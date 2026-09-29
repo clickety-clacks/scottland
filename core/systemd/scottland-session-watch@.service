@@ -1,0 +1,14 @@
+[Unit]
+Description=Scottland session lifetime (launcher PID %i)
+Documentation=file:///usr/share/doc/scottland/README.md
+# Holds scottland-session.target up for exactly as long as the session's launcher lives, so the
+# user's graphical-session services stop even when the session is killed (e.g. the display
+# manager restarts) rather than exiting cleanly.
+Wants=scottland-session.target
+Before=scottland-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/tail --pid=%i -f /dev/null
+# Stop the session services only when no other Scottland session is still being watched.
+ExecStopPost=/bin/sh -c 'systemctl --user list-units --state=active --no-legend "scottland-session-watch@*.service" | grep -q . || systemctl --user stop scottland-session.target'

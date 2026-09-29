@@ -18,6 +18,7 @@ import os
 import re
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -285,8 +286,18 @@ class Translator:
     WINDOW_ADDRESS = re.compile(r'address:(0x[0-9a-fA-F]+)')
     LUA_FIELD = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 
+    EXEC_LUA = re.compile(r'^hl\.dsp\.exec_cmd\(\s*"((?:[^"\\]|\\.)*)"')
+
     def dispatch(self, text):
         """Translate the window dispatches the shell uses; everything else is a logged no-op."""
+        # Run a command in this session, like Hyprland's exec dispatcher (Lua or classic form).
+        match = self.EXEC_LUA.match(text.strip())
+        command = json.loads(f'"{match.group(1)}"') if match else (
+            text.strip()[5:] if text.strip().startswith("exec ") else None)
+        if command:
+            subprocess.Popen(["sh", "-c", command], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return "ok"
         if "send_key_state" in text or "send_shortcut" in text:
             # hl.dsp.send_key_state({ key = "Insert", mods = "CTRL", state = "down" })
             fields = dict(self.LUA_FIELD.findall(text))
@@ -348,6 +359,8 @@ class Translator:
             return {}
         if command == "plugin" and args.split(" ", 1)[0] == "list":
             return [] if as_json else "no plugins loaded"
+        if command == "configerrors":
+            return [] if as_json else ""
         if command == "status":
             return {"configProvider": "scottland", "backend": "wayfire"}
         if command == "version":

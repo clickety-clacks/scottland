@@ -36,6 +36,10 @@ mkdir -p "$state"
 # fragments; autostart.d/06-watch-config keeps it current while the session runs.
 config=$("$SCOTTLAND_HOOKS/libexec/scottland-build-config")
 
+# Lets autostart.d/05-import-environment tie the user's session services to this launcher.
+SCOTTLAND_SESSION_PID=$$
+export SCOTTLAND_SESSION_PID
+
 started=$(date +%s)
 wayfire -c "$config" "$@" >"$state/wayfire.log" 2>&1
 status=$?

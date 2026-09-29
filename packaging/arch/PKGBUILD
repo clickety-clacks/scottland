@@ -24,6 +24,7 @@ package_scottland() {
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
   install -Dm755 "$_root/core/session/start-scottland" "$pkgdir/usr/bin/start-scottland"
   install -Dm644 "$_root/core/systemd/scottland-session.target" "$pkgdir/usr/lib/systemd/user/scottland-session.target"
+  install -Dm644 "$_root/core/systemd/scottland-session-watch@.service" "$pkgdir/usr/lib/systemd/user/scottland-session-watch@.service"
   install -Dm644 "$_root/core/session/scottland.desktop" "$pkgdir/usr/share/wayland-sessions/scottland.desktop"
   install -Dm755 "$_root/core/session/scottland-autostart" "$pkgdir/usr/lib/scottland/libexec/scottland-autostart"
   install -Dm755 "$_root/core/session/scottland-build-config" "$pkgdir/usr/lib/scottland/libexec/scottland-build-config"

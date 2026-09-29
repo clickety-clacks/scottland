@@ -58,15 +58,28 @@ set_boot() {
 }
 
 # The user's session on seat0 whose desktop matches the target, if one is running.
+is_scottland_session() {
+  # SDDM reports the desktop as "Scottland:Wayfire:wlroots"; a session started on its own VT by
+  # this helper reports "scottland". Match either, case-insensitively.
+  local desktop
+  desktop=$(loginctl show-session "$1" -p Desktop --value)
+  [[ ${desktop,,} == *scottland* ]]
+}
+
+# The VT of the user's running graphical session of the target desktop on seat0, if any.
+# The caller's own session never counts as the target.
 running_vt() {
-  local id desktop vt type
+  local id vt type
   for id in $(loginctl list-sessions --no-legend | awk -v u="$user_name" '$3 == u && $4 == "seat0" {print $1}'); do
-    desktop=$(loginctl show-session "$id" -p Desktop --value)
-    vt=$(loginctl show-session "$id" -p VTNr --value)
+    [[ $id == "$source_session" ]] && continue
     type=$(loginctl show-session "$id" -p Type --value)
     [[ $type == wayland || $type == x11 ]] || continue
     [[ $(loginctl show-session "$id" -p State --value) == closing ]] && continue
-    if [[ $target == scottland && $desktop == scottland ]] || [[ $target == hyprland && $desktop != scottland ]]; then
+    vt=$(loginctl show-session "$id" -p VTNr --value)
+    if [[ $target == scottland ]] && is_scottland_session "$id"; then
+      echo "$vt"; return
+    fi
+    if [[ $target == hyprland ]] && ! is_scottland_session "$id"; then
       echo "$vt"; return
     fi
   done
