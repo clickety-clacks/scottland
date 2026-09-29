@@ -25,6 +25,12 @@ mkdir -p "$dir"
     "$generator" "$base" || printf '# (generator failed)\n'
   done
 } >"$out.new"
+
+# After scottland-reload, load the plugin from the fresh copy it made (see scottland-reload).
+current_plugin=$(cat "$dir/plugins/current" 2>/dev/null || true)
+if [ -n "$current_plugin" ] && [ -f "$current_plugin" ]; then
+  sed -i "s#^  scottland \\\\\$#  $current_plugin \\\\#" "$out.new"
+fi
 # Write in place rather than rename: Wayfire watches this file and reloads it on change.
 cat "$out.new" >"$out"
 rm -f "$out.new"

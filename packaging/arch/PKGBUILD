@@ -33,6 +33,7 @@ package_scottland() {
   install -Dm755 "$_root/core/config.d/20-layout-settings" "$pkgdir/usr/lib/scottland/config.d/20-layout-settings"
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
+  install -Dm755 "$_root/core/session/scottland-reload" "$pkgdir/usr/lib/scottland/libexec/scottland-reload"
   install -Dm644 "$_root/core/settings/shell.qml" "$pkgdir/usr/share/scottland/settings/shell.qml"
   install -Dm755 "$_root/core/autostart.d/05-import-environment" "$pkgdir/usr/lib/scottland/autostart.d/05-import-environment"
   install -dm755 "$pkgdir/usr/lib/scottland/early-exit.d" "$pkgdir/usr/lib/scottland/session-env.d"

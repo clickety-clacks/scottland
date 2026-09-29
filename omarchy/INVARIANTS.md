@@ -11,6 +11,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 
 | ID | Invariant | Status |
 |---|---|---|
+| S8 | Omarchy menu > System has "Reload Scottland" (shown only inside Scottland). | implemented |
 | S7 | Omarchy menu > System has "Scottland Layout" to open it (added by `scottland-omarchy-setup`). | implemented |
 
 ## Switching between Scottland and Hyprland

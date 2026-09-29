@@ -19,6 +19,7 @@ dev-install: plugin
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(DEV)/libexec/start-scottland
+	ln -sf $(CURDIR)/core/session/scottland-reload $(DEV)/libexec/scottland-reload
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(DEV)/settings
 	mkdir -p $(HOME)/.config/systemd/user

@@ -1,0 +1,50 @@
+#!/bin/sh
+# Reload Scottland in place: load the current plugin build and config into the running session.
+# Windows stay open. Use after updating or rebuilding Scottland; a session restart is only
+# needed for changes to the launcher or session hooks.
+#
+# The plugin is copied to a fresh file each time: a library at the same path would be reused
+# from memory, so Wayfire would keep running the old code.
+set -eu
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}"
+dev="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev"
+[ -n "${WAYFIRE_SOCKET:-}" ] || { echo "scottland-reload: run it inside a Scottland session" >&2; exit 1; }
+
+source_plugin=/usr/lib/wayfire/libscottland.so
+[ -e "$dev/plugins/libscottland.so" ] && source_plugin="$dev/plugins/libscottland.so"
+
+mkdir -p "$runtime/plugins"
+fresh="$runtime/plugins/libscottland-$(date +%s%N).so"
+cp -L "$source_plugin" "$fresh"
+previous=$(cat "$runtime/plugins/current" 2>/dev/null || true)
+echo "$fresh" >"$runtime/plugins/current"
+
+# Rewrite the config (new settings take their saved values; the plugin list names the fresh
+# copy), register any new settings, then swap the plugin. The plugin list is also set over IPC:
+# values set over IPC (e.g. by the settings app) take precedence over the file.
+"$hooks/libexec/scottland-build-config" >/dev/null
+python3 - "$WAYFIRE_SOCKET" "$fresh" <<'PY'
+import json, socket, struct, sys, time
+sock = socket.socket(socket.AF_UNIX); sock.connect(sys.argv[1])
+def call(method, data=None):
+    body = json.dumps({"method": method, "data": data or {}}).encode()
+    sock.sendall(struct.pack("<I", len(body)) + body)
+    size = struct.unpack("<I", sock.recv(4))[0]; reply = b""
+    while len(reply) < size: reply += sock.recv(size - len(reply))
+    return json.loads(reply)
+call("wayfire/reload-config-metadata")
+plugins = call("wayfire/get-config-option", {"option": "core/plugins"})["value"].split()
+plugins = [sys.argv[2] if p == "scottland" or "/libscottland-" in p else p for p in plugins]
+reply = call("wayfire/set-config-options", {"core/plugins": " ".join(plugins)})
+if reply.get("error"): sys.exit(f"scottland-reload: {reply['error']}")
+time.sleep(1)
+PY
+
+# Old copies are no longer loaded.
+for old in "$runtime"/plugins/libscottland-*.so; do
+  [ "$old" = "$fresh" ] || rm -f "$old"
+done
+[ -n "$previous" ] && rm -f "$previous"
+command -v notify-send >/dev/null && notify-send -a Scottland "Scottland reloaded" "Plugin and config reloaded in place." || true
+echo "reloaded from $source_plugin"

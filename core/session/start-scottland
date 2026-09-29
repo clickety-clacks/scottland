@@ -30,6 +30,9 @@ for env_hook in "$SCOTTLAND_HOOKS"/session-env.d/*.sh; do
   [ -r "$env_hook" ] && . "$env_hook"
 done
 
+# A new session starts from the installed (or dev) plugin, not a previous session's reload copy.
+rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/plugins"
+
 state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
 mkdir -p "$state"
 # Base config (~/.config/scottland/scottland.ini overrides the packaged one) plus generated
