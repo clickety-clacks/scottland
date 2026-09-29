@@ -1,0 +1,174 @@
+#!/usr/bin/env lua
+-- Runs the Lua-function shortcuts from ~/.config/hypr/hyprland.lua inside a Scottland session.
+--
+-- Loads the Hyprland config against a stand-in `hl`, keeps each bind's function (and whatever
+-- state it closes over, e.g. Yoohoo's counters), then waits on a FIFO for shortcut ids written by
+-- scottland-lua-call. Commands run directly; any other dispatch goes to `hyprctl dispatch`, which
+-- the Hyprland shim translates, so all Hyprland-to-Wayfire translation lives in one place.
+--
+-- Ids match 50-omarchy-shortcuts: sorted modifiers, "+", key (e.g. "SHIFT SUPER+TAB").
+-- A line "reload" re-reads the config (the shortcut generator sends it after config changes).
+
+local runtime = os.getenv("XDG_RUNTIME_DIR") or ("/run/user/" .. io.popen("id -u"):read("l"))
+local fifo = arg[1] or (runtime .. "/scottland/" .. (os.getenv("WAYLAND_DISPLAY") or "wayland") .. ".lua.fifo")
+local config = os.getenv("HOME") .. "/.config/hypr/hyprland.lua"
+
+local function log(message)
+  io.stderr:write(os.date("%H:%M:%S ") .. message .. "\n")
+end
+
+local function shell_quote(text)
+  return "'" .. tostring(text):gsub("'", "'\\''") .. "'"
+end
+
+local function spawn(command)
+  os.execute("setsid -f sh -c " .. shell_quote(command) .. " >/dev/null 2>&1")
+end
+
+local function literal(value)
+  local kind = type(value)
+  if kind == "string" then return string.format("%q", value) end
+  if kind == "number" or kind == "boolean" then return tostring(value) end
+  if kind == "table" then
+    local parts = {}
+    for k, v in pairs(value) do
+      local key = (type(k) == "string" and k:match("^[%a_][%w_]*$")) and k or ("[" .. literal(k) .. "]")
+      parts[#parts + 1] = key .. " = " .. literal(v)
+    end
+    table.sort(parts)
+    return "{ " .. table.concat(parts, ", ") .. " }"
+  end
+  return "nil"
+end
+
+local function normalize(keys)
+  local mods, key = {}, ""
+  for part in string.gmatch(tostring(keys or ""), "[^+]+") do
+    local value = part:gsub("^%s+", ""):gsub("%s+$", "")
+    local upper = string.upper(value)
+    if upper == "SUPER" or upper == "SHIFT" or upper == "CTRL" or upper == "CONTROL" or upper == "ALT" then
+      mods[#mods + 1] = (upper == "CONTROL") and "CTRL" or upper
+    else
+      key = value
+    end
+  end
+  table.sort(mods)
+  return table.concat(mods, " ") .. "+" .. key
+end
+
+-- Minimal reader for the fields binds ask about; hyprctl output is pretty-printed JSON.
+local function active_window()
+  local handle = io.popen("hyprctl -j activewindow 2>/dev/null")
+  local text = handle and handle:read("a") or ""
+  if handle then handle:close() end
+  if not text:find('"address"') then return nil end
+  local window = { tags = {} }
+  for _, field in ipairs({ "address", "class", "title", "initialClass", "initialTitle" }) do
+    window[field] = text:match('"' .. field .. '":%s*"(.-)"')
+  end
+  local tags = text:match('"tags":%s*%[(.-)%]') or ""
+  for tag in tags:gmatch('"(.-)"') do window.tags[#window.tags + 1] = tag end
+  return window
+end
+
+local noop
+noop = setmetatable({}, { __index = function() return noop end, __call = function() return noop end })
+
+local binds = {}
+
+local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
+
+local function dsp_proxy(path)
+  return setmetatable({ path = path }, {
+    __index = function(self, key) return dsp_proxy(self.path .. "." .. tostring(key)) end,
+    __call = function(self, ...)
+      local first = ...
+      if self.path == "hl.dsp.exec_cmd" and type(first) == "string" then return dispatcher("exec", first) end
+      local args = {}
+      for i = 1, select("#", ...) do args[i] = literal(select(i, ...)) end
+      return dispatcher("lua", self.path .. "(" .. table.concat(args, ", ") .. ")")
+    end,
+  })
+end
+
+local function run(action)
+  if type(action) == "function" then
+    local ok, err = pcall(action)
+    if not ok then log("bind failed: " .. tostring(err)) end
+  elseif type(action) == "table" and action.__scottland then
+    if action.kind == "exec" then
+      spawn(action.arg)
+    else
+      spawn("hyprctl dispatch " .. shell_quote(action.arg))
+    end
+  elseif type(action) == "string" then
+    spawn(action)
+  end
+end
+
+local function stand_in()
+  return setmetatable({
+    dsp = dsp_proxy("hl.dsp"),
+    bind = function(keys, action, opts)
+      binds[normalize(keys)] = { action = action, opts = opts or {} }
+      return noop
+    end,
+    unbind = function(keys) binds[normalize(keys)] = nil; return noop end,
+    exec_cmd = function(command) spawn(command) end,
+    dispatch = function(action) run(action) end,
+    timer = function(callback, opts)
+      -- Timers here are short (key up/down spacing), so run them in line after the delay.
+      local timeout = (opts and opts.timeout or 0) / 1000
+      if timeout > 0 then os.execute("sleep " .. string.format("%.3f", timeout)) end
+      local ok, err = pcall(callback)
+      if not ok then log("timer failed: " .. tostring(err)) end
+      return noop
+    end,
+    get_active_window = active_window,
+    get_config = function() return nil end,
+  }, { __index = function() return noop end })
+end
+
+local function load_config()
+  binds = {}
+  hl = stand_in()
+  local real_require = require
+  require = function(name)
+    local ok, result = pcall(real_require, name)
+    if ok then return result end
+    log("skipped module " .. tostring(name) .. ": " .. tostring(result))
+    package.loaded[name] = noop
+    return noop
+  end
+  for name in pairs(package.loaded) do
+    if name:match("^hypr") or name:match("^default") then package.loaded[name] = nil end
+  end
+  local ok, err = pcall(dofile, config)
+  require = real_require
+  if not ok then log("config load stopped: " .. tostring(err)) end
+  local count = 0
+  for _, bind in pairs(binds) do
+    if type(bind.action) == "function" then count = count + 1 end
+  end
+  log("loaded " .. count .. " Lua-function shortcuts")
+end
+
+load_config()
+os.execute("mkdir -p " .. shell_quote(fifo:match("(.*)/")))
+os.remove(fifo)
+assert(os.execute("mkfifo -m 600 " .. shell_quote(fifo)), "cannot create " .. fifo)
+
+while true do
+  local pipe = io.open(fifo, "r")  -- blocks until scottland-lua-call writes
+  if pipe then
+    for line in pipe:lines() do
+      if line == "reload" then
+        load_config()
+      elseif line ~= "" then
+        local bind = binds[line]
+        if bind then run(bind.action) else log("no shortcut " .. line) end
+      end
+    end
+    pipe:close()
+  end
+end

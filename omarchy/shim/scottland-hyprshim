@@ -39,6 +39,11 @@ VERSION = {
     "commits": "0", "flags": [],
 }
 
+# Omarchy tags terminals with a window rule (default/hypr/apps/terminals.lua); bindings such as
+# universal copy/paste read the tag, so mirror that rule.
+TERMINAL_CLASS = re.compile(r"(Alacritty|kitty|com\.mitchellh\.ghostty|foot|org\.codeberg\.dnkl\.foot|"
+                            r"wezterm|org\.omarchy\..*|TUI\..*)")
+
 ADDRESS_BASE = 0x5C0700000000  # makes view ids look like Hyprland window addresses
 
 
@@ -199,7 +204,9 @@ class Translator:
             "pinned": bool(view.get("sticky")), "pinFullscreened": False,
             "fullscreen": 2 if view.get("fullscreen") else 0, "fullscreenClient": 0,
             "fullscreenHandler": "default", "allowedOverFullscreen": False,
-            "grouped": [], "tags": [], "swallowing": "0x0",
+            "grouped": [],
+            "tags": ["terminal*"] if TERMINAL_CLASS.fullmatch(view.get("app-id", "")) else [],
+            "swallowing": "0x0",
             "focusHistoryID": focus_order.get(view["id"], 0),
             "inhibitingIdle": False, "xdgTag": "", "xdgDescription": "",
             "contentType": "none", "tearingHint": False,

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run a Lua-function shortcut in this session's scottland-luahost, e.g. scottland-lua-call "SUPER+TAB".
+fifo="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/${WAYLAND_DISPLAY:-wayland}.lua.fifo"
+[ -p "$fifo" ] || exit 1
+printf '%s\n' "$1" | timeout 1 tee "$fifo" >/dev/null

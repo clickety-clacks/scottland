@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run the Lua-function shortcuts from the Hyprland config (see libexec/scottland-luahost).
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+mkdir -p "$state"
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-luahost" 2>>"$state/luahost.log"
