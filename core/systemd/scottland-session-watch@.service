@@ -11,4 +11,4 @@ Before=scottland-session.target
 Type=exec
 ExecStart=/usr/bin/tail --pid=%i -f /dev/null
 # Stop the session services only when no other Scottland session is still being watched.
-ExecStopPost=/bin/sh -c 'systemctl --user list-units --state=active --no-legend "scottland-session-watch@*.service" | grep -q . || systemctl --user stop scottland-session.target'
+ExecStopPost=/bin/sh -c 'systemctl --user list-units --state=active --no-legend "scottland-session-watch@*.service" | grep -q . || systemctl --user stop scottland-session.target graphical-session.target graphical-session-pre.target'

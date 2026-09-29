@@ -70,25 +70,54 @@ def read_env_file(path):
     return env
 
 
-def hyprland_env():
-    """The environment of the running Hyprland, read from uwsm's compositor unit."""
-    units = run("systemctl", "--user", "list-units", "--state=active", "--no-legend", "--plain",
-                "wayland-wm@*.service").stdout.split()
-    for unit in (u for u in units if u.startswith("wayland-wm@")):
-        pid = run("systemctl", "--user", "show", unit, "-p", "MainPID", "--value").stdout.strip()
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+HYPRLAND_SNAPSHOT = os.path.join(RUNTIME, "scottland", "env-hyprland")
+
+
+def manager_env():
+    env = {}
+    for line in run("systemctl", "--user", "show-environment").stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in DESKTOP_VARS:
+            env[key] = value
+    return env
+
+
+def running_hyprland():
+    """(instance signature, wayland display) of the running Hyprland, from its lock file."""
+    for sig in os.listdir(os.path.join(RUNTIME, "hypr")) if os.path.isdir(os.path.join(RUNTIME, "hypr")) else []:
+        if sig.startswith("scottland_"):
+            continue  # the Hyprland shim's own instance
         try:
-            with open(f"/proc/{pid}/environ", "rb") as environ:
-                pairs = environ.read().split(b"\0")
-        except OSError:
+            with open(os.path.join(RUNTIME, "hypr", sig, "hyprland.lock")) as lock:
+                pid, display = (lock.read().split("\n") + ["", ""])[:2]
+            os.kill(int(pid), 0)
+        except (OSError, ValueError):
             continue
-        env = {}
-        for pair in pairs:
-            key, sep, value = pair.decode(errors="replace").partition("=")
-            if sep and key in DESKTOP_VARS:
-                env[key] = value
-        if env.get("WAYLAND_DISPLAY"):
-            return env
+        if display:
+            return sig, display
     return None
+
+
+def hyprland_env():
+    """Hyprland's desktop environment: the user manager's environment as uwsm set it (snapshotted
+    before the first handover), with the display and instance taken from Hyprland's lock file."""
+    running = running_hyprland()
+    if not running:
+        return None
+    current = manager_env()
+    if "hyprland" in current.get("XDG_CURRENT_DESKTOP", "").lower():
+        env = current
+        os.makedirs(os.path.dirname(HYPRLAND_SNAPSHOT), exist_ok=True)
+        with open(HYPRLAND_SNAPSHOT, "w") as snapshot:
+            snapshot.write("".join(f"{k}={v}\n" for k, v in env.items()))
+    elif os.path.exists(HYPRLAND_SNAPSHOT):
+        env = read_env_file(HYPRLAND_SNAPSHOT)
+    else:
+        env = {"XDG_CURRENT_DESKTOP": "Hyprland", "XDG_SESSION_DESKTOP": "Hyprland", "XDG_SESSION_TYPE": "wayland"}
+    env["HYPRLAND_INSTANCE_SIGNATURE"], env["WAYLAND_DISPLAY"] = running
+    env.pop("WAYFIRE_SOCKET", None)
+    return env
 
 
 def session_services():
