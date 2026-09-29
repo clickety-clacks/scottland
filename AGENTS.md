@@ -4,20 +4,50 @@ Scottland is a spatial desktop for Linux on Wayfire, after Scott Jenson's "worki
 Windows scale down as they move from a full-scale center zone toward the screen edges, and turn
 into widgets on thin rails at the edges. See README.md for the idea and layout.
 
-**Every behavior Mike has asked for is in [INVARIANTS.md](INVARIANTS.md).** Treat it as the
-spec and the test list. When Mike asks for a new behavior or changes one, add or update its entry
-there in the same change.
+**The behaviors Mike has asked for are the spec and the test list:**
 
-## Rules
+- [core/INVARIANTS.md](core/INVARIANTS.md): the desktop itself, on any distro.
+- [omarchy/INVARIANTS.md](omarchy/INVARIANTS.md): the Omarchy adapter (switching, service
+  handover, Hyprland shim, shortcut import, menu entries).
 
-- **Core vs adapter.** `core/` works on any distro and never mentions Omarchy, Hyprland or uwsm.
-  Everything Omarchy-specific (the Hyprland shim, Lua host, shortcut import, session switching,
-  service handover) lives in `omarchy/` and ships as `scottland-omarchy`.
-- **Generic, not per-app.** Never add code for one app. Hyprland IPC goes through the shim,
-  Hyprland-config behavior through the Lua host, compositor abilities through the plugin.
-- **Leave Hyprland, uwsm and the Omarchy shell alone**, and never edit users' app configs.
-- **Stock Wayfire.** Extend it with the plugin; don't fork it. The plugin must load after `move`.
-- **No hand-edits on machines.** Install packages, or use dev mode.
+When Mike asks for a new behavior or changes one, add or update its entry in the right file in the
+same change.
+
+## Where does a request belong?
+
+Every time Mike asks for something, decide which of these it is, **say which you assumed and
+why**, and ask only if it's genuinely unclear:
+
+1. **Core** (`core/`, package `scottland`): what any Scottland user on any distro would want from
+   the desktop itself. Layout, scaling, the plugin's compositor abilities, the settings app,
+   shipped defaults, acting as a graphical session.
+2. **Adapter** (`omarchy/`, package `scottland-omarchy`): exists only because Scottland runs on
+   Omarchy beside Hyprland and uwsm. The Hyprland shim, Lua host, shortcut import, switching
+   between desktops, service handover, Omarchy menu entries.
+3. **Mike's personal preference**: his taste, not a default others should get. Goes in his own
+   files, never in the repo: `~/.config/scottland/overrides.ini` (appended last, wins over
+   everything; example: natural scrolling), or `~/.config/scottland/layout.ini` (written by the
+   settings app).
+
+Hints: "turn X off in both installed and shipped" is core. Anything mentioning Hyprland,
+Omarchy's menu, uwsm or Hyprland-config behavior is the adapter. "I like", "for me", or a tweak to
+feel/appearance with no reason others would want it is personal. A shipped default that's just
+a value (a slider position) is usually personal unless Mike says it should ship.
+
+## Scope and project rules
+
+| ID | Rule |
+|---|---|
+| C1 | Scottland implements Scott Jenson's spatial "working memory" desktop concept (KDE Akademy 2026 talk), with his go-ahead. The README credits him and says it is independent, not his. |
+| C2 | No workspaces. Window navigation and layout are Scottland's own; Hyprland's workspace/tiling behavior is not reproduced. |
+| C3 | Stock Wayfire, not a fork: Wayfire + the scottland plugin + config + integration. The plugin must load after `move`. |
+| C4 | Core never references Omarchy, Hyprland or uwsm. Omarchy integration ships as `scottland-omarchy`. |
+| C5 | Omarchy users install one package and keep their environment; only window placement/scaling and workspaces change. Other distros (e.g. Ubuntu) run the core alone. |
+| C6 | Hyprland, uwsm and the stock Omarchy shell are not modified. |
+| C7 | Scottland never edits users' app configs. Session-specific behavior goes in how Scottland launches things. |
+| C8 | Generic, not per-app: Hyprland IPC goes through the shim, Hyprland-config behavior through the Lua host, compositor abilities through the plugin. No code for one particular app. |
+| D1 | Nothing is hand-edited on a machine: files come from a package, or from the repo in dev mode. |
+| D2 | Nothing is reported as done until it has been exercised with real input on a real session (plumbus), and any already-running session was checked for predating the build. |
 
 ## Build and dev mode
 
@@ -34,13 +64,14 @@ with: restart the session after rebuilding the plugin.
 Before reporting anything as done:
 
 1. Test on **plumbus** (Omarchy test machine on the tailnet; installing there is fine). sudo
-   there needs Mike's password; stage commands in its `scottland-install` tmux session.
+   there needs Mike's password; stage commands in its `scottland-install` tmux session and open a
+   terminal attached to it on Mike's screen.
 2. Use real input: Wayfire's `stipc` plugin (`tests/drag-test.py`, `tests/wfipc.py`). IPC calls
    that bypass input (e.g. `configure-view`) don't count as verification for input behavior.
 3. Look: screenshots with `grim`, and the Lumina webcam facing plumbus's screen
    (`/dev/video2`) when screenshots might lie.
 4. Check whether a running session predates the build.
-5. Re-check every invariant in INVARIANTS.md the change could affect, and update statuses.
+5. Re-check every invariant the change could affect, and update its status.
 
 Useful tools: `tests/shell-probe.sh` (stock shell against the shim, headless and sandboxed),
 `tests/nested.sh` (Scottland nested in a window), `scottland-ctl`, and the logs in
