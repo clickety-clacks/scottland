@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""Generate Scottland (Wayfire) shortcuts from the user's live Omarchy Hyprland config.
+
+Called by start-scottland with the base Wayfire config as its argument; prints an ini fragment
+that start-scottland appends. Runs every session start, so Hyprland shortcut changes carry over.
+
+  - Shortcuts that run commands (menus, apps, media keys, screenshots, toggles) are kept.
+  - Shortcuts that only make sense in Hyprland (workspaces, tiling, hyprctl scripts) are skipped
+    and listed in the fragment's comments.
+  - Where one of these clashes with a Scottland/Wayfire default, the Omarchy shortcut wins.
+
+The Lua scan follows omarchy-menu-keybindings: the config runs against a stand-in `hl` that
+records binds instead of applying them. This one also honours hl.unbind.
+"""
+
+import os
+import re
+import subprocess
+import sys
+
+HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
+
+LUA_SCAN = r'''
+local order, binds = {}, {}
+
+local function normalize(keys)
+  local mods, key = {}, ""
+  for part in string.gmatch(tostring(keys or ""), "[^+]+") do
+    local value = part:gsub("^%s+", ""):gsub("%s+$", "")
+    local upper = string.upper(value)
+    if upper == "SUPER" or upper == "SHIFT" or upper == "CTRL" or upper == "CONTROL" or upper == "ALT" then
+      mods[#mods + 1] = (upper == "CONTROL") and "CTRL" or upper
+    else
+      key = value
+    end
+  end
+  table.sort(mods)
+  return table.concat(mods, " "), key
+end
+
+local function literal(value)
+  local kind = type(value)
+  if kind == "string" then return string.format("%q", value) end
+  if kind == "number" or kind == "boolean" then return tostring(value) end
+  if kind == "table" then
+    local parts = {}
+    for k, v in pairs(value) do parts[#parts + 1] = tostring(k) .. "=" .. literal(v) end
+    table.sort(parts)
+    return "{" .. table.concat(parts, ",") .. "}"
+  end
+  return "nil"
+end
+
+local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
+
+local function dsp_proxy(path)
+  return setmetatable({ path = path }, {
+    __index = function(self, key) return dsp_proxy(self.path .. "." .. tostring(key)) end,
+    __call = function(self, ...)
+      local first = ...
+      if self.path == "hl.dsp.exec_cmd" and type(first) == "string" then return dispatcher("exec", first) end
+      local args = {}
+      for i = 1, select("#", ...) do args[i] = literal(select(i, ...)) end
+      return dispatcher("lua", self.path .. "(" .. table.concat(args, ",") .. ")")
+    end,
+  })
+end
+
+local noop
+noop = setmetatable({}, { __index = function() return noop end, __call = function() return noop end })
+
+hl = setmetatable({
+  dsp = dsp_proxy("hl.dsp"),
+  bind = function(keys, action, opts)
+    opts = opts or {}
+    local mods, key = normalize(keys)
+    local id = mods .. "+" .. key
+    local kind, arg = "", ""
+    if type(action) == "table" and action.__scottland then kind, arg = action.kind, action.arg
+    elseif type(action) == "string" then kind, arg = "exec", action
+    elseif type(action) == "function" then kind, arg = "function", "" end
+    if not binds[id] then order[#order + 1] = id end
+    binds[id] = { mods, key, opts.description or "", kind, arg, opts["repeat"] and "1" or "0" }
+    return noop
+  end,
+  unbind = function(keys)
+    local mods, key = normalize(keys)
+    binds[mods .. "+" .. key] = nil
+    return noop
+  end,
+  get_config = function() return nil end,
+}, { __index = function() return noop end })
+
+-- A module that fails against the stand-in must not stop the scan of everything after it.
+local real_require = require
+require = function(name)
+  local ok, result = pcall(real_require, name)
+  if ok then return result end
+  io.stderr:write("skipped module " .. tostring(name) .. ": " .. tostring(result) .. "\n")
+  package.loaded[name] = noop
+  return noop
+end
+
+local ok, err = pcall(dofile, os.getenv("HOME") .. "/.config/hypr/hyprland.lua")
+if not ok then io.stderr:write("scan failed: " .. tostring(err) .. "\n") end
+local printed = {}
+for _, id in ipairs(order) do
+  local b = binds[id]
+  if b and not printed[id] then
+    printed[id] = true
+    for i = 1, #b do b[i] = tostring(b[i]):gsub("[\t\n]", " ") end
+    print(table.concat(b, "\t"))
+  end
+end
+'''
+
+MODIFIERS = {"SUPER": "<super>", "SHIFT": "<shift>", "CTRL": "<ctrl>", "ALT": "<alt>"}
+
+# xkb keysym names (as Hyprland/Omarchy write them) -> evdev names (as Wayfire wants them)
+KEYSYMS = {
+    "return": "ENTER", "space": "SPACE", "escape": "ESC", "backspace": "BACKSPACE",
+    "tab": "TAB", "delete": "DELETE", "insert": "INSERT", "home": "HOME", "end": "END",
+    "page_up": "PAGEUP", "prior": "PAGEUP", "page_down": "PAGEDOWN", "next": "PAGEDOWN",
+    "left": "LEFT", "right": "RIGHT", "up": "UP", "down": "DOWN", "print": "SYSRQ",
+    "comma": "COMMA", "period": "DOT", "slash": "SLASH", "backslash": "BACKSLASH",
+    "minus": "MINUS", "equal": "EQUAL", "grave": "GRAVE", "semicolon": "SEMICOLON",
+    "apostrophe": "APOSTROPHE", "bracketleft": "LEFTBRACE", "bracketright": "RIGHTBRACE",
+    "xf86audioraisevolume": "VOLUMEUP", "xf86audiolowervolume": "VOLUMEDOWN",
+    "xf86audiomute": "MUTE", "xf86audiomicmute": "MICMUTE",
+    "xf86monbrightnessup": "BRIGHTNESSUP", "xf86monbrightnessdown": "BRIGHTNESSDOWN",
+    "xf86kbdbrightnessup": "KBDILLUMUP", "xf86kbdbrightnessdown": "KBDILLUMDOWN",
+    "xf86audioplay": "PLAYPAUSE", "xf86audiopause": "PLAYPAUSE", "xf86audionext": "NEXTSONG",
+    "xf86audioprev": "PREVIOUSSONG", "xf86audiostop": "STOPCD", "xf86poweroff": "POWER",
+    "xf86calculator": "CALC", "xf86search": "SEARCH", "xf86tools": "CONFIG",
+    "xf86launch1": "PROG1", "xf86launcha": "SCALE", "xf86display": "SWITCHVIDEOMODE",
+    "xf86kbdlightonoff": "KBDILLUMTOGGLE", "xf86touchpadtoggle": "TOUCHPAD_TOGGLE",
+    "xf86touchpadon": "TOUCHPAD_ON", "xf86touchpadoff": "TOUCHPAD_OFF", "xf86eject": "EJECTCD",
+}
+
+HYPRLAND_ONLY = re.compile(r"hyprctl|omarchy-hyprland-|hyprsunset|hyprpicker|workspace")
+
+# Hyprland dispatchers with a Wayfire equivalent: expression prefix -> (section, option)
+DISPATCHERS = {
+    "hl.dsp.window.close": ("core", "close_top_view"),
+    'hl.dsp.window.fullscreen({mode="maximized"})': ("wm-actions", "toggle_maximize"),
+    "hl.dsp.window.fullscreen": ("wm-actions", "toggle_fullscreen"),
+}
+
+
+def evdev_names():
+    names = {}
+    try:
+        with open("/usr/include/linux/input-event-codes.h") as header:
+            for line in header:
+                match = re.match(r"#define (KEY_\w+)\s+(\d+)\b", line)
+                if match:
+                    names.setdefault(int(match.group(2)), match.group(1))
+    except OSError:
+        pass
+    return names
+
+
+EVDEV = evdev_names()
+
+
+def wayfire_key(key):
+    if key.lower().startswith("code:"):
+        code = int(key[5:]) - 8  # xkb keycodes are evdev codes + 8
+        return EVDEV.get(code)
+    if len(key) == 1 and key.isalnum():
+        return f"KEY_{key.upper()}"
+    if re.fullmatch(r"[Ff]\d{1,2}", key):
+        return f"KEY_{key.upper()}"
+    name = KEYSYMS.get(key.lower())
+    return f"KEY_{name}" if name else None
+
+
+def combo(mods, key):
+    wayfire = wayfire_key(key)
+    if not wayfire:
+        return None
+    return " ".join([MODIFIERS[m] for m in mods.split() if m in MODIFIERS] + [wayfire])
+
+
+def parse_base(path):
+    """Map each activator combo in the base config to the (section, option, value) using it."""
+    used, section = {}, ""
+    with open(path) as config:
+        for line in config:
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section = stripped[1:-1]
+                continue
+            if "=" not in stripped or stripped.startswith("#"):
+                continue
+            option, value = (part.strip() for part in stripped.split("=", 1))
+            if "KEY_" not in value and "BTN_" not in value:
+                continue
+            for alternative in value.split("|"):
+                used[" ".join(alternative.split())] = (section, option, value)
+    return used
+
+
+def main():
+    if sys.argv[1:] == ["--watch-paths"]:
+        print(os.path.dirname(HYPR_CONFIG))
+        return
+    base = sys.argv[1] if len(sys.argv) > 1 else "/usr/share/scottland/scottland.ini"
+    if not os.path.exists(HYPR_CONFIG):
+        print("# omarchy shortcuts: no ~/.config/hypr/hyprland.lua, nothing to import")
+        return
+
+    scan = subprocess.run(["lua", "-"], input=LUA_SCAN, capture_output=True, text=True,
+                          env={**os.environ, "HOME": os.path.expanduser("~")})
+    used = parse_base(base)
+
+    command_overrides, disabled, sections, skipped, kept = [], {}, {}, [], 0
+    activators = {}  # (section, option) -> [(description, combo)]; one option can take several keys
+    for line in scan.stdout.splitlines():
+        mods, key, description, kind, arg, repeat = (line.split("\t") + [""] * 6)[:6]
+        label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
+        wanted = combo(mods, key)
+        if not wanted:
+            skipped.append(f"{label}  {description}  (key has no Wayfire name)")
+            continue
+
+        target = None
+        if kind == "exec":
+            if HYPRLAND_ONLY.search(arg):
+                skipped.append(f"{label}  {description}  (Hyprland-only: {arg[:60]})")
+                continue
+            target = ("command", arg)
+        elif kind == "lua":
+            for prefix, (section, option) in DISPATCHERS.items():
+                if arg.startswith(prefix):
+                    target = (section, option)
+                    break
+            if not target:
+                skipped.append(f"{label}  {description}  (window/workspace action: {arg[:60]})")
+                continue
+        else:
+            skipped.append(f"{label}  {description}  (Lua function)")
+            continue
+
+        # The Omarchy shortcut wins over a Scottland/Wayfire default on the same keys.
+        clash = used.get(wanted)
+        if clash:
+            section, option, value = clash
+            if section == "command" and option.startswith(("binding_", "repeatable_binding_")) and target[0] == "command":
+                name = option.split("binding_", 1)[1]
+                command_overrides.append((f"command_{name}", target[1], description))
+                kept += 1
+                continue
+            remaining = [a.strip() for a in value.split("|") if " ".join(a.split()) != wanted]
+            disabled[(section, option)] = " | ".join(remaining) or "none"
+
+        if target[0] == "command":
+            prefix = "repeatable_binding" if repeat == "1" else "binding"
+            name = f"omarchy_{kept}"
+            sections.setdefault("command", []).append(
+                (f"# {description or label}", f"{prefix}_{name} = {wanted}", f"command_{name} = {target[1]}"))
+        else:
+            activators.setdefault(target, []).append((description or label, wanted))
+        kept += 1
+
+    print(f"# Generated from ~/.config/hypr/hyprland.lua by 50-omarchy-shortcuts: {kept} imported, "
+          f"{len(skipped)} skipped.")
+    for section, entries in sections.items():
+        print(f"\n[{section}]")
+        for entry in entries:
+            print("\n".join(entry))
+    for (section, option), entries in activators.items():
+        print(f"\n[{section}]\n# {', '.join(d for d, _ in entries)}")
+        print(f"{option} = {' | '.join(c for _, c in entries)}")
+    if command_overrides:
+        print("\n[command]")
+        for option, command, description in command_overrides:
+            print(f"# {description} (Omarchy shortcut replaces the Scottland default on the same keys)")
+            print(f"{option} = {command}")
+    for (section, option), value in disabled.items():
+        print(f"\n[{section}]\n# Omarchy uses this key; Scottland's default steps aside.\n{option} = {value}")
+    if skipped:
+        print("\n# Skipped:")
+        for entry in skipped:
+            print(f"#   {entry}")
+    for warning in scan.stderr.strip().splitlines():
+        print(f"# Lua scan: {warning[:200]}")
+
+
+if __name__ == "__main__":
+    main()

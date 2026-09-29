@@ -1,0 +1,11 @@
+#!/bin/sh
+# Rebuild the session's config whenever one of its sources changes (the base config, or files a
+# config.d generator reads). Wayfire notices the rewritten file and reloads it.
+command -v inotifywait >/dev/null || exit 0
+build="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-build-config"
+paths=$("$build" --watch-paths)
+# shellcheck disable=SC2086
+while inotifywait -qq -r -e close_write -e moved_to -e create -e delete $paths; do
+  sleep 0.3  # let editors finish writing
+  "$build" >/dev/null
+done

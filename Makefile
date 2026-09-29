@@ -14,9 +14,12 @@ dev-install: plugin
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
 	ln -sf $(CURDIR)/core/config/scottland.ini $(CONF)/scottland.ini
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
-	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d
+	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
-	for d in session-env.d autostart.d early-exit.d; do \
+	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
+	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
+	ln -sf $(CURDIR)/core/session/start-scottland $(DEV)/libexec/start-scottland
+	for d in session-env.d autostart.d early-exit.d config.d; do \
 	  for f in core/$$d/* omarchy/$$d/* omarchy/hooks/*; do \
 	    [ -e "$$f" ] || continue; \
 	    case $$f in omarchy/hooks/*) [ $$d = early-exit.d ] || continue ;; esac; \

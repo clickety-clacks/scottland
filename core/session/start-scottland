@@ -1,9 +1,11 @@
 #!/bin/sh
+dev_launcher="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev/libexec/start-scottland"
+if [ -x "$dev_launcher" ] && [ -z "${SCOTTLAND_DEV_LAUNCHER:-}" ]; then
+  SCOTTLAND_DEV_LAUNCHER=1 exec "$dev_launcher" "$@"
+fi
+
 # Start a Scottland session (Wayfire + the scottland layout plugin) on the current VT.
 # Can run beside another session, e.g. log in on tty3 while Hyprland stays on tty1.
-config="${XDG_CONFIG_HOME:-$HOME/.config}/scottland/scottland.ini"
-[ -f "$config" ] || config=/usr/share/scottland/scottland.ini
-
 # Dev mode (make dev-install): repo builds, hooks and helpers take precedence over the package.
 dev="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev"
 if [ -d "$dev/libexec" ]; then
@@ -30,6 +32,10 @@ done
 
 state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
 mkdir -p "$state"
+# Base config (~/.config/scottland/scottland.ini overrides the packaged one) plus generated
+# fragments; autostart.d/06-watch-config keeps it current while the session runs.
+config=$("$SCOTTLAND_HOOKS/libexec/scottland-build-config")
+
 started=$(date +%s)
 wayfire -c "$config" "$@" >"$state/wayfire.log" 2>&1
 status=$?

@@ -53,7 +53,7 @@ done
 cp -a /usr/share/omarchy/shell "$out/shell"
 # The probe starts what it needs itself; installed autostart hooks must not run here.
 config=$out/scottland.ini
-grep -v '^scottland_hooks' "$config_source" >"$config"
+grep -v "^scottland_hooks" "$config_source" >"$config"
 
 if [[ -z $shim ]]; then
   cat >"$out/bin/hyprctl" <<FAKE
