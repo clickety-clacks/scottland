@@ -6,7 +6,7 @@ set -euo pipefail
 menu=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc
 entries=(
   'system.scottland|  "system.scottland": {"icon":"󰍹","label":"Switch Desktop","description":"Scottland or Hyprland","action":"scottland-switch"},'
-  'system.scottland-reload|  "system.scottland-reload": {"icon":"󰑓","label":"Reload Scottland","description":"Load updates in place","when":"[ -n \"$WAYFIRE_SOCKET\" ]","action":"\"${SCOTTLAND_HOOKS:-/usr/lib/scottland}\"/libexec/scottland-reload"},'
+  'system.scottland-reload|  "system.scottland-reload": {"icon":"󰑓","label":"Reload Scottland","description":"Load updates in place","when":"printenv WAYFIRE_SOCKET >/dev/null","action":"scottland-reload"},'
   'system.scottland-layout|  "system.scottland-layout": {"icon":"󰕰","label":"Scottland Layout","description":"Zone widths and scaling","action":"scottland-settings"},'
 )
 
@@ -17,9 +17,25 @@ for item in "${entries[@]}"; do
   id=${item%%|*} entry=${item#*|}
   grep -q "\"$id\"" "$menu" && continue
   $backed_up || { cp "$menu" "$menu.bak.scottland"; backed_up=true; }
-  # Insert right after the opening brace so it stays valid whatever follows.
-  awk -v entry="$entry" '!done && /^[[:space:]]*\{[[:space:]]*$/ {print; print entry; done=1; next} {print}' \
+  # Insert right after the opening brace so it stays valid whatever follows. The entry goes in
+  # through the environment: awk -v would process backslash escapes and break JSON quoting.
+  ENTRY=$entry awk '!done && /^[[:space:]]*\{[[:space:]]*$/ {print; print ENVIRON["ENTRY"]; done=1; next} {print}' \
     "$menu" >"$menu.tmp" && mv "$menu.tmp" "$menu"
   echo "Added ${id#system.} to Omarchy menu > System."
 done
+
+# Check the file still parses the way Omarchy reads it (line comments and trailing commas
+# allowed); if not, put the backup back rather than leave the user without their menu.
+if ! python3 - "$menu" <<'PY'
+import json, re, sys
+raw = open(sys.argv[1]).read()
+raw = re.sub(r"(?m)^\s*//[^\n]*(\n|$)", "", raw)
+raw = re.sub(r",(\s*[}\]])", r"\1", raw)
+json.loads(raw)
+PY
+then
+  $backed_up && cp "$menu.bak.scottland" "$menu"
+  echo "scottland-omarchy-setup: the menu file would not parse; restored the backup." >&2
+  exit 1
+fi
 $backed_up && echo "Backup: $menu.bak.scottland" || echo "Omarchy menu already has the Scottland entries."
