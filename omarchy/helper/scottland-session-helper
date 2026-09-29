@@ -29,6 +29,9 @@ stop_user_session_targets() {
 if [[ ${1:-} == relogin ]]; then
   [[ $EUID -eq 0 && -z ${PKEXEC_UID:-} && ${2:-} =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "relogin is internal" >&2; exit 2; }
   user_name=$2
+  # Stop the session services while the outgoing desktop is still up, so they exit cleanly
+  # (apps like 1Password crash if their display vanishes first), then end it and start fresh.
+  stop_user_session_targets
   systemctl stop sddm
   stop_user_session_targets
   systemctl start sddm
