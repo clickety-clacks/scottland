@@ -1,0 +1,197 @@
+{
+"mice": [
+    {
+        "address": "0x564ec671a0a0",
+        "name": "gxtp7863:00-27c6:0d4c-mouse",
+        "defaultSpeed": 0.00000,
+        "scrollFactor": -1.00
+    },    {
+        "address": "0x564ec7d97340",
+        "name": "gxtp7863:00-27c6:0d4c-touchpad",
+        "defaultSpeed": 0.00000,
+        "scrollFactor": -1.00
+    },    {
+        "address": "0x564ec990e5a0",
+        "name": "keyd-virtual-pointer",
+        "defaultSpeed": 0.00000,
+        "scrollFactor": -1.00
+    },    {
+        "address": "0x564ec98feb80",
+        "name": "ydotoold-virtual-device-1",
+        "defaultSpeed": 0.00000,
+        "scrollFactor": -1.00
+    },    {
+        "address": "0x564ec78d8950",
+        "name": "mouse-passthrough",
+        "defaultSpeed": 0.00000,
+        "scrollFactor": -1.00
+    },    {
+        "address": "0x564ec6d11bf0",
+        "name": "mouse-passthrough-(absolute)",
+        "defaultSpeed": 0.00000,
+        "scrollFactor": -1.00
+    }
+],
+"keyboards": [
+    {
+        "address": "0x564ec7389120",
+        "name": "video-bus",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec71b7bc0",
+        "name": "intel-hid-events",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec76301a0",
+        "name": "power-button",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec7172230",
+        "name": "sleep-button",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec71709f0",
+        "name": "dell-privacy-driver",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec642e220",
+        "name": "dell-wmi-hotkeys",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec7507e00",
+        "name": "at-translated-set-2-keyboard",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec7402b90",
+        "name": "keyd-virtual-keyboard",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec98cfb40",
+        "name": "ydotoold-virtual-device",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec5583e30",
+        "name": "keyboard-passthrough",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": false
+    },    {
+        "address": "0x564ec791f8e0",
+        "name": "hl-virtual-keyboard-fcitx5",
+        "rules": "",
+        "model": "",
+        "layout": "us",
+        "variant": "",
+        "options": "compose:ralt,shift:both_capslock_cancel",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": true,
+        "main": true
+    }
+],
+"tablets": [
+
+],
+"touch": [
+    {
+        "address": "0x564ec7f91c60",
+        "name": "lxt2021:00-29bd:3102"
+    }
+],
+"switches": [
+    {
+        "address": "0x564ec74190c0",
+        "name": "Lid Switch"
+    }
+]
+}
+

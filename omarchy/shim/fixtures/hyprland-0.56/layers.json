@@ -1,0 +1,46 @@
+{
+"eDP-1": {
+    "levels": {
+
+        "0": [
+                {
+                    "address": "0x564ec6411c90",
+                    "x": 5120,
+                    "y": 0,
+                    "w": 2560,
+                    "h": 1600,
+                    "alpha": 1,
+                    "namespace": "omarchy-background",
+                    "pid": 2751384
+                }
+        ],
+        "1": [
+],
+        "2": [
+                {
+                    "address": "0x564ec7984980",
+                    "x": 5120,
+                    "y": 0,
+                    "w": 2560,
+                    "h": 43,
+                    "alpha": 1,
+                    "namespace": "omarchy-bar",
+                    "pid": 2751384
+                }
+        ],
+        "3": [
+                {
+                    "address": "0x564ec7a89330",
+                    "x": 5120,
+                    "y": 0,
+                    "w": 2560,
+                    "h": 1600,
+                    "alpha": 1,
+                    "namespace": "cua-agent-cursor",
+                    "pid": 129696
+                }
+        ]
+    }
+}
+}
+

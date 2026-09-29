@@ -1,0 +1,19 @@
+#!/bin/bash
+# Per-user setup for Omarchy: add "Switch to Scottland" to the Omarchy menu (System submenu).
+# Omarchy only reads menu additions from the user's extension file, so a package can't ship this.
+set -euo pipefail
+
+menu=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc
+entry='  "system.scottland": {"icon":"󰍹","label":"Switch Desktop","description":"Scottland or Hyprland","action":"scottland-switch"},'
+
+mkdir -p "$(dirname "$menu")"
+[[ -f $menu ]] || printf '{\n}\n' >"$menu"
+if grep -q '"system.scottland"' "$menu"; then
+  echo "Omarchy menu already has the Scottland switcher."
+  exit 0
+fi
+cp "$menu" "$menu.bak.scottland"
+# Insert right after the opening brace so it stays valid whatever follows.
+awk -v entry="$entry" '!done && /^[[:space:]]*\{[[:space:]]*$/ {print; print entry; done=1; next} {print}' \
+  "$menu.bak.scottland" >"$menu"
+echo "Added Switch Desktop to Omarchy menu > System (backup: $menu.bak.scottland)."

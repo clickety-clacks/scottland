@@ -1,0 +1,52 @@
+# Local build: cd packaging/arch && makepkg -si
+pkgbase=scottland
+pkgname=(scottland scottland-omarchy)
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
+arch=('x86_64')
+license=('MIT')
+makedepends=('meson' 'ninja' 'wayfire')
+options=('!debug')
+
+_root="$startdir/../.."
+
+build() {
+  arch-meson "$_root/core/plugin" build
+  meson compile -C build
+}
+
+package_scottland() {
+  depends=('wayfire')
+
+  meson install -C build --destdir "$pkgdir"
+  install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
+  install -Dm755 "$_root/core/session/start-scottland" "$pkgdir/usr/bin/start-scottland"
+  install -Dm644 "$_root/core/session/scottland.desktop" "$pkgdir/usr/share/wayland-sessions/scottland.desktop"
+  install -Dm755 "$_root/core/session/scottland-autostart" "$pkgdir/usr/bin/scottland-autostart"
+  install -Dm755 "$_root/core/autostart.d/05-import-environment" "$pkgdir/usr/lib/scottland/autostart.d/05-import-environment"
+  install -dm755 "$pkgdir/usr/lib/scottland/early-exit.d" "$pkgdir/usr/lib/scottland/session-env.d"
+  install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_scottland-omarchy() {
+  pkgdesc="Omarchy integration for Scottland: switch between Scottland and Hyprland"
+  arch=('any')
+  depends=('scottland' 'omarchy' 'quickshell' 'jq' 'polkit' 'sddm' 'python')
+  install=scottland-omarchy.install
+
+  local o="$_root/omarchy"
+  install -Dm755 "$o/bin/scottland-switch" "$pkgdir/usr/bin/scottland-switch"
+  install -Dm755 "$o/bin/scottland-omarchy-setup" "$pkgdir/usr/bin/scottland-omarchy-setup"
+  install -Dm755 "$o/helper/scottland-session-helper" "$pkgdir/usr/lib/scottland/scottland-session-helper"
+  install -Dm644 "$o/helper/org.scottland.session.policy" "$pkgdir/usr/share/polkit-1/actions/org.scottland.session.policy"
+  install -Dm755 "$o/hooks/10-fall-back-to-hyprland" "$pkgdir/usr/lib/scottland/early-exit.d/10-fall-back-to-hyprland"
+  install -Dm755 "$o/shim/scottland-hyprshim" "$pkgdir/usr/lib/scottland/libexec/scottland-hyprshim"
+  install -Dm644 "$o/session-env.d/05-omarchy-env.sh" "$pkgdir/usr/lib/scottland/session-env.d/05-omarchy-env.sh"
+  install -Dm644 "$o/session-env.d/10-hyprland-compat.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-hyprland-compat.sh"
+  install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
+  install -Dm755 "$o/autostart.d/20-omarchy-shell" "$pkgdir/usr/lib/scottland/autostart.d/20-omarchy-shell"
+  install -Dm644 "$o/switch-dialog/shell.qml" "$pkgdir/usr/share/scottland/switch-dialog/shell.qml"
+  ln -s /usr/share/omarchy/shell/Commons "$pkgdir/usr/share/scottland/switch-dialog/Commons"
+  install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

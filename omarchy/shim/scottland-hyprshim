@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+"""Hyprland compatibility shim for Scottland.
+
+Serves Hyprland's two IPC sockets inside a Scottland (Wayfire) session and answers them from
+Wayfire's IPC, so the stock Omarchy shell, the real `hyprctl`, and Quickshell's Hyprland module
+work unmodified. It never talks to a real Hyprland.
+
+  $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock   requests ("j/monitors", ...)
+  $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock  event stream ("activewindow>>...")
+
+Scottland has no workspaces, so each output is presented as one workspace. Requests the shim
+cannot translate answer "ok" (or an error for queries) and are logged, so gaps are easy to find:
+  $XDG_STATE_HOME/scottland/hyprshim.log
+"""
+
+import json
+import os
+import re
+import socket
+import struct
+import sys
+import threading
+import time
+
+# Answers for `getoption`, standing in for Hyprland config the shell reads to match its look.
+OPTIONS = {
+    "general:gaps_out": {"css": "10 10 10 10"},
+    "general:gaps_in": {"css": "5 5 5 5"},
+    "general:border_size": {"int": 2},
+    "decoration:rounding": {"int": 0},
+    "input:kb_layout": {"str": "us"},
+    "input:kb_variant": {"str": ""},
+    "input:kb_options": {"str": ""},
+}
+
+VERSION = {
+    "branch": "v0.56.2", "commit": "scottland-hyprshim", "version": "0.56.2", "dirty": False,
+    "commit_message": "Scottland Hyprland compatibility shim", "commit_date": "", "tag": "v0.56.2",
+    "commits": "0", "flags": [],
+}
+
+ADDRESS_BASE = 0x5C0700000000  # makes view ids look like Hyprland window addresses
+
+
+def address(view_id, prefix="0x"):
+    return f"{prefix}{ADDRESS_BASE + view_id:x}"
+
+
+def view_id_from_address(text):
+    return int(text.removeprefix("0x"), 16) - ADDRESS_BASE
+
+
+class Log:
+    def __init__(self):
+        state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+        os.makedirs(os.path.join(state, "scottland"), exist_ok=True)
+        self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1)
+        self.seen = set()
+
+    def __call__(self, message):
+        self.file.write(f"{time.strftime('%H:%M:%S')} {message}\n")
+
+    def unsupported(self, request):
+        key = request.split(" ", 1)[0]
+        if key not in self.seen:
+            self.seen.add(key)
+            self(f"unsupported: {request[:200]}")
+
+
+log = Log()
+
+
+class Wayfire:
+    """Minimal Wayfire IPC client: 4-byte little-endian length, then JSON."""
+
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.sock = self._connect()
+
+    def _connect(self):
+        sock = socket.socket(socket.AF_UNIX)
+        sock.connect(self.path)
+        return sock
+
+    @staticmethod
+    def send(sock, method, data=None):
+        body = json.dumps({"method": method, "data": data or {}}).encode()
+        sock.sendall(struct.pack("<I", len(body)) + body)
+
+    @staticmethod
+    def receive(sock):
+        header = b""
+        while len(header) < 4:
+            chunk = sock.recv(4 - len(header))
+            if not chunk:
+                raise ConnectionError("wayfire closed the IPC socket")
+            header += chunk
+        size = struct.unpack("<I", header)[0]
+        body = b""
+        while len(body) < size:
+            chunk = sock.recv(size - len(body))
+            if not chunk:
+                raise ConnectionError("wayfire closed the IPC socket")
+            body += chunk
+        return json.loads(body)
+
+    def call(self, method, data=None):
+        with self.lock:
+            self.send(self.sock, method, data)
+            return self.receive(self.sock)
+
+    def events(self):
+        sock = self._connect()
+        self.send(sock, "window-rules/events/watch")
+        self.receive(sock)
+        while True:
+            yield self.receive(sock)
+
+
+class Translator:
+    def __init__(self, wayfire):
+        self.wf = wayfire
+
+    # --- Wayfire state -------------------------------------------------------------------
+
+    def outputs(self):
+        return sorted(self.wf.call("window-rules/list-outputs"), key=lambda o: o["id"])
+
+    def focused_output_id(self):
+        reply = self.wf.call("window-rules/get-focused-output")
+        return (reply.get("info") or {}).get("id")
+
+    def views(self):
+        return [v for v in self.wf.call("window-rules/list-views")
+                if v.get("role") == "toplevel" and v.get("mapped")]
+
+    def focused_view(self):
+        view = (self.wf.call("window-rules/get-focused-view") or {}).get("info")
+        return view if view and view.get("role") == "toplevel" else None
+
+    # --- Hyprland objects ----------------------------------------------------------------
+
+    def monitor_index(self, outputs, output_id):
+        for index, output in enumerate(outputs):
+            if output["id"] == output_id:
+                return index
+        return -1
+
+    def workspace_ref(self, outputs, output_id):
+        index = self.monitor_index(outputs, output_id)
+        return {"id": index + 1, "name": str(index + 1)}
+
+    def monitor(self, outputs, output, focused_id):
+        geometry, workarea = output["geometry"], output["workarea"]
+        reserved = [
+            int(workarea["x"] - geometry["x"]),
+            int(workarea["y"] - geometry["y"]),
+            int(geometry["x"] + geometry["width"] - workarea["x"] - workarea["width"]),
+            int(geometry["y"] + geometry["height"] - workarea["y"] - workarea["height"]),
+        ]
+        return {
+            "id": self.monitor_index(outputs, output["id"]),
+            "name": output["name"], "description": output["name"],
+            "make": "", "model": "", "serial": "",
+            "width": int(geometry["width"]), "height": int(geometry["height"]),
+            "physicalWidth": 0, "physicalHeight": 0, "refreshRate": 60.0,
+            "x": int(geometry["x"]), "y": int(geometry["y"]),
+            "activeWorkspace": self.workspace_ref(outputs, output["id"]),
+            "specialWorkspace": {"id": 0, "name": ""},
+            "reserved": reserved, "scale": 1, "transform": 0,
+            "focused": output["id"] == focused_id,
+            "dpmsStatus": True, "vrr": False,
+            # omarchy-hyprland-session-locked reads lock state from here; "LOCK" means locked.
+            # TODO: report the real session-lock state.
+            "solitary": "0", "solitaryBlockedBy": ["CANDIDATE"],
+            "activelyTearing": False, "tearingBlockedBy": ["CANDIDATE"],
+            "directScanoutTo": "0", "directScanoutBlockedBy": ["CANDIDATE"],
+            "disabled": False, "currentFormat": "XRGB8888", "mirrorOf": "none",
+            "availableModes": [], "colorManagementPreset": "srgb",
+            "sdrBrightness": 1, "sdrSaturation": 1, "sdrMinLuminance": 0.2, "sdrMaxLuminance": 80,
+            "hardwareCursorsInUse": True,
+        }
+
+    def client(self, outputs, view, focus_order):
+        geometry = view["geometry"]
+        return {
+            "address": address(view["id"]),
+            "mapped": True, "hidden": bool(view.get("minimized")), "visible": not view.get("minimized"),
+            "acceptsInput": bool(view.get("focusable", True)),
+            "at": [int(geometry["x"]), int(geometry["y"])],
+            "size": [int(geometry["width"]), int(geometry["height"])],
+            "workspace": self.workspace_ref(outputs, view.get("output-id")),
+            "floating": view.get("tiled-edges", 0) == 0,
+            "monitor": self.monitor_index(outputs, view.get("output-id")),
+            "class": view.get("app-id", ""), "title": view.get("title", ""),
+            "initialClass": view.get("app-id", ""), "initialTitle": view.get("title", ""),
+            "pid": view.get("pid", -1), "xwayland": bool(view.get("xwayland", False)),
+            "pinned": bool(view.get("sticky")), "pinFullscreened": False,
+            "fullscreen": 2 if view.get("fullscreen") else 0, "fullscreenClient": 0,
+            "fullscreenHandler": "default", "allowedOverFullscreen": False,
+            "grouped": [], "tags": [], "swallowing": "0x0",
+            "focusHistoryID": focus_order.get(view["id"], 0),
+            "inhibitingIdle": False, "xdgTag": "", "xdgDescription": "",
+            "contentType": "none", "tearingHint": False,
+            "stableId": f"{view['id']:08x}",
+        }
+
+    def clients(self):
+        outputs, views = self.outputs(), self.views()
+        ranked = sorted(views, key=lambda v: v.get("last-focus-timestamp", 0), reverse=True)
+        focus_order = {v["id"]: i for i, v in enumerate(ranked)}
+        return [self.client(outputs, v, focus_order) for v in views]
+
+    def monitors(self):
+        outputs, focused = self.outputs(), self.focused_output_id()
+        return [self.monitor(outputs, o, focused) for o in outputs]
+
+    def workspaces(self):
+        outputs, views = self.outputs(), self.views()
+        result = []
+        for index, output in enumerate(outputs):
+            here = sorted((v for v in views if v.get("output-id") == output["id"]),
+                          key=lambda v: v.get("last-focus-timestamp", 0), reverse=True)
+            result.append({
+                "id": index + 1, "name": str(index + 1),
+                "monitor": output["name"], "monitorID": index,
+                "windows": len(here), "hasfullscreen": any(v.get("fullscreen") for v in here),
+                "lastwindow": address(here[0]["id"]) if here else "0x0",
+                "lastwindowtitle": here[0].get("title", "") if here else "",
+                "ispersistent": False, "tiledLayout": "scottland",
+            })
+        return result
+
+    def active_workspace(self):
+        focused = self.focused_output_id()
+        for workspace, output in zip(self.workspaces(), self.outputs()):
+            if output["id"] == focused:
+                return workspace
+        return {}
+
+    def active_window(self):
+        view = self.focused_view()
+        if not view:
+            return {}
+        return self.client(self.outputs(), view, {view["id"]: 0})
+
+    def devices(self):
+        devices = {"mice": [], "keyboards": [], "tablets": [], "touch": [], "switches": []}
+        keyboard_state = self.wf.call("wayfire/get-keyboard-state") or {}
+        layouts = keyboard_state.get("possible-layouts") or []
+        layout = keyboard_state.get("layout", "")
+        for index, device in enumerate(self.wf.call("input/list-devices") or []):
+            kind = device.get("type", "")
+            entry = {"address": address(10_000 + index), "name": device.get("name", "")}
+            if kind == "keyboard":
+                entry.update({
+                    "rules": "", "model": "", "layout": OPTIONS["input:kb_layout"]["str"],
+                    "variant": "", "options": "",
+                    "active_layout_index": layouts.index(layout) if layout in layouts else 0,
+                    "active_keymap": layout, "capsLock": False, "numLock": False,
+                    "main": not devices["keyboards"],
+                })
+                devices["keyboards"].append(entry)
+            elif kind in ("pointer", "mouse"):
+                entry.update({"defaultSpeed": 0.0, "scrollFactor": -1.0})
+                devices["mice"].append(entry)
+            elif kind in ("touch", "touchscreen"):
+                devices["touch"].append(entry)
+            elif kind in ("tablet", "tablet-tool", "tablet-pad"):
+                devices["tablets"].append(entry)
+            elif kind == "switch":
+                devices["switches"].append(entry)
+        return devices
+
+    # --- Actions -------------------------------------------------------------------------
+
+    WINDOW_ADDRESS = re.compile(r'address:(0x[0-9a-fA-F]+)')
+
+    def dispatch(self, text):
+        """Translate the window dispatches the shell uses; everything else is a logged no-op."""
+        match = self.WINDOW_ADDRESS.search(text)
+        if match and ("window.close" in text or "closewindow" in text):
+            self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})
+            return "ok"
+        if match and ("focus" in text):
+            self.wf.call("window-rules/focus-view", {"id": view_id_from_address(match.group(1))})
+            return "ok"
+        log.unsupported(f"dispatch {text}")
+        return "ok"
+
+    # --- Requests ------------------------------------------------------------------------
+
+    def handle(self, raw):
+        request = raw.strip()
+        if request.startswith("[[BATCH]]"):
+            return "\n\n".join(self.handle(part) for part in request[9:].split(";") if part.strip())
+
+        flags = ""
+        head, _, rest = request.partition(" ")
+        if "/" in head and re.fullmatch(r"[a-z]{0,4}", head.split("/", 1)[0]):
+            flags, head = head.split("/", 1)
+        command, args = head, rest.strip()
+        as_json = "j" in flags
+
+        try:
+            reply = self.query(command, args, as_json)
+        except Exception as error:  # noqa: BLE001 - one bad request must not kill the shim
+            log(f"error handling {request!r}: {error!r}")
+            return "error"
+
+        if isinstance(reply, str):
+            return reply
+        return json.dumps(reply, indent=4) if as_json else self.plain(command, reply)
+
+    def query(self, command, args, as_json=False):
+        if command == "monitors":
+            return self.monitors()
+        if command == "workspaces":
+            return self.workspaces()
+        if command == "activeworkspace":
+            return self.active_workspace()
+        if command == "clients":
+            return self.clients()
+        if command == "activewindow":
+            return self.active_window()
+        if command == "devices":
+            return self.devices()
+        if command == "layers":
+            return {}
+        if command == "plugin" and args.split(" ", 1)[0] == "list":
+            return [] if as_json else "no plugins loaded"
+        if command == "status":
+            return {"configProvider": "scottland", "backend": "wayfire"}
+        if command == "version":
+            return VERSION
+        if command == "getoption":
+            if args in OPTIONS:
+                return {"option": args, **OPTIONS[args], "set": True}
+            log.unsupported(f"getoption {args}")
+            return "no such option"
+        if command == "dispatch":
+            return self.dispatch(args)
+        if command in ("keyword", "eval", "reload", "switchxkblayout", "submap", "notify",
+                       "dismissnotify", "setcursor", "output", "plugin", "kill", "setprop"):
+            log.unsupported(f"{command} {args}")
+            return "ok"
+        log.unsupported(f"{command} {args}")
+        return "unknown request"
+
+    @staticmethod
+    def plain(command, reply):
+        """Rough text form for callers that don't ask for JSON."""
+        if isinstance(reply, list):
+            return "\n\n".join(Translator.plain(command, item) for item in reply) or ""
+        return "\n".join(f"\t{k}: {v}" for k, v in reply.items())
+
+    # --- Events --------------------------------------------------------------------------
+
+    def event_lines(self, event, state):
+        kind, view = event.get("event"), event.get("view")
+        lines = []
+        is_window = bool(view) and view.get("role") == "toplevel"
+
+        def focused_monitor(output_id):
+            if output_id is None or output_id == state.get("output"):
+                return
+            state["output"] = output_id
+            outputs = self.outputs()
+            for index, output in enumerate(outputs):
+                if output["id"] == output_id:
+                    lines.append(f"focusedmon>>{output['name']},{index + 1}")
+                    lines.append(f"focusedmonv2>>{output['name']},{index + 1}")
+                    lines.append(f"workspace>>{index + 1}")
+                    lines.append(f"workspacev2>>{index + 1},{index + 1}")
+
+        if kind == "view-mapped" and is_window:
+            ws = self.workspace_ref(self.outputs(), view.get("output-id"))["name"]
+            lines.append(f"openwindow>>{address(view['id'], '')},{ws},{view.get('app-id', '')},{view.get('title', '')}")
+        elif kind == "view-unmapped" and is_window:
+            lines.append(f"closewindow>>{address(view['id'], '')}")
+        elif kind == "view-focused":
+            if is_window:
+                lines.append(f"activewindow>>{view.get('app-id', '')},{view.get('title', '')}")
+                lines.append(f"activewindowv2>>{address(view['id'], '')}")
+                focused_monitor(view.get("output-id"))
+            elif view is None:
+                lines += ["activewindow>>,", "activewindowv2>>"]
+        elif kind == "view-title-changed" and is_window and view.get("mapped"):
+            lines.append(f"windowtitle>>{address(view['id'], '')}")
+            lines.append(f"windowtitlev2>>{address(view['id'], '')},{view.get('title', '')}")
+            if view.get("activated"):
+                lines.append(f"activewindow>>{view.get('app-id', '')},{view.get('title', '')}")
+        elif kind == "view-set-output" and is_window and view.get("mapped") and event.get("output"):
+            ws = self.workspace_ref(self.outputs(), event["output"]["id"])
+            lines.append(f"movewindow>>{address(view['id'], '')},{ws['name']}")
+            lines.append(f"movewindowv2>>{address(view['id'], '')},{ws['id']},{ws['name']}")
+        elif kind == "view-fullscreen" and is_window:
+            lines.append(f"fullscreen>>{1 if view.get('fullscreen') else 0}")
+        elif kind == "output-gain-focus" and event.get("output"):
+            focused_monitor(event["output"]["id"])
+        return lines
+
+
+class Server:
+    def __init__(self, translator, directory):
+        self.translator = translator
+        self.directory = directory
+        self.listeners = []
+        self.listeners_lock = threading.Lock()
+
+    def listen(self, name):
+        path = os.path.join(self.directory, name)
+        if os.path.exists(path):
+            os.unlink(path)
+        sock = socket.socket(socket.AF_UNIX)
+        sock.bind(path)
+        sock.listen(64)
+        return sock
+
+    def serve_requests(self, sock):
+        while True:
+            conn, _ = sock.accept()
+            threading.Thread(target=self.answer, args=(conn,), daemon=True).start()
+
+    def answer(self, conn):
+        try:
+            conn.settimeout(2)
+            request = conn.recv(65536).decode(errors="replace")
+            conn.sendall(self.translator.handle(request).encode())
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def serve_events(self, sock):
+        while True:
+            conn, _ = sock.accept()
+            with self.listeners_lock:
+                self.listeners.append(conn)
+
+    def broadcast(self, lines):
+        if not lines:
+            return
+        data = ("\n".join(lines) + "\n").encode()
+        with self.listeners_lock:
+            alive = []
+            for conn in self.listeners:
+                try:
+                    conn.sendall(data)
+                    alive.append(conn)
+                except OSError:
+                    conn.close()
+            self.listeners = alive
+
+    def pump_events(self):
+        state = {"output": self.translator.focused_output_id()}
+        for event in self.translator.wf.events():
+            try:
+                self.broadcast(self.translator.event_lines(event, state))
+            except Exception as error:  # noqa: BLE001
+                log(f"error translating event {event.get('event')}: {error!r}")
+
+
+def main():
+    signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    wayfire_socket = os.environ.get("WAYFIRE_SOCKET")
+    if not signature or not wayfire_socket:
+        sys.exit("scottland-hyprshim: needs HYPRLAND_INSTANCE_SIGNATURE and WAYFIRE_SOCKET "
+                 "(run it from a Scottland session with the ipc plugins enabled)")
+
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    directory = os.path.join(runtime, "hypr", signature)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+
+    wayfire = None
+    for _ in range(50):  # wayfire may still be setting up its IPC socket
+        try:
+            wayfire = Wayfire(wayfire_socket)
+            break
+        except OSError:
+            time.sleep(0.1)
+    if wayfire is None:
+        sys.exit(f"scottland-hyprshim: cannot connect to {wayfire_socket}")
+
+    server = Server(Translator(wayfire), directory)
+    requests, events = server.listen(".socket.sock"), server.listen(".socket2.sock")
+    with open(os.path.join(directory, "hyprland.lock"), "w") as lock:
+        lock.write(f"{os.getpid()}\n{os.environ.get('WAYLAND_DISPLAY', '')}\n")
+    log(f"serving {directory} for {wayfire_socket}")
+
+    threading.Thread(target=server.serve_requests, args=(requests,), daemon=True).start()
+    threading.Thread(target=server.serve_events, args=(events,), daemon=True).start()
+    try:
+        server.pump_events()  # returns only when Wayfire goes away
+    except (ConnectionError, OSError) as error:
+        log(f"wayfire IPC closed: {error!r}")
+
+
+if __name__ == "__main__":
+    main()

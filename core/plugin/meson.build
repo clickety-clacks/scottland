@@ -1,0 +1,13 @@
+project('scottland', 'cpp', version: '0.1.0', license: 'MIT',
+  default_options: ['cpp_std=c++17', 'warning_level=2'])
+
+wayfire = dependency('wayfire')
+
+shared_module('scottland', 'src/scottland.cpp',
+  dependencies: [wayfire],
+  cpp_args: ['-DWLR_USE_UNSTABLE', '-DWAYFIRE_PLUGIN'],
+  install: true,
+  install_dir: wayfire.get_variable(pkgconfig: 'plugindir'))
+
+install_data('metadata/scottland.xml',
+  install_dir: wayfire.get_variable(pkgconfig: 'metadatadir'))

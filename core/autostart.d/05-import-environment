@@ -1,0 +1,18 @@
+#!/bin/sh
+# Give user services (systemd, D-Bus activation) this session's display, but only when Scottland is
+# the user's only graphical session. When another desktop runs alongside (e.g. Hyprland on tty1),
+# the shared service manager keeps pointing at that one, so its apps don't open here.
+me=${XDG_SESSION_ID:-}
+others=0
+for id in $(loginctl list-sessions --no-legend | awk -v u="$(id -un)" '$3 == u {print $1}'); do
+  [ "$id" = "$me" ] && continue
+  type=$(loginctl show-session "$id" -p Type --value)
+  state=$(loginctl show-session "$id" -p State --value)
+  case $type in wayland|x11) [ "$state" != closing ] && others=$((others + 1)) ;; esac
+done
+[ "$others" -gt 0 ] && exit 0
+
+# Integrations add their own variables through SCOTTLAND_IMPORT_ENV (see session-env.d).
+exec dbus-update-activation-environment --systemd \
+  WAYLAND_DISPLAY DISPLAY XAUTHORITY WAYFIRE_SOCKET \
+  XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP $SCOTTLAND_IMPORT_ENV

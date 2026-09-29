@@ -1,0 +1,3 @@
+#!/bin/sh
+# Scottland exited within seconds of starting: boot back into Hyprland next time.
+exec pkexec /usr/lib/scottland/scottland-session-helper boot hyprland

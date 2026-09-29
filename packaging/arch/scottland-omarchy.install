@@ -1,0 +1,8 @@
+post_install() {
+  echo ":: Run 'scottland-omarchy-setup' as your user to add Switch Desktop to the Omarchy menu."
+}
+
+post_remove() {
+  # Stop autologin from pointing at a session that no longer exists.
+  rm -f /etc/sddm.conf.d/zz-scottland.conf
+}

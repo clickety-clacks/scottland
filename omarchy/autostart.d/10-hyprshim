@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-hyprshim

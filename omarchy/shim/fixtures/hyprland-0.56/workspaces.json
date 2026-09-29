@@ -1,0 +1,86 @@
+[
+    {
+        "id": 10,
+        "name": "10",
+        "monitor": "eDP-1",
+        "monitorID": 0,
+        "windows": 1,
+        "hasfullscreen": false,
+        "lastwindow": "0x564ec7355d70",
+        "lastwindowtitle": "Example window 0",
+        "ispersistent": false,
+        "tiledLayout": "scrolling"
+    },
+    {
+        "id": 9,
+        "name": "9",
+        "monitor": "eDP-1",
+        "monitorID": 0,
+        "windows": 2,
+        "hasfullscreen": false,
+        "lastwindow": "0x564ec76d97c0",
+        "lastwindowtitle": "Example window 1",
+        "ispersistent": false,
+        "tiledLayout": "dwindle"
+    },
+    {
+        "id": -98,
+        "name": "special:scratchpad",
+        "monitor": "eDP-1",
+        "monitorID": 0,
+        "windows": 2,
+        "hasfullscreen": false,
+        "lastwindow": "0x0",
+        "lastwindowtitle": "Example window 2",
+        "ispersistent": false,
+        "tiledLayout": "dwindle"
+    },
+    {
+        "id": 3,
+        "name": "3",
+        "monitor": "eDP-1",
+        "monitorID": 0,
+        "windows": 2,
+        "hasfullscreen": false,
+        "lastwindow": "0x564ec7ec5ce0",
+        "lastwindowtitle": "Example window 3",
+        "ispersistent": false,
+        "tiledLayout": "master"
+    },
+    {
+        "id": 4,
+        "name": "4",
+        "monitor": "eDP-1",
+        "monitorID": 0,
+        "windows": 1,
+        "hasfullscreen": false,
+        "lastwindow": "0x564ec7a50610",
+        "lastwindowtitle": "Example window 4",
+        "ispersistent": false,
+        "tiledLayout": "scrolling"
+    },
+    {
+        "id": 1,
+        "name": "1",
+        "monitor": "eDP-1",
+        "monitorID": 0,
+        "windows": 3,
+        "hasfullscreen": false,
+        "lastwindow": "0x564ec76c16d0",
+        "lastwindowtitle": "Example window 5",
+        "ispersistent": false,
+        "tiledLayout": "master"
+    },
+    {
+        "id": 2,
+        "name": "2",
+        "monitor": "eDP-1",
+        "monitorID": 0,
+        "windows": 2,
+        "hasfullscreen": false,
+        "lastwindow": "0x564ec67bb0e0",
+        "lastwindowtitle": "Example window 6",
+        "ispersistent": false,
+        "tiledLayout": "dwindle"
+    }
+]

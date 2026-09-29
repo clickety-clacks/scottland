@@ -1,0 +1,8 @@
+#!/bin/sh
+# Start the stock Omarchy shell once the Hyprland shim is answering.
+sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock"
+for _ in $(seq 50); do
+  [ -S "$sock" ] && break
+  sleep 0.1
+done
+exec omarchy-launch-shell

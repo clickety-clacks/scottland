@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<wayfire>
+	<plugin name="scottland">
+		<_short>Scottland</_short>
+		<_long>Spatial window layout: windows scale down toward the side rails and snap into widgets.</_long>
+		<category>Window Management</category>
+	</plugin>
+</wayfire>

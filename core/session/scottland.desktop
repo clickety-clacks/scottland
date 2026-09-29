@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Scottland
+Comment=Spatial desktop on Wayfire
+Exec=start-scottland
+TryExec=start-scottland
+Type=Application
+DesktopNames=Scottland;Wayfire;wlroots

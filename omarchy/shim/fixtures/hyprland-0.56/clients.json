@@ -1,0 +1,600 @@
+[
+    {
+        "address": "0x564ec7355d70",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            5789,
+            62
+        ],
+        "size": [
+            1222,
+            1519
+        ],
+        "workspace": {
+            "id": 10,
+            "name": "10"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "python3",
+        "title": "Example window 0",
+        "initialClass": "python3",
+        "initialTitle": "Example window 0",
+        "pid": 3361345,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "scrolling",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 3,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "1800023b"
+    },
+    {
+        "address": "0x564ec79c4690",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            6409,
+            57
+        ],
+        "size": [
+            1257,
+            1529
+        ],
+        "workspace": {
+            "id": -98,
+            "name": "special:scratchpad"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "chrome-app.element.io__-Default",
+        "title": "Example window 1",
+        "initialClass": "chrome-app.element.io__-Default",
+        "initialTitle": "Example window 1",
+        "pid": 1557473,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 12,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000284"
+    },
+    {
+        "address": "0x564ec7a50610",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            5134,
+            57
+        ],
+        "size": [
+            2532,
+            1529
+        ],
+        "workspace": {
+            "id": 4,
+            "name": "4"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "chromium",
+        "title": "Example window 2",
+        "initialClass": "chromium",
+        "initialTitle": "Example window 2",
+        "pid": 1557473,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "scrolling",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "chromium-based-browser*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 5,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180002bc"
+    },
+    {
+        "address": "0x564ec7ec5ce0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            5134,
+            57
+        ],
+        "size": [
+            1384,
+            1529
+        ],
+        "workspace": {
+            "id": 3,
+            "name": "3"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "com.mitchellh.ghostty",
+        "title": "Example window 3",
+        "initialClass": "com.mitchellh.ghostty",
+        "initialTitle": "Example window 3",
+        "pid": 3521502,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*",
+            "terminal*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 2,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180002bb"
+    },
+    {
+        "address": "0x564ec7f568a0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            6536,
+            57
+        ],
+        "size": [
+            1130,
+            1529
+        ],
+        "workspace": {
+            "id": 3,
+            "name": "3"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "chromium",
+        "title": "Example window 4",
+        "initialClass": "chromium",
+        "initialTitle": "Example window 4",
+        "pid": 1557473,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "chromium-based-browser*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 11,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180002c4"
+    },
+    {
+        "address": "0x564ec76c16d0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            6537,
+            58
+        ],
+        "size": [
+            1128,
+            754
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "com.mitchellh.ghostty",
+        "title": "Example window 5",
+        "initialClass": "com.mitchellh.ghostty",
+        "initialTitle": "Example window 5",
+        "pid": 465147,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*",
+            "pop",
+            "terminal*",
+            "window-attention",
+            "window-attention-pulse"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 6,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "1800004d"
+    },
+    {
+        "address": "0x564ec7a81c80",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            6409,
+            57
+        ],
+        "size": [
+            1257,
+            1529
+        ],
+        "workspace": {
+            "id": 9,
+            "name": "9"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "chromium",
+        "title": "Example window 6",
+        "initialClass": "chromium",
+        "initialTitle": "Example window 6",
+        "pid": 1557473,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "chromium-based-browser*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 10,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180002cb"
+    },
+    {
+        "address": "0x564ec76d97c0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            5134,
+            57
+        ],
+        "size": [
+            1257,
+            1529
+        ],
+        "workspace": {
+            "id": 9,
+            "name": "9"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "com.mitchellh.ghostty",
+        "title": "Example window 7",
+        "initialClass": "com.mitchellh.ghostty",
+        "initialTitle": "Example window 7",
+        "pid": 1615838,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*",
+            "terminal*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 4,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000038"
+    },
+    {
+        "address": "0x564ec7edcc70",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            5134,
+            57
+        ],
+        "size": [
+            1257,
+            1529
+        ],
+        "workspace": {
+            "id": 2,
+            "name": "2"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "surf-ace-electron",
+        "title": "Example window 8",
+        "initialClass": "surf-ace-electron",
+        "initialTitle": "Example window 8",
+        "pid": 10889,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 1,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180002d6"
+    },
+    {
+        "address": "0x564ec7974890",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            6537,
+            832
+        ],
+        "size": [
+            1128,
+            753
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "com.mitchellh.ghostty",
+        "title": "Example window 9",
+        "initialClass": "com.mitchellh.ghostty",
+        "initialTitle": "Example window 9",
+        "pid": 3981478,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*",
+            "terminal*",
+            "window-attention",
+            "window-attention-pulse"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 9,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180001d8"
+    },
+    {
+        "address": "0x564ec73d1150",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            5135,
+            58
+        ],
+        "size": [
+            1382,
+            1527
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "com.mitchellh.ghostty",
+        "title": "Example window 10",
+        "initialClass": "com.mitchellh.ghostty",
+        "initialTitle": "Example window 10",
+        "pid": 8521,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*",
+            "terminal*",
+            "window-attention",
+            "window-attention-pulse"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 8,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000008"
+    },
+    {
+        "address": "0x564ec78d71f0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            5134,
+            57
+        ],
+        "size": [
+            1257,
+            1529
+        ],
+        "workspace": {
+            "id": -98,
+            "name": "special:scratchpad"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "chrome-x.com__-Default",
+        "title": "Example window 11",
+        "initialClass": "chrome-x.com__-Default",
+        "initialTitle": "Example window 11",
+        "pid": 1557473,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 7,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000283"
+    },
+    {
+        "address": "0x564ec67bb0e0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            6411,
+            59
+        ],
+        "size": [
+            1253,
+            1525
+        ],
+        "workspace": {
+            "id": 2,
+            "name": "2"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "com.mitchellh.ghostty",
+        "title": "Example window 12",
+        "initialClass": "com.mitchellh.ghostty",
+        "initialTitle": "Example window 12",
+        "pid": 354456,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*",
+            "terminal*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180002f1"
+    }
+]

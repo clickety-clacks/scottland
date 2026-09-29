@@ -1,0 +1,120 @@
+#!/bin/bash
+# Root helper for scottland-switch, run through pkexec (polkit: active local session only).
+# Accepts only fixed verbs so it cannot be used to run arbitrary commands as root.
+#
+#   switch <scottland|hyprland> close [session-id]
+#       set the autologin session; if the target is already running, switch to it and end the
+#       caller's session, otherwise restart the login manager so autologin starts the target
+#   switch <scottland|hyprland> keep [session-id]
+#       set the autologin session, then start or activate the target on its own VT
+#   boot   <scottland|hyprland>         only set the autologin session (crash guard)
+set -euo pipefail
+
+conf=/etc/sddm.conf.d/zz-scottland.conf
+uid=${PKEXEC_UID:?must run through pkexec}
+user_name=$(id -nu "$uid")
+target=${2:-}
+mode=${3:-}
+source_session=${4:-}
+
+# The caller's own graphical session, if the id given really is one of theirs.
+if [[ -n $source_session ]]; then
+  [[ $source_session =~ ^[A-Za-z0-9]+$ ]] &&
+    [[ $(loginctl show-session "$source_session" -p User --value 2>/dev/null) == "$uid" ]] ||
+    source_session=""
+fi
+
+# Omarchy's own autologin session, ignoring the file this helper writes.
+default_session() {
+  local session="" file value
+  for file in /etc/sddm.conf.d/*.conf; do
+    [[ $file == "$conf" ]] && continue
+    value=$(sed -n 's/^Session=//p' "$file" | tail -1)
+    [[ -n $value ]] && session=$value
+  done
+  echo "${session:-hyprland-uwsm.desktop}"
+}
+
+session_file() {
+  case $target in
+    scottland) echo scottland.desktop ;;
+    hyprland) default_session ;;
+    *) echo "unknown session: $target" >&2; exit 2 ;;
+  esac
+}
+
+desktop_exec() {
+  local name=$1 dir
+  for dir in /usr/local/share/wayland-sessions /usr/share/wayland-sessions; do
+    [[ -f $dir/$name ]] && { sed -n 's/^Exec=//p' "$dir/$name" | head -1; return; }
+  done
+  echo "no session file: $name" >&2; exit 3
+}
+
+set_boot() {
+  printf '# Written by scottland-switch: the session autologin starts.\n[Autologin]\nSession=%s\n' \
+    "$(session_file)" >"$conf.tmp"
+  mv "$conf.tmp" "$conf"
+}
+
+# The user's session on seat0 whose desktop matches the target, if one is running.
+running_vt() {
+  local id desktop vt type
+  for id in $(loginctl list-sessions --no-legend | awk -v u="$user_name" '$3 == u && $4 == "seat0" {print $1}'); do
+    desktop=$(loginctl show-session "$id" -p Desktop --value)
+    vt=$(loginctl show-session "$id" -p VTNr --value)
+    type=$(loginctl show-session "$id" -p Type --value)
+    [[ $type == wayland || $type == x11 ]] || continue
+    [[ $(loginctl show-session "$id" -p State --value) == closing ]] && continue
+    if [[ $target == scottland && $desktop == scottland ]] || [[ $target == hyprland && $desktop != scottland ]]; then
+      echo "$vt"; return
+    fi
+  done
+}
+
+start_on_vt() {
+  local vt=7 unit
+  [[ $target == hyprland ]] && vt=8
+  unit=scottland-session-tty$vt
+  systemctl is-active --quiet "$unit" && { chvt "$vt"; return; }
+  # When this session ends, return to the VT it was started from instead of a blank console.
+  local back=1
+  [[ -n $source_session ]] && back=$(loginctl show-session "$source_session" -p VTNr --value)
+  [[ $back =~ ^[0-9]+$ && $back -gt 0 ]] || back=1
+  # shellcheck disable=SC2046
+  systemd-run --unit="$unit" --collect --quiet \
+    -p PAMName=login -p User="$user_name" -p WorkingDirectory="~" \
+    -p TTYPath=/dev/tty$vt -p TTYReset=yes -p TTYVHangup=yes \
+    -p StandardInput=tty -p StandardOutput=journal -p StandardError=journal \
+    -p UtmpIdentifier=tty$vt -p UtmpMode=user \
+    -p "ExecStopPost=+/usr/bin/chvt $back" \
+    --setenv=XDG_SESSION_TYPE=wayland --setenv=XDG_SESSION_CLASS=user \
+    --setenv=XDG_SEAT=seat0 --setenv=XDG_VTNR=$vt \
+    --setenv=XDG_SESSION_DESKTOP="$target" \
+    /bin/sh -c "exec $(desktop_exec "$(session_file)")"
+  chvt "$vt"
+}
+
+case ${1:-} in
+  boot)
+    set_boot ;;
+  switch)
+    set_boot
+    case $mode in
+      close)
+        vt=$(running_vt)
+        if [[ -n $vt ]]; then
+          chvt "$vt"
+          [[ -n $source_session ]] && loginctl terminate-session "$source_session"
+        else
+          systemctl --no-block restart sddm
+        fi ;;
+      keep)
+        vt=$(running_vt)
+        if [[ -n $vt ]]; then chvt "$vt"; else start_on_vt; fi ;;
+      *) echo "mode must be close or keep" >&2; exit 2 ;;
+    esac ;;
+  *)
+    echo "usage: scottland-session-helper switch <scottland|hyprland> <close|keep> | boot <scottland|hyprland>" >&2
+    exit 2 ;;
+esac

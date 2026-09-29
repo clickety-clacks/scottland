@@ -1,0 +1,46 @@
+{
+    "address": "0x564ec67bb0e0",
+    "mapped": true,
+    "hidden": false,
+    "visible": true,
+    "acceptsInput": true,
+    "at": [
+        6411,
+        59
+    ],
+    "size": [
+        1253,
+        1525
+    ],
+    "workspace": {
+        "id": 2,
+        "name": "2"
+    },
+    "floating": false,
+    "monitor": 0,
+    "class": "com.mitchellh.ghostty",
+    "title": "Example window 0",
+    "initialClass": "com.mitchellh.ghostty",
+    "initialTitle": "Example window 0",
+    "pid": 354456,
+    "xwayland": false,
+    "pinned": false,
+    "pinFullscreened": false,
+    "fullscreen": 0,
+    "fullscreenClient": 0,
+    "fullscreenHandler": "default",
+    "allowedOverFullscreen": true,
+    "grouped": [],
+    "tags": [
+        "default-opacity*",
+        "terminal*"
+    ],
+    "swallowing": "0x0",
+    "focusHistoryID": 0,
+    "inhibitingIdle": false,
+    "xdgTag": "",
+    "xdgDescription": "",
+    "contentType": "none",
+    "tearingHint": false,
+    "stableId": "180002f1"
+}
