@@ -1,0 +1,9 @@
+#!/bin/sh
+# Append the user's saved layout settings (written by the Scottland settings app).
+settings="${XDG_CONFIG_HOME:-$HOME/.config}/scottland/layout.ini"
+if [ "${1:-}" = --watch-paths ]; then
+  dirname "$settings"
+  exit 0
+fi
+[ -f "$settings" ] && cat "$settings"
+exit 0

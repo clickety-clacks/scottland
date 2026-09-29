@@ -4,16 +4,21 @@
 set -euo pipefail
 
 menu=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc
-entry='  "system.scottland": {"icon":"󰍹","label":"Switch Desktop","description":"Scottland or Hyprland","action":"scottland-switch"},'
+entries=(
+  'system.scottland|  "system.scottland": {"icon":"󰍹","label":"Switch Desktop","description":"Scottland or Hyprland","action":"scottland-switch"},'
+  'system.scottland-layout|  "system.scottland-layout": {"icon":"󰕰","label":"Scottland Layout","description":"Zone widths and scaling","action":"scottland-settings"},'
+)
 
 mkdir -p "$(dirname "$menu")"
 [[ -f $menu ]] || printf '{\n}\n' >"$menu"
-if grep -q '"system.scottland"' "$menu"; then
-  echo "Omarchy menu already has the Scottland switcher."
-  exit 0
-fi
-cp "$menu" "$menu.bak.scottland"
-# Insert right after the opening brace so it stays valid whatever follows.
-awk -v entry="$entry" '!done && /^[[:space:]]*\{[[:space:]]*$/ {print; print entry; done=1; next} {print}' \
-  "$menu.bak.scottland" >"$menu"
-echo "Added Switch Desktop to Omarchy menu > System (backup: $menu.bak.scottland)."
+backed_up=false
+for item in "${entries[@]}"; do
+  id=${item%%|*} entry=${item#*|}
+  grep -q "\"$id\"" "$menu" && continue
+  $backed_up || { cp "$menu" "$menu.bak.scottland"; backed_up=true; }
+  # Insert right after the opening brace so it stays valid whatever follows.
+  awk -v entry="$entry" '!done && /^[[:space:]]*\{[[:space:]]*$/ {print; print entry; done=1; next} {print}' \
+    "$menu" >"$menu.tmp" && mv "$menu.tmp" "$menu"
+  echo "Added ${id#system.} to Omarchy menu > System."
+done
+$backed_up && echo "Backup: $menu.bak.scottland" || echo "Omarchy menu already has the Scottland entries."

@@ -1,5 +1,8 @@
 #include <wayfire/plugin.hpp>
 #include <wayfire/core.hpp>
+#include <wayfire/output.hpp>
+#include <wayfire/toplevel-view.hpp>
+#include <wayfire/view-transform.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/option-wrapper.hpp>
 #include <wayfire/config/compound-option.hpp>
@@ -14,15 +17,23 @@ extern "C" {
 
 #include <xkbcommon/xkbcommon.h>
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <ctime>
 #include <optional>
 #include <sstream>
 #include <string>
 
-// Scottland layout plugin. The spatial layout (scaling side rails, full-scale center, widget
-// snapping) will live here. For now it provides general compositor features other desktops
-// build in, which Scottland's integrations rely on:
+// Scottland layout plugin.
+//
+// Spatial layout: each screen has five vertical zones. A center zone (center_width % of the width)
+// shows windows at 100%. Thin rails at the far left and right (rail_width %) are widget rails:
+// windows there are asked to render as widgets and otherwise stay at min_scale. Between them, the
+// scale falls linearly from 100% at the center zone to min_scale at the rails. A window's zone is
+// set by its center; scaling is a real, interactive transform around that center.
+//
+// General compositor features Scottland's integrations rely on:
 //
 //  - IPC "scottland/send-key": press/release a key with explicit modifiers on the focused
 //    surface, independent of keys physically held (Hyprland's send_key_state).
@@ -133,8 +144,169 @@ uint32_t modifier_mask(xkb_keymap *keymap, const std::string& names)
 }
 }
 
+namespace
+{
+enum class zone_t { center, continuous, widget };
+
+struct placement_t
+{
+    zone_t zone;
+    double scale;
+};
+
+const char *zone_name(zone_t zone)
+{
+    switch (zone)
+    {
+      case zone_t::center:
+        return "center";
+
+      case zone_t::continuous:
+        return "continuous";
+
+      case zone_t::widget:
+        return "widget";
+    }
+
+    return "";
+}
+
+/** Zone and scale for a window centered at x on a screen `width` wide. */
+placement_t place(double x, double width, double center_pct, double rail_pct, double min_scale)
+{
+    double center_half = width * std::clamp(center_pct, 0.0, 100.0) / 200.0;
+    double rail = width * std::clamp(rail_pct, 0.0, 50.0) / 100.0;
+    double from_middle = std::abs(x - width / 2.0);
+    double to_rail     = width / 2.0 - rail;
+
+    if (from_middle <= center_half)
+    {
+        return {zone_t::center, 1.0};
+    }
+
+    if (from_middle >= to_rail)
+    {
+        return {zone_t::widget, min_scale};
+    }
+
+    double span = std::max(1.0, to_rail - center_half);
+    double t    = (from_middle - center_half) / span;
+    return {zone_t::continuous, 1.0 - t * (1.0 - min_scale)};
+}
+}
+
 class scottland_plugin_t : public wf::plugin_interface_t
 {
+    static constexpr const char *TRANSFORMER = "scottland-scale";
+
+    wf::option_wrapper_t<double> center_width{"scottland/center_width"};
+    wf::option_wrapper_t<double> rail_width{"scottland/rail_width"};
+    wf::option_wrapper_t<double> min_scale{"scottland/min_scale"};
+
+    placement_t placement_of(wayfire_toplevel_view view)
+    {
+        auto output = view->get_output();
+        if (!output || view->pending_fullscreen())
+        {
+            return {zone_t::center, 1.0};
+        }
+
+        auto geometry = view->get_geometry();
+        double x = geometry.x + geometry.width / 2.0;
+        return place(x, output->get_relative_geometry().width, center_width, rail_width,
+            std::clamp((double)min_scale, 0.05, 1.0));
+    }
+
+    void apply(wayfire_view any_view)
+    {
+        auto view = wf::toplevel_cast(any_view);
+        if (!view || !view->is_mapped())
+        {
+            return;
+        }
+
+        auto scale = placement_of(view).scale;
+        auto node  = view->get_transformed_node();
+        auto transformer = node->get_transformer<wf::scene::view_2d_transformer_t>(TRANSFORMER);
+
+        if (std::abs(scale - 1.0) < 0.001)
+        {
+            if (transformer)
+            {
+                view->damage();
+                node->rem_transformer(transformer);
+                view->damage();
+            }
+
+            return;
+        }
+
+        if (!transformer)
+        {
+            transformer = std::make_shared<wf::scene::view_2d_transformer_t>(view);
+            node->add_transformer(transformer, wf::TRANSFORMER_2D, TRANSFORMER);
+        }
+
+        if (std::abs(transformer->scale_x - scale) > 0.0005)
+        {
+            view->damage();
+            transformer->scale_x = transformer->scale_y = scale;
+            view->damage();
+        }
+    }
+
+    void apply_all()
+    {
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            apply(view);
+        }
+    }
+
+    wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
+    {
+        apply(ev->view);
+    };
+
+    wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
+        [=] (wf::view_geometry_changed_signal *ev)
+    {
+        apply(ev->view);
+    };
+
+    wf::signal::connection_t<wf::view_set_output_signal> on_output = [=] (wf::view_set_output_signal *ev)
+    {
+        apply(ev->view);
+    };
+
+    wf::ipc::method_callback layout_state = [=] (wf::json_t) -> wf::json_t
+    {
+        wf::json_t reply = wf::ipc::json_ok();
+        wf::json_t views = wf::json_t::array();
+        for (auto& any_view : wf::get_core().get_all_views())
+        {
+            auto view = wf::toplevel_cast(any_view);
+            if (!view || !view->is_mapped())
+            {
+                continue;
+            }
+
+            auto placement = placement_of(view);
+            wf::json_t entry;
+            entry["id"]    = (int64_t)view->get_id();
+            entry["title"] = view->get_title();
+            entry["zone"]  = zone_name(placement.zone);
+            entry["scale"] = placement.scale;
+            auto transformer = view->get_transformed_node()->get_transformer<
+                wf::scene::view_2d_transformer_t>(TRANSFORMER);
+            entry["applied_scale"] = transformer ? transformer->scale_x : 1.0;
+            views.append(entry);
+        }
+
+        reply["views"] = views;
+        return reply;
+    };
+
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
     wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string>> release_bindings{
         "scottland/release_bindings"};
@@ -209,14 +381,30 @@ class scottland_plugin_t : public wf::plugin_interface_t
     void init() override
     {
         ipc_repo->register_method("scottland/send-key", send_key);
+        ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_key);
+        wf::get_core().connect(&on_mapped);
+        wf::get_core().connect(&on_geometry);
+        wf::get_core().connect(&on_output);
+        center_width.set_callback([=] { apply_all(); });
+        rail_width.set_callback([=] { apply_all(); });
+        min_scale.set_callback([=] { apply_all(); });
+        apply_all();
         LOGI("scottland: plugin loaded");
     }
 
     void fini() override
     {
         ipc_repo->unregister_method("scottland/send-key");
+        ipc_repo->unregister_method("scottland/layout-state");
         on_key.disconnect();
+        on_mapped.disconnect();
+        on_geometry.disconnect();
+        on_output.disconnect();
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            view->get_transformed_node()->rem_transformer(TRANSFORMER);
+        }
         LOGI("scottland: plugin unloaded");
     }
 };

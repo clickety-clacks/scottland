@@ -19,7 +19,9 @@ dev-install: plugin
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(DEV)/libexec/start-scottland
-	for f in omarchy/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
+	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
+	ln -sfn $(CURDIR)/core/settings $(DEV)/settings
+	ln -sf $(CURDIR)/core/session/scottland-settings $(HOME)/.local/bin/scottland-settings
 	for d in session-env.d autostart.d early-exit.d config.d; do \
 	  for f in core/$$d/* omarchy/$$d/* omarchy/hooks/*; do \
 	    [ -e "$$f" ] || continue; \

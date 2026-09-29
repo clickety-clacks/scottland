@@ -1,0 +1,8 @@
+#!/bin/sh
+# Open the Scottland layout settings (zone widths and minimum scale).
+hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}"
+app=/usr/share/scottland/settings
+[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev/settings" ] && app="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev/settings"
+SCOTTLAND_CTL="$hooks/libexec/scottland-ctl" \
+SCOTTLAND_LAYOUT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/scottland/layout.ini" \
+  exec qs -n -p "$app"

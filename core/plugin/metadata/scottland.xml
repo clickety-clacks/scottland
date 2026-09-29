@@ -4,6 +4,27 @@
 		<_short>Scottland</_short>
 		<_long>Spatial window layout: windows scale down toward the side rails and snap into widgets.</_long>
 		<category>Window Management</category>
+		<option name="center_width" type="double">
+			<_short>Center width (%)</_short>
+			<_long>Width of the full-scale center zone, as a percentage of the screen width.</_long>
+			<default>33.333</default>
+			<min>0</min>
+			<max>100</max>
+		</option>
+		<option name="rail_width" type="double">
+			<_short>Widget rail width (%)</_short>
+			<_long>Width of each widget rail at the far left and right, as a percentage of the screen width.</_long>
+			<default>2</default>
+			<min>0</min>
+			<max>25</max>
+		</option>
+		<option name="min_scale" type="double">
+			<_short>Minimum scale</_short>
+			<_long>Scale of windows where the continuous zones meet the widget rails (and on the rails).</_long>
+			<default>0.2</default>
+			<min>0.05</min>
+			<max>1</max>
+		</option>
 		<option name="release_bindings" type="dynamic-list" type-hint="dict">
 			<_short>Key release bindings</_short>
 			<_long>Run a command when a key is released.</_long>
