@@ -25,6 +25,13 @@
 			<min>0.05</min>
 			<max>1</max>
 		</option>
+		<option name="max_scale" type="double">
+			<_short>Largest scale in the side zones</_short>
+			<_long>Scale of windows where the continuous zones meet the center zone. Below 100%, windows animate down to it when they leave the center.</_long>
+			<default>1</default>
+			<min>0.05</min>
+			<max>1</max>
+		</option>
 		<option name="release_bindings" type="dynamic-list" type-hint="dict">
 			<_short>Key release bindings</_short>
 			<_long>Run a command when a key is released.</_long>

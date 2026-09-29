@@ -15,11 +15,12 @@ ShellRoot {
   readonly property string layoutFile: Quickshell.env("SCOTTLAND_LAYOUT_FILE")
     || (Quickshell.env("HOME") + "/.config/scottland/layout.ini")
 
-  readonly property var defaults: ({ center_width: 33.333, rail_width: 2, min_scale: 0.2 })
+  readonly property var defaults: ({ center_width: 33.333, rail_width: 2, min_scale: 0.2, max_scale: 1 })
   property var original: null
   property real centerWidth: defaults.center_width
   property real railWidth: defaults.rail_width
   property real minScale: defaults.min_scale
+  property real maxScale: defaults.max_scale
   property bool loaded: false
 
   readonly property color panelColor: "#f21c1d22"
@@ -36,7 +37,8 @@ ShellRoot {
     if (fromMiddle <= centerHalf) return 1
     if (fromMiddle >= toRail) return minScale
     const t = (fromMiddle - centerHalf) / Math.max(0.0001, toRail - centerHalf)
-    return 1 - t * (1 - minScale)
+    const top = Math.max(maxScale, minScale)
+    return top - t * (top - minScale)
   }
 
   // Live updates go through one long-running scottland-ctl; a short timer coalesces slider drags.
@@ -50,18 +52,20 @@ ShellRoot {
   Timer {
     id: push
     interval: 30
-    onTriggered: root.send(root.centerWidth, root.railWidth, root.minScale)
+    onTriggered: root.send(root.centerWidth, root.railWidth, root.minScale, root.maxScale)
   }
 
-  function send(center, rail, scale) {
+  function send(center, rail, scale, top) {
     live.write("center_width " + center.toFixed(3) + "\n"
       + "rail_width " + rail.toFixed(3) + "\n"
-      + "min_scale " + scale.toFixed(3) + "\n")
+      + "min_scale " + scale.toFixed(3) + "\n"
+      + "max_scale " + top.toFixed(3) + "\n")
   }
 
   onCenterWidthChanged: if (loaded) push.restart()
   onRailWidthChanged: if (loaded) push.restart()
   onMinScaleChanged: if (loaded) push.restart()
+  onMaxScaleChanged: if (loaded) push.restart()
 
   Process {
     id: reader
@@ -75,6 +79,7 @@ ShellRoot {
           root.centerWidth = values.center_width
           root.railWidth = values.rail_width
           root.minScale = values.min_scale
+          root.maxScale = values.max_scale !== undefined ? values.max_scale : root.defaults.max_scale
         } catch (e) {
           root.original = root.defaults
         }
@@ -91,17 +96,19 @@ ShellRoot {
 
   function save() {
     push.stop()
-    send(centerWidth, railWidth, minScale)
+    send(centerWidth, railWidth, minScale, maxScale)
     saved.setText("# Written by Scottland settings.\n[scottland]\n"
       + "center_width = " + centerWidth.toFixed(3) + "\n"
       + "rail_width = " + railWidth.toFixed(3) + "\n"
-      + "min_scale = " + minScale.toFixed(3) + "\n")
+      + "min_scale = " + minScale.toFixed(3) + "\n"
+      + "max_scale = " + maxScale.toFixed(3) + "\n")
     quitSoon.start()
   }
 
   function cancel() {
     push.stop()
-    if (original) send(original.center_width, original.rail_width, original.min_scale)
+    if (original) send(original.center_width, original.rail_width, original.min_scale,
+      original.max_scale !== undefined ? original.max_scale : defaults.max_scale)
     quitSoon.start()
   }
 
@@ -171,12 +178,12 @@ ShellRoot {
         }
         ZoneLabel {
           x: Math.max(zones.rail + 4, (zones.rail + zones.centerLeft - width) / 2); y: parent.height * 0.3
-          text: "100% → " + Math.round(root.minScale * 100) + "%"
+          text: Math.round(Math.max(root.maxScale, root.minScale) * 100) + "% → " + Math.round(root.minScale * 100) + "%"
         }
         ZoneLabel {
           x: Math.min(zones.width - zones.rail - width - 4, (zones.centerRight + zones.width - zones.rail - width) / 2)
           y: parent.height * 0.3
-          text: Math.round(root.minScale * 100) + "% ← 100%"
+          text: Math.round(root.minScale * 100) + "% ← " + Math.round(Math.max(root.maxScale, root.minScale) * 100) + "%"
         }
         ZoneLabel {
           x: zones.rail + 6; y: parent.height * 0.3 + 44
@@ -267,6 +274,14 @@ ShellRoot {
         }
 
         SettingRow {
+          title: "Largest scale (next to the center)"
+          valueText: Math.round(Math.max(root.maxScale, root.minScale) * 100) + "%"
+          from: 0.05; to: 1; stepSize: 0.01
+          value: root.maxScale
+          onMoved: v => root.maxScale = v
+        }
+
+        SettingRow {
           title: "Smallest scale (next to the rails)"
           valueText: Math.round(root.minScale * 100) + "%"
           from: 0.05; to: 1; stepSize: 0.01
@@ -285,6 +300,7 @@ ShellRoot {
               root.centerWidth = root.defaults.center_width
               root.railWidth = root.defaults.rail_width
               root.minScale = root.defaults.min_scale
+              root.maxScale = root.defaults.max_scale
             }
           }
           Item { Layout.fillWidth: true }

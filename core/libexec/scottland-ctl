@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read and change Scottland's live layout settings through Wayfire IPC.
 
-  scottland-ctl get                      print center_width, rail_width, min_scale as JSON
+  scottland-ctl get                      print center_width, rail_width, min_scale, max_scale as JSON
   scottland-ctl set min_scale 0.3        apply a value to the running session (not saved)
   scottland-ctl stdin                    apply "name value" lines from stdin (used by the settings app)
 """
@@ -11,7 +11,7 @@ import socket
 import struct
 import sys
 
-NAMES = ("center_width", "rail_width", "min_scale")
+NAMES = ("center_width", "rail_width", "min_scale", "max_scale")
 
 
 def connect():

@@ -8,9 +8,33 @@
 #   switch <scottland|hyprland> keep [session-id]
 #       set the autologin session, then start or activate the target on its own VT
 #   boot   <scottland|hyprland>         only set the autologin session (crash guard)
+#
+# Internal: `relogin <user>` is what `switch … close` hands to systemd so it outlives the session
+# being ended. It only runs as root outside pkexec (systemd's transient unit), never for callers.
 set -euo pipefail
 
 conf=/etc/sddm.conf.d/zz-scottland.conf
+
+# Stop the user's graphical-session targets and wait until they are down, so the next desktop's
+# session manager (uwsm refuses to start while one is active) finds a clean slate.
+stop_user_session_targets() {
+  local targets=(scottland-session.target graphical-session.target graphical-session-pre.target)
+  systemctl --user --machine="$user_name@.host" stop "${targets[@]}" 2>/dev/null || true
+  for _ in $(seq 50); do
+    systemctl --user --machine="$user_name@.host" is-active --quiet "${targets[@]}" || return 0
+    sleep 0.1
+  done
+}
+
+if [[ ${1:-} == relogin ]]; then
+  [[ $EUID -eq 0 && -z ${PKEXEC_UID:-} && ${2:-} =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "relogin is internal" >&2; exit 2; }
+  user_name=$2
+  systemctl stop sddm
+  stop_user_session_targets
+  systemctl start sddm
+  exit 0
+fi
+
 uid=${PKEXEC_UID:?must run through pkexec}
 user_name=$(id -nu "$uid")
 target=${2:-}
@@ -108,17 +132,6 @@ start_on_vt() {
   chvt "$vt"
 }
 
-# Stop the user's graphical-session targets and wait until they are down, so the next desktop's
-# session manager (uwsm refuses to start while one is active) finds a clean slate.
-stop_user_session_targets() {
-  local targets=(scottland-session.target graphical-session.target graphical-session-pre.target)
-  systemctl --user --machine="$user_name@.host" stop "${targets[@]}" 2>/dev/null || true
-  for _ in $(seq 50); do
-    systemctl --user --machine="$user_name@.host" is-active --quiet "${targets[@]}" || return 0
-    sleep 0.1
-  done
-}
-
 case ${1:-} in
   boot)
     set_boot ;;
@@ -135,8 +148,7 @@ case ${1:-} in
           # clear the session services before the next desktop starts.
           # Runs as a transient system unit so it survives this session being torn down.
           systemd-run --no-block --collect --quiet --unit="scottland-relogin-$(date +%s)" \
-            /bin/bash -c "$(declare -f stop_user_session_targets); user_name=$user_name; \
-              systemctl stop sddm; stop_user_session_targets; systemctl start sddm"
+            /usr/lib/scottland/scottland-session-helper relogin "$user_name"
         fi ;;
       keep)
         vt=$(running_vt)

@@ -10,6 +10,8 @@
 #include <wayfire/plugins/ipc/ipc-method-repository.hpp>
 #include <wayfire/plugins/common/move-drag-interface.hpp>
 #include <wayfire/util/log.hpp>
+#include <wayfire/util/duration.hpp>
+#include <wayfire/util.hpp>
 
 extern "C" {
 #include <wlr/types/wlr_keyboard.h>
@@ -22,6 +24,7 @@ extern "C" {
 #include <cctype>
 #include <cmath>
 #include <ctime>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -31,8 +34,9 @@ extern "C" {
 // Spatial layout: each screen has five vertical zones. A center zone (center_width % of the width)
 // shows windows at 100%. Thin rails at the far left and right (rail_width %) are widget rails:
 // windows there are asked to render as widgets and otherwise stay at min_scale. Between them, the
-// scale falls linearly from 100% at the center zone to min_scale at the rails. A window's zone is
-// set by its center; scaling is a real, interactive transform around that center.
+// scale falls linearly from max_scale next to the center zone to min_scale at the rails. A window's
+// zone is set by its center; scaling is a real, interactive transform around that center. Jumps in
+// scale (crossing from the center into a zone that starts below 100%) animate instead of snapping.
 //
 // General compositor features Scottland's integrations rely on:
 //
@@ -173,8 +177,10 @@ const char *zone_name(zone_t zone)
 }
 
 /** Zone and scale for a window centered at x on a screen `width` wide. */
-placement_t place(double x, double width, double center_pct, double rail_pct, double min_scale)
+placement_t place(double x, double width, double center_pct, double rail_pct, double min_scale,
+    double max_scale)
 {
+    max_scale = std::max(max_scale, min_scale);
     double center_half = width * std::clamp(center_pct, 0.0, 100.0) / 200.0;
     double rail = width * std::clamp(rail_pct, 0.0, 50.0) / 100.0;
     double from_middle = std::abs(x - width / 2.0);
@@ -192,7 +198,7 @@ placement_t place(double x, double width, double center_pct, double rail_pct, do
 
     double span = std::max(1.0, to_rail - center_half);
     double t    = (from_middle - center_half) / span;
-    return {zone_t::continuous, 1.0 - t * (1.0 - min_scale)};
+    return {zone_t::continuous, max_scale - t * (max_scale - min_scale)};
 }
 }
 
@@ -203,6 +209,13 @@ class scottland_plugin_t : public wf::plugin_interface_t
     wf::option_wrapper_t<double> center_width{"scottland/center_width"};
     wf::option_wrapper_t<double> rail_width{"scottland/rail_width"};
     wf::option_wrapper_t<double> min_scale{"scottland/min_scale"};
+    wf::option_wrapper_t<double> max_scale{"scottland/max_scale"};
+
+    placement_t place_at(double x, double width)
+    {
+        return place(x, width, center_width, rail_width, std::clamp((double)min_scale, 0.05, 1.0),
+            std::clamp((double)max_scale, 0.05, 1.0));
+    }
 
     placement_t placement_of(wayfire_toplevel_view view)
     {
@@ -214,8 +227,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
 
         auto geometry = view->get_geometry();
         double x = geometry.x + geometry.width / 2.0;
-        return place(x, output->get_relative_geometry().width, center_width, rail_width,
-            std::clamp((double)min_scale, 0.05, 1.0));
+        return place_at(x, output->get_relative_geometry().width);
     }
 
     void apply(wayfire_view any_view)
@@ -236,7 +248,82 @@ class scottland_plugin_t : public wf::plugin_interface_t
         set_scale(view, placement_of(view).scale);
     }
 
-    void set_scale(wayfire_toplevel_view view, double scale)
+    // Scale changes bigger than this animate; smaller ones (a drag moving through a continuous
+    // zone) apply immediately so the window tracks the pointer.
+    static constexpr double JUMP = 0.03;
+
+    struct transition_t
+    {
+        std::weak_ptr<wf::view_interface_t> view;
+        wf::animation::simple_animation_t animation;
+    };
+
+    std::shared_ptr<wf::config::option_t<int>> transition_ms = wf::create_option<int>(180);
+    std::map<uint64_t, transition_t> transitions;
+    wf::wl_timer<true> transition_tick;
+
+    double displayed_scale(wayfire_toplevel_view view)
+    {
+        auto transformer = view->get_transformed_node()->get_transformer<
+            wf::scene::view_2d_transformer_t>(TRANSFORMER);
+        return transformer ? transformer->scale_x : 1.0;
+    }
+
+    /** Move a window toward `target`, animating jumps. */
+    void set_scale(wayfire_toplevel_view view, double target)
+    {
+        auto found = transitions.find(view->get_id());
+        if (found != transitions.end())
+        {
+            // Already animating: re-aim at the new target without restarting the clock.
+            found->second.animation.end = target;
+            return;
+        }
+
+        double current = displayed_scale(view);
+        if (std::abs(target - current) <= JUMP)
+        {
+            apply_scale(view, target);
+            return;
+        }
+
+        auto& transition = transitions[view->get_id()];
+        transition.view = view->weak_from_this();
+        transition.animation = wf::animation::simple_animation_t{transition_ms};
+        transition.animation.animate(current, target);
+        if (!transition_tick.is_connected())
+        {
+            transition_tick.set_timeout(8, [=] () { return step_transitions(); });
+        }
+    }
+
+    bool step_transitions()
+    {
+        for (auto it = transitions.begin(); it != transitions.end();)
+        {
+            auto view = wf::toplevel_cast(it->second.view.lock().get());
+            if (!view || !view->is_mapped())
+            {
+                it = transitions.erase(it);
+                continue;
+            }
+
+            auto& animation = it->second.animation;
+            if (animation.running())
+            {
+                apply_scale(view, animation);
+                ++it;
+            } else
+            {
+                apply_scale(view, animation.end);
+                it = transitions.erase(it);
+            }
+        }
+
+        return !transitions.empty();
+    }
+
+    void apply_scale(wayfire_toplevel_view view, double scale)
     {
         auto node = view->get_transformed_node();
         auto transformer = node->get_transformer<wf::scene::view_2d_transformer_t>(TRANSFORMER);
@@ -310,8 +397,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
         double width = view->get_geometry().width * scale;
         double pointer_x = ev->current_position.x - output->get_layout_geometry().x;
         double center_x  = pointer_x + (0.5 - drag_relative_x) * width;
-        set_scale(view, place(center_x, output->get_relative_geometry().width, center_width, rail_width,
-            std::clamp((double)min_scale, 0.05, 1.0)).scale);
+        set_scale(view, place_at(center_x, output->get_relative_geometry().width).scale);
     };
 
     wf::signal::connection_t<wf::move_drag::drag_done_signal> on_drag_done =
@@ -456,6 +542,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
         center_width.set_callback([=] { apply_all(); });
         rail_width.set_callback([=] { apply_all(); });
         min_scale.set_callback([=] { apply_all(); });
+        max_scale.set_callback([=] { apply_all(); });
         apply_all();
         LOGI("scottland: plugin loaded");
     }
@@ -471,6 +558,8 @@ class scottland_plugin_t : public wf::plugin_interface_t
         on_drag_output.disconnect();
         on_drag_motion.disconnect();
         on_drag_done.disconnect();
+        transition_tick.disconnect();
+        transitions.clear();
         for (auto& view : wf::get_core().get_all_views())
         {
             view->get_transformed_node()->rem_transformer(TRANSFORMER);
