@@ -36,10 +36,16 @@ def main():
     sock = connect()
     command = sys.argv[1] if len(sys.argv) > 1 else "get"
     if command == "get":
-        values = {}
+        # Settings the running plugin doesn't know (it predates them; the session needs a restart)
+        # are listed under "unsupported" instead of being reported as 0.
+        values, unsupported = {}, []
         for name in NAMES:
             reply = call(sock, "wayfire/get-config-option", {"option": f"scottland/{name}"})
-            values[name] = float(reply.get("value", reply.get("default", 0)))
+            if "value" in reply:
+                values[name] = float(reply["value"])
+            else:
+                unsupported.append(name)
+        values["unsupported"] = unsupported
         print(json.dumps(values))
     elif command == "set" and len(sys.argv) == 4 and sys.argv[2] in NAMES:
         print(json.dumps(call(sock, "wayfire/set-config-options", {f"scottland/{sys.argv[2]}": sys.argv[3]})))
@@ -47,7 +53,9 @@ def main():
         for line in sys.stdin:
             parts = line.split()
             if len(parts) == 2 and parts[0] in NAMES:
-                call(sock, "wayfire/set-config-options", {f"scottland/{parts[0]}": parts[1]})
+                reply = call(sock, "wayfire/set-config-options", {f"scottland/{parts[0]}": parts[1]})
+                if reply.get("error"):
+                    print(f"{parts[0]}: {reply['error']}", file=sys.stderr, flush=True)
     else:
         sys.exit(__doc__)
 

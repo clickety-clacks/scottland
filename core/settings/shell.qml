@@ -22,6 +22,10 @@ ShellRoot {
   property real minScale: defaults.min_scale
   property real maxScale: defaults.max_scale
   property bool loaded: false
+  // Settings the running Scottland doesn't support yet (its plugin predates them).
+  property var unsupported: []
+  readonly property var settingNames: ({ center_width: "Center zone width", rail_width: "Widget rail width",
+    min_scale: "Smallest scale", max_scale: "Largest scale" })
 
   readonly property color panelColor: "#f21c1d22"
   readonly property color textColor: "#e6e6e9"
@@ -75,11 +79,14 @@ ShellRoot {
       onStreamFinished: {
         try {
           const values = JSON.parse(text)
+          root.unsupported = values.unsupported || []
+          for (const name of ["center_width", "rail_width", "min_scale", "max_scale"])
+            if (values[name] === undefined) values[name] = root.savedValue(name, root.defaults[name])
           root.original = values
           root.centerWidth = values.center_width
           root.railWidth = values.rail_width
           root.minScale = values.min_scale
-          root.maxScale = values.max_scale !== undefined ? values.max_scale : root.defaults.max_scale
+          root.maxScale = values.max_scale
         } catch (e) {
           root.original = root.defaults
         }
@@ -92,6 +99,13 @@ ShellRoot {
     id: saved
     path: root.layoutFile
     printErrors: false
+    blockLoading: true  // read before the running values arrive
+  }
+
+  // Values last saved by this app; used for settings the running session can't report.
+  function savedValue(name, fallback) {
+    const match = saved.text().match(new RegExp("^" + name + "\\s*=\\s*([0-9.]+)", "m"))
+    return match ? parseFloat(match[1]) : fallback
   }
 
   function save() {
@@ -229,6 +243,16 @@ ShellRoot {
           color: root.textColor
           font.pixelSize: 18
           font.bold: true
+        }
+
+        Text {
+          Layout.fillWidth: true
+          visible: root.unsupported.length > 0
+          wrapMode: Text.WordWrap
+          color: root.railColor
+          font.pixelSize: 13
+          text: "Restart Scottland to use: " + root.unsupported.map(n => root.settingNames[n] || n).join(", ")
+            + ". This session's plugin is older; your values are still saved."
         }
 
         component SettingRow: ColumnLayout {
