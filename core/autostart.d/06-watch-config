@@ -3,9 +3,19 @@
 # config.d generator reads). Wayfire notices the rewritten file and reloads it.
 command -v inotifywait >/dev/null || exit 0
 build="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-build-config"
-paths=$("$build" --watch-paths)
-# shellcheck disable=SC2086
-while inotifywait -qq -r -e close_write -e moved_to -e create -e delete $paths; do
+log="${XDG_STATE_HOME:-$HOME/.local/state}/scottland/watch-config.log"
+mkdir -p "$(dirname "$log")"
+echo "$(date '+%F %T') watching (pid $$)" >>"$log"
+trap 'echo "$(date "+%F %T") watcher stopped by signal" >>"$log"; exit 0' TERM INT HUP
+while :; do
+  paths=$("$build" --watch-paths)
+  # shellcheck disable=SC2086
+  inotifywait -qq -r -e close_write -e moved_to -e create -e delete $paths
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "$(date '+%F %T') inotifywait exited $status; retrying" >>"$log"
+    sleep 2
+  fi
   sleep 0.3  # let editors finish writing
   "$build" >/dev/null
 done
