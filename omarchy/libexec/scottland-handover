@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Hand the user's graphical-session services to whichever desktop is on screen.
+
+When Scottland runs beside Hyprland (keep mode), both desktops share one systemd user manager,
+and uwsm binds that manager's graphical session to Hyprland. This watcher leaves uwsm alone and
+instead follows the active session on seat0: when a desktop comes to the front, it points the
+manager's environment at that desktop and restarts the services that belong to the graphical
+session (graphical-session.target's ConsistsOf), so they reconnect there. When Scottland exits,
+everything is handed back to Hyprland and the watcher exits.
+
+  scottland-handover watch --scottland-env FILE --scottland-session ID
+
+Services that don't talk to the display, or would lose state for nothing, are skipped; the list
+can be extended in ~/.config/scottland/handover.conf (one glob per line, "#" comments).
+Log: ~/.local/state/scottland/handover.log
+"""
+
+import argparse
+import fnmatch
+import os
+import re
+import subprocess
+import sys
+import time
+
+# Variables that tell a service which desktop to talk to.
+DESKTOP_VARS = (
+    "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "WAYFIRE_SOCKET", "HYPRLAND_INSTANCE_SIGNATURE",
+    "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "XDG_SESSION_TYPE",
+)
+
+# Never restarted on a handover: uwsm's own plumbing, Hyprland-only services, and services that
+# don't talk to the display or would lose state for nothing.
+SKIP = [
+    "wayland-wm-*", "wayland-session*", "*hypr*",
+    "gvfs-*", "xdg-permission-store.service", "xdg-document-portal.service",
+    "at-spi-dbus-bus.service", "*gnome\\x2dkeyring*", "*gnome-keyring*",
+]
+
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "scottland")
+os.makedirs(STATE, exist_ok=True)
+LOG = open(os.path.join(STATE, "handover.log"), "a", buffering=1)
+
+
+def log(message):
+    LOG.write(f"{time.strftime('%F %T')} {message}\n")
+
+
+def run(*args, **kwargs):
+    return subprocess.run(args, capture_output=True, text=True, **kwargs)
+
+
+def user_skips():
+    path = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                        "scottland", "handover.conf")
+    try:
+        with open(path) as conf:
+            return [line.split("#", 1)[0].strip() for line in conf if line.split("#", 1)[0].strip()]
+    except OSError:
+        return []
+
+
+def read_env_file(path):
+    env = {}
+    with open(path) as source:
+        for line in source:
+            key, sep, value = line.rstrip("\n").partition("=")
+            if sep and key in DESKTOP_VARS:
+                env[key] = value
+    return env
+
+
+def hyprland_env():
+    """The environment of the running Hyprland, read from uwsm's compositor unit."""
+    units = run("systemctl", "--user", "list-units", "--state=active", "--no-legend", "--plain",
+                "wayland-wm@*.service").stdout.split()
+    for unit in (u for u in units if u.startswith("wayland-wm@")):
+        pid = run("systemctl", "--user", "show", unit, "-p", "MainPID", "--value").stdout.strip()
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as environ:
+                pairs = environ.read().split(b"\0")
+        except OSError:
+            continue
+        env = {}
+        for pair in pairs:
+            key, sep, value = pair.decode(errors="replace").partition("=")
+            if sep and key in DESKTOP_VARS:
+                env[key] = value
+        if env.get("WAYLAND_DISPLAY"):
+            return env
+    return None
+
+
+def session_services():
+    names = run("systemctl", "--user", "show", "graphical-session.target", "-p", "ConsistsOf",
+                "--value").stdout.split()
+    skips = SKIP + user_skips()
+    return [n for n in names if n.endswith(".service") and not any(fnmatch.fnmatch(n, s) for s in skips)]
+
+
+def hand_over(name, env):
+    """Point the user manager at `env` and restart the graphical-session services there."""
+    started = time.time()
+    unset = [key for key in DESKTOP_VARS if key not in env]
+    if unset:
+        run("systemctl", "--user", "unset-environment", *unset)
+    run("systemctl", "--user", "set-environment", *[f"{k}={v}" for k, v in env.items()])
+    # D-Bus-activated services read their environment from the bus as well.
+    run("dbus-update-activation-environment", *env.keys(), env={**os.environ, **env})
+    services = session_services()
+    if services:
+        result = run("systemctl", "--user", "restart", *services)
+        if result.returncode:
+            log(f"restart reported: {result.stderr.strip()[:300]}")
+    log(f"handed {len(services)} services to {name} in {time.time() - started:.1f}s: {' '.join(services)}")
+
+
+def active_session():
+    path = run("busctl", "get-property", "org.freedesktop.login1", "/org/freedesktop/login1/seat/seat0",
+               "org.freedesktop.login1.Seat", "ActiveSession").stdout
+    match = re.search(r'"([^"]+)"', path)
+    return match.group(1) if match else None
+
+
+def session_exists(session_id):
+    return run("loginctl", "show-session", session_id, "-p", "State", "--value").returncode == 0
+
+
+def watch(scottland_env_file, scottland_session):
+    scottland = read_env_file(scottland_env_file)
+    hyprland = hyprland_env()
+    if not hyprland:
+        log("no running Hyprland found; nothing to hand over")
+        return
+    log(f"watching: Scottland session {scottland_session} ({scottland.get('WAYLAND_DISPLAY')}), "
+        f"Hyprland on {hyprland.get('WAYLAND_DISPLAY')}")
+
+    owner = None
+
+    def follow(session_id):
+        nonlocal owner
+        wanted = "scottland" if session_id == scottland_session else "hyprland"
+        if session_id and wanted != owner:
+            hand_over(wanted, scottland if wanted == "scottland" else hyprland)
+            owner = wanted
+
+    follow(active_session())
+
+    # login1 signals: seat0 ActiveSession changes (any VT switch) and session removal.
+    monitor = subprocess.Popen(["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1"],
+                               stdout=subprocess.PIPE, text=True)
+    for line in monitor.stdout:
+        if "SessionRemoved" in line and f"('{scottland_session}'," in line:
+            break
+        if "ActiveSession" in line:
+            time.sleep(0.5)  # let the new session take the display before services reconnect
+            follow(active_session())
+        if not session_exists(scottland_session):
+            break
+    monitor.terminate()
+
+    # Scottland is gone: give everything back to Hyprland if it's still running.
+    hyprland = hyprland_env() or hyprland
+    if owner != "hyprland" and hyprland_env():
+        hand_over("hyprland", hyprland)
+    log("Scottland session ended; watcher exiting")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("command", choices=["watch"])
+    parser.add_argument("--scottland-env", required=True)
+    parser.add_argument("--scottland-session", required=True)
+    args = parser.parse_args()
+    try:
+        watch(args.scottland_env, args.scottland_session)
+    except Exception as error:  # noqa: BLE001
+        log(f"watcher failed: {error!r}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

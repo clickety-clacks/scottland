@@ -1,0 +1,25 @@
+#!/bin/sh
+# Keep mode only (Scottland running beside Hyprland): hand the user's graphical-session services
+# to whichever desktop is on screen, following every switch, including Ctrl+Alt+F-key ones.
+# See libexec/scottland-handover. When Scottland is the only desktop, core's
+# 05-import-environment already makes it the graphical session.
+me=${XDG_SESSION_ID:-}
+[ -n "$me" ] || exit 0
+others=0
+for id in $(loginctl list-sessions --no-legend | awk -v u="$(id -un)" '$3 == u {print $1}'); do
+  [ "$id" = "$me" ] && continue
+  case $(loginctl show-session "$id" -p Type --value) in
+    wayland|x11) [ "$(loginctl show-session "$id" -p State --value)" != closing ] && others=$((others + 1)) ;;
+  esac
+done
+[ "$others" -gt 0 ] || exit 0
+
+dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+mkdir -p "$dir"
+env_file="$dir/env-session-$me"
+env | grep -E '^(WAYLAND_DISPLAY|DISPLAY|XAUTHORITY|WAYFIRE_SOCKET|HYPRLAND_INSTANCE_SIGNATURE|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP|XDG_SESSION_TYPE)=' >"$env_file"
+
+systemctl --user stop scottland-handover.service 2>/dev/null
+exec systemd-run --user --unit=scottland-handover --collect --quiet \
+  "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-handover" watch \
+  --scottland-env "$env_file" --scottland-session "$me"

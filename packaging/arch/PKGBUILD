@@ -57,6 +57,8 @@ package_scottland-omarchy() {
   install -Dm755 "$o/libexec/scottland-luahost" "$pkgdir/usr/lib/scottland/libexec/scottland-luahost"
   install -Dm755 "$o/libexec/scottland-lua-call" "$pkgdir/usr/lib/scottland/libexec/scottland-lua-call"
   install -Dm755 "$o/autostart.d/30-lua-host" "$pkgdir/usr/lib/scottland/autostart.d/30-lua-host"
+  install -Dm755 "$o/autostart.d/40-handover" "$pkgdir/usr/lib/scottland/autostart.d/40-handover"
+  install -Dm755 "$o/libexec/scottland-handover" "$pkgdir/usr/lib/scottland/libexec/scottland-handover"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
   install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
   install -Dm755 "$o/autostart.d/20-omarchy-shell" "$pkgdir/usr/lib/scottland/autostart.d/20-omarchy-shell"
