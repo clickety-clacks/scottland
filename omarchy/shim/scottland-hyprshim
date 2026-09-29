@@ -283,9 +283,20 @@ class Translator:
     # --- Actions -------------------------------------------------------------------------
 
     WINDOW_ADDRESS = re.compile(r'address:(0x[0-9a-fA-F]+)')
+    LUA_FIELD = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 
     def dispatch(self, text):
         """Translate the window dispatches the shell uses; everything else is a logged no-op."""
+        if "send_key_state" in text or "send_shortcut" in text:
+            # hl.dsp.send_key_state({ key = "Insert", mods = "CTRL", state = "down" })
+            fields = dict(self.LUA_FIELD.findall(text))
+            reply = self.wf.call("scottland/send-key", {
+                "key": fields.get("key", ""), "mods": fields.get("mods", ""),
+                "state": fields.get("state", "press"),
+            })
+            if reply.get("error"):
+                log(f"send-key failed: {reply['error']} ({text[:120]})")
+            return "ok"
         match = self.WINDOW_ADDRESS.search(text)
         if match and ("window.close" in text or "closewindow" in text):
             self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})

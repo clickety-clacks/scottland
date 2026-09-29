@@ -2,9 +2,11 @@ project('scottland', 'cpp', version: '0.1.0', license: 'MIT',
   default_options: ['cpp_std=c++17', 'warning_level=2'])
 
 wayfire = dependency('wayfire')
+wlroots = dependency('wlroots-0.20')
+xkbcommon = dependency('xkbcommon')
 
 shared_module('scottland', 'src/scottland.cpp',
-  dependencies: [wayfire],
+  dependencies: [wayfire, wlroots, xkbcommon],
   cpp_args: ['-DWLR_USE_UNSTABLE', '-DWAYFIRE_PLUGIN'],
   install: true,
   install_dir: wayfire.get_variable(pkgconfig: 'plugindir'))

@@ -4,5 +4,17 @@
 		<_short>Scottland</_short>
 		<_long>Spatial window layout: windows scale down toward the side rails and snap into widgets.</_long>
 		<category>Window Management</category>
+		<option name="release_bindings" type="dynamic-list" type-hint="dict">
+			<_short>Key release bindings</_short>
+			<_long>Run a command when a key is released.</_long>
+			<entry prefix="release_key_" type="string" name="key">
+				<_short>Key</_short>
+				<_long>xkb keysym name (e.g. Super_L) or code:N.</_long>
+			</entry>
+			<entry prefix="release_command_" type="string" name="command">
+				<_short>Command</_short>
+				<_long>Command to run when the key is released.</_long>
+			</entry>
+		</option>
 	</plugin>
 </wayfire>

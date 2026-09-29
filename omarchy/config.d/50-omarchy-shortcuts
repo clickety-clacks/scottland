@@ -218,9 +218,23 @@ def main():
 
     command_overrides, disabled, sections, skipped, kept = [], {}, {}, [], 0
     activators = {}  # (section, option) -> [(description, combo)]; one option can take several keys
+    releases = []  # (description, keysym, command) for key-release shortcuts
     for line in scan.stdout.splitlines():
         mods, key, description, kind, arg, repeat, release = (line.split("\t") + [""] * 7)[:7]
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
+        if release == "1" and kind in ("exec", "function"):
+            # The Scottland plugin runs these when the key is let go (Hyprland release binds).
+            if kind == "exec" and HYPRLAND_ONLY.search(arg):
+                skipped.append(f"{label}  {description}  (Hyprland-only: {arg[:60]})")
+                continue
+            if mods:
+                skipped.append(f"{label}  {description}  (release with modifiers not supported yet)")
+                continue
+            command = arg if kind == "exec" else (
+                '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call ' + shlex.quote(f"{mods}+{key}"))
+            releases.append((description or label, key, command))
+            kept += 1
+            continue
         wanted = combo(mods, key)
         if not wanted:
             skipped.append(f"{label}  {description}  (key has no Wayfire name)")
@@ -241,9 +255,6 @@ def main():
                 skipped.append(f"{label}  {description}  (window/workspace action: {arg[:60]})")
                 continue
         elif kind == "function":
-            if release == "1":
-                skipped.append(f"{label}  {description}  (runs on key release; needs Scottland plugin support)")
-                continue
             # scottland-luahost keeps the function (and its state) and runs it on demand.
             target = ("command", '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
                       + shlex.quote(f"{mods}+{key}"))
@@ -281,6 +292,12 @@ def main():
     for (section, option), entries in activators.items():
         print(f"\n[{section}]\n# {', '.join(d for d, _ in entries)}")
         print(f"{option} = {' | '.join(c for _, c in entries)}")
+    if releases:
+        print("\n[scottland]")
+        for index, (description, key, command) in enumerate(releases):
+            print(f"# {description} (on release)")
+            print(f"release_key_omarchy_{index} = {key}")
+            print(f"release_command_omarchy_{index} = {command}")
     if command_overrides:
         print("\n[command]")
         for option, command, description in command_overrides:
