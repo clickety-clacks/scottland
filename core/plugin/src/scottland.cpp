@@ -8,6 +8,7 @@
 #include <wayfire/config/compound-option.hpp>
 #include <wayfire/plugins/common/shared-core-data.hpp>
 #include <wayfire/plugins/ipc/ipc-method-repository.hpp>
+#include <wayfire/plugins/common/move-drag-interface.hpp>
 #include <wayfire/util/log.hpp>
 
 extern "C" {
@@ -225,8 +226,19 @@ class scottland_plugin_t : public wf::plugin_interface_t
             return;
         }
 
-        auto scale = placement_of(view).scale;
-        auto node  = view->get_transformed_node();
+        // While Wayfire's move tool drags a window, its geometry only changes on release;
+        // on_drag_motion keeps the scale live instead.
+        if (drag->view == view)
+        {
+            return;
+        }
+
+        set_scale(view, placement_of(view).scale);
+    }
+
+    void set_scale(wayfire_toplevel_view view, double scale)
+    {
+        auto node = view->get_transformed_node();
         auto transformer = node->get_transformer<wf::scene::view_2d_transformer_t>(TRANSFORMER);
 
         if (std::abs(scale - 1.0) < 0.001)
@@ -262,6 +274,58 @@ class scottland_plugin_t : public wf::plugin_interface_t
             apply(view);
         }
     }
+
+    // Live scaling while a window is dragged. The drag keeps the grabbed point of the window's
+    // (transformed) bounding box under the pointer, so rescaling mid-drag stays anchored there.
+    wf::shared_data::ref_ptr_t<wf::move_drag::core_drag_t> drag;
+    double drag_relative_x = 0.5;
+
+    wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> on_drag_output =
+        [=] (wf::move_drag::drag_focus_output_signal *ev)
+    {
+        if (!ev->previous_focus_output && drag->view)
+        {
+            // Drag just began: remember where across the window it was grabbed.
+            auto bbox = drag->view->get_bounding_box();
+            auto output = drag->view->get_output();
+            auto cursor = wf::get_core().get_cursor_position();
+            double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
+            drag_relative_x = bbox.width > 0 ? std::clamp((local_x - bbox.x) / bbox.width, 0.0, 1.0) : 0.5;
+        }
+    };
+
+    wf::signal::connection_t<wf::move_drag::drag_motion_signal> on_drag_motion =
+        [=] (wf::move_drag::drag_motion_signal *ev)
+    {
+        auto view   = drag->view;
+        auto output = drag->current_output;
+        if (!view || !output || view->pending_fullscreen())
+        {
+            return;
+        }
+
+        auto node = view->get_transformed_node();
+        auto transformer = node->get_transformer<wf::scene::view_2d_transformer_t>(TRANSFORMER);
+        double scale = transformer ? transformer->scale_x : 1.0;
+        double width = view->get_geometry().width * scale;
+        double pointer_x = ev->current_position.x - output->get_layout_geometry().x;
+        double center_x  = pointer_x + (0.5 - drag_relative_x) * width;
+        set_scale(view, place(center_x, output->get_relative_geometry().width, center_width, rail_width,
+            std::clamp((double)min_scale, 0.05, 1.0)).scale);
+    };
+
+    wf::signal::connection_t<wf::move_drag::drag_done_signal> on_drag_done =
+        [=] (wf::move_drag::drag_done_signal *ev)
+    {
+        // The dropped geometry is final; drag->view may still point at the view here.
+        for (auto& dragged : ev->all_views)
+        {
+            if (dragged.view && dragged.view->is_mapped())
+            {
+                set_scale(dragged.view, placement_of(dragged.view).scale);
+            }
+        }
+    };
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
@@ -386,6 +450,9 @@ class scottland_plugin_t : public wf::plugin_interface_t
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
+        drag->connect(&on_drag_output);
+        drag->connect(&on_drag_motion);
+        drag->connect(&on_drag_done);
         center_width.set_callback([=] { apply_all(); });
         rail_width.set_callback([=] { apply_all(); });
         min_scale.set_callback([=] { apply_all(); });
@@ -401,6 +468,9 @@ class scottland_plugin_t : public wf::plugin_interface_t
         on_mapped.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();
+        on_drag_output.disconnect();
+        on_drag_motion.disconnect();
+        on_drag_done.disconnect();
         for (auto& view : wf::get_core().get_all_views())
         {
             view->get_transformed_node()->rem_transformer(TRANSFORMER);
