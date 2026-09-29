@@ -40,6 +40,11 @@ started=$(date +%s)
 wayfire -c "$config" "$@" >"$state/wayfire.log" 2>&1
 status=$?
 
+# If this session brought up the user's graphical-session services, take them down with it.
+if systemctl --user is-active --quiet scottland-session.target; then
+  systemctl --user stop scottland-session.target
+fi
+
 # A session that dies within seconds is almost certainly broken. Hooks in
 # /usr/lib/scottland/early-exit.d/ get a chance to recover, e.g. by making the
 # next login start a known-good desktop instead of looping into this one.

@@ -1,0 +1,10 @@
+[Unit]
+Description=Scottland graphical session
+Documentation=file:///usr/share/doc/scottland/README.md
+# Marks the desktop as a running graphical session, so user services tied to it (portals,
+# password managers, input methods, notification watchers, XDG autostart apps) start with
+# Scottland and stop with it, the way uwsm does for Hyprland.
+BindsTo=graphical-session.target
+Wants=graphical-session-pre.target xdg-desktop-autostart.target
+After=graphical-session-pre.target
+Before=graphical-session.target xdg-desktop-autostart.target

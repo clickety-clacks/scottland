@@ -1,0 +1,10 @@
+#!/bin/sh
+# Append the user's hand-written overrides last, so they win over the base config and every
+# other generator. For people who track the shipped config and only want to change a few keys.
+overrides="${XDG_CONFIG_HOME:-$HOME/.config}/scottland/overrides.ini"
+if [ "${1:-}" = --watch-paths ]; then
+  dirname "$overrides"
+  exit 0
+fi
+[ -f "$overrides" ] && cat "$overrides"
+exit 0

@@ -21,6 +21,9 @@ dev-install: plugin
 	ln -sf $(CURDIR)/core/session/start-scottland $(DEV)/libexec/start-scottland
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(DEV)/settings
+	mkdir -p $(HOME)/.config/systemd/user
+	ln -sf $(CURDIR)/core/systemd/scottland-session.target $(HOME)/.config/systemd/user/scottland-session.target
+	systemctl --user daemon-reload
 	ln -sf $(CURDIR)/core/session/scottland-settings $(HOME)/.local/bin/scottland-settings
 	for d in session-env.d autostart.d early-exit.d config.d; do \
 	  for f in core/$$d/* omarchy/$$d/* omarchy/hooks/*; do \
