@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Read and change Scottland's live layout settings through Wayfire IPC.
 
-  scottland-ctl get                      print center_width, rail_width, min_scale, max_scale as JSON
+  scottland-ctl get                      print the layout settings as JSON
+  scottland-ctl set scale_curve "0:1 0.4:0.6 1:0.2"
   scottland-ctl set min_scale 0.3        apply a value to the running session (not saved)
   scottland-ctl stdin                    apply "name value" lines from stdin (used by the settings app)
 """
@@ -11,7 +12,8 @@ import socket
 import struct
 import sys
 
-NAMES = ("center_width", "rail_width", "min_scale", "max_scale")
+NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve")
+TEXT = ("scale_curve",)
 
 
 def connect():
@@ -42,7 +44,7 @@ def main():
         for name in NAMES:
             reply = call(sock, "wayfire/get-config-option", {"option": f"scottland/{name}"})
             if "value" in reply:
-                values[name] = float(reply["value"])
+                values[name] = reply["value"] if name in TEXT else float(reply["value"])
             else:
                 unsupported.append(name)
         values["unsupported"] = unsupported
@@ -51,8 +53,9 @@ def main():
         print(json.dumps(call(sock, "wayfire/set-config-options", {f"scottland/{sys.argv[2]}": sys.argv[3]})))
     elif command == "stdin":
         for line in sys.stdin:
-            parts = line.split()
-            if len(parts) == 2 and parts[0] in NAMES:
+            parts = line.strip().split(None, 1)
+            if parts and parts[0] in NAMES:
+                parts = parts + [""] if len(parts) == 1 else parts
                 reply = call(sock, "wayfire/set-config-options", {f"scottland/{parts[0]}": parts[1]})
                 if reply.get("error"):
                     print(f"{parts[0]}: {reply['error']}", file=sys.stderr, flush=True)

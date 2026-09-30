@@ -28,6 +28,7 @@ extern "C" {
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 // Scottland layout plugin.
 //
@@ -176,9 +177,109 @@ const char *zone_name(zone_t zone)
     return "";
 }
 
-/** Zone and scale for a window centered at x on a screen `width` wide. */
+/**
+ * The scale curve across a continuous zone: points (t, scale), t = 0 at the center zone's edge
+ * and 1 at the widget rail, joined by a monotone cubic (PCHIP) spline, which passes through the
+ * points smoothly without overshooting them. Stored as "t:scale t:scale ...".
+ */
+class scale_curve_t
+{
+    std::vector<double> xs, ys, slopes;
+
+  public:
+    bool parse(const std::string& text)
+    {
+        std::vector<std::pair<double, double>> points;
+        std::istringstream words(text);
+        std::string word;
+        while (words >> word)
+        {
+            auto colon = word.find(':');
+            if (colon == std::string::npos)
+            {
+                return false;
+            }
+
+            try {
+                points.emplace_back(std::clamp(std::stod(word.substr(0, colon)), 0.0, 1.0),
+                    std::clamp(std::stod(word.substr(colon + 1)), 0.05, 1.0));
+            } catch (...)
+            {
+                return false;
+            }
+        }
+
+        std::sort(points.begin(), points.end());
+        if ((points.size() < 2) || (points.front().first > 0.0) || (points.back().first < 1.0))
+        {
+            return false;
+        }
+
+        xs.clear();
+        ys.clear();
+        for (auto& [x, y] : points)
+        {
+            if (!xs.empty() && (x - xs.back() < 1e-6))
+            {
+                continue;
+            }
+
+            xs.push_back(x);
+            ys.push_back(y);
+        }
+
+        size_t n = xs.size();
+        std::vector<double> delta(n - 1);
+        for (size_t i = 0; i + 1 < n; i++)
+        {
+            delta[i] = (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]);
+        }
+
+        slopes.assign(n, 0.0);
+        slopes[0]     = delta[0];
+        slopes[n - 1] = delta[n - 2];
+        for (size_t i = 1; i + 1 < n; i++)
+        {
+            if (delta[i - 1] * delta[i] <= 0)
+            {
+                continue;
+            }
+
+            double h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i];
+            double w1 = 2 * h1 + h0, w2 = h1 + 2 * h0;
+            slopes[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i]);
+        }
+
+        return true;
+    }
+
+    bool empty() const
+    {
+        return xs.empty();
+    }
+
+    double operator ()(double t) const
+    {
+        t = std::clamp(t, 0.0, 1.0);
+        size_t i = 0;
+        while (i + 2 < xs.size() && t > xs[i + 1])
+        {
+            i++;
+        }
+
+        double h = xs[i + 1] - xs[i];
+        double u = (t - xs[i]) / h;
+        double u2 = u * u, u3 = u2 * u;
+        double y = (2 * u3 - 3 * u2 + 1) * ys[i] + (u3 - 2 * u2 + u) * h * slopes[i] +
+            (-2 * u3 + 3 * u2) * ys[i + 1] + (u3 - u2) * h * slopes[i + 1];
+        return std::clamp(y, 0.05, 1.0);
+    }
+};
+
+/** Zone and scale for a window centered at x on a screen `width` wide. Without a curve, the
+ *  continuous zones run linearly from max_scale to min_scale. */
 placement_t place(double x, double width, double center_pct, double rail_pct, double min_scale,
-    double max_scale)
+    double max_scale, const scale_curve_t& curve)
 {
     max_scale = std::max(max_scale, min_scale);
     double center_half = width * std::clamp(center_pct, 0.0, 100.0) / 200.0;
@@ -193,12 +294,12 @@ placement_t place(double x, double width, double center_pct, double rail_pct, do
 
     if (from_middle >= to_rail)
     {
-        return {zone_t::widget, min_scale};
+        return {zone_t::widget, curve.empty() ? min_scale : curve(1.0)};
     }
 
     double span = std::max(1.0, to_rail - center_half);
     double t    = (from_middle - center_half) / span;
-    return {zone_t::continuous, max_scale - t * (max_scale - min_scale)};
+    return {zone_t::continuous, curve.empty() ? max_scale - t * (max_scale - min_scale) : curve(t)};
 }
 }
 
@@ -210,11 +311,27 @@ class scottland_plugin_t : public wf::plugin_interface_t
     wf::option_wrapper_t<double> rail_width{"scottland/rail_width"};
     wf::option_wrapper_t<double> min_scale{"scottland/min_scale"};
     wf::option_wrapper_t<double> max_scale{"scottland/max_scale"};
+    wf::option_wrapper_t<std::string> scale_curve_text{"scottland/scale_curve"};
+    scale_curve_t scale_curve;
+
+    void load_curve()
+    {
+        std::string text = scale_curve_text;
+        if (!scale_curve.parse(text))
+        {
+            if (!text.empty())
+            {
+                LOGE("scottland: ignoring invalid scale_curve \"", text, "\"");
+            }
+
+            scale_curve = {};
+        }
+    }
 
     placement_t place_at(double x, double width)
     {
         return place(x, width, center_width, rail_width, std::clamp((double)min_scale, 0.05, 1.0),
-            std::clamp((double)max_scale, 0.05, 1.0));
+            std::clamp((double)max_scale, 0.05, 1.0), scale_curve);
     }
 
     placement_t placement_of(wayfire_toplevel_view view)
@@ -543,6 +660,8 @@ class scottland_plugin_t : public wf::plugin_interface_t
         rail_width.set_callback([=] { apply_all(); });
         min_scale.set_callback([=] { apply_all(); });
         max_scale.set_callback([=] { apply_all(); });
+        load_curve();
+        scale_curve_text.set_callback([=] { load_curve(); apply_all(); });
         apply_all();
         LOGI("scottland: plugin loaded");
     }

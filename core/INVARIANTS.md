@@ -14,7 +14,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L1 | Each screen has five vertical zones: widget rail, continuous zone, center zone, continuous zone, widget rail. | verified |
 | L2 | Center zone: default one third of the width (33.333%); windows there are at 100%. | verified |
 | L3 | Widget rails: thin strips at the far left and right, default 2% of the width (~50 pt on a 2560-wide screen). | verified |
-| L4 | Continuous zones: scale falls smoothly and linearly from the largest scale (next to the center, default 100%) to the smallest scale (next to the rails, default 20%). | verified |
+| L4 | Continuous zones: scale follows the scale curve from the largest scale (next to the center, default 100%) to the smallest (next to the rails, default 20%); without a curve it's a straight line between them. | verified (straight line); curve: implemented |
 | L5 | A window's zone and scale are set by its center. It scales around its center. | verified |
 | L6 | True scaling: the real window is transformed, not a thumbnail, and stays fully interactive (click, type, scroll) at any scale. | verified (scale); interaction at small scale: implemented |
 | L7 | Scaling is the only transform: no rotation or other distortion. | implemented |
@@ -32,7 +32,8 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 
 | ID | Invariant | Status |
 |---|---|---|
-| S1 | Sliders for center width (%), widget rail width (%), largest scale (next to the center) and smallest scale (next to the rails). | verified |
+| S1 | Sliders for center width (%) and widget rail width (%). | verified |
+| S9 | A 2D curve editor sets the scale across the side zones: two endpoints (largest scale at the center edge, smallest at the rail) move vertically only; clicking adds a point, dragging shapes the curve, double-click or right-click removes a point. Points are joined by a smooth curve that doesn't overshoot them (monotone cubic), and the plugin uses the same curve. | implemented |
 | S2 | While the panel is open, a click-through overlay shows the zones on every screen. | verified |
 | S3 | Moving a slider rescales windows on screen live. | verified |
 | S4 | Save persists the values (`~/.config/scottland/layout.ini`); reopening shows the saved values. | verified |

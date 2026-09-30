@@ -32,6 +32,11 @@
 			<min>0.05</min>
 			<max>1</max>
 		</option>
+		<option name="scale_curve" type="string">
+			<_short>Scale curve</_short>
+			<_long>Scale across the continuous zones as points "t:scale", t from 0 (center zone edge) to 1 (widget rail), joined smoothly. Empty: straight line from max_scale to min_scale.</_long>
+			<default></default>
+		</option>
 		<option name="release_bindings" type="dynamic-list" type-hint="dict">
 			<_short>Key release bindings</_short>
 			<_long>Run a command when a key is released.</_long>
