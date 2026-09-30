@@ -44,6 +44,22 @@
 			<_long>Scale across the continuous zones as points "t:scale", t from 0 (center zone edge) to 1 (widget rail), joined smoothly. Empty: straight line from max_scale to min_scale.</_long>
 			<default></default>
 		</option>
+		<option name="key_remaps" type="dynamic-list" type-hint="dict">
+			<_short>Per-app key remaps</_short>
+			<_long>For apps whose app-id matches, turn one key combination into another before bindings and the app see it.</_long>
+			<entry prefix="remap_apps_" type="string" name="apps">
+				<_short>Apps</_short>
+				<_long>Regular expression matched against the focused app-id (case-insensitive).</_long>
+			</entry>
+			<entry prefix="remap_from_" type="string" name="from">
+				<_short>From</_short>
+				<_long>Key combination, e.g. CTRL+W (xkb keysym names).</_long>
+			</entry>
+			<entry prefix="remap_to_" type="string" name="to">
+				<_short>To</_short>
+				<_long>Replacement combination, e.g. CTRL+BackSpace.</_long>
+			</entry>
+		</option>
 		<option name="release_bindings" type="dynamic-list" type-hint="dict">
 			<_short>Key release bindings</_short>
 			<_long>Run a command when a key is released.</_long>

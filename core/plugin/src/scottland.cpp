@@ -1,6 +1,7 @@
 #include <wayfire/plugin.hpp>
 #include <wayfire/core.hpp>
 #include <wayfire/output.hpp>
+#include <wayfire/seat.hpp>
 #include <wayfire/toplevel-view.hpp>
 #include <wayfire/view-transform.hpp>
 #include <wayfire/signal-definitions.hpp>
@@ -26,6 +27,7 @@ extern "C" {
 #include <cmath>
 #include <ctime>
 #include <map>
+#include <regex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -153,6 +155,28 @@ uint32_t modifier_mask(xkb_keymap *keymap, const std::string& names)
 
 namespace
 {
+/** Deliver one key state to the focused surface with exactly `mask` held, then restore the
+ *  keyboard's real modifier state (so a physically held modifier doesn't leak in). */
+void inject_key(wlr_seat *seat, wlr_keyboard *keyboard, uint32_t keycode, uint32_t mask, bool pressed)
+{
+    wlr_keyboard_modifiers saved = keyboard->modifiers;
+    wlr_keyboard_modifiers synthetic = saved;
+    synthetic.depressed = mask;
+    synthetic.latched   = 0;
+    wlr_seat_keyboard_notify_modifiers(seat, &synthetic);
+    wlr_seat_keyboard_notify_key(seat, now_msec(), keycode,
+        pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+    wlr_seat_keyboard_notify_modifiers(seat, &saved);
+}
+
+/** Split "CTRL+ALT+W" into its modifier names and key. */
+std::pair<std::string, std::string> split_combo(const std::string& combo)
+{
+    auto plus = combo.find_last_of('+');
+    return plus == std::string::npos ? std::make_pair(std::string{}, combo) :
+           std::make_pair(combo.substr(0, plus), combo.substr(plus + 1));
+}
+
 enum class zone_t { center, continuous, widget };
 
 struct placement_t
@@ -632,23 +656,17 @@ class scottland_plugin_t : public wf::plugin_interface_t
 
         // Present only the requested modifiers to the client for this key, then restore the real
         // state, so a physically held Super doesn't turn Ctrl+C into Super+Ctrl+C.
-        wlr_keyboard_modifiers saved = keyboard->modifiers;
-        wlr_keyboard_modifiers synthetic = saved;
-        synthetic.depressed = modifier_mask(keyboard->keymap, mods);
-        synthetic.latched   = 0;
-
-        wlr_seat_keyboard_notify_modifiers(seat, &synthetic);
+        uint32_t mask = modifier_mask(keyboard->keymap, mods);
         if ((state == "down") || (state == "press"))
         {
-            wlr_seat_keyboard_notify_key(seat, now_msec(), *key, WL_KEYBOARD_KEY_STATE_PRESSED);
+            inject_key(seat, keyboard, *key, mask, true);
         }
 
         if ((state == "up") || (state == "press"))
         {
-            wlr_seat_keyboard_notify_key(seat, now_msec(), *key, WL_KEYBOARD_KEY_STATE_RELEASED);
+            inject_key(seat, keyboard, *key, mask, false);
         }
 
-        wlr_seat_keyboard_notify_modifiers(seat, &saved);
         return wf::ipc::json_ok();
     };
 
@@ -669,6 +687,87 @@ class scottland_plugin_t : public wf::plugin_interface_t
             ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
         }
 #endif
+    };
+
+    // Per-app key remaps: [scottland] remap_apps_<name> (app-id regex, case-insensitive),
+    // remap_from_<name> and remap_to_<name> (e.g. "CTRL+W" -> "CTRL+BackSpace"). The original key
+    // is swallowed before bindings and apps see it; the replacement goes down and up with it, so
+    // holding the key repeats the replacement.
+    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string, std::string>> key_remaps{
+        "scottland/key_remaps"};
+    struct active_remap_t
+    {
+        uint32_t keycode;
+        uint32_t mask;
+    };
+    std::map<uint32_t, active_remap_t> active_remaps;  // physical keycode -> replacement held
+
+    std::string focused_app_id()
+    {
+        auto view = wf::get_core().seat->get_active_view();
+        return view ? view->get_app_id() : "";
+    }
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_remap_key =
+        [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
+    {
+        auto seat     = wf::get_core().get_current_seat();
+        auto keyboard = wlr_seat_get_keyboard(seat);
+        if (!keyboard || !keyboard->keymap)
+        {
+            return;
+        }
+
+        if (ev->event->state == WL_KEYBOARD_KEY_STATE_RELEASED)
+        {
+            auto held = active_remaps.find(ev->event->keycode);
+            if (held != active_remaps.end())
+            {
+                inject_key(seat, keyboard, held->second.keycode, held->second.mask, false);
+                active_remaps.erase(held);
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            }
+
+            return;
+        }
+
+        uint32_t relevant = modifier_mask(keyboard->keymap, "CTRL SHIFT ALT SUPER");
+        uint32_t held_mods = keyboard->modifiers.depressed & relevant;
+        std::string app = focused_app_id();
+        for (const auto& [name, apps, from, to] : key_remaps.value())
+        {
+            auto [from_mods, from_key] = split_combo(from);
+            auto from_code = evdev_keycode(keyboard->keymap, from_key);
+            if (!from_code || (*from_code != ev->event->keycode) ||
+                (modifier_mask(keyboard->keymap, from_mods) != held_mods))
+            {
+                continue;
+            }
+
+            try {
+                if (!std::regex_search(app, std::regex(apps, std::regex::icase)))
+                {
+                    continue;
+                }
+            } catch (const std::regex_error&)
+            {
+                LOGE("scottland: bad remap_apps_", name, " regex: ", apps);
+                continue;
+            }
+
+            auto [to_mods, to_key] = split_combo(to);
+            auto to_code = evdev_keycode(keyboard->keymap, to_key);
+            if (!to_code)
+            {
+                continue;
+            }
+
+            uint32_t mask = modifier_mask(keyboard->keymap, to_mods);
+            inject_key(seat, keyboard, *to_code, mask, true);
+            active_remaps[ev->event->keycode] = {*to_code, mask};
+            ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            return;
+        }
     };
 
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
@@ -698,6 +797,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_key);
         wf::get_core().connect(&on_axis);
+        wf::get_core().connect(&on_remap_key);
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
@@ -721,6 +821,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
         ipc_repo->unregister_method("scottland/layout-state");
         on_key.disconnect();
         on_axis.disconnect();
+        on_remap_key.disconnect();
         on_mapped.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();
