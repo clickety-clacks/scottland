@@ -10,6 +10,11 @@
 #include <wayfire/plugins/common/shared-core-data.hpp>
 #include <wayfire/plugins/ipc/ipc-method-repository.hpp>
 #include <wayfire/plugins/common/move-drag-interface.hpp>
+#include <wayfire/plugins/common/input-grab.hpp>
+#include <wayfire/per-output-plugin.hpp>
+#include <wayfire/txn/transaction-manager.hpp>
+#include <wayfire/toplevel.hpp>
+#include <linux/input-event-codes.h>
 #include <wayfire/util/log.hpp>
 #include <wayfire/util/duration.hpp>
 #include <wayfire/util.hpp>
@@ -354,7 +359,180 @@ placement_t place(double x, double width, double center_pct, double rail_pct, do
 }
 }
 
-class scottland_plugin_t : public wf::plugin_interface_t
+/**
+ * Center-anchored resize (Super + right-drag by default), like visionOS: the window grows or
+ * shrinks symmetrically around its center, which stays put, so it keeps its zone and scale. Cursor
+ * motion is divided by the window's current scale so the edges track the cursor on screen.
+ */
+class center_resize_t : public wf::per_output_plugin_instance_t, public wf::pointer_interaction_t
+{
+    wf::option_wrapper_t<wf::buttonbinding_t> button{"scottland/resize"};
+    std::unique_ptr<wf::input_grab_t> input_grab;
+    wf::plugin_activation_data_t grab_interface = {
+        .name = "scottland-resize",
+        .capabilities = wf::CAPABILITY_GRAB_INPUT | wf::CAPABILITY_MANAGE_DESKTOP,
+    };
+
+    std::weak_ptr<wf::view_interface_t> view;
+    std::weak_ptr<wf::view_interface_t> recenter_view;  // keeps its center after release, until settled
+    wf::pointf_t anchor_center;
+    wf::pointf_t grab_start;
+    wf::geometry_t start_geometry;
+    double scale = 1.0;
+    int sign_x = 1, sign_y = 1;
+
+    wf::pointf_t input_coords()
+    {
+        return wf::get_core().get_cursor_position() - wf::origin(output->get_layout_geometry());
+    }
+
+    wf::button_callback on_activate = [=] (auto)
+    {
+        auto target = wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
+        if (!target || !target->is_mapped() || target->pending_fullscreen() ||
+            (target->get_output() != output) || !(target->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))
+        {
+            return false;
+        }
+
+        if (!output->activate_plugin(&grab_interface))
+        {
+            return false;
+        }
+
+        input_grab->set_wants_raw_input(true);
+        input_grab->grab_input(wf::scene::layer::OVERLAY);
+        if (target->pending_tiled_edges())
+        {
+            target->toplevel()->pending().tiled_edges = 0;
+        }
+
+        view = target->weak_from_this();
+        recenter_view = view;
+        grab_start     = input_coords();
+        start_geometry = target->get_geometry();
+        anchor_center  = {start_geometry.x + start_geometry.width / 2.0,
+            start_geometry.y + start_geometry.height / 2.0};
+        target->connect(&on_geometry);
+        auto transformer = target->get_transformed_node()->get_transformer<
+            wf::scene::view_2d_transformer_t>("scottland-scale");
+        scale = std::max(0.05, transformer ? (double)transformer->scale_x : 1.0);
+        auto bbox = target->get_bounding_box();
+        sign_x = (grab_start.x >= bbox.x + bbox.width / 2.0) ? 1 : -1;
+        sign_y = (grab_start.y >= bbox.y + bbox.height / 2.0) ? 1 : -1;
+        wf::get_core().set_cursor("all-scroll");
+        return true;
+    };
+
+    void end()
+    {
+        if (input_grab->is_grabbed())
+        {
+            input_grab->ungrab_input();
+        }
+
+        output->deactivate_plugin(&grab_interface);
+        view.reset();
+        // Let the app's final commit land, then stop keeping it centered.
+        settle.set_timeout(300, [=] ()
+        {
+            on_geometry.disconnect();
+            recenter_view.reset();
+        });
+    }
+
+    wf::wl_timer<false> settle;
+
+    // Apps often commit a different size than requested (terminals snap to whole cells). Keep the
+    // anchor center by moving the window to match whatever size it actually took.
+    wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
+        [=] (wf::view_geometry_changed_signal *ev)
+    {
+        auto target = wf::toplevel_cast(ev->view);
+        if (!target || (target.get() != recenter_view.lock().get()))
+        {
+            return;
+        }
+
+        auto g = target->get_geometry();
+        double x = std::round(anchor_center.x - g.width / 2.0);
+        double y = std::round(anchor_center.y - g.height / 2.0);
+        if ((std::abs(g.x - x) > 0.5) || (std::abs(g.y - y) > 0.5))
+        {
+            target->move(x, y);
+        }
+    };
+
+  public:
+    void init() override
+    {
+        input_grab = std::make_unique<wf::input_grab_t>("scottland-resize", output, nullptr, this, nullptr);
+        grab_interface.cancel = [=] () { end(); };
+        output->add_button(button, &on_activate);
+    }
+
+    void fini() override
+    {
+        end();
+        settle.disconnect();
+        on_geometry.disconnect();
+        output->rem_binding(&on_activate);
+    }
+
+    void handle_pointer_button(const wlr_pointer_button_event& event) override
+    {
+        if ((event.state == WL_POINTER_BUTTON_STATE_RELEASED) &&
+            (event.button == wf::buttonbinding_t(button).get_button()))
+        {
+            end();
+        }
+    }
+
+    void handle_pointer_motion(wf::pointf_t, uint32_t) override
+    {
+        auto target = wf::toplevel_cast(view.lock().get());
+        if (!target || !target->is_mapped())
+        {
+            end();
+            return;
+        }
+
+        auto input = input_coords();
+        double grow_x = sign_x * (input.x - grab_start.x) / scale;
+        double grow_y = sign_y * (input.y - grab_start.y) / scale;
+
+        auto min_size = target->toplevel()->get_min_size();
+        auto max_size = target->toplevel()->get_max_size();
+        int width  = std::max({1, min_size.width, (int)std::lround(start_geometry.width + 2 * grow_x)});
+        int height = std::max({1, min_size.height, (int)std::lround(start_geometry.height + 2 * grow_y)});
+        if (max_size.width > 0)
+        {
+            width = std::min(width, max_size.width);
+        }
+
+        if (max_size.height > 0)
+        {
+            height = std::min(height, max_size.height);
+        }
+
+        double center_x = start_geometry.x + start_geometry.width / 2.0;
+        double center_y = start_geometry.y + start_geometry.height / 2.0;
+        wf::geometry_t desired;
+        desired.x      = std::round(center_x - width / 2.0);
+        desired.y      = std::round(center_y - height / 2.0);
+        desired.width  = width;
+        desired.height = height;
+        if (target->toplevel()->pending().geometry != desired)
+        {
+            target->toplevel()->pending().gravity  = 0;
+            target->toplevel()->pending().geometry = desired;
+            wf::get_core().tx_manager->schedule_object(target->toplevel());
+        }
+    }
+};
+
+class scottland_plugin_t : public wf::plugin_interface_t,
+    public wf::per_output_tracker_mixin_t<center_resize_t>
 {
     static constexpr const char *TRANSFORMER = "scottland-scale";
 
@@ -793,6 +971,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
   public:
     void init() override
     {
+        init_output_tracking();
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_key);
@@ -817,6 +996,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
 
     void fini() override
     {
+        fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
         on_key.disconnect();

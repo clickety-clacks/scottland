@@ -18,7 +18,8 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L18 | Just outside the center zone, a blend band (default 3 pt, "Center edge blend" slider) eases the scale from 100% into the scale curve: flat where it meets the center, matching the curve's starting slope where it meets the curve, so there is no jump or corner at the edge. | implemented |
 | L5 | A window's zone and scale are set by its center. It scales around its center. | verified |
 | L6 | True scaling: the real window is transformed, not a thumbnail, and stays fully interactive (click, type, scroll) at any scale. | verified (scale); interaction at small scale: implemented |
-| L7 | Scaling is the only transform: no rotation or other distortion. | implemented |
+| L7 | Scaling is the only transform: no rotation or other distortion. Wayfire's window rotation (flat and 3D) and desktop cube are not enabled. | implemented |
+| L20 | Super + right-drag resizes around the window's center, like visionOS: it grows or shrinks symmetrically, the center stays put (also when the app snaps to its own size), so the window keeps its zone and scale; the edges track the cursor at the window's current scale. | implemented (headless) |
 | L8 | Windows rescale live while being dragged, with the grabbed point staying under the pointer. | verified |
 | L9 | Dropping a window causes no jump: the scale after release equals the scale just before it. | verified |
 | L10 | Scale jumps (e.g. leaving the 100% center for a zone that starts lower) animate smoothly (~180 ms) instead of snapping. Small changes during a drag apply immediately; a moving target re-aims a running animation. | verified |

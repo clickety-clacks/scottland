@@ -44,6 +44,11 @@
 			<_long>Scale across the continuous zones as points "t:scale", t from 0 (center zone edge) to 1 (widget rail), joined smoothly. Empty: straight line from max_scale to min_scale.</_long>
 			<default></default>
 		</option>
+		<option name="resize" type="button">
+			<_short>Resize around the center</_short>
+			<_long>Grow or shrink the window under the pointer symmetrically around its center.</_long>
+			<default>&lt;super&gt; BTN_RIGHT</default>
+		</option>
 		<option name="key_remaps" type="dynamic-list" type-hint="dict">
 			<_short>Per-app key remaps</_short>
 			<_long>For apps whose app-id matches, turn one key combination into another before bindings and the app see it.</_long>
