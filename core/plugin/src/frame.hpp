@@ -48,7 +48,7 @@ constexpr double NEAR_RANGE   = 64.0;   // corners cloud and the close dot shows
 constexpr double DOT_RADIUS   = 7.0;
 constexpr int MAX_NEIGHBORS   = 8;
 constexpr double SWELL_VICINITY = 50.0; // the cursor pausing this near the halo swells it
-constexpr int DWELL_MS  = 1000;         // pause this long to swell
+constexpr int DWELL_MS  = 500;          // pause this long to swell
 constexpr int LINGER_MS = 500;          // stay swollen this long after the cursor leaves
 
 /** The halo's colors, set from the plugin's options. */
