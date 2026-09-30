@@ -33,10 +33,10 @@ namespace scottland
 // Sizes in logical points. The corner radius is in window space (it scales with the window);
 // everything else is on screen (constant size, A6).
 constexpr double CORNER_RADIUS = 10.0;  // double Omarchy's 5
-constexpr double PROXIMITY     = 24.0;  // how near the cursor must be for a handle to show
+constexpr double PROXIMITY     = 48.0;  // how near the cursor must be for a handle to show
 constexpr double GAP       = 6.0;       // between the window and its handles
-constexpr double THICKNESS = 6.0;       // bar and arc stroke
-constexpr double BAR_LENGTH = 64.0;
+constexpr double THICKNESS = 12.0;      // bar and arc stroke
+constexpr double BAR_LENGTH = 128.0;    // at most 80% of the edge it sits on
 constexpr double DOT_RADIUS = 7.0;
 constexpr double DOT_GAP    = 8.0;      // between the bar's end and the close dot
 constexpr double HIT_SLOP   = 8.0;      // grab tolerance around a bar or arc
@@ -169,7 +169,7 @@ inline std::vector<shape_t> shapes_for(handle_t group, const rectf_t& r, double 
     double cx = (r.x1 + r.x2) / 2, cy = (r.y1 + r.y2) / 2;
     auto bar_length = [&] (double edge)
     {
-        return std::clamp(edge - 2 * radius - 2 * THICKNESS, 8.0, BAR_LENGTH);
+        return std::min(BAR_LENGTH, 0.8 * edge);
     };
     double dot_offset = THICKNESS / 2 + DOT_GAP + DOT_RADIUS;
 
@@ -421,9 +421,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return pressed != handle_t::none;
     }
 
+    /** How visible the handles are: the fade in/out, times how near the cursor is. */
     double opacity() const
     {
-        return fade;
+        return fade * (is_pressed() ? 1.0 : nearness);
     }
 
     /** Show the handles for `g` (or fade out with none). */
@@ -460,11 +461,35 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         if ((shown != handle_t::none) && (handle_at(p) != handle_t::none))
         {
             set_hovered(handle_at(p));
+            update_nearness(p);
             return;
         }
 
         show(group_near(p, screen_rect(), screen_radius()));
         set_hovered(handle_at(p));
+        update_nearness(p);
+    }
+
+    /** Brightness follows the cursor's distance to the handles on a curve: faint at the edge of
+     *  the zone, brightening quickly as the cursor closes in, full on the handle. */
+    void update_nearness(wf::pointf_t p)
+    {
+        // Zero where the zone ends outside the window (PROXIMITY from the window, which is this
+        // far from the handle), so the handle doesn't pop in.
+        constexpr double range = PROXIMITY - GAP - THICKNESS;
+        double d = range;
+        for (auto& shape : shapes_for(shown, screen_rect(), screen_radius()))
+        {
+            d = std::min(d, std::max(0.0, shape.distance(p)));
+        }
+
+        double t = 1.0 - d / range;
+        double value = t * t;
+        if (std::abs(value - nearness) > 0.005)
+        {
+            nearness = value;
+            damage();
+        }
     }
 
     void release()
@@ -636,6 +661,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     handle_t drawn   = handle_t::none;  // group being drawn (kept while fading out)
     handle_t hovered = handle_t::none;
     handle_t pressed = handle_t::none;
+    double nearness  = 0.0;
     wf::pointf_t last_pointer{0, 0};
     wf::animation::simple_animation_t fade{wf::create_option<int>(140)};
     wf::wl_timer<true> fade_tick;
