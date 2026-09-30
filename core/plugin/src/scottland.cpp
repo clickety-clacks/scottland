@@ -417,9 +417,9 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         auto transformer = target->get_transformed_node()->get_transformer<
             wf::scene::view_2d_transformer_t>("scottland-scale");
         scale = std::max(0.05, transformer ? (double)transformer->scale_x : 1.0);
-        auto bbox = target->get_bounding_box();
-        sign_x = (grab_start.x >= bbox.x + bbox.width / 2.0) ? 1 : -1;
-        sign_y = (grab_start.y >= bbox.y + bbox.height / 2.0) ? 1 : -1;
+        // Direction is absolute, wherever the window was grabbed: right/down grows, left/up shrinks.
+        sign_x = 1;
+        sign_y = 1;
         wf::get_core().set_cursor("all-scroll");
         return true;
     };
