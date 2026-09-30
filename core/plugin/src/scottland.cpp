@@ -558,10 +558,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<std::string> scale_curve_text{"scottland/scale_curve"};
     wf::option_wrapper_t<double> blend_width{"scottland/blend_width"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
+    wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
 
     void load_color_scheme()
     {
-        scottland::light_scheme = std::string(color_scheme) == "light";
+        scottland::palette.light = std::string(color_scheme) == "light";
+        wf::color_t accent = accent_color;
+        scottland::palette.accent = {accent.r, accent.g, accent.b};
         for (auto& view : wf::get_core().get_all_views())
         {
             if (auto toplevel = wf::toplevel_cast(view))
@@ -711,7 +714,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (frame)
             {
-                forget_handles(frame);
+                forget_owner(frame);
                 view->damage();
                 node->rem_transformer(frame);
                 view->damage();
@@ -724,6 +727,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             frame = std::make_shared<scottland::frame_t>(view);
             frame->on_press = [=] (wayfire_toplevel_view v, scottland::handle_t h) { handle_pressed(v, h); };
+            frame->set_focused(wf::get_core().seat->get_active_view() == view);
             node->add_transformer(frame, wf::TRANSFORMER_2D, TRANSFORMER);
             view->damage();
         }
@@ -739,42 +743,59 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             frame->damage();
             frame->scale_x = frame->scale_y = scale;
             frame->damage();
+            update_neighbors(view->get_output());
         }
     }
 
-    // Handles (A3-A7). One window shows handles at a time: the one the cursor is near.
-    std::weak_ptr<scottland::frame_t> handles_owner;
+    // Halos (A3-A11). The frame nearest the cursor follows it (corner clouds, close dot, hover);
+    // the others are told it left.
+    std::weak_ptr<scottland::frame_t> pointer_owner;
 
-    void forget_handles(const std::shared_ptr<scottland::frame_t>& frame)
+    void forget_owner(const std::shared_ptr<scottland::frame_t>& frame)
     {
-        if (handles_owner.lock() == frame)
+        if (pointer_owner.lock() == frame)
         {
-            handles_owner.reset();
+            pointer_owner.reset();
         }
     }
 
-    /** The window whose handles respond to the cursor at p (output coordinates): the one with the
-     *  handle nearest to it. Windows behind the one the cursor is over don't respond. */
+    /** Framed windows on an output, topmost first. */
+    std::vector<std::pair<wayfire_toplevel_view, std::shared_ptr<scottland::frame_t>>> frames_on(
+        wf::output_t *output)
+    {
+        std::vector<std::pair<wayfire_toplevel_view, std::shared_ptr<scottland::frame_t>>> list;
+        if (!output || !output->wset())
+        {
+            return list;
+        }
+
+        for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY | wf::WSET_SORT_STACKING))
+        {
+            if (auto frame = frame_of(view, false))
+            {
+                list.emplace_back(view, frame);
+            }
+        }
+
+        return list;
+    }
+
+    /** The window whose halo follows the cursor at p (output coordinates): the one whose liquid
+     *  is nearest. Windows behind the one the cursor is over don't respond. */
     std::shared_ptr<scottland::frame_t> frame_near(wf::output_t *output, wf::pointf_t p)
     {
         std::shared_ptr<scottland::frame_t> best;
-        double best_distance = scottland::PROXIMITY;
-        for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY | wf::WSET_SORT_STACKING))
+        double best_distance = scottland::NEAR_RANGE;
+        for (auto& [view, frame] : frames_on(output))
         {
-            auto frame = frame_of(view, false);
-            if (!frame)
-            {
-                continue;
-            }
-
-            double d = frame->handle_distance(p);
+            double d = std::max(0.0, frame->liquid_distance(p));
             if (d < best_distance)
             {
                 best = frame;
                 best_distance = d;
             }
 
-            if (scottland::box_distance(p, frame->screen_rect()) <= 0)
+            if (frame->liquid_distance(p) <= 0)
             {
                 break;
             }
@@ -785,7 +806,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void track_pointer()
     {
-        auto owner = handles_owner.lock();
+        auto owner = pointer_owner.lock();
         if (owner && owner->is_pressed())
         {
             return;
@@ -803,17 +824,103 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (owner && (owner != frame))
         {
-            owner->activate(false);
+            owner->leave();
         }
 
         if (frame)
         {
-            frame->activate(true);
             frame->track(local);
         }
 
-        handles_owner = frame;
+        pointer_owner = frame;
     }
+
+    /** Tell each framed window where the liquid of the windows around it is (A10), so halos
+     *  merge and reach for each other. A window being dragged is drawn away from its geometry,
+     *  so it takes no part until it's dropped. */
+    void update_neighbors(wf::output_t *output)
+    {
+        auto list = frames_on(output);
+        auto dragged = drag->view;
+        for (size_t i = 0; i < list.size(); i++)
+        {
+            auto& [view, frame] = list[i];
+            std::vector<scottland::neighbor_t> neighbors;
+            if (view != dragged)
+            {
+                auto mine = frame->screen_rect().grown(frame->thickness());
+                for (size_t j = 0; j < list.size(); j++)
+                {
+                    auto& [other_view, other] = list[j];
+                    if ((j == i) || (other_view == dragged))
+                    {
+                        continue;
+                    }
+
+                    auto theirs = other->screen_rect().grown(other->thickness());
+                    double gx = std::max({mine.x1 - theirs.x2, theirs.x1 - mine.x2, 0.0});
+                    double gy = std::max({mine.y1 - theirs.y2, theirs.y1 - mine.y2, 0.0});
+                    if (std::hypot(gx, gy) < scottland::MERGE)
+                    {
+                        neighbors.push_back({other->screen_rect(), other->screen_radius(),
+                            other->thickness(), j < i});
+                    }
+                }
+            }
+
+            if (neighbors.size() > (size_t)scottland::MAX_NEIGHBORS)
+            {
+                neighbors.resize(scottland::MAX_NEIGHBORS);
+            }
+
+            frame->set_neighbors(std::move(neighbors));
+        }
+    }
+
+    void update_all_neighbors()
+    {
+        for (auto& output : wf::get_core().output_layout->get_outputs())
+        {
+            update_neighbors(output);
+        }
+    }
+
+    void update_focus()
+    {
+        auto active = wf::get_core().seat->get_active_view();
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            if (auto toplevel = wf::toplevel_cast(view))
+            {
+                if (auto frame = frame_of(toplevel, false))
+                {
+                    frame->set_focused(view == active);
+                }
+            }
+        }
+
+        // Focus usually comes with raising: stacking decides whose liquid is in front.
+        update_all_neighbors();
+    }
+
+    wf::signal::connection_t<wf::keyboard_focus_changed_signal> on_focus =
+        [=] (wf::keyboard_focus_changed_signal*) { update_focus(); };
+    wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
+        [=] (wf::view_unmapped_signal *ev)
+    {
+        if (auto toplevel = wf::toplevel_cast(ev->view))
+        {
+            if (auto frame = frame_of(toplevel, false))
+            {
+                forget_owner(frame);
+                frame->set_neighbors({});
+            }
+        }
+
+        // Neighbors are recomputed without it once it's gone from the stacking list.
+        idle_neighbors.run_once([=] () { update_all_neighbors(); });
+    };
+    wf::wl_idle_call idle_neighbors;
 
     void handle_pressed(wayfire_toplevel_view view, scottland::handle_t h)
     {
@@ -828,7 +935,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 output_instance[output]->start(view, BTN_LEFT, sx, sy);
             }
-        } else
+        } else if (h == handle_t::halo)
         {
             wf::get_core().default_wm->move_request(view);
         }
@@ -843,7 +950,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED)
         {
-            if (auto owner = handles_owner.lock())
+            if (auto owner = pointer_owner.lock())
             {
                 owner->release();
             }
@@ -877,6 +984,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
             auto r = frame ? frame->screen_rect() : scottland::rectf_t{0, 0, 0, 0};
             drag_relative_x = r.width() > 0 ? std::clamp((local_x - r.x1) / r.width(), 0.0, 1.0) : 0.5;
+            update_neighbors(output);
         }
     };
 
@@ -910,11 +1018,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 set_scale(dragged.view, placement_of(dragged.view).scale);
             }
         }
+
+        // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
+        idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
         apply(ev->view);
+        idle_neighbors.run_once([=] () { update_focus(); });
     };
 
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
@@ -927,6 +1039,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 frame->damage_previous(ev->old_geometry);
                 frame->damage();
             }
+
+            update_neighbors(view->get_output());
         }
 
         apply(ev->view);
@@ -966,9 +1080,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["frame"]["y"] = r.y1;
                 entry["frame"]["width"]  = r.width();
                 entry["frame"]["height"] = r.height();
-                entry["frame"]["handles"] = scottland::handle_name(frame->group());
+                entry["frame"]["thickness"] = frame->thickness();
+                entry["frame"]["swell"]   = frame->swell;
+                entry["frame"]["focus"]   = (double)frame->focus_mix;
                 entry["frame"]["hovered"] = scottland::handle_name(frame->hovered_handle());
-                entry["frame"]["opacity"] = frame->opacity();
+                entry["frame"]["dot"]     = frame->dot_glow;
+                entry["frame"]["neighbors"] = (int64_t)frame->get_neighbors().size();
+                wf::json_t clouds = wf::json_t::array();
+                for (double c : frame->cloud)
+                {
+                    clouds.append(c);
+                }
+
+                entry["frame"]["cloud"] = clouds;
             }
             views.append(entry);
         }
@@ -1154,6 +1278,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
+        wf::get_core().connect(&on_focus);
+        wf::get_core().connect(&on_unmapped);
         wf::get_core().connect(&on_motion);
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
@@ -1168,8 +1294,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scale_curve_text.set_callback([=] { load_curve(); apply_all(); });
         blend_width.set_callback([=] { apply_all(); });
         color_scheme.set_callback([=] { load_color_scheme(); });
+        accent_color.set_callback([=] { load_color_scheme(); });
         load_color_scheme();
         apply_all();
+        update_focus();
         LOGI("scottland: plugin loaded");
     }
 
@@ -1184,6 +1312,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_mapped.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();
+        on_focus.disconnect();
+        on_unmapped.disconnect();
+        idle_neighbors.disconnect();
         on_motion.disconnect();
         on_motion_abs.disconnect();
         on_button.disconnect();

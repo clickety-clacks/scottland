@@ -63,6 +63,7 @@ package_scottland-omarchy() {
   install -Dm644 "$o/session-env.d/05-omarchy-env.sh" "$pkgdir/usr/lib/scottland/session-env.d/05-omarchy-env.sh"
   install -Dm644 "$o/session-env.d/10-hyprland-compat.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-hyprland-compat.sh"
   install -Dm755 "$o/libexec/scottland-luahost" "$pkgdir/usr/lib/scottland/libexec/scottland-luahost"
+  install -Dm755 "$o/accent.d/10-omarchy-theme" "$pkgdir/usr/lib/scottland/accent.d/10-omarchy-theme"
   install -Dm755 "$o/libexec/scottland-lua-call" "$pkgdir/usr/lib/scottland/libexec/scottland-lua-call"
   install -Dm755 "$o/autostart.d/30-lua-host" "$pkgdir/usr/lib/scottland/autostart.d/30-lua-host"
   install -Dm755 "$o/reload.d/30-lua-host" "$pkgdir/usr/lib/scottland/reload.d/30-lua-host"

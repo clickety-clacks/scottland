@@ -1,0 +1,9 @@
+#!/bin/sh
+# The Omarchy theme's accent color (the same color as Hyprland's active window border), for the
+# focused window's halo. With --watch-paths: where a theme switch writes.
+current="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current"
+if [ "${1:-}" = --watch-paths ]; then
+  echo "$current"
+  exit 0
+fi
+sed -n 's/^accent *= *"\(#[0-9a-fA-F]\{6\}\)".*/\1/p' "$current/theme/colors.toml" 2>/dev/null | head -1

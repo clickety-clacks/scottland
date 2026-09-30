@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep Scottland's handles in the desktop's light or dark style.
+"""Keep Scottland's halos in the desktop's style: light or dark, and its highlight (accent) color.
 
   scottland-color-scheme once     apply the current scheme to the running session
   scottland-color-scheme watch    apply it now and whenever it changes
@@ -7,6 +7,8 @@
 
 The scheme comes from the desktop portal (org.freedesktop.appearance color-scheme, which themes
 and settings apps set on any desktop), or from GNOME's color-scheme setting without a portal.
+The accent comes from an integration's provider in accent.d/ (executables printing "#rrggbb";
+with --watch-paths they print the paths to watch for changes), else the portal's accent-color.
 """
 import json
 import os
@@ -15,6 +17,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 PORTAL = ["org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop"]
@@ -58,10 +61,65 @@ def current():
         return "dark"
 
 
-def apply(scheme):
-    reply = call("wayfire/set-config-options", {"scottland/color_scheme": scheme})
+HOOKS = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+
+
+def providers():
+    folder = os.path.join(HOOKS, "accent.d")
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    return [os.path.join(folder, n) for n in names if os.access(os.path.join(folder, n), os.X_OK)]
+
+
+def portal_accent():
+    result = subprocess.run(["busctl", "--user", "call", *PORTAL, "org.freedesktop.portal.Settings",
+                             "ReadOne", "ss", "org.freedesktop.appearance", "accent-color"],
+                            capture_output=True, text=True, timeout=5)
+    values = re.findall(r"[-\d.]+(?:e[-\d]+)?", result.stdout.split("(ddd)")[-1]) if "(ddd)" in result.stdout else []
+    if len(values) < 3:
+        return None
+    r, g, b = (min(max(float(v), 0.0), 1.0) for v in values[:3])
+    return "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def current_accent():
+    for provider in providers():
+        try:
+            color = subprocess.run([provider], capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            return color
+    try:
+        return portal_accent()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def accent_watch_paths():
+    paths = []
+    for provider in providers():
+        try:
+            out = subprocess.run([provider, "--watch-paths"], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        paths += [line for line in out.splitlines() if line and os.path.exists(line)]
+    return paths
+
+
+def set_option(name, value):
+    reply = call("wayfire/set-config-options", {f"scottland/{name}": value})
     if reply.get("error"):
         print(f"scottland-color-scheme: {reply['error']}", file=sys.stderr)
+
+
+def apply(scheme, accent=None):
+    set_option("color_scheme", scheme)
+    accent = accent or current_accent()
+    if accent:
+        set_option("accent_color", accent + "ff")
 
 
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
@@ -83,6 +141,7 @@ def watch():
         target.write(f"{os.getpid()}\n")
     applied = current()
     apply(applied)
+    threading.Thread(target=watch_accent, daemon=True).start()
     while True:
         # Any change to the appearance settings, from the portal or GNOME's settings.
         if portal_scheme() is not None:
@@ -94,9 +153,31 @@ def watch():
                 if "color-scheme" in line:
                     scheme = current()
                     if scheme != applied:
-                        apply(scheme)
+                        set_option("color_scheme", scheme)
                         applied = scheme
+                if "accent-color" in line:
+                    accent = current_accent()
+                    if accent:
+                        set_option("accent_color", accent + "ff")
         time.sleep(2)  # the monitor exited (portal restarted): start again
+
+
+def watch_accent():
+    """Follow the integrations' accent sources (e.g. a theme switch rewriting a theme file)."""
+    if not providers():
+        return
+    applied = current_accent()
+    while True:
+        paths = accent_watch_paths()
+        if not paths:
+            return
+        subprocess.run(["inotifywait", "-qq", "-r", "-e", "close_write", "-e", "moved_to", "-e", "create",
+                        "-e", "delete", *paths])
+        time.sleep(0.5)  # let the theme switch finish writing
+        accent = current_accent()
+        if accent and accent != applied:
+            set_option("accent_color", accent + "ff")
+            applied = accent
 
 
 if __name__ == "__main__":

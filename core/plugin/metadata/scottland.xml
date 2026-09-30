@@ -40,9 +40,14 @@
 			<max>400</max>
 		</option>
 		<option name="color_scheme" type="string">
-			<_short>Handle style</_short>
-			<_long>"dark" or "light": draws window handles to suit a dark or light desktop. Set by scottland-color-scheme from the desktop's color scheme.</_long>
+			<_short>Light or dark style</_short>
+			<_long>"dark" or "light": draws halos and the close dot to suit a dark or light desktop. Set by scottland-color-scheme from the desktop's color scheme.</_long>
 			<default>dark</default>
+		</option>
+		<option name="accent_color" type="color">
+			<_short>Highlight color</_short>
+			<_long>The focused window's halo color. Set by scottland-color-scheme from the desktop's accent color, or by an integration.</_long>
+			<default>#81A1C1FF</default>
 		</option>
 		<option name="scale_curve" type="string">
 			<_short>Scale curve</_short>

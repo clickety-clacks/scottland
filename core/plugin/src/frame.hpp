@@ -1,13 +1,17 @@
 #pragma once
 
-// Window frame: every window is drawn as a rounded rectangle (A2), and handles appear outside it
-// when the cursor comes near an edge or corner (A3-A7): pill bars on the edges move the window,
-// arcs at the corners resize it around its center, and a close dot sits beside the edge bar.
+// Window frame: every window is drawn as a rounded rectangle (A2) inside a liquid halo (A3-A11).
+// The halo is always visible; it tints with focus, moves the window when dragged, resizes it
+// from its corners (which cloud up as the cursor nears), swells like goo after a hover, merges
+// with neighboring windows' halos under surface tension, and carries a close dot.
 //
 // The frame is the window's scale transformer too (it extends view_2d_transformer_t), so the
-// rounding, the scale and the handles are one node in the window's transformer chain: handles
-// stack with their window, follow it exactly through scale animations and drags, and a window in
-// front covers both the window behind and its handles, for drawing and for input.
+// rounding, the scale and the halo are one node in the window's transformer chain: the halo
+// stacks with its window, follows it exactly through scale animations and drags, and a window
+// in front covers the window behind and its halo, for drawing and for input.
+//
+// Shapes are signed distance fields, evaluated identically here (hit testing) and in the
+// shaders (drawing). Distances are in the coordinates the window is drawn in (after scaling).
 
 #include <wayfire/view-transform.hpp>
 #include <wayfire/opengl.hpp>
@@ -21,46 +25,50 @@
 #include <wayfire/util/duration.hpp>
 #include <wayfire/config/types.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <linux/input-event-codes.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <ctime>
 #include <functional>
 #include <vector>
 
 namespace scottland
 {
-// Sizes in logical points. The corner radius is in window space (it scales with the window);
-// everything else is on screen (constant size, A6).
+// Window space (scales with the window):
 constexpr double CORNER_RADIUS = 10.0;  // double Omarchy's 5
-constexpr double PROXIMITY     = 96.0;  // how near the cursor must be for a handle to show
-constexpr double GAP       = 6.0;       // between the window and its handles
-constexpr double THICKNESS = 12.0;      // bar and arc stroke
-constexpr double BAR_LENGTH = 128.0;    // at most 80% of the edge it sits on
-constexpr double DOT_RADIUS = 7.0;
-constexpr double DOT_GAP    = 8.0;      // between the bar's end and the close dot
-constexpr double HIT_SLOP   = 8.0;      // grab tolerance around a bar or arc
-constexpr double OUTLINE    = 1.5;      // soft dark rim so handles show on light content
-constexpr double MARGIN     = GAP + 2 * DOT_RADIUS + OUTLINE + 4;  // drawn area outside the window
+constexpr double HALO = 8.0;            // halo thickness at rest
+// On screen (constant size):
+constexpr double MIN_GRAB     = 12.0;   // the halo's grab area is never thinner than this
+constexpr double MERGE        = 10.0;   // surface-tension reach: halos ~5 pt apart bridge
+constexpr double CORNER_EXTRA = 16.0;   // a corner's resize part runs this far past its curve
+constexpr double NEAR_RANGE   = 64.0;   // corners cloud and the close dot shows within this
+constexpr double DOT_RADIUS   = 7.0;
+constexpr int MAX_NEIGHBORS   = 8;
+constexpr int DWELL_MS  = 2000;         // hover this long to swell
+constexpr int LINGER_MS = 500;          // stay swollen this long after the cursor leaves
 
-/** Handles are drawn for a light desktop (dark handles, light rim) or a dark one (the reverse);
- *  set from the plugin's color_scheme option. */
-inline bool light_scheme = false;
+/** The halo's colors, set from the plugin's options. */
+struct palette_t
+{
+    bool light = false;                 // light desktop: dark neutral tone; dark desktop: light
+    glm::vec3 accent{0.506, 0.631, 0.757};
+};
+
+inline palette_t palette;
 
 enum class handle_t
 {
-    none, top, bottom, left, right, top_left, top_right, bottom_left, bottom_right, close,
+    none, halo, top_left, top_right, bottom_left, bottom_right, close,
 };
 
 inline const char *handle_name(handle_t h)
 {
     switch (h)
     {
-      case handle_t::top:          return "top";
-      case handle_t::bottom:       return "bottom";
-      case handle_t::left:         return "left";
-      case handle_t::right:        return "right";
+      case handle_t::halo:         return "halo";
       case handle_t::top_left:     return "top-left";
       case handle_t::top_right:    return "top-right";
       case handle_t::bottom_left:  return "bottom-left";
@@ -83,6 +91,7 @@ struct rectf_t
     double x1, y1, x2, y2;
     double width() const { return x2 - x1; }
     double height() const { return y2 - y1; }
+    rectf_t grown(double by) const { return {x1 - by, y1 - by, x2 + by, y2 + by}; }
 };
 
 /** Signed distance from p to the rectangle's outline (negative inside). */
@@ -94,149 +103,51 @@ inline double box_distance(wf::pointf_t p, const rectf_t& r)
     return outside + std::min(std::max(dx, dy), 0.0);
 }
 
-inline double segment_distance(wf::pointf_t p, wf::pointf_t a, wf::pointf_t b)
+/** Signed distance to a rounded rectangle. */
+inline double round_box_distance(wf::pointf_t p, const rectf_t& r, double radius)
 {
-    double bx = b.x - a.x, by = b.y - a.y;
-    double len2 = bx * bx + by * by;
-    double h = len2 > 0 ? std::clamp(((p.x - a.x) * bx + (p.y - a.y) * by) / len2, 0.0, 1.0) : 0.0;
-    return std::hypot(p.x - a.x - bx * h, p.y - a.y - by * h);
+    radius = std::min({radius, r.width() / 2, r.height() / 2});
+    double hx = r.width() / 2, hy = r.height() / 2;
+    double qx = std::abs(p.x - (r.x1 + hx)) - hx + radius;
+    double qy = std::abs(p.y - (r.y1 + hy)) - hy + radius;
+    return std::hypot(std::max(qx, 0.0), std::max(qy, 0.0)) + std::min(std::max(qx, qy), 0.0) - radius;
 }
 
-/** One handle shape, in the coordinates the window is drawn in (after its scale). */
-struct shape_t
+/** Polynomial smooth minimum: joins two shapes with a rounded fillet about k wide. */
+inline double smooth_min(double a, double b, double k)
 {
-    enum kind_t { BAR = 0, ARC = 1, DOT = 2 } kind;
-    handle_t id;
-    handle_t group;     // the handle it belongs to: a close dot belongs to its edge's bar
-    wf::pointf_t a, b;  // bar: end points; arc: circle center, b = outward direction (+-1, +-1); dot: a
-    double radius = 0;  // arc: centerline radius; dot: radius
-
-    double distance(wf::pointf_t p) const
-    {
-        switch (kind)
-        {
-          case BAR:
-            return segment_distance(p, a, b) - THICKNESS / 2;
-
-          case DOT:
-            return std::hypot(p.x - a.x, p.y - a.y) - radius;
-
-          case ARC:
-          {
-            double qx = (p.x - a.x) * b.x, qy = (p.y - a.y) * b.y;
-            if ((qx >= 0) && (qy >= 0))
-            {
-                return std::abs(std::hypot(qx, qy) - radius) - THICKNESS / 2;
-            }
-
-            return std::min(std::hypot(qx - radius, qy), std::hypot(qx, qy - radius)) - THICKNESS / 2;
-          }
-        }
-
-        return 1e9;
-    }
-
-    bool hit(wf::pointf_t p) const
-    {
-        return distance(p) <= (kind == DOT ? 3.0 : HIT_SLOP);
-    }
-
-    rectf_t bounds() const
-    {
-        double pad = THICKNESS / 2 + OUTLINE + 2;
-        switch (kind)
-        {
-          case BAR:
-            return {std::min(a.x, b.x) - pad, std::min(a.y, b.y) - pad, std::max(a.x, b.x) + pad,
-                std::max(a.y, b.y) + pad};
-
-          case DOT:
-            return {a.x - radius - pad, a.y - radius - pad, a.x + radius + pad, a.y + radius + pad};
-
-          case ARC:
-          {
-            double far = radius + pad;
-            double x_out = a.x + b.x * far, y_out = a.y + b.y * far;
-            return {std::min(a.x - b.x * pad, x_out), std::min(a.y - b.y * pad, y_out),
-                std::max(a.x - b.x * pad, x_out), std::max(a.y - b.y * pad, y_out)};
-          }
-        }
-
-        return {0, 0, 0, 0};
-    }
-};
-
-/** The shapes of one handle group: an edge (its bar and the close dot) or a corner (its arc).
- *  `r` is the window's rounded rectangle on screen, `radius` its corner radius on screen. */
-inline std::vector<shape_t> shapes_for(handle_t group, const rectf_t& r, double radius)
-{
-    std::vector<shape_t> shapes;
-    double off = GAP + THICKNESS / 2;
-    double cx = (r.x1 + r.x2) / 2, cy = (r.y1 + r.y2) / 2;
-    auto bar_length = [&] (double edge)
-    {
-        return std::min(BAR_LENGTH, 0.8 * edge);
-    };
-    double dot_offset = THICKNESS / 2 + DOT_GAP + DOT_RADIUS;
-
-    auto horizontal = [&] (handle_t id, double y)
-    {
-        double half = bar_length(r.width()) / 2;
-        shapes.push_back({shape_t::BAR, id, id, {cx - half, y}, {cx + half, y}});
-        shapes.push_back({shape_t::DOT, handle_t::close, id, {cx - half - dot_offset, y}, {}, DOT_RADIUS});
-    };
-    auto vertical = [&] (handle_t id, double x)
-    {
-        double half = bar_length(r.height()) / 2;
-        shapes.push_back({shape_t::BAR, id, id, {x, cy - half}, {x, cy + half}});
-        shapes.push_back({shape_t::DOT, handle_t::close, id, {x, cy - half - dot_offset}, {}, DOT_RADIUS});
-    };
-    auto corner = [&] (handle_t id, double x, double y, double dx, double dy)
-    {
-        shapes.push_back({shape_t::ARC, id, id, {x - dx * radius, y - dy * radius}, {dx, dy}, radius + off});
-    };
-
-    switch (group)
-    {
-      case handle_t::top:          horizontal(group, r.y1 - off); break;
-      case handle_t::bottom:       horizontal(group, r.y2 + off); break;
-      case handle_t::left:         vertical(group, r.x1 - off); break;
-      case handle_t::right:        vertical(group, r.x2 + off); break;
-      case handle_t::top_left:     corner(group, r.x1, r.y1, -1, -1); break;
-      case handle_t::top_right:    corner(group, r.x2, r.y1, 1, -1); break;
-      case handle_t::bottom_left:  corner(group, r.x1, r.y2, -1, 1); break;
-      case handle_t::bottom_right: corner(group, r.x2, r.y2, 1, 1); break;
-      default: break;
-    }
-
-    return shapes;
+    double h = std::max(k - std::abs(a - b), 0.0) / k;
+    return std::min(a, b) - h * h * k / 4.0;
 }
 
-constexpr handle_t ALL_HANDLES[] = {
-    handle_t::top, handle_t::bottom, handle_t::left, handle_t::right,
-    handle_t::top_left, handle_t::top_right, handle_t::bottom_left, handle_t::bottom_right,
-};
-
-/** Every handle shape of a window: four bars with their close dots, four corner arcs. */
-inline std::vector<shape_t> all_shapes(const rectf_t& r, double radius)
+/** Brightness for a cursor `d` from something: zero `range` away, rising quickly as the cursor
+ *  closes in (squared), full on it. */
+inline double nearness(double d, double range)
 {
-    std::vector<shape_t> shapes;
-    for (auto h : ALL_HANDLES)
-    {
-        auto more = shapes_for(h, r, radius);
-        shapes.insert(shapes.end(), more.begin(), more.end());
-    }
-
-    return shapes;
-}
-
-/** Brightness for a cursor `d` from a handle: zero PROXIMITY away, rising quickly as the cursor
- *  closes in, full on the handle. */
-inline double glow_at(double d)
-{
-    double t = std::clamp(1.0 - std::max(0.0, d) / PROXIMITY, 0.0, 1.0);
+    double t = std::clamp(1.0 - std::max(0.0, d) / range, 0.0, 1.0);
     return t * t;
 }
+
+/** Another window's liquid, as seen by this one. */
+struct neighbor_t
+{
+    rectf_t window;     // its rounded rectangle on screen
+    double radius;      // its corner radius on screen
+    double thickness;   // its halo thickness on screen
+    bool in_front;      // above this window (its liquid wins where they meet)
+
+    double liquid(wf::pointf_t p) const
+    {
+        return round_box_distance(p, window.grown(thickness), radius + thickness);
+    }
+
+    bool operator ==(const neighbor_t& other) const
+    {
+        return std::abs(window.x1 - other.window.x1) < 0.25 && std::abs(window.y1 - other.window.y1) < 0.25 &&
+               std::abs(window.x2 - other.window.x2) < 0.25 && std::abs(window.y2 - other.window.y2) < 0.25 &&
+               std::abs(thickness - other.thickness) < 0.1 && in_front == other.in_front;
+    }
+};
 
 // ---------------------------------------------------------------------------------------------
 // GL programs
@@ -279,20 +190,148 @@ void main()
     gl_FragColor = c * clamp(0.5 - d / aa, 0.0, 1.0);
 })";
 
-// Handle shapes as signed distance fields: bar (capsule), arc (quarter ring), dot (with an x).
-static const char *shape_fragment_source =
+// The halo: liquid made of this window's rounded band, joined to the neighbors behind it with a
+// smooth minimum (meniscus and bridges), shaded as a rounded surface lit from the upper left.
+static const char *halo_fragment_source =
+    R"(#version 100
+varying highp vec2 pos;
+uniform highp vec4 window;       // x1, y1, x2, y2 on screen
+uniform highp float radius;      // window corner radius on screen
+uniform highp float thickness;   // halo thickness on screen (with the swell)
+uniform highp float ripple;      // goo ripple amplitude (px)
+uniform highp float phase;       // animation clock
+uniform highp float aa;          // px per fragment
+uniform highp float merge;       // smooth-min width
+uniform highp vec3 tone;         // base color
+uniform highp float density;     // base opacity
+uniform highp vec4 cloud;        // cloudiness per corner: tl, tr, bl, br
+uniform highp float corner_extra;
+uniform highp float count;
+uniform highp vec4 nb_window[8];
+uniform highp vec4 nb_param[8];  // radius, thickness, in front (0/1)
+
+highp float round_box(highp vec2 p, highp vec4 r, highp float rad)
+{
+    highp vec2 hs = (r.zw - r.xy) * 0.5;
+    rad = min(rad, min(hs.x, hs.y));
+    highp vec2 q = abs(p - (r.xy + hs)) - hs + vec2(rad);
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
+}
+
+highp float smin(highp float a, highp float b, highp float k)
+{
+    highp float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
+}
+
+highp float hash(highp vec2 p)
+{
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+highp float noise(highp vec2 p)
+{
+    highp vec2 i = floor(p);
+    highp vec2 f = fract(p);
+    highp vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+               mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
+highp float own_liquid(highp vec2 p)
+{
+    highp float wave = sin(p.x * 0.09 + phase * 5.0) * sin(p.y * 0.08 - phase * 4.1);
+    return round_box(p, window + vec4(-thickness, -thickness, thickness, thickness), radius + thickness)
+        - ripple * wave;
+}
+
+// The liquid this window draws: its own band joined to the neighbors behind it.
+highp float liquid(highp vec2 p)
+{
+    highp float d = own_liquid(p);
+    for (int i = 0; i < 8; i++) {
+        if (float(i) >= count) break;
+        if (nb_param[i].z < 0.5) {
+            highp float t = nb_param[i].y;
+            highp float n = round_box(p, nb_window[i] + vec4(-t, -t, t, t), nb_param[i].x + t);
+            d = smin(d, n, merge);
+        }
+    }
+    return d;
+}
+
+highp float cover(highp float d)
+{
+    return clamp(0.5 - d / aa, 0.0, 1.0);
+}
+
+void main()
+{
+    highp float d = liquid(pos);
+    highp float mine = own_liquid(pos);
+    highp float a = cover(d);
+    a *= 1.0 - cover(round_box(pos, window, radius));       // not under the window itself
+
+    // Pixels of a neighbor's own liquid belong to it (unless they're also mine: I'm in front);
+    // pixels of a neighbor in front belong to it outright.
+    for (int i = 0; i < 8; i++) {
+        if (float(i) >= count) break;
+        highp float t = nb_param[i].y;
+        highp float n = round_box(pos, nb_window[i] + vec4(-t, -t, t, t), nb_param[i].x + t);
+        if (nb_param[i].z > 0.5) {
+            a *= 1.0 - cover(n);
+        } else {
+            a *= 1.0 - cover(n) * (1.0 - cover(mine));
+        }
+    }
+
+    if (a <= 0.0) {
+        discard;
+    }
+
+    // Shape the band like a rounded bead: flat on top, sloping at the outer edge.
+    highp float e = max(aa, 0.5);
+    highp vec2 grad = vec2(liquid(pos + vec2(e, 0.0)) - d, liquid(pos + vec2(0.0, e)) - d) / e;
+    highp float depth = clamp(-d / max(thickness * 0.8, 1.0), 0.0, 1.0);
+    highp vec3 n = normalize(vec3(grad * (1.0 - depth) * 1.8, 1.0));
+
+    // Which corner's resize area this pixel is in, and how cloudy that corner is.
+    highp float reach = radius + thickness + corner_extra;
+    highp vec2 wx = vec2(window.x - thickness, window.z + thickness);
+    highp vec2 wy = vec2(window.y - thickness, window.w + thickness);
+    highp float cl = 0.0;
+    cl = max(cl, cloud.x * (1.0 - smoothstep(reach - 6.0, reach, max(pos.x - wx.x, pos.y - wy.x))));
+    cl = max(cl, cloud.y * (1.0 - smoothstep(reach - 6.0, reach, max(wx.y - pos.x, pos.y - wy.x))));
+    cl = max(cl, cloud.z * (1.0 - smoothstep(reach - 6.0, reach, max(pos.x - wx.x, wy.y - pos.y))));
+    cl = max(cl, cloud.w * (1.0 - smoothstep(reach - 6.0, reach, max(wx.y - pos.x, wy.y - pos.y))));
+
+    // Light passing through liquid: soft internal variation, a bright rim, glints.
+    highp float flow = noise(pos * 0.045 + vec2(phase * 0.35, -phase * 0.22));
+    highp float swirl = noise(pos * 0.11 - vec2(phase * 0.5, phase * 0.3));
+    highp vec3 light = normalize(vec3(-0.45, -0.65, 0.9));
+    highp float spec = pow(max(dot(reflect(-light, n), vec3(0.0, 0.0, 1.0)), 0.0), 18.0);
+    highp float rim = pow(1.0 - n.z, 1.5);
+
+    highp float body = density * (0.8 + 0.4 * flow);
+    body = mix(body, 0.82 * (0.75 + 0.35 * swirl), cl);        // the goo clouds up
+    highp float glint = spec * (0.35 + 1.4 * cl) + rim * (0.22 + 0.5 * cl);
+
+    highp float alpha = clamp(body + glint * 0.6, 0.0, 1.0) * a;
+    highp vec3 rgb = tone * body * a + vec3(1.0) * glint * a;
+    gl_FragColor = vec4(min(rgb, vec3(alpha)), alpha);
+})";
+
+// The close dot, with an x.
+static const char *dot_fragment_source =
     R"(#version 100
 varying highp vec2 pos;
 uniform highp vec4 fill;
-uniform highp float kind;
-uniform highp vec4 geom;
+uniform highp vec3 mark_color;
+uniform highp vec4 rim_color;
+uniform highp vec2 center;
 uniform highp float radius;
-uniform highp float thickness;
 uniform highp float aa;
 uniform highp float opacity;
-uniform highp float outline;
-uniform highp vec4 rim_color;
-uniform highp vec3 mark_color;
 
 highp float segment(highp vec2 p, highp vec2 a, highp vec2 b)
 {
@@ -304,38 +343,22 @@ highp float segment(highp vec2 p, highp vec2 a, highp vec2 b)
 
 void main()
 {
-    highp float d;
-    highp float mark = 1e9;
-    if (kind < 0.5) {
-        d = segment(pos, geom.xy, geom.zw) - thickness * 0.5;
-    } else if (kind < 1.5) {
-        highp vec2 q = (pos - geom.xy) * geom.zw;
-        if (q.x >= 0.0 && q.y >= 0.0) {
-            d = abs(length(q) - radius) - thickness * 0.5;
-        } else {
-            d = min(length(q - vec2(radius, 0.0)), length(q - vec2(0.0, radius))) - thickness * 0.5;
-        }
-    } else {
-        d = length(pos - geom.xy) - radius;
-        highp float k = radius * 0.38;
-        mark = min(segment(pos, geom.xy - vec2(k, k), geom.xy + vec2(k, k)),
-                   segment(pos, geom.xy + vec2(-k, k), geom.xy + vec2(k, -k))) - 0.9;
-    }
-
+    highp float d = length(pos - center) - radius;
+    highp float k = radius * 0.38;
+    highp float mark = min(segment(pos, center - vec2(k, k), center + vec2(k, k)),
+                           segment(pos, center + vec2(-k, k), center + vec2(k, -k))) - 0.9;
     highp float body = clamp(0.5 - d / aa, 0.0, 1.0);
-    highp float rim = clamp(0.5 - (d - outline) / (aa + outline), 0.0, 1.0) * rim_color.a;
+    highp float rim = clamp(0.5 - (d - 1.5) / (aa + 1.5), 0.0, 1.0) * rim_color.a;
     highp float x = clamp(0.5 - mark / aa, 0.0, 1.0);
     highp vec3 rgb = mix(fill.rgb, mark_color, x * 0.9);
     highp float a = fill.a * body;
-    highp vec4 shape = vec4(rgb * a, a);
     highp float r = rim * (1.0 - body);
-    highp vec4 shadow = vec4(rim_color.rgb * r, r);
-    gl_FragColor = (shape + shadow) * opacity;
+    gl_FragColor = (vec4(rgb * a, a) + vec4(rim_color.rgb * r, r)) * opacity;
 })";
 
 struct gl_programs_t
 {
-    OpenGL::program_t window, shape;
+    OpenGL::program_t window, halo, dot;
     bool ready = false;
 
     void ensure()
@@ -343,7 +366,8 @@ struct gl_programs_t
         if (!ready)
         {
             window.compile(frame_vertex_source, window_fragment_source);
-            shape.compile(frame_vertex_source, shape_fragment_source);
+            halo.compile(frame_vertex_source, halo_fragment_source);
+            dot.compile(frame_vertex_source, dot_fragment_source);
             ready = true;
         }
     }
@@ -355,7 +379,8 @@ struct gl_programs_t
             wf::gles::run_in_context_if_gles([&]
             {
                 window.free_resources();
-                shape.free_resources();
+                halo.free_resources();
+                dot.free_resources();
             });
             ready = false;
         }
@@ -373,18 +398,20 @@ inline gl_programs_t& gl_programs()
 class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_interaction_t
 {
   public:
-    /** Called when a handle is pressed (edge bars and corners); the plugin starts the move or
-     *  resize. The close dot is handled here. */
+    /** Called when the halo or a corner is pressed; the plugin starts the move or resize. The
+     *  close dot is handled here. */
     std::function<void(wayfire_toplevel_view, handle_t)> on_press;
 
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
-        fade.set(0, 0);
+        focus_mix.set(0, 0);
     }
 
     ~frame_t()
     {
-        fade_tick.disconnect();
+        tick.disconnect();
+        dwell.disconnect();
+        linger.disconnect();
     }
 
     wayfire_toplevel_view toplevel() const
@@ -414,21 +441,16 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return CORNER_RADIUS * get_scale_x();
     }
 
-    /** The brightest handle, for reporting. */
-    handle_t group() const
+    /** Halo thickness on screen, with the swell. */
+    double thickness() const
     {
-        handle_t best = handle_t::none;
-        double value  = 0.0;
-        for (auto h : ALL_HANDLES)
-        {
-            if (glow_of(h) > value)
-            {
-                best  = h;
-                value = glow_of(h);
-            }
-        }
+        return HALO * get_scale_x() * (1.0 + std::max(-0.3, swell));
+    }
 
-        return best;
+    /** Distance from p to the edge of this window's liquid (negative inside it). */
+    double liquid_distance(wf::pointf_t p) const
+    {
+        return round_box_distance(p, screen_rect().grown(thickness()), screen_radius() + thickness());
     }
 
     bool is_pressed() const
@@ -436,133 +458,178 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return pressed != handle_t::none;
     }
 
-    /** How visible the brightest handle is. */
-    double opacity() const
+    handle_t hovered_handle() const
     {
-        return fade * glow_of(group());
+        return is_pressed() ? pressed : hovered;
     }
 
-    /** How visible handle `h` is: the fade in/out, times how near the cursor is to it. */
-    double visibility(handle_t h) const
-    {
-        return fade * glow_of(h);
-    }
+    // --- state from the plugin ---
 
-    /** This window's handles respond to the cursor (it has the handle nearest to it), or not. */
-    void activate(bool on)
+    void set_focused(bool focused)
     {
-        if (on == active)
+        if (focused != is_focused)
         {
-            return;
+            is_focused = focused;
+            focus_mix.animate(focused ? 1.0 : 0.0);
+            start_ticking();
+        }
+    }
+
+    void set_neighbors(std::vector<neighbor_t> list)
+    {
+        if (list != neighbors)
+        {
+            neighbors = std::move(list);
+            damage();
+        }
+    }
+
+    const std::vector<neighbor_t>& get_neighbors() const
+    {
+        return neighbors;
+    }
+
+    /** The cursor moved to p. Only the frame nearest the cursor gets this; others get leave(). */
+    void track(wf::pointf_t p)
+    {
+        last_track = p;
+        auto r = screen_rect();
+        double t = thickness();
+        double reach = screen_radius() + t + CORNER_EXTRA;
+        std::array<rectf_t, 4> corners = {{
+            {r.x1 - t, r.y1 - t, r.x1 - t + reach, r.y1 - t + reach},
+            {r.x2 + t - reach, r.y1 - t, r.x2 + t, r.y1 - t + reach},
+            {r.x1 - t, r.y2 + t - reach, r.x1 - t + reach, r.y2 + t},
+            {r.x2 + t - reach, r.y2 + t - reach, r.x2 + t, r.y2 + t},
+        }};
+        for (int i = 0; i < 4; i++)
+        {
+            cloud_target[i] = nearness(box_distance(p, corners[i]), NEAR_RANGE);
         }
 
-        active = on;
-        if (!on)
+        auto dot = dot_center();
+        dot_target = nearness(std::hypot(p.x - dot.x, p.y - dot.y) - DOT_RADIUS, NEAR_RANGE);
+        if (!is_pressed())
+        {
+            set_hovered(handle_at(p));
+        }
+
+        on_halo((hovered == handle_t::halo) || is_corner(hovered));
+        start_ticking();
+    }
+
+    void leave()
+    {
+        cloud_target = {0, 0, 0, 0};
+        dot_target = 0;
+        if (!is_pressed())
         {
             set_hovered(handle_t::none);
         }
 
-        fade.animate(on ? 1.0 : 0.0);
+        on_halo(false);
         start_ticking();
-    }
-
-    /** Distance from p to the nearest of this window's handles. */
-    double handle_distance(wf::pointf_t p) const
-    {
-        double d = 1e9;
-        for (auto& shape : all_shapes(screen_rect(), screen_radius()))
-        {
-            d = std::min(d, shape.distance(p));
-        }
-
-        return d;
-    }
-
-    /** The cursor moved to p: each handle's brightness follows its own distance from it. */
-    void track(wf::pointf_t p)
-    {
-        if (is_pressed())
-        {
-            return;
-        }
-
-        std::array<double, 10> next{};
-        for (auto& shape : all_shapes(screen_rect(), screen_radius()))
-        {
-            auto& value = next[(int)shape.group];
-            value = std::max(value, glow_at(shape.distance(p)));
-        }
-
-        bool changed = false;
-        for (size_t i = 0; i < next.size(); i++)
-        {
-            changed |= std::abs(next[i] - glow[i]) > 0.004;
-        }
-
-        if (changed)
-        {
-            glow = next;
-            damage();
-        }
-
-        set_hovered(handle_at(p));
     }
 
     void release()
     {
         if (is_pressed())
         {
-            pressed = pressed_group = handle_t::none;
+            pressed = handle_t::none;
+            auto h = handle_at(last_track);
+            on_halo((h == handle_t::halo) || is_corner(h));
             damage();
         }
     }
 
-    std::vector<shape_t> shapes() const
-    {
-        return all_shapes(screen_rect(), screen_radius());
-    }
-
+    /** What's under p: the close dot, a corner, the halo, or nothing. */
     handle_t handle_at(wf::pointf_t p) const
     {
-        if (!active)
+        auto v = toplevel();
+        if (!v || v->pending_fullscreen())
         {
             return handle_t::none;
         }
 
-        auto list = shapes();
-        // A close dot sits beside its bar; test dots first so their small target wins.
-        for (auto kind : {shape_t::DOT, shape_t::BAR, shape_t::ARC})
+        auto dot = dot_center();
+        if ((dot_glow > 0.2) && (std::hypot(p.x - dot.x, p.y - dot.y) <= DOT_RADIUS + 3))
         {
-            for (auto& shape : list)
+            return handle_t::close;
+        }
+
+        auto r = screen_rect();
+        double radius = screen_radius();
+        if (round_box_distance(p, r, radius) <= 0)
+        {
+            return handle_t::none;  // the window itself
+        }
+
+        // The grab area: this window's band (at least MIN_GRAB thick) joined to the liquid it
+        // shares with the neighbors behind it, minus what belongs to neighbors.
+        double grab = std::max(thickness(), MIN_GRAB);
+        double own  = round_box_distance(p, r.grown(grab), radius + grab);
+        double joined = own;
+        for (auto& n : neighbors)
+        {
+            double d = n.liquid(p);
+            if (n.in_front && (d <= 0))
             {
-                if ((shape.kind == kind) && shape.hit(p))
+                return handle_t::none;
+            }
+
+            if (!n.in_front)
+            {
+                if ((d <= 0) && (own > 0))
                 {
-                    return shape.id;
+                    return handle_t::none;
                 }
+
+                joined = smooth_min(joined, d, MERGE);
             }
         }
 
-        return handle_t::none;
+        if (joined > 0)
+        {
+            return handle_t::none;
+        }
+
+        double reach = radius + grab + CORNER_EXTRA;
+        bool left = p.x < r.x1 - grab + reach, right = p.x > r.x2 + grab - reach;
+        bool top  = p.y < r.y1 - grab + reach, bottom = p.y > r.y2 + grab - reach;
+        if (top && left)
+        {
+            return handle_t::top_left;
+        }
+
+        if (top && right)
+        {
+            return handle_t::top_right;
+        }
+
+        if (bottom && left)
+        {
+            return handle_t::bottom_left;
+        }
+
+        if (bottom && right)
+        {
+            return handle_t::bottom_right;
+        }
+
+        return handle_t::halo;
     }
 
-    /** The handle group the shape at p belongs to (its bar, for a close dot). */
-    handle_t group_at(wf::pointf_t p) const
+    /** The close dot: on the middle of the halo's bottom edge. */
+    wf::pointf_t dot_center() const
     {
-        auto id = handle_at(p);
-        if (id != handle_t::close)
-        {
-            return id;
-        }
+        auto r = screen_rect();
+        return {(r.x1 + r.x2) / 2, r.y2 + thickness() / 2};
+    }
 
-        for (auto& shape : shapes())
-        {
-            if ((shape.kind == shape_t::DOT) && shape.hit(p))
-            {
-                return shape.group;
-            }
-        }
-
-        return handle_t::none;
+    /** How far the drawn halo, its swell and its merging can reach outside the window. */
+    double margin() const
+    {
+        return std::max(HALO * get_scale_x() * 2.6, MIN_GRAB) + MERGE + DOT_RADIUS + 4;
     }
 
     // --- scene node ---
@@ -570,11 +637,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     wf::geometry_t get_bounding_box() override
     {
         auto base = view_2d_transformer_t::get_bounding_box();
-        auto r    = screen_rect();
-        double x1 = std::min<double>(base.x, std::floor(r.x1 - MARGIN));
-        double y1 = std::min<double>(base.y, std::floor(r.y1 - MARGIN));
-        double x2 = std::max<double>(base.x + base.width, std::ceil(r.x2 + MARGIN));
-        double y2 = std::max<double>(base.y + base.height, std::ceil(r.y2 + MARGIN));
+        auto r    = screen_rect().grown(margin());
+        double x1 = std::min<double>(base.x, std::floor(r.x1));
+        double y1 = std::min<double>(base.y, std::floor(r.y1));
+        double x2 = std::max<double>(base.x + base.width, std::ceil(r.x2));
+        double y2 = std::max<double>(base.y + base.height, std::ceil(r.y2));
         return {x1, y1, x2 - x1, y2 - y1};
     }
 
@@ -601,29 +668,18 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
         wf::scene::damage_callback push_damage, wf::output_t *shown_on) override;
 
-    // --- pointer interaction (the cursor is on a handle) ---
+    // --- pointer interaction (the cursor is on the halo) ---
 
+    // Wayfire hands these the cursor in this node's local coordinates, i.e. with the scale
+    // undone (to_local); the halo lives in the scaled coordinates, so map it back.
     void handle_pointer_enter(wf::pointf_t position) override
     {
-        last_pointer = position;
-        set_hovered(handle_at(position));
+        last_pointer = to_global(position);
     }
 
     void handle_pointer_motion(wf::pointf_t position, uint32_t) override
     {
-        last_pointer = position;
-        if (!is_pressed())
-        {
-            set_hovered(handle_at(position));
-        }
-    }
-
-    void handle_pointer_leave() override
-    {
-        if (!is_pressed())
-        {
-            set_hovered(handle_t::none);
-        }
+        last_pointer = to_global(position);
     }
 
     void handle_pointer_button(const wlr_pointer_button_event& event) override
@@ -636,13 +692,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
         if (event.state == WL_POINTER_BUTTON_STATE_PRESSED)
         {
-            pressed = hovered != handle_t::none ? hovered : handle_at(last_pointer);
+            pressed = handle_at(last_pointer);
             if (pressed == handle_t::none)
             {
                 return;
             }
-
-            pressed_group = group_at(last_pointer);
 
             damage();
             wf::get_core().default_wm->focus_raise_view(v);
@@ -665,13 +719,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         // or resize takes the pointer, this node gets a synthetic release first.
     }
 
-    handle_t hovered_handle() const
-    {
-        return is_pressed() ? pressed : hovered;
-    }
-
-    /** Repaint the window and its handle margin. (view->damage() covers only the window: the
-     *  handles are outside it.) */
+    /** Repaint the window and its halo. (view->damage() covers only the window.) */
     void damage()
     {
         if (parent())
@@ -683,36 +731,81 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
     }
 
-    /** Repaint where the handles were drawn for the window at `old` (after it moved). */
+    /** Repaint where the halo was drawn for the window at `old` (after it moved). */
     void damage_previous(const wf::geometry_t& old)
     {
-        if ((fade <= 0.0) || !parent())
+        if (!parent())
         {
             return;
         }
 
         double cx = old.x + old.width / 2.0, cy = old.y + old.height / 2.0;
-        double hw = old.width * get_scale_x() / 2.0 + MARGIN, hh = old.height * get_scale_y() / 2.0 + MARGIN;
+        double hw = old.width * get_scale_x() / 2.0 + margin(), hh = old.height * get_scale_y() / 2.0 + margin();
         wf::scene::damage_node(parent(), wf::geometry_t{std::floor(cx - hw), std::floor(cy - hh),
             std::ceil(2 * hw) + 1, std::ceil(2 * hh) + 1});
     }
 
+    // Animation state, read by the render instance and layout-state.
+    double phase = 0.0;
+    double swell = 0.0;          // 0 at rest, 1 swollen (overshoots while moving)
+    double swell_velocity = 0.0;
+    std::array<double, 4> cloud{};
+    double dot_glow = 0.0;
+    wf::animation::simple_animation_t focus_mix{wf::create_option<int>(150)};
+
   private:
-    bool active      = false;           // this window's handles respond to the cursor
-    std::array<double, 10> glow{};      // per handle, by handle_t: brightness from cursor distance
+    bool is_focused = false;
+    std::vector<neighbor_t> neighbors;
     handle_t hovered = handle_t::none;
     handle_t pressed = handle_t::none;
-    handle_t pressed_group = handle_t::none;
+    wf::pointf_t last_pointer{0, 0};
+    wf::pointf_t last_track{-1e6, -1e6};
+    std::array<double, 4> cloud_target{};
+    double dot_target   = 0.0;
+    double swell_target = 0.0;
+    bool hovering = false;
+    uint32_t last_tick = 0;
+    wf::wl_timer<true> tick;
+    wf::wl_timer<false> dwell;
+    wf::wl_timer<false> linger;
 
-    double glow_of(handle_t h) const
+    /** The cursor is on the halo (or not): swell after the dwell, sink after the linger. */
+    void on_halo(bool on)
     {
-        // A pressed handle stays fully lit while it's dragged.
-        return (is_pressed() && (h == pressed_group)) ? 1.0 : glow[(int)h];
+        if (on == hovering)
+        {
+            return;
+        }
+
+        hovering = on;
+        if (on)
+        {
+            linger.disconnect();
+            if (swell_target < 1.0)
+            {
+                dwell.set_timeout(DWELL_MS, [=] () { set_swell(1.0); });
+            }
+        } else
+        {
+            dwell.disconnect();
+            if (swell_target > 0.0)
+            {
+                linger.set_timeout(LINGER_MS, [=] ()
+                {
+                    if (!is_pressed() && !hovering)
+                    {
+                        set_swell(0.0);
+                    }
+                });
+            }
+        }
     }
 
-    wf::pointf_t last_pointer{0, 0};
-    wf::animation::simple_animation_t fade{wf::create_option<int>(140)};
-    wf::wl_timer<true> fade_tick;
+    void set_swell(double target)
+    {
+        swell_target = target;
+        start_ticking();
+    }
 
     void set_hovered(handle_t h)
     {
@@ -723,10 +816,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
         hovered = h;
         damage();
-        const char *cursor = "default";
+        const char *cursor = nullptr;
         switch (h)
         {
-          case handle_t::top: case handle_t::bottom: case handle_t::left: case handle_t::right:
+          case handle_t::halo:
             cursor = "grab";
             break;
 
@@ -743,22 +836,84 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             break;
 
           default:
-            return;  // off the handles: the surface under the cursor sets its own
+            break;  // off the halo: the surface under the cursor sets its own
         }
 
-        wf::get_core().set_cursor(cursor);
+        if (cursor)
+        {
+            wf::get_core().set_cursor(cursor);
+        }
+    }
+
+    bool settled()
+    {
+        // A cloudy corner keeps moving (its light shifts), so it keeps ticking.
+        for (int i = 0; i < 4; i++)
+        {
+            if ((std::abs(cloud[i] - cloud_target[i]) > 0.002) || (cloud[i] > 0.002))
+            {
+                return false;
+            }
+        }
+
+        return (std::abs(dot_glow - dot_target) < 0.002) && !focus_mix.running() &&
+               (std::abs(swell - swell_target) < 0.001) && (std::abs(swell_velocity) < 0.001);
+    }
+
+    static uint32_t now_ms()
+    {
+        timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
     }
 
     void start_ticking()
     {
-        if (!fade_tick.is_connected())
+        if (tick.is_connected())
         {
-            fade_tick.set_timeout(8, [=] ()
-            {
-                damage();
-                return fade.running();
-            });
+            return;
         }
+
+        last_tick = now_ms();
+        tick.set_timeout(16, [=] ()
+        {
+            uint32_t now = now_ms();
+            double dt = std::clamp((now - last_tick) / 1000.0, 0.001, 0.05);
+            last_tick = now;
+            step(dt);
+            damage();
+            if (settled())
+            {
+                swell = swell_target;
+                swell_velocity = 0;
+                dot_glow = dot_target;
+                return false;
+            }
+
+            return true;
+        });
+    }
+
+    void step(double dt)
+    {
+        phase += dt;
+        // Goo: an underdamped spring, so the swell overshoots and wobbles before settling.
+        const double stiffness = 70.0, damping = 7.0;
+        double accel = stiffness * (swell_target - swell) - damping * swell_velocity;
+        swell_velocity += accel * dt;
+        swell += swell_velocity * dt;
+        // Clouds and the dot ease toward their targets.
+        double ease = 1.0 - std::exp(-dt * 12.0);
+        for (int i = 0; i < 4; i++)
+        {
+            cloud[i] += (cloud_target[i] - cloud[i]) * ease;
+            if (cloud[i] < 0.002 && cloud_target[i] == 0)
+            {
+                cloud[i] = 0;
+            }
+        }
+
+        dot_glow += (dot_target - dot_glow) * ease;
     }
 };
 
@@ -781,10 +936,11 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
     {
         if (!wf::get_core().is_gles2())
         {
-            // Other renderers: plain scaled texture, no rounding or handles.
+            // Other renderers: plain scaled texture, no rounding or halo.
             auto tex = this->get_texture(data.target.scale);
             tex->set_filter_mode(WLR_SCALE_FILTER_BILINEAR);
-            data.pass->add_texture(tex, data.target, view_2d_bbox(), data.damage, self->get_alpha());
+            data.pass->add_texture(tex, data.target, self->view_2d_transformer_t::get_bounding_box(),
+                data.damage, self->get_alpha());
             return;
         }
 
@@ -795,20 +951,11 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
             self->get_translation_y() + mid.y, 0.0}) *
             glm::scale(glm::mat4(1.0), glm::vec3{self->get_scale_x(), self->get_scale_y(), 1.0}) *
             glm::translate(glm::mat4(1.0), glm::vec3{-mid.x, -mid.y, 0.0});
-        float pixel  = 1.0f / std::max(0.01f, data.target.scale);
+        float pixel     = 1.0f / std::max(0.01f, data.target.scale);
         float window_aa = pixel / std::max(0.01f, self->get_scale_x());
-        std::vector<std::pair<shape_t, double>> shapes;
-        for (auto& shape : self->shapes())
-        {
-            double visible = self->visibility(shape.group);
-            if (visible > 0.003)
-            {
-                shapes.emplace_back(shape, visible);
-            }
-        }
-
-        auto hovered    = self->hovered_handle();
         float alpha     = self->get_alpha();
+        auto v = self->toplevel();
+        bool halo = v && !v->pending_fullscreen();
 
         data.pass->custom_gles_subpass([&]
         {
@@ -820,20 +967,81 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
             wf::gles::for_each_scissor_rect(data.target, data.damage, [&]
             {
-                draw_window(programs.window, tex, bbox, ortho * flat, geometry, window_aa, alpha);
-                for (auto& [shape, visible] : shapes)
+                if (halo)
                 {
-                    bool lit = shape.id == hovered;
-                    draw_shape(programs.shape, shape, ortho, pixel, visible * alpha, lit);
+                    draw_halo(programs.halo, ortho, pixel, alpha);
+                }
+
+                draw_window(programs.window, tex, bbox, ortho * flat, geometry, window_aa, alpha);
+                if (halo && (self->dot_glow > 0.003))
+                {
+                    draw_dot(programs.dot, ortho, pixel, self->dot_glow * alpha,
+                        self->hovered_handle() == handle_t::close);
                 }
             });
         });
     }
 
   private:
-    wf::geometry_t view_2d_bbox()
+    static void quad(OpenGL::program_t& program, const rectf_t& b)
     {
-        return self->view_2d_transformer_t::get_bounding_box();
+        GLfloat vertices[] = {
+            (float)b.x1, (float)b.y2, (float)b.x2, (float)b.y2, (float)b.x2, (float)b.y1, (float)b.x1,
+            (float)b.y1,
+        };
+        program.attrib_pointer("position", 2, 0, vertices);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+    }
+
+    void draw_halo(OpenGL::program_t& program, const glm::mat4& mvp, float aa, float alpha)
+    {
+        auto r = self->screen_rect();
+        double t = self->thickness();
+        double radius = self->screen_radius();
+        float focus   = self->focus_mix;
+        glm::vec3 neutral = palette.light ? glm::vec3{0.08, 0.08, 0.1} : glm::vec3{0.9, 0.92, 0.95};
+        glm::vec3 tone    = glm::mix(neutral, palette.accent, focus);
+        float density     = (0.16f + (0.44f - 0.16f) * focus) * alpha;
+
+        program.use(wf::TEXTURE_TYPE_RGBA);
+        program.uniformMatrix4f("MVP", mvp);
+        program.uniform4f("window", glm::vec4{r.x1, r.y1, r.x2, r.y2});
+        program.uniform1f("radius", radius);
+        program.uniform1f("thickness", t);
+        // Ripples along the edge while the goo moves, in proportion to how fast it's moving.
+        program.uniform1f("ripple", std::min(3.0, std::abs(self->swell_velocity) * HALO * self->get_scale_x() * 0.12));
+        program.uniform1f("phase", self->phase);
+        program.uniform1f("aa", aa);
+        program.uniform1f("merge", MERGE);
+        program.uniform3f("tone", tone.r, tone.g, tone.b);
+        program.uniform1f("density", density);
+        program.uniform4f("cloud", glm::vec4{self->cloud[0], self->cloud[1], self->cloud[2], self->cloud[3]});
+        program.uniform1f("corner_extra", CORNER_EXTRA);
+
+        std::array<glm::vec4, MAX_NEIGHBORS> nb_window{}, nb_param{};
+        auto& list = self->get_neighbors();
+        int count  = std::min<int>(list.size(), MAX_NEIGHBORS);
+        for (int i = 0; i < count; i++)
+        {
+            nb_window[i] = {list[i].window.x1, list[i].window.y1, list[i].window.x2, list[i].window.y2};
+            nb_param[i]  = {list[i].radius, list[i].thickness, list[i].in_front ? 1.0 : 0.0, 0.0};
+        }
+
+        program.uniform1f("count", count);
+        GLuint id = program.get_program_id(wf::TEXTURE_TYPE_RGBA);
+        glUniform4fv(glGetUniformLocation(id, "nb_window"), MAX_NEIGHBORS, glm::value_ptr(nb_window[0]));
+        glUniform4fv(glGetUniformLocation(id, "nb_param"), MAX_NEIGHBORS, glm::value_ptr(nb_param[0]));
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        // Four strips around the window (not one big quad under it). Each reaches inside the
+        // window by its corner radius so the corners are covered.
+        double m = self->margin(), in = radius + 1;
+        quad(program, {r.x1 - m, r.y1 - m, r.x2 + m, r.y1 + in});                 // top
+        quad(program, {r.x1 - m, r.y2 - in, r.x2 + m, r.y2 + m});                 // bottom
+        quad(program, {r.x1 - m, r.y1 + in, r.x1 + in, r.y2 - in});               // left
+        quad(program, {r.x2 - in, r.y1 + in, r.x2 + m, r.y2 - in});               // right
+        program.deactivate();
     }
 
     static void draw_window(OpenGL::program_t& program, const wf::gles_texture_t& tex,
@@ -861,35 +1069,26 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.deactivate();
     }
 
-    static void draw_shape(OpenGL::program_t& program, const shape_t& shape, const glm::mat4& mvp,
-        float aa, double opacity, bool lit)
+    void draw_dot(OpenGL::program_t& program, const glm::mat4& mvp, float aa, double opacity, bool lit)
     {
+        auto c = self->dot_center();
         program.use(wf::TEXTURE_TYPE_RGBA);
-        auto b = shape.bounds();
-        GLfloat vertices[] = {
-            (float)b.x1, (float)b.y2, (float)b.x2, (float)b.y2, (float)b.x2, (float)b.y1, (float)b.x1,
-            (float)b.y1,
-        };
-        program.attrib_pointer("position", 2, 0, vertices);
         program.uniformMatrix4f("MVP", mvp);
-        float base = shape.kind == shape_t::DOT ? 0.78f : 0.62f;
-        // Dark desktop: light handles with a dark rim. Light desktop: dark handles, light rim.
-        glm::vec3 fill = light_scheme ? glm::vec3{0.13, 0.13, 0.15} : glm::vec3{1.0, 1.0, 1.0};
-        glm::vec4 rim  = light_scheme ? glm::vec4{1.0, 1.0, 1.0, 0.45} : glm::vec4{0.0, 0.0, 0.0, 0.28};
-        glm::vec3 mark = light_scheme ? glm::vec3{0.95, 0.95, 0.95} : glm::vec3{0.12, 0.12, 0.12};
-        program.uniform4f("fill", glm::vec4{fill, lit ? (light_scheme ? 0.9f : 0.96f) : base});
-        program.uniform4f("rim_color", rim);
+        bool light = palette.light;
+        glm::vec3 fill = light ? glm::vec3{0.13, 0.13, 0.15} : glm::vec3{1.0, 1.0, 1.0};
+        glm::vec4 rim  = light ? glm::vec4{1.0, 1.0, 1.0, 0.45} : glm::vec4{0.0, 0.0, 0.0, 0.28};
+        glm::vec3 mark = light ? glm::vec3{0.95, 0.95, 0.95} : glm::vec3{0.12, 0.12, 0.12};
+        program.uniform4f("fill", glm::vec4{fill, lit ? 0.96f : 0.8f});
         program.uniform3f("mark_color", mark.r, mark.g, mark.b);
-        program.uniform1f("kind", (float)shape.kind);
-        program.uniform4f("geom", glm::vec4{shape.a.x, shape.a.y, shape.b.x, shape.b.y});
-        program.uniform1f("radius", shape.radius);
-        program.uniform1f("thickness", THICKNESS);
+        program.uniform4f("rim_color", rim);
+        program.uniform2f("center", c.x, c.y);
+        program.uniform1f("radius", DOT_RADIUS);
         program.uniform1f("aa", aa);
         program.uniform1f("opacity", opacity);
-        program.uniform1f("outline", OUTLINE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        double e = DOT_RADIUS + 4;
+        quad(program, {c.x - e, c.y - e, c.x + e, c.y + e});
         program.deactivate();
     }
 };
