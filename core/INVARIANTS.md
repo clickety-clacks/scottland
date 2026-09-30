@@ -26,6 +26,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L11 | Dropping a window near an edge or corner does not snap or resize it (Wayfire edge snapping is off). | verified |
 | L12 | No wobbly windows, in shipped and installed configs. | verified |
 | L21 | Touchpad clicks use clickfinger: a two-finger press anywhere is a right click, three fingers a middle click (shipped default). | implemented |
+| L22 | Touchpad double-tap-and-drag has a grace period: lifting the finger mid-drag keeps the drag for about 300 ms (libinput drag lock, timeout mode), so putting it back down continues the same drag; past the grace period the drag drops. Shipped default. | implemented |
 | L19 | Ctrl+W deletes the previous word in every app, browsers included: the plugin remaps it to Ctrl+Backspace for browsers and Chromium web apps (shipped `key_remaps` rules), and Ctrl+Alt+W closes the browser tab (Ctrl+F4). Holding the key repeats. The remap mechanism is generic: per-app rules of app-id regex, from-combo, to-combo. | implemented (headless) |
 | L17 | Trackpad (two-finger) scrolling honors `input/touchpad_scroll_speed`, applied live; the shipped default is 0.2. (Wayfire 0.11 ignores it for touchpads, WayfireWM/wayfire#3148; the plugin applies it until the fix ships.) | verified (on Mike's trackpad, osanwe) |
 | L13 | A window entering a widget rail is told to render as a widget; apps that can't stay at the smallest scale. | not built (currently: stays at smallest scale) |
