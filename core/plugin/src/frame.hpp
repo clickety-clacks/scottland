@@ -47,7 +47,8 @@ constexpr double CORNER_EXTRA = 16.0;   // a corner's resize part runs this far 
 constexpr double NEAR_RANGE   = 64.0;   // corners cloud and the close dot shows within this
 constexpr double DOT_RADIUS   = 7.0;
 constexpr int MAX_NEIGHBORS   = 8;
-constexpr int DWELL_MS  = 2000;         // hover this long to swell
+constexpr double SWELL_VICINITY = 50.0; // the cursor pausing this near the halo swells it
+constexpr int DWELL_MS  = 1000;         // pause this long to swell
 constexpr int LINGER_MS = 500;          // stay swollen this long after the cursor leaves
 
 /** The halo's colors, set from the plugin's options. */
@@ -514,7 +515,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             set_hovered(handle_at(p));
         }
 
-        on_halo((hovered == handle_t::halo) || is_corner(hovered));
+        // Distance to the band itself: outside the liquid, or inside the window, or 0 on it.
+        double band = std::max(liquid_distance(p), -round_box_distance(p, r, screen_radius()));
+        near_halo(band <= SWELL_VICINITY);
         start_ticking();
     }
 
@@ -527,7 +530,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             set_hovered(handle_t::none);
         }
 
-        on_halo(false);
+        near_halo(false);
         start_ticking();
     }
 
@@ -536,8 +539,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         if (is_pressed())
         {
             pressed = handle_t::none;
-            auto h = handle_at(last_track);
-            on_halo((h == handle_t::halo) || is_corner(h));
+            if (!hovering)
+            {
+                near_halo(false, true);
+            }
+
             damage();
         }
     }
@@ -769,23 +775,20 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     wf::wl_timer<false> dwell;
     wf::wl_timer<false> linger;
 
-    /** The cursor is on the halo (or not): swell after the dwell, sink after the linger. */
-    void on_halo(bool on)
+    /** The cursor moved, near the halo or not. Near it, a pause of DWELL_MS swells the halo (any
+     *  motion restarts the wait); away from it, the halo sinks back after LINGER_MS. */
+    void near_halo(bool near, bool force = false)
     {
-        if (on == hovering)
-        {
-            return;
-        }
-
-        hovering = on;
-        if (on)
+        bool was = hovering;
+        hovering = near;
+        if (near)
         {
             linger.disconnect();
             if (swell_target < 1.0)
             {
                 dwell.set_timeout(DWELL_MS, [=] () { set_swell(1.0); });
             }
-        } else
+        } else if (was || force)
         {
             dwell.disconnect();
             if (swell_target > 0.0)
