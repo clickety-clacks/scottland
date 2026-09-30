@@ -33,6 +33,18 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L15 | Scottland copies the display scale the user's Hyprland uses (e.g. 4K panels are not tiny). | not built |
 | L16 | How widgets sit on a rail (currently a rail window hangs half off-screen). | not built (needs a decision) |
 
+## Window appearance and handles
+
+| ID | Invariant | Status |
+|---|---|---|
+| A1 | No window chrome: Scottland asks every app that allows it for server-side decorations and draws none (no title bars, no borders). GTK4/libadwaita apps keep the header bars they draw themselves; Chromium is switched to server-side decorations through additive app tuning (C7). | not built |
+| A2 | Every window is a rounded rectangle; the corner radius is double Omarchy's (10 pt), scaling with the window. | not built |
+| A3 | When the cursor comes within ~24 pt of a window's edge or corner, the matching handle fades in, drawn outside the window with a small gap, visionOS style; it fades out when the cursor leaves and brightens while hovered or dragged. | not built |
+| A4 | Edge handles: a thick pill bar with rounded ends, parallel to and centered on that edge, on all four edges. Dragging one moves the window (no modifier needed), with the same live scaling as Super+drag. | not built |
+| A5 | Corner handles: a thick arc (a circle section) concentric with the window's rounded corner, its radius the corner radius plus the gap. Dragging one resizes around the window's center (like Super+right-drag, absolute direction). | not built |
+| A6 | Handles keep a constant on-screen size regardless of the window's scale, so they stay easy to grab on small windows; they follow the window exactly, including during scale animations. | not built |
+| A7 | A close dot sits beside the edge drag bar, visionOS style; clicking it closes the window. There is no minimize. | not built |
+
 ## Layout configurator (`scottland-settings`)
 
 | ID | Invariant | Status |
