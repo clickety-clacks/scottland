@@ -24,6 +24,7 @@
 #include <linux/input-event-codes.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <vector>
@@ -106,6 +107,7 @@ struct shape_t
 {
     enum kind_t { BAR = 0, ARC = 1, DOT = 2 } kind;
     handle_t id;
+    handle_t group;     // the handle it belongs to: a close dot belongs to its edge's bar
     wf::pointf_t a, b;  // bar: end points; arc: circle center, b = outward direction (+-1, +-1); dot: a
     double radius = 0;  // arc: centerline radius; dot: radius
 
@@ -180,18 +182,18 @@ inline std::vector<shape_t> shapes_for(handle_t group, const rectf_t& r, double 
     auto horizontal = [&] (handle_t id, double y)
     {
         double half = bar_length(r.width()) / 2;
-        shapes.push_back({shape_t::BAR, id, {cx - half, y}, {cx + half, y}});
-        shapes.push_back({shape_t::DOT, handle_t::close, {cx - half - dot_offset, y}, {}, DOT_RADIUS});
+        shapes.push_back({shape_t::BAR, id, id, {cx - half, y}, {cx + half, y}});
+        shapes.push_back({shape_t::DOT, handle_t::close, id, {cx - half - dot_offset, y}, {}, DOT_RADIUS});
     };
     auto vertical = [&] (handle_t id, double x)
     {
         double half = bar_length(r.height()) / 2;
-        shapes.push_back({shape_t::BAR, id, {x, cy - half}, {x, cy + half}});
-        shapes.push_back({shape_t::DOT, handle_t::close, {x, cy - half - dot_offset}, {}, DOT_RADIUS});
+        shapes.push_back({shape_t::BAR, id, id, {x, cy - half}, {x, cy + half}});
+        shapes.push_back({shape_t::DOT, handle_t::close, id, {x, cy - half - dot_offset}, {}, DOT_RADIUS});
     };
     auto corner = [&] (handle_t id, double x, double y, double dx, double dy)
     {
-        shapes.push_back({shape_t::ARC, id, {x - dx * radius, y - dy * radius}, {dx, dy}, radius + off});
+        shapes.push_back({shape_t::ARC, id, id, {x - dx * radius, y - dy * radius}, {dx, dy}, radius + off});
     };
 
     switch (group)
@@ -210,36 +212,30 @@ inline std::vector<shape_t> shapes_for(handle_t group, const rectf_t& r, double 
     return shapes;
 }
 
-/** Which handle group the cursor at p calls up for a window at r (on screen), if any. */
-inline handle_t group_near(wf::pointf_t p, const rectf_t& r, double radius)
+constexpr handle_t ALL_HANDLES[] = {
+    handle_t::top, handle_t::bottom, handle_t::left, handle_t::right,
+    handle_t::top_left, handle_t::top_right, handle_t::bottom_left, handle_t::bottom_right,
+};
+
+/** Every handle shape of a window: four bars with their close dots, four corner arcs. */
+inline std::vector<shape_t> all_shapes(const rectf_t& r, double radius)
 {
-    double d = box_distance(p, r);
-    if ((d > PROXIMITY) || (d < -PROXIMITY))
+    std::vector<shape_t> shapes;
+    for (auto h : ALL_HANDLES)
     {
-        return handle_t::none;
+        auto more = shapes_for(h, r, radius);
+        shapes.insert(shapes.end(), more.begin(), more.end());
     }
 
-    double zone_x = std::min(radius + PROXIMITY, r.width() / 2);
-    double zone_y = std::min(radius + PROXIMITY, r.height() / 2);
-    int h = p.x < r.x1 + zone_x ? -1 : (p.x > r.x2 - zone_x ? 1 : 0);
-    int v = p.y < r.y1 + zone_y ? -1 : (p.y > r.y2 - zone_y ? 1 : 0);
-    if (h && v)
-    {
-        return h < 0 ? (v < 0 ? handle_t::top_left : handle_t::bottom_left) :
-               (v < 0 ? handle_t::top_right : handle_t::bottom_right);
-    }
+    return shapes;
+}
 
-    if (h)
-    {
-        return h < 0 ? handle_t::left : handle_t::right;
-    }
-
-    if (v)
-    {
-        return v < 0 ? handle_t::top : handle_t::bottom;
-    }
-
-    return handle_t::none;
+/** Brightness for a cursor `d` from a handle: zero PROXIMITY away, rising quickly as the cursor
+ *  closes in, full on the handle. */
+inline double glow_at(double d)
+{
+    double t = std::clamp(1.0 - std::max(0.0, d) / PROXIMITY, 0.0, 1.0);
+    return t * t;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -418,9 +414,21 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return CORNER_RADIUS * get_scale_x();
     }
 
+    /** The brightest handle, for reporting. */
     handle_t group() const
     {
-        return shown;
+        handle_t best = handle_t::none;
+        double value  = 0.0;
+        for (auto h : ALL_HANDLES)
+        {
+            if (glow_of(h) > value)
+            {
+                best  = h;
+                value = glow_of(h);
+            }
+        }
+
+        return best;
     }
 
     bool is_pressed() const
@@ -428,35 +436,49 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return pressed != handle_t::none;
     }
 
-    /** How visible the handles are: the fade in/out, times how near the cursor is. */
+    /** How visible the brightest handle is. */
     double opacity() const
     {
-        return fade * (is_pressed() ? 1.0 : nearness);
+        return fade * glow_of(group());
     }
 
-    /** Show the handles for `g` (or fade out with none). */
-    void show(handle_t g)
+    /** How visible handle `h` is: the fade in/out, times how near the cursor is to it. */
+    double visibility(handle_t h) const
     {
-        if (g == shown)
+        return fade * glow_of(h);
+    }
+
+    /** This window's handles respond to the cursor (it has the handle nearest to it), or not. */
+    void activate(bool on)
+    {
+        if (on == active)
         {
             return;
         }
 
-        if (g != handle_t::none)
+        active = on;
+        if (!on)
         {
-            drawn = g;
-        } else
-        {
-            hovered = handle_t::none;
+            set_hovered(handle_t::none);
         }
 
-        shown = g;
-        damage();
-        fade.animate(g == handle_t::none ? 0.0 : 1.0);
+        fade.animate(on ? 1.0 : 0.0);
         start_ticking();
     }
 
-    /** The cursor moved to p (window coordinates): pick the handle group it calls up. */
+    /** Distance from p to the nearest of this window's handles. */
+    double handle_distance(wf::pointf_t p) const
+    {
+        double d = 1e9;
+        for (auto& shape : all_shapes(screen_rect(), screen_radius()))
+        {
+            d = std::min(d, shape.distance(p));
+        }
+
+        return d;
+    }
+
+    /** The cursor moved to p: each handle's brightness follows its own distance from it. */
     void track(wf::pointf_t p)
     {
         if (is_pressed())
@@ -464,69 +486,79 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return;
         }
 
-        // Stay on the current group while the cursor is on one of its handles.
-        if ((shown != handle_t::none) && (handle_at(p) != handle_t::none))
+        std::array<double, 10> next{};
+        for (auto& shape : all_shapes(screen_rect(), screen_radius()))
         {
-            set_hovered(handle_at(p));
-            update_nearness(p);
-            return;
+            auto& value = next[(int)shape.group];
+            value = std::max(value, glow_at(shape.distance(p)));
         }
 
-        show(group_near(p, screen_rect(), screen_radius()));
-        set_hovered(handle_at(p));
-        update_nearness(p);
-    }
-
-    /** Brightness follows the cursor's distance to the handles on a curve: faint at the edge of
-     *  the zone, brightening quickly as the cursor closes in, full on the handle. */
-    void update_nearness(wf::pointf_t p)
-    {
-        // Zero where the zone ends outside the window (PROXIMITY from the window, which is this
-        // far from the handle), so the handle doesn't pop in.
-        constexpr double range = PROXIMITY - GAP - THICKNESS;
-        double d = range;
-        for (auto& shape : shapes_for(shown, screen_rect(), screen_radius()))
+        bool changed = false;
+        for (size_t i = 0; i < next.size(); i++)
         {
-            d = std::min(d, std::max(0.0, shape.distance(p)));
+            changed |= std::abs(next[i] - glow[i]) > 0.004;
         }
 
-        double t = 1.0 - d / range;
-        double value = t * t;
-        if (std::abs(value - nearness) > 0.005)
+        if (changed)
         {
-            nearness = value;
+            glow = next;
             damage();
         }
+
+        set_hovered(handle_at(p));
     }
 
     void release()
     {
         if (is_pressed())
         {
-            pressed = handle_t::none;
+            pressed = pressed_group = handle_t::none;
             damage();
         }
     }
 
     std::vector<shape_t> shapes() const
     {
-        return shapes_for(drawn, screen_rect(), screen_radius());
+        return all_shapes(screen_rect(), screen_radius());
     }
 
     handle_t handle_at(wf::pointf_t p) const
     {
-        if ((shown == handle_t::none) || (fade.end < 0.5))
+        if (!active)
         {
             return handle_t::none;
         }
 
-        auto list = shapes_for(shown, screen_rect(), screen_radius());
-        // The dot sits beside the bar; test it first so its small target wins.
-        for (auto it = list.rbegin(); it != list.rend(); ++it)
+        auto list = shapes();
+        // A close dot sits beside its bar; test dots first so their small target wins.
+        for (auto kind : {shape_t::DOT, shape_t::BAR, shape_t::ARC})
         {
-            if (it->hit(p))
+            for (auto& shape : list)
             {
-                return it->id;
+                if ((shape.kind == kind) && shape.hit(p))
+                {
+                    return shape.id;
+                }
+            }
+        }
+
+        return handle_t::none;
+    }
+
+    /** The handle group the shape at p belongs to (its bar, for a close dot). */
+    handle_t group_at(wf::pointf_t p) const
+    {
+        auto id = handle_at(p);
+        if (id != handle_t::close)
+        {
+            return id;
+        }
+
+        for (auto& shape : shapes())
+        {
+            if ((shape.kind == shape_t::DOT) && shape.hit(p))
+            {
+                return shape.group;
             }
         }
 
@@ -610,6 +642,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
                 return;
             }
 
+            pressed_group = group_at(last_pointer);
+
             damage();
             wf::get_core().default_wm->focus_raise_view(v);
             if ((pressed != handle_t::close) && on_press)
@@ -652,7 +686,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** Repaint where the handles were drawn for the window at `old` (after it moved). */
     void damage_previous(const wf::geometry_t& old)
     {
-        if ((drawn == handle_t::none) || !parent())
+        if ((fade <= 0.0) || !parent())
         {
             return;
         }
@@ -664,11 +698,18 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     }
 
   private:
-    handle_t shown   = handle_t::none;  // group called up by the cursor
-    handle_t drawn   = handle_t::none;  // group being drawn (kept while fading out)
+    bool active      = false;           // this window's handles respond to the cursor
+    std::array<double, 10> glow{};      // per handle, by handle_t: brightness from cursor distance
     handle_t hovered = handle_t::none;
     handle_t pressed = handle_t::none;
-    double nearness  = 0.0;
+    handle_t pressed_group = handle_t::none;
+
+    double glow_of(handle_t h) const
+    {
+        // A pressed handle stays fully lit while it's dragged.
+        return (is_pressed() && (h == pressed_group)) ? 1.0 : glow[(int)h];
+    }
+
     wf::pointf_t last_pointer{0, 0};
     wf::animation::simple_animation_t fade{wf::create_option<int>(140)};
     wf::wl_timer<true> fade_tick;
@@ -715,17 +756,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             fade_tick.set_timeout(8, [=] ()
             {
                 damage();
-                if (fade.running())
-                {
-                    return true;
-                }
-
-                if (shown == handle_t::none)
-                {
-                    drawn = handle_t::none;
-                }
-
-                return false;
+                return fade.running();
             });
         }
     }
@@ -766,8 +797,16 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
             glm::translate(glm::mat4(1.0), glm::vec3{-mid.x, -mid.y, 0.0});
         float pixel  = 1.0f / std::max(0.01f, data.target.scale);
         float window_aa = pixel / std::max(0.01f, self->get_scale_x());
-        double opacity  = self->opacity();
-        auto shapes     = opacity > 0.001 ? self->shapes() : std::vector<shape_t>{};
+        std::vector<std::pair<shape_t, double>> shapes;
+        for (auto& shape : self->shapes())
+        {
+            double visible = self->visibility(shape.group);
+            if (visible > 0.003)
+            {
+                shapes.emplace_back(shape, visible);
+            }
+        }
+
         auto hovered    = self->hovered_handle();
         float alpha     = self->get_alpha();
 
@@ -782,10 +821,10 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
             wf::gles::for_each_scissor_rect(data.target, data.damage, [&]
             {
                 draw_window(programs.window, tex, bbox, ortho * flat, geometry, window_aa, alpha);
-                for (auto& shape : shapes)
+                for (auto& [shape, visible] : shapes)
                 {
                     bool lit = shape.id == hovered;
-                    draw_shape(programs.shape, shape, ortho, pixel, opacity * alpha, lit);
+                    draw_shape(programs.shape, shape, ortho, pixel, visible * alpha, lit);
                 }
             });
         });

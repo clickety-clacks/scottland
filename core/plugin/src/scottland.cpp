@@ -753,31 +753,34 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    /** The topmost framed window whose handle zone contains the cursor, in output coordinates. */
+    /** The window whose handles respond to the cursor at p (output coordinates): the one with the
+     *  handle nearest to it. Windows behind the one the cursor is over don't respond. */
     std::shared_ptr<scottland::frame_t> frame_near(wf::output_t *output, wf::pointf_t p)
     {
-        if (auto view = wf::toplevel_cast(wf::get_core().get_cursor_focus_view()))
-        {
-            if (view->get_output() == output)
-            {
-                if (auto frame = frame_of(view, false))
-                {
-                    return frame;
-                }
-            }
-        }
-
-        // Over the desktop or a panel: look for a window whose edge is near.
+        std::shared_ptr<scottland::frame_t> best;
+        double best_distance = scottland::PROXIMITY;
         for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY | wf::WSET_SORT_STACKING))
         {
             auto frame = frame_of(view, false);
-            if (frame && (scottland::box_distance(p, frame->screen_rect()) <= scottland::PROXIMITY))
+            if (!frame)
             {
-                return frame;
+                continue;
+            }
+
+            double d = frame->handle_distance(p);
+            if (d < best_distance)
+            {
+                best = frame;
+                best_distance = d;
+            }
+
+            if (scottland::box_distance(p, frame->screen_rect()) <= 0)
+            {
+                break;
             }
         }
 
-        return nullptr;
+        return best;
     }
 
     void track_pointer()
@@ -800,11 +803,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (owner && (owner != frame))
         {
-            owner->show(scottland::handle_t::none);
+            owner->activate(false);
         }
 
         if (frame)
         {
+            frame->activate(true);
             frame->track(local);
         }
 
