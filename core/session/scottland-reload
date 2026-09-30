@@ -46,5 +46,10 @@ for old in "$runtime"/plugins/libscottland-*.so; do
   [ "$old" = "$fresh" ] || rm -f "$old"
 done
 [ -n "$previous" ] && rm -f "$previous"
+# Integrations restart their own session helpers (reload.d/*, e.g. the adapter's Lua host).
+for hook in "$hooks"/reload.d/*; do
+  [ -f "$hook" ] && [ -x "$hook" ] && "$hook"
+done
+
 command -v notify-send >/dev/null && notify-send -a Scottland "Scottland reloaded" "Plugin and config reloaded in place." || true
 echo "reloaded from $source_plugin"

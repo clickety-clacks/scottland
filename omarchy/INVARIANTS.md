@@ -42,6 +42,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O6 | Lua-function shortcuts (Yoohoo Super+Tab, universal copy/cut/paste) run through the Lua host with their state intact. | implemented |
 | O7 | Key-release shortcuts work (Yoohoo accepts on Super release; Voxtype push-to-talk stops on release). | implemented |
 | O8 | Injected shortcuts reach the focused window with only their own modifiers; a physically held Super does not leak in (universal copy sends plain Ctrl+C / Ctrl+Insert). | implemented (headless) |
+| O13 | Shortcuts a Hyprland config switches on and off (`:set_enabled()`, e.g. Ctrl+W remapped only while Chromium is focused) follow the focused window; while off, their keys pass through to the app unchanged (terminals keep Ctrl+W = delete word). | implemented |
 | O9 | A double-tap close shortcut (Super+W) is not turned into a single-press close. | implemented (left unmapped) |
 | O10 | Apps launched through Omarchy's launcher (uwsm-app) open in Scottland. | verified |
 | O11 | The shim reports the real session-lock state. | not built |

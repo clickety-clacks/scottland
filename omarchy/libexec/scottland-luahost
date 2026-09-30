@@ -75,6 +75,7 @@ local noop
 noop = setmetatable({}, { __index = function() return noop end, __call = function() return noop end })
 
 local binds = {}
+local handlers = {}  -- hl.on(event, fn): only "window.active" matters for shortcuts today
 
 local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
 
@@ -106,11 +107,39 @@ local function run(action)
   end
 end
 
+-- Hyprland bind handles: configs switch shortcuts on and off (e.g. only while Chromium is
+-- focused) with :set_enabled(). Track that; a disabled shortcut passes its keys through.
+local function bind_handle(entry)
+  return setmetatable({}, {
+    __index = function(_, key)
+      if key == "set_enabled" then
+        return function(_, enabled) entry.enabled = enabled ~= false; return noop end
+      end
+      return noop
+    end,
+  })
+end
+
+-- A disabled shortcut still grabbed its keys in the compositor; hand them to the focused window.
+local function pass_through(id)
+  local mods, key = id:match("^(.-)%+(.+)$")
+  mods = (mods or ""):gsub(" ", " ")
+  for _, state in ipairs({ "down", "up" }) do
+    run(dispatcher("lua", "hl.dsp.send_key_state(" .. literal({ mods = mods, key = key, state = state }) .. ")"))
+  end
+end
+
 local function stand_in()
   return setmetatable({
     dsp = dsp_proxy("hl.dsp"),
     bind = function(keys, action, opts)
-      binds[normalize(keys)] = { action = action, opts = opts or {} }
+      local entry = { action = action, opts = opts or {}, enabled = true, keys = keys }
+      binds[normalize(keys)] = entry
+      return bind_handle(entry)
+    end,
+    on = function(event, callback)
+      handlers[event] = handlers[event] or {}
+      table.insert(handlers[event], callback)
       return noop
     end,
     unbind = function(keys) binds[normalize(keys)] = nil; return noop end,
@@ -131,6 +160,7 @@ end
 
 local function load_config()
   binds = {}
+  handlers = {}
   hl = stand_in()
   local real_require = require
   require = function(name)
@@ -155,6 +185,12 @@ end
 
 load_config()
 os.execute("mkdir -p " .. shell_quote(fifo:match("(.*)/")))
+-- Record our pid so scottland-reload can restart exactly this host.
+local pid_file = io.open(fifo:gsub("%.fifo$", ".pid"), "w")
+if pid_file then
+  pid_file:write(io.open("/proc/self/stat"):read("l"):match("^(%d+)") or "", "\n")
+  pid_file:close()
+end
 os.remove(fifo)
 assert(os.execute("mkfifo -m 600 " .. shell_quote(fifo)), "cannot create " .. fifo)
 
@@ -166,7 +202,20 @@ while true do
         load_config()
       elseif line ~= "" then
         local bind = binds[line]
-        if bind then run(bind.action) else log("no shortcut " .. line) end
+        if bind then
+          -- Bring focus-dependent shortcut state up to date for the window focused now.
+          for _, callback in ipairs(handlers["window.active"] or {}) do
+            local ok, err = pcall(callback)
+            if not ok then log("window.active handler failed: " .. tostring(err)) end
+          end
+          if bind.enabled then
+            run(bind.action)
+          else
+            pass_through(line)
+          end
+        else
+          log("no shortcut " .. line)
+        end
       end
     end
     pipe:close()
