@@ -259,6 +259,12 @@ class scale_curve_t
         return xs.empty();
     }
 
+    /** d(scale)/dt where the curve starts (t = 0). */
+    double start_slope() const
+    {
+        return slopes.empty() ? 0.0 : slopes[0];
+    }
+
     double operator ()(double t) const
     {
         t = std::clamp(t, 0.0, 1.0);
@@ -278,9 +284,11 @@ class scale_curve_t
 };
 
 /** Zone and scale for a window centered at x on a screen `width` wide. Without a curve, the
- *  continuous zones run linearly from max_scale to min_scale. */
+ *  continuous zones run linearly from max_scale to min_scale. A band `blend` px wide just outside
+ *  the center zone eases from 100% into the curve: flat where it meets the center, matching the
+ *  curve's starting slope where it meets the curve, so the join has no jump and no corner. */
 placement_t place(double x, double width, double center_pct, double rail_pct, double min_scale,
-    double max_scale, const scale_curve_t& curve)
+    double max_scale, const scale_curve_t& curve, double blend)
 {
     max_scale = std::max(max_scale, min_scale);
     double center_half = width * std::clamp(center_pct, 0.0, 100.0) / 200.0;
@@ -299,8 +307,26 @@ placement_t place(double x, double width, double center_pct, double rail_pct, do
     }
 
     double span = std::max(1.0, to_rail - center_half);
-    double t    = (from_middle - center_half) / span;
-    return {zone_t::continuous, curve.empty() ? max_scale - t * (max_scale - min_scale) : curve(t)};
+    blend = std::clamp(blend, 0.0, span * 0.5);
+    auto curve_at = [&] (double t)
+    {
+        return curve.empty() ? max_scale - t * (max_scale - min_scale) : curve(t);
+    };
+
+    double into = from_middle - center_half;
+    if (into < blend)
+    {
+        // Cubic Hermite from (0, 1.0, slope 0) to (blend, curve(0), curve'(0) in px).
+        double u  = into / blend;
+        double p1 = curve_at(0.0);
+        double m1 = (curve.empty() ? -(max_scale - min_scale) : curve.start_slope()) * blend / (span - blend);
+        double u2 = u * u, u3 = u2 * u;
+        double s  = (2 * u3 - 3 * u2 + 1) * 1.0 + (-2 * u3 + 3 * u2) * p1 + (u3 - u2) * m1;
+        return {zone_t::continuous, std::clamp(s, 0.05, 1.0)};
+    }
+
+    double t = (into - blend) / std::max(1.0, span - blend);
+    return {zone_t::continuous, curve_at(t)};
 }
 }
 
@@ -313,6 +339,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
     wf::option_wrapper_t<double> min_scale{"scottland/min_scale"};
     wf::option_wrapper_t<double> max_scale{"scottland/max_scale"};
     wf::option_wrapper_t<std::string> scale_curve_text{"scottland/scale_curve"};
+    wf::option_wrapper_t<double> blend_width{"scottland/blend_width"};
     scale_curve_t scale_curve;
 
     void load_curve()
@@ -332,7 +359,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
     placement_t place_at(double x, double width)
     {
         return place(x, width, center_width, rail_width, std::clamp((double)min_scale, 0.05, 1.0),
-            std::clamp((double)max_scale, 0.05, 1.0), scale_curve);
+            std::clamp((double)max_scale, 0.05, 1.0), scale_curve, std::max(0.0, (double)blend_width));
     }
 
     placement_t placement_of(wayfire_toplevel_view view)
@@ -683,6 +710,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
         max_scale.set_callback([=] { apply_all(); });
         load_curve();
         scale_curve_text.set_callback([=] { load_curve(); apply_all(); });
+        blend_width.set_callback([=] { apply_all(); });
         apply_all();
         LOGI("scottland: plugin loaded");
     }

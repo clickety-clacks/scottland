@@ -15,6 +15,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L2 | Center zone: default one third of the width (33.333%); windows there are at 100%. | verified |
 | L3 | Widget rails: thin strips at the far left and right, default 2% of the width (~50 pt on a 2560-wide screen). | verified |
 | L4 | Continuous zones: scale follows the scale curve from the largest scale (next to the center, default 100%) to the smallest (next to the rails, default 20%); without a curve it's a straight line between them. | verified |
+| L18 | Just outside the center zone, a blend band (default 3 pt, "Center edge blend" slider) eases the scale from 100% into the scale curve: flat where it meets the center, matching the curve's starting slope where it meets the curve, so there is no jump or corner at the edge. | implemented |
 | L5 | A window's zone and scale are set by its center. It scales around its center. | verified |
 | L6 | True scaling: the real window is transformed, not a thumbnail, and stays fully interactive (click, type, scroll) at any scale. | verified (scale); interaction at small scale: implemented |
 | L7 | Scaling is the only transform: no rotation or other distortion. | implemented |

@@ -12,7 +12,7 @@ import socket
 import struct
 import sys
 
-NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve")
+NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", "blend_width")
 TEXT = ("scale_curve",)
 
 

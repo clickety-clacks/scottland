@@ -19,11 +19,12 @@ ShellRoot {
   readonly property string layoutFile: Quickshell.env("SCOTTLAND_LAYOUT_FILE")
     || (Quickshell.env("HOME") + "/.config/scottland/layout.ini")
 
-  readonly property var defaults: ({ center_width: 33.333, rail_width: 2,
+  readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 3,
     curve: [{ x: 0, y: 1 }, { x: 1, y: 0.2 }] })
   property var original: null
   property real centerWidth: defaults.center_width
   property real railWidth: defaults.rail_width
+  property real blendWidth: defaults.blend_width
   property var curvePoints: defaults.curve
   readonly property real maxScale: curvePoints[0].y
   readonly property real minScale: curvePoints[curvePoints.length - 1].y
@@ -31,7 +32,8 @@ ShellRoot {
   // Settings the running Scottland doesn't support yet (its plugin predates them).
   property var unsupported: []
   readonly property var settingNames: ({ center_width: "Center zone width", rail_width: "Widget rail width",
-    min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve" })
+    min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
+    blend_width: "Center edge blend" })
 
   readonly property color panelColor: "#f21c1d22"
   readonly property color textColor: "#e6e6e9"
@@ -93,12 +95,13 @@ ShellRoot {
   Timer {
     id: push
     interval: 30
-    onTriggered: root.send(root.centerWidth, root.railWidth, root.curvePoints)
+    onTriggered: root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth)
   }
 
-  function send(center, rail, points) {
+  function send(center, rail, points, blend) {
     live.write("center_width " + center.toFixed(3) + "\n"
       + "rail_width " + rail.toFixed(3) + "\n"
+      + "blend_width " + blend.toFixed(1) + "\n"
       + "scale_curve " + curveText(points) + "\n"
       // Endpoints double as min/max for anything reading those.
       + "min_scale " + points[points.length - 1].y.toFixed(3) + "\n"
@@ -108,6 +111,7 @@ ShellRoot {
   onCenterWidthChanged: if (loaded) push.restart()
   onRailWidthChanged: if (loaded) push.restart()
   onCurvePointsChanged: if (loaded) push.restart()
+  onBlendWidthChanged: if (loaded) push.restart()
 
   Process {
     id: reader
@@ -118,19 +122,21 @@ ShellRoot {
         try {
           const values = JSON.parse(text)
           root.unsupported = values.unsupported || []
-          for (const name of ["center_width", "rail_width", "min_scale", "max_scale"])
+          for (const name of ["center_width", "rail_width", "min_scale", "max_scale", "blend_width"])
             if (values[name] === undefined) values[name] = root.savedValue(name, null)
           if (values.scale_curve === undefined) values.scale_curve = root.savedText("scale_curve")
           const points = root.parseCurve(values.scale_curve) || [
             { x: 0, y: values.max_scale !== null ? Math.max(values.max_scale, values.min_scale || 0.05) : 1 },
             { x: 1, y: values.min_scale !== null ? values.min_scale : 0.2 }]
           root.original = { center_width: values.center_width ?? root.defaults.center_width,
-            rail_width: values.rail_width ?? root.defaults.rail_width, curve: points }
+            rail_width: values.rail_width ?? root.defaults.rail_width,
+            blend_width: values.blend_width ?? root.defaults.blend_width, curve: points }
         } catch (e) {
           root.original = root.defaults
         }
         root.centerWidth = root.original.center_width
         root.railWidth = root.original.rail_width
+        root.blendWidth = root.original.blend_width
         root.curvePoints = root.original.curve
         root.loaded = true
       }
@@ -157,10 +163,11 @@ ShellRoot {
 
   function save() {
     push.stop()
-    send(centerWidth, railWidth, curvePoints)
+    send(centerWidth, railWidth, curvePoints, blendWidth)
     saved.setText("# Written by Scottland settings.\n[scottland]\n"
       + "center_width = " + centerWidth.toFixed(3) + "\n"
       + "rail_width = " + railWidth.toFixed(3) + "\n"
+      + "blend_width = " + blendWidth.toFixed(1) + "\n"
       + "scale_curve = " + curveText(curvePoints) + "\n"
       + "min_scale = " + minScale.toFixed(3) + "\n"
       + "max_scale = " + maxScale.toFixed(3) + "\n")
@@ -169,7 +176,7 @@ ShellRoot {
 
   function cancel() {
     push.stop()
-    if (original) send(original.center_width, original.rail_width, original.curve)
+    if (original) send(original.center_width, original.rail_width, original.curve, original.blend_width)
     quitSoon.start()
   }
 
@@ -345,6 +352,14 @@ ShellRoot {
           onMoved: v => root.railWidth = v
         }
 
+        SettingRow {
+          title: "Center edge blend"
+          valueText: Math.round(root.blendWidth) + " pt"
+          from: 0; to: 100; stepSize: 1
+          value: root.blendWidth
+          onMoved: v => root.blendWidth = v
+        }
+
         // Scale curve editor.
         ColumnLayout {
           Layout.fillWidth: true
@@ -501,6 +516,7 @@ ShellRoot {
             onClicked: {
               root.centerWidth = root.defaults.center_width
               root.railWidth = root.defaults.rail_width
+              root.blendWidth = root.defaults.blend_width
               root.curvePoints = root.defaults.curve
             }
           }
