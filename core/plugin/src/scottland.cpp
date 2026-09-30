@@ -14,6 +14,8 @@
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/txn/transaction-manager.hpp>
 #include <wayfire/toplevel.hpp>
+#include <wayfire/workspace-set.hpp>
+#include <wayfire/window-manager.hpp>
 #include <linux/input-event-codes.h>
 #include <wayfire/util/log.hpp>
 #include <wayfire/util/duration.hpp>
@@ -26,6 +28,8 @@ extern "C" {
 }
 
 #include <xkbcommon/xkbcommon.h>
+
+#include "frame.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -386,9 +390,20 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         return wf::get_core().get_cursor_position() - wf::origin(output->get_layout_geometry());
     }
 
+    uint32_t grab_button = BTN_RIGHT;
+
     wf::button_callback on_activate = [=] (auto)
     {
         auto target = wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
+        // Direction is absolute, wherever the window was grabbed: right/up grows, left/down shrinks.
+        return start(target, wf::buttonbinding_t(button).get_button(), 1, -1);
+    };
+
+  public:
+    /** Resize `target` around its center until `with_button` is released. Moving the cursor
+     *  by (dx, dy) grows the window by (sign_x * dx, sign_y * dy) on each side. */
+    bool start(wayfire_toplevel_view target, uint32_t with_button, int grow_x_sign, int grow_y_sign)
+    {
         if (!target || !target->is_mapped() || target->pending_fullscreen() ||
             (target->get_output() != output) || !(target->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))
         {
@@ -417,13 +432,14 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         auto transformer = target->get_transformed_node()->get_transformer<
             wf::scene::view_2d_transformer_t>("scottland-scale");
         scale = std::max(0.05, transformer ? (double)transformer->scale_x : 1.0);
-        // Direction is absolute, wherever the window was grabbed: right/down grows, left/up shrinks.
-        sign_x = 1;
-        sign_y = 1;
+        grab_button = with_button;
+        sign_x = grow_x_sign;
+        sign_y = grow_y_sign;
         wf::get_core().set_cursor("all-scroll");
         return true;
-    };
+    }
 
+  private:
     void end()
     {
         if (input_grab->is_grabbed())
@@ -481,8 +497,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
     void handle_pointer_button(const wlr_pointer_button_event& event) override
     {
-        if ((event.state == WL_POINTER_BUTTON_STATE_RELEASED) &&
-            (event.button == wf::buttonbinding_t(button).get_button()))
+        if ((event.state == WL_POINTER_BUTTON_STATE_RELEASED) && (event.button == grab_button))
         {
             end();
         }
@@ -670,36 +685,152 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return !transitions.empty();
     }
 
-    void apply_scale(wayfire_toplevel_view view, double scale)
+    /** The window's frame (rounding, scale and handles), created on demand. Fullscreen windows
+     *  have none: they're drawn edge to edge, unscaled. */
+    std::shared_ptr<scottland::frame_t> frame_of(wayfire_toplevel_view view, bool create = true)
     {
         auto node = view->get_transformed_node();
-        auto transformer = node->get_transformer<wf::scene::view_2d_transformer_t>(TRANSFORMER);
-
-        if (std::abs(scale - 1.0) < 0.001)
+        auto frame = node->get_transformer<scottland::frame_t>(TRANSFORMER);
+        if (view->pending_fullscreen())
         {
-            if (transformer)
+            if (frame)
             {
+                forget_handles(frame);
                 view->damage();
-                node->rem_transformer(transformer);
+                node->rem_transformer(frame);
                 view->damage();
             }
 
+            return nullptr;
+        }
+
+        if (!frame && create)
+        {
+            frame = std::make_shared<scottland::frame_t>(view);
+            frame->on_press = [=] (wayfire_toplevel_view v, scottland::handle_t h) { handle_pressed(v, h); };
+            node->add_transformer(frame, wf::TRANSFORMER_2D, TRANSFORMER);
+            view->damage();
+        }
+
+        return frame;
+    }
+
+    void apply_scale(wayfire_toplevel_view view, double scale)
+    {
+        auto frame = frame_of(view);
+        if (frame && (std::abs(frame->scale_x - scale) > 0.0005))
+        {
+            frame->damage();
+            frame->scale_x = frame->scale_y = scale;
+            frame->damage();
+        }
+    }
+
+    // Handles (A3-A7). One window shows handles at a time: the one the cursor is near.
+    std::weak_ptr<scottland::frame_t> handles_owner;
+
+    void forget_handles(const std::shared_ptr<scottland::frame_t>& frame)
+    {
+        if (handles_owner.lock() == frame)
+        {
+            handles_owner.reset();
+        }
+    }
+
+    /** The topmost framed window whose handle zone contains the cursor, in output coordinates. */
+    std::shared_ptr<scottland::frame_t> frame_near(wf::output_t *output, wf::pointf_t p)
+    {
+        if (auto view = wf::toplevel_cast(wf::get_core().get_cursor_focus_view()))
+        {
+            if (view->get_output() == output)
+            {
+                if (auto frame = frame_of(view, false))
+                {
+                    return frame;
+                }
+            }
+        }
+
+        // Over the desktop or a panel: look for a window whose edge is near.
+        for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY | wf::WSET_SORT_STACKING))
+        {
+            auto frame = frame_of(view, false);
+            if (frame && (scottland::box_distance(p, frame->screen_rect()) <= scottland::PROXIMITY))
+            {
+                return frame;
+            }
+        }
+
+        return nullptr;
+    }
+
+    void track_pointer()
+    {
+        auto owner = handles_owner.lock();
+        if (owner && owner->is_pressed())
+        {
             return;
         }
 
-        if (!transformer)
+        auto cursor = wf::get_core().get_cursor_position();
+        auto output = wf::get_core().output_layout->find_closest_output(cursor);
+        std::shared_ptr<scottland::frame_t> frame;
+        wf::pointf_t local = cursor;
+        if (output && !output->is_plugin_active("move") && !output->is_plugin_active("scottland-resize"))
         {
-            transformer = std::make_shared<wf::scene::view_2d_transformer_t>(view);
-            node->add_transformer(transformer, wf::TRANSFORMER_2D, TRANSFORMER);
+            local = cursor - wf::origin(output->get_layout_geometry());
+            frame = frame_near(output, local);
         }
 
-        if (std::abs(transformer->scale_x - scale) > 0.0005)
+        if (owner && (owner != frame))
         {
-            view->damage();
-            transformer->scale_x = transformer->scale_y = scale;
-            view->damage();
+            owner->show(scottland::handle_t::none);
+        }
+
+        if (frame)
+        {
+            frame->track(local);
+        }
+
+        handles_owner = frame;
+    }
+
+    void handle_pressed(wayfire_toplevel_view view, scottland::handle_t h)
+    {
+        using scottland::handle_t;
+        if (scottland::is_corner(h))
+        {
+            // Corners resize around the center; dragging a corner outward grows the window.
+            int sx = (h == handle_t::top_right || h == handle_t::bottom_right) ? 1 : -1;
+            int sy = (h == handle_t::bottom_left || h == handle_t::bottom_right) ? 1 : -1;
+            auto output = view->get_output();
+            if (output && output_instance.count(output))
+            {
+                output_instance[output]->start(view, BTN_LEFT, sx, sy);
+            }
+        } else
+        {
+            wf::get_core().default_wm->move_request(view);
         }
     }
+
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_event>> on_motion =
+        [=] (auto) { track_pointer(); };
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_absolute_event>> on_motion_abs =
+        [=] (auto) { track_pointer(); };
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_button_event>> on_button =
+        [=] (wf::post_input_event_signal<wlr_pointer_button_event> *ev)
+    {
+        if (ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED)
+        {
+            if (auto owner = handles_owner.lock())
+            {
+                owner->release();
+            }
+
+            track_pointer();
+        }
+    };
 
     void apply_all()
     {
@@ -720,11 +851,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!ev->previous_focus_output && drag->view)
         {
             // Drag just began: remember where across the window it was grabbed.
-            auto bbox = drag->view->get_bounding_box();
+            auto frame  = frame_of(drag->view, false);
             auto output = drag->view->get_output();
             auto cursor = wf::get_core().get_cursor_position();
             double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
-            drag_relative_x = bbox.width > 0 ? std::clamp((local_x - bbox.x) / bbox.width, 0.0, 1.0) : 0.5;
+            auto r = frame ? frame->screen_rect() : scottland::rectf_t{0, 0, 0, 0};
+            drag_relative_x = r.width() > 0 ? std::clamp((local_x - r.x1) / r.width(), 0.0, 1.0) : 0.5;
         }
     };
 
@@ -768,6 +900,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
         [=] (wf::view_geometry_changed_signal *ev)
     {
+        if (auto view = wf::toplevel_cast(ev->view))
+        {
+            if (auto frame = frame_of(view, false))
+            {
+                frame->damage_previous(ev->old_geometry);
+                frame->damage();
+            }
+        }
+
         apply(ev->view);
     };
 
@@ -797,6 +938,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto transformer = view->get_transformed_node()->get_transformer<
                 wf::scene::view_2d_transformer_t>(TRANSFORMER);
             entry["applied_scale"] = transformer ? transformer->scale_x : 1.0;
+            if (auto frame = frame_of(view, false))
+            {
+                auto r = frame->screen_rect();
+                entry["frame"] = wf::json_t{};
+                entry["frame"]["x"] = r.x1;
+                entry["frame"]["y"] = r.y1;
+                entry["frame"]["width"]  = r.width();
+                entry["frame"]["height"] = r.height();
+                entry["frame"]["handles"] = scottland::handle_name(frame->group());
+                entry["frame"]["hovered"] = scottland::handle_name(frame->hovered_handle());
+                entry["frame"]["opacity"] = frame->opacity();
+            }
             views.append(entry);
         }
 
@@ -981,6 +1134,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
+        wf::get_core().connect(&on_motion);
+        wf::get_core().connect(&on_motion_abs);
+        wf::get_core().connect(&on_button);
         drag->connect(&on_drag_output);
         drag->connect(&on_drag_motion);
         drag->connect(&on_drag_done);
@@ -1006,6 +1162,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_mapped.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();
+        on_motion.disconnect();
+        on_motion_abs.disconnect();
+        on_button.disconnect();
         on_drag_output.disconnect();
         on_drag_motion.disconnect();
         on_drag_done.disconnect();
@@ -1015,6 +1174,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             view->get_transformed_node()->rem_transformer(TRANSFORMER);
         }
+
+        scottland::gl_programs().release();
         LOGI("scottland: plugin unloaded");
     }
 };

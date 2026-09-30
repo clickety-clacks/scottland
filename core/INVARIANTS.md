@@ -19,7 +19,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L5 | A window's zone and scale are set by its center. It scales around its center. | verified |
 | L6 | True scaling: the real window is transformed, not a thumbnail, and stays fully interactive (click, type, scroll) at any scale. | verified (scale); interaction at small scale: implemented |
 | L7 | Scaling is the only transform: no rotation or other distortion. Wayfire's window rotation (flat and 3D) and desktop cube are not enabled. | implemented |
-| L20 | Super + right-drag resizes around the window's center, like visionOS: it grows or shrinks symmetrically, the center stays put (also when the app snaps to its own size), so the window keeps its zone and scale; the edges track the cursor at the window's current scale. Direction is absolute wherever you grab: dragging right makes it wider, left narrower, down taller, up shorter. | implemented |
+| L20 | Super + right-drag resizes around the window's center, like visionOS: it grows or shrinks symmetrically, the center stays put (also when the app snaps to its own size), so the window keeps its zone and scale; the edges track the cursor at the window's current scale. Direction is absolute wherever you grab: dragging right makes it wider, left narrower, up taller, down shorter. | verified |
 | L8 | Windows rescale live while being dragged, with the grabbed point staying under the pointer. | verified |
 | L9 | Dropping a window causes no jump: the scale after release equals the scale just before it. | verified |
 | L10 | Scale jumps (e.g. leaving the 100% center for a zone that starts lower) animate smoothly (~180 ms) instead of snapping. Small changes during a drag apply immediately; a moving target re-aims a running animation. | verified |
@@ -37,13 +37,13 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 
 | ID | Invariant | Status |
 |---|---|---|
-| A1 | No window chrome: Scottland asks every app that allows it for server-side decorations and draws none (no title bars, no borders). GTK4/libadwaita apps keep the header bars they draw themselves; Chromium is switched to server-side decorations through additive app tuning (C7). | not built |
-| A2 | Every window is a rounded rectangle; the corner radius is double Omarchy's (10 pt), scaling with the window. | not built |
-| A3 | When the cursor comes within ~24 pt of a window's edge or corner, the matching handle fades in, drawn outside the window with a small gap, visionOS style; it fades out when the cursor leaves and brightens while hovered or dragged. | not built |
-| A4 | Edge handles: a thick pill bar with rounded ends, parallel to and centered on that edge, on all four edges. Dragging one moves the window (no modifier needed), with the same live scaling as Super+drag. | not built |
-| A5 | Corner handles: a thick arc (a circle section) concentric with the window's rounded corner, its radius the corner radius plus the gap. Dragging one resizes around the window's center (like Super+right-drag, absolute direction). | not built |
-| A6 | Handles keep a constant on-screen size regardless of the window's scale, so they stay easy to grab on small windows; they follow the window exactly, including during scale animations. | not built |
-| A7 | A close dot sits beside the edge drag bar, visionOS style; clicking it closes the window. There is no minimize. | not built |
+| A1 | No window chrome: Scottland asks every app that allows it for server-side decorations and draws none (no title bars, no borders). GTK4/libadwaita apps keep the header bars they draw themselves; Chromium is switched to server-side decorations through additive app tuning (C7). | implemented (Chromium tuning not built) |
+| A2 | Every window is a rounded rectangle; the corner radius is double Omarchy's (10 pt), scaling with the window. | verified |
+| A3 | When the cursor comes within ~24 pt of a window's edge or corner, the matching handle fades in, drawn outside the window with a small gap, visionOS style; it fades out when the cursor leaves and brightens while hovered or dragged. | verified |
+| A4 | Edge handles: a thick pill bar with rounded ends, parallel to and centered on that edge, on all four edges. Dragging one moves the window (no modifier needed), with the same live scaling as Super+drag. | verified |
+| A5 | Corner handles: a thick arc (a circle section) concentric with the window's rounded corner, its radius the corner radius plus the gap. Dragging one resizes around the window's center (like Super+right-drag); dragging a corner outward grows the window, inward shrinks it. | verified |
+| A6 | Handles keep a constant on-screen size regardless of the window's scale, so they stay easy to grab on small windows; they follow the window exactly, including during scale animations. | verified |
+| A7 | A close dot sits beside the edge drag bar, visionOS style; clicking it closes the window. There is no minimize. | verified |
 
 ## Layout configurator (`scottland-settings`)
 
