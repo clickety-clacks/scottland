@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Run a command inside a running Scottland session, with that session's own environment.
+
+  scottland-exec [--display wayland-N] [--] COMMAND [ARGS...]
+  scottland-exec --list
+
+The command gets exactly the environment the session recorded at startup (autostart.d/
+01-record-environment), not the caller's. So it works the same from a terminal in another
+desktop, an ssh shell or an agent as from inside Scottland: WAYFIRE_SOCKET, WAYLAND_DISPLAY,
+SCOTTLAND_HOOKS (dev mode), the Hyprland shim's instance signature and so on all belong to
+the session. The session is the one named with --display, else the one the caller's
+WAYFIRE_SOCKET points at, else the only one running.
+"""
+import glob
+import os
+import socket
+import sys
+
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+
+
+def read_env(path):
+    with open(path, "rb") as source:
+        entries = source.read().split(b"\0")
+    env = {}
+    for entry in entries:
+        key, sep, value = entry.decode(errors="surrogateescape").partition("=")
+        if sep:
+            env[key] = value
+    return env
+
+
+def alive(env):
+    """The session's Wayfire answers on its IPC socket (a stale socket file doesn't count)."""
+    path = env.get("WAYFIRE_SOCKET")
+    if not path:
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.settimeout(1)
+            sock.connect(path)
+        return True
+    except OSError:
+        return False
+
+
+def sessions():
+    found = {}
+    for path in sorted(glob.glob(os.path.join(RUNTIME, "*.env"))):
+        env = read_env(path)
+        if alive(env):
+            found[os.path.basename(path)[:-4]] = env
+    return found
+
+
+def main():
+    args = sys.argv[1:]
+    display = None
+    if args[:1] == ["--list"]:
+        for name, env in sessions().items():
+            print(f"{name}\t{env.get('WAYFIRE_SOCKET')}\t{env.get('SCOTTLAND_HOOKS', '')}")
+        return
+    if args[:1] == ["--display"] and len(args) > 1:
+        display, args = args[1], args[2:]
+    if args[:1] == ["--"]:
+        args = args[1:]
+    if not args:
+        sys.exit(__doc__.strip())
+
+    live = sessions()
+    if display:
+        env = live.get(display)
+        if env is None:
+            sys.exit(f"scottland-exec: no running Scottland session on {display} "
+                     f"(running: {', '.join(live) or 'none'})")
+    else:
+        caller_socket = os.environ.get("WAYFIRE_SOCKET")
+        matches = [e for e in live.values() if caller_socket and e.get("WAYFIRE_SOCKET") == caller_socket]
+        if matches:
+            env = matches[0]
+        elif len(live) == 1:
+            env = next(iter(live.values()))
+        else:
+            sys.exit("scottland-exec: " + ("no running Scottland session found" if not live else
+                     f"several sessions are running ({', '.join(live)}); pick one with --display"))
+
+    env = dict(env, SCOTTLAND_EXEC="1")
+    try:
+        os.execvpe(args[0], args, env)
+    except OSError as error:
+        sys.exit(f"scottland-exec: {args[0]}: {error.strerror}")
+
+
+if __name__ == "__main__":
+    main()

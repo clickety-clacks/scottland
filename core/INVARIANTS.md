@@ -65,4 +65,5 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | E1 | When Scottland is the user's only graphical session, it acts as the graphical session for systemd (scottland-session.target), so user services tied to graphical-session.target start with it and stop with it, however the session ends. | verified |
 | E2 | Quit keys inside Scottland: Ctrl+Alt+Backspace, Super+Shift+Escape. | implemented |
 | E4 | `scottland-reload` (Super+Ctrl+Alt+R) loads the current plugin build and config into the running session in place: windows stay open, new settings are registered and take their saved values. | verified |
+| E5 | Each session records its environment at startup; `scottland-exec` runs commands in a chosen session with that environment and `scottland-reload` goes through it, so reloading from any shell (another desktop, ssh, an agent) behaves exactly like Super+Ctrl+Alt+R and never leaks the caller's variables into the session's helpers. | verified |
 | E3 | Personal overrides in `~/.config/scottland/overrides.ini` are applied last and win over shipped defaults; Scottland never writes that file. | implemented |

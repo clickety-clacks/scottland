@@ -57,23 +57,46 @@ a value (a slider position) is usually personal unless Mike says it should ship.
 
 Dev mode covers everything except the root helper (`omarchy/helper/`), its polkit policy and
 system unit files; those need a package install. A running Scottland keeps the plugin it started
-with: restart the session after rebuilding the plugin.
+with until it's reloaded (below) or restarted.
+
+## Operating a running session from outside
+
+Agents and ssh shells are not inside Scottland: their environment belongs to wherever they run
+(often Hyprland, whose `HYPRLAND_INSTANCE_SIGNATURE` would send shortcut keys to Hyprland).
+**Never hand-set `WAYFIRE_SOCKET`, `WAYLAND_DISPLAY`, `SCOTTLAND_HOOKS` or similar to reach a
+session.** Each session records its own environment at startup (`autostart.d/01-record-environment`),
+and these tools use that, never the caller's:
+
+    scottland-reload [--display wayland-N]     load the current build and config in place
+    scottland-exec --list                      running sessions
+    scottland-exec [--display wayland-N] -- CMD   run CMD inside a session (grim, foot, wfipc.py...)
+
+`--display` is only needed when several sessions run on one machine. Helpers a reload restarts
+also take the session's environment (e.g. `reload.d/30-lua-host` copies the Hyprland shim's).
 
 ## Testing
 
 Before reporting anything as done:
 
-1. Test on **plumbus** (Omarchy test machine on the tailnet; installing there is fine). sudo
-   there needs Mike's password; stage commands in its `scottland-install` tmux session and open a
-   terminal attached to it on Mike's screen.
-2. Use real input: Wayfire's `stipc` plugin (`tests/drag-test.py`, `tests/wfipc.py`). IPC calls
+1. Pick where to test:
+   - **Headless** (`tests/headless.sh`): a full Scottland with no screen, running the real
+     config and imported shortcuts (`start --omarchy` adds the Hyprland shim and Lua host).
+     It touches nobody's display or services, so it's the default for logic, shortcuts and
+     input handling. `run CMD` runs a command inside it; `ipc METHOD JSON` drives stipc.
+   - **plumbus** (Omarchy test machine on the tailnet) for anything that must be seen on a
+     real screen or needs a real login. `tests/deploy.sh plumbus [--reload]` syncs, builds and
+     dev-installs there. plumbus is shared: other agents run tests on it. Check what's on its
+     screen first (deploy prints it); don't start, stop or switch sessions while someone else
+     is using it. sudo there needs Mike's password; stage commands in its `scottland-install`
+     tmux session and open a terminal attached to it on Mike's screen.
+2. Use real input: Wayfire's `stipc` plugin (`tests/wfipc.py`, `tests/drag-test.py`). IPC calls
    that bypass input (e.g. `configure-view`) don't count as verification for input behavior.
-3. Look: screenshots with `grim`, and the Lumina webcam facing plumbus's screen
-   (`/dev/video2`) when screenshots might lie.
-4. Check whether a running session predates the build.
+3. Look: screenshots with `grim` (through `scottland-exec`), and on plumbus the Lumina webcam
+   facing its screen (`/dev/video2`) when screenshots might lie.
+4. Check whether a running session predates the build (`scottland-reload` loads it in place).
 5. Re-check every invariant the change could affect, and update its status.
 
-Useful tools: `tests/shell-probe.sh` (stock shell against the shim, headless and sandboxed),
-`tests/nested.sh` (Scottland nested in a window), `scottland-ctl`, and the logs in
-`~/.local/state/scottland/` (`wayfire.log`, `hyprshim.log`, `handover.log`, `luahost.log`,
-`watch-config.log`).
+Useful tools: `tests/headless.sh`, `tests/deploy.sh`, `tests/shell-probe.sh` (stock shell
+against the shim, headless and sandboxed), `tests/nested.sh` (Scottland in a window on
+Hyprland), `scottland-ctl`, `scottland-exec`, and the logs in `~/.local/state/scottland/`
+(`wayfire.log`, `hyprshim.log`, `handover.log`, `luahost.log`, `watch-config.log`).

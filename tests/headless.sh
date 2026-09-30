@@ -1,0 +1,88 @@
+#!/bin/bash
+# A Scottland session with no screen, for testing without touching anyone's display: the real
+# config (shipped base + generated fragments, e.g. imported shortcuts) and the repo's plugin
+# build, driven with Wayfire's stipc virtual input. It runs only hooks that stay inside the test
+# session: never 05-import-environment (would repoint the user's systemd services), 06-watch-
+# config (would rewrite the live session's config), 20-omarchy-shell or 40-handover.
+#
+#   tests/headless.sh start [--omarchy]   start; --omarchy adds the Hyprland shim and Lua host
+#   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
+#   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
+#   tests/headless.sh stop
+#
+# Example: tests/headless.sh start --omarchy && tests/headless.sh run foot &
+#          tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
+set -euo pipefail
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+dir=$runtime/scottland-headless
+hooks=${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev
+[[ -d $hooks/libexec ]] || hooks=/usr/lib/scottland
+exec_tool=$hooks/libexec/scottland-exec
+
+display() { cat "$dir/display"; }
+
+case ${1:-} in
+  start)
+    [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
+    rm -rf "$dir"; mkdir -p "$dir"
+    started=(01-record-environment)
+    [[ ${2:-} == --omarchy ]] && started+=(10-hyprshim 30-lua-host)
+    (
+      # A clean environment, as a display manager would give, plus the session's own variables.
+      unset HYPRLAND_INSTANCE_SIGNATURE WAYFIRE_SOCKET WAYLAND_DISPLAY DISPLAY SCOTTLAND_EXEC
+      export SCOTTLAND_HOOKS=$hooks XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
+      for env_hook in "$hooks"/session-env.d/*.sh; do [[ -r $env_hook ]] && . "$env_hook"; done
+      "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
+      hook_list=${started[*]}
+      sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
+        -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
+        "$dir/wayfire.ini"
+      WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 \
+        WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
+        setsid wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+      echo $! >"$dir/pid"
+    )
+    for _ in $(seq 100); do
+      name=$(sed -n 's/.*Using socket name \(wayland-[0-9]*\).*/\1/p' "$dir/wayfire.log")
+      [[ -n $name && -f $runtime/scottland/$name.env ]] && break
+      sleep 0.1
+    done
+    [[ -n ${name:-} ]] || { echo "headless Scottland didn't start; see $dir/wayfire.log" >&2; exit 1; }
+    echo "$name" >"$dir/display"
+    sleep 1
+    echo "headless Scottland on $name (hooks: ${started[*]})"
+    ;;
+  run)
+    shift
+    exec "$exec_tool" --display "$(display)" -- "$@"
+    ;;
+  ipc)
+    shift
+    exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
+    ;;
+  stop)
+    [[ -f $dir/display ]] || exit 0
+    name=$(display)
+    # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
+    for pid_file in "$runtime/scottland/$name.lua.pid" "$runtime/scottland/$name.color-scheme.pid"; do
+      [[ -f $pid_file ]] && kill "$(cat "$pid_file")" 2>/dev/null || true
+      rm -f "$pid_file"
+    done
+    for lock in "$runtime"/hypr/scottland_*/hyprland.lock; do
+      [[ -f $lock && $(sed -n 2p "$lock") == "$name" ]] || continue
+      kill "$(sed -n 1p "$lock")" 2>/dev/null || true
+      rm -rf "$(dirname "$lock")"
+    done
+    pid=$(cat "$dir/pid")
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs
+    rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo"
+    rm -rf "$dir"
+    echo "stopped headless Scottland on $name"
+    ;;
+  *)
+    sed -n '2,15p' "$0"; exit 1
+    ;;
+esac

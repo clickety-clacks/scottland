@@ -5,11 +5,30 @@
 #
 # The plugin is copied to a fresh file each time: a library at the same path would be reused
 # from memory, so Wayfire would keep running the old code.
+#
+#   scottland-reload [--display wayland-N]
+#
+# Runs inside the session's own environment wherever it's started from (a keybinding, another
+# desktop's terminal, ssh, an agent): it re-executes itself through scottland-exec, which uses
+# the environment the session recorded at startup. The caller's environment is never used, so a
+# shell belonging to Hyprland can't leak Hyprland's variables into Scottland's helpers.
 set -eu
+dev="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev"
+if [ -z "${SCOTTLAND_EXEC:-}" ]; then
+  for exe in "$dev/libexec/scottland-exec" /usr/lib/scottland/libexec/scottland-exec; do
+    [ -x "$exe" ] || continue
+    if [ -n "$("$exe" --list)" ]; then
+      exec "$exe" "$@" -- "$0"
+    fi
+    break
+  done
+  # Sessions started before scottland-exec existed recorded no environment: only a caller
+  # inside the session (the keybinding) has the right one.
+  echo "scottland-reload: this session predates scottland-exec; using the caller's environment" >&2
+fi
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
 hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}"
-dev="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev"
-[ -n "${WAYFIRE_SOCKET:-}" ] || { echo "scottland-reload: run it inside a Scottland session" >&2; exit 1; }
+[ -n "${WAYFIRE_SOCKET:-}" ] || { echo "scottland-reload: no running Scottland session found" >&2; exit 1; }
 
 source_plugin=/usr/lib/wayfire/libscottland.so
 [ -e "$dev/plugins/libscottland.so" ] && source_plugin="$dev/plugins/libscottland.so"
