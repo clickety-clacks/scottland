@@ -49,6 +49,7 @@ constexpr double DOT_RADIUS   = 7.0;
 constexpr int MAX_NEIGHBORS   = 8;
 constexpr double SWOLLEN = 2 * HALO;    // swollen halo thickness, on screen (doesn't scale)
 constexpr double SWELL_VICINITY = 50.0; // the cursor pausing this near the halo swells it
+constexpr double FOCUS_NUDGE = 2.2;     // swell velocity given to a newly focused window's halo
 constexpr int DWELL_MS  = 500;          // pause this long to swell
 constexpr int LINGER_MS = 500;          // stay swollen this long after the cursor leaves
 
@@ -477,6 +478,12 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         {
             is_focused = focused;
             focus_mix.animate(focused ? 1.0 : 0.0);
+            if (focused)
+            {
+                // A newly focused window's liquid is disturbed: it bulges and settles in waves.
+                swell_velocity += FOCUS_NUDGE;
+            }
+
             start_ticking();
         }
     }
@@ -709,6 +716,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
                 return;
             }
 
+            // The swell waits for a pause after the drag ends, not during it: a dragged window is
+            // drawn by the move tool, so a swell mid-drag would pop in unanimated at the drop.
+            dwell.disconnect();
             damage();
             wf::get_core().default_wm->focus_raise_view(v);
             if ((pressed != handle_t::close) && on_press)
@@ -789,7 +799,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         if (near)
         {
             linger.disconnect();
-            if (swell_target < 1.0)
+            if ((swell_target < 1.0) && !is_pressed())
             {
                 dwell.set_timeout(DWELL_MS, [=] () { set_swell(1.0); });
             }
