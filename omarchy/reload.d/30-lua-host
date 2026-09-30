@@ -1,7 +1,14 @@
 #!/bin/sh
 # Restart this session's Lua host so it picks up an updated host and the current Hyprland config.
-runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
-pid_file="$runtime/${WAYLAND_DISPLAY:-wayland}.lua.pid"
+#
+# The host must run with the session's own environment, above all the Hyprland shim's
+# HYPRLAND_INSTANCE_SIGNATURE, whoever runs the reload: from a shell that belongs to the real
+# Hyprland, the inherited environment would send every shortcut's key presses to Hyprland. So
+# take the environment from this session's shim, found through its lock file (pid, display).
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+runtime="$runtime_dir/scottland"
+display="${WAYLAND_DISPLAY:-wayland}"
+pid_file="$runtime/$display.lua.pid"
 if [ -f "$pid_file" ]; then
   pid=$(cat "$pid_file")
   # Only stop it if that pid is still our Lua host.
@@ -10,6 +17,26 @@ if [ -f "$pid_file" ]; then
     sleep 0.3
   fi
 fi
+
+shim_pid=
+for lock in "$runtime_dir"/hypr/scottland_*/hyprland.lock; do
+  [ -f "$lock" ] || continue
+  lock_pid=$(sed -n 1p "$lock")
+  lock_display=$(sed -n 2p "$lock")
+  if [ "$lock_display" = "$display" ] && [ -r "/proc/$lock_pid/environ" ] &&
+     grep -q scottland-hyprshim "/proc/$lock_pid/cmdline" 2>/dev/null; then
+    shim_pid=$lock_pid
+  fi
+done
+
 state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
 mkdir -p "$state"
-setsid -f "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-luahost" 2>>"$state/luahost.log" </dev/null >/dev/null
+host="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-luahost"
+if [ -n "$shim_pid" ]; then
+  # env -i <the shim's environment> setsid -f <host>
+  STATE_LOG="$state/luahost.log" xargs -0 -a "/proc/$shim_pid/environ" \
+    sh -c 'exec env -i "$@" setsid -f "$0" 2>>"$STATE_LOG" </dev/null >/dev/null' "$host"
+else
+  echo "$(date +%T) reload: no Hyprland shim found for $display; Lua host keeps the caller's environment" >>"$state/luahost.log"
+  setsid -f "$host" 2>>"$state/luahost.log" </dev/null >/dev/null
+fi
