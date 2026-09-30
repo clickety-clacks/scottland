@@ -43,6 +43,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O7 | Key-release shortcuts work (Yoohoo accepts on Super release; Voxtype push-to-talk stops on release). | implemented |
 | O8 | Injected shortcuts reach the focused window with only their own modifiers; a physically held Super does not leak in (universal copy sends plain Ctrl+C / Ctrl+Insert). | implemented (headless) |
 | O13 | Shortcuts a Hyprland config switches on and off (`:set_enabled()`, e.g. Ctrl+W remapped only while Chromium is focused) follow the focused window; while off, their keys pass through to the app unchanged (terminals keep Ctrl+W = delete word). | implemented |
+| O14 | Apps in Scottland get the environment Omarchy's Hyprland config sets with `hl.env` (e.g. `QT_QPA_PLATFORMTHEME=gtk3` for native file dialogs in Qt apps, Electron/Chromium Wayland hints, cursor size, compose file, theme colors, the user's own variables), read from the same config by the Lua host, and handed to user services as uwsm does; the variables naming the desktop stay Scottland's. | implemented |
 | O9 | A double-tap close shortcut (Super+W) is not turned into a single-press close. | implemented (left unmapped) |
 | O10 | Apps launched through Omarchy's launcher (uwsm-app) open in Scottland. | verified |
 | O11 | The shim reports the real session-lock state. | not built |

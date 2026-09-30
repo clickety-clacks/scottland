@@ -76,6 +76,7 @@ noop = setmetatable({}, { __index = function() return noop end, __call = functio
 
 local binds = {}
 local handlers = {}  -- hl.on(event, fn): only "window.active" matters for shortcuts today
+local envs = {}      -- hl.env(name, value), in order: the session environment Hyprland would get
 
 local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
 
@@ -144,6 +145,10 @@ local function stand_in()
     end,
     unbind = function(keys) binds[normalize(keys)] = nil; return noop end,
     exec_cmd = function(command) spawn(command) end,
+    env = function(name, value)
+      if type(name) == "string" and value ~= nil then envs[#envs + 1] = { name, tostring(value) } end
+      return noop
+    end,
     dispatch = function(action) run(action) end,
     timer = function(callback, opts)
       -- Timers here are short (key up/down spacing), so run them in line after the delay.
@@ -161,6 +166,7 @@ end
 local function load_config()
   binds = {}
   handlers = {}
+  envs = {}
   hl = stand_in()
   local real_require = require
   require = function(name)
@@ -183,7 +189,39 @@ local function load_config()
   log("loaded " .. count .. " Lua-function shortcuts")
 end
 
+if arg[1] == "--print-env" then
+  -- Keep stdout for the export lines: anything the config prints goes to stderr.
+  print = function(...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[i] = tostring(select(i, ...)) end
+    io.stderr:write(table.concat(parts, "\t"), "\n")
+  end
+  io.write = function(...) return io.stderr:write(...) end
+end
+local write_stdout = function(...) return io.stdout:write(...) end
+
 load_config()
+
+-- --print-env: print the environment the Hyprland config sets (hl.env), last assignment winning,
+-- as shell export lines, and exit. session-env.d/07-hyprland-env.sh evaluates it when a Scottland
+-- session starts, so apps get what they'd get under Hyprland (e.g. QT_QPA_PLATFORMTHEME for native
+-- file dialogs). Variables that name the desktop belong to Scottland and are left out.
+local SESSION_OWNED = {
+  XDG_CURRENT_DESKTOP = true, XDG_SESSION_DESKTOP = true, XDG_SESSION_TYPE = true,
+  HYPRLAND_INSTANCE_SIGNATURE = true, WAYLAND_DISPLAY = true, DISPLAY = true,
+}
+if arg[1] == "--print-env" then
+  local last, order = {}, {}
+  for _, pair in ipairs(envs) do
+    if not SESSION_OWNED[pair[1]] and pair[1]:match("^[%a_][%w_]*$") then
+      if last[pair[1]] == nil then order[#order + 1] = pair[1] end
+      last[pair[1]] = pair[2]
+    end
+  end
+  for _, name in ipairs(order) do write_stdout("export ", name, "=", shell_quote(last[name]), "\n") end
+  os.exit(0)
+end
+
 os.execute("mkdir -p " .. shell_quote(fifo:match("(.*)/")))
 -- Record our pid so scottland-reload can restart exactly this host.
 local pid_file = io.open(fifo:gsub("%.fifo$", ".pid"), "w")

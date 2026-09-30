@@ -61,6 +61,7 @@ package_scottland-omarchy() {
   install -Dm755 "$o/hooks/10-fall-back-to-hyprland" "$pkgdir/usr/lib/scottland/early-exit.d/10-fall-back-to-hyprland"
   install -Dm755 "$o/shim/scottland-hyprshim" "$pkgdir/usr/lib/scottland/libexec/scottland-hyprshim"
   install -Dm644 "$o/session-env.d/05-omarchy-env.sh" "$pkgdir/usr/lib/scottland/session-env.d/05-omarchy-env.sh"
+  install -Dm644 "$o/session-env.d/07-hyprland-env.sh" "$pkgdir/usr/lib/scottland/session-env.d/07-hyprland-env.sh"
   install -Dm644 "$o/session-env.d/10-hyprland-compat.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-hyprland-compat.sh"
   install -Dm755 "$o/libexec/scottland-luahost" "$pkgdir/usr/lib/scottland/libexec/scottland-luahost"
   install -Dm755 "$o/accent.d/10-omarchy-theme" "$pkgdir/usr/lib/scottland/accent.d/10-omarchy-theme"

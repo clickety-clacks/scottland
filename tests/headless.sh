@@ -29,8 +29,16 @@ case ${1:-} in
     started=(01-record-environment)
     [[ ${2:-} == --omarchy ]] && started+=(10-hyprshim 30-lua-host)
     (
-      # A clean environment, as a display manager would give, plus the session's own variables.
-      unset HYPRLAND_INSTANCE_SIGNATURE WAYFIRE_SOCKET WAYLAND_DISPLAY DISPLAY SCOTTLAND_EXEC
+      # A clean environment, as a display manager gives a login (not this shell's: an agent's or a
+      # terminal's environment carries another desktop's variables and hides session gaps), plus
+      # the session's own variables.
+      for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
+        case $name in
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|repo|dir|hooks|runtime|exec_tool|started) ;;
+          *) unset "$name" 2>/dev/null || true ;;
+        esac
+      done
+      export PATH=/usr/local/bin:/usr/bin:/bin
       export SCOTTLAND_HOOKS=$hooks XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
       for env_hook in "$hooks"/session-env.d/*.sh; do [[ -r $env_hook ]] && . "$env_hook"; done
       "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
