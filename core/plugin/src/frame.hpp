@@ -39,7 +39,7 @@ namespace scottland
 {
 // Window space (scales with the window):
 constexpr double CORNER_RADIUS = 10.0;  // double Omarchy's 5
-constexpr double HALO = 8.0;            // halo thickness at rest
+constexpr double HALO = 32.0 / 3.0;     // halo thickness at rest (10.7 pt)
 // On screen (constant size):
 constexpr double MIN_GRAB     = 12.0;   // the halo's grab area is never thinner than this
 constexpr double MERGE        = 10.0;   // surface-tension reach: halos ~5 pt apart bridge
@@ -47,6 +47,7 @@ constexpr double CORNER_EXTRA = 16.0;   // a corner's resize part runs this far 
 constexpr double NEAR_RANGE   = 64.0;   // corners cloud and the close dot shows within this
 constexpr double DOT_RADIUS   = 7.0;
 constexpr int MAX_NEIGHBORS   = 8;
+constexpr double SWOLLEN = 2 * HALO;    // swollen halo thickness, on screen (doesn't scale)
 constexpr double SWELL_VICINITY = 50.0; // the cursor pausing this near the halo swells it
 constexpr int DWELL_MS  = 500;          // pause this long to swell
 constexpr int LINGER_MS = 500;          // stay swollen this long after the cursor leaves
@@ -241,7 +242,9 @@ highp float noise(highp vec2 p)
 
 highp float own_liquid(highp vec2 p)
 {
-    highp float wave = sin(p.x * 0.09 + phase * 5.0) * sin(p.y * 0.08 - phase * 4.1);
+    // Lazy, irregular undulation: two octaves of slowly drifting noise, long wavelengths.
+    highp float wave = (noise(p * 0.013 + vec2(phase * 0.45, -phase * 0.3)) - 0.5) * 1.6
+                     + (noise(p * 0.029 - vec2(phase * 0.2, phase * 0.35)) - 0.5) * 0.8;
     return round_box(p, window + vec4(-thickness, -thickness, thickness, thickness), radius + thickness)
         - ripple * wave;
 }
@@ -442,10 +445,12 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return CORNER_RADIUS * get_scale_x();
     }
 
-    /** Halo thickness on screen, with the swell. */
+    /** Halo thickness on screen. At rest it scales with the window; swollen it's a fixed size on
+     *  screen (twice the full-size halo), however small the window, so it's always easy to grab. */
     double thickness() const
     {
-        return HALO * get_scale_x() * (1.0 + std::max(-0.3, swell));
+        double rest = HALO * get_scale_x();
+        return std::max(rest * 0.7, rest + (SWOLLEN - rest) * swell);
     }
 
     /** Distance from p to the edge of this window's liquid (negative inside it). */
@@ -635,7 +640,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** How far the drawn halo, its swell and its merging can reach outside the window. */
     double margin() const
     {
-        return std::max(HALO * get_scale_x() * 2.6, MIN_GRAB) + MERGE + DOT_RADIUS + 4;
+        return std::max(SWOLLEN * 1.35, MIN_GRAB) + MERGE + DOT_RADIUS + 4;
     }
 
     // --- scene node ---
@@ -901,7 +906,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     {
         phase += dt;
         // Goo: an underdamped spring, so the swell overshoots and wobbles before settling.
-        const double stiffness = 70.0, damping = 7.0;
+        const double stiffness = 30.0, damping = 4.6;
         double accel = stiffness * (swell_target - swell) - damping * swell_velocity;
         swell_velocity += accel * dt;
         swell += swell_velocity * dt;
@@ -1012,7 +1017,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("radius", radius);
         program.uniform1f("thickness", t);
         // Ripples along the edge while the goo moves, in proportion to how fast it's moving.
-        program.uniform1f("ripple", std::min(3.0, std::abs(self->swell_velocity) * HALO * self->get_scale_x() * 0.12));
+        double travel = SWOLLEN - HALO * self->get_scale_x();
+        program.uniform1f("ripple", std::min(4.0, std::abs(self->swell_velocity) * travel * 0.3));
         program.uniform1f("phase", self->phase);
         program.uniform1f("aa", aa);
         program.uniform1f("merge", MERGE);
