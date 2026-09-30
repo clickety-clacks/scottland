@@ -7,7 +7,11 @@ xkbcommon = dependency('xkbcommon')
 
 shared_module('scottland', 'src/scottland.cpp',
   dependencies: [wayfire, wlroots, xkbcommon],
-  cpp_args: ['-DWLR_USE_UNSTABLE', '-DWAYFIRE_PLUGIN'],
+  # -fno-gnu-unique: without it, statics in inline functions and inline variables become
+  # process-wide "unique" symbols, so a plugin reloaded in place (scottland-reload) would share
+  # them with the copy it replaces, even across incompatible layouts, and the old copy could never
+  # be unloaded. With it (and -Bsymbolic) each loaded copy keeps its own.
+  cpp_args: ['-DWLR_USE_UNSTABLE', '-DWAYFIRE_PLUGIN', '-fno-gnu-unique'],
   # Bind the plugin's own symbols to itself, so a rebuilt copy loaded next to an older one
   # (scottland-reload) runs its own code instead of the older copy's.
   link_args: ['-Wl,-Bsymbolic'],

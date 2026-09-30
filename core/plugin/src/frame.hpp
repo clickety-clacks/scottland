@@ -57,7 +57,7 @@ struct palette_t
     glm::vec3 accent{0.506, 0.631, 0.757};
 };
 
-inline palette_t palette;
+static palette_t palette;  // per loaded plugin copy (see meson.build)
 
 enum class handle_t
 {
@@ -387,7 +387,7 @@ struct gl_programs_t
     }
 };
 
-inline gl_programs_t& gl_programs()
+static gl_programs_t& gl_programs()
 {
     static gl_programs_t programs;
     return programs;

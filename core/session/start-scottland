@@ -1,63 +1,71 @@
 #!/bin/sh
-dev_launcher="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev/libexec/start-scottland"
-if [ -x "$dev_launcher" ] && [ -z "${SCOTTLAND_DEV_LAUNCHER:-}" ]; then
-  SCOTTLAND_DEV_LAUNCHER=1 exec "$dev_launcher" "$@"
-fi
+# The whole launcher is one function, called on the last line: the shell reads a script bit by bit
+# as it runs, so a launcher edited on disk (a package update, dev mode's repo checkout) while a
+# session runs would otherwise resume in the middle of the new text when Wayfire exits.
+main() {
+  dev_launcher="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev/libexec/start-scottland"
+  if [ -x "$dev_launcher" ] && [ -z "${SCOTTLAND_DEV_LAUNCHER:-}" ]; then
+    SCOTTLAND_DEV_LAUNCHER=1 exec "$dev_launcher" "$@"
+  fi
 
-# Start a Scottland session (Wayfire + the scottland layout plugin) on the current VT.
-# Can run beside another session, e.g. log in on tty3 while Hyprland stays on tty1.
-# Dev mode (make dev-install): repo builds, hooks and helpers take precedence over the package.
-dev="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev"
-if [ -d "$dev/libexec" ]; then
-  SCOTTLAND_HOOKS="$dev"
-else
-  SCOTTLAND_HOOKS=/usr/lib/scottland
-fi
-export SCOTTLAND_HOOKS
-if [ -d "$dev/plugins" ]; then
-  export WAYFIRE_PLUGIN_PATH="$dev/plugins${WAYFIRE_PLUGIN_PATH:+:$WAYFIRE_PLUGIN_PATH}"
-  export WAYFIRE_PLUGIN_XML_PATH="$dev/metadata:/usr/share/wayfire/metadata"
-fi
+  # Start a Scottland session (Wayfire + the scottland layout plugin) on the current VT.
+  # Can run beside another session, e.g. log in on tty3 while Hyprland stays on tty1.
+  # Dev mode (make dev-install): repo builds, hooks and helpers take precedence over the package.
+  dev="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev"
+  if [ -d "$dev/libexec" ]; then
+    SCOTTLAND_HOOKS="$dev"
+  else
+    SCOTTLAND_HOOKS=/usr/lib/scottland
+  fi
+  export SCOTTLAND_HOOKS
+  if [ -d "$dev/plugins" ]; then
+    export WAYFIRE_PLUGIN_PATH="$dev/plugins${WAYFIRE_PLUGIN_PATH:+:$WAYFIRE_PLUGIN_PATH}"
+    export WAYFIRE_PLUGIN_XML_PATH="$dev/metadata:/usr/share/wayfire/metadata"
+  fi
 
-export XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots
-export XDG_SESSION_TYPE=wayland
-export XDG_SESSION_DESKTOP=scottland
-export MOZ_ENABLE_WAYLAND=1
-export QT_QPA_PLATFORM=wayland
+  export XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots
+  export XDG_SESSION_TYPE=wayland
+  export XDG_SESSION_DESKTOP=scottland
+  export MOZ_ENABLE_WAYLAND=1
+  export QT_QPA_PLATFORM=wayland
 
-# Integrations can add session environment in /usr/lib/scottland/session-env.d/*.sh.
-for env_hook in "$SCOTTLAND_HOOKS"/session-env.d/*.sh; do
-  [ -r "$env_hook" ] && . "$env_hook"
-done
-
-# A new session starts from the installed (or dev) plugin, not a previous session's reload copy.
-rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/plugins"
-
-state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
-mkdir -p "$state"
-# Base config (~/.config/scottland/scottland.ini overrides the packaged one) plus generated
-# fragments; autostart.d/06-watch-config keeps it current while the session runs.
-config=$("$SCOTTLAND_HOOKS/libexec/scottland-build-config")
-
-# Lets autostart.d/05-import-environment tie the user's session services to this launcher.
-SCOTTLAND_SESSION_PID=$$
-export SCOTTLAND_SESSION_PID
-
-started=$(date +%s)
-wayfire -c "$config" "$@" >"$state/wayfire.log" 2>&1
-status=$?
-
-# If this session brought up the user's graphical-session services, take them down with it.
-if systemctl --user is-active --quiet scottland-session.target; then
-  systemctl --user stop scottland-session.target
-fi
-
-# A session that dies within seconds is almost certainly broken. Hooks in
-# /usr/lib/scottland/early-exit.d/ get a chance to recover, e.g. by making the
-# next login start a known-good desktop instead of looping into this one.
-if [ $(( $(date +%s) - started )) -lt 15 ]; then
-  for hook in "$SCOTTLAND_HOOKS"/early-exit.d/*; do
-    [ -x "$hook" ] && "$hook" "$status"
+  # Integrations can add session environment in /usr/lib/scottland/session-env.d/*.sh.
+  for env_hook in "$SCOTTLAND_HOOKS"/session-env.d/*.sh; do
+    [ -r "$env_hook" ] && . "$env_hook"
   done
-fi
-exit "$status"
+
+  # A new session starts from the installed (or dev) plugin, not a previous session's reload copy.
+  rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/plugins"
+
+  state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+  mkdir -p "$state"
+  # Base config (~/.config/scottland/scottland.ini overrides the packaged one) plus generated
+  # fragments; autostart.d/06-watch-config keeps it current while the session runs.
+  config=$("$SCOTTLAND_HOOKS/libexec/scottland-build-config")
+
+  # Lets autostart.d/05-import-environment tie the user's session services to this launcher.
+  SCOTTLAND_SESSION_PID=$$
+  export SCOTTLAND_SESSION_PID
+
+  started=$(date +%s)
+  wayfire -c "$config" "$@" >"$state/wayfire.log" 2>&1
+  status=$?
+
+  # If this session brought up the user's graphical-session services, take them down with it.
+  if systemctl --user is-active --quiet scottland-session.target; then
+    systemctl --user stop scottland-session.target
+  fi
+
+  # A session that dies within seconds is almost certainly broken. Hooks in
+  # /usr/lib/scottland/early-exit.d/ get a chance to recover, e.g. by making the
+  # next login start a known-good desktop instead of looping into this one.
+  if [ $(( $(date +%s) - started )) -lt 15 ]; then
+    for hook in "$SCOTTLAND_HOOKS"/early-exit.d/*; do
+      [ -x "$hook" ] && "$hook" "$status"
+    done
+  fi
+  exit "$status"
+}
+
+main "$@"
+exit

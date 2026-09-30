@@ -94,6 +94,12 @@ Before reporting anything as done:
 3. Look: screenshots with `grim` (through `scottland-exec`), and on plumbus the Lumina webcam
    facing its screen (`/dev/video2`) when screenshots might lie.
 4. Check whether a running session predates the build (`scottland-reload` loads it in place).
+   **Before reloading anyone's live session, rehearse that exact reload headless**: start
+   `tests/headless.sh` on the build the live session runs now (a `git worktree` at its commit),
+   open a few windows, reload into the new build, and check it survives and renders. A reload
+   swaps code under open windows; a crash there loses the user's windows. (2026-09-29: an
+   unrehearsed reload crashed Mike's session; the cause, statics shared across plugin copies,
+   is now prevented by `-fno-gnu-unique` in core/plugin/meson.build.)
 5. Re-check every invariant the change could affect, and update its status.
 
 Useful tools: `tests/headless.sh`, `tests/deploy.sh`, `tests/shell-probe.sh` (stock shell
