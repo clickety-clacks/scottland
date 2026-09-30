@@ -33,7 +33,7 @@ namespace scottland
 // Sizes in logical points. The corner radius is in window space (it scales with the window);
 // everything else is on screen (constant size, A6).
 constexpr double CORNER_RADIUS = 10.0;  // double Omarchy's 5
-constexpr double PROXIMITY     = 48.0;  // how near the cursor must be for a handle to show
+constexpr double PROXIMITY     = 96.0;  // how near the cursor must be for a handle to show
 constexpr double GAP       = 6.0;       // between the window and its handles
 constexpr double THICKNESS = 12.0;      // bar and arc stroke
 constexpr double BAR_LENGTH = 128.0;    // at most 80% of the edge it sits on
@@ -42,6 +42,10 @@ constexpr double DOT_GAP    = 8.0;      // between the bar's end and the close d
 constexpr double HIT_SLOP   = 8.0;      // grab tolerance around a bar or arc
 constexpr double OUTLINE    = 1.5;      // soft dark rim so handles show on light content
 constexpr double MARGIN     = GAP + 2 * DOT_RADIUS + OUTLINE + 4;  // drawn area outside the window
+
+/** Handles are drawn for a light desktop (dark handles, light rim) or a dark one (the reverse);
+ *  set from the plugin's color_scheme option. */
+inline bool light_scheme = false;
 
 enum class handle_t
 {
@@ -291,6 +295,8 @@ uniform highp float thickness;
 uniform highp float aa;
 uniform highp float opacity;
 uniform highp float outline;
+uniform highp vec4 rim_color;
+uniform highp vec3 mark_color;
 
 highp float segment(highp vec2 p, highp vec2 a, highp vec2 b)
 {
@@ -321,12 +327,13 @@ void main()
     }
 
     highp float body = clamp(0.5 - d / aa, 0.0, 1.0);
-    highp float rim = clamp(0.5 - (d - outline) / (aa + outline), 0.0, 1.0) * 0.28;
+    highp float rim = clamp(0.5 - (d - outline) / (aa + outline), 0.0, 1.0) * rim_color.a;
     highp float x = clamp(0.5 - mark / aa, 0.0, 1.0);
-    highp vec3 rgb = mix(fill.rgb, vec3(0.12), x * 0.85);
+    highp vec3 rgb = mix(fill.rgb, mark_color, x * 0.9);
     highp float a = fill.a * body;
     highp vec4 shape = vec4(rgb * a, a);
-    highp vec4 shadow = vec4(0.0, 0.0, 0.0, rim * (1.0 - body));
+    highp float r = rim * (1.0 - body);
+    highp vec4 shadow = vec4(rim_color.rgb * r, r);
     gl_FragColor = (shape + shadow) * opacity;
 })";
 
@@ -827,7 +834,13 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.attrib_pointer("position", 2, 0, vertices);
         program.uniformMatrix4f("MVP", mvp);
         float base = shape.kind == shape_t::DOT ? 0.78f : 0.62f;
-        program.uniform4f("fill", glm::vec4{1.0, 1.0, 1.0, lit ? 0.96f : base});
+        // Dark desktop: light handles with a dark rim. Light desktop: dark handles, light rim.
+        glm::vec3 fill = light_scheme ? glm::vec3{0.13, 0.13, 0.15} : glm::vec3{1.0, 1.0, 1.0};
+        glm::vec4 rim  = light_scheme ? glm::vec4{1.0, 1.0, 1.0, 0.45} : glm::vec4{0.0, 0.0, 0.0, 0.28};
+        glm::vec3 mark = light_scheme ? glm::vec3{0.95, 0.95, 0.95} : glm::vec3{0.12, 0.12, 0.12};
+        program.uniform4f("fill", glm::vec4{fill, lit ? (light_scheme ? 0.9f : 0.96f) : base});
+        program.uniform4f("rim_color", rim);
+        program.uniform3f("mark_color", mark.r, mark.g, mark.b);
         program.uniform1f("kind", (float)shape.kind);
         program.uniform4f("geom", glm::vec4{shape.a.x, shape.a.y, shape.b.x, shape.b.y});
         program.uniform1f("radius", shape.radius);

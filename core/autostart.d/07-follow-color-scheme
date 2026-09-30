@@ -1,0 +1,3 @@
+#!/bin/sh
+# Draw window handles in the desktop's light or dark style, following changes live.
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-color-scheme" watch

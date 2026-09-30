@@ -1,0 +1,4 @@
+#!/bin/sh
+# A reload re-registers the plugin's settings: re-apply the desktop's light or dark style, and
+# start following it if this session predates the watcher.
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-color-scheme" ensure

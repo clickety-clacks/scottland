@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Keep Scottland's handles in the desktop's light or dark style.
+
+  scottland-color-scheme once     apply the current scheme to the running session
+  scottland-color-scheme watch    apply it now and whenever it changes
+  scottland-color-scheme ensure   apply it now, and start a watcher if this session has none
+
+The scheme comes from the desktop portal (org.freedesktop.appearance color-scheme, which themes
+and settings apps set on any desktop), or from GNOME's color-scheme setting without a portal.
+"""
+import json
+import os
+import re
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+PORTAL = ["org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop"]
+
+
+def call(method, data):
+    sock = socket.socket(socket.AF_UNIX)
+    sock.connect(os.environ["WAYFIRE_SOCKET"])
+    body = json.dumps({"method": method, "data": data}).encode()
+    sock.sendall(struct.pack("<I", len(body)) + body)
+    header = b""
+    while len(header) < 4:
+        header += sock.recv(4 - len(header))
+    size, reply = struct.unpack("<I", header)[0], b""
+    while len(reply) < size:
+        reply += sock.recv(size - len(reply))
+    return json.loads(reply)
+
+
+def portal_scheme():
+    """'light', 'dark', or None when the portal can't say."""
+    result = subprocess.run(["busctl", "--user", "call", *PORTAL, "org.freedesktop.portal.Settings",
+                             "ReadOne", "ss", "org.freedesktop.appearance", "color-scheme"],
+                            capture_output=True, text=True, timeout=5)
+    match = re.search(r"u (\d)", result.stdout)
+    if not match:
+        return None
+    return {"1": "dark", "2": "light"}.get(match.group(1), "dark")
+
+
+def gsettings_scheme():
+    result = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                            capture_output=True, text=True)
+    return "light" if "light" in result.stdout else "dark"
+
+
+def current():
+    try:
+        return portal_scheme() or gsettings_scheme()
+    except (OSError, subprocess.SubprocessError):
+        return "dark"
+
+
+def apply(scheme):
+    reply = call("wayfire/set-config-options", {"scottland/color_scheme": scheme})
+    if reply.get("error"):
+        print(f"scottland-color-scheme: {reply['error']}", file=sys.stderr)
+
+
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+PID_FILE = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
+
+
+def watcher_running():
+    try:
+        with open(PID_FILE) as source:
+            os.kill(int(source.read().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def watch():
+    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+    with open(PID_FILE, "w") as target:
+        target.write(f"{os.getpid()}\n")
+    applied = current()
+    apply(applied)
+    while True:
+        # Any change to the appearance settings, from the portal or GNOME's settings.
+        if portal_scheme() is not None:
+            monitor = ["gdbus", "monitor", "--session", "--dest", PORTAL[0], "--object-path", PORTAL[1]]
+        else:
+            monitor = ["gsettings", "monitor", "org.gnome.desktop.interface", "color-scheme"]
+        with subprocess.Popen(monitor, stdout=subprocess.PIPE, text=True) as proc:
+            for line in proc.stdout:
+                if "color-scheme" in line:
+                    scheme = current()
+                    if scheme != applied:
+                        apply(scheme)
+                        applied = scheme
+        time.sleep(2)  # the monitor exited (portal restarted): start again
+
+
+if __name__ == "__main__":
+    command = sys.argv[1] if len(sys.argv) > 1 else "once"
+    if command == "watch":
+        watch()
+    elif command == "ensure" and not watcher_running():
+        # The watcher applies the scheme as it starts.
+        subprocess.Popen([sys.argv[0], "watch"], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        apply(current())

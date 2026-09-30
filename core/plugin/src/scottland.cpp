@@ -557,6 +557,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> max_scale{"scottland/max_scale"};
     wf::option_wrapper_t<std::string> scale_curve_text{"scottland/scale_curve"};
     wf::option_wrapper_t<double> blend_width{"scottland/blend_width"};
+    wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
+
+    void load_color_scheme()
+    {
+        scottland::light_scheme = std::string(color_scheme) == "light";
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            if (auto toplevel = wf::toplevel_cast(view))
+            {
+                if (auto frame = frame_of(toplevel, false))
+                {
+                    frame->damage();
+                }
+            }
+        }
+    }
     scale_curve_t scale_curve;
 
     void load_curve()
@@ -1147,6 +1163,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         load_curve();
         scale_curve_text.set_callback([=] { load_curve(); apply_all(); });
         blend_width.set_callback([=] { apply_all(); });
+        color_scheme.set_callback([=] { load_color_scheme(); });
+        load_color_scheme();
         apply_all();
         LOGI("scottland: plugin loaded");
     }

@@ -39,11 +39,12 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 |---|---|---|
 | A1 | No window chrome: Scottland asks every app that allows it for server-side decorations and draws none (no title bars, no borders). GTK4/libadwaita apps keep the header bars they draw themselves; Chromium is switched to server-side decorations through additive app tuning (C7). | implemented (Chromium tuning not built) |
 | A2 | Every window is a rounded rectangle; the corner radius is double Omarchy's (10 pt), scaling with the window. | verified |
-| A3 | When the cursor comes within ~48 pt of a window's edge or corner, the matching handle appears, drawn outside the window with a small gap, visionOS style. Its brightness follows the cursor's distance on a curve (faint at the edge of the zone, brightening quickly as the cursor closes in, full on the handle); it fades out when the cursor leaves and is fully lit while hovered or dragged. | verified |
+| A3 | When the cursor comes within ~96 pt of a window's edge or corner, the matching handle appears, drawn outside the window with a small gap, visionOS style. Its brightness follows the cursor's distance on a curve (faint at the edge of the zone, brightening quickly as the cursor closes in, full on the handle); it fades out when the cursor leaves and is fully lit while hovered or dragged. | verified |
 | A4 | Edge handles: a thick pill bar with rounded ends (12 pt thick, 128 pt long, at most 80% of the edge), parallel to and centered on that edge, on all four edges. Dragging one moves the window (no modifier needed), with the same live scaling as Super+drag. | verified |
 | A5 | Corner handles: a thick arc (a circle section) concentric with the window's rounded corner, its radius the corner radius plus the gap. Dragging one resizes around the window's center (like Super+right-drag); dragging a corner outward grows the window, inward shrinks it. | verified |
 | A6 | Handles keep a constant on-screen size regardless of the window's scale, so they stay easy to grab on small windows; they follow the window exactly, including during scale animations. | verified |
 | A7 | A close dot sits beside the edge drag bar, visionOS style; clicking it closes the window. There is no minimize. | verified |
+| A8 | Handles follow the desktop's light or dark color scheme (the desktop portal's appearance setting, or GNOME's color-scheme): light handles with a dark rim on a dark desktop, dark handles with a light rim on a light one, switching live when the scheme changes. | verified |
 
 ## Layout configurator (`scottland-settings`)
 
