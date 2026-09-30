@@ -24,8 +24,8 @@ echo "$fresh" >"$runtime/plugins/current"
 # copy), register any new settings, then swap the plugin. The plugin list is also set over IPC:
 # values set over IPC (e.g. by the settings app) take precedence over the file.
 "$hooks/libexec/scottland-build-config" >/dev/null
-python3 - "$WAYFIRE_SOCKET" "$fresh" <<'PY'
-import json, socket, struct, sys, time
+python3 - "$WAYFIRE_SOCKET" "$fresh" "$runtime/wayfire.ini" <<'PY'
+import json, re, socket, struct, sys, time
 sock = socket.socket(socket.AF_UNIX); sock.connect(sys.argv[1])
 def call(method, data=None):
     body = json.dumps({"method": method, "data": data or {}}).encode()
@@ -34,7 +34,11 @@ def call(method, data=None):
     while len(reply) < size: reply += sock.recv(size - len(reply))
     return json.loads(reply)
 call("wayfire/reload-config-metadata")
-plugins = call("wayfire/get-config-option", {"option": "core/plugins"})["value"].split()
+# The plugin list comes from the rebuilt config, so a reload also adds and removes plugins.
+config = open(sys.argv[3]).read()
+match = re.search(r"(?ms)^plugins\s*=\s*((?:[^\n]*\\\n)*[^\n]*)", config)
+plugins = match.group(1).replace("\\\n", " ").split() if match else \
+    call("wayfire/get-config-option", {"option": "core/plugins"})["value"].split()
 plugins = [sys.argv[2] if p == "scottland" or "/libscottland-" in p else p for p in plugins]
 reply = call("wayfire/set-config-options", {"core/plugins": " ".join(plugins)})
 if reply.get("error"): sys.exit(f"scottland-reload: {reply['error']}")
