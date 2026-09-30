@@ -4,9 +4,10 @@ project('scottland', 'cpp', version: '0.1.0', license: 'MIT',
 wayfire = dependency('wayfire')
 wlroots = dependency('wlroots-0.20')
 xkbcommon = dependency('xkbcommon')
+libinput = dependency('libinput')
 
 shared_module('scottland', 'src/scottland.cpp',
-  dependencies: [wayfire, wlroots, xkbcommon],
+  dependencies: [wayfire, wlroots, xkbcommon, libinput],
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become
   # process-wide "unique" symbols, so a plugin reloaded in place (scottland-reload) would share
   # them with the copy it replaces, even across incompatible layouts, and the old copy could never

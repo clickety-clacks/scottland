@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64')
 license=('MIT')
-makedepends=('meson' 'ninja' 'wayfire' 'glm')
+makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput')
 options=('!debug')
 
 _root="$startdir/../.."
