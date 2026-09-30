@@ -14,6 +14,7 @@
 #include <wayfire/util.hpp>
 
 extern "C" {
+#include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_seat.h>
 }
@@ -624,6 +625,25 @@ class scottland_plugin_t : public wf::plugin_interface_t
         return wf::ipc::json_ok();
     };
 
+    // Wayfire <= 0.11 never applies input/touchpad_scroll_speed to touchpad finger scrolling:
+    // pointing_device_t::get_scroll_speed() only returns it for tablet pads, so touchpads (pointer
+    // devices) always scroll at 1.0. Apply it here, before Wayfire handles the event. Remove this
+    // once the upstream fix ships (the ABI check below turns it off for newer Wayfire builds).
+    wf::option_wrapper_t<double> touchpad_scroll_speed{"input/touchpad_scroll_speed"};
+    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_axis_event>> on_axis =
+        [=] (wf::input_event_signal<wlr_pointer_axis_event> *ev)
+    {
+#if WAYFIRE_API_ABI_VERSION_MACRO <= 2026'07'26
+        if ((ev->event->source == WL_POINTER_AXIS_SOURCE_FINGER) && ev->device &&
+            (ev->device->type == WLR_INPUT_DEVICE_POINTER))
+        {
+            double speed = std::max(0.0, (double)touchpad_scroll_speed);
+            ev->event->delta *= speed;
+            ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
+        }
+#endif
+    };
+
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
@@ -650,6 +670,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_key);
+        wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
@@ -671,6 +692,7 @@ class scottland_plugin_t : public wf::plugin_interface_t
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
         on_key.disconnect();
+        on_axis.disconnect();
         on_mapped.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();

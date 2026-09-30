@@ -23,6 +23,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L10 | Scale jumps (e.g. leaving the 100% center for a zone that starts lower) animate smoothly (~180 ms) instead of snapping. Small changes during a drag apply immediately; a moving target re-aims a running animation. | verified |
 | L11 | Dropping a window near an edge or corner does not snap or resize it (Wayfire edge snapping is off). | verified |
 | L12 | No wobbly windows, in shipped and installed configs. | verified |
+| L17 | Trackpad (two-finger) scrolling honors `input/touchpad_scroll_speed`, applied live; the shipped default is 0.2. (Wayfire 0.11 ignores it for touchpads; the plugin applies it until the upstream fix ships.) | verified (on Mike's trackpad, osanwe) |
 | L13 | A window entering a widget rail is told to render as a widget; apps that can't stay at the smallest scale. | not built (currently: stays at smallest scale) |
 | L14 | Tiling rules apply to windows. | not built (rules not yet specified) |
 | L15 | Scottland copies the display scale the user's Hyprland uses (e.g. 4K panels are not tiny). | not built |
