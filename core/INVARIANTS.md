@@ -27,7 +27,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L12 | No wobbly windows, in shipped and installed configs. | verified |
 | L21 | Touchpad clicks use clickfinger: a two-finger press anywhere is a right click, three fingers a middle click (shipped default). | implemented |
 | L19 | Ctrl+W deletes the previous word in every app, browsers included: the plugin remaps it to Ctrl+Backspace for browsers and Chromium web apps (shipped `key_remaps` rules), and Ctrl+Alt+W closes the browser tab (Ctrl+F4). Holding the key repeats. The remap mechanism is generic: per-app rules of app-id regex, from-combo, to-combo. | implemented (headless) |
-| L17 | Trackpad (two-finger) scrolling honors `input/touchpad_scroll_speed`, applied live; the shipped default is 0.2. (Wayfire 0.11 ignores it for touchpads; the plugin applies it until the upstream fix ships.) | verified (on Mike's trackpad, osanwe) |
+| L17 | Trackpad (two-finger) scrolling honors `input/touchpad_scroll_speed`, applied live; the shipped default is 0.2. (Wayfire 0.11 ignores it for touchpads, WayfireWM/wayfire#3148; the plugin applies it until the fix ships.) | verified (on Mike's trackpad, osanwe) |
 | L13 | A window entering a widget rail is told to render as a widget; apps that can't stay at the smallest scale. | not built (currently: stays at smallest scale) |
 | L14 | Tiling rules apply to windows. | not built (rules not yet specified) |
 | L15 | Scottland copies the display scale the user's Hyprland uses (e.g. 4K panels are not tiny). | not built |

@@ -850,7 +850,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     // Wayfire <= 0.11 never applies input/touchpad_scroll_speed to touchpad finger scrolling:
     // pointing_device_t::get_scroll_speed() only returns it for tablet pads, so touchpads (pointer
-    // devices) always scroll at 1.0. Apply it here, before Wayfire handles the event. Remove this
+    // devices) always scroll at 1.0 (https://github.com/WayfireWM/wayfire/issues/3148). Apply it
+    // here, before Wayfire handles the event. Remove this
     // once the upstream fix ships (the ABI check below turns it off for newer Wayfire builds).
     wf::option_wrapper_t<double> touchpad_scroll_speed{"input/touchpad_scroll_speed"};
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_axis_event>> on_axis =
