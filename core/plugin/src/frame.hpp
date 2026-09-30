@@ -460,6 +460,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return round_box_distance(p, screen_rect().grown(thickness()), screen_radius() + thickness());
     }
 
+    /** Distance from p to the halo band itself: outside the liquid, or inside the window, or 0
+     *  on the band. */
+    double band_distance(wf::pointf_t p) const
+    {
+        return std::max(liquid_distance(p), -round_box_distance(p, screen_rect(), screen_radius()));
+    }
+
     bool is_pressed() const
     {
         return pressed != handle_t::none;
@@ -527,9 +534,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             set_hovered(handle_at(p));
         }
 
-        // Distance to the band itself: outside the liquid, or inside the window, or 0 on it.
-        double band = std::max(liquid_distance(p), -round_box_distance(p, r, screen_radius()));
-        near_halo(band <= SWELL_VICINITY);
+        near_halo(band_distance(p) <= SWELL_VICINITY);
         start_ticking();
     }
 

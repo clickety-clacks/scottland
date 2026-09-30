@@ -780,15 +780,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return list;
     }
 
-    /** The window whose halo follows the cursor at p (output coordinates): the one whose liquid
-     *  is nearest. Windows behind the one the cursor is over don't respond. */
+    /** The window whose halo follows the cursor at p (output coordinates): the one whose halo band
+     *  is nearest, from outside or inside its window. Windows behind the one the cursor is over
+     *  don't respond (that one still does). */
     std::shared_ptr<scottland::frame_t> frame_near(wf::output_t *output, wf::pointf_t p)
     {
         std::shared_ptr<scottland::frame_t> best;
-        double best_distance = scottland::NEAR_RANGE;
+        double best_distance = std::max(scottland::NEAR_RANGE, scottland::SWELL_VICINITY);
         for (auto& [view, frame] : frames_on(output))
         {
-            double d = std::max(0.0, frame->liquid_distance(p));
+            double d = frame->band_distance(p);
             if (d < best_distance)
             {
                 best = frame;
@@ -797,7 +798,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             if (frame->liquid_distance(p) <= 0)
             {
-                break;
+                break;  // the cursor is over this window or its halo: those behind are covered
             }
         }
 
@@ -971,6 +972,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // (transformed) bounding box under the pointer, so rescaling mid-drag stays anchored there.
     wf::shared_data::ref_ptr_t<wf::move_drag::core_drag_t> drag;
     double drag_relative_x = 0.5;
+    double drag_target = 1.0;     // the scale the dragged window is heading for
 
     wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> on_drag_output =
         [=] (wf::move_drag::drag_focus_output_signal *ev)
@@ -984,6 +986,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
             auto r = frame ? frame->screen_rect() : scottland::rectf_t{0, 0, 0, 0};
             drag_relative_x = r.width() > 0 ? std::clamp((local_x - r.x1) / r.width(), 0.0, 1.0) : 0.5;
+            auto running = transitions.find(drag->view->get_id());
+            drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
             update_neighbors(output);
         }
     };
@@ -998,13 +1002,45 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        auto node = view->get_transformed_node();
-        auto transformer = node->get_transformer<wf::scene::view_2d_transformer_t>(TRANSFORMER);
-        double scale = transformer ? transformer->scale_x : 1.0;
-        double width = view->get_geometry().width * scale;
+        // The drag keeps the grabbed point under the pointer, so the window's center (which picks
+        // its zone) depends on its size, and its size on the zone. Choose a scale that agrees
+        // with the center it produces. Where none does (right at a jump in scale, e.g. from the
+        // center zone's 100% into a curve starting lower), keep the current one until the
+        // pointer has moved far enough for the other to agree: otherwise the window flips
+        // between the two sizes on every motion. Sizes are the targets, not the animated ones.
+        double unscaled  = view->get_geometry().width;
         double pointer_x = ev->current_position.x - output->get_layout_geometry().x;
-        double center_x  = pointer_x + (0.5 - drag_relative_x) * width;
-        set_scale(view, place_at(center_x, output->get_relative_geometry().width).scale);
+        double screen    = output->get_relative_geometry().width;
+        auto zone_scale  = [&] (double s)
+        {
+            return place_at(pointer_x + (0.5 - drag_relative_x) * unscaled * s, screen).scale;
+        };
+
+        double chosen = zone_scale(drag_target);
+        if (std::abs(chosen - drag_target) > 0.001)
+        {
+            // Settle on a self-consistent scale starting from the zone's answer, if there is one.
+            bool consistent = false;
+            for (int i = 0; i < 16; i++)
+            {
+                double next = zone_scale(chosen);
+                if (std::abs(next - chosen) < 0.002)
+                {
+                    consistent = true;
+                    chosen = next;
+                    break;
+                }
+
+                chosen = next;
+            }
+
+            if (consistent)
+            {
+                drag_target = chosen;
+            }
+        }
+
+        set_scale(view, drag_target);
     };
 
     wf::signal::connection_t<wf::move_drag::drag_done_signal> on_drag_done =
