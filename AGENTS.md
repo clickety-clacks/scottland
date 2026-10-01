@@ -17,8 +17,11 @@ same change.
 (IDs prefixed per doc). When a subsystem's design grows past a few rows in the files above, give it
 a doc there and leave a one-line pointer in the invariants file. Current docs:
 
-- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG12): what a widget is, how it's chosen,
-  its launch context and D-Bus interface, the default card.
+- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG15): what a widget is, how it's chosen,
+  its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
+  attention on widgets.
+- [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
+  pluggable and networked sources (mostly not built yet).
 
 ## Where does a request belong?
 
