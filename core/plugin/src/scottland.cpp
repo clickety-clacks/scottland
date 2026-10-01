@@ -2890,6 +2890,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if ((hold_finger >= 0) || (lifted_finger >= 0) ||
             (wf::get_core().get_touch_state().fingers.size() != 1))
         {
+            if (wf::get_core().get_touch_state().fingers.size() == 1)
+            {
+                LOGI("scottland: touch ignored: a finger still counted down (hold ", hold_finger,
+                    ", lifted ", lifted_finger, ")");
+            }
+
             cancel_hold();  // a second finger: this is a multi-finger touch, never a lift
             end_touch_scroll(scroll_finger, false);
             return;
@@ -2909,6 +2915,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
         {
             return;
+        }
+
+        if (auto link = link_of_widget(view))
+        {
+            LOGI("scottland: touch on widget ", view->get_id(), link->touch_drag ? " (a drag moves it)" :
+                " (its own drags)");
         }
 
         start_touch_scroll(finger, view);
@@ -2945,6 +2957,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto link = view ? link_of_widget(view) : nullptr;
             if (link && link->touch_drag)
             {
+                LOGI("scottland: touch drag on widget ", view->get_id(), ": moving it");
                 lift_held_window(false);
             } else
             {
@@ -3320,6 +3333,51 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::pointf_t drag_start_cursor{0, 0};  // where the drag was grabbed (layout coords)
     static constexpr double CLICK_SLOP = 6.0;  // a press and release within this is a click, not a move
 
+    // A just-dropped window kept above the widgets until a re-grab could no longer continue its
+    // move (DRAG_CHAIN_MS), then back with the ordinary windows (L29). Never one the user put
+    // above themselves.
+    std::weak_ptr<wf::view_interface_t> held_above;
+    wf::wl_timer<false> held_above_timer;
+
+    static void set_above(wayfire_toplevel_view view, bool above)
+    {
+        if (view && view->get_output())
+        {
+            wf::wm_actions_set_above_state_signal signal;
+            signal.view  = view;
+            signal.above = above;
+            view->get_output()->emit(&signal);
+        }
+    }
+
+    void hold_above(wayfire_toplevel_view view)
+    {
+        if (held_above.lock().get() != view.get())
+        {
+            release_above();
+            if (view->has_data("wm-actions-above"))
+            {
+                return;  // the user's own: theirs to change
+            }
+
+            set_above(view, true);
+            held_above = view->weak_from_this();
+        }
+
+        held_above_timer.set_timeout(DRAG_CHAIN_MS, [=] () { release_above(); });
+    }
+
+    void release_above()
+    {
+        held_above_timer.disconnect();
+        auto view = wf::toplevel_cast(held_above.lock());
+        held_above.reset();
+        if (view && view->is_mapped() && !is_widget(view))
+        {
+            set_above(view, false);
+        }
+    }
+
     void note_drag_start()
     {
         if (drag_started || !drag->view)
@@ -3328,6 +3386,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         drag_started = true;
+        if (held_above.lock().get() == drag->view.get())
+        {
+            held_above_timer.disconnect();  // picked up again: above until this drag's drop
+        } else
+        {
+            release_above();
+        }
+
         drag_start_cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
         // Every resize's after-care stops: it would move the window back toward its center.
         for (auto& [output, instance] : output_instance)
@@ -4080,6 +4146,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
+        // Let go (fingers lifted to reset on the touchpad, say): until a re-grab could no longer
+        // continue the move, the window stays above the widgets, as it was while dragged (L29).
+        if (auto stands = main ? wf::toplevel_cast(view_by_id(last_drop.became)) : nullptr;
+            stands && stands->is_mapped() && !is_widget(stands))
+        {
+            hold_above(stands);
+        }
+
         dragged_widget = 0;
         drag_started = false;
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
@@ -4474,6 +4548,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // the links from a file (WG5).
         end_morph();
         widget_watchdog.disconnect();
+        release_above();  // a just-dropped window doesn't stay above for good
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
         if (reloading && widgets_collapsed)
         {

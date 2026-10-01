@@ -611,6 +611,29 @@ check "WG18 a tap on the card still opens its window" [ "$(is_widget_of touchy-a
 h window-rules/close-view "{\"id\": $(view_field touchy-app "v['id']")}"
 sleep 2
 
+# L29: a window let go of stays above the widgets until a re-grab could no longer continue the
+# move (fingers lifted to reset on the touchpad), then the widgets float above it again.
+(tests/headless.sh run foot -T under-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field under-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 6)) $((ay + ah / 2))
+sleep 2.5
+read -r ux uy <<<"$(views | python3 -c "import json,sys; f=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('under-app')][0]['frame']; print(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))")"
+(tests/headless.sh run foot -T cover-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+on_top() { ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title']=='cover-app'][0])"; }
+pixel() { tests/headless.sh run grim -g "$ux,$uy 1x1" -t ppm - 2>/dev/null | tail -c 3 | od -An -tu1 | tr -s ' '; }
+card_pixel=$(pixel)
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((ux - 30)) $uy
+sleep 0.6
+check "L29 a window just let go of stays above the widgets" [ "$(on_top)/$([ "$(pixel)" != "$card_pixel" ] && echo covered)" = "True/covered" ]
+sleep 2.6
+check "L29 ...then the widgets float above it again" [ "$(on_top)/$(pixel)" = "False/$card_pixel" ]
+h window-rules/close-view "{\"id\": $(view_field cover-app "v['id']")}"
+h window-rules/close-view "{\"id\": $(view_field under-app "v['id']")}"
+sleep 2
+
 # L23: lifting three fingers ends the drag at once (no grace period); a second three-finger
 # drag right after is a new drag, which only counts as the same move for Esc (L27).
 (tests/headless.sh run foot -T grace-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
