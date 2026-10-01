@@ -109,7 +109,7 @@ exec = "quickshell -p %d/shell.qml"  # any program; %d = this folder
 A widget is any program (QML via Quickshell, GTK, a web view, a TUI...), fully interactive, with
 the user's normal access (files, network, D-Bus). It gets the window's identity in its
 environment: `SCOTTLAND_WIDGET_APP_ID`, `_TITLE`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID` (the app's
-process), `_WINDOW`, `_RAIL`, `_ID`, `_STATE` (a JSON file kept current with title, badge,
+process), `_WINDOW`, `_RAIL`, `_MINIMIZED` (`1` if it starts collapsed by Super+M), `_ID`, `_STATE` (a JSON file kept current with title, badge,
 focus and data), and `SCOTTLAND_PALETTE` (a JSON file with the desktop's colors: `scheme`,
 `background`, `foreground`, `muted`, `accent`, `alert`, kept current). Placeholders in `exec`: `%a` app-id, `%t` title, `%i` icon, `%p` pid, `%w`
 window, `%r` rail, `%d` folder. Live properties and `Restore()`/`Close()`/`Focus()` are on D-Bus at

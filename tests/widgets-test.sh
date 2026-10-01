@@ -508,6 +508,29 @@ print(str(round(w[0]['frame']['x'])) + ',' + str(round(w[0]['frame']['y'])) if w
 h window-rules/close-view "{\"id\": $(view_field halo-click "v['id']")}"
 sleep 2
 
+# WG17: clicking a default card opens its window in the middle of the screen.
+(tests/headless.sh run foot -T open-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field open-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 2.5
+read -r ox oy <<<"$(views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('open-app')][0]; f=v['frame']
+print(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))")"
+h stipc/move_cursor "{\"x\":$ox,\"y\":$oy}"; sleep 0.3
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'
+sleep 1.5
+check "WG17 clicking a card opens its window in the middle of the screen (and the card goes)" \
+  python3 -c "
+import json,subprocess,sys
+vs=json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views']
+w=[v for v in vs if v['title']=='open-app'][0]; f=w['frame']
+cards=[v for v in vs if v['widget'] and v['title'].endswith('open-app')]
+sys.exit(0 if not w['hidden'] and abs(f['x']+f['width']/2 - $screen_w/2) < 30 and not cards else 1)"
+h window-rules/close-view "{\"id\": $(view_field open-app "v['id']")}"
+sleep 1
+
 # WG16: Super+M collapses all widgets to their icons, and expands them back.
 (tests/headless.sh run foot -T mini-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
@@ -526,10 +549,21 @@ check "WG16 ...against its screen edge" \
 import json,subprocess,sys
 v=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views'] if v['widget'] and v['title'].endswith('mini-app')][0]['frame']
 sys.exit(0 if v['x'] + v['width'] >= $screen_w - 40 else 1)"
+# Collapsed is a mode: a window widgetized now becomes a collapsed widget, from its first frame.
+(tests/headless.sh run foot -T mini2-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field mini2-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 2.5
+card2_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini2-app')][0])"; }
+check "WG16 a window widgetized while widgets are collapsed is collapsed too" \
+  [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['minimized'] for w in json.load(sys.stdin)['widgets'] if w['title']=='mini2-app'][0])")/$(card2_width)" = "True/96" ]
 h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key":"KEY_M","state":true}'
 h stipc/feed_key '{"key":"KEY_M","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
 sleep 1.5
 check "WG16 Super+M again: the card again" [ "$(card_width)" = "$wide" ]
+check "WG16 ...the new one too" [ "$(card2_width)" -gt 96 ]
+h window-rules/close-view "{\"id\": $(view_field mini2-app "v['id']")}"
 h window-rules/close-view "{\"id\": $(view_field mini-app "v['id']")}"
 sleep 2
 

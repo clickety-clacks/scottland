@@ -36,6 +36,7 @@ extern "C" {
 #include <wlr/backend/multi.h>
 #include <wlr/interfaces/wlr_pointer.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_compositor.h>
 #if WF_HAS_XWAYLAND
 #include <pthread.h>  // as Wayfire does: xwayland.h uses C++ keywords as names
@@ -736,19 +737,34 @@ class virtual_pointer_t
         wl_signal_emit(&pointer.events.frame, NULL);
     }
 
-    void scroll(double dx, double dy)
+    /** Scroll by (dx, dy) pixels: smooth, as a finger on a touchpad (the content follows it one
+     *  to one), or with `wheel` as a high-resolution wheel (fine value120 steps), for apps that
+     *  ignore smooth scrolling from a device like this (Ghostty). (0, 0) ends a smooth scroll. */
+    void scroll(double dx, double dy, bool wheel = false)
     {
+        if (wheel && (dx == 0) && (dy == 0))
+        {
+            return;  // a wheel has no "stop"
+        }
+
         for (auto [orientation, delta] : {std::pair{WL_POINTER_AXIS_VERTICAL_SCROLL, dy},
             std::pair{WL_POINTER_AXIS_HORIZONTAL_SCROLL, dx}})
         {
+            // A zero from a finger means "stop" (axis_stop): only the axes that moved, unless
+            // both are zero (the scroll ends).
+            if ((delta == 0) && (wheel || (dx != 0) || (dy != 0)))
+            {
+                continue;
+            }
+
             wlr_pointer_axis_event ev;
             ev.pointer     = &pointer;
             ev.time_msec   = now_msec();
-            ev.source      = WL_POINTER_AXIS_SOURCE_FINGER;  // smooth, like a trackpad
+            ev.source      = wheel ? WL_POINTER_AXIS_SOURCE_WHEEL : WL_POINTER_AXIS_SOURCE_FINGER;
             ev.orientation = orientation;
             ev.relative_direction = WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL;
             ev.delta = delta;
-            ev.delta_discrete = 0;
+            ev.delta_discrete = wheel ? (int32_t)std::lround(delta * 8) : 0;  // value120: 15 px a notch
             wl_signal_emit(&pointer.events.axis, &ev);
         }
 
@@ -1360,7 +1376,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     // Super+M (WG16): all widgets collapse to just their icons, or (if they all are) expand back.
     // Widgets learn it from the widget service (Minimized, and the state file); the default card
-    // shrinks to its icon.
+    // shrinks to its icon. It's a mode: a widget made while widgets are collapsed starts collapsed.
+    bool widgets_collapsed = false;
     wf::option_wrapper_t<wf::keybinding_t> minimize_key{"scottland/minimize_widget"};
     wf::key_callback on_minimize_key = [=] (const wf::keybinding_t&)
     {
@@ -1386,6 +1403,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 link.minimized = !all_minimized;
             }
         }
+
+        widgets_collapsed = !all_minimized;
 
         LOGI("scottland: Super+M: all widgets ", all_minimized ? "expanded" : "collapsed");
         announce_widgets();
@@ -1866,6 +1885,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         context["title"]  = view->get_title();
         context["pid"]    = (int64_t)view_pid(view);
         context["rail"]   = link.rail;
+        context["minimized"] = widgets_collapsed;  // so it starts in the mode, even as a preview
+        link.minimized = widgets_collapsed;
         auto process = std::make_shared<widget_process_t>();
         const char *display = getenv("WAYLAND_DISPLAY");
         process->unit = "scottland-widget-" + std::string(display ? display : "wayland") + "-" +
@@ -2039,6 +2060,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     /** After a reload: take over the widgets the previous plugin handed over. */
     void take_handover()
     {
+        auto collapsed = runtime_file(".widgets-collapsed");
+        widgets_collapsed = access(collapsed.c_str(), F_OK) == 0;
+        std::remove(collapsed.c_str());
         auto path = runtime_file(".widget-handover.json");
         std::ifstream in(path);
         if (!in)
@@ -2111,6 +2135,70 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             above.above = true;
             widget->get_output()->emit(&above);
         }
+    }
+
+    // Wayfire's place plugin positions every window as it maps (centered, cascaded...), in the
+    // transaction that maps it. A widget's window has its place already: recognized as it maps,
+    // it gets that place in the same transaction and is marked as positioned (startup-x/y, which
+    // place leaves alone), so no other placement ever applies to it.
+    wf::signal::connection_t<wf::txn::new_transaction_signal> on_new_transaction =
+        [=] (wf::txn::new_transaction_signal *ev)
+    {
+        if (widget_links.empty())
+        {
+            return;
+        }
+
+        for (const auto& object : ev->tx->get_objects())
+        {
+            auto toplevel = std::dynamic_pointer_cast<wf::toplevel_t>(object);
+            if (!toplevel || toplevel->current().mapped || !toplevel->pending().mapped)
+            {
+                continue;  // not a window about to map
+            }
+
+            auto view = wf::find_view_for_toplevel(toplevel);
+            pid_t pid = view ? view_pid(view) : 0;
+            for (auto& [id, link] : widget_links)
+            {
+                if (link.widget.lock() || !link.launcher || !(in_scope(pid, link.launcher->unit) ||
+                    (alive(link.launcher) && descends_from(pid, link.launcher->pid))))
+                {
+                    continue;
+                }
+
+                auto output = output_alive(link.output) ? link.output : view->get_output();
+                if (!output)
+                {
+                    break;
+                }
+
+                auto& pending = toplevel->pending().geometry;
+                auto spot = widget_spot(output, link, pending.width, pending.height);
+                pending.x = spot.x;
+                pending.y = spot.y;
+                view->set_property("startup-x", spot.x);
+                view->set_property("startup-y", spot.y);
+                break;
+            }
+        }
+    };
+
+    /** Where a widget `width` x `height` goes: its drop point, its screen-edge side against the
+     *  edge, wholly on screen with room for its halo. */
+    wf::point_t widget_spot(wf::output_t *output, const widget_link_t& link, int width, int height)
+    {
+        double screen = output->get_relative_geometry().width;
+        wf::pointf_t at = link.drop;
+        at.x = link.rail == "right" ? std::max(at.x, screen - width / 2.0) : std::min(at.x, width / 2.0);
+        auto area = output->workarea->get_workarea();
+        area.x += WIDGET_INSET;
+        area.y += WIDGET_INSET;
+        area.width  -= 2 * WIDGET_INSET;
+        area.height -= 2 * WIDGET_INSET;
+        double x = std::clamp(at.x - width / 2.0, (double)area.x, std::max((double)area.x, (double)(area.x + area.width - width)));
+        double y = std::clamp(at.y - height / 2.0, (double)area.y, std::max((double)area.y, (double)(area.y + area.height - height)));
+        return {(int)std::round(x), (int)std::round(y)};
     }
 
     /** Put a widget where it belongs: centered on its drop point (its screen edge for a widget
@@ -2236,7 +2324,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     /** Back to the window, at `at` (output coords); the widget goes (it isn't closed: WG5). */
-    void restore_window(widget_link_t& link, std::optional<wf::pointf_t> at)
+    void restore_window(widget_link_t& link, std::optional<wf::pointf_t> at, bool grow = false)
     {
         auto window = wf::toplevel_cast(link.window.lock());
         auto widget = wf::toplevel_cast(link.widget.lock());
@@ -2256,7 +2344,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 window->move(std::round(at->x - g.width / 2.0), std::round(at->y - g.height / 2.0));
                 // At once at the size it has here: the drag already showed it at this size (the
                 // morph), so the drop is just a drop, no growing from its size on the rail.
-                set_scale_now(window, placement_of(window).scale);
+                // Opened from the widget (a click), it grows out of it instead.
+                if (!grow)
+                {
+                    set_scale_now(window, placement_of(window).scale);
+                }
             }
 
             set_hidden(link, false);
@@ -2405,7 +2497,33 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         std::string action = data["action"].as_string();
-        if (action == "minimize")
+        if (action == "open")
+        {
+            // The widget clicked: its window comes back in the middle of the screen, flying out
+            // of the widget and growing to its size there (WG17).
+            auto widget = wf::toplevel_cast(found->second.widget.lock());
+            auto window = wf::toplevel_cast(found->second.window.lock());
+            auto output = widget ? widget->get_output() : (window ? window->get_output() : nullptr);
+            if (!output)
+            {
+                return wf::ipc::json_error("the widget has no screen");
+            }
+
+            auto area = output->workarea->get_workarea();
+            wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
+            wf::pointf_t from = middle;
+            if (widget)
+            {
+                auto g = widget->get_geometry();
+                from = {g.x + g.width / 2.0, g.y + g.height / 2.0};
+            }
+
+            restore_window(found->second, middle, true);
+            if (window)
+            {
+                start_glide(window, from.x - middle.x, from.y - middle.y);
+            }
+        } else if (action == "minimize")
         {
             found->second.minimized = !found->second.minimized;
             announce_widgets();
@@ -2642,9 +2760,90 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         hold_view.reset();
     }
 
+    // Touch for apps that ignore touch (L26): such an app never gets the touch at all. Scottland
+    // takes it before delivery (the window under the finger is found here, as the compositor
+    // hasn't routed it yet) and gives the app only the pointer equivalent: scrolling, a quick tap
+    // as a click; a long press still lifts the window.
+    std::map<int, std::weak_ptr<wf::view_interface_t>> captured_touches;  // finger -> the window it's on
+    /** Where a touch event's 0..1 position is on the screens (the touchscreen's own screen, or
+     *  the whole layout when it names none). */
+    static wf::pointf_t touch_to_layout(wlr_touch *touch, double x, double y)
+    {
+        wf::geometry_t box{0, 0, 0, 0};
+        wf::output_t *mapped = nullptr;
+        for (auto output : wf::get_core().output_layout->get_outputs())
+        {
+            if (touch && touch->output_name && (output->to_string() == touch->output_name))
+            {
+                mapped = output;
+            }
+        }
+
+        auto outputs = wf::get_core().output_layout->get_outputs();
+        if (!mapped && (outputs.size() == 1))
+        {
+            mapped = outputs.front();
+        }
+
+        if (mapped)
+        {
+            box = mapped->get_layout_geometry();
+        } else
+        {
+            wlr_box whole;
+            wlr_output_layout_get_box(wf::get_core().output_layout->get_handle(), nullptr, &whole);
+            box = {whole.x, whole.y, whole.width, whole.height};
+        }
+
+        return {box.x + x * box.width, box.y + y * box.height};
+    }
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_touch_down_event>> on_touch_down_capture =
+        [=] (wf::input_event_signal<wlr_touch_down_event> *ev)
+    {
+        if (!captured_touches.empty() || !wf::get_core().get_touch_state().fingers.empty())
+        {
+            return;  // another finger is down: a multi-finger touch, the app's as usual
+        }
+
+        auto at  = touch_to_layout(ev->event->touch, ev->event->x, ev->event->y);
+        auto hit = wf::get_core().scene()->find_node_at(at);
+        if (!hit || dynamic_cast<scottland::frame_t*>(hit->node.get()))
+        {
+            return;  // nothing, or the halo (the frame handles it)
+        }
+
+        auto view = wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this()));
+        if (view && view->is_mapped() && frame_of(view, false) && wants_touch_scroll(view))
+        {
+            // The compositor follows the touch as usual; the app gets nothing of it.
+            ev->mode = wf::input_event_processing_mode_t::NO_CLIENT;
+            captured_touches[ev->event->touch_id] = view->weak_from_this();
+        }
+    };
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_touch_motion_event>> on_touch_motion_capture =
+        [=] (wf::input_event_signal<wlr_touch_motion_event> *ev)
+    {
+        if (captured_touches.count(ev->event->touch_id))
+        {
+            ev->mode = wf::input_event_processing_mode_t::NO_CLIENT;
+        }
+    };
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_touch_up_event>> on_touch_up_capture =
+        [=] (wf::input_event_signal<wlr_touch_up_event> *ev)
+    {
+        if (captured_touches.count(ev->event->touch_id))
+        {
+            ev->mode = wf::input_event_processing_mode_t::NO_CLIENT;
+        }
+    };
+
     wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_down_event>> on_touch_down =
         [=] (wf::post_input_event_signal<wlr_touch_down_event> *ev)
     {
+
         int finger = ev->event->touch_id;
         if ((hold_finger >= 0) || (lifted_finger >= 0) ||
             (wf::get_core().get_touch_state().fingers.size() != 1))
@@ -2654,13 +2853,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        // A captured touch has no focus in the compositor (it goes to no app): its window is known.
+        auto captured = captured_touches.find(finger);
         auto focus = wf::get_core().get_touch_focus(finger);
-        if (!focus || dynamic_cast<scottland::frame_t*>(focus.get()))
+        if ((captured == captured_touches.end()) && (!focus || dynamic_cast<scottland::frame_t*>(focus.get())))
         {
             return;  // nothing, or the halo (the frame handles it)
         }
 
-        auto view = wf::toplevel_cast(wf::node_to_view(focus));
+        auto view = captured != captured_touches.end() ? wf::toplevel_cast(captured->second.lock()) :
+            wf::toplevel_cast(wf::node_to_view(focus));
         if (!view || !view->is_mapped() || !frame_of(view, false) ||
             !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
         {
@@ -2677,6 +2879,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_motion_event>> on_touch_motion =
         [=] (wf::post_input_event_signal<wlr_touch_motion_event> *ev)
     {
+
         if ((ev->event->touch_id == lifted_finger) && drag->view)
         {
             // The lifted window follows the finger.
@@ -2700,12 +2903,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_up_event>> on_touch_up =
         [=] (wf::post_input_event_signal<wlr_touch_up_event> *ev)
     {
+
         if (ev->event->touch_id == hold_finger)
         {
             cancel_hold();
         }
 
         end_touch_scroll(ev->event->touch_id, true);
+        captured_touches.erase(ev->event->touch_id);
         if (ev->event->touch_id == lifted_finger)
         {
             lifted_finger = -1;
@@ -2728,8 +2933,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         int finger = hold_finger;
         auto view  = wf::toplevel_cast(hold_view.lock());
         cancel_hold();
-        if (!view || !view->is_mapped() || drag->view ||
-            !wf::get_core().get_touch_state().fingers.count(finger))
+        auto captured = captured_touches.find(finger);
+        bool is_captured = captured != captured_touches.end();
+        if (!view || !view->is_mapped() || drag->view || !wf::get_core().get_touch_state().fingers.count(finger))
         {
             return;
         }
@@ -2741,12 +2947,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         end_touch_scroll(finger, false);
-        // The app already has this touch: tell it to forget it.
-        auto seat  = wf::get_core().get_current_seat();
-        auto point = wlr_seat_touch_get_point(seat, finger);
-        if (point && point->client)
+        if (!is_captured)  // (a captured touch never reached the app)
         {
-            wlr_seat_touch_notify_cancel(seat, point->client);
+            // The app already has this touch: tell it to forget it.
+            auto seat  = wf::get_core().get_current_seat();
+            auto point = wlr_seat_touch_get_point(seat, finger);
+            if (point && point->client)
+            {
+                wlr_seat_touch_notify_cancel(seat, point->client);
+            }
         }
 
         wf::get_core().default_wm->focus_raise_view(view);
@@ -2757,7 +2966,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     /** Drag `view` with finger `finger`, grabbed exactly where the finger is. */
-    void start_touch_drag(wayfire_toplevel_view view, int finger)
+    void start_touch_drag(wayfire_toplevel_view view, int finger, std::optional<wf::pointf_t> where = {})
     {
         if (drag->view)
         {
@@ -2765,7 +2974,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         lifted_finger = finger;
-        auto at = wf::get_core().get_touch_position(finger);
+        auto at = where.value_or(wf::get_core().get_touch_position(finger));
         drag_input_override = at;
         drag->set_pending_drag(at);
         wf::move_drag::drag_options_t options;
@@ -2839,6 +3048,24 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::pointf_t scroll_velocity{0, 0};  // px per ms, smoothed
     wf::wl_timer<true> momentum;
 
+    // Apps that take the touch-as-pointer scrolling as a wheel rather than smooth scrolling
+    // ([scottland] touch_scroll_wheel = <app-id regex>; shipped: Ghostty, which ignores smooth
+    // scrolling from Scottland's pointer).
+    wf::option_wrapper_t<std::string> touch_scroll_wheel{"scottland/touch_scroll_wheel"};
+    bool scroll_as_wheel = false;
+
+    bool wants_wheel(wayfire_view view)
+    {
+        std::string pattern = touch_scroll_wheel;
+        try {
+            return view && !pattern.empty() && std::regex_search(view->get_app_id(), std::regex(pattern, std::regex::icase));
+        } catch (const std::regex_error&)
+        {
+            LOGE("scottland: bad touch_scroll_wheel regex: ", pattern);
+            return false;
+        }
+    }
+
     bool wants_touch_scroll(wayfire_view view)
     {
         if (!view)
@@ -2868,7 +3095,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return false;
     }
 
-    void start_touch_scroll(int finger, wayfire_view view)
+    void start_touch_scroll(int finger, wayfire_view view, std::optional<wf::pointf_t> at = {})
     {
         if (!wants_touch_scroll(view))
         {
@@ -2881,31 +3108,23 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         momentum.disconnect();
+        scroll_as_wheel = wants_wheel(view);
         scroll_finger  = finger;
         scroll_moved   = false;
-        scroll_origin  = scroll_last = wf::get_core().get_touch_position(finger);
+        scroll_origin  = scroll_last = at.value_or(wf::get_core().get_touch_position(finger));
         scroll_down_time = scroll_last_time = now_msec();
         scroll_velocity  = {0, 0};
         touch_pointer->move_to(scroll_origin);  // the pointer goes where the finger is
-        // The app already got this touch, and an app that does something with touch (Ghostty
-        // selects text) would act on it too: tell it to forget it. Scottland scrolls, and turns
-        // a quick tap into a click.
-        auto seat  = wf::get_core().get_current_seat();
-        auto point = wlr_seat_touch_get_point(seat, finger);
-        if (point && point->client)
-        {
-            wlr_seat_touch_notify_cancel(seat, point->client);
-        }
     }
 
-    void touch_scroll_motion(int finger)
+    void touch_scroll_motion(int finger, std::optional<wf::pointf_t> where = {})
     {
         if (finger != scroll_finger)
         {
             return;
         }
 
-        auto at = wf::get_core().get_touch_position(finger);
+        auto at = where.value_or(wf::get_core().get_touch_position(finger));
         if (!scroll_moved && (std::hypot(at.x - scroll_origin.x, at.y - scroll_origin.y) < HOLD_SLOP))
         {
             return;  // not yet a scroll: still a tap, or a long press to lift
@@ -2916,7 +3135,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double dt = std::max(1u, now - scroll_last_time);
         wf::pointf_t d = {at.x - scroll_last.x, at.y - scroll_last.y};
         // Direct manipulation: the content follows the finger.
-        touch_pointer->scroll(-d.x, -d.y);
+        touch_pointer->scroll(-d.x, -d.y, scroll_as_wheel);
         scroll_velocity = {0.6 * (-d.x / dt) + 0.4 * scroll_velocity.x, 0.6 * (-d.y / dt) + 0.4 * scroll_velocity.y};
         scroll_last = at;
         scroll_last_time = now;
@@ -2932,7 +3151,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scroll_finger = -1;
         if (!lifted_off)
         {
-            touch_pointer->scroll(0, 0);  // stop
+            touch_pointer->scroll(0, 0, scroll_as_wheel);  // stop
             return;
         }
 
@@ -2949,17 +3168,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // A flick keeps going and eases out; a finger that stopped before lifting doesn't.
         if ((now_msec() - scroll_last_time > 80) || (std::hypot(scroll_velocity.x, scroll_velocity.y) < 0.2))
         {
-            touch_pointer->scroll(0, 0);
+            touch_pointer->scroll(0, 0, scroll_as_wheel);
             return;
         }
 
         momentum.set_timeout(16, [=] ()
         {
-            touch_pointer->scroll(scroll_velocity.x * 16, scroll_velocity.y * 16);
+            touch_pointer->scroll(scroll_velocity.x * 16, scroll_velocity.y * 16, scroll_as_wheel);
             scroll_velocity = {scroll_velocity.x * 0.94, scroll_velocity.y * 0.94};
             if (std::hypot(scroll_velocity.x, scroll_velocity.y) < 0.03)
             {
-                touch_pointer->scroll(0, 0);
+                touch_pointer->scroll(0, 0, scroll_as_wheel);
                 return false;
             }
 
@@ -3843,11 +4062,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             update_neighbors(view->get_output());
 
-            // A widget's place is Scottland's: whatever moved or resized it (another plugin placing
-            // new windows, a card whose title changed), it goes back to its place for its drop
-            // point, wholly on screen, its screen-edge side against the edge (WG4).
+            // A widget that changes size (a card whose title changed) keeps its screen-edge side
+            // against the edge, wholly on screen (WG4).
+            auto g = view->get_geometry();
             if (auto link = link_of_widget(view); link && !link->preview && (drag->view != view) &&
-                (view->get_id() != dragged_widget))  // a drop is moving it: the drop decides
+                (view->get_id() != dragged_widget) &&  // a drop is moving it: the drop decides
+                ((g.width != ev->old_geometry.width) || (g.height != ev->old_geometry.height)))
             {
                 keep_in_place(*link, view);
             }
@@ -4115,6 +4335,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_swipe_update);
         wf::get_core().connect(&on_swipe_end);
         wf::get_core().connect(&on_touchpad_button);
+        wf::get_core().connect(&on_touch_down_capture);
+        wf::get_core().connect(&on_touch_motion_capture);
+        wf::get_core().connect(&on_touch_up_capture);
         wf::get_core().connect(&on_touch_down);
         wf::get_core().connect(&on_touch_motion);
         wf::get_core().connect(&on_touch_up);
@@ -4124,6 +4347,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
         ipc_repo->register_method("scottland/attention", attention_method);
+        wf::get_core().tx_manager->connect(&on_new_transaction);
         take_handover();
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
@@ -4175,6 +4399,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_swipe_end.disconnect();
         on_touchpad_button.disconnect();
         on_touch_down.disconnect();
+        on_touch_down_capture.disconnect();
+        on_touch_motion_capture.disconnect();
+        on_touch_up_capture.disconnect();
         on_touch_motion.disconnect();
         on_touch_up.disconnect();
         cancel_hold();
@@ -4187,6 +4414,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);
         on_focus_request.disconnect();
+        on_new_transaction.disconnect();
         on_activate.disconnect();
         // Unloading gives every app its window back. A reload (scottland-reload marks it) hands the
         // widgets over instead: they stay, their windows stay hidden, and the new plugin takes
@@ -4194,6 +4422,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         end_morph();
         widget_watchdog.disconnect();
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
+        if (reloading && widgets_collapsed)
+        {
+            std::ofstream(runtime_file(".widgets-collapsed")) << "1\n";  // the mode, for the next plugin
+        }
+
         wf::json_t handover = wf::json_t::array();
         for (auto& [id, link] : widget_links)
         {

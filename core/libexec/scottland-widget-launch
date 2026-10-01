@@ -189,6 +189,8 @@ def main():
         "SCOTTLAND_WIDGET_PID": values["p"],
         "SCOTTLAND_WIDGET_WINDOW": values["w"],
         "SCOTTLAND_WIDGET_RAIL": values["r"],
+        # "1" when widgets are collapsed to their icons (Super+M) as it starts; then live
+        "SCOTTLAND_WIDGET_MINIMIZED": "1" if context.get("minimized") else "",
         "SCOTTLAND_WIDGET_NAME": entry.get("Name", ""),
         "SCOTTLAND_WIDGET_DESKTOP": desktop_id or "",
         "SCOTTLAND_WIDGET_BADGE": "0",

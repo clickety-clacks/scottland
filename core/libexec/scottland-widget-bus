@@ -50,6 +50,7 @@ WIDGET_XML = """
     <property name="Data" type="s" access="read"/>
     <property name="Minimized" type="b" access="read"/>
     <method name="Restore"/>
+    <method name="Open"/>
     <method name="Close"/>
     <method name="Focus"/>
   </interface>
@@ -388,7 +389,7 @@ class Service:
 
     def on_widget_call(self, _conn, _sender, path, _iface, method, _params, invocation):
         wid = path.rsplit("/", 1)[-1]
-        action = {"Restore": "restore", "Close": "close", "Focus": "focus"}.get(method)
+        action = {"Restore": "restore", "Open": "open", "Close": "close", "Focus": "focus"}.get(method)
         try:
             reply = self.ipc.call("scottland/widget-action", {"id": wid, "action": action})
         except (OSError, ConnectionError, ValueError) as error:

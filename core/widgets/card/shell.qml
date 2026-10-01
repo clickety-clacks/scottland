@@ -18,8 +18,8 @@ FloatingWindow {
     readonly property int gap: 14
     readonly property int maxWidth: 320
     readonly property bool hasText: appName !== "" || appTitle !== ""
-    // Minimized (Super+M, from the state file): just the icon.
-    property bool minimized: false
+    // Minimized (Super+M; SCOTTLAND_WIDGET_MINIMIZED, then the state file): just the icon.
+    property bool minimized: Quickshell.env("SCOTTLAND_WIDGET_MINIMIZED") === "1"
     readonly property bool showsText: hasText && !minimized
     // Without text the row is just the icon: centered in the square card.
     readonly property int rowPad: showsText ? pad : (implicitHeight - iconSize) / 2
@@ -91,6 +91,14 @@ FloatingWindow {
         anchors.fill: parent
         radius: 16
         color: root.background
+
+        // A click opens the app's window in the middle of the screen (WG17).
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: Quickshell.execDetached(["busctl", "--user", "call", "org.scottland.Widgets",
+                "/org/scottland/widget/" + (Quickshell.env("SCOTTLAND_WIDGET_ID") || ""), "org.scottland.Widget", "Open"])
+        }
 
         // The icon sits on the screen-edge side: left of the text on the left rail, right of it on
         // the right rail (RightToLeft lays the row out mirrored), following the rail live.
