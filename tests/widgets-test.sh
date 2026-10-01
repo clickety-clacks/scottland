@@ -94,7 +94,7 @@ cleanup() {
   rm -rf "$test_widgets" "${src:-/nonexistent}"
 }
 trap cleanup EXIT
-display=$(cat "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/display")
+display=$(cat "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/display")
 state_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/widgets/$display
 signals=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-signals.XXXXXX")
 tests/headless.sh run gdbus monitor --session --dest org.scottland.Widgets >"$signals" 2>&1 &
@@ -873,7 +873,7 @@ sleep 2.5
 carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
 mark=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.reloading
 touch "$mark"
-fresh=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/libscottland-test-$(date +%s%N).so
+fresh=${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/libscottland-test-$(date +%s%N).so
 cp build/libscottland.so "$fresh"
 plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
 h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': ' '.join(sys.argv[2] if p == 'scottland' or '/libscottland-' in p else p for p in sys.argv[1].split())}))" "$plugins" "$fresh")"
