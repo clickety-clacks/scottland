@@ -5,6 +5,10 @@
   scottland-ctl set scale_curve "0:1 0.4:0.6 1:0.2"
   scottland-ctl set min_scale 0.3        apply a value to the running session (not saved)
   scottland-ctl stdin                    apply "name value" lines from stdin (used by the settings app)
+  scottland-ctl windows                  list open windows: app-id, zone, scale, title
+  scottland-ctl option scottland/sounds  print an option's live value (any Wayfire option)
+
+Outside a Scottland session it runs inside one through scottland-exec.
 """
 import json
 import os
@@ -17,6 +21,9 @@ TEXT = ("scale_curve",)
 
 
 def connect():
+    if not os.environ.get("WAYFIRE_SOCKET") and not os.environ.get("SCOTTLAND_EXEC"):
+        here = os.path.dirname(os.path.realpath(__file__))
+        os.execvp(os.path.join(here, "scottland-exec"), ["scottland-exec", "--", os.path.realpath(__file__), *sys.argv[1:]])
     sock = socket.socket(socket.AF_UNIX)
     sock.connect(os.environ["WAYFIRE_SOCKET"])
     return sock
@@ -51,6 +58,12 @@ def main():
         print(json.dumps(values))
     elif command == "set" and len(sys.argv) == 4 and sys.argv[2] in NAMES:
         print(json.dumps(call(sock, "wayfire/set-config-options", {f"scottland/{sys.argv[2]}": sys.argv[3]})))
+    elif command == "option" and len(sys.argv) == 3:
+        reply = call(sock, "wayfire/get-config-option", {"option": sys.argv[2]})
+        print(json.dumps(reply.get("value", reply)))
+    elif command == "windows":
+        for view in call(sock, "scottland/layout-state", {}).get("views", []):
+            print(f"{view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")
     elif command == "stdin":
         for line in sys.stdin:
             parts = line.strip().split(None, 1)

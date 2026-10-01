@@ -1,0 +1,15 @@
+#!/bin/sh
+# Make Scottland's agent skill available to the user's coding-agent harnesses, the way Omarchy
+# links its own: a symlink in each harness's skills folder, for harnesses that are installed.
+src="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/agents/skills"
+[ -d "$src" ] || src=/usr/share/scottland/agents/skills
+[ -d "$src" ] || exit 0
+for harness in "$HOME/.claude" "$HOME/.codex" "$HOME/.agents" "$HOME/.pi/agent" "$HOME/.hermes" "$HOME"/.hermes/profiles/*; do
+  [ -d "$harness" ] || continue
+  mkdir -p "$harness/skills"
+  for skill in "$src"/*/; do
+    [ -f "$skill/SKILL.md" ] || continue
+    name=$(basename "$skill")
+    ln -sfn "${skill%/}" "$harness/skills/$name"
+  done
+done

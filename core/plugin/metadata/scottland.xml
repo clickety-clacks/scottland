@@ -81,6 +81,14 @@
 			<_long>Grow or shrink the window under the pointer symmetrically around its center.</_long>
 			<default>&lt;super&gt; BTN_RIGHT</default>
 		</option>
+		<option name="touch_scroll" type="dynamic-list" type-hint="dict">
+			<_short>Touch scrolling for apps that ignore touch</_short>
+			<_long>For apps whose app-id matches (case-insensitive regex), a one-finger drag on the touchscreen scrolls (with momentum) and a quick tap clicks. Set an entry to empty to turn a shipped default off.</_long>
+			<entry prefix="touch_scroll_" type="string" name="apps">
+				<_short>Apps</_short>
+				<_long>Regular expression matched against the app-id.</_long>
+			</entry>
+		</option>
 		<option name="key_remaps" type="dynamic-list" type-hint="dict">
 			<_short>Per-app key remaps</_short>
 			<_long>For apps whose app-id matches, turn one key combination into another before bindings and the app see it.</_long>

@@ -27,6 +27,9 @@ extern "C" {
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/backend/libinput.h>
+#include <wlr/backend/headless.h>
+#include <wlr/backend/multi.h>
+#include <wlr/interfaces/wlr_pointer.h>
 }
 
 #include <libinput.h>
@@ -589,6 +592,85 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
             target->toplevel()->pending().gravity  = 0;
             target->toplevel()->pending().geometry = desired;
             wf::get_core().tx_manager->schedule_object(target->toplevel());
+        }
+    }
+};
+
+/**
+ * A pointer device of Scottland's own. Its events go through Wayfire's normal input path, like
+ * any mouse, so pointer focus and delivery stay right. Used to give apps that ignore touch the
+ * pointer equivalent of a finger: scrolling and clicks.
+ */
+class virtual_pointer_t
+{
+    static inline const wlr_pointer_impl impl = {.name = "scottland-touch-pointer"};
+    wlr_backend *backend = nullptr;
+
+  public:
+    wlr_pointer pointer;
+
+    virtual_pointer_t()
+    {
+        auto& core = wf::get_core();
+        backend = wlr_headless_backend_create(core.ev_loop);
+        wlr_multi_backend_add(core.backend, backend);
+        wlr_pointer_init(&pointer, &impl, "scottland-touch-pointer");
+        wl_signal_emit_mutable(&backend->events.new_input, &pointer.base);
+        if (core.get_current_state() >= wf::compositor_state_t::RUNNING)
+        {
+            wlr_backend_start(backend);
+        }
+    }
+
+    ~virtual_pointer_t()
+    {
+        wlr_pointer_finish(&pointer);
+        wlr_multi_backend_remove(wf::get_core().backend, backend);
+        wlr_backend_destroy(backend);
+    }
+
+    void move_to(wf::pointf_t to)
+    {
+        auto cursor = wf::get_core().get_cursor_position();
+        wlr_pointer_motion_event ev;
+        ev.pointer   = &pointer;
+        ev.time_msec = now_msec();
+        ev.delta_x   = ev.unaccel_dx = to.x - cursor.x;
+        ev.delta_y   = ev.unaccel_dy = to.y - cursor.y;
+        wl_signal_emit(&pointer.events.motion, &ev);
+        wl_signal_emit(&pointer.events.frame, NULL);
+    }
+
+    void scroll(double dx, double dy)
+    {
+        for (auto [orientation, delta] : {std::pair{WL_POINTER_AXIS_VERTICAL_SCROLL, dy},
+            std::pair{WL_POINTER_AXIS_HORIZONTAL_SCROLL, dx}})
+        {
+            wlr_pointer_axis_event ev;
+            ev.pointer     = &pointer;
+            ev.time_msec   = now_msec();
+            ev.source      = WL_POINTER_AXIS_SOURCE_FINGER;  // smooth, like a trackpad
+            ev.orientation = orientation;
+            ev.relative_direction = WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL;
+            ev.delta = delta;
+            ev.delta_discrete = 0;
+            wl_signal_emit(&pointer.events.axis, &ev);
+        }
+
+        wl_signal_emit(&pointer.events.frame, NULL);
+    }
+
+    void click(uint32_t button)
+    {
+        for (auto state : {WL_POINTER_BUTTON_STATE_PRESSED, WL_POINTER_BUTTON_STATE_RELEASED})
+        {
+            wlr_pointer_button_event ev;
+            ev.pointer   = &pointer;
+            ev.time_msec = now_msec();
+            ev.button    = button;
+            ev.state     = state;
+            wl_signal_emit(&pointer.events.button, &ev);
+            wl_signal_emit(&pointer.events.frame, NULL);
         }
     }
 };
@@ -1190,6 +1272,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             (wf::get_core().get_touch_state().fingers.size() != 1))
         {
             cancel_hold();  // a second finger: this is a multi-finger touch, never a lift
+            end_touch_scroll(scroll_finger, false);
             return;
         }
 
@@ -1206,6 +1289,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        start_touch_scroll(finger, view);
         hold_finger = finger;
         hold_origin = wf::get_core().get_touch_position(finger);
         hold_view   = view->weak_from_this();
@@ -1222,6 +1306,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        touch_scroll_motion(ev->event->touch_id);
         if (ev->event->touch_id != hold_finger)
         {
             return;
@@ -1242,6 +1327,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             cancel_hold();
         }
 
+        end_touch_scroll(ev->event->touch_id, true);
         if (ev->event->touch_id == lifted_finger)
         {
             lifted_finger = -1;
@@ -1276,6 +1362,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        end_touch_scroll(finger, false);
         // The app already has this touch: tell it to forget it.
         auto seat  = wf::get_core().get_current_seat();
         auto point = wlr_seat_touch_get_point(seat, finger);
@@ -1358,6 +1445,138 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         wf::get_core().run("pw-play '" + pop_sound + "' 2>/dev/null || paplay '" + pop_sound +
             "' 2>/dev/null || aplay -q '" + pop_sound + "' 2>/dev/null");
+    }
+
+    // Touch as pointer (L26). Apps that ignore touch (terminals, mostly) get a finger's pointer
+    // equivalent: a one-finger drag scrolls smoothly, with momentum after a flick, and a quick tap
+    // clicks. Which apps: [scottland] touch_scroll_<name> = <app-id regex>, shipped for common
+    // ones and set, added to or emptied in the user's overrides. Long press still lifts the window.
+    wf::option_wrapper_t<wf::config::compound_list_t<std::string>> touch_scroll_apps{"scottland/touch_scroll"};
+    std::unique_ptr<virtual_pointer_t> touch_pointer;
+    int scroll_finger = -1;
+    bool scroll_moved = false;
+    wf::pointf_t scroll_origin, scroll_last;
+    uint32_t scroll_down_time = 0, scroll_last_time = 0;
+    wf::pointf_t scroll_velocity{0, 0};  // px per ms, smoothed
+    wf::wl_timer<true> momentum;
+
+    bool wants_touch_scroll(wayfire_view view)
+    {
+        if (!view)
+        {
+            return false;
+        }
+
+        std::string app = view->get_app_id();
+        for (const auto& [name, pattern] : touch_scroll_apps.value())
+        {
+            if (pattern.empty())
+            {
+                continue;  // an emptied entry: the user switched a default off
+            }
+
+            try {
+                if (std::regex_search(app, std::regex(pattern, std::regex::icase)))
+                {
+                    return true;
+                }
+            } catch (const std::regex_error&)
+            {
+                LOGE("scottland: bad touch_scroll_", name, " regex: ", pattern);
+            }
+        }
+
+        return false;
+    }
+
+    void start_touch_scroll(int finger, wayfire_view view)
+    {
+        if (!wants_touch_scroll(view))
+        {
+            return;
+        }
+
+        if (!touch_pointer)
+        {
+            touch_pointer = std::make_unique<virtual_pointer_t>();
+        }
+
+        momentum.disconnect();
+        scroll_finger  = finger;
+        scroll_moved   = false;
+        scroll_origin  = scroll_last = wf::get_core().get_touch_position(finger);
+        scroll_down_time = scroll_last_time = now_msec();
+        scroll_velocity  = {0, 0};
+        touch_pointer->move_to(scroll_origin);  // the pointer goes where the finger is
+    }
+
+    void touch_scroll_motion(int finger)
+    {
+        if (finger != scroll_finger)
+        {
+            return;
+        }
+
+        auto at = wf::get_core().get_touch_position(finger);
+        if (!scroll_moved && (std::hypot(at.x - scroll_origin.x, at.y - scroll_origin.y) < HOLD_SLOP))
+        {
+            return;  // not yet a scroll: still a tap, or a long press to lift
+        }
+
+        scroll_moved = true;
+        uint32_t now = now_msec();
+        double dt = std::max(1u, now - scroll_last_time);
+        wf::pointf_t d = {at.x - scroll_last.x, at.y - scroll_last.y};
+        // Direct manipulation: the content follows the finger.
+        touch_pointer->scroll(-d.x, -d.y);
+        scroll_velocity = {0.6 * (-d.x / dt) + 0.4 * scroll_velocity.x, 0.6 * (-d.y / dt) + 0.4 * scroll_velocity.y};
+        scroll_last = at;
+        scroll_last_time = now;
+    }
+
+    void end_touch_scroll(int finger, bool lifted_off)
+    {
+        if ((finger < 0) || (finger != scroll_finger) || !touch_pointer)
+        {
+            return;
+        }
+
+        scroll_finger = -1;
+        if (!lifted_off)
+        {
+            touch_pointer->scroll(0, 0);  // stop
+            return;
+        }
+
+        if (!scroll_moved)
+        {
+            if (now_msec() - scroll_down_time < 300)
+            {
+                touch_pointer->click(BTN_LEFT);
+            }
+
+            return;
+        }
+
+        // A flick keeps going and eases out; a finger that stopped before lifting doesn't.
+        if ((now_msec() - scroll_last_time > 80) || (std::hypot(scroll_velocity.x, scroll_velocity.y) < 0.2))
+        {
+            touch_pointer->scroll(0, 0);
+            return;
+        }
+
+        momentum.set_timeout(16, [=] ()
+        {
+            touch_pointer->scroll(scroll_velocity.x * 16, scroll_velocity.y * 16);
+            scroll_velocity = {scroll_velocity.x * 0.94, scroll_velocity.y * 0.94};
+            if (std::hypot(scroll_velocity.x, scroll_velocity.y) < 0.03)
+            {
+                touch_pointer->scroll(0, 0);
+                return false;
+            }
+
+            return true;
+        });
     }
 
     // Tests can't produce real touchpad gestures: this feeds the same handlers synthetic ones.
@@ -1637,6 +1856,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             wf::json_t entry;
             entry["id"]    = (int64_t)view->get_id();
             entry["title"] = view->get_title();
+            entry["app_id"] = view->get_app_id();
             entry["zone"]  = zone_name(placement.zone);
             entry["scale"] = placement.scale;
             auto transformer = view->get_transformed_node()->get_transformer<
@@ -1726,7 +1946,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
 #if WAYFIRE_API_ABI_VERSION_MACRO <= 2026'07'26
         if ((ev->event->source == WL_POINTER_AXIS_SOURCE_FINGER) && ev->device &&
-            (ev->device->type == WLR_INPUT_DEVICE_POINTER))
+            (ev->device->type == WLR_INPUT_DEVICE_POINTER) &&
+            !(touch_pointer && (ev->device == &touch_pointer->pointer.base)))
         {
             double speed = std::max(0.0, (double)touchpad_scroll_speed);
             ev->event->delta *= speed;
@@ -1904,6 +2125,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_touch_motion.disconnect();
         on_touch_up.disconnect();
         cancel_hold();
+        momentum.disconnect();
+        touch_pointer.reset();
         ipc_repo->unregister_method("scottland/test-input");
         on_motion_abs.disconnect();
         on_button.disconnect();
