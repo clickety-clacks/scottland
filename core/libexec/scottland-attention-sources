@@ -167,6 +167,8 @@ class Service:
         if snapshot.get("session") == self.snapshot.get("session") and snapshot.get("version", -1) <= self.snapshot["version"]:
             return
         previous = {v["id"]: set(v["attention"]) for v in self.snapshot["windows"]}
+        if snapshot.get("session") != self.snapshot.get("session"):
+            previous = {}
         current = {v["id"]: set(v["attention"]) for v in snapshot["windows"]}
         self.snapshot = snapshot
         for source in self.sources:
@@ -180,10 +182,7 @@ class Service:
         entries = source.entries()
         if entries is None:
             return
-        try:
-            views = self.ipc.call("window-rules/list-views")
-        except (OSError, ConnectionError, ValueError):
-            views = []
+        views = self.snapshot["windows"]
         listed = {}
         for entry in entries:
             window = source.window_of(entry, views if isinstance(views, list) else [])
@@ -195,11 +194,12 @@ class Service:
             if window not in marked:
                 reply = self.ipc.call("scottland/attention",
                                       {"window": window, "attention": True, "source": source.name})
+                self.replace_snapshot(reply)
                 if reply.get("in_front"):
                     source.run_answered(entry)
         for window in marked - listed.keys():
-            self.ipc.call("scottland/attention", {"window": window, "attention": False, "source": source.name})
-        self.replace_snapshot(self.ipc.call("scottland/desktop-model", {"slice": "attention"}))
+            self.replace_snapshot(self.ipc.call("scottland/attention",
+                                                {"window": window, "attention": False, "source": source.name}))
 
     def run(self):
         events = Ipc()

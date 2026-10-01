@@ -1575,7 +1575,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (active && ((active->get_id() == window) ||
                 ((link != model.widgets.end()) && (link->second.widget.lock().get() == active.get()))))
             {
-                auto reply = wf::ipc::json_ok();
+                auto reply = model_snapshot("attention");
+                reply["version"] = (int64_t)model.version;
                 reply["in_front"] = true;  // already in front of the user: nothing to show, answered
                 return reply;
             }
@@ -1587,7 +1588,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             show_attention(window);  // only that source's is taken back
         }
 
-        return wf::ipc::json_ok();
+        auto reply = model_snapshot("attention");
+        reply["version"] = (int64_t)model.version;
+        return reply;
     };
 
     /** Send a custom IPC event (names must end in '#') to subscribed clients. */
