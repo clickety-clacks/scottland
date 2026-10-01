@@ -1216,6 +1216,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             announced_scale.erase(toplevel->get_id());
+            disabled_nodes.erase(toplevel->get_id());
             if (auto frame = frame_of(toplevel, false))
             {
                 forget_owner(frame);
@@ -1226,7 +1227,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // closed by the user closes the app's window (unless it's going because of a restore).
             if (auto link = link_of_window(toplevel))
             {
-                set_hidden(*link, false);  // if it maps again, it's an ordinary window
+                transition_widget(*link, widget_link_t::lifecycle_t::closing);  // if it maps again, it's an ordinary window
                 auto widget = wf::toplevel_cast(link->widget.lock());
                 auto launcher = link->launcher;
                 widget_links.erase(uint64_t(link->window_id));
@@ -1234,10 +1235,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 close_view_or_process(widget, launcher);
             } else if (auto link = link_of_widget(toplevel))
             {
-                if (link->dismissing || link->preview)  // a preview going is no reason to close the app
+                if (!link->docked())  // a preview going is no reason to close the app
                 {
                     auto launcher = link->launcher;
-                    bool preview  = link->preview;
+                    bool preview  = link->previewing();
                     widget_links.erase(uint64_t(link->window_id));
                     if (preview)
                     {
@@ -1290,12 +1291,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::output_t *output = nullptr;
         wf::pointf_t drop;                           // where the window was dropped (output coords)
         std::string rail;                            // "left" or "right"
-        bool dismissing = false;                     // restoring the window: the widget just goes
-        bool hidden = false;                         // holds a disable on the app's window
-        bool preview = false;                        // launched during a drag over a rail (WG13): the
-                                                     // window isn't hidden yet, the widget is kept unseen
-        bool widget_hidden = false;                  // holds a disable on the widget's window
-        bool minimized = false;                      // shown as just its icon (Super+M, WG16)
+        enum class lifecycle_t { previewing, docked, restoring, closing, handed_over };
+        lifecycle_t lifecycle = lifecycle_t::previewing;
+        bool collapsed = false;                      // presentation, independent of lifecycle
+
+        bool previewing() const { return lifecycle == lifecycle_t::previewing; }
+        bool docked() const { return lifecycle == lifecycle_t::docked; }
         bool touch_drag = false;                     // a finger drag anywhere moves it (its manifest, WG18)
         uint32_t launched_at = 0;
     };
@@ -1334,7 +1335,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool on   = needs_attention(window);
         auto link = widget_links.find(window);
         auto view = view_by_id(window);
-        bool widgetized = (link != widget_links.end()) && !link->second.preview;
+        bool widgetized = (link != widget_links.end()) && !link->second.previewing();
         if (view && view->is_mapped())
         {
             if (auto frame = frame_of(view, false))
@@ -1385,10 +1386,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool all_minimized = true, any = false;
         for (auto& [id, link] : widget_links)
         {
-            if (!link.preview)
+            if (!link.previewing())
             {
                 any = true;
-                all_minimized &= link.minimized;
+                all_minimized &= link.collapsed;
             }
         }
 
@@ -1399,9 +1400,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         for (auto& [id, link] : widget_links)
         {
-            if (!link.preview)
+            if (!link.previewing())
             {
-                link.minimized = !all_minimized;
+                link.collapsed = !all_minimized;
             }
         }
 
@@ -1471,7 +1472,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool from_input = token && token->seat && token->surface;
         auto source = from_input ? wf::wl_surface_to_wayfire_view(token->surface->resource) : nullptr;
         bool from_active_app = source && active && (source->get_client() == active->get_client());
-        if ((!link || link->preview) && from_active_app)
+        if ((!link || link->previewing()) && from_active_app)
         {
             wf::get_core().default_wm->focus_raise_view(view);
             return;
@@ -1488,7 +1489,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto view = wf::toplevel_cast(ev->view);
         auto link = view ? link_of_window(view) : nullptr;
-        if (!link || link->preview || ev->carried_out)
+        if (!link || link->previewing() || ev->carried_out)
         {
             return;
         }
@@ -1684,21 +1685,44 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return link_of_widget(view) != nullptr;
     }
 
-    /** Hide the app's window behind its widget, or show it again. Wayfire counts disables (its
-     *  own unmap is one too), so the link remembers whether it holds one and gives back exactly
-     *  that: a window unmapped and remapped while widgetized isn't left hidden. */
-    static void set_hidden(widget_link_t& link, bool hidden)
+    // Rendering resources, not desktop state: each entry holds exactly one Wayfire disable.
+    std::set<uint64_t> disabled_nodes;
+
+    void render_hidden(wayfire_view view, bool hidden)
     {
-        auto window = link.window.lock();
-        if (!window || (link.hidden == hidden))
+        if (!view || (bool(disabled_nodes.count(view->get_id())) == hidden))
         {
             return;
         }
 
-        wf::scene::set_node_enabled(window->get_root_node(), !hidden);
-        link.hidden = hidden;
+        wf::scene::set_node_enabled(view->get_root_node(), !hidden);
+        if (hidden)
+        {
+            disabled_nodes.insert(view->get_id());
+        } else
+        {
+            disabled_nodes.erase(view->get_id());
+        }
     }
 
+    /** Apply a lifecycle to the scene. All logical lifecycle changes go through here; the
+     *  disable leases above only keep Wayfire's reference counts balanced. */
+    void transition_widget(widget_link_t& link, widget_link_t::lifecycle_t next)
+    {
+        link.lifecycle = next;
+        render_hidden(link.window.lock(), link.docked() || next == widget_link_t::lifecycle_t::handed_over);
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        bool hidden = !link.docked() && next != widget_link_t::lifecycle_t::handed_over;
+        render_hidden(widget, hidden);
+        if (widget)
+        {
+            if (auto frame = frame_of(widget))
+            {
+                frame->alpha = hidden ? 0.0 : 1.0;
+                frame->damage();
+            }
+        }
+    }
 
     /** Widgets asked to go, ended if they're still running at their deadline. */
     struct ending_t
@@ -1854,7 +1878,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto existing = link_of_window(view))
         {
-            if (existing->preview && !preview)
+            if (existing->previewing() && !preview)
             {
                 auto g = view->get_geometry();
                 commit_preview(*existing, {g.x + g.width / 2.0, g.y + g.height / 2.0});
@@ -1887,7 +1911,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         context["pid"]    = (int64_t)view_pid(view);
         context["rail"]   = link.rail;
         context["minimized"] = widgets_collapsed;  // so it starts in the mode, even as a preview
-        link.minimized = widgets_collapsed;
+        link.collapsed = widgets_collapsed;
         auto process = std::make_shared<widget_process_t>();
         const char *display = getenv("WAYLAND_DISPLAY");
         process->unit = "scottland-widget-" + std::string(display ? display : "wayland") + "-" +
@@ -1909,11 +1933,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Taken right away, while the process is certainly the one just started.
         process->pidfd = pidfd_open(process->pid, 0);
         link.launcher  = process;
-        link.preview   = preview;
+        transition_widget(link, preview ? widget_link_t::lifecycle_t::previewing : widget_link_t::lifecycle_t::docked);
 
         if (!preview)
         {
-            set_hidden(link, true);
             if (wf::get_core().seat->get_active_view() == view)
             {
                 wf::get_core().seat->refocus();
@@ -1942,7 +1965,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (!link.widget.lock() && (now_msec() - link.launched_at > WIDGET_ADOPT_MS))
             {
                 LOGE("scottland: no widget window appeared for window ", link.window_id, "; restoring it");
-                set_hidden(link, false);
+                transition_widget(link, widget_link_t::lifecycle_t::restoring);
                 end_process(link.launcher, 0);  // a late widget would show up unlinked
                 it = widget_links.erase(it);
                 announce_widgets();
@@ -1973,10 +1996,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             link.widget = view->weak_from_this();
             set_scale(view, 1.0);
-            if (link.preview)
+            if (link.previewing())
             {
                 // Unseen until the drop: the dragged window's frame shows it as it morphs.
-                set_widget_hidden(link, true);
+                transition_widget(link, link.lifecycle);
                 if (auto window = wf::toplevel_cast(link.window.lock()))
                 {
                     if (wf::get_core().seat->get_active_view() == view)
@@ -2101,11 +2124,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.window_id = window->get_id();
             link.window = window->weak_from_this();
             link.widget = widget->weak_from_this();
-            link.hidden = true;  // the previous plugin's disable, now ours
+            disabled_nodes.insert(window->get_id());  // adopt the previous renderer's lease
+            transition_widget(link, widget_link_t::lifecycle_t::docked);
             link.output = widget->get_output();
             link.rail   = entry["rail"].as_string();
             link.drop   = {entry["x"].as_double(), entry["y"].as_double()};
-            link.minimized   = entry["minimized"].as_bool();
+            link.collapsed   = entry["minimized"].as_bool();
             link.touch_drag  = entry.has_member("touch_drag") && entry["touch_drag"].as_bool();
             link.launched_at = now_msec();
             auto process  = std::make_shared<widget_process_t>();
@@ -2256,31 +2280,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    /** Keep the widget's window unseen (a preview, or one going away), or show it. Its frame is
-     *  made transparent too: a map animation can hold the window enabled for a moment. */
-    void set_widget_hidden(widget_link_t& link, bool hidden)
-    {
-        auto widget = wf::toplevel_cast(link.widget.lock());
-        if (!widget || (link.widget_hidden == hidden))
-        {
-            return;
-        }
-
-        if (auto frame = frame_of(widget))
-        {
-            frame->alpha = hidden ? 0.0 : 1.0;
-            frame->damage();
-        }
-
-        wf::scene::set_node_enabled(widget->get_root_node(), !hidden);
-        link.widget_hidden = hidden;
-    }
-
     /** A drag over a rail ended there: the preview becomes the widget, at `at`. */
     void commit_preview(widget_link_t& link, wf::pointf_t at)
     {
         auto window = wf::toplevel_cast(link.window.lock());
-        link.preview = false;
+        transition_widget(link, widget_link_t::lifecycle_t::docked);
         link.drop    = at;
         if (window && window->get_output())
         {
@@ -2288,7 +2292,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.rail   = at.x < window->get_output()->get_relative_geometry().width / 2 ? "left" : "right";
         }
 
-        set_hidden(link, true);
         show_attention(link.window_id);  // now shown on the widget, not the window
         if (auto widget = wf::toplevel_cast(link.widget.lock()))
         {
@@ -2301,7 +2304,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             keep_above(widget);
             place_widget(widget, output, at);
             set_scale(widget, 1.0);
-            set_widget_hidden(link, false);
             // It was let go at `at` (the dragged window was drawn there as the widget): glide to
             // its place against the screen edge rather than jump.
             auto placed = widget->get_geometry();
@@ -2320,7 +2322,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto widget   = wf::toplevel_cast(link.widget.lock());
         auto launcher = link.launcher;
-        link.dismissing = true;
+        transition_widget(link, widget_link_t::lifecycle_t::restoring);
         widget_links.erase(uint64_t(link.window_id));  // `link` is gone from here on
         close_view_or_process(widget, launcher);
     }
@@ -2330,7 +2332,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto window = wf::toplevel_cast(link.window.lock());
         auto widget = wf::toplevel_cast(link.widget.lock());
-        link.dismissing = true;
+        transition_widget(link, widget_link_t::lifecycle_t::restoring);
         if (window)
         {
             // Dropped on another screen: the window goes there.
@@ -2353,13 +2355,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
             }
 
-            set_hidden(link, false);
+            transition_widget(link, widget_link_t::lifecycle_t::restoring);
             wf::get_core().default_wm->focus_raise_view(window);  // (going to it answers attention)
         }
 
         uint64_t id = link.window_id;
         auto launcher = link.launcher;
-        set_widget_hidden(link, true);  // gone at once, not when its program gets round to closing
         close_view_or_process(widget, launcher);
         widget_links.erase(id);
         announce_widgets();
@@ -2372,7 +2373,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto widget = wf::toplevel_cast(link.widget.lock());
         auto launcher = link.launcher;
         // Shown again first: if the app asks before closing (unsaved work), the question is visible.
-        set_hidden(link, false);
+        transition_widget(link, widget_link_t::lifecycle_t::closing);
         widget_links.erase(uint64_t(link.window_id));  // `link` is gone from here on
         announce_widgets();
         close_view_or_process(widget, launcher);
@@ -2450,7 +2451,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         } else if (on_rail)
         {
             widgetize(view, false, (in_rail(at) ? at : center.x) < width / 2 ? "left" : "right");
-        } else if (auto link = link_of_window(view); link && link->preview)
+        } else if (auto link = link_of_window(view); link && link->previewing())
         {
             cancel_preview(*link);
         }
@@ -2463,7 +2464,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto active = wf::get_core().seat->get_active_view();
         for (auto& [id, link] : widget_links)
         {
-            if (link.preview)
+            if (link.previewing())
             {
                 continue;  // not a widget yet (WG13)
             }
@@ -2484,7 +2485,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["launcher_pid"] = (int64_t)(alive(link.launcher) ? link.launcher->pid : 0);
             entry["rail"]    = link.rail;
             entry["focused"] = widget && (active == widget);
-            entry["minimized"] = link.minimized;
+            entry["minimized"] = link.collapsed;
             entry["urgent"]  = needs_attention(id);
             list.append(entry);
         }
@@ -2567,7 +2568,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         } else if (action == "minimize")
         {
-            found->second.minimized = !found->second.minimized;
+            found->second.collapsed = !found->second.collapsed;
             announce_widgets();
         } else if (action == "restore")
         {
@@ -3797,7 +3798,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             morph->shape.animate(morph->shape, 0.0);
         }
 
-        if (auto link = link_of_window(view); link && link->preview)
+        if (auto link = link_of_window(view); link && link->previewing())
         {
             cancel_preview(*link);
         }
@@ -3849,7 +3850,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             // It began as a widget and became this window: a widget again, where it was (a widget
             // previewed on the way, dragging back toward a rail, goes).
-            if (auto preview = link_of_window(view); preview && preview->preview)
+            if (auto preview = link_of_window(view); preview && preview->previewing())
             {
                 cancel_preview(*preview);
             }
@@ -4138,7 +4139,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 last_drop.became = app_window;  // restored: the window stands for it
             } else if (!was_widget)
             {
-                if (auto now = link_of_window(main); now && !now->preview)
+                if (auto now = link_of_window(main); now && !now->previewing())
                 {
                     auto widget = wf::toplevel_cast(now->widget.lock());
                     last_drop.became = widget ? widget->get_id() : 0;  // it's a widget now
@@ -4190,7 +4191,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // A widget that changes size (a card whose title changed) keeps its screen-edge side
             // against the edge, wholly on screen (WG4).
             auto g = view->get_geometry();
-            if (auto link = link_of_widget(view); link && !link->preview && (drag->view != view) &&
+            if (auto link = link_of_widget(view); link && !link->previewing() && (drag->view != view) &&
                 (view->get_id() != dragged_widget) &&  // a drop is moving it: the drop decides
                 ((g.width != ev->old_geometry.width) || (g.height != ev->old_geometry.height)))
             {
@@ -4225,8 +4226,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["app_id"] = view->get_app_id();
             entry["widget"] = is_widget(view);
             auto link = link_of_window(view);
-            entry["widgetized"] = link && !link->preview;
-            entry["preview"] = (link && link->preview) || (link_of_widget(view) && link_of_widget(view)->preview);
+            entry["widgetized"] = link && !link->previewing();
+            entry["preview"] = (link && link->previewing()) || (link_of_widget(view) && link_of_widget(view)->previewing());
             entry["hidden"] = !view->get_root_node()->is_enabled();
             entry["zone"]  = zone_name(placement.zone);
             entry["scale"] = placement.scale;
@@ -4559,7 +4560,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         for (auto& [id, link] : widget_links)
         {
             auto widget = wf::toplevel_cast(link.widget.lock());
-            if (reloading && !link.preview && link.hidden && widget && widget->is_mapped())
+            if (reloading && link.docked() && widget && widget->is_mapped())
             {
                 wf::json_t entry;
                 entry["window"] = (int64_t)id;
@@ -4569,14 +4570,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["rail"]   = link.rail;
                 entry["x"] = link.drop.x;
                 entry["y"] = link.drop.y;
-                entry["minimized"] = link.minimized;
+                entry["minimized"] = link.collapsed;
                 entry["touch_drag"] = link.touch_drag;
                 handover.append(entry);
-                set_widget_hidden(link, false);
-                continue;  // the window keeps its disable: the next plugin holds it
+                    continue;  // the window keeps its disable: the next plugin holds it
             }
 
-            set_hidden(link, false);
+            transition_widget(link, widget_link_t::lifecycle_t::restoring);
             close_view_or_process(widget, link.launcher);
         }
 
