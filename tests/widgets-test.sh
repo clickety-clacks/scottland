@@ -63,7 +63,7 @@ id = "daemon"
 apps = ["^scottland-test-daemon$"]
 exec = "./start %t"
 TOML
-printf '#!/bin/sh\nsetsid -f foot -T "$1" sh -c "exec sleep 600"\nexit 0\n' >"$test_widgets/daemon/start"
+printf '#!/bin/sh\nsetsid -f foot -T "$1" sh -c "exec sleep 600"\nsleep 3\nexit 0\n' >"$test_widgets/daemon/start"
 chmod +x "$test_widgets/daemon/start"
 # Never shows a window, ignores SIGTERM, and leaves a child behind: all of it must still end.
 cat >"$test_widgets/sleeper/widget.toml" <<'TOML'
@@ -260,6 +260,8 @@ import json,sys
 v=[v for v in json.load(sys.stdin)['views'] if v.get('app_id')=='scottland-test-daemon' and not v['widget']][0]; f=v['frame']
 print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+check "DM2 launcher exit is published as a newer full snapshot" \
+  tests/headless.sh run python3 tests/model-process-test.py
 sleep 3.5
 check "WG2 a widget that forks its window off and exits is adopted (placed, at 100%)" \
   python3 -c "

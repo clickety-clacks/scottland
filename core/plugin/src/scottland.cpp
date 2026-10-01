@@ -1271,8 +1271,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         pid_t pid = 0;
         int pidfd = -1;
         std::string unit;
+        scottland_plugin_t *owner = nullptr;
+        wl_event_source *exit_watch = nullptr;
         ~widget_process_t()
         {
+            if (exit_watch)
+            {
+                wl_event_source_remove(exit_watch);
+            }
             if (pidfd >= 0)
             {
                 ::close(pidfd);
@@ -1821,6 +1827,26 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
+    /** Process exit is a model input, not a fact discovered while serializing a snapshot. */
+    void watch_process(const widget_process& process)
+    {
+        if (process->pidfd < 0)
+        {
+            return;
+        }
+        process->owner = this;
+        process->exit_watch = wl_event_loop_add_fd(wf::get_core().ev_loop, process->pidfd,
+            WL_EVENT_READABLE, [] (int, uint32_t, void *data)
+        {
+            auto process = static_cast<widget_process_t*>(data);
+            wl_event_source_remove(process->exit_watch);
+            process->exit_watch = nullptr;
+            process->pid = 0;
+            process->owner->publish_model();
+            return 0;
+        }, process.get());
+    }
+
     /** Widgets asked to go, ended if they're still running at their deadline. */
     struct ending_t
     {
@@ -2029,6 +2055,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         // Taken right away, while the process is certainly the one just started.
         process->pidfd = pidfd_open(process->pid, 0);
+        watch_process(process);
         link.launcher  = process;
         transition_widget(link, preview ? widget_link_t::lifecycle_t::previewing : widget_link_t::lifecycle_t::docked);
 
@@ -2261,6 +2288,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 process->pidfd = pidfd_open(process->pid, 0);
             }
 
+            watch_process(process);
             link.launcher = process;
             model.widgets[link.window_id] = std::move(link);
             keep_above(widget);
@@ -2618,11 +2646,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["app_id"] = state->second.app_id;
             entry["title"] = state->second.title;
             entry["pid"] = (int64_t)state->second.pid;
-            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : 0);
-            entry["widget_unit"] = link.launcher ? link.launcher->unit : "";
-            entry["launcher_pid"] = (int64_t)(alive(link.launcher) ? link.launcher->pid : 0);
-            entry["rail"] = link.rail;
             auto shown = widget ? model.windows.find(widget->get_id()) : model.windows.end();
+            entry["widget_pid"] = (int64_t)(shown != model.windows.end() ? shown->second.pid : 0);
+            entry["widget_unit"] = link.launcher ? link.launcher->unit : "";
+            entry["launcher_pid"] = (int64_t)(link.launcher ? link.launcher->pid : 0);
+            entry["rail"] = link.rail;
             entry["focused"] = shown != model.windows.end() && shown->second.focused;
             entry["minimized"] = link.collapsed;
             entry["urgent"] = needs_attention(id);

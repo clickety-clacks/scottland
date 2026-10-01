@@ -12,6 +12,7 @@ leases, process handles and timers are resources, not independent logical state.
 | Windows, identity, title, size, position, zone, focus, layer | Plugin's desktop model | Wayfire signals supply facts; plugin position/layer commands supply targets. |
 | Target scale | Plugin's desktop model | Zone/drag rules set it; the scale transformer animates toward it. |
 | Widget lifecycle, rail, drop point, collapsed presentation, touch traits | Plugin's desktop model | One lifecycle transition applies visibility; the renderer positions the widget and holds balanced disables. |
+| Launcher PID, launch unit | Plugin's desktop model | A pidfd event records launcher exit and publishes it; snapshot serialization never probes process liveness. |
 | Resolved desktop identity, name, icon, built-in card trait | Plugin's desktop model | The launcher submits these once for a specific launch unit; there is no identity side file. |
 | Attention source set, per window | Plugin's desktop model | Each source adds/removes its name; `builtin:` names are reserved for plugin inputs, so a configured source cannot clear a bell/urgency. User focus answers all sources. Halos read this set. |
 | Desktop collapsed mode | Plugin's desktop model | Super+M updates the mode and widget presentation together. |
