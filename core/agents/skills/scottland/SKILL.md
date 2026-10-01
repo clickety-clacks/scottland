@@ -82,7 +82,7 @@ scottland-ctl option scottland/touch_scroll
 
 ## Rail widgets
 
-Not available yet. Windows dragged to the screen-edge rails currently stay as small windows.
+Not available yet (designed: see Scottland's docs/widgets.md). Windows dragged to the screen-edge rails currently stay as small windows.
 A configurable widget system is being designed; don't invent settings for it.
 
 ## Don't

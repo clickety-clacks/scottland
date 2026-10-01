@@ -13,6 +13,13 @@ into widgets on thin rails at the edges. See README.md for the idea and layout.
 When Mike asks for a new behavior or changes one, add or update its entry in the right file in the
 same change.
 
+**Design docs live in [docs/](docs/)**, one file per subsystem, each with its own invariants table
+(IDs prefixed per doc). When a subsystem's design grows past a few rows in the files above, give it
+a doc there and leave a one-line pointer in the invariants file. Current docs:
+
+- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG12): what a widget is, how it's chosen,
+  its launch context and D-Bus interface, the default card.
+
 ## Where does a request belong?
 
 Every time Mike asks for something, decide which of these it is, **say which you assumed and
