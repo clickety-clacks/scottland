@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""Scottland's widget service on the session bus (docs/widgets.md: WG9, WG10 live data, WG11, WG12).
+
+Owns org.scottland.Widgets and publishes, for each widget, an org.scottland.Widget object at
+/org/scottland/widget/<id> (properties with change signals; Restore, Close, Focus). On
+/org/scottland/Widgets it offers the optional app<->widget data mailbox (org.scottland.WidgetData)
+and lets apps learn their own state (org.scottland.Windows). It also listens for launcher badges
+(com.canonical.Unity.LauncherEntry) and keeps each widget's state file current, for widgets that
+prefer a file to D-Bus (the default card).
+
+Driven by events, not polling: it subscribes to the compositor's IPC events (Scottland's
+scottland-widgets# and scottland-scale#, and window title/focus changes).
+
+  scottland-widget-bus          run (started with the session; needs WAYFIRE_SOCKET)
+"""
+import json
+import os
+import socket
+import struct
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+BUS_NAME = "org.scottland.Widgets"
+ROOT = "/org/scottland/Widgets"
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets")
+STATE_LOG = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                         "scottland", "widgets.log")
+
+WIDGET_XML = """
+<node>
+  <interface name="org.scottland.Widget">
+    <property name="Id" type="s" access="read"/>
+    <property name="AppId" type="s" access="read"/>
+    <property name="Title" type="s" access="read"/>
+    <property name="Pid" type="u" access="read"/>
+    <property name="Window" type="t" access="read"/>
+    <property name="Rail" type="s" access="read"/>
+    <property name="Focused" type="b" access="read"/>
+    <property name="Urgent" type="b" access="read"/>
+    <property name="Badge" type="x" access="read"/>
+    <property name="Data" type="s" access="read"/>
+    <method name="Restore"/>
+    <method name="Close"/>
+    <method name="Focus"/>
+  </interface>
+</node>"""
+
+ROOT_XML = """
+<node>
+  <interface name="org.scottland.WidgetData">
+    <method name="Publish"><arg name="json" type="s" direction="in"/></method>
+    <method name="Send"><arg name="json" type="s" direction="in"/></method>
+    <signal name="Received">
+      <arg name="app_pid" type="u"/>
+      <arg name="window" type="t"/>
+      <arg name="json" type="s"/>
+    </signal>
+  </interface>
+  <interface name="org.scottland.Windows">
+    <method name="GetState">
+      <arg name="widgetized" type="b" direction="out"/>
+      <arg name="scale" type="d" direction="out"/>
+    </method>
+    <signal name="StateChanged">
+      <arg name="pid" type="u"/>
+      <arg name="widgetized" type="b"/>
+      <arg name="scale" type="d"/>
+    </signal>
+  </interface>
+</node>"""
+
+
+def log(message):
+    os.makedirs(os.path.dirname(STATE_LOG), exist_ok=True)
+    with open(STATE_LOG, "a") as out:
+        out.write(f"{time.strftime('%F %T')} bus: {message}\n")
+
+
+class Ipc:
+    """A Wayfire IPC connection (4-byte little-endian length + JSON)."""
+
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(os.environ["WAYFIRE_SOCKET"])
+
+    def send(self, method, data=None):
+        body = json.dumps({"method": method, "data": data or {}}).encode()
+        self.sock.sendall(struct.pack("<I", len(body)) + body)
+
+    def receive(self):
+        header = self._exactly(4)
+        return json.loads(self._exactly(struct.unpack("<I", header)[0]))
+
+    def call(self, method, data=None):
+        self.send(method, data)
+        return self.receive()
+
+    def _exactly(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError("compositor closed the IPC socket")
+            data += chunk
+        return data
+
+
+def pid_descends_from(pid, ancestor):
+    for _ in range(8):
+        if pid <= 1:
+            return False
+        if pid == ancestor:
+            return True
+        try:
+            with open(f"/proc/{pid}/stat") as stat:
+                pid = int(stat.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+    return False
+
+
+class Service:
+    def __init__(self):
+        self.ipc = Ipc()
+        self.widgets = {}        # id -> state dict
+        self.registrations = {}  # id -> registration id
+        self.badges = {}         # .desktop id -> count (latest announced, even before a widget exists)
+        self.scales = {}         # window id -> scale
+        self.bus = None
+        self.widget_info = Gio.DBusNodeInfo.new_for_xml(WIDGET_XML).interfaces[0]
+        root = Gio.DBusNodeInfo.new_for_xml(ROOT_XML)
+        self.data_info, self.windows_info = root.interfaces
+        os.makedirs(RUNTIME, exist_ok=True)
+
+    # --- compositor ---
+
+    def refresh(self):
+        try:
+            reply = self.ipc.call("scottland/widgets")
+            layout = self.ipc.call("scottland/layout-state")
+        except (OSError, ConnectionError, ValueError) as error:
+            log(f"compositor unreachable: {error}")
+            return
+        scales = {v["id"]: v.get("applied_scale", 1.0) for v in layout.get("views", [])}
+        seen = set()
+        for entry in reply.get("widgets", []):
+            wid = entry["id"]
+            seen.add(wid)
+            state = self.widgets.get(wid) or self.new_widget(wid)
+            self.learn_desktop(wid)
+            updates = {
+                "AppId": entry.get("app_id", ""),
+                "Title": entry.get("title", ""),
+                "Pid": max(0, int(entry.get("pid", 0))),
+                "Window": max(0, int(entry.get("window", 0))),
+                "Rail": entry.get("rail", ""),
+                "Focused": bool(entry.get("focused")),
+                "Urgent": bool(entry.get("urgent")),
+                "_widget_pid": int(entry.get("widget_pid", 0)),
+            }
+            if state.get("_desktop") in self.badges:
+                updates["Badge"] = self.badges[state["_desktop"]]
+            self.update(wid, updates)
+        for wid in [w for w in self.widgets if w not in seen]:
+            self.remove_widget(wid)
+        for window, scale in scales.items():
+            self.note_scale(window, scale)
+
+    def new_widget(self, wid):
+        state = {"Id": wid, "AppId": "", "Title": "", "Pid": 0, "Window": 0, "Rail": "", "Focused": False,
+                 "Urgent": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_desktop": ""}
+        self.widgets[wid] = state
+        self.learn_desktop(wid)
+        if self.bus:
+            self.registrations[wid] = self.bus.register_object_with_closures2(
+                f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get, None)
+        return state
+
+    def learn_desktop(self, wid):
+        """The app's .desktop id, which the launcher writes into the state file (badges are
+        announced per .desktop). The widget can show up here before the launcher has run, so
+        this is retried until it's known."""
+        state = self.widgets[wid]
+        if state["_desktop"]:
+            return
+        try:
+            with open(self.state_path(wid)) as source:
+                state["_desktop"] = json.load(source).get("desktop", "") or ""
+        except (OSError, ValueError):
+            return
+        if state["_desktop"] in self.badges:
+            self.update(wid, {"Badge": self.badges[state["_desktop"]]})
+
+    def remove_widget(self, wid):
+        if wid in self.registrations:
+            self.bus.unregister_object(self.registrations.pop(wid))
+        state = self.widgets.pop(wid)
+        try:
+            os.remove(self.state_path(wid))
+        except OSError:
+            pass
+        self.announce_state(state["Pid"], False, 1.0)
+
+    def update(self, wid, updates):
+        state = self.widgets[wid]
+        changed = {k: v for k, v in updates.items() if state.get(k) != v}
+        if not changed:
+            return
+        newly = state["Pid"] == 0 and changed.get("Pid", 0) > 0
+        state.update(changed)
+        public = {k: v for k, v in changed.items() if not k.startswith("_")}
+        if public and self.bus:
+            self.bus.emit_signal(None, f"/org/scottland/widget/{wid}", "org.freedesktop.DBus.Properties",
+                                 "PropertiesChanged", GLib.Variant("(sa{sv}as)", (
+                                     "org.scottland.Widget",
+                                     {k: self.variant(k, v) for k, v in public.items()}, [])))
+        if newly:
+            self.announce_state(state["Pid"], True, 1.0)
+        self.write_state(wid)
+
+    def write_state(self, wid):
+        state = self.widgets[wid]
+        self.learn_desktop(wid)  # never overwrite the launcher's .desktop id with a blank
+        path = self.state_path(wid)
+        try:
+            with open(path + ".tmp", "w") as out:
+                json.dump({"desktop": state["_desktop"], "title": state["Title"], "badge": state["Badge"],
+                           "focused": state["Focused"], "urgent": state["Urgent"], "data": state["Data"]}, out)
+            os.replace(path + ".tmp", path)
+        except OSError as error:
+            log(f"state file {path}: {error}")
+
+    @staticmethod
+    def state_path(wid):
+        return os.path.join(RUNTIME, f"{wid}.json")
+
+    @staticmethod
+    def variant(key, value):
+        kind = {"Pid": "u", "Window": "t", "Badge": "x", "Focused": "b", "Urgent": "b"}.get(key, "s")
+        return GLib.Variant(kind, value)
+
+    def note_scale(self, window, scale):
+        if abs(self.scales.get(window, -1) - scale) < 0.005:
+            return
+        self.scales[window] = scale
+        pid = self.window_pid(window)
+        if pid:
+            self.announce_state(pid, self.widgetized(pid), scale)
+
+    def window_pid(self, window):
+        for state in self.widgets.values():
+            if state["Window"] == window:
+                return state["Pid"]
+        try:
+            for view in self.ipc.call("window-rules/list-views"):
+                if view.get("id") == window:
+                    return int(view.get("pid", 0)) or None
+        except (OSError, ConnectionError, ValueError, TypeError):
+            pass
+        return None
+
+    def widgetized(self, pid):
+        """Is the app owning process `pid` (or any of its helpers) widgetized?"""
+        return any(state["Pid"] and pid_descends_from(pid, state["Pid"]) for state in self.widgets.values())
+
+    def announce_state(self, pid, widgetized, scale):
+        if self.bus and pid:
+            self.bus.emit_signal(None, ROOT, "org.scottland.Windows", "StateChanged",
+                                 GLib.Variant("(ubd)", (pid, widgetized, scale)))
+
+    def watch_compositor(self):
+        events = Ipc()
+        reply = events.call("window-rules/events/watch", {
+            "events": ["scottland-widgets#", "scottland-scale#", "view-title-changed", "view-focused"]})
+        if reply.get("result") != "ok":
+            log(f"couldn't watch compositor events: {reply}")
+            sys.exit(1)
+        channel = GLib.IOChannel.unix_new(events.sock.fileno())
+        GLib.io_add_watch(channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP,
+                          self.on_event, events)
+
+    def on_event(self, _channel, condition, events):
+        if condition & GLib.IOCondition.HUP:
+            log("compositor went away; exiting")
+            GLib.MainLoop().quit()
+            sys.exit(0)
+        try:
+            event = events.receive()
+        except (OSError, ConnectionError, ValueError):
+            sys.exit(0)
+        if event.get("event") == "scottland-scale#":
+            self.note_scale(int(event.get("window", 0)), float(event.get("scale", 1.0)))
+        else:
+            self.refresh()
+        return True
+
+    # --- D-Bus ---
+
+    def on_widget_get(self, _conn, _sender, path, _iface, prop):
+        state = self.widgets.get(path.rsplit("/", 1)[-1])
+        return self.variant(prop, state[prop]) if state and prop in state else None
+
+    def on_widget_call(self, _conn, _sender, path, _iface, method, _params, invocation):
+        wid = path.rsplit("/", 1)[-1]
+        action = {"Restore": "restore", "Close": "close", "Focus": "focus"}.get(method)
+        try:
+            reply = self.ipc.call("scottland/widget-action", {"id": wid, "action": action})
+        except (OSError, ConnectionError, ValueError) as error:
+            reply = {"error": str(error)}
+        if reply.get("error"):
+            invocation.return_dbus_error("org.scottland.Widgets.Error", str(reply["error"]))
+        else:
+            invocation.return_value(None)
+
+    def caller_pid(self, sender):
+        reply = self.bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                   "GetConnectionUnixProcessID", GLib.Variant("(s)", (sender,)),
+                                   GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, -1, None)
+        return reply.unpack()[0]
+
+    def on_root_call(self, _conn, sender, _path, iface, method, params, invocation):
+        try:
+            pid = self.caller_pid(sender)
+        except GLib.Error as error:
+            invocation.return_dbus_error("org.scottland.Widgets.Error", f"can't identify caller: {error.message}")
+            return
+        if iface == "org.scottland.Windows" and method == "GetState":
+            scale = next((self.scales.get(s["Window"], 1.0) for s in self.widgets.values()
+                          if s["Pid"] and pid_descends_from(pid, s["Pid"])), None)
+            if scale is None:
+                window = self.window_of_pid(pid)
+                scale = self.scales.get(window, 1.0) if window else 1.0
+            invocation.return_value(GLib.Variant("(bd)", (self.widgetized(pid), scale)))
+            return
+        (payload,) = params.unpack()
+        try:
+            json.loads(payload)
+        except ValueError:
+            invocation.return_dbus_error("org.scottland.Widgets.Error", "payload isn't JSON")
+            return
+        if method == "Publish":
+            # An app publishes for its own windows only: its process must own the window.
+            targets = [wid for wid, s in self.widgets.items() if s["Pid"] and pid_descends_from(pid, s["Pid"])]
+            if not targets:
+                invocation.return_dbus_error("org.scottland.Widgets.Error", "no widget for the calling app")
+                return
+            for wid in targets:
+                self.update(wid, {"Data": payload})
+        elif method == "Send":
+            # A widget sends to its own app only.
+            sources = [s for s in self.widgets.values() if s["_widget_pid"] and pid_descends_from(pid, s["_widget_pid"])]
+            if not sources:
+                invocation.return_dbus_error("org.scottland.Widgets.Error", "the caller isn't a widget")
+                return
+            for state in sources:
+                self.bus.emit_signal(None, ROOT, "org.scottland.WidgetData", "Received",
+                                     GLib.Variant("(uts)", (state["Pid"], state["Window"], payload)))
+        invocation.return_value(None)
+
+    def window_of_pid(self, pid):
+        try:
+            for view in self.ipc.call("window-rules/list-views"):
+                if int(view.get("pid", 0)) > 1 and pid_descends_from(pid, int(view["pid"])):
+                    return view.get("id")
+        except (OSError, ConnectionError, ValueError, TypeError):
+            pass
+        return None
+
+    def on_launcher_entry(self, _conn, _sender, _path, _iface, _signal, params):
+        app_uri, props = params.unpack()
+        desktop = app_uri.removeprefix("application://").removesuffix(".desktop")
+        count = int(props.get("count", 0)) if props.get("count-visible", True) else 0
+        self.badges[desktop] = count
+        for wid, state in self.widgets.items():
+            if state["_desktop"] == desktop:
+                self.update(wid, {"Badge": count})
+
+    def on_bus(self, connection, _name):
+        self.bus = connection
+        connection.register_object_with_closures2(ROOT, self.data_info, self.on_root_call, None, None)
+        connection.register_object_with_closures2(ROOT, self.windows_info, self.on_root_call, None, None)
+        for wid in list(self.widgets):
+            self.registrations[wid] = connection.register_object_with_closures2(
+                f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get, None)
+        connection.signal_subscribe(None, "com.canonical.Unity.LauncherEntry", "Update", None, None,
+                                    Gio.DBusSignalFlags.NONE, self.on_launcher_entry)
+
+    def run(self):
+        # One service per session: the reload hook checks this before starting another.
+        pid_file = os.path.join(os.path.dirname(RUNTIME), (os.environ.get("WAYLAND_DISPLAY") or "wayland") + ".widget-bus.pid")
+        with open(pid_file, "w") as out:
+            out.write(f"{os.getpid()}\n")
+        Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE, self.on_bus, None,
+                         lambda *_: (log("couldn't own org.scottland.Widgets (another service?)"), sys.exit(1)))
+        self.watch_compositor()
+        self.refresh()
+        GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    if not os.environ.get("WAYFIRE_SOCKET"):
+        sys.exit("scottland-widget-bus: run it inside a Scottland session")
+    Service().run()

@@ -5,7 +5,9 @@
 # session: never 05-import-environment (would repoint the user's systemd services), 06-watch-
 # config (would rewrite the live session's config), 20-omarchy-shell or 40-handover.
 #
-#   tests/headless.sh start [--omarchy]   start; --omarchy adds the Hyprland shim and Lua host
+#   tests/headless.sh start [--omarchy] [--widgets]   start; --omarchy adds the Hyprland shim and
+#                                         Lua host; --widgets adds the widget service, on a private
+#                                         D-Bus session bus (the live session owns the real one)
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
@@ -27,7 +29,13 @@ case ${1:-} in
     [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
     rm -rf "$dir"; mkdir -p "$dir"
     started=(01-record-environment)
-    [[ ${2:-} == --omarchy ]] && started+=(10-hyprshim 30-lua-host)
+    private_bus=
+    for option in "${@:2}"; do
+      case $option in
+        --omarchy) started+=(10-hyprshim 30-lua-host) ;;
+        --widgets) started+=(08-widget-bus); private_bus=1 ;;
+      esac
+    done
     (
       # A clean environment, as a display manager gives a login (not this shell's: an agent's or a
       # terminal's environment carries another desktop's variables and hides session gaps), plus
@@ -48,7 +56,7 @@ case ${1:-} in
         "$dir/wayfire.ini"
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
-        setsid wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+        setsid ${private_bus:+dbus-run-session --} wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
     for _ in $(seq 100); do
@@ -83,6 +91,8 @@ case ${1:-} in
       rm -rf "$(dirname "$lock")"
     done
     pid=$(cat "$dir/pid")
+    # With --widgets the pid is dbus-run-session's; stop its child (Wayfire) too.
+    for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
     kill "$pid" 2>/dev/null || true
     for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
     kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs

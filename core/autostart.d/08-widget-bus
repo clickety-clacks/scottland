@@ -1,0 +1,5 @@
+#!/bin/sh
+# Scottland's widget service: per-widget D-Bus objects, badges, the app<->widget mailbox.
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+mkdir -p "$state"
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-widget-bus" 2>>"$state/widgets.log"

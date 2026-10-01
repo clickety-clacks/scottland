@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Launch the widget for a window that was dropped on a widget rail (docs/widgets.md).
+
+  scottland-widget-launch '<json context>'
+
+The Scottland plugin runs this with the window's identity (id, window, app_id, title, pid, rail).
+It picks the widget (WG6), resolves the app's .desktop entry and icon, and execs the widget's
+command with the launch context in its environment and placeholders (WG8). The widget process
+keeps this process's id, which is how the plugin recognizes the widget's window.
+
+Choosing a widget, first match wins:
+  1. ~/.config/scottland/widgets.ini   [widgets] <app-id or .desktop id> = <widget id>
+  2. the app's .desktop entry          X-Scottland-Widget=<widget id>
+  3. installed widget packages         widget.toml: apps = ["<app-id regex>", ...]
+  4. the default card
+Widget packages (a directory with widget.toml) are found, first wins for an id, in
+~/.local/share/scottland/widgets/, /usr/share/scottland/widgets/ and Scottland's built-ins.
+"""
+import configparser
+import json
+import os
+import re
+import shlex
+import sys
+import time
+import tomllib
+
+HOME = os.path.expanduser("~")
+CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
+DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "share")
+DATA_DIRS = (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state"), "scottland")
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets")
+HOOKS = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+BUILTIN = [os.path.join(HOOKS, "widgets"), "/usr/lib/scottland/widgets"]
+PACKAGE_DIRS = [os.path.join(DATA_HOME, "scottland", "widgets"), "/usr/share/scottland/widgets", *BUILTIN]
+
+
+def log(message):
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "widgets.log"), "a") as out:
+        out.write(f"{time.strftime('%F %T')} launch: {message}\n")
+
+
+def desktop_files():
+    seen = set()
+    for base in [DATA_HOME, *DATA_DIRS]:
+        folder = os.path.join(base, "applications")
+        for root, _, files in os.walk(folder):
+            for name in files:
+                if name.endswith(".desktop"):
+                    rel = os.path.relpath(os.path.join(root, name), folder).replace(os.sep, "-")
+                    if rel not in seen:  # earlier directories win, like the spec says
+                        seen.add(rel)
+                        yield rel[:-len(".desktop")], os.path.join(root, name)
+
+
+def read_desktop(path):
+    entry = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as source:
+            section = None
+            for line in source:
+                line = line.strip()
+                if line.startswith("["):
+                    section = line
+                elif section == "[Desktop Entry]" and "=" in line and not line.startswith("#"):
+                    key, _, value = line.partition("=")
+                    entry.setdefault(key.strip(), value.strip())
+    except OSError:
+        pass
+    return entry
+
+
+def find_desktop(app_id):
+    """The app's .desktop entry: by id, by StartupWMClass, by executable, or (web apps whose
+    window class names a site, e.g. chrome-app.element.io__-Default) by the site in Exec."""
+    if not app_id:
+        return None, {}
+    wanted = app_id.lower()
+    site = None
+    match = re.match(r"^(?:chrome|brave|chromium|msedge)-(.+?)__", app_id)
+    if match:
+        site = match.group(1).lower()  # "app.element.io" (or a crx id)
+    by_wmclass = by_exec = by_site = None
+    for desktop_id, path in desktop_files():
+        if desktop_id.lower() == wanted:
+            return desktop_id, read_desktop(path)
+        entry = read_desktop(path)
+        if entry.get("StartupWMClass", "").lower() == wanted and not by_wmclass:
+            by_wmclass = (desktop_id, entry)
+        exec_line = entry.get("Exec", "")
+        program = os.path.basename(shlex.split(exec_line)[0]) if exec_line.strip() else ""
+        if program.lower() == wanted and not by_exec:
+            by_exec = (desktop_id, entry)
+        if site and site in exec_line.lower() and not by_site:
+            by_site = (desktop_id, entry)
+    return by_wmclass or by_site or by_exec or (None, {})
+
+
+def packages():
+    found = {}
+    for folder in PACKAGE_DIRS:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            manifest = os.path.join(folder, name, "widget.toml")
+            try:
+                with open(manifest, "rb") as source:
+                    data = tomllib.load(source)
+            except (OSError, tomllib.TOMLDecodeError) as error:
+                if os.path.exists(manifest):
+                    log(f"skipping {manifest}: {error}")
+                continue
+            widget_id = data.get("id") or name
+            if widget_id not in found and data.get("exec"):
+                found[widget_id] = {**data, "id": widget_id, "dir": os.path.join(folder, name)}
+    return found
+
+
+def choose(app_id, desktop_id, entry, available):
+    keys = [k for k in (app_id, desktop_id) if k]
+    user = configparser.ConfigParser(interpolation=None, delimiters=("=",))
+    user.optionxform = str
+    try:
+        user.read(os.path.join(CONFIG, "scottland", "widgets.ini"))
+    except configparser.Error as error:
+        log(f"widgets.ini unreadable: {error}")
+    if user.has_section("widgets"):
+        for key in keys:
+            choice = user.get("widgets", key, fallback="").strip()
+            if choice in available:
+                return available[choice], "your widgets.ini"
+            if choice:
+                log(f"widgets.ini names {choice!r} for {key}, which isn't installed")
+    choice = entry.get("X-Scottland-Widget", "").strip()
+    if choice in available:
+        return available[choice], "the app's .desktop entry"
+    for widget in available.values():
+        for pattern in widget.get("apps", []):
+            try:
+                if any(re.search(pattern, key, re.IGNORECASE) for key in keys):
+                    return widget, "a widget made for this app"
+            except re.error:
+                log(f"widget {widget['id']}: bad apps pattern {pattern!r}")
+    return available.get("card"), "the default"
+
+
+def main():
+    context = json.loads(sys.argv[1])
+    app_id = context.get("app_id", "")
+    desktop_id, entry = find_desktop(app_id)
+    available = packages()
+    widget, why = choose(app_id, desktop_id, entry, available)
+    if not widget:
+        log(f"no widget for {app_id!r} (not even the default card)")
+        sys.exit(1)
+
+    widget_id = str(context.get("id", ""))
+    os.makedirs(RUNTIME, exist_ok=True)
+    values = {
+        "a": app_id,
+        "t": context.get("title", ""),
+        "i": entry.get("Icon", "") or app_id,
+        "p": str(context.get("pid", "")),
+        "w": str(context.get("window", "")),
+        "r": context.get("rail", ""),
+        "d": widget["dir"],
+        "%": "%",
+    }
+    env = dict(os.environ)
+    env.update({
+        "SCOTTLAND_WIDGET_ID": widget_id,
+        "SCOTTLAND_WIDGET_APP_ID": values["a"],
+        "SCOTTLAND_WIDGET_TITLE": values["t"],
+        "SCOTTLAND_WIDGET_ICON": values["i"],
+        "SCOTTLAND_WIDGET_PID": values["p"],
+        "SCOTTLAND_WIDGET_WINDOW": values["w"],
+        "SCOTTLAND_WIDGET_RAIL": values["r"],
+        "SCOTTLAND_WIDGET_NAME": entry.get("Name", ""),
+        "SCOTTLAND_WIDGET_DESKTOP": desktop_id or "",
+        "SCOTTLAND_WIDGET_BADGE": "0",
+        # Live title and badge for widgets that want them without D-Bus (the card does).
+        "SCOTTLAND_WIDGET_STATE": os.path.join(RUNTIME, f"{widget_id}.json"),
+    })
+
+    # The widget service keeps this file current (title, badge, focus, data); seed it here with
+    # what only the launcher knows, the app's .desktop id (badges are announced per .desktop).
+    try:
+        with open(env["SCOTTLAND_WIDGET_STATE"] + ".tmp", "w") as state:
+            json.dump({"desktop": desktop_id or "", "title": values["t"], "badge": 0}, state)
+        os.replace(env["SCOTTLAND_WIDGET_STATE"] + ".tmp", env["SCOTTLAND_WIDGET_STATE"])
+    except OSError as error:
+        log(f"couldn't write widget state: {error}")
+
+    # Placeholders are filled per word after splitting, so values with spaces stay one argument.
+    argv = [re.sub(r"%(.)", lambda m: values.get(m.group(1), m.group(0)), word)
+            for word in shlex.split(widget["exec"])]
+    log(f"{app_id} ({desktop_id or 'no .desktop'}): widget {widget['id']} from {why}: {argv}")
+    os.chdir(widget["dir"])
+    try:
+        os.execvpe(argv[0], argv, env)
+    except OSError as error:
+        log(f"couldn't run widget {widget['id']}: {error}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -17,7 +17,7 @@ build() {
 }
 
 package_scottland() {
-  depends=('wayfire' 'inotify-tools' 'python')
+  depends=('wayfire' 'inotify-tools' 'python' 'python-gobject')
   optdepends=('quickshell: layout settings app (scottland-settings)')
 
   meson install -C build --destdir "$pkgdir"
@@ -35,6 +35,12 @@ package_scottland() {
   ln -s /usr/lib/scottland/libexec/scottland-ctl "$pkgdir/usr/bin/scottland-ctl"
   install -Dm644 "$_root/core/agents/skills/scottland/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland/SKILL.md"
   install -Dm755 "$_root/core/autostart.d/02-link-agent-skills" "$pkgdir/usr/lib/scottland/autostart.d/02-link-agent-skills"
+  install -Dm755 "$_root/core/libexec/scottland-widget-launch" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-launch"
+  install -Dm755 "$_root/core/libexec/scottland-widget-bus" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-bus"
+  install -Dm755 "$_root/core/autostart.d/08-widget-bus" "$pkgdir/usr/lib/scottland/autostart.d/08-widget-bus"
+  install -Dm755 "$_root/core/reload.d/08-widget-bus" "$pkgdir/usr/lib/scottland/reload.d/08-widget-bus"
+  install -Dm644 "$_root/core/widgets/card/widget.toml" "$pkgdir/usr/lib/scottland/widgets/card/widget.toml"
+  install -Dm644 "$_root/core/widgets/card/shell.qml" "$pkgdir/usr/lib/scottland/widgets/card/shell.qml"
   install -Dm755 "$_root/core/autostart.d/01-record-environment" "$pkgdir/usr/lib/scottland/autostart.d/01-record-environment"
   install -Dm755 "$_root/core/libexec/scottland-color-scheme" "$pkgdir/usr/lib/scottland/libexec/scottland-color-scheme"
   install -Dm755 "$_root/core/autostart.d/07-follow-color-scheme" "$pkgdir/usr/lib/scottland/autostart.d/07-follow-color-scheme"

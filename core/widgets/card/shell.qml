@@ -1,7 +1,8 @@
 // Scottland's default widget ("card"): the app's icon, the window title, and an alert badge.
-// Shown for any app with no widget configured. Inputs come from the widget launch contract:
-//   SCOTTLAND_WIDGET_APP_ID, SCOTTLAND_WIDGET_TITLE, SCOTTLAND_WIDGET_ICON (resolved by Scottland
-//   from the app's .desktop entry), SCOTTLAND_WIDGET_BADGE (alert count; empty or 0 = none).
+// Shown for any app with no widget configured. Inputs come from the widget launch contract
+// (docs/widgets.md, WG8): SCOTTLAND_WIDGET_APP_ID, _TITLE, _ICON (from the app's .desktop entry),
+// _BADGE; live title and badge changes arrive in the JSON file named by SCOTTLAND_WIDGET_STATE,
+// which Scottland's widget service keeps current.
 // Colors follow the Omarchy theme when there is one, else a neutral dark palette.
 import QtQuick
 import Quickshell
@@ -15,9 +16,23 @@ FloatingWindow {
     color: "transparent"
 
     readonly property string appId: Quickshell.env("SCOTTLAND_WIDGET_APP_ID") || ""
-    readonly property string appTitle: Quickshell.env("SCOTTLAND_WIDGET_TITLE") || appId
+    property string appTitle: Quickshell.env("SCOTTLAND_WIDGET_TITLE") || appId
     readonly property string iconName: Quickshell.env("SCOTTLAND_WIDGET_ICON") || appId
-    readonly property int badge: parseInt(Quickshell.env("SCOTTLAND_WIDGET_BADGE") || "0") || 0
+    property int badge: parseInt(Quickshell.env("SCOTTLAND_WIDGET_BADGE") || "0") || 0
+
+    // Live state from the widget service.
+    FileView {
+        path: Quickshell.env("SCOTTLAND_WIDGET_STATE") || ""
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: {
+            try {
+                const state = JSON.parse(this.text())
+                if (typeof state.title === "string" && state.title !== "") root.appTitle = state.title
+                if (typeof state.badge === "number") root.badge = state.badge
+            } catch (e) {}
+        }
+    }
 
     // Theme: Omarchy's colors.toml if present.
     property color background: "#2e3440"

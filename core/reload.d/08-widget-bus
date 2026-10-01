@@ -1,0 +1,10 @@
+#!/bin/sh
+# Start the widget service if this session doesn't have one (it predates the service, or it died).
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+pid=$(cat "$runtime/${WAYLAND_DISPLAY:-wayland}.widget-bus.pid" 2>/dev/null)
+if [ -n "$pid" ] && grep -q scottland-widget-bus "/proc/$pid/cmdline" 2>/dev/null; then
+  exit 0
+fi
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+mkdir -p "$state"
+setsid -f "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-widget-bus" 2>>"$state/widgets.log" </dev/null >/dev/null

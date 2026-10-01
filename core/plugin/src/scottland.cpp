@@ -16,6 +16,7 @@
 #include <wayfire/toplevel.hpp>
 #include <wayfire/touch/touch.hpp>
 #include <wayfire/workspace-set.hpp>
+#include <wayfire/workarea.hpp>
 #include <wayfire/window-manager.hpp>
 #include <linux/input-event-codes.h>
 #include <wayfire/util/log.hpp>
@@ -43,8 +44,10 @@ extern "C" {
 #include <cmath>
 #include <ctime>
 #include <map>
+#include <set>
 #include <regex>
 #include <optional>
+#include <signal.h>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -65,6 +68,17 @@ extern "C" {
 //    surface, independent of keys physically held (Hyprland's send_key_state).
 //  - [scottland] release_key_<name> / release_command_<name>: run a command when a key is
 //    released (e.g. accept a switcher when Super is let go).
+// Custom IPC events go through the ipc-rules plugin, which relays this signal (emitted on the shared
+// IPC method repository) to clients subscribed to the event's name. Declared as in Wayfire's
+// ipc-rules-common.hpp, which can't be included outside Wayfire's tree (it needs its config.h).
+namespace wf::ipc_rules::detail
+{
+struct custom_event_signal_t
+{
+    wf::json_t data;
+};
+}
+
 namespace
 {
 uint32_t now_msec()
@@ -748,6 +762,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        // Widgets are always at 100%: they never follow the zones (WG4).
+        if (is_widget(view))
+        {
+            set_scale(view, 1.0);
+            return;
+        }
+
         // While Wayfire's move tool drags a window, its geometry only changes on release;
         // on_drag_motion keeps the scale live instead.
         if (drag->view == view)
@@ -779,9 +800,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return transformer ? transformer->scale_x : 1.0;
     }
 
+    std::map<uint64_t, double> announced_scale;
+
     /** Move a window toward `target`, animating jumps. */
     void set_scale(wayfire_toplevel_view view, double target)
     {
+        // Apps can follow their own scale over IPC/D-Bus (WG12): announce target changes.
+        auto& last = announced_scale[view->get_id()];
+        if (std::abs(last - target) > 0.01)
+        {
+            last = target;
+            wf::json_t event;
+            event["window"] = (int64_t)view->get_id();
+            event["scale"]  = target;
+            send_ipc_event(event, "scottland-scale#");
+        }
+
         auto found = transitions.find(view->get_id());
         if (found != transitions.end())
         {
@@ -903,6 +937,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY | wf::WSET_SORT_STACKING))
         {
+            if (!view->get_root_node()->is_enabled())
+            {
+                continue;  // hidden behind its widget
+            }
+
             if (auto frame = frame_of(view, false))
             {
                 list.emplace_back(view, frame);
@@ -1048,12 +1087,483 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 forget_owner(frame);
                 frame->set_neighbors({});
             }
+
+            // Tied lifecycles (WG5): the app's window closed takes its widget along; a widget
+            // closed by the user closes the app's window (unless it's going because of a restore).
+            if (auto link = link_of_window(toplevel))
+            {
+                auto widget = wf::toplevel_cast(link->widget.lock());
+                pid_t launcher = link->launcher;
+                widget_links.erase(uint64_t(link->window_id));
+                announce_widgets();
+                if (widget)
+                {
+                    close_view_or_process(widget, launcher);
+                } else if (launcher > 1)
+                {
+                    kill(launcher, SIGTERM);
+                }
+            } else if (auto link = link_of_widget(toplevel))
+            {
+                if (link->dismissing)
+                {
+                    widget_links.erase(uint64_t(link->window_id));
+                    announce_widgets();
+                } else
+                {
+                    link->widget.reset();
+                    close_linked(*link);
+                }
+            }
         }
 
         // Neighbors are recomputed without it once it's gone from the stacking list.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
     wf::wl_idle_call idle_neighbors;
+
+    // Rail widgets (docs/widgets.md). A window dropped onto a widget rail is hidden (kept alive)
+    // and a widget program is launched in its place; the widget's window, recognized by its
+    // process, floats where the window was dropped at 100%. The two are tied: closing either
+    // closes both; dragging the widget off the rail restores the window there.
+    struct widget_link_t
+    {
+        uint64_t window_id = 0;
+        std::weak_ptr<wf::view_interface_t> window;  // the app's window (hidden)
+        std::weak_ptr<wf::view_interface_t> widget;  // the widget's window, once it maps
+        pid_t launcher = 0;                          // the widget process (or its shell)
+        wf::output_t *output = nullptr;
+        wf::pointf_t drop;                           // where the window was dropped (output coords)
+        std::string rail;                            // "left" or "right"
+        bool dismissing = false;                     // restoring the window: the widget just goes
+        uint32_t launched_at = 0;
+    };
+
+    std::map<uint64_t, widget_link_t> widget_links;  // by the app window's id
+    std::set<uint64_t> wants_attention;              // windows demanding attention (urgent)
+
+    /** Tell IPC subscribers (the widget service) that widgets changed. */
+    /** Send a custom IPC event (names must end in '#') to subscribed clients. */
+    void send_ipc_event(wf::json_t data, const std::string& name)
+    {
+        data["event"] = name;
+        wf::ipc_rules::detail::custom_event_signal_t ev;
+        ev.data = std::move(data);
+        ipc_repo->emit(&ev);
+    }
+
+    void announce_widgets()
+    {
+        send_ipc_event(wf::json_t{}, "scottland-widgets#");
+    }
+
+    wf::signal::connection_t<wf::view_hints_changed_signal> on_hints =
+        [=] (wf::view_hints_changed_signal *ev)
+    {
+        if (!ev->view)
+        {
+            return;
+        }
+
+        if (ev->demands_attention)
+        {
+            wants_attention.insert(ev->view->get_id());
+        } else
+        {
+            wants_attention.erase(ev->view->get_id());
+        }
+
+        if (link_of_window(wf::toplevel_cast(ev->view)))
+        {
+            announce_widgets();
+        }
+    };
+    wf::wl_timer<true> widget_watchdog;
+    static constexpr uint32_t WIDGET_ADOPT_MS = 8000;  // no widget window by then: give up, restore
+
+    static pid_t view_pid(wayfire_view view)
+    {
+        pid_t pid = 0;
+        if (view && view->get_client())
+        {
+            wl_client_get_credentials(view->get_client(), &pid, nullptr, nullptr);
+        }
+
+        return pid;
+    }
+
+    /** Is `ancestor` the process `pid` or one of its ancestors (a few levels up)? */
+    static bool descends_from(pid_t pid, pid_t ancestor)
+    {
+        for (int depth = 0; (pid > 1) && (depth < 8); depth++)
+        {
+            if (pid == ancestor)
+            {
+                return true;
+            }
+
+            std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+            std::string line;
+            if (!std::getline(stat, line))
+            {
+                return false;
+            }
+
+            // pid (comm) state ppid ...: comm may contain spaces, so parse after the last ')'.
+            auto close = line.rfind(')');
+            if (close == std::string::npos)
+            {
+                return false;
+            }
+
+            std::istringstream rest(line.substr(close + 1));
+            std::string state;
+            rest >> state >> pid;
+        }
+
+        return false;
+    }
+
+    widget_link_t *link_of_window(wayfire_view view)
+    {
+        auto found = view ? widget_links.find(view->get_id()) : widget_links.end();
+        return found == widget_links.end() ? nullptr : &found->second;
+    }
+
+    widget_link_t *link_of_widget(wayfire_view view)
+    {
+        for (auto& [id, link] : widget_links)
+        {
+            if (view && (link.widget.lock().get() == view.get()))
+            {
+                return &link;
+            }
+        }
+
+        return nullptr;
+    }
+
+    bool is_widget(wayfire_view view)
+    {
+        return link_of_widget(view) != nullptr;
+    }
+
+    static void set_hidden(wayfire_view view, bool hidden)
+    {
+        if (view && (view->get_root_node()->is_enabled() == hidden))
+        {
+            wf::scene::set_node_enabled(view->get_root_node(), !hidden);
+        }
+    }
+
+    /** Close a window; a widget that won't go is ended. */
+    void close_view_or_process(wayfire_view view, pid_t pid)
+    {
+        if (view)
+        {
+            view->close();
+        }
+
+        if (pid > 1)
+        {
+            // Give it a moment to close on its own (it may want to save), then end it.
+            auto timer = std::make_shared<wf::wl_timer<false>>();
+            timer->set_timeout(3000, [timer, pid] ()
+            {
+                if (kill(pid, 0) == 0)
+                {
+                    kill(pid, SIGTERM);
+                }
+            });
+        }
+    }
+
+    std::string widget_launcher()
+    {
+        const char *hooks = getenv("SCOTTLAND_HOOKS");
+        return std::string(hooks ? hooks : "/usr/lib/scottland") + "/libexec/scottland-widget-launch";
+    }
+
+    static std::string shell_quote(const std::string& text)
+    {
+        std::string out = "'";
+        for (char c : text)
+        {
+            out += (c == '\'') ? std::string("'\\''") : std::string(1, c);
+        }
+
+        return out + "'";
+    }
+
+    /** The window was dropped on a rail: hide it and launch its widget. */
+    void widgetize(wayfire_toplevel_view view)
+    {
+        auto output = view->get_output();
+        if (!output || view->parent || view->pending_fullscreen() || link_of_window(view) || is_widget(view))
+        {
+            return;
+        }
+
+        auto geometry = view->get_geometry();
+        double width  = output->get_relative_geometry().width;
+        widget_link_t link;
+        link.window_id = view->get_id();
+        link.window = view->weak_from_this();
+        link.output = output;
+        link.drop   = {geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
+        link.rail   = link.drop.x < width / 2 ? "left" : "right";
+        link.launched_at = now_msec();
+
+        wf::json_t context;
+        context["id"]     = std::to_string(link.window_id);
+        context["window"] = (int64_t)link.window_id;
+        context["app_id"] = view->get_app_id();
+        context["title"]  = view->get_title();
+        context["pid"]    = (int64_t)view_pid(view);
+        context["rail"]   = link.rail;
+        link.launcher = wf::get_core().run(shell_quote(widget_launcher()) + " " +
+            shell_quote(context.serialize()));
+        if (link.launcher <= 0)
+        {
+            LOGE("scottland: couldn't launch a widget for ", view->get_app_id());
+            return;
+        }
+
+        set_hidden(view, true);
+        if (wf::get_core().seat->get_active_view() == view)
+        {
+            wf::get_core().seat->refocus();
+        }
+
+        widget_links[link.window_id] = std::move(link);
+        announce_widgets();
+        if (!widget_watchdog.is_connected())
+        {
+            widget_watchdog.set_timeout(500, [=] () { return check_widget_launches(); });
+        }
+    }
+
+    /** Widgets whose window never appeared: restore their app window. */
+    bool check_widget_launches()
+    {
+        bool waiting = false;
+        for (auto it = widget_links.begin(); it != widget_links.end();)
+        {
+            auto& link = it->second;
+            if (!link.widget.lock() && (now_msec() - link.launched_at > WIDGET_ADOPT_MS))
+            {
+                LOGE("scottland: no widget window appeared for window ", link.window_id, "; restoring it");
+                if (auto window = wf::toplevel_cast(link.window.lock()))
+                {
+                    set_hidden(window, false);
+                }
+
+                it = widget_links.erase(it);
+                announce_widgets();
+                continue;
+            }
+
+            waiting |= !link.widget.lock();
+            ++it;
+        }
+
+        return waiting;
+    }
+
+    /** A window mapped: is it a widget we launched? Then place it where its app window was dropped. */
+    bool adopt_widget(wayfire_toplevel_view view)
+    {
+        pid_t pid = view_pid(view);
+        for (auto& [id, link] : widget_links)
+        {
+            if (link.widget.lock() || !descends_from(pid, link.launcher))
+            {
+                continue;
+            }
+
+            link.widget = view->weak_from_this();
+            auto output = link.output && wf::get_core().output_layout->find_output(link.output->handle) ?
+                link.output : view->get_output();
+            if (output && (view->get_output() != output))
+            {
+                wf::move_view_to_output(view, output, false);
+            }
+
+            place_widget(view, output, link.drop);
+            set_scale(view, 1.0);
+            announce_widgets();
+            return true;
+        }
+
+        return false;
+    }
+
+    /** Center the widget on `at`, kept wholly on screen, halo included. */
+    void place_widget(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t at)
+    {
+        auto geometry = view->get_geometry();
+        auto area = output ? output->workarea->get_workarea() : geometry;
+        auto frame = frame_of(view, false);
+        int inset = frame ? (int)std::ceil(frame->thickness() + 2) : 0;
+        area.x += inset;
+        area.y += inset;
+        area.width  -= 2 * inset;
+        area.height -= 2 * inset;
+        double x = std::clamp(at.x - geometry.width / 2.0, (double)area.x,
+            std::max((double)area.x, (double)(area.x + area.width - geometry.width)));
+        double y = std::clamp(at.y - geometry.height / 2.0, (double)area.y,
+            std::max((double)area.y, (double)(area.y + area.height - geometry.height)));
+        view->move(std::round(x), std::round(y));
+    }
+
+    /** Back to the window, at `at` (output coords); the widget goes (it isn't closed: WG5). */
+    void restore_window(widget_link_t& link, std::optional<wf::pointf_t> at)
+    {
+        auto window = wf::toplevel_cast(link.window.lock());
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        link.dismissing = true;
+        if (window)
+        {
+            if (at)
+            {
+                auto g = window->get_geometry();
+                window->move(std::round(at->x - g.width / 2.0), std::round(at->y - g.height / 2.0));
+            }
+
+            set_hidden(window, false);
+            wf::get_core().default_wm->focus_raise_view(window);
+        }
+
+        uint64_t id = link.window_id;
+        pid_t launcher = link.launcher;
+        if (widget)
+        {
+            close_view_or_process(widget, launcher);
+        } else if (launcher > 1)
+        {
+            kill(launcher, SIGTERM);
+        }
+
+        widget_links.erase(id);
+        announce_widgets();
+    }
+
+    /** Close the app's window and its widget together (WG5). */
+    void close_linked(widget_link_t& link)
+    {
+        auto window = wf::toplevel_cast(link.window.lock());
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        pid_t launcher = link.launcher;
+        widget_links.erase(uint64_t(link.window_id));
+        announce_widgets();
+        if (widget)
+        {
+            close_view_or_process(widget, launcher);
+        }
+
+        if (window)
+        {
+            // Shown again first: if the app asks before closing (unsaved work), the question is visible.
+            set_hidden(window, false);
+            window->close();
+        }
+    }
+
+    /** A drop: windows dropped on a rail become widgets; widgets dropped off the rail restore. */
+    void handle_widget_drop(wayfire_toplevel_view view)
+    {
+        if (!view || !view->is_mapped() || !view->get_output())
+        {
+            return;
+        }
+
+        auto geometry = view->get_geometry();
+        wf::pointf_t center{geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
+        bool on_rail = place_at(center.x, view->get_output()->get_relative_geometry().width).zone == zone_t::widget;
+        if (auto link = link_of_widget(view))
+        {
+            if (!on_rail)
+            {
+                restore_window(*link, center);
+            } else
+            {
+                link->drop = center;
+            }
+        } else if (on_rail)
+        {
+            widgetize(view);
+        }
+    }
+
+    wf::ipc::method_callback widgets_state = [=] (wf::json_t) -> wf::json_t
+    {
+        auto reply = wf::ipc::json_ok();
+        wf::json_t list = wf::json_t::array();
+        auto active = wf::get_core().seat->get_active_view();
+        for (auto& [id, link] : widget_links)
+        {
+            auto window = wf::toplevel_cast(link.window.lock());
+            auto widget = wf::toplevel_cast(link.widget.lock());
+            wf::json_t entry;
+            entry["id"]     = std::to_string(id);
+            entry["window"] = (int64_t)id;
+            entry["widget_view"] = widget ? (int64_t)widget->get_id() : (int64_t)-1;
+            entry["app_id"] = window ? window->get_app_id() : "";
+            entry["title"]  = window ? window->get_title() : "";
+            entry["pid"]    = (int64_t)(window ? view_pid(window) : 0);
+            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : link.launcher);
+            entry["rail"]    = link.rail;
+            entry["focused"] = widget && (active == widget);
+            entry["urgent"]  = wants_attention.count(id) > 0;
+            list.append(entry);
+        }
+
+        reply["widgets"] = list;
+        return reply;
+    };
+
+    wf::ipc::method_callback widget_action = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("id") || !data["id"].is_string() || !data.has_member("action") ||
+            !data["action"].is_string())
+        {
+            return wf::ipc::json_error("widget-action needs string \"id\" and \"action\"");
+        }
+
+        uint64_t id = 0;
+        try {
+            id = std::stoull(data["id"].as_string());
+        } catch (...)
+        {
+            return wf::ipc::json_error("bad widget id");
+        }
+
+        auto found = widget_links.find(id);
+        if (found == widget_links.end())
+        {
+            return wf::ipc::json_error("no such widget");
+        }
+
+        std::string action = data["action"].as_string();
+        if (action == "restore")
+        {
+            restore_window(found->second, std::nullopt);
+        } else if (action == "close")
+        {
+            close_linked(found->second);
+        } else if (action == "focus")
+        {
+            if (auto widget = found->second.widget.lock())
+            {
+                wf::get_core().default_wm->focus_raise_view(widget);
+            }
+        } else
+        {
+            return wf::ipc::json_error("unknown action: " + action);
+        }
+
+        return wf::ipc::json_ok();
+    };
 
     void handle_pressed(wayfire_toplevel_view view, scottland::handle_t h, int finger = -1)
     {
@@ -1681,9 +2191,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto view   = drag->view;
         auto output = drag->current_output;
-        if (!view || !output || view->pending_fullscreen())
+        if (!view || !output || view->pending_fullscreen() || is_widget(view))
         {
-            return;
+            return;  // widgets stay at 100% wherever they're dragged
         }
 
         // The drag keeps the grabbed point under the pointer, so the window's center (which picks
@@ -1808,12 +2318,25 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         drag_input_override.reset();
+        if (main)
+        {
+            handle_widget_drop(main);
+        }
+
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
+        if (auto toplevel = wf::toplevel_cast(ev->view))
+        {
+            if (!widget_links.empty())
+            {
+                adopt_widget(toplevel);
+            }
+        }
+
         apply(ev->view);
         idle_neighbors.run_once([=] () { update_focus(); });
     };
@@ -1857,6 +2380,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["id"]    = (int64_t)view->get_id();
             entry["title"] = view->get_title();
             entry["app_id"] = view->get_app_id();
+            entry["widget"] = is_widget(view);
+            entry["widgetized"] = link_of_window(view) != nullptr;
+            entry["hidden"] = !view->get_root_node()->is_enabled();
             entry["zone"]  = zone_name(placement.zone);
             entry["scale"] = placement.scale;
             auto transformer = view->get_transformed_node()->get_transformer<
@@ -2081,6 +2607,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_touch_up);
         synthesize_pop();
         ipc_repo->register_method("scottland/test-input", test_input);
+        ipc_repo->register_method("scottland/widgets", widgets_state);
+        wf::get_core().connect(&on_hints);
+        ipc_repo->register_method("scottland/widget-action", widget_action);
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
         drag->connect(&on_drag_output);
@@ -2128,6 +2657,25 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         momentum.disconnect();
         touch_pointer.reset();
         ipc_repo->unregister_method("scottland/test-input");
+        ipc_repo->unregister_method("scottland/widgets");
+        on_hints.disconnect();
+        ipc_repo->unregister_method("scottland/widget-action");
+        // Unloading (or reloading) forgets the links: give every app its window back.
+        widget_watchdog.disconnect();
+        for (auto& [id, link] : widget_links)
+        {
+            if (auto window = wf::toplevel_cast(link.window.lock()))
+            {
+                set_hidden(window, false);
+            }
+
+            if (auto widget = wf::toplevel_cast(link.widget.lock()))
+            {
+                widget->close();
+            }
+        }
+
+        widget_links.clear();
         on_motion_abs.disconnect();
         on_button.disconnect();
         on_drag_output.disconnect();

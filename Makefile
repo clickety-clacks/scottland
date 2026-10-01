@@ -24,6 +24,7 @@ dev-install: plugin
 	ln -sf $(CURDIR)/core/libexec/scottland-exec $(HOME)/.local/bin/scottland-exec
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
+	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(DEV)/settings
 	mkdir -p $(HOME)/.config/systemd/user

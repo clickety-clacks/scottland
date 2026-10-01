@@ -1,0 +1,6 @@
+# Scottland's default widget: the app's icon, the window title, and an alert badge.
+id = "card"
+name = "Card"
+# Used for any app with no other widget; it claims no apps of its own.
+apps = []
+exec = "quickshell -p %d/shell.qml"
