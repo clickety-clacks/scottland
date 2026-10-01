@@ -74,7 +74,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 ## Desktop state
 
 The single desktop model and its reactive subscription/launch/audit contracts are in
-[../docs/desktop-model.md](../docs/desktop-model.md) (DM1-DM6).
+[../docs/desktop-model.md](../docs/desktop-model.md) (DM1-DM7).
 
 ## Session
 

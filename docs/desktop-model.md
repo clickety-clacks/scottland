@@ -16,7 +16,7 @@ leases, process handles and timers are resources, not independent logical state.
 | Attention source set, per window | Plugin's desktop model | Each source adds/removes its name; `builtin:` names are reserved for plugin inputs, so a configured source cannot clear a bell/urgency. User focus answers all sources. Halos read this set. |
 | Desktop collapsed mode | Plugin's desktop model | Super+M updates the mode and widget presentation together. |
 | Selected window set | Plugin's desktop model | Reserved, empty until multi-select is implemented. |
-| Drag origin, chain, morph and held-above window | Plugin (existing drag session) | A separate follow-up can move these records into the desktop model without changing consumers. Morphing form is included in the desktop snapshot. |
+| Drag origin, re-grab chain, morph, scale/grab state and held-above window | Plugin's desktop model (`drag`) | One drag-session record; Wayfire's drag controller, timers and frame buffers are input/rendering resources. The full desktop snapshot includes origin, chain, morph target and held-above identity; external slices omit them. |
 | Badge count/visibility | Widget service | Unity Launcher input is a partial-update protocol; only this input is merged. The service emits complete presentation snapshots. |
 | Mailbox payload | App, held by widget service for that launch | Publish replaces the payload; compositor snapshots cannot change it. |
 | Card presentation | Derived only from one state-file snapshot | The card replaces its entire object; no mutable launch-environment defaults. |
@@ -64,6 +64,7 @@ build; new reloads don't create a separate collapsed-mode file.
 | DM3 | External slices exclude geometry and animation samples; an unchanged presentation never rewrites its card file. There is no model polling or drift-repair service. | implemented (headless) |
 | DM4 | The widget service atomically writes a complete presentation file before the widget process starts. The card renders exclusively from that snapshot. Resolved launch identity enters the plugin, without a launch side file. | implemented (headless) |
 | DM5 | A marked reload preserves collapsed mode, attention sources and widget identities in one atomic model handover; its version increases afterward. | implemented (headless) |
+| DM7 | The drag session is a field of the desktop model: current origin, original form, re-grab chain, morph target, drag scale/grab state and temporarily held-above window have one owner. Existing Esc and re-grab behavior stays the same. | implemented (headless) |
 | DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. They run only in an isolated headless session. | implemented (headless) |
 
 Tests: `tests/widgets-test.sh` retains the behavior regression checks;

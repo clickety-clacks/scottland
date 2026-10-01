@@ -1315,6 +1315,53 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<std::string> attention;
     };
 
+    static constexpr int MORPH_MS = 240;
+    static constexpr double PROVISIONAL_WIDGET_W = 300, PROVISIONAL_WIDGET_H = 96;
+    struct drag_origin_t
+    {
+        uint64_t view = 0;                // the window this origin is for (the one being dragged)
+        wf::output_t *output = nullptr;
+        wf::point_t position{0, 0};
+        // The move began with this window, in this form (a re-grab can continue a move whose drop
+        // changed the form: a window that became a widget, or the reverse).
+        uint64_t first_view = 0;
+        bool first_widget = false;
+        wf::dimensions_t first_size{0, 0};
+        uint64_t became = 0;              // after a drop: the window that now stands for it
+    };
+    struct drag_morph_t
+    {
+        std::weak_ptr<wf::view_interface_t> dragged;
+        bool from_widget = false;  // dragging a widget: its other form is its app's window
+        bool toward = false;       // heading for the other form
+        double center_x = 0;       // where the dragged frame is centered (output coords)
+        wf::animation::simple_animation_t shape{wf::create_option<int>(MORPH_MS)};
+        wf::animation::simple_animation_t fade{wf::create_option<int>(MORPH_MS * 3 / 4)};
+        std::shared_ptr<wf::auxilliary_buffer_t> snapshot = std::make_shared<wf::auxilliary_buffer_t>();
+        wf::geometry_t snapshot_box{}, other_geometry{};
+        bool snapshot_ready = false;
+        int ticks = 0;
+    };
+    // One drag session owns the Esc origin, re-grab chain, morph and temporarily raised view.
+    // Wayfire's drag controller and the animation timers remain renderer/input resources.
+    struct drag_session_t
+    {
+        double relative_x = 0.5;
+        double margin = 0.0;
+        double target = 1.0;
+        double last_center = 0;
+        bool started = false;
+        wf::pointf_t start_cursor{0, 0};
+        std::weak_ptr<wf::view_interface_t> held_above;
+        drag_origin_t origin;
+        bool cancelled = false;
+        uint64_t widget = 0;
+        drag_origin_t last_drop;
+        uint32_t last_drop_at = 0;
+        std::optional<wf::pointf_t> input_override;
+        std::optional<drag_morph_t> morph;
+    };
+
     struct desktop_model_t
     {
         uint64_t version = 0;
@@ -1322,6 +1369,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::map<uint64_t, window_state_t> windows;
         std::map<uint64_t, widget_link_t> widgets;    // keyed by the app window
         bool collapsed = false;
+        drag_session_t drag;
         std::set<uint64_t> selected;                 // reserved for future multi-select
     } model;
 
@@ -2063,9 +2111,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 wf::move_view_to_output(view, output, false);
             }
 
-            if ((last_drop.became == 0) && (last_drop.first_view == link.window_id))
+            if ((model.drag.last_drop.became == 0) && (model.drag.last_drop.first_view == link.window_id))
             {
-                last_drop.became = view->get_id();  // dropped before it appeared: the move goes on through it
+                model.drag.last_drop.became = view->get_id();  // dropped before it appeared: the move goes on through it
             }
 
             keep_above(view);
@@ -2626,7 +2674,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["collapsed"] = represented && represented->collapsed;
                 if (slice == "desktop")
                 {
-                    if (morph && morph->dragged.lock().get() == state.view.lock().get())
+                    if (model.drag.morph && model.drag.morph->dragged.lock().get() == state.view.lock().get())
                     {
                         entry["form"] = "morphing";
                         entry["widget_shaped"] = morph_widget_shaped();
@@ -2652,6 +2700,30 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 selected.append((int64_t)id);
             }
             reply["selected"] = selected;
+            wf::json_t drag;
+            drag["window"] = (int64_t)model.drag.origin.view;
+            drag["started"] = model.drag.started;
+            drag["cancelled"] = model.drag.cancelled;
+            drag["origin_window"] = (int64_t)model.drag.origin.first_view;
+            drag["origin_x"] = model.drag.origin.position.x;
+            drag["origin_y"] = model.drag.origin.position.y;
+            drag["origin_widget"] = model.drag.origin.first_widget;
+            drag["chain_window"] = (int64_t)model.drag.last_drop.became;
+            drag["chain_at"] = (int64_t)model.drag.last_drop_at;
+            auto held = model.drag.held_above.lock();
+            drag["held_above"] = held ? (int64_t)held->get_id() : (int64_t)-1;
+            drag["target_scale"] = model.drag.target;
+            if (model.drag.morph)
+            {
+                wf::json_t morph;
+                auto dragged = model.drag.morph->dragged.lock();
+                morph["window"] = dragged ? (int64_t)dragged->get_id() : (int64_t)-1;
+                morph["from_widget"] = model.drag.morph->from_widget;
+                morph["toward"] = model.drag.morph->toward;
+                morph["center_x"] = model.drag.morph->center_x;
+                drag["morph"] = morph;
+            }
+            reply["drag"] = drag;
         }
         if (slice != "attention")
         {
@@ -3215,7 +3287,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<false> hold_timer;
     std::weak_ptr<scottland::frame_t> lifted_frame;
     int lifted_finger = -1;
-    std::optional<wf::pointf_t> drag_input_override;  // where a touch drag was grabbed (until it ends)
     std::string pop_sound;
 
     void cancel_hold()
@@ -3468,7 +3539,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         lifted_finger = finger;
         auto at = where.value_or(wf::get_core().get_touch_position(finger));
-        drag_input_override = at;
+        model.drag.input_override = at;
         drag->set_pending_drag(at);
         wf::move_drag::drag_options_t options;
         options.join_views = false;
@@ -3710,7 +3781,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["hold_armed"] = hold_finger >= 0;
         reply["lifted"]     = lifted_finger >= 0;
         reply["dragging"]   = (bool)drag->view;
-        reply["drag_center"] = last_drag_center;
+        reply["drag_center"] = model.drag.last_center;
         return reply;
     };
 
@@ -3743,23 +3814,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Live scaling while a window is dragged. The drag keeps the grabbed point of the window's
     // (transformed) bounding box under the pointer, so rescaling mid-drag stays anchored there.
     wf::shared_data::ref_ptr_t<wf::move_drag::core_drag_t> drag;
-    double drag_relative_x = 0.5;   // where across the dragged window's bounding box it was grabbed
-    double drag_margin = 0.0;       // bounding box minus window, per side (halo margin), on screen
-    double drag_target = 1.0;     // the scale the dragged window is heading for
-    double last_drag_center = 0;  // where the dragged window's center is shown (output coords)
 
-    // A drag's start, noted once per drag: where it was grabbed, where Esc sends it back, whether
-    // it continues the last move. Noted when the drag starts (Scottland's own drags: a three-
-    // finger swipe, a touch lift) or at its first motion (Wayfire's move plugin moves it at once),
-    // never later: a drag that ends before it moves must still keep the move's origin.
-    bool drag_started = false;
-    wf::pointf_t drag_start_cursor{0, 0};  // where the drag was grabbed (layout coords)
     static constexpr double CLICK_SLOP = 6.0;  // a press and release within this is a click, not a move
 
-    // A just-dropped window kept above the widgets until a re-grab could no longer continue its
-    // move (DRAG_CHAIN_MS), then back with the ordinary windows (L29). Never one the user put
-    // above themselves.
-    std::weak_ptr<wf::view_interface_t> held_above;
     wf::wl_timer<false> held_above_timer;
 
     void set_above(wayfire_toplevel_view view, bool above)
@@ -3776,7 +3833,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void hold_above(wayfire_toplevel_view view)
     {
-        if (held_above.lock().get() != view.get())
+        if (model.drag.held_above.lock().get() != view.get())
         {
             release_above();
             if (view->has_data("wm-actions-above"))
@@ -3785,7 +3842,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             set_above(view, true);
-            held_above = view->weak_from_this();
+            model.drag.held_above = view->weak_from_this();
         }
 
         held_above_timer.set_timeout(DRAG_CHAIN_MS, [=] () { release_above(); });
@@ -3794,8 +3851,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void release_above()
     {
         held_above_timer.disconnect();
-        auto view = wf::toplevel_cast(held_above.lock());
-        held_above.reset();
+        auto view = wf::toplevel_cast(model.drag.held_above.lock());
+        model.drag.held_above.reset();
         if (view && view->is_mapped() && !is_widget(view))
         {
             set_above(view, false);
@@ -3804,13 +3861,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void note_drag_start()
     {
-        if (drag_started || !drag->view)
+        if (model.drag.started || !drag->view)
         {
             return;
         }
 
-        drag_started = true;
-        if (held_above.lock().get() == drag->view.get())
+        model.drag.started = true;
+        if (model.drag.held_above.lock().get() == drag->view.get())
         {
             held_above_timer.disconnect();  // picked up again: above until this drag's drop
         } else
@@ -3818,7 +3875,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             release_above();
         }
 
-        drag_start_cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
+        model.drag.start_cursor = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
         // Every resize's after-care stops: it would move the window back toward its center.
         for (auto& [output, instance] : output_instance)
         {
@@ -3830,39 +3887,40 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // measure it the same way, or the predicted center (and zone, and scale) drifts from
         // where the window really lands.
         auto output = drag->view->get_output();
-        auto cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
+        auto cursor = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
         double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
         // Use the window's resting box (its scaled width plus the halo margin), not the live
         // bounding box: a just-lifted window is mid-bulge, which inflates the box for a moment.
         auto geometry = drag->view->get_geometry();
         double drawn  = geometry.width * displayed_scale(drag->view);
         auto frame    = frame_of(drag->view, false);
-        drag_margin   = frame ? frame->margin() :
+        model.drag.margin   = frame ? frame->margin() :
             std::max(0.0, (drag->view->get_bounding_box().width - drawn) / 2.0);
-        double box   = drawn + 2 * drag_margin;
+        double box   = drawn + 2 * model.drag.margin;
         double left  = geometry.x + geometry.width / 2.0 - box / 2.0;
-        drag_relative_x = box > 0 ? (local_x - left) / box : 0.5;
+        model.drag.relative_x = box > 0 ? (local_x - left) / box : 0.5;
         // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
         // reset on the touchpad, out of room), it's the same move: keep the first origin.
-        bool continued = (last_drop.became == drag->view->get_id()) &&
-            ((int32_t)(now_msec() - last_drop_at) < DRAG_CHAIN_MS);
+        bool continued = (model.drag.last_drop.became == drag->view->get_id()) &&
+            ((int32_t)(now_msec() - model.drag.last_drop_at) < DRAG_CHAIN_MS);
         stop_glide(drag->view);  // picked up again mid-glide: it's where it's drawn
-        dragged_widget = is_widget(drag->view) ? drag->view->get_id() : 0;
-        drag_origin = origin_of(drag->view);
+        model.drag.widget = is_widget(drag->view) ? drag->view->get_id() : 0;
+        model.drag.origin = origin_of(drag->view);
         if (continued)
         {
-            auto view = drag_origin.view;
-            drag_origin = last_drop;
-            drag_origin.view = view;  // the window being dragged now (maybe the other form)
+            auto view = model.drag.origin.view;
+            model.drag.origin = model.drag.last_drop;
+            model.drag.origin.view = view;  // the window being dragged now (maybe the other form)
         }
 
         LOGI("scottland: drag start: window ", drag->view->get_id(), continued ? " continues the move" :
-            " starts a move", " (", (int32_t)(now_msec() - last_drop_at), " ms after the last drop, of window ",
-            last_drop.became, "); Esc goes to ", drag_origin.position.x, ",", drag_origin.position.y);
-        drag_cancelled = false;
+            " starts a move", " (", (int32_t)(now_msec() - model.drag.last_drop_at), " ms after the last drop, of window ",
+            model.drag.last_drop.became, "); Esc goes to ", model.drag.origin.position.x, ",", model.drag.origin.position.y);
+        model.drag.cancelled = false;
         auto running = transitions.find(drag->view->get_id());
-        drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
+        model.drag.target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
         update_neighbors(output);
+        publish_model();
     }
 
     wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> on_drag_output =
@@ -3879,39 +3937,23 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // a widget dragged off its rail turns back into its window the same way; the drop keeps the
     // shape shown. The widget is launched (unseen) when the drag first reaches the rail; until
     // it shows, the frame reshapes around the window's own contents.
-    static constexpr int MORPH_MS = 240;
-    static constexpr double PROVISIONAL_WIDGET_W = 300, PROVISIONAL_WIDGET_H = 96;
-    struct drag_morph_t
-    {
-        std::weak_ptr<wf::view_interface_t> dragged;
-        bool from_widget = false;  // dragging a widget: its other form is its app's window
-        bool toward = false;       // heading for the other form
-        double center_x = 0;       // where the dragged frame is centered (output coords)
-        wf::animation::simple_animation_t shape{wf::create_option<int>(MORPH_MS)};
-        wf::animation::simple_animation_t fade{wf::create_option<int>(MORPH_MS * 3 / 4)};
-        std::shared_ptr<wf::auxilliary_buffer_t> snapshot = std::make_shared<wf::auxilliary_buffer_t>();
-        wf::geometry_t snapshot_box{}, other_geometry{};
-        bool snapshot_ready = false;
-        int ticks = 0;
-    };
-    std::optional<drag_morph_t> morph;
     wf::wl_timer<true> morph_tick;
 
     /** Is the dragged view showing its widget shape (or heading there)? */
     bool morph_widget_shaped() const
     {
-        return morph && (morph->from_widget ? !morph->toward : morph->toward);
+        return model.drag.morph && (model.drag.morph->from_widget ? !model.drag.morph->toward : model.drag.morph->toward);
     }
 
     wayfire_toplevel_view morph_other()
     {
-        auto dragged = wf::toplevel_cast(morph ? morph->dragged.lock() : nullptr);
+        auto dragged = wf::toplevel_cast(model.drag.morph ? model.drag.morph->dragged.lock() : nullptr);
         if (!dragged)
         {
             return nullptr;
         }
 
-        if (morph->from_widget)
+        if (model.drag.morph->from_widget)
         {
             auto link = link_of_widget(dragged);
             return link ? wf::toplevel_cast(link->window.lock()) : nullptr;
@@ -3923,12 +3965,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void end_morph()
     {
-        if (!morph)
+        if (!model.drag.morph)
         {
             return;
         }
 
-        if (auto dragged = wf::toplevel_cast(morph->dragged.lock()))
+        if (auto dragged = wf::toplevel_cast(model.drag.morph->dragged.lock()))
         {
             if (auto frame = frame_of(dragged, false))
             {
@@ -3938,15 +3980,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        morph.reset();
+        model.drag.morph.reset();
         morph_tick.disconnect();
+        publish_model();
     }
 
     /** Follow the drag: decide which form it should show, and start the widget if it's needed. */
     void update_drag_morph(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t pointer)
     {
         bool dragging_widget = is_widget(view);
-        if (!morph || (morph->dragged.lock().get() != view.get()))
+        if (!model.drag.morph || (model.drag.morph->dragged.lock().get() != view.get()))
         {
             end_morph();
             if (!dragging_widget && !can_widgetize(view))
@@ -3954,11 +3997,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 return;
             }
 
-            morph.emplace();
-            morph->dragged     = view->weak_from_this();
-            morph->from_widget = dragging_widget;
-            morph->shape.set(0, 0);
-            morph->fade.set(0, 0);
+            model.drag.morph.emplace();
+            model.drag.morph->dragged     = view->weak_from_this();
+            model.drag.morph->from_widget = dragging_widget;
+            model.drag.morph->shape.set(0, 0);
+            model.drag.morph->fade.set(0, 0);
         }
 
         auto frame = frame_of(view, false);
@@ -3974,9 +4017,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double box    = r.width() + 2 * margin;
         double origin = output->get_layout_geometry().x;
         double width  = output->get_relative_geometry().width;
-        double x1 = pointer.x - origin - drag_relative_x * box + margin;
+        double x1 = pointer.x - origin - model.drag.relative_x * box + margin;
         double x2 = x1 + r.width();
-        morph->center_x = (x1 + x2) / 2.0;
+        model.drag.morph->center_x = (x1 + x2) / 2.0;
         auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
 
         // The pointer (or finger) decides, not the window's geometry (WG1): entering the rail
@@ -3984,18 +4027,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // shape shown.
         double at = pointer.x - origin;
         bool want_widget = on_rail(at, width, morph_widget_shaped() ?
-            (morph->from_widget ? view : morph_other()) : nullptr);
-        bool toward = morph->from_widget ? !want_widget : want_widget;
-        if (toward != morph->toward)
+            (model.drag.morph->from_widget ? view : morph_other()) : nullptr);
+        bool toward = model.drag.morph->from_widget ? !want_widget : want_widget;
+        if (toward != model.drag.morph->toward)
         {
-            if (!morph->from_widget && toward)
+            if (!model.drag.morph->from_widget && toward)
             {
                 // Launched now, unseen, so it's ready to fade in; on the rail the drag is over.
                 widgetize(view, true, at < width / 2 ? "left" : "right");
             }
 
-            morph->toward = toward;
-            morph->shape.animate(morph->shape, toward ? 1.0 : 0.0);
+            model.drag.morph->toward = toward;
+            model.drag.morph->shape.animate(model.drag.morph->shape, toward ? 1.0 : 0.0);
         }
 
         if (!morph_tick.is_connected())
@@ -4006,12 +4049,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     bool step_morph()
     {
-        if (!morph)
+        if (!model.drag.morph)
         {
             return false;
         }
 
-        auto dragged = wf::toplevel_cast(morph->dragged.lock());
+        auto dragged = wf::toplevel_cast(model.drag.morph->dragged.lock());
         auto frame   = dragged && dragged->is_mapped() ? frame_of(dragged, false) : nullptr;
         if (!frame)
         {
@@ -4036,34 +4079,34 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        if (other && other->is_mapped() && other->get_output() && (!morph->snapshot_ready || (morph->ticks % 2 == 0)))
+        if (other && other->is_mapped() && other->get_output() && (!model.drag.morph->snapshot_ready || (model.drag.morph->ticks % 2 == 0)))
         {
-            other->take_snapshot(*morph->snapshot);
-            morph->snapshot_box   = other->get_surface_root_node()->get_bounding_box();
-            morph->other_geometry = other->get_geometry();
-            morph->snapshot_ready = morph->snapshot->get_buffer() != nullptr;
+            other->take_snapshot(*model.drag.morph->snapshot);
+            model.drag.morph->snapshot_box   = other->get_surface_root_node()->get_bounding_box();
+            model.drag.morph->other_geometry = other->get_geometry();
+            model.drag.morph->snapshot_ready = model.drag.morph->snapshot->get_buffer() != nullptr;
         }
 
-        morph->ticks++;
-        if (!morph->toward && (drag->view != dragged) && !morph->shape.running() && !morph->fade.running())
+        model.drag.morph->ticks++;
+        if (!model.drag.morph->toward && (drag->view != dragged) && !model.drag.morph->shape.running() && !model.drag.morph->fade.running())
         {
             end_morph();  // a cancelled drag finished morphing back
             return false;
         }
 
-        double fade_to = (morph->toward && morph->snapshot_ready && other) ? 1.0 : 0.0;
-        if (std::abs(morph->fade.end - fade_to) > 0.001)
+        double fade_to = (model.drag.morph->toward && model.drag.morph->snapshot_ready && other) ? 1.0 : 0.0;
+        if (std::abs(model.drag.morph->fade.end - fade_to) > 0.001)
         {
-            morph->fade.animate(morph->fade, fade_to);
+            model.drag.morph->fade.animate(model.drag.morph->fade, fade_to);
         }
 
         // The other form's size on screen: the widget at 100%, or the window at the scale it would
         // have where the frame is now.
         double w = PROVISIONAL_WIDGET_W, h = PROVISIONAL_WIDGET_H, scale = 1.0;
-        if (morph->from_widget && other)
+        if (model.drag.morph->from_widget && other)
         {
             auto output = output_alive(drag->current_output) ? drag->current_output : dragged->get_output();
-            scale = output ? place_at(morph->center_x, output->get_relative_geometry().width).scale : 1.0;
+            scale = output ? place_at(model.drag.morph->center_x, output->get_relative_geometry().width).scale : 1.0;
             auto g = other->get_geometry();
             w = g.width * scale;
             h = g.height * scale;
@@ -4075,14 +4118,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         frame->damage();
-        frame->morph.shape = morph->shape;
-        frame->morph.fade  = morph->fade;
+        frame->morph.shape = model.drag.morph->shape;
+        frame->morph.fade  = model.drag.morph->fade;
         frame->morph.w     = w;
         frame->morph.h     = h;
         frame->morph.scale = scale;
-        frame->morph.snapshot       = morph->snapshot_ready ? morph->snapshot : nullptr;
-        frame->morph.snapshot_box   = morph->snapshot_box;
-        frame->morph.other_geometry = morph->other_geometry;
+        frame->morph.snapshot       = model.drag.morph->snapshot_ready ? model.drag.morph->snapshot : nullptr;
+        frame->morph.snapshot_box   = model.drag.morph->snapshot_box;
+        frame->morph.other_geometry = model.drag.morph->other_geometry;
         frame->damage();
         dragged->damage();  // through the drag's own transform, so it repaints with the pointer still
         return true;
@@ -4091,24 +4134,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Esc cancels a drag (WG14): the window goes back where it was picked up, gliding from where
     // it was let go, and a drag that changed it into its other form (window/widget) morphs back.
     /** Where a drag picked a window up: which window, on which screen, where. */
-    struct drag_origin_t
-    {
-        uint64_t view = 0;                // the window this origin is for (the one being dragged)
-        wf::output_t *output = nullptr;
-        wf::point_t position{0, 0};
-        // The move began with this window, in this form (a re-grab can continue a move whose drop
-        // changed the form: a window that became a widget, or the reverse).
-        uint64_t first_view = 0;
-        bool first_widget = false;
-        wf::dimensions_t first_size{0, 0};
-        uint64_t became = 0;              // after a drop: the window that now stands for it
-    };
-    drag_origin_t drag_origin;
-    bool drag_cancelled = false;
-    uint64_t dragged_widget = 0;  // a widget being dragged, until its drop is handled
     static constexpr int DRAG_CHAIN_MS = 2500;  // a new drag of the same window within this continues the move
-    drag_origin_t last_drop;
-    uint32_t last_drop_at = 0;
 
     drag_origin_t origin_of(wayfire_toplevel_view view)
     {
@@ -4127,7 +4153,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      *  window is where it was picked up. Never another window's origin. */
     drag_origin_t origin_for(wayfire_toplevel_view view)
     {
-        return drag_origin.view == view->get_id() ? drag_origin : origin_of(view);
+        return model.drag.origin.view == view->get_id() ? model.drag.origin : origin_of(view);
     }
     static constexpr int GLIDE_MS = 260;
     // A glide: a window drawn moving from where it was to where it now is (Esc sending it home;
@@ -4170,9 +4196,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
         if ((ev->event->keycode == KEY_ESC) && (ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED) &&
-            drag->view && !drag_cancelled)
+            drag->view && !model.drag.cancelled)
         {
-            drag_cancelled = true;
+            model.drag.cancelled = true;
             ev->mode = wf::input_event_processing_mode_t::IGNORE;  // the app under it doesn't get it
             drag->handle_input_released();
         }
@@ -4182,7 +4208,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void cancel_drop(wayfire_toplevel_view view)
     {
         auto origin = origin_for(view);
-        drag_origin = {};
+        model.drag.origin = {};
         if (origin.first_view && (origin.first_view != view->get_id()) && cancel_form_change(view, origin))
         {
             return;
@@ -4215,10 +4241,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         double dx = from.x - to.x, dy = from.y - to.y;
-        if (morph && (morph->dragged.lock().get() == view.get()) && morph->toward)
+        if (model.drag.morph && (model.drag.morph->dragged.lock().get() == view.get()) && model.drag.morph->toward)
         {
-            morph->toward = false;  // back to the form it had
-            morph->shape.animate(morph->shape, 0.0);
+            model.drag.morph->toward = false;  // back to the form it had
+            model.drag.morph->shape.animate(model.drag.morph->shape, 0.0);
         }
 
         if (auto link = link_of_window(view); link && link->previewing())
@@ -4373,11 +4399,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;  // widgets stay at 100% wherever they're dragged
         }
 
-        if (morph && (morph->dragged.lock().get() == view.get()) && morph->toward)
+        if (model.drag.morph && (model.drag.morph->dragged.lock().get() == view.get()) && model.drag.morph->toward)
         {
             // Shown as its widget: the window keeps the scale of where it is, for if it's dragged
             // back out.
-            set_scale(view, place_at(morph->center_x, output->get_relative_geometry().width).scale);
+            set_scale(view, place_at(model.drag.morph->center_x, output->get_relative_geometry().width).scale);
             return;
         }
 
@@ -4399,7 +4425,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // follows exactly: the box grows by unscaled * ds, around the grab.
         std::function<double(double)> center_at = [&] (double s)
         {
-            return pointer_x + (0.5 - drag_relative_x) * (unscaled * s + 2 * drag_margin);
+            return pointer_x + (0.5 - model.drag.relative_x) * (unscaled * s + 2 * model.drag.margin);
         };
         auto drag_box = view->get_transformed_node()->get_transformer<wf::scene::transformer_base_node_t>(
             "move-drag-transformer");
@@ -4428,10 +4454,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto zone_scale = [&] (double s) { return place_at(center_at(s), screen).scale; };
-        last_drag_center = center_at(drag_target);
+        model.drag.last_center = center_at(model.drag.target);
 
-        double chosen = zone_scale(drag_target);
-        if (std::abs(chosen - drag_target) > 0.001)
+        double chosen = zone_scale(model.drag.target);
+        if (std::abs(chosen - model.drag.target) > 0.001)
         {
             // Settle on a self-consistent scale starting from the zone's answer, if there is one.
             bool consistent = false;
@@ -4450,11 +4476,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             if (consistent)
             {
-                drag_target = chosen;
+                model.drag.target = chosen;
             }
         }
 
-        set_scale(view, drag_target);
+        set_scale(view, model.drag.target);
     };
 
     wf::signal::connection_t<wf::move_drag::drag_done_signal> on_drag_done =
@@ -4467,18 +4493,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
         swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
-        if (drag_cancelled)
+        if (model.drag.cancelled)
         {
-            drag_cancelled = false;
-            drag_input_override.reset();
+            model.drag.cancelled = false;
+            model.drag.input_override.reset();
             if (main && main->is_mapped())
             {
                 cancel_drop(main);
             }
 
-            last_drop = {};  // the move is over
-            dragged_widget = 0;
-            drag_started = false;
+            model.drag.last_drop = {};  // the move is over
+            model.drag.widget = 0;
+            model.drag.started = false;
 
             idle_neighbors.run_once([=] () { update_all_neighbors(); });
             return;
@@ -4486,26 +4512,26 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (main)
         {
-            last_drop    = origin_for(main);
-            last_drop_at = now_msec();
-            last_drop.became = main->get_id();
-            LOGI("scottland: drop: window ", main->get_id(), " (the move began at ", last_drop.position.x, ",",
-                last_drop.position.y, ")");
+            model.drag.last_drop    = origin_for(main);
+            model.drag.last_drop_at = now_msec();
+            model.drag.last_drop.became = main->get_id();
+            LOGI("scottland: drop: window ", main->get_id(), " (the move began at ", model.drag.last_drop.position.x, ",",
+                model.drag.last_drop.position.y, ")");
         }
 
-        drag_origin = {};
+        model.drag.origin = {};
 
         std::optional<bool> widget_shaped;  // the shape a morphing drag showed at the drop (WG13)
-        if (morph && main && (morph->dragged.lock().get() == main.get()))
+        if (model.drag.morph && main && (model.drag.morph->dragged.lock().get() == main.get()))
         {
             widget_shaped = morph_widget_shaped();
         }
 
         // A click on a halo (pressed and let go where it was) is no move: it never changes a
         // widget into its window or the reverse.
-        auto released_at = drag_input_override.value_or(wf::get_core().get_cursor_position());
-        if (main && drag_started && (std::hypot(released_at.x - drag_start_cursor.x,
-            released_at.y - drag_start_cursor.y) < CLICK_SLOP))
+        auto released_at = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
+        if (main && model.drag.started && (std::hypot(released_at.x - model.drag.start_cursor.x,
+            released_at.y - model.drag.start_cursor.y) < CLICK_SLOP))
         {
             widget_shaped = is_widget(main);
         }
@@ -4517,14 +4543,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto geometry = main->get_geometry();
             double screen = main->get_output()->get_relative_geometry().width;
             double center = geometry.x + geometry.width / 2.0;
-            if (std::abs(place_at(center, screen).scale - drag_target) > JUMP)
+            if (std::abs(place_at(center, screen).scale - model.drag.target) > JUMP)
             {
                 for (int d = 1; d <= 400; d++)
                 {
                     int found = 0;
                     for (int sign : {-1, 1})
                     {
-                        if (std::abs(place_at(center + sign * d, screen).scale - drag_target) <= 0.003)
+                        if (std::abs(place_at(center + sign * d, screen).scale - model.drag.target) <= 0.003)
                         {
                             found = sign;
                             break;
@@ -4548,7 +4574,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        drag_input_override.reset();
+        model.drag.input_override.reset();
         if (main)
         {
             // What stands for it now, if the drop changed its form: a re-grab of that continues
@@ -4559,27 +4585,27 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             handle_widget_drop(main, widget_shaped, released_at);
             if (was_widget && !link_of_window(view_by_id(app_window)))
             {
-                last_drop.became = app_window;  // restored: the window stands for it
+                model.drag.last_drop.became = app_window;  // restored: the window stands for it
             } else if (!was_widget)
             {
                 if (auto now = link_of_window(main); now && !now->previewing())
                 {
                     auto widget = wf::toplevel_cast(now->widget.lock());
-                    last_drop.became = widget ? widget->get_id() : 0;  // it's a widget now
+                    model.drag.last_drop.became = widget ? widget->get_id() : 0;  // it's a widget now
                 }
             }
         }
 
         // Let go (fingers lifted to reset on the touchpad, say): until a re-grab could no longer
         // continue the move, the window stays above the widgets, as it was while dragged (L29).
-        if (auto stands = main ? wf::toplevel_cast(view_by_id(last_drop.became)) : nullptr;
+        if (auto stands = main ? wf::toplevel_cast(view_by_id(model.drag.last_drop.became)) : nullptr;
             stands && stands->is_mapped() && !is_widget(stands))
         {
             hold_above(stands);
         }
 
-        dragged_widget = 0;
-        drag_started = false;
+        model.drag.widget = 0;
+        model.drag.started = false;
         publish_model();
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
@@ -4618,7 +4644,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // against the edge, wholly on screen (WG4).
             auto g = view->get_geometry();
             if (auto link = link_of_widget(view); link && !link->previewing() && (drag->view != view) &&
-                (view->get_id() != dragged_widget) &&  // a drop is moving it: the drop decides
+                (view->get_id() != model.drag.widget) &&  // a drop is moving it: the drop decides
                 ((g.width != ev->old_geometry.width) || (g.height != ev->old_geometry.height)))
             {
                 keep_in_place(*link, view);
