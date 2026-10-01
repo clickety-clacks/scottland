@@ -5,6 +5,9 @@
 #   tests/widgets-test.sh        prints PASS/FAIL per check; exit status 1 if any failed
 set -uo pipefail
 cd "$(dirname -- "$0")/.."
+test_dir=${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}
+artifacts=$test_dir.artifacts
+mkdir -p "$artifacts"
 fails=0
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; fails=$((fails + 1)); }
@@ -89,12 +92,12 @@ monitor_pid=
 cleanup() {
   [ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null
   cp "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/wayfire.log" \
-    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-widgets-test.log" 2>/dev/null  # kept for a look
+    "$artifacts/wayfire.log" 2>/dev/null  # kept for a look
   tests/headless.sh stop >/dev/null 2>&1
   rm -rf "$test_widgets" "${src:-/nonexistent}"
 }
 trap cleanup EXIT
-display=$(cat "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/display")
+display=$(cat "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/display")
 state_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/widgets/$display
 signals=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-signals.XXXXXX")
 tests/headless.sh run gdbus monitor --session --dest org.scottland.Widgets >"$signals" 2>&1 &
@@ -103,7 +106,8 @@ h wayfire/set-config-options '{"scottland/sounds":false}'
 screen_w=$(ipc window-rules/list-outputs | python3 -c "import json,sys; print(int(json.load(sys.stdin)[0]['geometry']['width']))")
 
 # The app: a terminal that, once widgetized, publishes data for its widget (WG11) as itself.
-mailbox_script='sleep 6; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Publish s "{\"unread\": 4}"; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.Windows GetState > "$XDG_RUNTIME_DIR/scottland-widgets-test-state.txt"; exec sleep 3600'
+mailbox_script='sleep 6; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Publish s "{\"unread\": 4}"; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.Windows GetState > "$artifacts/state.txt"; exec sleep 3600'
+mailbox_script=${mailbox_script//\$artifacts/$artifacts}
 (tests/headless.sh run foot -T widget-app -W 50x12 sh -c "$mailbox_script" >/dev/null 2>&1 &)
 sleep 2
 read -r ax ay aw ah <<<"$(view_field widget-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -128,7 +132,7 @@ v=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/la
 f=v['frame']; halo=21.3  # the halo at its widest (SWOLLEN)
 ok = f['x'] >= halo and f['x'] + f['width'] + halo <= $screen_w + 1 and abs((f['y'] + f['height']/2) - $drop_y) < 6 and f['x'] + f['width'] >= $screen_w - 40
 sys.exit(0 if ok else 1)"
-tests/headless.sh run grim /tmp/scottland-widgets-test.png 2>/dev/null
+tests/headless.sh run grim "$artifacts/widgets.png" 2>/dev/null
 
 id=$(widget_id)
 check "WG9 the widget's D-Bus object exists" \
@@ -159,7 +163,7 @@ sleep 4
 check "WG11 data the app published reaches its widget" \
   [ "$(bus get-property org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Data)" = 's "{\"unread\": 4}"' ]
 check "WG12 the app learns it's widgetized (GetState from its own process tree)" \
-  grep -q "^bd true " "$XDG_RUNTIME_DIR/scottland-widgets-test-state.txt"
+  grep -q "^bd true " "$artifacts/state.txt"
 check "WG11 a process that isn't the app can't publish for it" \
   bash -c "! tests/headless.sh run busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Publish s '{}' 2>/dev/null"
 check "WG11 a process that isn't a widget can't send as one" \
@@ -682,7 +686,7 @@ sleep 1
 # widget), picked up again within 2 s and moved: Esc brings the window back where it began.
 (tests/headless.sh run foot -T form-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
-fx0=$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(g['x'], g['y'])")
+fx0=$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(round(g['x']), round(g['y']))")
 read -r ax ay aw ah <<<"$(view_field form-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 0.8
@@ -697,7 +701,7 @@ h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY
 h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
 sleep 1.5
 check "WG14 Esc after re-grabbing the widget it became: the window is back where the move began" \
-  [ "$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(g['x'], g['y'])")/$(view_field form-app "not v['hidden']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = "$fx0/True/0" ]
+  [ "$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(round(g['x']), round(g['y']))")/$(view_field form-app "not v['hidden']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = "$fx0/True/0" ]
 h window-rules/close-view "{\"id\": $(view_field form-app "v['id']")}"
 sleep 1
 
@@ -743,7 +747,7 @@ sleep 1
 sleep 1.5
 geo_of() { ipc window-rules/list-views | python3 -c "
 import json,sys
-v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(round(g['x']), round(g['y']))" "$1"; }
 center_of() { view_field "$1" "round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2)"; }
 swipe() {  # swipe <title> <updates>: grab it with three fingers, move left-down
   read -r cx cy <<<"$(center_of "$1")"
@@ -790,7 +794,7 @@ h window-rules/configure-view "{\"id\": $(view_field esc-b "v['id']"), \"geometr
 sleep 1
 geo() { ipc window-rules/list-views | python3 -c "
 import json,sys
-v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(round(g['x']), round(g['y']))" "$1"; }
 a0=$(geo esc-a); b0=$(geo esc-b)
 esc_key() { h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'; }
 super_drag 250 190 450 260   # A moves somewhere else (a finished drag)
@@ -873,7 +877,7 @@ sleep 2.5
 carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
 mark=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.reloading
 touch "$mark"
-fresh=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/libscottland-test-$(date +%s%N).so
+fresh=$test_dir/libscottland-test-$(date +%s%N).so
 cp build/libscottland.so "$fresh"
 plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
 h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': ' '.join(sys.argv[2] if p == 'scottland' or '/libscottland-' in p else p for p in sys.argv[1].split())}))" "$plugins" "$fresh")"
