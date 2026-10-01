@@ -18,6 +18,8 @@ FloatingWindow {
     readonly property int gap: 14
     readonly property int maxWidth: 320
     readonly property bool hasText: appName !== "" || appTitle !== ""
+    // Without text the row is just the icon: centered in the square card.
+    readonly property int rowPad: hasText ? pad : (implicitHeight - iconSize) / 2
     readonly property int textWidth: Math.min(maxWidth - 2 * pad - iconSize - gap,
         Math.ceil(Math.max(nameText.implicitWidth, titleText.visible ? titleText.implicitWidth : 0)))
     implicitWidth: hasText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
@@ -84,8 +86,10 @@ FloatingWindow {
 
         // The icon sits on the screen-edge side: left of the text on the left rail, right of it on
         // the right rail (RightToLeft lays the row out mirrored), following the rail live.
+        // Hugs the screen-edge side, with the card's padding, whatever the card's width.
         Row {
-            anchors.centerIn: parent
+            anchors.verticalCenter: parent.verticalCenter
+            x: root.rail === "right" ? parent.width - width - root.rowPad : root.rowPad
             spacing: root.gap
             layoutDirection: root.rail === "right" ? Qt.RightToLeft : Qt.LeftToRight
 
