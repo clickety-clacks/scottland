@@ -1262,24 +1262,52 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return wants_attention.count(window) || asked_attention.count(window);
     }
 
-    /** Show (or stop showing) on the window's widget that its app needs attention (WG15). */
-    void show_attention(uint64_t window)
+    static wayfire_toplevel_view view_by_id(uint64_t id)
     {
-        auto found = widget_links.find(window);
-        if (found == widget_links.end())
+        for (auto& view : wf::get_core().get_all_views())
         {
-            return;
-        }
-
-        if (auto widget = wf::toplevel_cast(found->second.widget.lock()))
-        {
-            if (auto frame = frame_of(widget))
+            if (view->get_id() == id)
             {
-                frame->set_attention(needs_attention(window));
+                return wf::toplevel_cast(view);
             }
         }
 
-        announce_widgets();
+        return nullptr;
+    }
+
+    /** Show (or stop showing) that a window's app needs attention (WG15): on its halo, or on its
+     *  widget's when it's a widget. Announced to IPC subscribers as scottland-attention#. */
+    void show_attention(uint64_t window)
+    {
+        bool on   = needs_attention(window);
+        auto link = widget_links.find(window);
+        auto view = view_by_id(window);
+        bool widgetized = (link != widget_links.end()) && !link->second.preview;
+        if (view && view->is_mapped())
+        {
+            if (auto frame = frame_of(view, false))
+            {
+                frame->set_attention(on && !widgetized);
+            }
+        }
+
+        if (link != widget_links.end())
+        {
+            if (auto widget = wf::toplevel_cast(link->second.widget.lock()))
+            {
+                if (auto frame = frame_of(widget))
+                {
+                    frame->set_attention(on && widgetized);
+                }
+            }
+
+            announce_widgets();
+        }
+
+        wf::json_t event;
+        event["window"]    = (int64_t)window;
+        event["attention"] = on;
+        send_ipc_event(event, "scottland-attention#");
     }
 
     /** The user went to it (focused its widget, or its window): attention is answered. */
@@ -1924,6 +1952,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         set_hidden(link, true);
+        show_attention(link.window_id);  // now shown on the widget, not the window
         if (auto widget = wf::toplevel_cast(link.widget.lock()))
         {
             auto output = output_alive(link.output) ? link.output : widget->get_output();
@@ -1976,7 +2005,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             set_hidden(link, false);
-            wf::get_core().default_wm->focus_raise_view(window);
+            wf::get_core().default_wm->focus_raise_view(window);  // (going to it answers attention)
         }
 
         uint64_t id = link.window_id;
@@ -2909,9 +2938,24 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return false;
         }
 
-        // The other form's contents, refreshed now and then (it isn't on screen to update itself).
+        // The other form's contents, live: it isn't on screen, so it isn't asked to draw; ask it to
+        // (frame callbacks), and take a fresh snapshot every other tick. Peeking at a widget's
+        // window shows what the app shows now, not what it showed when it became a widget.
         auto other = morph_other();
-        if (other && other->is_mapped() && other->get_output() && (!morph->snapshot_ready || (morph->ticks % 6 == 0)))
+        if (other && other->is_mapped())
+        {
+            if (auto surface = other->get_wlr_surface())
+            {
+                timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                wlr_surface_for_each_surface(surface, [] (wlr_surface *s, int, int, void *data)
+                {
+                    wlr_surface_send_frame_done(s, static_cast<timespec*>(data));
+                }, &now);
+            }
+        }
+
+        if (other && other->is_mapped() && other->get_output() && (!morph->snapshot_ready || (morph->ticks % 2 == 0)))
         {
             other->take_snapshot(*morph->snapshot);
             morph->snapshot_box   = other->get_surface_root_node()->get_bounding_box();
@@ -3040,10 +3084,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         frame->translation_y = glide->dy * left;
         frame->damage();
         view->damage();
+        // The halos it passes over are cut where it's in front of them: follow it home, or the
+        // cut stays where it was let go.
+        update_neighbors(view->get_output());
         if (!glide->progress.running())
         {
             frame->translation_x = frame->translation_y = 0;
             glide.reset();
+            update_all_neighbors();
             return false;
         }
 
@@ -3320,6 +3368,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["frame"]["hovered"] = scottland::handle_name(frame->hovered_handle());
                 entry["frame"]["dot"]     = frame->dot_glow;
                 entry["frame"]["attention"] = frame->needs_attention();
+                entry["attention"] = needs_attention(view->get_id());
                 if (frame->morphing())
                 {
                     entry["frame"]["morph"] = wf::json_t{};

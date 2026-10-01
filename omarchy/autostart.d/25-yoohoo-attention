@@ -1,0 +1,5 @@
+#!/bin/sh
+# Yoohoo's attention list, shown on Scottland's halos and widgets (exits if Yoohoo isn't installed).
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+mkdir -p "$state"
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-yoohoo-bridge" 2>>"$state/widgets.log"

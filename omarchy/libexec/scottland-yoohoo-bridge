@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Yoohoo's attention list, shown by Scottland (docs/widgets.md, WG15; omarchy/INVARIANTS.md, O16).
+
+Yoohoo (an Omarchy add-on) decides which windows need the user: native urgency, desktop
+notifications, and agents reported by Agentd Hub (agents in remote terminals). Under Hyprland it
+shows them with a breathing border; under Scottland, Hyprland borders don't exist, so this bridge
+tells Scottland, which shows them on the window's halo or its widget's. Answering one in
+Scottland (going to it) dismisses it in Yoohoo too.
+
+  scottland-yoohoo-bridge        run (started with the session; exits if Yoohoo isn't installed)
+
+Yoohoo's list: $XDG_STATE_HOME/window-attention/current.json, rewritten on every change. Its
+window addresses are the Hyprland shim's, which are Scottland window ids plus ADDRESS_BASE.
+"""
+import hashlib
+import json
+import os
+import select
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+ADDRESS_BASE = 0x5C0700000000  # as in the shim (omarchy/shim/scottland-hyprshim)
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "window-attention")
+LIST = os.path.join(STATE, "current.json")
+LOG = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "scottland", "widgets.log")
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+DISPLAY = os.environ.get("WAYLAND_DISPLAY") or "wayland"
+
+
+def log(message):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a") as out:
+        out.write(f"{time.strftime('%F %T')} yoohoo-bridge: {message}\n")
+
+
+def fingerprint():
+    with open(os.path.realpath(__file__), "rb") as source:
+        return hashlib.sha256(source.read()).hexdigest()
+
+
+class Ipc:
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(os.environ["WAYFIRE_SOCKET"])
+
+    def send(self, method, data=None):
+        body = json.dumps({"method": method, "data": data or {}}).encode()
+        self.sock.sendall(struct.pack("<I", len(body)) + body)
+
+    def receive(self):
+        size = struct.unpack("<I", self._exactly(4))[0]
+        return json.loads(self._exactly(size))
+
+    def call(self, method, data=None):
+        self.send(method, data)
+        return self.receive()
+
+    def _exactly(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError("compositor went away")
+            data += chunk
+        return data
+
+
+def yoohoo_windows():
+    """Scottland window id -> Yoohoo address, for the windows on Yoohoo's list."""
+    try:
+        with open(LIST) as source:
+            entries = json.load(source).get("windows", [])
+    except (OSError, ValueError):
+        return {}
+    windows = {}
+    for entry in entries:
+        try:
+            address = int(str(entry.get("address", "")), 16)
+        except ValueError:
+            continue
+        if address >= ADDRESS_BASE:
+            windows[address - ADDRESS_BASE] = entry["address"]
+    return windows
+
+
+class Bridge:
+    def __init__(self):
+        self.ipc = Ipc()
+        self.asserted = {}  # window id -> Yoohoo address, marked in Scottland by us
+
+    def sync(self, again=False):
+        """Mark what Yoohoo lists, unmark what it no longer does. `again`: mark everything listed
+        anew (the plugin was reloaded and forgot)."""
+        listed = yoohoo_windows()
+        for window, address in listed.items():
+            if again or window not in self.asserted:
+                self.asserted[window] = address
+                self.ipc.call("scottland/attention", {"window": window, "attention": True})
+        for window in [w for w in self.asserted if w not in listed]:
+            del self.asserted[window]
+            self.ipc.call("scottland/attention", {"window": window, "attention": False})
+
+    def on_scottland(self, event):
+        """Attention answered in Scottland (the user went to it): answered in Yoohoo too."""
+        window = event.get("window")
+        if event.get("attention") or window not in self.asserted:
+            return
+        address = self.asserted.pop(window)
+        if shutil.which("window-attention"):
+            subprocess.run(["window-attention", "dismiss", address], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=10)
+
+    def ipc_has_attention(self):
+        """Does Scottland still show attention for every window we marked?"""
+        try:
+            views = self.ipc.call("scottland/layout-state").get("views", [])
+        except (OSError, ConnectionError, ValueError):
+            return True
+        marked = {v["id"] for v in views if v.get("attention")}
+        present = {v["id"] for v in views}
+        return all(w in marked or w not in present for w in self.asserted)
+
+    def run(self):
+        events = Ipc()
+        reply = events.call("window-rules/events/watch", {"events": ["scottland-attention#", "scottland-widgets#"]})
+        if reply.get("result") != "ok":
+            log(f"couldn't watch Scottland's attention events: {reply}")
+            return 1
+        os.makedirs(STATE, exist_ok=True)
+        watch = subprocess.Popen(["inotifywait", "-m", "-q", "-e", "close_write", "-e", "moved_to",
+                                  "--format", "%f", STATE], stdout=subprocess.PIPE, text=True)
+        self.sync()
+        try:
+            while True:
+                ready, _, _ = select.select([events.sock, watch.stdout], [], [])
+                if watch.stdout in ready:
+                    if os.path.basename(watch.stdout.readline().strip()) == "current.json":
+                        self.sync()
+                if events.sock in ready:
+                    event = events.receive()
+                    if event.get("event") == "scottland-attention#":
+                        self.on_scottland(event)
+                    elif event.get("event") == "scottland-widgets#" and not self.ipc_has_attention():
+                        self.sync(again=True)  # a reloaded plugin starts with no attention
+        except (ConnectionError, OSError):
+            return 0  # the session ended
+        finally:
+            watch.terminate()
+
+
+if __name__ == "__main__":
+    if not os.environ.get("WAYFIRE_SOCKET"):
+        sys.exit("scottland-yoohoo-bridge: run it inside a Scottland session")
+    if not (shutil.which("window-attention") or os.path.isdir(STATE)):
+        sys.exit(0)  # Yoohoo isn't installed
+    os.makedirs(RUNTIME, exist_ok=True)
+    with open(os.path.join(RUNTIME, f"{DISPLAY}.yoohoo-bridge.pid"), "w") as out:
+        out.write(f"{os.getpid()}\n{fingerprint()}\n")
+    sys.exit(Bridge().run())

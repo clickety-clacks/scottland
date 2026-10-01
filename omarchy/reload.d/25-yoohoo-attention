@@ -1,0 +1,14 @@
+#!/bin/sh
+# Start the Yoohoo bridge if this session doesn't have one, and replace one that runs other code
+# than what's installed (it records a fingerprint of its code next to its pid).
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+bridge="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-yoohoo-bridge"
+pid_file="$runtime/${WAYLAND_DISPLAY:-wayland}.yoohoo-bridge.pid"
+pid=$(sed -n 1p "$pid_file" 2>/dev/null || true)
+if [ -n "$pid" ] && grep -q scottland-yoohoo-bridge "/proc/$pid/cmdline" 2>/dev/null; then
+  [ "$(sed -n 2p "$pid_file")" = "$(sha256sum "$(readlink -f "$bridge")" | cut -d" " -f1)" ] && exit 0
+  kill "$pid"
+fi
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+mkdir -p "$state"
+setsid -f "$bridge" 2>>"$state/widgets.log" </dev/null >/dev/null
