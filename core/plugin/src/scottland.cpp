@@ -2970,6 +2970,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
 
         int finger = ev->event->touch_id;
+        log_widget_touch(finger);
         if ((hold_finger >= 0) || (lifted_finger >= 0) ||
             (wf::get_core().get_touch_state().fingers.size() != 1))
         {
@@ -3076,6 +3077,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
     };
+
+    /** A touch landing on a widget: what decides it, in the log (diagnosing touches on real input). */
+    void log_widget_touch(int finger)
+    {
+        auto at  = wf::get_core().get_touch_position(finger);
+        auto hit = wf::get_core().scene()->find_node_at(at);
+        auto hit_view = hit ? wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) : nullptr;
+        auto focus = wf::get_core().get_touch_focus(finger);
+        bool on_frame = hit && dynamic_cast<scottland::frame_t*>(hit->node.get());
+        wayfire_toplevel_view widget = (hit_view && is_widget(hit_view)) ? hit_view : nullptr;
+        if (!widget && on_frame)
+        {
+            for (auto& [id, link] : widget_links)
+            {
+                auto w = wf::toplevel_cast(link.widget.lock());
+                if (w && (frame_of(w, false).get() == hit->node.get()))
+                {
+                    widget = w;
+                }
+            }
+        }
+
+        if (!widget)
+        {
+            return;
+        }
+
+        auto link = link_of_widget(widget);
+        LOGI("scottland: touch down on widget ", widget->get_id(), " at ", at.x, ",", at.y, ": hit ",
+            on_frame ? "its halo" : "its surface", ", touch focus ", focus ? (dynamic_cast<scottland::frame_t*>(
+            focus.get()) ? "a halo" : "a surface") : "none", ", fingers ",
+            wf::get_core().get_touch_state().fingers.size(), ", hold ", hold_finger, ", lifted ", lifted_finger,
+            ", movable ", (widget->get_allowed_actions() & wf::VIEW_ALLOW_MOVE) ? "yes" : "no",
+            ", touch_drag ", (link && link->touch_drag) ? "yes" : "no");
+    }
 
     void lift_held_window(bool pop = true)
     {
