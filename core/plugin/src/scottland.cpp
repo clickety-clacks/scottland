@@ -2323,20 +2323,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
-    // Lifting the fingers mid-drag (out of room on the touchpad) doesn't drop the window at once:
-    // three fingers back down within the grace period continue the same drag (L23).
-    static constexpr int SWIPE_GRACE_MS = 600;
-    wf::wl_timer<false> swipe_grace;
-
     void swipe_begin(uint32_t fingers)
     {
-        if (swipe_grace.is_connected() && (fingers == 3) && drag->view)
-        {
-            swipe_grace.disconnect();  // back down in time: the same drag goes on
-            swipe_moving = true;
-            return;
-        }
-
         if (!touchpad_gestures || (fingers != 3) || drag->view || swipe_moving)
         {
             return;
@@ -2373,14 +2361,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (swipe_moving)
         {
+            // The fingers lifted: the drag ends now. (A drag of the same window soon after counts
+            // as the same move only for where Esc sends it back, WG14.)
             swipe_moving = false;
-            swipe_grace.set_timeout(SWIPE_GRACE_MS, [=] ()
-            {
-                if (drag->view)
-                {
-                    drag->handle_input_released();
-                }
-            });
+            drag->handle_input_released();
         }
     }
 
@@ -3925,14 +3909,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_unmapped.disconnect();
         idle_neighbors.disconnect();
         on_motion.disconnect();
-        // Unloading: a swipe drag (or one in its grace period) drops now.
-        bool swiping = swipe_moving || swipe_grace.is_connected();
-        swipe_grace.disconnect();
-        swipe_moving = false;
-        if (swiping && drag->view)
-        {
-            drag->handle_input_released();
-        }
+        swipe_end();
         on_swipe_begin.disconnect();
         on_cancel_key.disconnect();
         glide_tick.disconnect();

@@ -512,29 +512,17 @@ check "WG16 Super+M again: the card again" [ "$(card_width)" = "$wide" ]
 h window-rules/close-view "{\"id\": $(view_field mini-app "v['id']")}"
 sleep 2
 
-# L23: lifting three fingers mid-drag and putting them back within the grace period continues
-# the same drag.
+# L23: lifting three fingers ends the drag at once (no grace period); a second three-finger
+# drag right after is a new drag, which only counts as the same move for Esc (L27).
 (tests/headless.sh run foot -T grace-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
-gx0=$(ipc window-rules/list-views | python3 -c "import json,sys; print([v['geometry']['x'] for v in json.load(sys.stdin) if v['title']=='grace-app'][0])")
 read -r ax ay aw ah <<<"$(view_field grace-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 h stipc/move_cursor "{\"x\":$((ax + aw / 2)),\"y\":$((ay + ah / 2))}"; sleep 0.1
 h scottland/test-input '{"swipe":"begin","fingers":3}'
 for i in 1 2 3 4; do h scottland/test-input '{"swipe":"update","dx":-15,"dy":0}'; sleep 0.02; done
 h scottland/test-input '{"swipe":"end"}'
-sleep 0.3
-check "L23 three fingers lifted: still dragging during the grace period" \
-  [ "$(ipc scottland/test-input '{}' | python3 -c "import json,sys; print(json.load(sys.stdin)['dragging'])")" = True ]
-h scottland/test-input '{"swipe":"begin","fingers":3}'
-for i in 1 2 3 4; do h scottland/test-input '{"swipe":"update","dx":-15,"dy":0}'; sleep 0.02; done
-h scottland/test-input '{"swipe":"end"}'
-sleep 1.2
-check "L23 ...and three fingers back down continued the same drag (both moves applied)" \
-  python3 -c "
-import json,subprocess,sys
-v=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','window-rules/list-views'],capture_output=True,text=True).stdout) if v['title']=='grace-app'][0]
-d=v['geometry']['x'] - $gx0; sys.exit(0 if -150 < d < -90 else 1)"
-check "L23 ...then let go after the grace period" \
+sleep 0.1
+check "L23 three fingers lifted: the drag has ended (no grace period)" \
   [ "$(ipc scottland/test-input '{}' | python3 -c "import json,sys; print(json.load(sys.stdin)['dragging'])")" = False ]
 h window-rules/close-view "{\"id\": $(view_field grace-app "v['id']")}"
 sleep 1
