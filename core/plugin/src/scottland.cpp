@@ -14,6 +14,7 @@
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/txn/transaction-manager.hpp>
 #include <wayfire/toplevel.hpp>
+#include <wayfire/touch/touch.hpp>
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/window-manager.hpp>
 #include <linux/input-event-codes.h>
@@ -41,6 +42,8 @@ extern "C" {
 #include <map>
 #include <regex>
 #include <optional>
+#include <fstream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -371,7 +374,8 @@ placement_t place(double x, double width, double center_pct, double rail_pct, do
  * shrinks symmetrically around its center, which stays put, so it keeps its zone and scale. Cursor
  * motion is divided by the window's current scale so the edges track the cursor on screen.
  */
-class center_resize_t : public wf::per_output_plugin_instance_t, public wf::pointer_interaction_t
+class center_resize_t : public wf::per_output_plugin_instance_t, public wf::pointer_interaction_t,
+    public wf::touch_interaction_t
 {
     wf::option_wrapper_t<wf::buttonbinding_t> button{"scottland/resize"};
     wf::option_wrapper_t<wf::buttonbinding_t> alt_button{"scottland/resize_alt"};
@@ -389,9 +393,13 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
     double scale = 1.0;
     int sign_x = 1, sign_y = 1;
 
+    int touch_finger = -1;  // the finger driving the resize, or -1 for the pointer
+
     wf::pointf_t input_coords()
     {
-        return wf::get_core().get_cursor_position() - wf::origin(output->get_layout_geometry());
+        auto global = (touch_finger >= 0) ? wf::get_core().get_touch_position(touch_finger) :
+            wf::get_core().get_cursor_position();
+        return global - wf::origin(output->get_layout_geometry());
     }
 
     uint32_t grab_button = BTN_RIGHT;
@@ -413,7 +421,8 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
   public:
     /** Resize `target` around its center until `with_button` is released. Moving the cursor
      *  by (dx, dy) grows the window by (sign_x * dx, sign_y * dy) on each side. */
-    bool start(wayfire_toplevel_view target, uint32_t with_button, int grow_x_sign, int grow_y_sign)
+    bool start(wayfire_toplevel_view target, uint32_t with_button, int grow_x_sign, int grow_y_sign,
+        int finger = -1)
     {
         if (!target || !target->is_mapped() || target->pending_fullscreen() ||
             (target->get_output() != output) || !(target->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))
@@ -435,6 +444,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
         view = target->weak_from_this();
         recenter_view = view;
+        touch_finger   = finger;
         grab_start     = input_coords();
         start_geometry = target->get_geometry();
         anchor_center  = {start_geometry.x + start_geometry.width / 2.0,
@@ -460,6 +470,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
         output->deactivate_plugin(&grab_interface);
         view.reset();
+        touch_finger = -1;
         // Let the app's final commit land, then stop keeping it centered.
         settle.set_timeout(300, [=] ()
         {
@@ -493,7 +504,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
   public:
     void init() override
     {
-        input_grab = std::make_unique<wf::input_grab_t>("scottland-resize", output, nullptr, this, nullptr);
+        input_grab = std::make_unique<wf::input_grab_t>("scottland-resize", output, nullptr, this, this);
         grab_interface.cancel = [=] () { end(); };
         output->add_button(button, &on_activate);
         output->add_button(alt_button, &on_activate_alt);
@@ -516,7 +527,31 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         }
     }
 
+    void handle_touch_motion(uint32_t, int finger_id, wf::pointf_t) override
+    {
+        if (finger_id == touch_finger)
+        {
+            update();
+        }
+    }
+
+    void handle_touch_up(uint32_t, int finger_id, wf::pointf_t) override
+    {
+        if (finger_id == touch_finger)
+        {
+            end();
+        }
+    }
+
     void handle_pointer_motion(wf::pointf_t, uint32_t) override
+    {
+        if (touch_finger < 0)
+        {
+            update();
+        }
+    }
+
+    void update()
     {
         auto target = wf::toplevel_cast(view.lock().get());
         if (!target || !target->is_mapped())
@@ -739,7 +774,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame && create)
         {
             frame = std::make_shared<scottland::frame_t>(view);
-            frame->on_press = [=] (wayfire_toplevel_view v, scottland::handle_t h) { handle_pressed(v, h); };
+            frame->on_press = [=] (wayfire_toplevel_view v, scottland::handle_t h, int finger)
+            {
+                handle_pressed(v, h, finger);
+            };
             frame->set_focused(wf::get_core().seat->get_active_view() == view);
             node->add_transformer(frame, wf::TRANSFORMER_2D, TRANSFORMER);
             view->damage();
@@ -936,7 +974,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     wf::wl_idle_call idle_neighbors;
 
-    void handle_pressed(wayfire_toplevel_view view, scottland::handle_t h)
+    void handle_pressed(wayfire_toplevel_view view, scottland::handle_t h, int finger = -1)
     {
         using scottland::handle_t;
         if (scottland::is_corner(h))
@@ -947,11 +985,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto output = view->get_output();
             if (output && output_instance.count(output))
             {
-                output_instance[output]->start(view, BTN_LEFT, sx, sy);
+                output_instance[output]->start(view, BTN_LEFT, sx, sy, finger);
             }
         } else if (h == handle_t::halo)
         {
-            wf::get_core().default_wm->move_request(view);
+            if (finger >= 0)
+            {
+                // Not move_request: for touch, the move plugin learns where the finger went down
+                // only after this runs, and would grab the window at a stale position.
+                start_touch_drag(view, finger);
+            } else
+            {
+                wf::get_core().default_wm->move_request(view);
+            }
         }
     }
 
@@ -1113,6 +1159,209 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
+    // Long press to lift (L25). A finger held still on a window for lift_delay ms lifts it: the
+    // app's touch is cancelled (it already had the touch: no delay for scrolling, rotating,
+    // drawing), and the window follows the finger through Wayfire's drag, with live scaling, an
+    // elastic bulge, a swollen halo and a synthesized pop. The move plugin ends the drag when the
+    // finger lifts. Touches on the halo are the frame's (no wait); two or more fingers never lift.
+    wf::option_wrapper_t<int> lift_delay{"scottland/lift_delay"};
+    wf::option_wrapper_t<bool> sounds{"scottland/sounds"};
+    static constexpr double HOLD_SLOP = 10.0;
+    int hold_finger = -1;
+    wf::pointf_t hold_origin;
+    std::weak_ptr<wf::view_interface_t> hold_view;
+    wf::wl_timer<false> hold_timer;
+    std::weak_ptr<scottland::frame_t> lifted_frame;
+    int lifted_finger = -1;
+    std::optional<wf::pointf_t> drag_input_override;  // where a touch drag was grabbed
+    std::string pop_sound;
+
+    void cancel_hold()
+    {
+        hold_timer.disconnect();
+        hold_finger = -1;
+        hold_view.reset();
+    }
+
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_down_event>> on_touch_down =
+        [=] (wf::post_input_event_signal<wlr_touch_down_event> *ev)
+    {
+        int finger = ev->event->touch_id;
+        if ((hold_finger >= 0) || (lifted_finger >= 0) ||
+            (wf::get_core().get_touch_state().fingers.size() != 1))
+        {
+            cancel_hold();  // a second finger: this is a multi-finger touch, never a lift
+            return;
+        }
+
+        auto focus = wf::get_core().get_touch_focus(finger);
+        if (!focus || dynamic_cast<scottland::frame_t*>(focus.get()))
+        {
+            return;  // nothing, or the halo (the frame handles it)
+        }
+
+        auto view = wf::toplevel_cast(wf::node_to_view(focus));
+        if (!view || !view->is_mapped() || !frame_of(view, false) ||
+            !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
+        {
+            return;
+        }
+
+        hold_finger = finger;
+        hold_origin = wf::get_core().get_touch_position(finger);
+        hold_view   = view->weak_from_this();
+        hold_timer.set_timeout(std::max(50, (int)lift_delay), [=] () { lift_held_window(); });
+    };
+
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_motion_event>> on_touch_motion =
+        [=] (wf::post_input_event_signal<wlr_touch_motion_event> *ev)
+    {
+        if ((ev->event->touch_id == lifted_finger) && drag->view)
+        {
+            // The lifted window follows the finger.
+            drag->handle_motion(wf::get_core().get_touch_position(lifted_finger));
+            return;
+        }
+
+        if (ev->event->touch_id != hold_finger)
+        {
+            return;
+        }
+
+        auto at = wf::get_core().get_touch_position(hold_finger);
+        if (std::hypot(at.x - hold_origin.x, at.y - hold_origin.y) > HOLD_SLOP)
+        {
+            cancel_hold();  // it moved: the touch is the app's (scroll, rotate, draw...)
+        }
+    };
+
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_up_event>> on_touch_up =
+        [=] (wf::post_input_event_signal<wlr_touch_up_event> *ev)
+    {
+        if (ev->event->touch_id == hold_finger)
+        {
+            cancel_hold();
+        }
+
+        if (ev->event->touch_id == lifted_finger)
+        {
+            lifted_finger = -1;
+            if (auto frame = lifted_frame.lock())
+            {
+                frame->drop();
+            }
+
+            lifted_frame.reset();
+            // The move plugin ends the drag on the last finger up; finish it if nothing did.
+            if (drag->view && wf::get_core().get_touch_state().fingers.empty())
+            {
+                drag->handle_input_released();
+            }
+        }
+    };
+
+    void lift_held_window()
+    {
+        int finger = hold_finger;
+        auto view  = wf::toplevel_cast(hold_view.lock());
+        cancel_hold();
+        if (!view || !view->is_mapped() || drag->view ||
+            !wf::get_core().get_touch_state().fingers.count(finger))
+        {
+            return;
+        }
+
+        auto frame = frame_of(view, false);
+        if (!frame)
+        {
+            return;
+        }
+
+        // The app already has this touch: tell it to forget it.
+        auto seat  = wf::get_core().get_current_seat();
+        auto point = wlr_seat_touch_get_point(seat, finger);
+        if (point && point->client)
+        {
+            wlr_seat_touch_notify_cancel(seat, point->client);
+        }
+
+        wf::get_core().default_wm->focus_raise_view(view);
+        frame->lift();
+        play_pop();
+        lifted_frame = frame;
+        start_touch_drag(view, finger);
+    }
+
+    /** Drag `view` with finger `finger`, grabbed exactly where the finger is. */
+    void start_touch_drag(wayfire_toplevel_view view, int finger)
+    {
+        if (drag->view)
+        {
+            return;
+        }
+
+        lifted_finger = finger;
+        auto at = wf::get_core().get_touch_position(finger);
+        drag_input_override = at;
+        drag->set_pending_drag(at);
+        wf::move_drag::drag_options_t options;
+        options.join_views = false;
+        options.enable_snap_off = false;
+        drag->start_drag(view, options);
+        drag_input_override.reset();
+    }
+
+    /** The lift's pop, synthesized (not a sample): a short tone whose pitch drops fast, with a
+     *  little noise at the attack. Written once as a WAV in the runtime directory. */
+    void synthesize_pop()
+    {
+        const char *runtime = getenv("XDG_RUNTIME_DIR");
+        std::string dir = std::string(runtime ? runtime : "/tmp") + "/scottland";
+        std::string mkdir = "mkdir -p '" + dir + "'";
+        if (system(mkdir.c_str()) != 0)
+        {
+            return;
+        }
+
+        const int rate = 48000;
+        const int count = rate * 75 / 1000;
+        std::vector<int16_t> samples(count);
+        std::mt19937 noise_source(7);
+        std::uniform_real_distribution<double> noise(-1.0, 1.0);
+        double phase = 0.0;
+        for (int i = 0; i < count; i++)
+        {
+            double t = (double)i / rate;
+            double frequency = 260.0 + 900.0 * std::exp(-t / 0.012);   // pitch drops fast
+            phase += 2.0 * M_PI * frequency / rate;
+            double envelope = (1.0 - std::exp(-t / 0.0015)) * std::exp(-t / 0.022);
+            double tail = std::min(1.0, (count - i) / (rate * 0.005)); // click-free end
+            double value = (0.8 * std::sin(phase) * envelope + 0.35 * noise(noise_source) * std::exp(-t / 0.003));
+            samples[i] = (int16_t)std::clamp(value * 0.55 * tail * 32767.0, -32767.0, 32767.0);
+        }
+
+        pop_sound = dir + "/pop.wav";
+        std::ofstream out(pop_sound, std::ios::binary);
+        auto u32 = [&] (uint32_t v) { out.write((const char*)&v, 4); };
+        auto u16 = [&] (uint16_t v) { out.write((const char*)&v, 2); };
+        uint32_t data_bytes = count * 2;
+        out.write("RIFF", 4); u32(36 + data_bytes); out.write("WAVE", 4);
+        out.write("fmt ", 4); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+        out.write("data", 4); u32(data_bytes);
+        out.write((const char*)samples.data(), data_bytes);
+    }
+
+    void play_pop()
+    {
+        if (!sounds || pop_sound.empty())
+        {
+            return;
+        }
+
+        wf::get_core().run("pw-play '" + pop_sound + "' 2>/dev/null || paplay '" + pop_sound +
+            "' 2>/dev/null || aplay -q '" + pop_sound + "' 2>/dev/null");
+    }
+
     // Tests can't produce real touchpad gestures: this feeds the same handlers synthetic ones.
     wf::ipc::method_callback test_input = [=] (wf::json_t data) -> wf::json_t
     {
@@ -1141,6 +1390,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["swipe_moving"]    = swipe_moving;
         reply["middle_pending"]  = middle_pending;
         reply["middle_resizing"] = middle_resizing;
+        reply["hold_armed"] = hold_finger >= 0;
+        reply["lifted"]     = lifted_finger >= 0;
+        reply["dragging"]   = (bool)drag->view;
         return reply;
     };
 
@@ -1184,7 +1436,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // Drag just began: remember where across the window it was grabbed.
             auto frame  = frame_of(drag->view, false);
             auto output = drag->view->get_output();
-            auto cursor = wf::get_core().get_cursor_position();
+            auto cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
             double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
             auto r = frame ? frame->screen_rect() : scottland::rectf_t{0, 0, 0, 0};
             drag_relative_x = r.width() > 0 ? std::clamp((local_x - r.x1) / r.width(), 0.0, 1.0) : 0.5;
@@ -1523,6 +1775,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_swipe_update);
         wf::get_core().connect(&on_swipe_end);
         wf::get_core().connect(&on_touchpad_button);
+        wf::get_core().connect(&on_touch_down);
+        wf::get_core().connect(&on_touch_motion);
+        wf::get_core().connect(&on_touch_up);
+        synthesize_pop();
         ipc_repo->register_method("scottland/test-input", test_input);
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
@@ -1564,6 +1820,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_swipe_update.disconnect();
         on_swipe_end.disconnect();
         on_touchpad_button.disconnect();
+        on_touch_down.disconnect();
+        on_touch_motion.disconnect();
+        on_touch_up.disconnect();
+        cancel_hold();
         ipc_repo->unregister_method("scottland/test-input");
         on_motion_abs.disconnect();
         on_button.disconnect();

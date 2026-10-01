@@ -59,6 +59,18 @@
 			<_long>Three-finger drag on a touchpad moves the window under the pointer; a three-finger click-drag resizes it around its center. A three-finger click without moving is still a middle click.</_long>
 			<default>true</default>
 		</option>
+		<option name="lift_delay" type="int">
+			<_short>Long press to lift (ms)</_short>
+			<_long>How long a finger must rest still on a window before the window lifts and follows it. A touch that moves sooner belongs to the app.</_long>
+			<default>350</default>
+			<min>150</min>
+			<max>1500</max>
+		</option>
+		<option name="sounds" type="bool">
+			<_short>Sounds</_short>
+			<_long>Play Scottland's synthesized interface sounds (e.g. the pop when a window lifts).</_long>
+			<default>true</default>
+		</option>
 		<option name="scale_curve" type="string">
 			<_short>Scale curve</_short>
 			<_long>Scale across the continuous zones as points "t:scale", t from 0 (center zone edge) to 1 (widget rail), joined smoothly. Empty: straight line from max_scale to min_scale.</_long>

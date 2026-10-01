@@ -20,6 +20,7 @@
 #include <wayfire/region.hpp>
 #include <wayfire/scene-input.hpp>
 #include <wayfire/scene-render.hpp>
+#include <wayfire/touch/touch.hpp>
 #include <wayfire/util.hpp>
 #include <wayfire/window-manager.hpp>
 #include <wayfire/util/duration.hpp>
@@ -49,7 +50,9 @@ constexpr double DOT_RADIUS   = 7.0;
 constexpr int MAX_NEIGHBORS   = 8;
 constexpr double SWOLLEN = 2 * HALO;    // swollen halo thickness, on screen (doesn't scale)
 constexpr double SWELL_VICINITY = 50.0; // the cursor pausing this near the halo swells it
-constexpr double FOCUS_NUDGE = 2.2;     // swell velocity given to a newly focused window's halo
+constexpr double FOCUS_NUDGE = 2.2;
+constexpr double LIFT_BULGE  = 0.03;    // a lifted window stays this much larger while dragged
+constexpr double LIFT_KICK   = 1.6;     // bulge velocity at the lift: overshoots, then pulls back     // swell velocity given to a newly focused window's halo
 constexpr int DWELL_MS  = 500;          // pause this long to swell
 constexpr int LINGER_MS = 500;          // stay swollen this long after the cursor leaves
 
@@ -400,12 +403,13 @@ static gl_programs_t& gl_programs()
 
 // ---------------------------------------------------------------------------------------------
 
-class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_interaction_t
+class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_interaction_t,
+    public wf::touch_interaction_t
 {
   public:
-    /** Called when the halo or a corner is pressed; the plugin starts the move or resize. The
-     *  close dot is handled here. */
-    std::function<void(wayfire_toplevel_view, handle_t)> on_press;
+    /** Called when the halo or a corner is pressed (by the pointer, or by finger touch_id >= 0);
+     *  the plugin starts the move or resize. The close dot is handled here. */
+    std::function<void(wayfire_toplevel_view, handle_t, int touch_id)> on_press;
 
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
@@ -417,6 +421,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         tick.disconnect();
         dwell.disconnect();
         linger.disconnect();
+        dot_hide.disconnect();
     }
 
     wayfire_toplevel_view toplevel() const
@@ -444,6 +449,55 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double screen_radius() const
     {
         return CORNER_RADIUS * get_scale_x();
+    }
+
+    // The elastic bulge of a lifted window rides on top of the layout's scale (scale_x/scale_y,
+    // which the plugin sets): everything that draws or hit-tests asks these.
+    float get_scale_x() const override
+    {
+        return scale_x * (1.0 + bulge);
+    }
+
+    float get_scale_y() const override
+    {
+        return scale_y * (1.0 + bulge);
+    }
+
+    /** The window was lifted by a long press: it bulges out elastically and its halo swells. */
+    void lift()
+    {
+        lifted = true;
+        bulge_target = LIFT_BULGE;
+        bulge_velocity += LIFT_KICK;
+        dwell.disconnect();
+        linger.disconnect();
+        set_swell(1.0);
+    }
+
+    /** Dropped: the bulge settles back, and the halo sinks after the usual linger. */
+    void drop()
+    {
+        if (!lifted)
+        {
+            return;
+        }
+
+        lifted = false;
+        bulge_target = 0.0;
+        hovering = false;
+        linger.set_timeout(LINGER_MS, [=] ()
+        {
+            if (!is_pressed() && !hovering && !lifted)
+            {
+                set_swell(0.0);
+            }
+        });
+        start_ticking();
+    }
+
+    bool is_lifted() const
+    {
+        return lifted;
     }
 
     /** Halo thickness on screen. At rest it scales with the window; swollen it's a fixed size on
@@ -683,6 +737,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return *this;
     }
 
+    wf::touch_interaction_t& touch_interaction() override
+    {
+        return *this;
+    }
+
     std::string stringify() const override
     {
         return "scottland-frame";
@@ -728,7 +787,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             wf::get_core().default_wm->focus_raise_view(v);
             if ((pressed != handle_t::close) && on_press)
             {
-                on_press(v, pressed);
+                on_press(v, pressed, -1);
             }
         } else if (pressed == handle_t::close)
         {
@@ -743,6 +802,70 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
         // Other presses end on the real button release (the plugin calls release()): when a move
         // or resize takes the pointer, this node gets a synthetic release first.
+    }
+
+    // --- touch interaction (a finger on the halo): no long press needed here ---
+
+    void handle_touch_down(uint32_t, int finger_id, wf::pointf_t position) override
+    {
+        auto v = toplevel();
+        last_touch = to_global(position);
+        if ((touch_finger >= 0) && !wf::get_core().get_touch_state().fingers.count(touch_finger))
+        {
+            touch_finger = -1;  // its lift went to a grab (a move or resize took the finger)
+        }
+
+        if (!v || (touch_finger >= 0))
+        {
+            return;
+        }
+
+        // Fingers can't hover: touching the halo shows the close dot for a while.
+        dot_target = 1.0;
+        dot_hide.set_timeout(3000, [=] () { dot_target = 0.0; start_ticking(); });
+        start_ticking();
+
+        touch_finger = finger_id;
+        touch_pressed = handle_at(last_touch);
+        if ((touch_pressed == handle_t::none) || (touch_pressed == handle_t::close))
+        {
+            return;
+        }
+
+        wf::get_core().default_wm->focus_raise_view(v);
+        // A move or resize grab takes the finger from here on; only the close dot needs its lift.
+        touch_finger = -1;
+        if (on_press)
+        {
+            on_press(v, touch_pressed, finger_id);
+        }
+    }
+
+    void handle_touch_motion(uint32_t, int finger_id, wf::pointf_t position) override
+    {
+        if (finger_id == touch_finger)
+        {
+            last_touch = to_global(position);
+        }
+    }
+
+    void handle_touch_up(uint32_t, int finger_id, wf::pointf_t) override
+    {
+        if (finger_id != touch_finger)
+        {
+            return;
+        }
+
+        bool close = (touch_pressed == handle_t::close) && (handle_at(last_touch) == handle_t::close);
+        touch_finger  = -1;
+        touch_pressed = handle_t::none;
+        if (close)
+        {
+            if (auto v = toplevel())
+            {
+                v->close();
+            }
+        }
     }
 
     /** Repaint the window and its halo. (view->damage() covers only the window.) */
@@ -777,6 +900,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double swell_velocity = 0.0;
     std::array<double, 4> cloud{};
     double dot_glow = 0.0;
+    double bulge = 0.0;          // extra scale of a lifted window (springs, overshoots)
+    double bulge_velocity = 0.0;
     wf::animation::simple_animation_t focus_mix{wf::create_option<int>(150)};
 
   private:
@@ -790,6 +915,12 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double dot_target   = 0.0;
     double swell_target = 0.0;
     bool hovering = false;
+    bool lifted = false;
+    double bulge_target = 0.0;
+    int touch_finger = -1;
+    handle_t touch_pressed = handle_t::none;
+    wf::pointf_t last_touch{0, 0};
+    wf::wl_timer<false> dot_hide;
     uint32_t last_tick = 0;
     wf::wl_timer<true> tick;
     wf::wl_timer<false> dwell;
@@ -815,7 +946,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             {
                 linger.set_timeout(LINGER_MS, [=] ()
                 {
-                    if (!is_pressed() && !hovering)
+                    if (!is_pressed() && !hovering && !lifted)
                     {
                         set_swell(0.0);
                     }
@@ -880,6 +1011,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
 
         return (std::abs(dot_glow - dot_target) < 0.002) && !focus_mix.running() &&
+               (std::abs(bulge - bulge_target) < 0.0005) && (std::abs(bulge_velocity) < 0.001) &&
                (std::abs(swell - swell_target) < 0.001) && (std::abs(swell_velocity) < 0.001);
     }
 
@@ -903,6 +1035,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             uint32_t now = now_ms();
             double dt = std::clamp((now - last_tick) / 1000.0, 0.001, 0.05);
             last_tick = now;
+            damage();  // where it was: a shrinking bulge must not leave its old outline behind
             step(dt);
             damage();
             if (settled())
@@ -910,6 +1043,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
                 swell = swell_target;
                 swell_velocity = 0;
                 dot_glow = dot_target;
+                bulge = bulge_target;
+                bulge_velocity = 0;
                 return false;
             }
 
@@ -925,6 +1060,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         double accel = stiffness * (swell_target - swell) - damping * swell_velocity;
         swell_velocity += accel * dt;
         swell += swell_velocity * dt;
+        // The lift bulge: a snappier spring, so it pops out, overshoots and pulls back.
+        const double b_stiffness = 160.0, b_damping = 11.0;
+        double b_accel = b_stiffness * (bulge_target - bulge) - b_damping * bulge_velocity;
+        bulge_velocity += b_accel * dt;
+        bulge += bulge_velocity * dt;
         // Clouds and the dot ease toward their targets.
         double ease = 1.0 - std::exp(-dt * 12.0);
         for (int i = 0; i < 4; i++)
