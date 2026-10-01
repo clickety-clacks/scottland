@@ -91,6 +91,10 @@ accessibility, or the app talking to its own widget (WG11, or its own service) c
   verbatim (no `$` expansion). Without systemd, the mailbox identifies a widget by process tree,
   checked fresh from the compositor at each call; a process id reused within that call's
   moment is the accepted residual risk.
+- **Older GLib:** the widget service registers its D-Bus objects with GLib 2.84's API where
+  present and the older one otherwise (Ubuntu 24.04 ships GLib 2.80). The older path passes the
+  whole end-to-end suite here (`SCOTTLAND_DBUS_LEGACY=1 tests/widgets-test.sh`) but hasn't run on
+  an actual Ubuntu 24.04 system yet.
 - **Helpers across updates:** the widget service and color-scheme watcher record a fingerprint of
   their code; a reload replaces one whose fingerprint differs from the installed code.
 - Supersedes the earlier core invariant L13 ("apps are told to render as widgets") and settles

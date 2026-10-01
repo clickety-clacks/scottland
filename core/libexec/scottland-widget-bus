@@ -114,6 +114,15 @@ class Ipc:
         return data
 
 
+def register(connection, path, info, method_call, get_property):
+    """Export an object. GLib 2.84+ has register_object_with_closures2; older GLib (Ubuntu 24.04
+    ships 2.80) only the closures API PyGObject calls register_object. SCOTTLAND_DBUS_LEGACY=1
+    forces the older one (tests)."""
+    if hasattr(connection, "register_object_with_closures2") and os.environ.get("SCOTTLAND_DBUS_LEGACY") != "1":
+        return connection.register_object_with_closures2(path, info, method_call, get_property, None)
+    return connection.register_object(path, info, method_call, get_property, None)
+
+
 def fingerprint():
     with open(os.path.realpath(__file__), "rb") as source:
         return hashlib.sha256(source.read()).hexdigest()
@@ -232,8 +241,8 @@ class Service:
         self.widgets[wid] = state
         self.learn_desktop(wid)
         if self.bus:
-            self.registrations[wid] = self.bus.register_object_with_closures2(
-                f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get, None)
+            self.registrations[wid] = register(
+                self.bus, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)
         return state
 
     def learn_desktop(self, wid):
@@ -443,11 +452,11 @@ class Service:
 
     def on_bus(self, connection, _name):
         self.bus = connection
-        connection.register_object_with_closures2(ROOT, self.data_info, self.on_root_call, None, None)
-        connection.register_object_with_closures2(ROOT, self.windows_info, self.on_root_call, None, None)
+        register(connection, ROOT, self.data_info, self.on_root_call, None)
+        register(connection, ROOT, self.windows_info, self.on_root_call, None)
         for wid in list(self.widgets):
-            self.registrations[wid] = connection.register_object_with_closures2(
-                f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get, None)
+            self.registrations[wid] = register(
+                connection, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)
         connection.signal_subscribe(None, "com.canonical.Unity.LauncherEntry", "Update", None, None,
                                     Gio.DBusSignalFlags.NONE, self.on_launcher_entry)
 
