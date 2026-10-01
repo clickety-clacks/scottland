@@ -1,0 +1,18 @@
+#!/bin/sh
+# Omarchy: full screen is focus (FS1), so the shell's notifications are held (do-not-disturb) while
+# it lasts. Only a do-not-disturb this hook turned on is turned off again: if the user already had
+# it on, it stays on.
+command -v omarchy-shell >/dev/null || exit 0
+mark="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/focus-dnd"
+case ${1:-} in
+  on)
+    [ "$(omarchy-shell notifications dndState 2>/dev/null)" = off ] || exit 0
+    omarchy-shell notifications setDnd on >/dev/null && mkdir -p "$(dirname "$mark")" && touch "$mark"
+    ;;
+  off)
+    [ -e "$mark" ] || exit 0
+    rm -f "$mark"
+    omarchy-shell notifications setDnd off >/dev/null
+    ;;
+esac
+omarchy-shell -q omarchy.indicators refresh >/dev/null 2>&1 || true

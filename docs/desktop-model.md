@@ -16,6 +16,7 @@ leases, process handles and timers are resources, not independent logical state.
 | Resolved desktop identity, name, icon, built-in card trait | Plugin's desktop model | The launcher submits these once for a specific launch unit; there is no identity side file. |
 | Attention source set, per window | Plugin's desktop model | Each source adds/removes its name; `builtin:` names are reserved for plugin inputs, so a configured source cannot clear a bell/urgency. User focus answers all sources. Halos read this set. |
 | Desktop collapsed mode | Plugin's desktop model | Super+M updates the mode and widget presentation together. |
+| Full-screen focus per screen (FS1) | Plugin's desktop model | Wayfire's fullscreen-promotion signal sets it; that screen's docked widgets are marked away (slid off and hidden) without leaving docked, and the focus.d hooks follow whether any screen is in focus. Published as `focus` (screen names). |
 | Selected window set | Plugin's desktop model | Reserved, empty until multi-select is implemented. |
 | Drag origin, re-grab chain, morph, scale/grab state and held-above window | Plugin's desktop model (`drag`) | One drag-session record; Wayfire's drag controller, timers and frame buffers are input/rendering resources. The full desktop snapshot includes origin, chain, morph target and held-above identity; external slices omit them. |
 | Badge count/visibility | Widget service | Unity Launcher input is a partial-update protocol; only this input is merged. The service emits complete presentation snapshots. |

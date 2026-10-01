@@ -83,6 +83,8 @@ extern "C" {
 //
 // General compositor features Scottland's integrations rely on:
 //
+//  - IPC "scottland/present" {window}: bring a window (or a widget's window) to the middle of
+//    the screen at 100%, raised and focused: "I want to see this now" (L30).
 //  - IPC "scottland/send-key": press/release a key with explicit modifiers on the focused
 //    surface, independent of keys physically held (Hyprland's send_key_state).
 //  - [scottland] release_key_<name> / release_command_<name>: run a command when a key is
@@ -1301,6 +1303,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         enum class lifecycle_t { previewing, docked, restoring, closing, handed_over };
         lifecycle_t lifecycle = lifecycle_t::previewing;
         bool collapsed = false;                      // presentation, independent of lifecycle
+        bool away = false;                           // slid off its screen for full-screen focus (FS1)
 
         bool previewing() const { return lifecycle == lifecycle_t::previewing; }
         bool docked() const { return lifecycle == lifecycle_t::docked; }
@@ -1378,6 +1381,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool collapsed = false;
         drag_session_t drag;
         std::set<uint64_t> selected;                 // reserved for future multi-select
+        std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
 
     bool needs_attention(uint64_t window) const
@@ -1816,7 +1820,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.lifecycle = next;
         render_hidden(link.window.lock(), link.docked() || next == widget_link_t::lifecycle_t::handed_over);
         auto widget = wf::toplevel_cast(link.widget.lock());
-        bool hidden = !link.docked() && next != widget_link_t::lifecycle_t::handed_over;
+        bool hidden = (!link.docked() && next != widget_link_t::lifecycle_t::handed_over) || link.away;
         render_hidden(widget, hidden);
         if (widget)
         {
@@ -2677,6 +2681,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto reply = wf::ipc::json_ok();
         reply["collapsed"] = model.collapsed;
         reply["session"] = model.session;
+        auto focus = wf::json_t::array();
+        for (auto output : model.focused_outputs)
+        {
+            focus.append(output->to_string());  // screens in full-screen focus (FS1)
+        }
+
+        reply["focus"] = focus;
         auto windows = wf::json_t::array();
         for (auto& [id, state] : model.windows)
         {
@@ -2920,7 +2931,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     fail("widget not mapped: " + label);
                     continue;
                 }
-                if (widget->get_root_node()->is_enabled() != link.docked())
+                if (widget->get_root_node()->is_enabled() != (link.docked() && !link.away))
                 {
                     fail("widget visibility differs: " + label);
                 }
@@ -2991,11 +3002,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         wf::per_output_tracker_mixin_t<center_resize_t>::handle_new_output(output);
         output->connect(&on_above);
+        watch_fullscreen(output);
     }
 
     void handle_output_removed(wf::output_t *output) override
     {
         output->disconnect(&on_above);
+        unwatch_fullscreen(output);
         wf::per_output_tracker_mixin_t<center_resize_t>::handle_output_removed(output);
     }
 
@@ -3041,6 +3054,107 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return wf::ipc::json_ok();
     };
 
+    /** The widget clicked: its window comes back in the middle of the screen, flying out of the
+     *  widget and growing to its size there (WG17). False when it has no screen to go to. */
+    bool open_widget(widget_link_t& link)
+    {
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        auto window = wf::toplevel_cast(link.window.lock());
+        auto output = widget ? widget->get_output() : (window ? window->get_output() : nullptr);
+        if (!output)
+        {
+            return false;
+        }
+
+        auto area = output->workarea->get_workarea();
+        wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
+        wf::pointf_t from = middle;
+        if (widget)
+        {
+            auto g = widget->get_geometry();
+            from = {g.x + g.width / 2.0, g.y + g.height / 2.0};
+        }
+
+        restore_window(link, middle, true);
+        if (window)
+        {
+            start_glide(window, from.x - middle.x, from.y - middle.y);
+        }
+
+        return true;
+    }
+
+    /** IPC scottland/present {window}: "I want to see this now" (L30). A widget's window opens
+     *  as if its widget were clicked; a window in a side zone flies to the middle of its screen,
+     *  growing to 100% there; a window already in the center zone stays where it is. All are
+     *  raised and focused. `window` may name the app's window or its widget. */
+    wf::ipc::method_callback present_method = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("window") || !data["window"].is_int())
+        {
+            return wf::ipc::json_error("present needs integer \"window\"");
+        }
+
+        uint64_t id = (uint64_t)data["window"].as_int64();
+        auto found  = model.widgets.find(id);
+        if (found == model.widgets.end())
+        {
+            for (auto it = model.widgets.begin(); it != model.widgets.end(); ++it)
+            {
+                auto widget = it->second.widget.lock();
+                if (widget && (widget->get_id() == id))
+                {
+                    found = it;
+                    break;
+                }
+            }
+        }
+
+        if ((found != model.widgets.end()) && !found->second.previewing())
+        {
+            if (!open_widget(found->second))
+            {
+                return wf::ipc::json_error("the widget has no screen");
+            }
+
+            auto reply = wf::ipc::json_ok();
+            reply["presented"] = "widget";
+            return reply;
+        }
+
+        wayfire_toplevel_view view = nullptr;
+        for (auto& any_view : wf::get_core().get_all_views())
+        {
+            if (any_view->get_id() == id)
+            {
+                view = wf::toplevel_cast(any_view);
+                break;
+            }
+        }
+
+        if (!view || !view->is_mapped())
+        {
+            return wf::ipc::json_error("no such window");
+        }
+
+        auto reply = wf::ipc::json_ok();
+        reply["presented"] = "window";
+        auto output = view->get_output();
+        if (output && !view->pending_fullscreen() && (placement_of(view).zone != zone_t::center))
+        {
+            auto g    = view->get_geometry();
+            auto area = output->workarea->get_workarea();
+            wf::pointf_t from{g.x + g.width / 2.0, g.y + g.height / 2.0};
+            wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
+            view->move(std::round(middle.x - g.width / 2.0), std::round(middle.y - g.height / 2.0));
+            start_glide(view, from.x - middle.x, from.y - middle.y);
+            reply["presented"] = "moved";
+        }
+
+        wf::get_core().default_wm->focus_raise_view(view);
+        return reply;
+    };
+
     wf::ipc::method_callback widget_action = [=] (wf::json_t data) -> wf::json_t
     {
         if (!data.has_member("id") || !data["id"].is_string() || !data.has_member("action") ||
@@ -3066,29 +3180,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::string action = data["action"].as_string();
         if (action == "open")
         {
-            // The widget clicked: its window comes back in the middle of the screen, flying out
-            // of the widget and growing to its size there (WG17).
-            auto widget = wf::toplevel_cast(found->second.widget.lock());
-            auto window = wf::toplevel_cast(found->second.window.lock());
-            auto output = widget ? widget->get_output() : (window ? window->get_output() : nullptr);
-            if (!output)
+            if (!open_widget(found->second))
             {
                 return wf::ipc::json_error("the widget has no screen");
-            }
-
-            auto area = output->workarea->get_workarea();
-            wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
-            wf::pointf_t from = middle;
-            if (widget)
-            {
-                auto g = widget->get_geometry();
-                from = {g.x + g.width / 2.0, g.y + g.height / 2.0};
-            }
-
-            restore_window(found->second, middle, true);
-            if (window)
-            {
-                start_glide(window, from.x - middle.x, from.y - middle.y);
             }
         } else if (action == "minimize")
         {
@@ -3411,6 +3505,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
 
         int finger = ev->event->touch_id;
+        log_widget_touch(finger);
         if ((hold_finger >= 0) || (lifted_finger >= 0) ||
             (wf::get_core().get_touch_state().fingers.size() != 1))
         {
@@ -3517,6 +3612,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
     };
+
+    /** A touch landing on a widget: what decides it, in the log (diagnosing touches on real input). */
+    void log_widget_touch(int finger)
+    {
+        auto at  = wf::get_core().get_touch_position(finger);
+        auto hit = wf::get_core().scene()->find_node_at(at);
+        auto hit_view = hit ? wf::toplevel_cast(wf::node_to_view(hit->node->shared_from_this())) : nullptr;
+        auto focus = wf::get_core().get_touch_focus(finger);
+        bool on_frame = hit && dynamic_cast<scottland::frame_t*>(hit->node.get());
+        wayfire_toplevel_view widget = (hit_view && is_widget(hit_view)) ? hit_view : nullptr;
+        if (!widget && on_frame)
+        {
+            for (auto& [id, link] : model.widgets)
+            {
+                auto w = wf::toplevel_cast(link.widget.lock());
+                if (w && (frame_of(w, false).get() == hit->node.get()))
+                {
+                    widget = w;
+                }
+            }
+        }
+
+        if (!widget)
+        {
+            return;
+        }
+
+        auto link = link_of_widget(widget);
+        LOGI("scottland: touch down on widget ", widget->get_id(), " at ", at.x, ",", at.y, ": hit ",
+            on_frame ? "its halo" : "its surface", ", touch focus ", focus ? (dynamic_cast<scottland::frame_t*>(
+            focus.get()) ? "a halo" : "a surface") : "none", ", fingers ",
+            wf::get_core().get_touch_state().fingers.size(), ", hold ", hold_finger, ", lifted ", lifted_finger,
+            ", movable ", (widget->get_allowed_actions() & wf::VIEW_ALLOW_MOVE) ? "yes" : "no",
+            ", touch_drag ", (link && link->touch_drag) ? "yes" : "no");
+    }
 
     void lift_held_window(bool pop = true)
     {
@@ -4196,10 +4326,147 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         std::weak_ptr<wf::view_interface_t> view;
         double dx = 0, dy = 0;  // where it's drawn from, relative to where it is
+        bool outward = false;   // drawn going away to (dx, dy) instead (then `done`)
+        std::function<void()> done;
         wf::animation::simple_animation_t progress{wf::create_option<int>(GLIDE_MS)};
     };
     std::map<uint64_t, glide_t> glides;
     wf::wl_timer<true> glide_tick;
+
+    /** Draw `view` gliding away from where it is to (dx, dy) off it, then run `done`. */
+    void start_glide_out(wayfire_toplevel_view view, double dx, double dy, std::function<void()> done)
+    {
+        auto frame = frame_of(view, false);
+        if (!frame)
+        {
+            done();
+            return;
+        }
+
+        stop_glide(view);
+        auto& glide = glides[view->get_id()];
+        glide.view = view->weak_from_this();
+        glide.dx = dx;
+        glide.dy = dy;
+        glide.outward = true;
+        glide.done = std::move(done);
+        glide.progress.animate(0.0, 1.0);
+        if (!glide_tick.is_connected())
+        {
+            glide_tick.set_timeout(8, [=] () { return step_glides(); });
+        }
+    }
+
+    // Full screen is focus (FS1, tenet 6): while a fullscreen window is in front on a screen,
+    // nothing interrupts it. That screen's widgets slide off its edges, and come back when it
+    // isn't anymore; integrations hold notifications (focus.d hooks, run with "on" while any
+    // screen is in focus, "off" after).
+    std::map<wf::output_t*, std::unique_ptr<wf::signal::connection_t<wf::fullscreen_layer_focused_signal>>>
+    fullscreen_watch;
+    bool focus_hooks_on = false;
+
+    void watch_fullscreen(wf::output_t *output)
+    {
+        auto watch = std::make_unique<wf::signal::connection_t<wf::fullscreen_layer_focused_signal>>(
+            [=] (wf::fullscreen_layer_focused_signal *ev) { set_focus_mode(output, ev->has_promoted); });
+        output->connect(watch.get());
+        fullscreen_watch[output] = std::move(watch);
+    }
+
+    void unwatch_fullscreen(wf::output_t *output)
+    {
+        fullscreen_watch.erase(output);
+        model.focused_outputs.erase(output);
+        run_focus_hooks();
+    }
+
+    bool in_focus_mode(wf::output_t *output) const
+    {
+        return model.focused_outputs.count(output) > 0;
+    }
+
+    void set_focus_mode(wf::output_t *output, bool on)
+    {
+        if (in_focus_mode(output) == on)
+        {
+            return;
+        }
+
+        if (on)
+        {
+            model.focused_outputs.insert(output);
+        } else
+        {
+            model.focused_outputs.erase(output);
+        }
+
+        LOGI("scottland: full screen on ", output->to_string(), on ? ": focus (widgets away)" : ": widgets back");
+        for (auto& [id, link] : model.widgets)
+        {
+            if ((link.output == output) && !link.previewing())
+            {
+                slide_widget(link, on);
+            }
+        }
+
+        run_focus_hooks();
+        publish_model();
+    }
+
+    /** A widget slides off its screen edge (focus) or back to its place. */
+    void slide_widget(widget_link_t& link, bool away)
+    {
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        if (!widget || !widget->get_output())
+        {
+            return;
+        }
+
+        auto g = widget->get_geometry();
+        double width = widget->get_output()->get_relative_geometry().width;
+        double margin = frame_of(widget, false) ? frame_of(widget, false)->margin() : 0;
+        double off = (link.rail == "left") ? -(g.x + g.width + margin) : (width - g.x + margin);
+        uint64_t window_id = link.window_id;
+        if (away)
+        {
+            start_glide_out(widget, off, 0, [=] ()
+            {
+                auto found = model.widgets.find(window_id);
+                if ((found != model.widgets.end()) && in_focus_mode(found->second.output))
+                {
+                    found->second.away = true;
+                    transition_widget(found->second, found->second.lifecycle);
+                }
+
+                if (auto frame = frame_of(widget, false))
+                {
+                    frame->translation_x = frame->translation_y = 0;
+                }
+            });
+        } else
+        {
+            stop_glide(widget);
+            link.away = false;
+            transition_widget(link, link.lifecycle);
+            start_glide(widget, off, 0);
+        }
+    }
+
+    void run_focus_hooks()
+    {
+        bool any = false;
+        any = !model.focused_outputs.empty();
+
+        if (any == focus_hooks_on)
+        {
+            return;
+        }
+
+        focus_hooks_on = any;
+        const char *hooks = getenv("SCOTTLAND_HOOKS");
+        wf::get_core().run(shell_quote(std::string(hooks ? hooks : "/usr/lib/scottland") +
+            "/libexec/scottland-focus-mode") + (any ? " on" : " off"));
+    }
 
     /** Draw `view` gliding from (dx, dy) away to where it is. */
     void start_glide(wayfire_toplevel_view view, double dx, double dy)
@@ -4406,7 +4673,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             auto& glide = it->second;
-            double left = 1.0 - (double)glide.progress;
+            double left = glide.outward ? (double)glide.progress : 1.0 - (double)glide.progress;
             frame->damage();
             frame->translation_x = glide.dx * left;
             frame->translation_y = glide.dy * left;
@@ -4417,8 +4684,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             update_neighbors(view->get_output());
             if (!glide.progress.running())
             {
-                frame->translation_x = frame->translation_y = 0;
+                auto done = std::move(glide.done);
                 it = glides.erase(it);
+                if (done)
+                {
+                    done();  // (it puts the frame where it's to stay)
+                } else
+                {
+                    frame->translation_x = frame->translation_y = 0;
+                }
+
                 update_all_neighbors();
                 continue;
             }
@@ -4988,6 +5263,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_title);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
+        ipc_repo->register_method("scottland/present", present_method);
         ipc_repo->register_method("scottland/widget-traits", widget_traits);
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
@@ -4996,6 +5272,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             observe_view(wf::toplevel_cast(view));
         }
         take_handover();
+        // Loaded (a reload) while a fullscreen window is in front: Wayfire won't say so again.
+        if (auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            active && active->get_output() && active->pending_fullscreen())
+        {
+            set_focus_mode(active->get_output(), true);
+        }
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
         wf::get_core().connect(&on_focus_request);
@@ -5070,6 +5352,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_above.disconnect();
         on_hints.disconnect();
         ipc_repo->unregister_method("scottland/widget-action");
+        ipc_repo->unregister_method("scottland/present");
         ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);

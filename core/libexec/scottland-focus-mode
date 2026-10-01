@@ -1,0 +1,20 @@
+#!/bin/sh
+# Full screen is focus (FS1, tenet 6): Scottland runs this with "on" when a fullscreen window comes
+# in front on a screen, and "off" when none is anymore. It runs each focus.d hook with the same
+# argument: the installed integrations' (e.g. one that holds the desktop's notifications), then
+# the user's (~/.config/scottland/focus.d), in name order. A hook that fails doesn't stop the rest.
+state=${1:?usage: scottland-focus-mode on|off}
+hooks=${SCOTTLAND_HOOKS:-/usr/lib/scottland}
+log="${XDG_STATE_HOME:-$HOME/.local/state}/scottland/focus-mode.log"
+mkdir -p "$(dirname "$log")"
+echo "$(date '+%F %T') focus $state" >>"$log"
+# SCOTTLAND_FOCUS_HOOKS names one folder to run instead (a test session's own).
+if [ -n "${SCOTTLAND_FOCUS_HOOKS:-}" ]; then
+  set -- "$SCOTTLAND_FOCUS_HOOKS"/*
+else
+  set -- "$hooks"/focus.d/* "${XDG_CONFIG_HOME:-$HOME/.config}"/scottland/focus.d/*
+fi
+for hook in "$@"; do
+  [ -f "$hook" ] && [ -x "$hook" ] || continue
+  "$hook" "$state" >>"$log" 2>&1 || echo "$(date '+%F %T') $hook $state failed" >>"$log"
+done

@@ -33,6 +33,13 @@ scottland-ctl windows
 
 The first column is the app-id (e.g. `com.mitchellh.ghostty`, `foot`, `chromium`).
 
+## Bring a window to the user
+
+`scottland-ctl present <id>` (IPC `scottland/present {window}`) shows a window now: a widget opens
+back into its window, a window at the side flies to the middle at 100%, and either way it's raised
+and focused. A window already in the center zone stays put. Use it when the user picks a window
+(from a launcher, a list of agents); a plain focus request moves nothing.
+
 ## Touchscreen scrolling for apps that ignore touch
 
 Many apps scroll with a finger on their own (browsers, most GTK and Qt apps). Some don't, notably
