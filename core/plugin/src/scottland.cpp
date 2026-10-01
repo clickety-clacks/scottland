@@ -1216,7 +1216,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             announced_scale.erase(toplevel->get_id());
-            disabled_nodes.erase(toplevel->get_id());
+            render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
             {
                 forget_owner(frame);
@@ -4573,7 +4573,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["minimized"] = link.collapsed;
                 entry["touch_drag"] = link.touch_drag;
                 handover.append(entry);
-                    continue;  // the window keeps its disable: the next plugin holds it
+                transition_widget(link, widget_link_t::lifecycle_t::handed_over);
+                continue;  // the window keeps its disable: the next plugin holds it
             }
 
             transition_widget(link, widget_link_t::lifecycle_t::restoring);
@@ -4586,6 +4587,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             out << handover.serialize();
         }
 
+        // Returning a disable is part of unloading the renderer. Only handed-over apps keep
+        // their lease for the incoming plugin; a disabled widget must never outlive this one.
+        auto leases = disabled_nodes;
+        for (auto id : leases)
+        {
+            auto link = widget_links.find(id);
+            if (link == widget_links.end() || link->second.lifecycle != widget_link_t::lifecycle_t::handed_over)
+            {
+                render_hidden(view_by_id(id), false);
+            }
+        }
         widget_links.clear();
         if (handover.size() == 0)
         {
