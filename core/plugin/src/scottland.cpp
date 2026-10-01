@@ -3795,10 +3795,144 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         std::weak_ptr<wf::view_interface_t> view;
         double dx = 0, dy = 0;  // where it's drawn from, relative to where it is
+        bool outward = false;   // drawn going away to (dx, dy) instead (then `done`)
+        std::function<void()> done;
         wf::animation::simple_animation_t progress{wf::create_option<int>(GLIDE_MS)};
     };
     std::map<uint64_t, glide_t> glides;
     wf::wl_timer<true> glide_tick;
+
+    /** Draw `view` gliding away from where it is to (dx, dy) off it, then run `done`. */
+    void start_glide_out(wayfire_toplevel_view view, double dx, double dy, std::function<void()> done)
+    {
+        auto frame = frame_of(view, false);
+        if (!frame)
+        {
+            done();
+            return;
+        }
+
+        stop_glide(view);
+        auto& glide = glides[view->get_id()];
+        glide.view = view->weak_from_this();
+        glide.dx = dx;
+        glide.dy = dy;
+        glide.outward = true;
+        glide.done = std::move(done);
+        glide.progress.animate(0.0, 1.0);
+        if (!glide_tick.is_connected())
+        {
+            glide_tick.set_timeout(8, [=] () { return step_glides(); });
+        }
+    }
+
+    // Full screen is focus (FS1, tenet 6): while a fullscreen window is in front on a screen,
+    // nothing interrupts it. That screen's widgets slide off its edges, and come back when it
+    // isn't anymore; integrations hold notifications (focus.d hooks, run with "on" while any
+    // screen is in focus, "off" after).
+    std::map<wf::output_t*, bool> focused_outputs;
+    std::map<wf::output_t*, std::unique_ptr<wf::signal::connection_t<wf::fullscreen_layer_focused_signal>>>
+    fullscreen_watch;
+    bool focus_hooks_on = false;
+
+    void handle_new_output(wf::output_t *output) override
+    {
+        per_output_tracker_mixin_t::handle_new_output(output);
+        auto watch = std::make_unique<wf::signal::connection_t<wf::fullscreen_layer_focused_signal>>(
+            [=] (wf::fullscreen_layer_focused_signal *ev) { set_focus_mode(output, ev->has_promoted); });
+        output->connect(watch.get());
+        fullscreen_watch[output] = std::move(watch);
+    }
+
+    void handle_output_removed(wf::output_t *output) override
+    {
+        fullscreen_watch.erase(output);
+        focused_outputs.erase(output);
+        run_focus_hooks();
+        per_output_tracker_mixin_t::handle_output_removed(output);
+    }
+
+    bool in_focus_mode(wf::output_t *output) const
+    {
+        auto found = focused_outputs.find(output);
+        return (found != focused_outputs.end()) && found->second;
+    }
+
+    void set_focus_mode(wf::output_t *output, bool on)
+    {
+        if (in_focus_mode(output) == on)
+        {
+            return;
+        }
+
+        focused_outputs[output] = on;
+        LOGI("scottland: full screen on ", output->to_string(), on ? ": focus (widgets away)" : ": widgets back");
+        for (auto& [id, link] : widget_links)
+        {
+            if ((link.output == output) && !link.preview)
+            {
+                slide_widget(link, on);
+            }
+        }
+
+        run_focus_hooks();
+    }
+
+    /** A widget slides off its screen edge (focus) or back to its place. */
+    void slide_widget(widget_link_t& link, bool away)
+    {
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        if (!widget || !widget->get_output())
+        {
+            return;
+        }
+
+        auto g = widget->get_geometry();
+        double width = widget->get_output()->get_relative_geometry().width;
+        double margin = frame_of(widget, false) ? frame_of(widget, false)->margin() : 0;
+        double off = (link.rail == "left") ? -(g.x + g.width + margin) : (width - g.x + margin);
+        uint64_t window_id = link.window_id;
+        if (away)
+        {
+            start_glide_out(widget, off, 0, [=] ()
+            {
+                auto found = widget_links.find(window_id);
+                if (found != widget_links.end())
+                {
+                    set_widget_hidden(found->second, true);
+                }
+
+                if (auto frame = frame_of(widget, false))
+                {
+                    frame->translation_x = frame->translation_y = 0;
+                }
+            });
+        } else
+        {
+            stop_glide(widget);
+            set_widget_hidden(link, false);
+            start_glide(widget, off, 0);
+        }
+    }
+
+    void run_focus_hooks()
+    {
+        bool any = false;
+        for (auto& [output, on] : focused_outputs)
+        {
+            any |= on;
+        }
+
+        if (any == focus_hooks_on)
+        {
+            return;
+        }
+
+        focus_hooks_on = any;
+        const char *hooks = getenv("SCOTTLAND_HOOKS");
+        wf::get_core().run(shell_quote(std::string(hooks ? hooks : "/usr/lib/scottland") +
+            "/libexec/scottland-focus-mode") + (any ? " on" : " off"));
+    }
 
     /** Draw `view` gliding from (dx, dy) away to where it is. */
     void start_glide(wayfire_toplevel_view view, double dx, double dy)
@@ -3993,7 +4127,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             auto& glide = it->second;
-            double left = 1.0 - (double)glide.progress;
+            double left = glide.outward ? (double)glide.progress : 1.0 - (double)glide.progress;
             frame->damage();
             frame->translation_x = glide.dx * left;
             frame->translation_y = glide.dy * left;
@@ -4004,8 +4138,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             update_neighbors(view->get_output());
             if (!glide.progress.running())
             {
-                frame->translation_x = frame->translation_y = 0;
+                auto done = std::move(glide.done);
                 it = glides.erase(it);
+                if (done)
+                {
+                    done();  // (it puts the frame where it's to stay)
+                } else
+                {
+                    frame->translation_x = frame->translation_y = 0;
+                }
+
                 update_all_neighbors();
                 continue;
             }
@@ -4559,6 +4701,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
         take_handover();
+        // Loaded (a reload) while a fullscreen window is in front: Wayfire won't say so again.
+        if (auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            active && active->get_output() && active->pending_fullscreen())
+        {
+            set_focus_mode(active->get_output(), true);
+        }
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
         wf::get_core().connect(&on_focus_request);

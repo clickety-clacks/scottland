@@ -2,7 +2,7 @@
 DEV := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/dev
 CONF := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/scottland
 
-.PHONY: plugin dev-install dev-uninstall package clean
+.PHONY: plugin dev-install test-hooks hooks dev-uninstall package clean
 
 plugin:
 	meson setup build core/plugin --reconfigure 2>/dev/null || meson setup build core/plugin
@@ -14,7 +14,7 @@ dev-install: plugin
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
 	ln -sf $(CURDIR)/core/config/scottland.ini $(CONF)/scottland.ini
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
-	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d
+	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
@@ -31,13 +31,43 @@ dev-install: plugin
 	for f in core/systemd/*; do ln -sf $(CURDIR)/$$f $(HOME)/.config/systemd/user/$$(basename $$f); done
 	systemctl --user daemon-reload
 	ln -sf $(CURDIR)/core/session/scottland-settings $(HOME)/.local/bin/scottland-settings
-	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d; do \
+	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d focus.d; do \
 	  for f in core/$$d/* omarchy/$$d/* omarchy/hooks/*; do \
 	    [ -e "$$f" ] || continue; \
 	    case $$f in omarchy/hooks/*) [ $$d = early-exit.d ] || continue ;; esac; \
 	    ln -sf $(CURDIR)/$$f $(DEV)/$$d/$$(basename $$f); \
 	  done; \
 	done
+
+# Scottland's session helpers (libexec, hook directories, widgets, metadata) for this checkout,
+# linked into HOOKS_DIR. dev-install puts them in the dev directory the user's session uses.
+hooks:
+	mkdir -p $(HOOKS_DIR)/plugins $(HOOKS_DIR)/metadata
+	ln -sf $(CURDIR)/build/libscottland.so $(HOOKS_DIR)/plugins/libscottland.so
+	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(HOOKS_DIR)/metadata/scottland.xml
+	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d
+	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(HOOKS_DIR)/libexec/scottland-hyprshim
+	ln -sf $(CURDIR)/core/session/scottland-build-config $(HOOKS_DIR)/libexec/scottland-build-config
+	ln -sf $(CURDIR)/core/session/scottland-autostart $(HOOKS_DIR)/libexec/scottland-autostart
+	ln -sf $(CURDIR)/core/session/start-scottland $(HOOKS_DIR)/libexec/start-scottland
+	ln -sf $(CURDIR)/core/session/scottland-reload $(HOOKS_DIR)/libexec/scottland-reload
+	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
+	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
+	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
+	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
+	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d focus.d; do \
+	  for f in core/$$d/* omarchy/$$d/* omarchy/hooks/*; do \
+	    [ -e "$$f" ] || continue; \
+	    case $$f in omarchy/hooks/*) [ $$d = early-exit.d ] || continue ;; esac; \
+	    ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/$$d/$$(basename $$f); \
+	  done; \
+	done
+
+# The same, inside this checkout (build/hooks), for its headless test sessions only
+# (tests/headless.sh): test sessions of different checkouts on one machine never run each other's
+# helpers, and the user's own session is untouched.
+test-hooks: plugin
+	$(MAKE) --no-print-directory hooks HOOKS_DIR=$(CURDIR)/build/hooks
 
 dev-uninstall:
 	rm -rf $(DEV)

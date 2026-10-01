@@ -88,7 +88,7 @@ tests/headless.sh start --widgets >/dev/null || { echo "couldn't start headless 
 monitor_pid=
 cleanup() {
   [ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null
-  cp "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/wayfire.log" \
+  cp "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/wayfire.log" \
     "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-widgets-test.log" 2>/dev/null  # kept for a look
   tests/headless.sh stop >/dev/null 2>&1
   rm -rf "$test_widgets" "${src:-/nonexistent}"
@@ -634,6 +634,35 @@ h window-rules/close-view "{\"id\": $(view_field cover-app "v['id']")}"
 h window-rules/close-view "{\"id\": $(view_field under-app "v['id']")}"
 sleep 2
 
+# FS1: full screen is focus. A fullscreen window in front sends the widgets off the screen's edges
+# (sliding) and runs the focus hooks ("on"); leaving full screen brings them back ("off").
+focus_dir="${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/focus.d"
+focus_record="$focus_dir/../focus-record"
+printf '#!/bin/sh\necho "$1" >>"%s"\n' "$focus_record" >"$focus_dir/10-record"; chmod +x "$focus_dir/10-record"
+(tests/headless.sh run foot -T docked-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field docked-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 6)) $((ay + ah / 2))
+sleep 2.5
+docked() { views | python3 -c "import json,sys; v=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('docked-app')][0]; print(v['hidden'], round(v['frame']['x']))"; }
+read -r _ x0 <<<"$(docked)"
+(tests/headless.sh run foot -T full-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+h wm-actions/set-fullscreen "{\"view_id\": $(view_field full-app "v['id']"), \"state\": true}"
+slid=no
+for i in $(seq 1 12); do read -r hid x <<<"$(docked)"; [ "$hid" = False ] && [ "$x" -gt $((x0 + 5)) ] && slid=yes; sleep 0.03; done
+sleep 1
+check "FS1 full screen: the widgets slide off the screen's edge" [ "$slid/$(docked | cut -d' ' -f1)" = "yes/True" ]
+check "FS1 ...and the focus hooks run with on" [ "$(tail -1 "$focus_record" 2>/dev/null)" = on ]
+h wm-actions/set-fullscreen "{\"view_id\": $(view_field full-app "v['id']"), \"state\": false}"
+sleep 1
+read -r hid x <<<"$(docked)"
+check "FS1 leaving full screen: the widgets come back to their place" [ "$hid/$(( x - x0 < 3 && x0 - x < 3 ))" = "False/1" ]
+check "FS1 ...and the focus hooks run with off" [ "$(tail -1 "$focus_record" 2>/dev/null)" = off ]
+h window-rules/close-view "{\"id\": $(view_field full-app "v['id']")}"
+h window-rules/close-view "{\"id\": $(view_field docked-app "v['id']")}"
+sleep 2
+
 # L23: lifting three fingers ends the drag at once (no grace period); a second three-finger
 # drag right after is a new drag, which only counts as the same move for Esc (L27).
 (tests/headless.sh run foot -T grace-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
@@ -729,10 +758,10 @@ swipe chain-app 4
 h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'
 h scottland/test-input '{"swipe":"end"}'; sleep 1
 check "L27 a re-grab that didn't move keeps the move's origin (Esc goes back to the start)" [ "$(geo_of chain-app)" = "$o0" ]
-swipe chain-app 4; h scottland/test-input '{"swipe":"end"}'; sleep 2.2
+swipe chain-app 4; h scottland/test-input '{"swipe":"end"}'; sleep 1.8
 read -r cx cy <<<"$(center_of chain-app)"
 h stipc/move_cursor "{\"x\":$cx,\"y\":$cy}"
-h scottland/test-input '{"swipe":"begin","fingers":3}'; sleep 0.5          # begun at 2.2 s, first motion at 2.7 s
+h scottland/test-input '{"swipe":"begin","fingers":3}'; sleep 1.0          # begun at ~1.9 s, first motion at ~2.9 s
 for i in 1 2 3; do h scottland/test-input '{"swipe":"update","dx":-20,"dy":10}'; sleep 0.02; done
 h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'
 h scottland/test-input '{"swipe":"end"}'; sleep 1

@@ -13,13 +13,21 @@
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
 #
+# Helpers come from this checkout (make test-hooks) if built, else the dev install. Set
+# SCOTTLAND_HEADLESS_DIR to run test sessions of several checkouts at once.
+#
 # Example: tests/headless.sh start --omarchy && tests/headless.sh run foot &
 #          tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-dir=$runtime/scottland-headless
-hooks=${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev
+# SCOTTLAND_HEADLESS_DIR: where this test session keeps its state, so test sessions of several
+# checkouts (e.g. agents on branches sharing a test machine) can run at once.
+dir=${SCOTTLAND_HEADLESS_DIR:-$runtime/scottland-headless}
+# The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
+# package's.
+hooks=$repo/build/hooks
+[[ -d $hooks/libexec ]] || hooks=${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev
 [[ -d $hooks/libexec ]] || hooks=/usr/lib/scottland
 exec_tool=$hooks/libexec/scottland-exec
 
@@ -49,6 +57,9 @@ case ${1:-} in
       done
       export PATH=/usr/local/bin:/usr/bin:/bin
       export SCOTTLAND_HOOKS=$hooks XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
+      # Focus-mode hooks (full screen) touch the desktop (e.g. its notifications): a test session
+      # runs only its own, from its folder.
+      mkdir -p "$dir/focus.d"; export SCOTTLAND_FOCUS_HOOKS=$dir/focus.d
       for env_hook in "$hooks"/session-env.d/*.sh; do [[ -r $env_hook ]] && . "$env_hook"; done
       "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
       hook_list=${started[*]}
