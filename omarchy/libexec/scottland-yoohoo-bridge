@@ -9,8 +9,10 @@ Scottland (going to it) dismisses it in Yoohoo too.
 
   scottland-yoohoo-bridge        run (started with the session; exits if Yoohoo isn't installed)
 
-Yoohoo's list: $XDG_STATE_HOME/window-attention/current.json, rewritten on every change. Its
-window addresses are the Hyprland shim's, which are Scottland window ids plus ADDRESS_BASE.
+Yoohoo's list: `window-attention list` (its interface for other UIs; it merges the native list
+with agents from Agentd Hub), read every POLL_S seconds, as Yoohoo's own panel does, and at once
+when the native list ($XDG_STATE_HOME/window-attention/current.json) changes. Its window
+addresses are the Hyprland shim's, which are Scottland window ids plus ADDRESS_BASE.
 """
 import hashlib
 import json
@@ -69,13 +71,20 @@ class Ipc:
         return data
 
 
+POLL_S = 2.0
+
+
 def yoohoo_windows():
     """Scottland window id -> Yoohoo address, for the windows on Yoohoo's list."""
     try:
-        with open(LIST) as source:
-            entries = json.load(source).get("windows", [])
-    except (OSError, ValueError):
-        return {}
+        if shutil.which("window-attention"):
+            out = subprocess.run(["window-attention", "list"], capture_output=True, text=True, timeout=10).stdout
+            entries = json.loads(out).get("windows", [])
+        else:
+            with open(LIST) as source:
+                entries = json.load(source).get("windows", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None  # couldn't tell: change nothing
     windows = {}
     for entry in entries:
         try:
@@ -96,6 +105,8 @@ class Bridge:
         """Mark what Yoohoo lists, unmark what it no longer does. `again`: mark everything listed
         anew (the plugin was reloaded and forgot)."""
         listed = yoohoo_windows()
+        if listed is None:
+            return
         for window, address in listed.items():
             if again or window not in self.asserted:
                 self.asserted[window] = address
@@ -136,7 +147,9 @@ class Bridge:
         self.sync()
         try:
             while True:
-                ready, _, _ = select.select([events.sock, watch.stdout], [], [])
+                ready, _, _ = select.select([events.sock, watch.stdout], [], [], POLL_S)
+                if not ready:
+                    self.sync()
                 if watch.stdout in ready:
                     if os.path.basename(watch.stdout.readline().strip()) == "current.json":
                         self.sync()
