@@ -1728,7 +1728,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["app_id"] = window ? window->get_app_id() : "";
             entry["title"]  = window ? window->get_title() : "";
             entry["pid"]    = (int64_t)(window ? view_pid(window) : 0);
-            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : (link.launcher ? link.launcher->pid : 0));
+            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : 0);  // its window's process, once it has one
             entry["widget_unit"] = link.launcher ? link.launcher->unit : "";
             // Only while it runs (its pidfd says so): a number that may since have been reused is
             // no one's identity.

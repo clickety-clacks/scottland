@@ -419,7 +419,7 @@ sleep 1.5
 read -r ax ay aw ah <<<"$(view_field fallback-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 1
-first=$(ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['widget_pid'] if w else '')")
+first=$(ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['launcher_pid'] if w else '')")
 check "WG5 (no scope) the widget runs outside any scope" \
   bash -c "[ -n '$first' ] && ! grep -q 'scottland-widget-' /proc/$first/cgroup"
 sleep 11.5

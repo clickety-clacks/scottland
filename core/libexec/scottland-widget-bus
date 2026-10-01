@@ -192,10 +192,12 @@ class Service:
         for entry in reply.get("widgets", []):
             wid = entry["id"]
             seen.add(wid)
-            state = self.widgets.get(wid) or self.new_widget(wid)
+            state = self.widgets.get(wid) or self.new_widget(wid, entry.get("widget_unit", ""))
             if state["_widget_unit"] != entry.get("widget_unit", ""):
-                state["_widget_unit"] = entry.get("widget_unit", "")  # a new launch: learn its app again
+                # A new launch with this id: forget what came from the old one, learn its app again.
+                state["_widget_unit"] = entry.get("widget_unit", "")
                 state["_desktop"] = ""
+                self.update(wid, {"Badge": 0})
             self.learn_desktop(wid)
             updates = {
                 "AppId": entry.get("app_id", ""),
@@ -216,10 +218,10 @@ class Service:
             self.remove_widget(wid)
         self.announce_changes()
 
-    def new_widget(self, wid):
+    def new_widget(self, wid, unit=""):
         state = {"Id": wid, "AppId": "", "Title": "", "Pid": 0, "Window": 0, "Rail": "", "Focused": False,
                  "Urgent": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_launcher_pid": 0,
-                 "_widget_unit": "", "_desktop": ""}
+                 "_widget_unit": unit, "_desktop": ""}
         self.widgets[wid] = state
         self.learn_desktop(wid)
         if self.bus:
@@ -397,7 +399,9 @@ class Service:
             for wid in targets:
                 self.update(wid, {"Data": payload})
         elif method == "Send":
-            # A widget sends to its own app only.
+            # A widget sends to its own app only. Identities are taken fresh from the compositor
+            # (without scopes, a launch process counts only while it still runs).
+            self.refresh()
             sources = [s for s in self.widgets.values() if is_widget_process(pid, s)]
             if not sources:
                 invocation.return_dbus_error("org.scottland.Widgets.Error", "the caller isn't a widget")
