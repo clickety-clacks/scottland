@@ -43,7 +43,6 @@ extern "C" {
 #include <regex>
 #include <optional>
 #include <fstream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1173,7 +1172,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<false> hold_timer;
     std::weak_ptr<scottland::frame_t> lifted_frame;
     int lifted_finger = -1;
-    std::optional<wf::pointf_t> drag_input_override;  // where a touch drag was grabbed
+    std::optional<wf::pointf_t> drag_input_override;  // where a touch drag was grabbed (until it ends)
     std::string pop_sound;
 
     void cancel_hold()
@@ -1307,12 +1306,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::move_drag::drag_options_t options;
         options.join_views = false;
         options.enable_snap_off = false;
+        // Kept until the drag ends: the drag reports its start (on_drag_output) on the first motion.
         drag->start_drag(view, options);
-        drag_input_override.reset();
     }
 
-    /** The lift's pop, synthesized (not a sample): a short tone whose pitch drops fast, with a
-     *  little noise at the attack. Written once as a WAV in the runtime directory. */
+    /** The lift's sound, synthesized (not a sample): a "bloop", like a bubble. A soft sine whose
+     *  pitch rises quickly, with a gentle attack, a touch of second harmonic for roundness, and
+     *  no noise. Written once as a WAV in the runtime directory. */
     void synthesize_pop()
     {
         const char *runtime = getenv("XDG_RUNTIME_DIR");
@@ -1324,20 +1324,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         const int rate = 48000;
-        const int count = rate * 75 / 1000;
+        const int count = rate * 140 / 1000;
         std::vector<int16_t> samples(count);
-        std::mt19937 noise_source(7);
-        std::uniform_real_distribution<double> noise(-1.0, 1.0);
         double phase = 0.0;
         for (int i = 0; i < count; i++)
         {
             double t = (double)i / rate;
-            double frequency = 260.0 + 900.0 * std::exp(-t / 0.012);   // pitch drops fast
+            double frequency = 380.0 + 620.0 * (1.0 - std::exp(-t / 0.018));  // rises like a bubble
             phase += 2.0 * M_PI * frequency / rate;
-            double envelope = (1.0 - std::exp(-t / 0.0015)) * std::exp(-t / 0.022);
-            double tail = std::min(1.0, (count - i) / (rate * 0.005)); // click-free end
-            double value = (0.8 * std::sin(phase) * envelope + 0.35 * noise(noise_source) * std::exp(-t / 0.003));
-            samples[i] = (int16_t)std::clamp(value * 0.55 * tail * 32767.0, -32767.0, 32767.0);
+            double envelope = (1.0 - std::exp(-t / 0.004)) * std::exp(-t / 0.035);
+            double tail = std::min(1.0, (count - i) / (rate * 0.01));          // click-free end
+            double value = (std::sin(phase) + 0.15 * std::sin(2.0 * phase)) * envelope;
+            samples[i] = (int16_t)std::clamp(value * 0.5 * tail * 32767.0, -32767.0, 32767.0);
         }
 
         pop_sound = dir + "/pop.wav";
@@ -1425,7 +1423,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Live scaling while a window is dragged. The drag keeps the grabbed point of the window's
     // (transformed) bounding box under the pointer, so rescaling mid-drag stays anchored there.
     wf::shared_data::ref_ptr_t<wf::move_drag::core_drag_t> drag;
-    double drag_relative_x = 0.5;
+    double drag_relative_x = 0.5;   // where across the dragged window's bounding box it was grabbed
+    double drag_margin = 0.0;       // bounding box minus window, per side (halo margin), on screen
     double drag_target = 1.0;     // the scale the dragged window is heading for
 
     wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> on_drag_output =
@@ -1434,12 +1433,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!ev->previous_focus_output && drag->view)
         {
             // Drag just began: remember where across the window it was grabbed.
-            auto frame  = frame_of(drag->view, false);
+            // The drag keeps the grabbed point at the same fraction of the view's bounding box (which
+            // includes the halo margin), so measure it the same way, or the predicted center (and
+            // zone, and scale) drifts from where the window really lands.
             auto output = drag->view->get_output();
             auto cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
             double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
-            auto r = frame ? frame->screen_rect() : scottland::rectf_t{0, 0, 0, 0};
-            drag_relative_x = r.width() > 0 ? std::clamp((local_x - r.x1) / r.width(), 0.0, 1.0) : 0.5;
+            // Use the window's resting box (its scaled width plus the halo margin), not the live
+            // bounding box: a just-lifted window is mid-bulge, which inflates the box for a moment.
+            auto geometry = drag->view->get_geometry();
+            double drawn  = geometry.width * displayed_scale(drag->view);
+            auto frame    = frame_of(drag->view, false);
+            drag_margin   = frame ? frame->margin() :
+                std::max(0.0, (drag->view->get_bounding_box().width - drawn) / 2.0);
+            double box   = drawn + 2 * drag_margin;
+            double left  = geometry.x + geometry.width / 2.0 - box / 2.0;
+            drag_relative_x = box > 0 ? (local_x - left) / box : 0.5;
             auto running = transitions.find(drag->view->get_id());
             drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
             update_neighbors(output);
@@ -1467,7 +1476,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double screen    = output->get_relative_geometry().width;
         auto zone_scale  = [&] (double s)
         {
-            return place_at(pointer_x + (0.5 - drag_relative_x) * unscaled * s, screen).scale;
+            return place_at(pointer_x + (0.5 - drag_relative_x) * (unscaled * s + 2 * drag_margin), screen).scale;
         };
 
         double chosen = zone_scale(drag_target);
@@ -1501,6 +1510,39 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::move_drag::drag_done_signal *ev)
     {
         // The dropped geometry is final; drag->view may still point at the view here.
+        // What you saw while dragging is what you get: right at a jump in scale (the drag keeps
+        // its size there until the other one agrees, see on_drag_motion) the drop can land where
+        // the zone says the other size. Then keep the size shown, and nudge the window sideways
+        // by the least distance that puts its center where that size belongs.
+        auto main = ev->main_view;
+        if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen())
+        {
+            auto geometry = main->get_geometry();
+            double screen = main->get_output()->get_relative_geometry().width;
+            double center = geometry.x + geometry.width / 2.0;
+            if (std::abs(place_at(center, screen).scale - drag_target) > JUMP)
+            {
+                for (int d = 1; d <= 400; d++)
+                {
+                    int found = 0;
+                    for (int sign : {-1, 1})
+                    {
+                        if (std::abs(place_at(center + sign * d, screen).scale - drag_target) <= 0.003)
+                        {
+                            found = sign;
+                            break;
+                        }
+                    }
+
+                    if (found)
+                    {
+                        main->move(geometry.x + found * d, geometry.y);
+                        break;
+                    }
+                }
+            }
+        }
+
         for (auto& dragged : ev->all_views)
         {
             if (dragged.view && dragged.view->is_mapped())
@@ -1509,6 +1551,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
+        drag_input_override.reset();
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
