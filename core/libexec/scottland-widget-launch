@@ -202,7 +202,8 @@ def main():
     # Tell the widget service what only the launcher knows, the app's .desktop id (badges are
     # announced per .desktop), in a file of the launcher's own.
     try:
-        launch = os.path.join(RUNTIME, f"{widget_id}.launch.json")
+        # Named by the launch (unique), so a window's earlier and later launches never share it.
+        launch = os.path.join(RUNTIME, f"{context.get('unit') or widget_id}.launch.json")
         with open(f"{launch}.{os.getpid()}", "w") as out:
             # The launch it belongs to (unique per launch): a file left by a crashed session for
             # a window with the same id isn't taken for this one's.

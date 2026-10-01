@@ -137,7 +137,8 @@ check "WG9 its Title property is the window title" \
   [ "$(bus get-property org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Title)" = 's "widget-app"' ]
 
 # WG10: a badge announced the standard way (Unity launcher API, per .desktop id).
-desktop=$(python3 -c "import json; print(json.load(open('$state_dir/$id.launch.json')).get('desktop',''))")
+unit=$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_unit'])")
+desktop=$(python3 -c "import json; print(json.load(open('$state_dir/$unit.launch.json')).get('desktop',''))")
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 2 count x 7 count-visible b true
 sleep 0.8
@@ -199,7 +200,7 @@ f=v['frame']; sys.exit(0 if abs(f['x']+f['width']/2 - $restore_x) < 30 and abs(f
 check "WG5 ...and the widget is gone (dismissed, not closed)" \
   [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = 0 ]
 check "WG12 StateChanged told the app it's back (not widgetized)" grep -q "StateChanged (uint32 $app_pid, false" "$signals"
-check "WG9 the widget's state files are gone" bash -c "! ls '$state_dir'/$id.* 2>/dev/null | grep -q ."
+check "WG9 the widget's state files are gone" bash -c "! ls '$state_dir'/$id.json '$state_dir'/$unit.launch.json 2>/dev/null | grep -q ."
 
 # WG5: closing the widget closes the app's window.
 read -r ax ay aw ah <<<"$(view_field widget-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"

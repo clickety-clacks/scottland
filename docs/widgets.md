@@ -73,7 +73,7 @@ accessibility, or the app talking to its own widget (WG11, or its own service) c
   session on the same user bus can't own it (tests use a private bus: `tests/headless.sh --widgets`).
   Runtime files are per session (`$XDG_RUNTIME_DIR/scottland/widgets/<display>/`): the widget
   service is the only writer of `<id>.json`; the launcher leaves the app's `.desktop` id in
-  `<id>.launch.json`.
+  `<launch scope>.launch.json` (one per launch).
 - **Palette:** `$XDG_RUNTIME_DIR/scottland/<display>.palette.json` (`scheme`, `background`,
   `foreground`, `muted`, `accent`, `alert`), kept current by `scottland-color-scheme` from the
   desktop's light/dark setting and accent, overlaid by an integration's palette (an `accent.d`

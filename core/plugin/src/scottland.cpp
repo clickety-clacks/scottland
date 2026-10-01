@@ -1579,7 +1579,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         for (auto& [id, link] : widget_links)
         {
             if (link.widget.lock() || !link.launcher ||
-                !(in_scope(pid, link.launcher->unit) || descends_from(pid, link.launcher->pid)))
+                !(in_scope(pid, link.launcher->unit) ||
+                  // Without a scope: descent from the launched process, while it still runs (its
+                  // number could belong to someone else once it has exited).
+                  (alive(link.launcher) && descends_from(pid, link.launcher->pid) && alive(link.launcher))))
             {
                 continue;
             }

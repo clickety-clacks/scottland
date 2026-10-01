@@ -49,7 +49,7 @@ service.bus = None
 
 
 def launch_file(wid, desktop, unit):
-    with open(os.path.join(bus.RUNTIME, f"{wid}.launch.json"), "w") as out:
+    with open(os.path.join(bus.RUNTIME, f"{unit}.launch.json"), "w") as out:
         json.dump({"desktop": desktop, "unit": unit}, out)
 
 
@@ -77,6 +77,18 @@ service.ipc.widgets = [entry("42", "scottland-widget-newer.scope")]
 service.refresh()
 check("WG10 a new launch with the same id starts without the old launch's badge",
       service.widgets["42"]["Badge"] == 0 and service.widgets["42"]["_desktop"] == "")
+
+# A widget goes while its window is already being widgetized again: cleanup removes only the
+# departing launch's file, never the new launch's.
+launch_file("42", "app-c", "scottland-widget-newest.scope")
+service.ipc.widgets = []
+service.refresh()
+check("WG10 cleanup of a departing launch keeps the next launch's file",
+      os.path.exists(os.path.join(bus.RUNTIME, "scottland-widget-newest.scope.launch.json"))
+      and not os.path.exists(os.path.join(bus.RUNTIME, "scottland-widget-newer.scope.launch.json")))
+service.ipc.widgets = [entry("42", "scottland-widget-newest.scope")]
+service.refresh()
+check("WG10 ...and the next launch learns its app from it", service.widgets["42"]["_desktop"] == "app-c")
 
 # WG11 without systemd: no systemctl on PATH; identity by process tree, and only live roots.
 child = subprocess.Popen(["sleep", "30"])

@@ -95,8 +95,11 @@ write("data/scottland/widgets/mine/widget.toml", 'id = "mine"\napps = ["^org\\\\
       'exec = "python3 -c \'import json,os,sys; json.dump([sys.argv[1:], os.getcwd(), {k: v for k, v in os.environ.items() if k.startswith(\\"SCOTTLAND_\\")}], open(os.environ[\\"OUT\\"], \\"w\\"))\' %a %t %i %p %w %r %d %% %z"\n')
 write("data/applications/org.example.Mail2.desktop", "[Desktop Entry]\nName=Mail Two\nIcon=mail-two\nExec=mail2\n")
 out = f"{root}/exec-out.json"
+# Through a real systemd scope (as the compositor asks), with a title systemd-run must not expand.
+unit = f"scottland-widget-launch-test-{os.getpid()}.scope"
 result = subprocess.run([sys.executable, path, json.dumps({"id": "7", "window": 7, "app_id": "org.example.Mail2",
-                         "title": "A b", "pid": 99, "rail": "right"})], env={**os.environ, "OUT": out, "WAYLAND_DISPLAY": "wl-test"})
+                         "title": "A b", "pid": 99, "rail": "right", "unit": unit})],
+                        env={**os.environ, "OUT": out, "WAYLAND_DISPLAY": "wl-test"})
 argv, cwd, wenv = json.load(open(out)) if os.path.exists(out) else ([], "", {})
 check("WG8 (exec) every placeholder fills, unknown ones stay",
       argv == ["org.example.Mail2", "A b", "mail-two", "99", "7", "right", f"{root}/data/scottland/widgets/mine", "%", "%z"])
@@ -108,6 +111,9 @@ check("WG8 (exec) the whole launch environment",
       and wenv.get("SCOTTLAND_WIDGET_BADGE") == "0"
       and wenv.get("SCOTTLAND_WIDGET_STATE") == f"{root}/runtime/scottland/widgets/wl-test/7.json"
       and wenv.get("SCOTTLAND_PALETTE") == f"{root}/runtime/scottland/wl-test.palette.json")
+
+check("WG8 (exec) the launch file is named by its launch",
+      os.path.exists(f"{root}/runtime/scottland/widgets/wl-test/{unit}.launch.json"))
 
 print("\nall launcher checks passed" if not fails else f"\n{fails} launcher check(s) failed")
 sys.exit(1 if fails else 0)

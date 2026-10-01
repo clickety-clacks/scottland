@@ -244,7 +244,7 @@ class Service:
         if state["_desktop"]:
             return
         try:
-            with open(os.path.join(RUNTIME, f"{wid}.launch.json")) as source:
+            with open(self.launch_path(wid)) as source:
                 launch = json.load(source)
         except (OSError, ValueError):
             return
@@ -257,8 +257,9 @@ class Service:
     def remove_widget(self, wid):
         if wid in self.registrations:
             self.bus.unregister_object(self.registrations.pop(wid))
+        launch = self.launch_path(wid)  # this launch's own: a newer launch's file is another
         self.widgets.pop(wid)
-        for path in (self.state_path(wid), os.path.join(RUNTIME, f"{wid}.launch.json")):
+        for path in (self.state_path(wid), launch):
             try:
                 os.remove(path)
             except OSError:
@@ -289,6 +290,10 @@ class Service:
             os.replace(path + ".tmp", path)
         except OSError as error:
             log(f"state file {path}: {error}")
+
+    def launch_path(self, wid):
+        """The launcher's file for this widget's launch (named by its unique scope)."""
+        return os.path.join(RUNTIME, f"{self.widgets[wid]['_widget_unit'] or wid}.launch.json")
 
     @staticmethod
     def state_path(wid):
