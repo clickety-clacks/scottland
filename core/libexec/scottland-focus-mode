@@ -6,6 +6,7 @@
 state=${1:?usage: scottland-focus-mode on|off}
 hooks=${SCOTTLAND_HOOKS:-/usr/lib/scottland}
 log="${XDG_STATE_HOME:-$HOME/.local/state}/scottland/focus-mode.log"
+[ -n "${SCOTTLAND_FOCUS_HOOKS:-}" ] && log="$SCOTTLAND_FOCUS_HOOKS/../focus-mode.log"  # a test session's own
 mkdir -p "$(dirname "$log")"
 echo "$(date '+%F %T') focus $state" >>"$log"
 # SCOTTLAND_FOCUS_HOOKS names one folder to run instead (a test session's own).

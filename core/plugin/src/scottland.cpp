@@ -1205,6 +1205,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::keyboard_focus_changed_signal*)
     {
         update_focus();
+        // Going to another window ends a just-dropped window's hold above the others (L29): the one
+        // the user went to comes forward, now and when the hold would have ended.
+        if (auto held = held_above.lock(); held && (wf::get_core().seat->get_active_view().get() != held.get()))
+        {
+            release_above();
+        }
+
         // Going to a window, or to the widget standing in for it, answers its attention (WG15).
         if (auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view()))
         {
@@ -3494,6 +3501,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (view && view->is_mapped() && !is_widget(view))
         {
             set_above(view, false);
+            // Back with the ordinary windows, it must not end up in front of the one the user is on.
+            auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            if (active && (active != view) && active->is_mapped())
+            {
+                wf::get_core().default_wm->focus_raise_view(active);
+            }
         }
     }
 
