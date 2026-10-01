@@ -194,7 +194,9 @@ def main():
         "SCOTTLAND_WIDGET_BADGE": "0",
         # Live title and badge for widgets that want them without D-Bus (the card does). The
         # widget service is this file's only writer.
-        "SCOTTLAND_WIDGET_STATE": os.path.join(RUNTIME, f"{widget_id}.json"),
+        # Named by the launch, so a file left by an earlier launch (or a crashed session) for a
+        # window with the same id is never this widget's.
+        "SCOTTLAND_WIDGET_STATE": os.path.join(RUNTIME, f"{context.get('unit') or widget_id}.json"),
         # The desktop's colors (light/dark, accent, and the integration's palette), kept current.
         "SCOTTLAND_PALETTE": PALETTE,
     })

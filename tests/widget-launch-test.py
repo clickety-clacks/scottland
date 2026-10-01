@@ -113,7 +113,7 @@ check("WG8 (exec) the whole launch environment",
       and wenv.get("SCOTTLAND_WIDGET_ICON") == "mail-two" and wenv.get("SCOTTLAND_WIDGET_NAME") == "Mail Two"
       and wenv.get("SCOTTLAND_WIDGET_DESKTOP") == "org.example.Mail2" and wenv.get("SCOTTLAND_WIDGET_WINDOW") == "7"
       and wenv.get("SCOTTLAND_WIDGET_BADGE") == "0"
-      and wenv.get("SCOTTLAND_WIDGET_STATE") == f"{root}/runtime/scottland/widgets/wl-test/7.json"
+      and wenv.get("SCOTTLAND_WIDGET_STATE") == f"{root}/runtime/scottland/widgets/wl-test/{unit}.json"
       and wenv.get("SCOTTLAND_PALETTE") == f"{root}/runtime/scottland/wl-test.palette.json")
 
 scoped = os.path.exists(f"{root}/runtime/systemd")

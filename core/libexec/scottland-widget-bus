@@ -211,6 +211,11 @@ class Service:
             state = self.widgets.get(wid) or self.new_widget(wid, entry.get("widget_unit", ""))
             if state["_widget_unit"] != entry.get("widget_unit", ""):
                 # A new launch with this id: forget what came from the old one, learn its app again.
+                for path in (self.state_path(wid), self.launch_path(wid)):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
                 state["_widget_unit"] = entry.get("widget_unit", "")
                 state["_desktop"] = ""
                 self.update(wid, {"Badge": 0})
@@ -266,9 +271,9 @@ class Service:
     def remove_widget(self, wid):
         if wid in self.registrations:
             self.bus.unregister_object(self.registrations.pop(wid))
-        launch = self.launch_path(wid)  # this launch's own: a newer launch's file is another
+        paths = (self.state_path(wid), self.launch_path(wid))  # this launch's own, not a newer one's
         self.widgets.pop(wid)
-        for path in (self.state_path(wid), launch):
+        for path in paths:
             try:
                 os.remove(path)
             except OSError:
@@ -304,9 +309,9 @@ class Service:
         """The launcher's file for this widget's launch (named by its unique scope)."""
         return os.path.join(RUNTIME, f"{self.widgets[wid]['_widget_unit'] or wid}.launch.json")
 
-    @staticmethod
-    def state_path(wid):
-        return os.path.join(RUNTIME, f"{wid}.json")
+    def state_path(self, wid):
+        """The widget's state file, named by its launch (as the launcher told the widget)."""
+        return os.path.join(RUNTIME, f"{self.widgets[wid]['_widget_unit'] or wid}.json")
 
     @staticmethod
     def variant(key, value):
