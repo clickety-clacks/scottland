@@ -22,6 +22,8 @@ steps = int(sys.argv[2])
 rng = random.Random(seed)
 trace = []
 passes = 0
+artifacts = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland-model-artifacts"
+artifacts.mkdir(exist_ok=True)
 
 
 class Ipc:
@@ -100,7 +102,7 @@ def shown(app_id):
     return next(v for v in ipc.call("scottland/layout-state")["views"] if v["id"] == represented), link
 
 
-def drag(app_id, x, y=None, cancel=False, finger=False):
+def drag(app_id, x, y=None, cancel=False, finger=False, audit_held=False):
     view, _ = shown(app_id)
     f = view["frame"]
     sx, sy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
@@ -119,6 +121,12 @@ def drag(app_id, x, y=None, cancel=False, finger=False):
         ipc.call("stipc/touch" if finger else "stipc/move_cursor", {**point, **({"finger": 0} if finger else {})})
         time.sleep(0.025)
     time.sleep(0.4)
+    if audit_held:
+        state = ipc.call("scottland/desktop-model")
+        check("drag origin and morph are in the desktop snapshot",
+              state["drag"]["started"] and state["drag"]["window"] == view["id"]
+              and state["drag"]["morph"]["window"] == view["id"])
+        audit("held drag morph")
     if cancel:
         key("KEY_ESC", True)
         key("KEY_ESC", False)
@@ -182,7 +190,7 @@ try:
     width = ipc.call("window-rules/list-outputs")[0]["geometry"]["width"]
     a = open_app()
     audit("window mapped")
-    drag(a, width - 6)
+    drag(a, width - 6, audit_held=True)
     audit("docked")
     check("docking used real pointer input", shown(a)[1] is not None)
     properties = subprocess.check_output(["busctl", "--user", "get-property", "org.scottland.Widgets",
@@ -206,6 +214,7 @@ try:
     combo("KEY_LEFTMETA", "KEY_M")
     time.sleep(0.6)
     audit("cards expanded, including the one started collapsed")
+    subprocess.run(["grim", str(artifacts / f"seed-{seed}-expanded.png")], check=True)
 
     # A widget moved, resized by Super+M, then re-grabbed: Esc restores the original rail
     # anchor, and a later resize must not jump back to the cancelled drop point.
@@ -327,7 +336,7 @@ try:
             combo("KEY_LEFTALT", "KEY_F4")
             time.sleep(0.7)
         audit(f"seed {seed} step {step} {op}")
-    subprocess.run(["grim", str(Path(work.name) / "final.png")], check=True)
+    subprocess.run(["grim", str(artifacts / f"seed-{seed}-final.png")], check=True)
     check("headless scene renders after randomized inputs")
     print(f"{passes} checks passed; seed={seed}, steps={len(sequence)}", flush=True)
 except Exception:
