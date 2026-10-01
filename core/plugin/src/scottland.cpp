@@ -1350,25 +1350,36 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    // Super+M (WG16): the focused widget, or the one under the pointer, toggles between its normal
-    // form and just its icon. The widget learns it from the widget service (Minimized, and the
-    // state file); the default card shrinks to its icon.
+    // Super+M (WG16): all widgets collapse to just their icons, or (if they all are) expand back.
+    // Widgets learn it from the widget service (Minimized, and the state file); the default card
+    // shrinks to its icon.
     wf::option_wrapper_t<wf::keybinding_t> minimize_key{"scottland/minimize_widget"};
     wf::key_callback on_minimize_key = [=] (const wf::keybinding_t&)
     {
-        auto pick = [&] (wayfire_view view) { return link_of_widget(wf::toplevel_cast(view)); };
-        auto link = pick(wf::get_core().seat->get_active_view());
-        if (!link)
+        bool all_minimized = true, any = false;
+        for (auto& [id, link] : widget_links)
         {
-            link = pick(wf::get_core().get_cursor_focus_view());
+            if (!link.preview)
+            {
+                any = true;
+                all_minimized &= link.minimized;
+            }
         }
 
-        if (!link || link->preview)
+        if (!any)
         {
-            return false;  // not a widget: the key goes on to the app
+            return false;  // no widgets: the key goes on to the app
         }
 
-        link->minimized = !link->minimized;
+        for (auto& [id, link] : widget_links)
+        {
+            if (!link.preview)
+            {
+                link.minimized = !all_minimized;
+            }
+        }
+
+        LOGI("scottland: Super+M: all widgets ", all_minimized ? "expanded" : "collapsed");
         announce_widgets();
         return true;
     };
@@ -1963,6 +1974,77 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     static constexpr int WIDGET_INSET = (int)scottland::SWOLLEN + 3;  // room for the halo at its widest
+
+    /** $XDG_RUNTIME_DIR/scottland/<display><suffix>: this session's runtime files. */
+    static std::string runtime_file(const std::string& suffix)
+    {
+        const char *runtime = getenv("XDG_RUNTIME_DIR");
+        const char *display = getenv("WAYLAND_DISPLAY");
+        return std::string(runtime ? runtime : "/tmp") + "/scottland/" + (display ? display : "wayland") + suffix;
+    }
+
+    /** After a reload: take over the widgets the previous plugin handed over. */
+    void take_handover()
+    {
+        auto path = runtime_file(".widget-handover.json");
+        std::ifstream in(path);
+        if (!in)
+        {
+            return;
+        }
+
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        std::remove(path.c_str());
+        wf::json_t entries;
+        if (wf::json_t::parse_string(text, entries) || !entries.is_array())
+        {
+            LOGE("scottland: unreadable widget handover");
+            return;
+        }
+
+        for (size_t i = 0; i < entries.size(); i++)
+        {
+            wf::json_t entry = entries[i];
+            auto window = view_by_id((uint64_t)entry["window"].as_int64());
+            auto widget = view_by_id((uint64_t)entry["widget"].as_int64());
+            if (!window || !window->is_mapped())
+            {
+                continue;
+            }
+
+            if (!widget || !widget->is_mapped())
+            {
+                wf::scene::set_node_enabled(window->get_root_node(), true);  // the handed-over disable
+                continue;
+            }
+
+            widget_link_t link;
+            link.window_id = window->get_id();
+            link.window = window->weak_from_this();
+            link.widget = widget->weak_from_this();
+            link.hidden = true;  // the previous plugin's disable, now ours
+            link.output = widget->get_output();
+            link.rail   = entry["rail"].as_string();
+            link.drop   = {entry["x"].as_double(), entry["y"].as_double()};
+            link.minimized   = entry["minimized"].as_bool();
+            link.launched_at = now_msec();
+            auto process  = std::make_shared<widget_process_t>();
+            process->pid  = (pid_t)entry["pid"].as_int64();
+            process->unit = entry["unit"].as_string();
+            if ((process->pid > 1) && (in_scope(process->pid, process->unit) || process->unit.empty()))
+            {
+                process->pidfd = pidfd_open(process->pid, 0);
+            }
+
+            link.launcher = process;
+            widget_links[link.window_id] = std::move(link);
+            keep_above(widget);
+            set_scale(widget, 1.0);
+        }
+
+        announce_widgets();
+    }
 
     /** Widgets float above all ordinary windows (WG4), in the always-above layer Wayfire's
      *  wm-actions keeps. */
@@ -2885,6 +2967,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 drag_origin = last_drop;
                 drag_origin.view = view;  // the window being dragged now (maybe the other form)
             }
+
+            LOGI("scottland: drag start: window ", drag->view->get_id(), continued ? " continues the move" :
+                " starts a move", " (", (int32_t)(now_msec() - last_drop_at), " ms after the last drop, of window ",
+                last_drop.became, "); Esc goes to ", drag_origin.position.x, ",", drag_origin.position.y);
             drag_cancelled = false;
             auto running = transitions.find(drag->view->get_id());
             drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
@@ -3481,6 +3567,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             last_drop    = origin_for(main);
             last_drop_at = now_msec();
             last_drop.became = main->get_id();
+            LOGI("scottland: drop: window ", main->get_id(), " (the move began at ", last_drop.position.x, ",",
+                last_drop.position.y, ")");
         }
 
         drag_origin = {};
@@ -3869,6 +3957,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
         ipc_repo->register_method("scottland/attention", attention_method);
+        take_handover();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
         wf::get_core().connect(&on_focus_request);
         start_activation();
@@ -3931,18 +4020,47 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().bindings->rem_binding(&on_minimize_key);
         on_focus_request.disconnect();
         on_activate.disconnect();
-        // Unloading (or reloading) forgets the links: give every app its window back.
+        // Unloading gives every app its window back. A reload (scottland-reload marks it) hands the
+        // widgets over instead: they stay, their windows stay hidden, and the new plugin takes
+        // the links from a file (WG5).
         end_morph();
         widget_watchdog.disconnect();
+        bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
+        wf::json_t handover = wf::json_t::array();
         for (auto& [id, link] : widget_links)
         {
-            set_hidden(link, false);
+            auto widget = wf::toplevel_cast(link.widget.lock());
+            if (reloading && !link.preview && link.hidden && widget && widget->is_mapped())
+            {
+                wf::json_t entry;
+                entry["window"] = (int64_t)id;
+                entry["widget"] = (int64_t)widget->get_id();
+                entry["unit"]   = link.launcher ? link.launcher->unit : "";
+                entry["pid"]    = (int64_t)(link.launcher ? link.launcher->pid : 0);
+                entry["rail"]   = link.rail;
+                entry["x"] = link.drop.x;
+                entry["y"] = link.drop.y;
+                entry["minimized"] = link.minimized;
+                handover.append(entry);
+                set_widget_hidden(link, false);
+                continue;  // the window keeps its disable: the next plugin holds it
+            }
 
-            close_view_or_process(wf::toplevel_cast(link.widget.lock()), link.launcher);
+            set_hidden(link, false);
+            close_view_or_process(widget, link.launcher);
+        }
+
+        if (handover.size() > 0)
+        {
+            std::ofstream out(runtime_file(".widget-handover.json"));
+            out << handover.serialize();
         }
 
         widget_links.clear();
-        announce_widgets();  // the widget service drops its objects (a reloaded plugin re-announces)
+        if (handover.size() == 0)
+        {
+            announce_widgets();  // the widget service drops its objects
+        }
         end_due_processes(true);
         ending_timer.disconnect();
         on_motion_abs.disconnect();

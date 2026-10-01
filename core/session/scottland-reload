@@ -43,6 +43,10 @@ echo "$fresh" >"$runtime/plugins/current"
 # copy), register any new settings, then swap the plugin. The plugin list is also set over IPC:
 # values set over IPC (e.g. by the settings app) take precedence over the file.
 "$hooks/libexec/scottland-build-config" >/dev/null
+# Widgets stay through a reload: the outgoing plugin sees this mark and hands them over.
+reloading="$runtime/${WAYLAND_DISPLAY:-wayland}.reloading"
+touch "$reloading"
+trap 'rm -f "$reloading"' EXIT
 python3 - "$WAYFIRE_SOCKET" "$fresh" "$runtime/wayfire.ini" <<'PY'
 import json, re, socket, struct, sys, time
 sock = socket.socket(socket.AF_UNIX); sock.connect(sys.argv[1])
@@ -63,6 +67,7 @@ reply = call("wayfire/set-config-options", {"core/plugins": " ".join(plugins)})
 if reply.get("error"): sys.exit(f"scottland-reload: {reply['error']}")
 time.sleep(1)
 PY
+rm -f "$reloading"
 
 # Old copies are no longer loaded.
 for old in "$runtime"/plugins/libscottland-*.so; do

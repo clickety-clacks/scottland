@@ -487,7 +487,7 @@ print(v[0]['id'] if v else '')" $t)
 done
 sleep 2
 
-# WG16: Super+M toggles the focused widget between its card and just its icon.
+# WG16: Super+M collapses all widgets to their icons, and expands them back.
 (tests/headless.sh run foot -T mini-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field mini-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -498,7 +498,7 @@ wide=$(card_width)
 h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key":"KEY_M","state":true}'
 h stipc/feed_key '{"key":"KEY_M","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
 sleep 1.5
-check "WG16 Super+M minimizes the widget to its icon (a square card)" \
+check "WG16 Super+M collapses widgets to their icons (a square card)" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['minimized'] for w in json.load(sys.stdin)['widgets'] if w['title']=='mini-app'][0])")/$(card_width)" = "True/96" ]
 check "WG16 ...against its screen edge" \
   python3 -c "
@@ -669,6 +669,26 @@ check "WG5 (reload) the app's window is back, not widgetized" \
   [ "$(view_field widget-app5 "not v['hidden'] and not v['widgetized']")" = True ]
 h window-rules/close-view "{\"id\": $(view_field widget-app5 "v['id']")}"
 sleep 1
+
+# WG5: a reload (scottland-reload marks it) keeps widgets: they're handed to the new plugin.
+(tests/headless.sh run foot -T carry-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field carry-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 2.5
+carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
+mark=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.reloading
+touch "$mark"
+fresh=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/libscottland-test-$(date +%s%N).so
+cp build/libscottland.so "$fresh"
+plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
+h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': ' '.join(sys.argv[2] if p == 'scottland' or '/libscottland-' in p else p for p in sys.argv[1].split())}))" "$plugins" "$fresh")"
+sleep 2
+rm -f "$mark"
+check "WG5 (marked reload) the widget stays, linked, its window still hidden" \
+  [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")/$(view_field carry-app "v['hidden'] and v['widgetized']")" = "$carry_before/True" ]
+h window-rules/close-view "{\"id\": $(view_field carry-app "v['id']")}"
+sleep 2
 
 # WG5: the app's window closing takes the widget with it.
 (tests/headless.sh run foot -T widget-app2 -W 40x10 sh -c 'sleep 5; exit 0' >/dev/null 2>&1 &)

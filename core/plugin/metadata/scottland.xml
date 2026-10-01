@@ -50,8 +50,8 @@
 			<default>#81A1C1FF</default>
 		</option>
 		<option name="minimize_widget" type="key">
-			<_short>Minimize a widget</_short>
-			<_long>Toggles the focused widget (or the one under the pointer) between its normal form and just its icon.</_long>
+			<_short>Collapse widgets</_short>
+			<_long>Collapses all widgets to just their icons, or, if they all are, expands them back.</_long>
 			<default>&lt;super&gt; KEY_M</default>
 		</option>
 		<option name="attention_color" type="color">
