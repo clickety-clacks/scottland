@@ -3045,6 +3045,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void cancel_drop(wayfire_toplevel_view view)
     {
         auto g = view->get_geometry();
+        LOGI("scottland: Esc: window ", view->get_id(), " (", view->get_title(), ") back from ", g.x, ",", g.y,
+            " to ", drag_origin.x, ",", drag_origin.y);
         double dx = g.x - drag_origin.x, dy = g.y - drag_origin.y;
         view->move(drag_origin.x, drag_origin.y);
         if (morph && (morph->dragged.lock().get() == view.get()) && morph->toward)
