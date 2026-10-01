@@ -25,6 +25,8 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG18): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets.
+- [docs/windowing-keys.md](docs/windowing-keys.md): Alt window hints and cycles (WK1–WK13),
+  remembered zones and contention-aware placement (WP1–WP6).
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
 

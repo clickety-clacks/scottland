@@ -525,7 +525,7 @@ print(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))")"
 h stipc/move_cursor "{\"x\":$ox,\"y\":$oy}"; sleep 0.3
 h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'
 sleep 1.5
-check "WG17 clicking a card opens its window in the middle of the screen (and the card goes)" \
+check "WG17 clicking a card restores its remembered center (and the card goes)" \
   python3 -c "
 import json,subprocess,sys
 vs=json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views']

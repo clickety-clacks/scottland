@@ -53,6 +53,11 @@ extern "C" {
 #include <xkbcommon/xkbcommon.h>
 
 #include "frame.hpp"
+#include "placement.hpp"
+#include "declutter.hpp"
+#include "alt-mode.hpp"
+#include "hint-overlay.hpp"
+#include <wayfire/scene-operations.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -803,6 +808,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
 
+    #include "windowing-bridge.hpp"
+
     void load_color_scheme()
     {
         scottland::palette.light = std::string(color_scheme) == "light";
@@ -1218,6 +1225,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             announced_scale.erase(toplevel->get_id());
+            if (!is_widget(toplevel)) window_positions.erase(toplevel->get_id());
+            pending_rail_placement.erase(toplevel->get_id());
             if (auto frame = frame_of(toplevel, false))
             {
                 forget_owner(frame);
@@ -1945,6 +1954,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 LOGE("scottland: no widget window appeared for window ", link.window_id, "; restoring it");
                 set_hidden(link, false);
+                pending_rail_placement.erase(link.window_id);
                 end_process(link.launcher, 0);  // a late widget would show up unlinked
                 it = widget_links.erase(it);
                 announce_widgets();
@@ -2002,7 +2012,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             keep_above(view);
-            place_widget(view, output, link.drop);
+            if (!place_cycled_widget(view, link.window_id, link.rail)) place_widget(view, output, link.drop);
             set_scale(view, 1.0);
             show_attention(link.window_id);  // asked before its widget appeared
             return true;
@@ -2330,6 +2340,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     /** Back to the window, at `at` (output coords); the widget goes (it isn't closed: WG5). */
     void restore_window(widget_link_t& link, std::optional<wf::pointf_t> at, bool grow = false)
     {
+        pending_rail_placement.erase(link.window_id);
         auto window = wf::toplevel_cast(link.window.lock());
         auto widget = wf::toplevel_cast(link.widget.lock());
         link.dismissing = true;
@@ -2539,7 +2550,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             from = {g.x + g.width / 2.0, g.y + g.height / 2.0};
         }
 
+        if (widget) remember_window(widget);
+        if (window) middle = zone_spot(window, scottland::windowing::zone::center, {from.x, from.y});
         restore_window(link, middle, true);
+        if (window) remember_window(window);
         if (window)
         {
             start_glide(window, from.x - middle.x, from.y - middle.y);
@@ -2607,11 +2621,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (output && !view->pending_fullscreen() && (placement_of(view).zone != zone_t::center))
         {
             auto g    = view->get_geometry();
-            auto area = output->workarea->get_workarea();
             wf::pointf_t from{g.x + g.width / 2.0, g.y + g.height / 2.0};
-            wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
+            remember_window(view);
+            wf::pointf_t middle = zone_spot(view, scottland::windowing::zone::center, {from.x, from.y});
             view->move(std::round(middle.x - g.width / 2.0), std::round(middle.y - g.height / 2.0));
             start_glide(view, from.x - middle.x, from.y - middle.y);
+            remember_window(view);
             reply["presented"] = "moved";
         }
 
@@ -3504,6 +3519,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        window_entries();
+        remember_window(drag->view);
         drag_started = true;
         if (held_above.lock().get() == drag->view.get())
         {
@@ -3923,6 +3940,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        away = away && !window_keys.active;
         auto g = widget->get_geometry();
         double width = widget->get_output()->get_relative_geometry().width;
         double margin = frame_of(widget, false) ? frame_of(widget, false)->margin() : 0;
@@ -3998,6 +4016,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_cancel_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
         if ((ev->event->keycode == KEY_ESC) && (ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED) &&
             drag->view && !drag_cancelled)
         {
@@ -4394,6 +4413,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto link = was_widget ? link_of_widget(main) : nullptr;
             uint64_t app_window = link ? link->window_id : 0;
             handle_widget_drop(main, widget_shaped, released_at);
+            auto dropped = represented_view(was_widget ? app_window : main->get_id());
+            if (dropped) remember_window(dropped);
             if (was_widget && !link_of_window(view_by_id(app_window)))
             {
                 last_drop.became = app_window;  // restored: the window stands for it
@@ -4432,6 +4453,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         apply(ev->view);
+        hint_registration.run_once([=] () { window_entries(); });
         idle_neighbors.run_once([=] () { update_focus(); });
     };
 
@@ -4457,6 +4479,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 keep_in_place(*link, view);
             }
+
+            // Widget placement during map is pending until its transaction commits. Save the
+            // committed center, not the provisional center reported in view-mapped.
+            if (auto link = link_of_widget(view); link && !link->preview && !link->dismissing &&
+                drag->view != view && view->get_id() != dragged_widget)
+                remember_window(view);
         }
 
         apply(ev->view);
@@ -4622,6 +4650,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_remap_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
         auto seat     = wf::get_core().get_current_seat();
         auto keyboard = wlr_seat_get_keyboard(seat);
         if (!keyboard || !keyboard->keymap)
@@ -4684,6 +4713,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
         if (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED)
         {
             return;
@@ -4707,9 +4737,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         init_output_tracking();
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
-        wf::get_core().connect(&on_key);
         wf::get_core().connect(&on_axis);
-        wf::get_core().connect(&on_remap_key);
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
@@ -4717,7 +4745,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_unmapped);
         wf::get_core().connect(&on_motion);
         wf::get_core().connect(&on_swipe_begin);
-        wf::get_core().connect(&on_cancel_key);
         wf::get_core().connect(&on_swipe_update);
         wf::get_core().connect(&on_swipe_end);
         wf::get_core().connect(&on_touchpad_button);
@@ -4737,6 +4764,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
         take_handover();
+        init_window_keys();
+        wf::get_core().connect(&on_cancel_key);
+        wf::get_core().connect(&on_key);
+        wf::get_core().connect(&on_remap_key);
         // Loaded (a reload) while a fullscreen window is in front: Wayfire won't say so again.
         if (auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
             active && active->get_output() && active->pending_fullscreen())
@@ -4771,6 +4802,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void fini() override
     {
+        fini_window_keys();
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
