@@ -8,6 +8,7 @@
 #   tests/headless.sh start [--omarchy] [--widgets]   start; --omarchy adds the Hyprland shim and
 #                                         Lua host; --widgets adds the widget service, on a private
 #                                         D-Bus session bus (the live session owns the real one)
+#                                         (SCOTTLAND_WIDGET_PATH, if set, passes through: test widgets)
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
@@ -42,7 +43,7 @@ case ${1:-} in
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done

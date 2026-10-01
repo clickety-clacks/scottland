@@ -22,6 +22,7 @@
 #include <wayfire/util/log.hpp>
 #include <wayfire/util/duration.hpp>
 #include <wayfire/util.hpp>
+#include <wayfire/config.h>
 
 extern "C" {
 #include <wlr/types/wlr_pointer.h>
@@ -31,6 +32,14 @@ extern "C" {
 #include <wlr/backend/headless.h>
 #include <wlr/backend/multi.h>
 #include <wlr/interfaces/wlr_pointer.h>
+#if WF_HAS_XWAYLAND
+#include <pthread.h>  // as Wayfire does: xwayland.h uses C++ keywords as names
+#define class class_t
+#define static
+#include <wlr/xwayland.h>
+#undef static
+#undef class
+#endif
 }
 
 #include <libinput.h>
@@ -48,6 +57,10 @@ extern "C" {
 #include <regex>
 #include <optional>
 #include <signal.h>
+extern "C" {
+#include <sys/pidfd.h>  // glibc declares it without C linkage for C++
+}
+#include <unistd.h>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -1096,13 +1109,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 pid_t launcher = link->launcher;
                 widget_links.erase(uint64_t(link->window_id));
                 announce_widgets();
-                if (widget)
-                {
-                    close_view_or_process(widget, launcher);
-                } else if (launcher > 1)
-                {
-                    kill(launcher, SIGTERM);
-                }
+                close_view_or_process(widget, launcher);
             } else if (auto link = link_of_widget(toplevel))
             {
                 if (link->dismissing)
@@ -1181,10 +1188,26 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<true> widget_watchdog;
     static constexpr uint32_t WIDGET_ADOPT_MS = 8000;  // no widget window by then: give up, restore
 
+    /** The app's process. X11 windows all belong to the XWayland server's client, so theirs is the
+     *  _NET_WM_PID they declare (X11 apps can already see each other; no stronger check exists). */
     static pid_t view_pid(wayfire_view view)
     {
         pid_t pid = 0;
-        if (view && view->get_client())
+        if (!view)
+        {
+            return pid;
+        }
+
+#if WF_HAS_XWAYLAND
+        if (auto surface = view->get_wlr_surface())
+        {
+            if (auto xsurface = wlr_xwayland_surface_try_from_wlr_surface(surface))
+            {
+                return xsurface->pid;
+            }
+        }
+#endif
+        if (view->get_client())
         {
             wl_client_get_credentials(view->get_client(), &pid, nullptr, nullptr);
         }
@@ -1256,26 +1279,75 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    /** Close a window; a widget that won't go is ended. */
+    /** Widget processes asked to go, ended if they're still running at the deadline. Held as
+     *  pidfds, so a recycled process id is never signalled. */
+    struct ending_t
+    {
+        int pidfd;
+        uint32_t deadline;
+    };
+    std::vector<ending_t> endings;
+    wf::wl_timer<true> ending_timer;
+
+    /** End widget process `pid` after `delay_ms` (0: now), unless it has gone by then. */
+    void end_process(pid_t pid, uint32_t delay_ms)
+    {
+        int fd = pid > 1 ? pidfd_open(pid, 0) : -1;
+        if (fd < 0)
+        {
+            return;  // already gone
+        }
+
+        if (delay_ms == 0)
+        {
+            pidfd_send_signal(fd, SIGTERM, nullptr, 0);
+            ::close(fd);
+            return;
+        }
+
+        endings.push_back({fd, now_msec() + delay_ms});
+        if (!ending_timer.is_connected())
+        {
+            ending_timer.set_timeout(250, [=] () { return end_due_processes(false); });
+        }
+    }
+
+    /** Signal the processes past their deadline (all of them with `all`); true while some wait. */
+    bool end_due_processes(bool all)
+    {
+        auto now = now_msec();
+        endings.erase(std::remove_if(endings.begin(), endings.end(), [&] (const ending_t& e)
+        {
+            if (!all && ((int32_t)(e.deadline - now) > 0))
+            {
+                return false;
+            }
+
+            pidfd_send_signal(e.pidfd, SIGTERM, nullptr, 0);  // fails harmlessly if it exited
+            ::close(e.pidfd);
+            return true;
+        }), endings.end());
+        return !endings.empty();
+    }
+
+    /** Close a widget's window; one that won't go is ended. A widget that never showed a window
+     *  (still launching) is ended now. */
     void close_view_or_process(wayfire_view view, pid_t pid)
     {
         if (view)
         {
             view->close();
-        }
-
-        if (pid > 1)
+            end_process(pid, 3000);  // a moment to close on its own first
+        } else
         {
-            // Give it a moment to close on its own (it may want to save), then end it.
-            auto timer = std::make_shared<wf::wl_timer<false>>();
-            timer->set_timeout(3000, [timer, pid] ()
-            {
-                if (kill(pid, 0) == 0)
-                {
-                    kill(pid, SIGTERM);
-                }
-            });
+            end_process(pid, 0);
         }
+    }
+
+    static bool output_alive(wf::output_t *output)
+    {
+        auto outputs = wf::get_core().output_layout->get_outputs();
+        return output && (std::find(outputs.begin(), outputs.end(), output) != outputs.end());
     }
 
     std::string widget_launcher()
@@ -1358,6 +1430,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     set_hidden(window, false);
                 }
 
+                end_process(link.launcher, 0);  // a late widget would show up unlinked
                 it = widget_links.erase(it);
                 announce_widgets();
                 continue;
@@ -1382,8 +1455,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             link.widget = view->weak_from_this();
-            auto output = link.output && wf::get_core().output_layout->find_output(link.output->handle) ?
-                link.output : view->get_output();
+            auto output = output_alive(link.output) ? link.output : view->get_output();
             if (output && (view->get_output() != output))
             {
                 wf::move_view_to_output(view, output, false);
@@ -1398,13 +1470,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return false;
     }
 
+    static constexpr int WIDGET_INSET = (int)scottland::SWOLLEN + 3;  // room for the halo at its widest
+
     /** Center the widget on `at`, kept wholly on screen, halo included. */
     void place_widget(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t at)
     {
         auto geometry = view->get_geometry();
         auto area = output ? output->workarea->get_workarea() : geometry;
-        auto frame = frame_of(view, false);
-        int inset = frame ? (int)std::ceil(frame->thickness() + 2) : 0;
+        int inset = WIDGET_INSET;
         area.x += inset;
         area.y += inset;
         area.width  -= 2 * inset;
@@ -1424,6 +1497,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.dismissing = true;
         if (window)
         {
+            // Dropped on another screen: the window goes there.
+            auto to = widget ? widget->get_output() : nullptr;
+            if (at && to && (window->get_output() != to))
+            {
+                wf::move_view_to_output(window, to, false);
+            }
+
             if (at)
             {
                 auto g = window->get_geometry();
@@ -1436,14 +1516,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         uint64_t id = link.window_id;
         pid_t launcher = link.launcher;
-        if (widget)
-        {
-            close_view_or_process(widget, launcher);
-        } else if (launcher > 1)
-        {
-            kill(launcher, SIGTERM);
-        }
-
+        close_view_or_process(widget, launcher);
         widget_links.erase(id);
         announce_widgets();
     }
@@ -1456,11 +1529,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         pid_t launcher = link.launcher;
         widget_links.erase(uint64_t(link.window_id));
         announce_widgets();
-        if (widget)
-        {
-            close_view_or_process(widget, launcher);
-        }
-
+        close_view_or_process(widget, launcher);
         if (window)
         {
             // Shown again first: if the app asks before closing (unsaved work), the question is visible.
@@ -1478,18 +1547,36 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto geometry = view->get_geometry();
+        auto output   = view->get_output();
+        double width  = output->get_relative_geometry().width;
         wf::pointf_t center{geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
-        bool on_rail = place_at(center.x, view->get_output()->get_relative_geometry().width).zone == zone_t::widget;
+        auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
         if (auto link = link_of_widget(view))
         {
-            if (!on_rail)
+            // A widget is wider than the rail and kept on screen, so its center can sit outside
+            // the rail: it stays a widget while any of it (halo included) is on a rail, and
+            // leaves when none is.
+            double x1 = geometry.x - WIDGET_INSET, x2 = geometry.x + geometry.width + WIDGET_INSET;
+            bool left  = (x1 < width / 2) && in_rail(x1);
+            bool right = (x2 > width / 2) && in_rail(x2);
+            if (!left && !right)
             {
                 restore_window(*link, center);
-            } else
-            {
-                link->drop = center;
+                return;
             }
-        } else if (on_rail)
+
+            place_widget(view, output, center);
+            auto rail = left ? "left" : "right";
+            if ((link->rail != rail) || (link->output != output))
+            {
+                link->rail   = rail;
+                link->output = output;
+                announce_widgets();
+            }
+
+            auto placed = view->get_geometry();
+            link->drop = {placed.x + placed.width / 2.0, placed.y + placed.height / 2.0};
+        } else if (in_rail(center.x))
         {
             widgetize(view);
         }
@@ -2281,7 +2368,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // the zone says the other size. Then keep the size shown, and nudge the window sideways
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
-        if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen())
+        if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen() && !is_widget(main))
         {
             auto geometry = main->get_geometry();
             double screen = main->get_output()->get_relative_geometry().width;
@@ -2313,7 +2400,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (dragged.view && dragged.view->is_mapped())
             {
-                set_scale(dragged.view, placement_of(dragged.view).scale);
+                set_scale(dragged.view, is_widget(dragged.view) ? 1.0 : placement_of(dragged.view).scale);
             }
         }
 
@@ -2610,6 +2697,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
+        announce_widgets();  // a widget service that outlived a reload catches up
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
         drag->connect(&on_drag_output);
@@ -2669,13 +2757,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 set_hidden(window, false);
             }
 
-            if (auto widget = wf::toplevel_cast(link.widget.lock()))
-            {
-                widget->close();
-            }
+            close_view_or_process(wf::toplevel_cast(link.widget.lock()), link.launcher);
         }
 
         widget_links.clear();
+        announce_widgets();  // the widget service drops its objects (a reloaded plugin re-announces)
+        end_due_processes(true);
+        ending_timer.disconnect();
         on_motion_abs.disconnect();
         on_button.disconnect();
         on_drag_output.disconnect();

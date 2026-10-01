@@ -1,9 +1,25 @@
 #!/bin/sh
 # The Omarchy theme's accent color (the same color as Hyprland's active window border), for the
-# focused window's halo. With --watch-paths: where a theme switch writes.
+# focused window's halo. With --watch-paths: where a theme switch writes. With --palette: the
+# theme's colors as Scottland's palette (JSON), for widgets.
 current="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current"
 if [ "${1:-}" = --watch-paths ]; then
   echo "$current"
+  exit 0
+fi
+if [ "${1:-}" = --palette ]; then
+  colors="$current/theme/colors.toml"
+  pick() { sed -n "s/^$1 *= *\"\(#[0-9a-fA-F]\{6\}\)\".*/\1/p" "$colors" 2>/dev/null | head -1; }
+  bg=$(pick lighter_background); [ -n "$bg" ] || bg=$(pick background)
+  printf '{'
+  sep=
+  for pair in "background=$bg" "foreground=$(pick foreground)" "muted=$(pick light_foreground)" \
+              "accent=$(pick accent)" "alert=$(pick red)"; do
+    [ -n "${pair#*=}" ] || continue
+    printf '%s"%s": "%s"' "$sep" "${pair%%=*}" "${pair#*=}"
+    sep=', '
+  done
+  printf '}\n'
   exit 0
 fi
 sed -n 's/^accent *= *"\(#[0-9a-fA-F]\{6\}\)".*/\1/p' "$current/theme/colors.toml" 2>/dev/null | head -1

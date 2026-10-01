@@ -14,6 +14,8 @@ host=${1:?usage: tests/deploy.sh HOST [--reload]}
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 rsync -a --delete --exclude build "$repo/" "$host:Projects/scottland/"
 ssh "$host" 'set -e
+  # Build scratch files under home: a shared machine's /tmp can be full of other users' files.
+  export TMPDIR="$HOME/.cache/scottland-build-tmp"; mkdir -p "$TMPDIR"
   cd ~/Projects/scottland
   make plugin >/dev/null
   make dev-install >/dev/null

@@ -14,7 +14,8 @@ Choosing a widget, first match wins:
   3. installed widget packages         widget.toml: apps = ["<app-id regex>", ...]
   4. the default card
 Widget packages (a directory with widget.toml) are found, first wins for an id, in
-~/.local/share/scottland/widgets/, /usr/share/scottland/widgets/ and Scottland's built-ins.
+$SCOTTLAND_WIDGET_PATH (colon-separated, if set), ~/.local/share/scottland/widgets/,
+/usr/share/scottland/widgets/ and Scottland's built-ins.
 """
 import configparser
 import json
@@ -30,10 +31,15 @@ CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
 DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "share")
 DATA_DIRS = (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state"), "scottland")
-RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets")
+# Per session (display): two Scottland sessions number their windows independently.
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets",
+                       os.environ.get("WAYLAND_DISPLAY") or "wayland")
+PALETTE = os.path.join(os.path.dirname(os.path.dirname(RUNTIME)),
+                       (os.environ.get("WAYLAND_DISPLAY") or "wayland") + ".palette.json")
 HOOKS = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
 BUILTIN = [os.path.join(HOOKS, "widgets"), "/usr/lib/scottland/widgets"]
-PACKAGE_DIRS = [os.path.join(DATA_HOME, "scottland", "widgets"), "/usr/share/scottland/widgets", *BUILTIN]
+EXTRA = [d for d in os.environ.get("SCOTTLAND_WIDGET_PATH", "").split(":") if d]  # searched first
+PACKAGE_DIRS = [*EXTRA, os.path.join(DATA_HOME, "scottland", "widgets"), "/usr/share/scottland/widgets", *BUILTIN]
 
 
 def log(message):
@@ -90,7 +96,10 @@ def find_desktop(app_id):
         if entry.get("StartupWMClass", "").lower() == wanted and not by_wmclass:
             by_wmclass = (desktop_id, entry)
         exec_line = entry.get("Exec", "")
-        program = os.path.basename(shlex.split(exec_line)[0]) if exec_line.strip() else ""
+        try:
+            program = os.path.basename(shlex.split(exec_line)[0]) if exec_line.strip() else ""
+        except ValueError:  # a malformed entry elsewhere mustn't stop this one's widget
+            program = ""
         if program.lower() == wanted and not by_exec:
             by_exec = (desktop_id, entry)
         if site and site in exec_line.lower() and not by_site:
@@ -182,18 +191,22 @@ def main():
         "SCOTTLAND_WIDGET_NAME": entry.get("Name", ""),
         "SCOTTLAND_WIDGET_DESKTOP": desktop_id or "",
         "SCOTTLAND_WIDGET_BADGE": "0",
-        # Live title and badge for widgets that want them without D-Bus (the card does).
+        # Live title and badge for widgets that want them without D-Bus (the card does). The
+        # widget service is this file's only writer.
         "SCOTTLAND_WIDGET_STATE": os.path.join(RUNTIME, f"{widget_id}.json"),
+        # The desktop's colors (light/dark, accent, and the integration's palette), kept current.
+        "SCOTTLAND_PALETTE": PALETTE,
     })
 
-    # The widget service keeps this file current (title, badge, focus, data); seed it here with
-    # what only the launcher knows, the app's .desktop id (badges are announced per .desktop).
+    # Tell the widget service what only the launcher knows, the app's .desktop id (badges are
+    # announced per .desktop), in a file of the launcher's own.
     try:
-        with open(env["SCOTTLAND_WIDGET_STATE"] + ".tmp", "w") as state:
-            json.dump({"desktop": desktop_id or "", "title": values["t"], "badge": 0}, state)
-        os.replace(env["SCOTTLAND_WIDGET_STATE"] + ".tmp", env["SCOTTLAND_WIDGET_STATE"])
+        launch = os.path.join(RUNTIME, f"{widget_id}.launch.json")
+        with open(f"{launch}.{os.getpid()}", "w") as out:
+            json.dump({"desktop": desktop_id or ""}, out)
+        os.replace(f"{launch}.{os.getpid()}", launch)
     except OSError as error:
-        log(f"couldn't write widget state: {error}")
+        log(f"couldn't write {launch}: {error}")
 
     # Placeholders are filled per word after splitting, so values with spaces stay one argument.
     argv = [re.sub(r"%(.)", lambda m: values.get(m.group(1), m.group(0)), word)

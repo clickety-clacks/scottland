@@ -27,7 +27,9 @@ from gi.repository import Gio, GLib  # noqa: E402
 
 BUS_NAME = "org.scottland.Widgets"
 ROOT = "/org/scottland/Widgets"
-RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets")
+DISPLAY = os.environ.get("WAYLAND_DISPLAY") or "wayland"
+# Per session (display): two Scottland sessions number their windows independently.
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets", DISPLAY)
 STATE_LOG = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
                          "scottland", "widgets.log")
 
@@ -129,8 +131,10 @@ class Service:
         self.ipc = Ipc()
         self.widgets = {}        # id -> state dict
         self.registrations = {}  # id -> registration id
-        self.badges = {}         # .desktop id -> count (latest announced, even before a widget exists)
+        self.badges = {}         # .desktop id -> (count, visible), merged from partial updates
         self.scales = {}         # window id -> scale
+        self.window_pids = {}    # window id -> its app's process
+        self.announced = {}      # pid -> (widgetized, scale) last announced in StateChanged
         self.bus = None
         self.widget_info = Gio.DBusNodeInfo.new_for_xml(WIDGET_XML).interfaces[0]
         root = Gio.DBusNodeInfo.new_for_xml(ROOT_XML)
@@ -143,10 +147,14 @@ class Service:
         try:
             reply = self.ipc.call("scottland/widgets")
             layout = self.ipc.call("scottland/layout-state")
+            views = self.ipc.call("window-rules/list-views")
         except (OSError, ConnectionError, ValueError) as error:
             log(f"compositor unreachable: {error}")
             return
-        scales = {v["id"]: v.get("applied_scale", 1.0) for v in layout.get("views", [])}
+        if not isinstance(views, list):
+            views = []
+        self.window_pids = {v.get("id"): int(v.get("pid", 0) or 0) for v in views if isinstance(v, dict)}
+        self.scales = {v["id"]: v.get("applied_scale", 1.0) for v in layout.get("views", [])}
         seen = set()
         for entry in reply.get("widgets", []):
             wid = entry["id"]
@@ -164,12 +172,11 @@ class Service:
                 "_widget_pid": int(entry.get("widget_pid", 0)),
             }
             if state.get("_desktop") in self.badges:
-                updates["Badge"] = self.badges[state["_desktop"]]
+                updates["Badge"] = self.badge(state["_desktop"])
             self.update(wid, updates)
         for wid in [w for w in self.widgets if w not in seen]:
             self.remove_widget(wid)
-        for window, scale in scales.items():
-            self.note_scale(window, scale)
+        self.announce_changes()
 
     def new_widget(self, wid):
         state = {"Id": wid, "AppId": "", "Title": "", "Pid": 0, "Window": 0, "Rail": "", "Focused": False,
@@ -182,36 +189,35 @@ class Service:
         return state
 
     def learn_desktop(self, wid):
-        """The app's .desktop id, which the launcher writes into the state file (badges are
+        """The app's .desktop id, which the launcher leaves in <id>.launch.json (badges are
         announced per .desktop). The widget can show up here before the launcher has run, so
         this is retried until it's known."""
         state = self.widgets[wid]
         if state["_desktop"]:
             return
         try:
-            with open(self.state_path(wid)) as source:
+            with open(os.path.join(RUNTIME, f"{wid}.launch.json")) as source:
                 state["_desktop"] = json.load(source).get("desktop", "") or ""
         except (OSError, ValueError):
             return
         if state["_desktop"] in self.badges:
-            self.update(wid, {"Badge": self.badges[state["_desktop"]]})
+            self.update(wid, {"Badge": self.badge(state["_desktop"])})
 
     def remove_widget(self, wid):
         if wid in self.registrations:
             self.bus.unregister_object(self.registrations.pop(wid))
-        state = self.widgets.pop(wid)
-        try:
-            os.remove(self.state_path(wid))
-        except OSError:
-            pass
-        self.announce_state(state["Pid"], False, 1.0)
+        self.widgets.pop(wid)
+        for path in (self.state_path(wid), os.path.join(RUNTIME, f"{wid}.launch.json")):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def update(self, wid, updates):
         state = self.widgets[wid]
         changed = {k: v for k, v in updates.items() if state.get(k) != v}
         if not changed:
             return
-        newly = state["Pid"] == 0 and changed.get("Pid", 0) > 0
         state.update(changed)
         public = {k: v for k, v in changed.items() if not k.startswith("_")}
         if public and self.bus:
@@ -219,13 +225,11 @@ class Service:
                                  "PropertiesChanged", GLib.Variant("(sa{sv}as)", (
                                      "org.scottland.Widget",
                                      {k: self.variant(k, v) for k, v in public.items()}, [])))
-        if newly:
-            self.announce_state(state["Pid"], True, 1.0)
         self.write_state(wid)
 
     def write_state(self, wid):
+        """The state file's only writer (the launcher has its own file)."""
         state = self.widgets[wid]
-        self.learn_desktop(wid)  # never overwrite the launcher's .desktop id with a blank
         path = self.state_path(wid)
         try:
             with open(path + ".tmp", "w") as out:
@@ -245,33 +249,36 @@ class Service:
         return GLib.Variant(kind, value)
 
     def note_scale(self, window, scale):
-        if abs(self.scales.get(window, -1) - scale) < 0.005:
-            return
         self.scales[window] = scale
-        pid = self.window_pid(window)
-        if pid:
-            self.announce_state(pid, self.widgetized(pid), scale)
+        if window not in self.window_pids:
+            self.refresh()  # a window we haven't seen: learn whose it is
+        else:
+            self.announce_changes()
 
-    def window_pid(self, window):
-        for state in self.widgets.values():
-            if state["Window"] == window:
-                return state["Pid"]
-        try:
-            for view in self.ipc.call("window-rules/list-views"):
-                if view.get("id") == window:
-                    return int(view.get("pid", 0)) or None
-        except (OSError, ConnectionError, ValueError, TypeError):
-            pass
-        return None
+    def app_state(self, pid):
+        """(widgetized, scale) for the app owning process `pid` (or one of its helpers). Apps
+        with several windows: widgetized if any is, with that window's scale; else the scale of
+        its first window. GetState and StateChanged both answer from here, so they agree."""
+        owned = sorted(w for w, owner in self.window_pids.items() if owner > 1 and pid_descends_from(pid, owner))
+        widgetized = [s["Window"] for s in self.widgets.values() if s["Pid"] and pid_descends_from(pid, s["Pid"])]
+        window = (widgetized or owned or [None])[0]
+        return bool(widgetized), round(self.scales.get(window, 1.0), 3)
 
     def widgetized(self, pid):
-        """Is the app owning process `pid` (or any of its helpers) widgetized?"""
-        return any(state["Pid"] and pid_descends_from(pid, state["Pid"]) for state in self.widgets.values())
+        return self.app_state(pid)[0]
 
-    def announce_state(self, pid, widgetized, scale):
-        if self.bus and pid:
-            self.bus.emit_signal(None, ROOT, "org.scottland.Windows", "StateChanged",
-                                 GLib.Variant("(ubd)", (pid, widgetized, scale)))
+    def announce_changes(self):
+        """StateChanged for every app whose (widgetized, scale) differs from what it was last told."""
+        if not self.bus:
+            return
+        for pid in {p for p in self.window_pids.values() if p > 1} | set(self.announced):
+            state = self.app_state(pid)
+            if self.announced.get(pid, (False, 1.0)) != state:  # a new app at 100% has nothing to hear
+                self.bus.emit_signal(None, ROOT, "org.scottland.Windows", "StateChanged",
+                                     GLib.Variant("(ubd)", (pid, *state)))
+            self.announced[pid] = state
+        for pid in [p for p in self.announced if p not in self.window_pids.values()]:
+            del self.announced[pid]  # its windows are gone
 
     def watch_compositor(self):
         events = Ipc()
@@ -330,12 +337,7 @@ class Service:
             invocation.return_dbus_error("org.scottland.Widgets.Error", f"can't identify caller: {error.message}")
             return
         if iface == "org.scottland.Windows" and method == "GetState":
-            scale = next((self.scales.get(s["Window"], 1.0) for s in self.widgets.values()
-                          if s["Pid"] and pid_descends_from(pid, s["Pid"])), None)
-            if scale is None:
-                window = self.window_of_pid(pid)
-                scale = self.scales.get(window, 1.0) if window else 1.0
-            invocation.return_value(GLib.Variant("(bd)", (self.widgetized(pid), scale)))
+            invocation.return_value(GLib.Variant("(bd)", self.app_state(pid)))
             return
         (payload,) = params.unpack()
         try:
@@ -362,23 +364,23 @@ class Service:
                                      GLib.Variant("(uts)", (state["Pid"], state["Window"], payload)))
         invocation.return_value(None)
 
-    def window_of_pid(self, pid):
-        try:
-            for view in self.ipc.call("window-rules/list-views"):
-                if int(view.get("pid", 0)) > 1 and pid_descends_from(pid, int(view["pid"])):
-                    return view.get("id")
-        except (OSError, ConnectionError, ValueError, TypeError):
-            pass
-        return None
+    def badge(self, desktop):
+        count, visible = self.badges.get(desktop, (0, False))
+        return count if visible else 0
 
     def on_launcher_entry(self, _conn, _sender, _path, _iface, _signal, params):
+        """Updates carry only what changed (a progress update has no count): merge them."""
         app_uri, props = params.unpack()
         desktop = app_uri.removeprefix("application://").removesuffix(".desktop")
-        count = int(props.get("count", 0)) if props.get("count-visible", True) else 0
-        self.badges[desktop] = count
+        count, visible = self.badges.get(desktop, (0, False))
+        if "count" in props:
+            count = int(props["count"])
+        if "count-visible" in props:
+            visible = bool(props["count-visible"])
+        self.badges[desktop] = (count, visible)
         for wid, state in self.widgets.items():
             if state["_desktop"] == desktop:
-                self.update(wid, {"Badge": count})
+                self.update(wid, {"Badge": self.badge(desktop)})
 
     def on_bus(self, connection, _name):
         self.bus = connection
@@ -392,7 +394,7 @@ class Service:
 
     def run(self):
         # One service per session: the reload hook checks this before starting another.
-        pid_file = os.path.join(os.path.dirname(RUNTIME), (os.environ.get("WAYLAND_DISPLAY") or "wayland") + ".widget-bus.pid")
+        pid_file = os.path.join(os.path.dirname(os.path.dirname(RUNTIME)), DISPLAY + ".widget-bus.pid")
         with open(pid_file, "w") as out:
             out.write(f"{os.getpid()}\n")
         Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE, self.on_bus, None,

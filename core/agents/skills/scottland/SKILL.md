@@ -84,7 +84,7 @@ scottland-ctl option scottland/touch_scroll
 
 Dragging a window onto a screen-edge rail turns it into a **widget**: the window hides and a
 widget program stands in for it, at 100%, where it was dropped. Dragging the widget off the rail
-brings the window back; closing either closes both. Full design: Scottland's `docs/widgets.md`.
+(so no part of it is on the rail) brings the window back; closing either closes both. Full design: Scottland's `docs/widgets.md`.
 
 **Choose a widget for an app** in `~/.config/scottland/widgets.ini` (create it if missing):
 
@@ -109,8 +109,9 @@ exec = "quickshell -p %d/shell.qml"  # any program; %d = this folder
 A widget is any program (QML via Quickshell, GTK, a web view, a TUI...), fully interactive, with
 the user's normal access (files, network, D-Bus). It gets the window's identity in its
 environment: `SCOTTLAND_WIDGET_APP_ID`, `_TITLE`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID` (the app's
-process), `_WINDOW`, `_RAIL`, `_ID`, and `_STATE` (a JSON file kept current with title, badge,
-focus and data). Placeholders in `exec`: `%a` app-id, `%t` title, `%i` icon, `%p` pid, `%w`
+process), `_WINDOW`, `_RAIL`, `_ID`, `_STATE` (a JSON file kept current with title, badge,
+focus and data), and `SCOTTLAND_PALETTE` (a JSON file with the desktop's colors: `scheme`,
+`background`, `foreground`, `muted`, `accent`, `alert`, kept current). Placeholders in `exec`: `%a` app-id, `%t` title, `%i` icon, `%p` pid, `%w`
 window, `%r` rail, `%d` folder. Live properties and `Restore()`/`Close()`/`Focus()` are on D-Bus at
 `org.scottland.Widgets /org/scottland/widget/<id>` (interface `org.scottland.Widget`).
 

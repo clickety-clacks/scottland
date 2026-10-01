@@ -62,9 +62,17 @@ check("WG6 an unknown widget in widgets.ini falls back (and is logged)",
 widget, desktop, entry = pick("chrome-app.element.io__-Default")
 check("web apps find their .desktop entry (by site) and icon", desktop == "Element X" and entry.get("Icon") == "element-x")
 
+write("data/applications/broken.desktop", '[Desktop Entry]\nName=Broken\nExec=broken "unclosed\n')
+check("a malformed .desktop entry elsewhere doesn't stop the choice", pick("org.example.Other2")[0] == "card")
+os.makedirs(f"{root}/data/scottland/widgets/my-card", exist_ok=True)
+write("data/scottland/widgets/my-card/widget.toml", 'id = "card"\napps = []\nexec = "my-card"\n')
+check("WG7 a user's package with the same id wins over the built-in", launch.packages()["card"]["exec"] == "my-card")
+os.remove(f"{root}/data/scottland/widgets/my-card/widget.toml")
+
 # WG8: run main() up to exec and capture what it would run.
 captured = {}
-launch.os.execvpe = lambda prog, argv, env: captured.update(argv=argv, env=env)
+real_exec = launch.os.execvpe
+launch.os.execvpe = lambda prog, argv, env: captured.update(argv=argv, env=env, cwd=os.getcwd())
 sys.argv = ["scottland-widget-launch", json.dumps({"id": "42", "window": 42, "app_id": "org.example.Mail2",
                                                   "title": "Inbox (3) — Mail", "pid": 1234, "rail": "left"})]
 os.remove(f"{root}/config/scottland/widgets.ini")
@@ -76,6 +84,30 @@ env = captured.get("env", {})
 check("WG8 the launch environment carries the window's identity",
       env.get("SCOTTLAND_WIDGET_ID") == "42" and env.get("SCOTTLAND_WIDGET_PID") == "1234"
       and env.get("SCOTTLAND_WIDGET_RAIL") == "left" and env.get("SCOTTLAND_WIDGET_STATE", "").endswith("/42.json"))
+
+check("WG8 the widget runs in its package directory", captured.get("cwd") == f"{root}/data/scottland/widgets/mine")
+check("the launcher leaves the .desktop id for the widget service in its own file, not the state file",
+      os.path.exists(f"{launch.RUNTIME}/42.launch.json") and not os.path.exists(f"{launch.RUNTIME}/42.json"))
+
+# WG8, for real: every placeholder, exec'd in a child process.
+import subprocess
+write("data/scottland/widgets/mine/widget.toml", 'id = "mine"\napps = ["^org\\\\.example\\\\.Mail2$"]\n'
+      'exec = "python3 -c \'import json,os,sys; json.dump([sys.argv[1:], os.getcwd(), {k: v for k, v in os.environ.items() if k.startswith(\\"SCOTTLAND_\\")}], open(os.environ[\\"OUT\\"], \\"w\\"))\' %a %t %i %p %w %r %d %% %z"\n')
+write("data/applications/org.example.Mail2.desktop", "[Desktop Entry]\nName=Mail Two\nIcon=mail-two\nExec=mail2\n")
+out = f"{root}/exec-out.json"
+result = subprocess.run([sys.executable, path, json.dumps({"id": "7", "window": 7, "app_id": "org.example.Mail2",
+                         "title": "A b", "pid": 99, "rail": "right"})], env={**os.environ, "OUT": out, "WAYLAND_DISPLAY": "wl-test"})
+argv, cwd, wenv = json.load(open(out)) if os.path.exists(out) else ([], "", {})
+check("WG8 (exec) every placeholder fills, unknown ones stay",
+      argv == ["org.example.Mail2", "A b", "mail-two", "99", "7", "right", f"{root}/data/scottland/widgets/mine", "%", "%z"])
+check("WG8 (exec) runs in the package directory", cwd == f"{root}/data/scottland/widgets/mine")
+check("WG8 (exec) the whole launch environment",
+      wenv.get("SCOTTLAND_WIDGET_APP_ID") == "org.example.Mail2" and wenv.get("SCOTTLAND_WIDGET_TITLE") == "A b"
+      and wenv.get("SCOTTLAND_WIDGET_ICON") == "mail-two" and wenv.get("SCOTTLAND_WIDGET_NAME") == "Mail Two"
+      and wenv.get("SCOTTLAND_WIDGET_DESKTOP") == "org.example.Mail2" and wenv.get("SCOTTLAND_WIDGET_WINDOW") == "7"
+      and wenv.get("SCOTTLAND_WIDGET_BADGE") == "0"
+      and wenv.get("SCOTTLAND_WIDGET_STATE") == f"{root}/runtime/scottland/widgets/wl-test/7.json"
+      and wenv.get("SCOTTLAND_PALETTE") == f"{root}/runtime/scottland/wl-test.palette.json")
 
 print("\nall launcher checks passed" if not fails else f"\n{fails} launcher check(s) failed")
 sys.exit(1 if fails else 0)

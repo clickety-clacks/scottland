@@ -15,7 +15,8 @@ shared_module('scottland', 'src/scottland.cpp',
   cpp_args: ['-DWLR_USE_UNSTABLE', '-DWAYFIRE_PLUGIN', '-fno-gnu-unique'],
   # Bind the plugin's own symbols to itself, so a rebuilt copy loaded next to an older one
   # (scottland-reload) runs its own code instead of the older copy's.
-  link_args: ['-Wl,-Bsymbolic'],
+  # -z now: a symbol that can't be resolved fails the plugin's load, not the session mid-use.
+  link_args: ['-Wl,-Bsymbolic', '-Wl,-z,now'],
   install: true,
   install_dir: wayfire.get_variable(pkgconfig: 'plugindir'))
 

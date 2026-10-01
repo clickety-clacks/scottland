@@ -9,6 +9,11 @@ The scheme comes from the desktop portal (org.freedesktop.appearance color-schem
 and settings apps set on any desktop), or from GNOME's color-scheme setting without a portal.
 The accent comes from an integration's provider in accent.d/ (executables printing "#rrggbb";
 with --watch-paths they print the paths to watch for changes), else the portal's accent-color.
+
+It also keeps the session's palette file current ($XDG_RUNTIME_DIR/scottland/<display>.palette.json:
+scheme, background, foreground, muted, accent, alert), for widgets and other Scottland surfaces:
+neutral light or dark colors, overlaid by a provider's full palette (accent.d providers that
+print a JSON object of those colors when run with --palette).
 """
 import json
 import os
@@ -109,10 +114,48 @@ def accent_watch_paths():
     return paths
 
 
+NEUTRAL = {
+    "dark":  {"background": "#2e3440", "foreground": "#d8dee9", "muted": "#97a3ab", "accent": "#81a1c1",
+              "alert": "#bf616a"},
+    "light": {"background": "#f4f5f7", "foreground": "#2e3440", "muted": "#5e6878", "accent": "#3b6ea8",
+              "alert": "#c0392b"},
+}
+
+
+def provider_palette():
+    for provider in providers():
+        try:
+            out = subprocess.run([provider, "--palette"], capture_output=True, text=True, timeout=5).stdout
+            palette = json.loads(out)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+        if isinstance(palette, dict):
+            return {k: v for k, v in palette.items()
+                    if k in NEUTRAL["dark"] and isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v)}
+    return {}
+
+
+def write_palette(scheme, accent=None):
+    palette = {"scheme": scheme, **NEUTRAL.get(scheme, NEUTRAL["dark"]), **provider_palette()}
+    if accent:
+        palette["accent"] = accent
+    path = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".palette.json")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(f"{path}.{os.getpid()}", "w") as out:
+            json.dump(palette, out)
+        os.replace(f"{path}.{os.getpid()}", path)
+    except OSError as error:
+        print(f"scottland-color-scheme: {path}: {error}", file=sys.stderr)
+
+
 def set_option(name, value):
     reply = call("wayfire/set-config-options", {f"scottland/{name}": value})
     if reply.get("error"):
         print(f"scottland-color-scheme: {reply['error']}", file=sys.stderr)
+
+
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
 
 
 def apply(scheme, accent=None):
@@ -120,9 +163,7 @@ def apply(scheme, accent=None):
     accent = accent or current_accent()
     if accent:
         set_option("accent_color", accent + "ff")
-
-
-RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    write_palette(scheme, accent)
 PID_FILE = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
 
 
@@ -155,10 +196,12 @@ def watch():
                     if scheme != applied:
                         set_option("color_scheme", scheme)
                         applied = scheme
+                        write_palette(scheme, current_accent())
                 if "accent-color" in line:
                     accent = current_accent()
                     if accent:
                         set_option("accent_color", accent + "ff")
+                    write_palette(applied, accent)
         time.sleep(2)  # the monitor exited (portal restarted): start again
 
 
@@ -178,6 +221,7 @@ def watch_accent():
         if accent and accent != applied:
             set_option("accent_color", accent + "ff")
             applied = accent
+        write_palette(current(), accent)  # a theme switch changes more than the accent
 
 
 if __name__ == "__main__":

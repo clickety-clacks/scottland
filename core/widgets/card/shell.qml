@@ -3,7 +3,7 @@
 // (docs/widgets.md, WG8): SCOTTLAND_WIDGET_APP_ID, _TITLE, _ICON (from the app's .desktop entry),
 // _BADGE; live title and badge changes arrive in the JSON file named by SCOTTLAND_WIDGET_STATE,
 // which Scottland's widget service keeps current.
-// Colors follow the Omarchy theme when there is one, else a neutral dark palette.
+// Colors follow the session's palette (SCOTTLAND_PALETTE), else a neutral dark palette.
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -34,7 +34,8 @@ FloatingWindow {
         }
     }
 
-    // Theme: Omarchy's colors.toml if present.
+    // Theme: the session's palette (SCOTTLAND_PALETTE, kept current by Scottland: light or dark,
+    // the accent, and an integration's full palette such as Omarchy's theme). Followed live.
     property color background: "#2e3440"
     property color foreground: "#d8dee9"
     property color muted: "#97a3ab"
@@ -42,18 +43,19 @@ FloatingWindow {
     property color alert: "#bf616a"
 
     FileView {
-        path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
+        path: Quickshell.env("SCOTTLAND_PALETTE") || ""
+        watchChanges: true
+        onFileChanged: reload()
         onLoaded: {
-            const text = this.text()
-            const pick = name => {
-                const m = text.match(new RegExp("^" + name + "\\s*=\\s*\"(#[0-9a-fA-F]{6})\"", "m"))
-                return m ? m[1] : null
-            }
-            root.background = pick("lighter_background") || pick("background") || root.background
-            root.foreground = pick("foreground") || root.foreground
-            root.muted = pick("light_foreground") || root.muted
-            root.accent = pick("accent") || root.accent
-            root.alert = pick("red") || root.alert
+            try {
+                const p = JSON.parse(this.text())
+                const valid = c => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c)
+                if (valid(p.background)) root.background = p.background
+                if (valid(p.foreground)) root.foreground = p.foreground
+                if (valid(p.muted)) root.muted = p.muted
+                if (valid(p.accent)) root.accent = p.accent
+                if (valid(p.alert)) root.alert = p.alert
+            } catch (e) {}
         }
     }
 
