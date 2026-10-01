@@ -2,6 +2,7 @@
 #include <wayfire/core.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/seat.hpp>
+#include <wayfire/input-device.hpp>
 #include <wayfire/toplevel-view.hpp>
 #include <wayfire/view-transform.hpp>
 #include <wayfire/signal-definitions.hpp>
@@ -426,6 +427,50 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
     int touch_finger = -1;  // the finger driving the resize, or -1 for the pointer
 
+    // Touchpad drag lock (L22) keeps a tap-and-drag going for a moment after the finger lifts, so
+    // putting it back down continues the drag. For moving a window that's a grace period; for a
+    // resize, which magnifies motion at small scales, it's a trap: you lift thinking it's done, go
+    // to move the cursor, and the window resizes. So a resize turns drag lock off while it runs
+    // (libinput reads it when the finger lifts) and puts each touchpad's setting back after.
+    void suspend_drag_lock()
+    {
+        for (auto& device : wf::get_core().get_input_devices())
+        {
+            auto handle = device->get_wlr_handle();
+            if (!handle || !wlr_input_device_is_libinput(handle))
+            {
+                continue;
+            }
+
+            auto li = wlr_libinput_get_device_handle(handle);
+            if (!li || (libinput_device_config_tap_get_finger_count(li) == 0))
+            {
+                continue;
+            }
+
+            auto state = libinput_device_config_tap_get_drag_lock_enabled(li);
+            if (state != LIBINPUT_CONFIG_DRAG_LOCK_DISABLED)
+            {
+                libinput_device_ref(li);
+                libinput_device_config_tap_set_drag_lock_enabled(li, LIBINPUT_CONFIG_DRAG_LOCK_DISABLED);
+                suspended_locks.push_back({li, state});
+            }
+        }
+    }
+
+    void restore_drag_lock()
+    {
+        for (auto& [li, state] : suspended_locks)
+        {
+            libinput_device_config_tap_set_drag_lock_enabled(li, state);
+            libinput_device_unref(li);
+        }
+
+        suspended_locks.clear();
+    }
+
+    std::vector<std::pair<libinput_device*, libinput_config_drag_lock_state>> suspended_locks;
+
     wf::pointf_t input_coords()
     {
         auto global = (touch_finger >= 0) ? wf::get_core().get_touch_position(touch_finger) :
@@ -487,6 +532,11 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         grab_button = with_button;
         sign_x = grow_x_sign;
         sign_y = grow_y_sign;
+        if (finger < 0)
+        {
+            suspend_drag_lock();
+        }
+
         wf::get_core().set_cursor("all-scroll");
         return true;
     }
@@ -502,6 +552,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         output->deactivate_plugin(&grab_interface);
         view.reset();
         touch_finger = -1;
+        restore_drag_lock();
         // Let the app's final commit land, then stop keeping it centered.
         settle.set_timeout(300, [=] ()
         {
@@ -609,11 +660,15 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
             height = std::min(height, max_size.height);
         }
 
-        double center_x = start_geometry.x + start_geometry.width / 2.0;
-        double center_y = start_geometry.y + start_geometry.height / 2.0;
+        // Ask for the size only, where the window is now; on_geometry centers whatever size the
+        // app commits. Positioning for the size asked would flicker with apps that don't take it
+        // (one capped at the screen's size commits a smaller one): each request would place it
+        // for the size asked, the commit would land there at the size taken, and the recenter
+        // would move it back, again and again as the pointer moves.
+        auto current = target->get_geometry();
         wf::geometry_t desired;
-        desired.x      = std::round(center_x - width / 2.0);
-        desired.y      = std::round(center_y - height / 2.0);
+        desired.x      = current.x;
+        desired.y      = current.y;
         desired.width  = width;
         desired.height = height;
         if (target->toplevel()->pending().geometry != desired)
