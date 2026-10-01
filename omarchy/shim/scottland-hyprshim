@@ -211,6 +211,8 @@ class Translator:
             "focusHistoryID": focus_order.get(view["id"], 0),
             "inhibitingIdle": False, "xdgTag": "", "xdgDescription": "",
             "contentType": "none", "tearingHint": False,
+            # Contract: the Scottland window id in hex, so Hyprland-speaking clients can reach
+            # Scottland's own requests (e.g. scottland/present) for a window they listed here.
             "stableId": f"{view['id']:08x}",
         }
 
