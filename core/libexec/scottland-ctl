@@ -6,6 +6,7 @@
   scottland-ctl set min_scale 0.3        apply a value to the running session (not saved)
   scottland-ctl stdin                    apply "name value" lines from stdin (used by the settings app)
   scottland-ctl windows                  list open windows: id, app-id, zone, scale, title
+  scottland-ctl present 42               bring window 42 (or its widget's window) to the middle, focused
   scottland-ctl option scottland/sounds  print an option's live value (any Wayfire option)
 
 Outside a Scottland session it runs inside one through scottland-exec.
@@ -61,6 +62,10 @@ def main():
     elif command == "option" and len(sys.argv) == 3:
         reply = call(sock, "wayfire/get-config-option", {"option": sys.argv[2]})
         print(json.dumps(reply.get("value", reply)))
+    elif command == "present" and len(sys.argv) == 3 and sys.argv[2].isdigit():
+        reply = call(sock, "scottland/present", {"window": int(sys.argv[2])})
+        print(json.dumps(reply))
+        sys.exit(1 if "error" in reply else 0)
     elif command == "windows":
         for view in call(sock, "scottland/layout-state", {}).get("views", []):
             print(f"{view['id']:>5}  {view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")

@@ -83,6 +83,8 @@ extern "C" {
 //
 // General compositor features Scottland's integrations rely on:
 //
+//  - IPC "scottland/present" {window}: bring a window (or a widget's window) to the middle of
+//    the screen at 100%, raised and focused: "I want to see this now" (L30).
 //  - IPC "scottland/send-key": press/release a key with explicit modifiers on the focused
 //    surface, independent of keys physically held (Hyprland's send_key_state).
 //  - [scottland] release_key_<name> / release_command_<name>: run a command when a key is
@@ -2516,6 +2518,107 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return wf::ipc::json_ok();
     };
 
+    /** The widget clicked: its window comes back in the middle of the screen, flying out of the
+     *  widget and growing to its size there (WG17). False when it has no screen to go to. */
+    bool open_widget(widget_link_t& link)
+    {
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        auto window = wf::toplevel_cast(link.window.lock());
+        auto output = widget ? widget->get_output() : (window ? window->get_output() : nullptr);
+        if (!output)
+        {
+            return false;
+        }
+
+        auto area = output->workarea->get_workarea();
+        wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
+        wf::pointf_t from = middle;
+        if (widget)
+        {
+            auto g = widget->get_geometry();
+            from = {g.x + g.width / 2.0, g.y + g.height / 2.0};
+        }
+
+        restore_window(link, middle, true);
+        if (window)
+        {
+            start_glide(window, from.x - middle.x, from.y - middle.y);
+        }
+
+        return true;
+    }
+
+    /** IPC scottland/present {window}: "I want to see this now" (L30). A widget's window opens
+     *  as if its widget were clicked; a window in a side zone flies to the middle of its screen,
+     *  growing to 100% there; a window already in the center zone stays where it is. All are
+     *  raised and focused. `window` may name the app's window or its widget. */
+    wf::ipc::method_callback present_method = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("window") || !data["window"].is_int())
+        {
+            return wf::ipc::json_error("present needs integer \"window\"");
+        }
+
+        uint64_t id = (uint64_t)data["window"].as_int64();
+        auto found  = widget_links.find(id);
+        if (found == widget_links.end())
+        {
+            for (auto it = widget_links.begin(); it != widget_links.end(); ++it)
+            {
+                auto widget = it->second.widget.lock();
+                if (widget && (widget->get_id() == id))
+                {
+                    found = it;
+                    break;
+                }
+            }
+        }
+
+        if ((found != widget_links.end()) && !found->second.preview)
+        {
+            if (!open_widget(found->second))
+            {
+                return wf::ipc::json_error("the widget has no screen");
+            }
+
+            auto reply = wf::ipc::json_ok();
+            reply["presented"] = "widget";
+            return reply;
+        }
+
+        wayfire_toplevel_view view = nullptr;
+        for (auto& any_view : wf::get_core().get_all_views())
+        {
+            if (any_view->get_id() == id)
+            {
+                view = wf::toplevel_cast(any_view);
+                break;
+            }
+        }
+
+        if (!view || !view->is_mapped())
+        {
+            return wf::ipc::json_error("no such window");
+        }
+
+        auto reply = wf::ipc::json_ok();
+        reply["presented"] = "window";
+        auto output = view->get_output();
+        if (output && !view->pending_fullscreen() && (placement_of(view).zone != zone_t::center))
+        {
+            auto g    = view->get_geometry();
+            auto area = output->workarea->get_workarea();
+            wf::pointf_t from{g.x + g.width / 2.0, g.y + g.height / 2.0};
+            wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
+            view->move(std::round(middle.x - g.width / 2.0), std::round(middle.y - g.height / 2.0));
+            start_glide(view, from.x - middle.x, from.y - middle.y);
+            reply["presented"] = "moved";
+        }
+
+        wf::get_core().default_wm->focus_raise_view(view);
+        return reply;
+    };
+
     wf::ipc::method_callback widget_action = [=] (wf::json_t data) -> wf::json_t
     {
         if (!data.has_member("id") || !data["id"].is_string() || !data.has_member("action") ||
@@ -2541,29 +2644,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::string action = data["action"].as_string();
         if (action == "open")
         {
-            // The widget clicked: its window comes back in the middle of the screen, flying out
-            // of the widget and growing to its size there (WG17).
-            auto widget = wf::toplevel_cast(found->second.widget.lock());
-            auto window = wf::toplevel_cast(found->second.window.lock());
-            auto output = widget ? widget->get_output() : (window ? window->get_output() : nullptr);
-            if (!output)
+            if (!open_widget(found->second))
             {
                 return wf::ipc::json_error("the widget has no screen");
-            }
-
-            auto area = output->workarea->get_workarea();
-            wf::pointf_t middle{area.x + area.width / 2.0, area.y + area.height / 2.0};
-            wf::pointf_t from = middle;
-            if (widget)
-            {
-                auto g = widget->get_geometry();
-                from = {g.x + g.width / 2.0, g.y + g.height / 2.0};
-            }
-
-            restore_window(found->second, middle, true);
-            if (window)
-            {
-                start_glide(window, from.x - middle.x, from.y - middle.y);
             }
         } else if (action == "minimize")
         {
@@ -4471,6 +4554,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
+        ipc_repo->register_method("scottland/present", present_method);
         ipc_repo->register_method("scottland/widget-traits", widget_traits);
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
@@ -4537,6 +4621,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widgets");
         on_hints.disconnect();
         ipc_repo->unregister_method("scottland/widget-action");
+        ipc_repo->unregister_method("scottland/present");
         ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);
