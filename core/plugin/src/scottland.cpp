@@ -1391,6 +1391,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["hold_armed"] = hold_finger >= 0;
         reply["lifted"]     = lifted_finger >= 0;
         reply["dragging"]   = (bool)drag->view;
+        reply["drag_center"] = last_drag_center;
         return reply;
     };
 
@@ -1426,6 +1427,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     double drag_relative_x = 0.5;   // where across the dragged window's bounding box it was grabbed
     double drag_margin = 0.0;       // bounding box minus window, per side (halo margin), on screen
     double drag_target = 1.0;     // the scale the dragged window is heading for
+    double last_drag_center = 0;  // where the dragged window's center is shown (output coords)
 
     wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> on_drag_output =
         [=] (wf::move_drag::drag_focus_output_signal *ev)
@@ -1472,12 +1474,47 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // pointer has moved far enough for the other to agree: otherwise the window flips
         // between the two sizes on every motion. Sizes are the targets, not the animated ones.
         double unscaled  = view->get_geometry().width;
-        double pointer_x = ev->current_position.x - output->get_layout_geometry().x;
+        double origin_x  = output->get_layout_geometry().x;
+        double pointer_x = ev->current_position.x - origin_x;
         double screen    = output->get_relative_geometry().width;
-        auto zone_scale  = [&] (double s)
+
+        // Where the window's center is shown, read from the drag itself rather than predicted. The
+        // move tool draws the window in a box sized from the view's own box (this frame plus its
+        // halo margin) divided by its zoom, placed so the grab sits at a fixed fraction of it.
+        // Measure that box, the grab fraction and the margins now; then the center at any scale s
+        // follows exactly: the box grows by unscaled * ds, around the grab.
+        std::function<double(double)> center_at = [&] (double s)
         {
-            return place_at(pointer_x + (0.5 - drag_relative_x) * (unscaled * s + 2 * drag_margin), screen).scale;
+            return pointer_x + (0.5 - drag_relative_x) * (unscaled * s + 2 * drag_margin);
         };
+        auto drag_box = view->get_transformed_node()->get_transformer<wf::scene::transformer_base_node_t>(
+            "move-drag-transformer");
+        auto frame = frame_of(view, false);
+        if (drag_box && frame)
+        {
+            auto shown = drag_box->get_bounding_box();           // where it's drawn (layout coords)
+            auto inner = drag_box->get_children_bounding_box();  // the view's own box
+            if ((shown.width > 0) && (inner.width > 0))
+            {
+                double zoom  = inner.width / shown.width;          // the drag's own scale-down
+                double grab  = (ev->current_position.x - shown.x) / shown.width;
+                auto rect    = frame->screen_rect();
+                double now_w = rect.width();
+                double left  = (rect.x1 + rect.x2) / 2.0 - now_w / 2.0 - inner.x;     // margin left
+                double right = inner.x + inner.width - (rect.x1 + rect.x2) / 2.0 - now_w / 2.0;
+                double bulge = displayed_scale(view) > 0 ? now_w / (unscaled * displayed_scale(view)) : 1.0;
+                center_at = [=] (double s)
+                {
+                    double width = unscaled * s * bulge;
+                    double box   = (width + left + right) / zoom;
+                    double box_x = ev->current_position.x - grab * box;
+                    return box_x + (left + width / 2.0) / zoom - origin_x;
+                };
+            }
+        }
+
+        auto zone_scale = [&] (double s) { return place_at(center_at(s), screen).scale; };
+        last_drag_center = center_at(drag_target);
 
         double chosen = zone_scale(drag_target);
         if (std::abs(chosen - drag_target) > 0.001)
