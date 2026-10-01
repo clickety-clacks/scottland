@@ -1983,6 +1983,45 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return std::string(runtime ? runtime : "/tmp") + "/scottland/" + (display ? display : "wayland") + suffix;
     }
 
+    /** Is the process part of a widget (in a widget scope: one still closing after an unload)? */
+    static bool runs_as_widget(pid_t pid)
+    {
+        std::ifstream cgroup("/proc/" + std::to_string(pid) + "/cgroup");
+        std::string line;
+        while (std::getline(cgroup, line))
+        {
+            if (line.find("/scottland-widget-") != std::string::npos)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** On load: a window whose center is on a rail is a widget (WG1), however it got there (a
+     *  reload that couldn't hand widgets over left their windows where they were). */
+    void widgetize_windows_on_rails()
+    {
+        for (auto& any : wf::get_core().get_all_views())
+        {
+            auto view = wf::toplevel_cast(any);
+            if (!view || !view->is_mapped() || !can_widgetize(view) || link_of_window(view) || is_widget(view) ||
+                (view->role != wf::VIEW_ROLE_TOPLEVEL) || runs_as_widget(view_pid(view)))
+            {
+                continue;
+            }
+
+            auto g = view->get_geometry();
+            double width = view->get_output()->get_relative_geometry().width;
+            if (place_at(std::clamp(g.x + g.width / 2.0, 0.0, width - 1), width).zone == zone_t::widget)
+            {
+                LOGI("scottland: window ", view->get_id(), " (", view->get_title(), ") is on a rail: a widget again");
+                widgetize(view);
+            }
+        }
+    }
+
     /** After a reload: take over the widgets the previous plugin handed over. */
     void take_handover()
     {
@@ -3958,6 +3997,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widget-action", widget_action);
         ipc_repo->register_method("scottland/attention", attention_method);
         take_handover();
+        widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
         wf::get_core().connect(&on_focus_request);
         start_activation();

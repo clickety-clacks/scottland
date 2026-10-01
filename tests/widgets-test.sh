@@ -665,8 +665,8 @@ check "WG5 (unload) the widget's window closes" \
   [ "$(ipc window-rules/list-views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin) if v['title'].startswith('Scottland widget')))")" = 0 ]
 h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': sys.argv[1]}))" "$plugins")"
 sleep 2
-check "WG5 (reload) the app's window is back, not widgetized" \
-  [ "$(view_field widget-app5 "not v['hidden'] and not v['widgetized']")" = True ]
+check "WG1 (reload) the window, still on the rail, is a widget again" \
+  [ "$(view_field widget-app5 "v['hidden'] and v['widgetized']")" = True ]
 h window-rules/close-view "{\"id\": $(view_field widget-app5 "v['id']")}"
 sleep 1
 
