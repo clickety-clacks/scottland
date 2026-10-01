@@ -70,6 +70,20 @@ check("late subscriber gets title, collapsed mode and badge from a full snapshot
 check("the first state file includes resolved name, icon and model version",
       state["name"] == "X" and state["icon"] == "x" and state["version"] == service.model_version)
 
+# D-Bus full replacements carry the version and the revision of the file already written.
+class FakeBus:
+    def emit_signal(self, _dest, _path, _iface, _signal, params):
+        public = params.unpack()[1]
+        written = json.load(open(service.state_path("42")))
+        check("D-Bus full snapshot matches the already-written file version and revision",
+              public["Version"] == written["version"] and public["Revision"] == written["revision"]
+              and public["Title"] == written["title"] and public["Badge"] == written["badge"])
+
+
+service.bus = FakeBus()
+service.update("42", {"Badge": 8})
+service.bus = None
+
 # Removed values cannot survive a newer snapshot. Queued older updates cannot win.
 old = service.ipc.snapshot
 replace([entry("42", "scottland-widget-new.scope")])

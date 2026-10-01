@@ -49,7 +49,8 @@ The launcher's `widget-traits` call submits resolved identity and traits with th
 unique unit. `org.scottland.WidgetLaunch.Prepare(id, unit)` synchronously writes the current
 presentation before exec. The service is the only file writer. Each file includes complete
 identity, presentation, mailbox/badge, model version and local presentation revision, and is
-replaced atomically. The service persists only its own badge/mailbox snapshot, keyed by compositor
+replaced atomically. D-Bus `PropertiesChanged` carries the complete public property set with
+`Version` and `Revision`, emitted after the file is written; property reads return the same counters. The service persists only its own badge/mailbox snapshot, keyed by compositor
 session identity, so a helper restart retains these values while a new session cannot inherit them. The environment carries identity and paths; title, rail, collapsed mode
 and badge are read from the file. Manifest placeholders are still expanded for a launch command.
 A marked plugin reload writes one atomic model handover containing mode, source sets, version

@@ -39,6 +39,8 @@ WIDGET_XML = """
 <node>
   <interface name="org.scottland.Widget">
     <property name="Id" type="s" access="read"/>
+    <property name="Version" type="t" access="read"/>
+    <property name="Revision" type="t" access="read"/>
     <property name="AppId" type="s" access="read"/>
     <property name="Title" type="s" access="read"/>
     <property name="Pid" type="u" access="read"/>
@@ -262,8 +264,8 @@ class Service:
                 self.registrations[wid] = register(
                     self.bus, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)
             if changed:
-                self.emit_properties(wid)
                 self.write_state(wid)
+                self.emit_properties(wid)
         for wid in [w for w in self.widgets if w not in seen]:
             self.remove_widget(wid)
         self.announce_changes()
@@ -292,7 +294,9 @@ class Service:
 
     def emit_properties(self, wid):
         if self.bus:
-            public = {k: v for k, v in self.widgets[wid].items() if not k.startswith("_")}
+            state = self.widgets[wid]
+            public = {k: v for k, v in state.items() if not k.startswith("_")}
+            public.update(Version=state["_model_version"], Revision=state["_revision"])
             self.bus.emit_signal(None, f"/org/scottland/widget/{wid}", "org.freedesktop.DBus.Properties",
                                  "PropertiesChanged", GLib.Variant("(sa{sv}as)", (
                                      "org.scottland.Widget", {k: self.variant(k, v) for k, v in public.items()}, [])))
@@ -303,8 +307,8 @@ class Service:
         if all(state.get(k) == v for k, v in updates.items()):
             return
         self.widgets[wid] = {**state, **updates}
-        self.emit_properties(wid)
         self.write_state(wid)
+        self.emit_properties(wid)
 
     def write_state(self, wid):
         """The file's only writer; atomic replacement of the complete presentation snapshot."""
@@ -330,7 +334,7 @@ class Service:
 
     @staticmethod
     def variant(key, value):
-        kind = {"Pid": "u", "Window": "t", "Badge": "x", "Focused": "b", "Urgent": "b", "Minimized": "b"}.get(key, "s")
+        kind = {"Pid": "u", "Window": "t", "Version": "t", "Revision": "t", "Badge": "x", "Focused": "b", "Urgent": "b", "Minimized": "b"}.get(key, "s")
         return GLib.Variant(kind, value)
 
     def app_state(self, pid):
@@ -387,6 +391,8 @@ class Service:
 
     def on_widget_get(self, _conn, _sender, path, _iface, prop):
         state = self.widgets.get(path.rsplit("/", 1)[-1])
+        if state and prop in ("Version", "Revision"):
+            return self.variant(prop, state["_model_version" if prop == "Version" else "_revision"])
         return self.variant(prop, state[prop]) if state and prop in state else None
 
     def on_widget_call(self, _conn, _sender, path, _iface, method, _params, invocation):
@@ -416,6 +422,7 @@ class Service:
                 invocation.return_dbus_error("org.scottland.Widgets.Error", "no such launch in the desktop model")
                 return
             self.write_state(wid)
+            self.emit_properties(wid)
             invocation.return_value(GLib.Variant("(s)", (self.state_path(wid),)))
             return
         if iface == "org.scottland.Diagnostics":
@@ -508,6 +515,7 @@ class Service:
         # Existing cards must observe a new file after a restarted service owns its bus name.
         for wid in self.widgets:
             self.write_state(wid)
+            self.emit_properties(wid)
 
     # --- attention from desktop notifications (WG15) ---
 

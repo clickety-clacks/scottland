@@ -185,6 +185,10 @@ try:
     drag(a, width - 6)
     audit("docked")
     check("docking used real pointer input", shown(a)[1] is not None)
+    properties = subprocess.check_output(["busctl", "--user", "get-property", "org.scottland.Widgets",
+                                         f"/org/scottland/widget/{a}", "org.scottland.Widget", "Version", "Revision"], text=True)
+    check("D-Bus presentation exposes model version and file revision", len(properties.splitlines()) == 2
+          and all(line.startswith("t ") for line in properties.splitlines()))
     wrong = diagnostics()
     wrong["widgets"][str(a)]["Title"] = "an incorrect replica"
     check("checker rejects an incorrect service replica", not ipc.call("scottland/audit-model", {"service": wrong})["ok"])
