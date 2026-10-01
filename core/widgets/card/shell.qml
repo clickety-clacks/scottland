@@ -47,7 +47,7 @@ FloatingWindow {
         onLoaded: {
             try {
                 const state = JSON.parse(this.text())
-                if (typeof state.title === "string" && state.title !== "") root.appTitle = state.title
+                if (typeof state.title === "string") root.appTitle = state.title
                 if (typeof state.badge === "number") root.badge = state.badge
                 if (state.rail === "left" || state.rail === "right") root.rail = state.rail
             } catch (e) {}

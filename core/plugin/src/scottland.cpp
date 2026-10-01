@@ -518,6 +518,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
             target->toplevel()->pending().tiled_edges = 0;
         }
 
+        settle.disconnect();  // the previous resize's: it would stop this one's centering
         view = target->weak_from_this();
         recenter_view = view;
         touch_finger   = finger;
@@ -1197,7 +1198,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 if (link->dismissing || link->preview)  // a preview going is no reason to close the app
                 {
+                    auto launcher = link->launcher;
+                    bool preview  = link->preview;
                     widget_links.erase(uint64_t(link->window_id));
+                    if (preview)
+                    {
+                        end_process(launcher, 0);  // whatever else it started goes with it
+                    }
+
                     announce_widgets();
                 } else
                 {
@@ -1256,10 +1264,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     std::set<uint64_t> wants_attention;              // windows demanding attention (urgency hint)
     std::set<uint64_t> asked_attention;              // windows that asked another way (WG15):
                                                      // activation requests, desktop notifications
+    std::set<uint64_t> told_attention;               // set over IPC by another process (an
+                                                     // integration): it takes back only its own
 
     bool needs_attention(uint64_t window) const
     {
-        return wants_attention.count(window) || asked_attention.count(window);
+        return wants_attention.count(window) || asked_attention.count(window) || told_attention.count(window);
     }
 
     static wayfire_toplevel_view view_by_id(uint64_t id)
@@ -1316,6 +1326,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool had = needs_attention(window);
         wants_attention.erase(window);
         asked_attention.erase(window);
+        told_attention.erase(window);
         if (had)
         {
             show_attention(window);
@@ -1428,14 +1439,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (active && ((active->get_id() == window) ||
                 ((link != widget_links.end()) && (link->second.widget.lock().get() == active.get()))))
             {
-                return wf::ipc::json_ok();  // already in front of the user (the window, or its widget)
+                auto reply = wf::ipc::json_ok();
+                reply["in_front"] = true;  // already in front of the user: nothing to show, answered
+                return reply;
             }
 
-            asked_attention.insert(window);
+            told_attention.insert(window);
             show_attention(window);
-        } else
+        } else if (told_attention.erase(window))
         {
-            clear_attention(window);
+            show_attention(window);  // only what was told over IPC is taken back
         }
 
         return wf::ipc::json_ok();
@@ -1749,7 +1762,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** Turn the window into a widget. With `preview` (a drag is over a rail, WG13) the widget is
      *  launched but the window stays, and the widget is kept unseen until the drop commits. */
-    void widgetize(wayfire_toplevel_view view, bool preview = false)
+    void widgetize(wayfire_toplevel_view view, bool preview = false, std::optional<std::string> rail = {})
     {
         if (auto existing = link_of_window(view))
         {
@@ -1775,7 +1788,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.window = view->weak_from_this();
         link.output = output;
         link.drop   = {geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
-        link.rail   = link.drop.x < width / 2 ? "left" : "right";
+        link.rail   = rail ? *rail : (link.drop.x < width / 2 ? "left" : "right");
         link.launched_at = now_msec();
 
         wf::json_t context;
@@ -2782,9 +2795,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             drag_relative_x = box > 0 ? (local_x - left) / box : 0.5;
             // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
             // reset on the touchpad, out of room), it's the same move: keep the first origin.
-            bool continued = (last_drop_view == drag->view->get_id()) &&
+            bool continued = (last_drop.view == drag->view->get_id()) &&
                 ((int32_t)(now_msec() - last_drop_at) < DRAG_CHAIN_MS);
-            drag_origin = continued ? last_drop_origin : wf::point_t{geometry.x, geometry.y};
+            if (glide && (glide->view.lock().get() == drag->view.get()))
+            {
+                stop_glide();  // picked up again on its way home: it's where it's drawn
+            }
+
+            drag_origin = continued ? last_drop : origin_of(drag->view);
             drag_cancelled = false;
             auto running = transitions.find(drag->view->get_id());
             drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
@@ -2914,7 +2932,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (!morph->from_widget && toward)
             {
-                widgetize(view, true);  // launched now, unseen, so it's ready to fade in
+                // Launched now, unseen, so it's ready to fade in; on the rail the drag is over.
+                widgetize(view, true, morph->center_x < width / 2 ? "left" : "right");
             }
 
             morph->toward = toward;
@@ -2985,7 +3004,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double w = PROVISIONAL_WIDGET_W, h = PROVISIONAL_WIDGET_H, scale = 1.0;
         if (morph->from_widget && other)
         {
-            auto output = dragged->get_output();
+            auto output = output_alive(drag->current_output) ? drag->current_output : dragged->get_output();
             scale = output ? place_at(morph->center_x, output->get_relative_geometry().width).scale : 1.0;
             auto g = other->get_geometry();
             w = g.width * scale;
@@ -3013,12 +3032,32 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     // Esc cancels a drag (WG14): the window goes back where it was picked up, gliding from where
     // it was let go, and a drag that changed it into its other form (window/widget) morphs back.
-    wf::point_t drag_origin{0, 0};
+    /** Where a drag picked a window up: which window, on which screen, where. */
+    struct drag_origin_t
+    {
+        uint64_t view = 0;
+        wf::output_t *output = nullptr;
+        wf::point_t position{0, 0};
+    };
+    drag_origin_t drag_origin;
     bool drag_cancelled = false;
     static constexpr int DRAG_CHAIN_MS = 2000;  // a new drag of the same window within this continues the move
-    uint64_t last_drop_view = 0;
+    drag_origin_t last_drop;
     uint32_t last_drop_at = 0;
-    wf::point_t last_drop_origin{0, 0};
+
+    static drag_origin_t origin_of(wayfire_toplevel_view view)
+    {
+        auto g = view->get_geometry();
+        return {view->get_id(), view->get_output(), {g.x, g.y}};
+    }
+
+    /** The origin recorded for this drag, if it's this window's. A drag that ended before it
+     *  moved may not have recorded one (its start is noticed at the first motion): then the
+     *  window is where it was picked up. Never another window's origin. */
+    drag_origin_t origin_for(wayfire_toplevel_view view)
+    {
+        return drag_origin.view == view->get_id() ? drag_origin : origin_of(view);
+    }
     static constexpr int GLIDE_MS = 260;
     struct glide_t
     {
@@ -3044,11 +3083,35 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     /** The drag was cancelled and just let go: put the window back, drawn gliding home. */
     void cancel_drop(wayfire_toplevel_view view)
     {
+        auto origin = origin_for(view);
+        drag_origin = {};
+        // Back to the screen it was picked up on (drawn gliding from where it was let go, in
+        // layout coordinates, so across screens too).
+        auto from_output = view->get_output();
         auto g = view->get_geometry();
+        wf::point_t from{g.x, g.y};
+        if (from_output)
+        {
+            auto layout = from_output->get_layout_geometry();
+            from = {from.x + layout.x, from.y + layout.y};
+        }
+
+        if (output_alive(origin.output) && (origin.output != from_output))
+        {
+            wf::move_view_to_output(view, origin.output, false);
+        }
+
         LOGI("scottland: Esc: window ", view->get_id(), " (", view->get_title(), ") back from ", g.x, ",", g.y,
-            " to ", drag_origin.x, ",", drag_origin.y);
-        double dx = g.x - drag_origin.x, dy = g.y - drag_origin.y;
-        view->move(drag_origin.x, drag_origin.y);
+            " to ", origin.position.x, ",", origin.position.y);
+        view->move(origin.position.x, origin.position.y);
+        wf::point_t to = origin.position;
+        if (view->get_output())
+        {
+            auto layout = view->get_output()->get_layout_geometry();
+            to = {to.x + layout.x, to.y + layout.y};
+        }
+
+        double dx = from.x - to.x, dy = from.y - to.y;
         if (morph && (morph->dragged.lock().get() == view.get()) && morph->toward)
         {
             morph->toward = false;  // back to the form it had
@@ -3063,6 +3126,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         apply(view);
         if (auto frame = frame_of(view, false); frame && ((dx != 0) || (dy != 0)))
         {
+            stop_glide();  // another window still gliding home lands now
             glide.emplace();
             glide->view = view->weak_from_this();
             glide->dx = dx;
@@ -3076,6 +3140,29 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 glide_tick.set_timeout(8, [=] () { return step_glide(); });
             }
         }
+    }
+
+    /** End a glide at once: the window is drawn where it is. */
+    void stop_glide()
+    {
+        if (!glide)
+        {
+            return;
+        }
+
+        if (auto view = wf::toplevel_cast(glide->view.lock()))
+        {
+            if (auto frame = frame_of(view, false))
+            {
+                frame->damage();
+                frame->translation_x = frame->translation_y = 0;
+                frame->damage();
+            }
+        }
+
+        glide.reset();
+        glide_tick.disconnect();
+        update_all_neighbors();
     }
 
     bool step_glide()
@@ -3225,7 +3312,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 cancel_drop(main);
             }
 
-            last_drop_view = 0;  // the move is over
+            last_drop = {};  // the move is over
 
             idle_neighbors.run_once([=] () { update_all_neighbors(); });
             return;
@@ -3233,10 +3320,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (main)
         {
-            last_drop_view   = main->get_id();
-            last_drop_at     = now_msec();
-            last_drop_origin = drag_origin;
+            last_drop    = origin_for(main);
+            last_drop_at = now_msec();
         }
+
+        drag_origin = {};
 
         std::optional<bool> widget_shaped;  // the shape a morphing drag showed at the drop (WG13)
         if (morph && main && (morph->dragged.lock().get() == main.get()))

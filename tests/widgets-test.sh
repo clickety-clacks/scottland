@@ -447,7 +447,9 @@ read -r ax ay aw ah <<<"$(view_field notify-app "round(f['x']), round(f['y']), r
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay - 150))
 sleep 1.5
 (tests/headless.sh run foot -o bell.urgent=yes -T plain-bell -W 40x8 sh -c 'sleep 4; printf "\a"; exec sleep 3600' >/dev/null 2>&1 &)
-sleep 1.5
+sleep 1
+(tests/headless.sh run foot -T focus-taker -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)  # plain-bell rings from behind it
+sleep 1
 focused_before=$(ipc window-rules/get-focused-view | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['id'])")
 sleep 6
 attention_of() { views | python3 -c "
@@ -458,8 +460,13 @@ check "WG15 a widgetized app's bell shows attention on its widget" [ "$(attentio
 check "WG15 a widgetized app's desktop notification shows attention on its widget" [ "$(attention_of notify-app)" = True ]
 check "WG15 ...also reported as Urgent" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print(all(w['urgent'] for w in json.load(sys.stdin)['widgets']))")" = True ]
-check "WG15 an ordinary window's bell doesn't take focus" \
-  [ "$(ipc window-rules/get-focused-view | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['id'])")" = "$focused_before" ]
+check "WG15/L28 a window in the background ringing its bell doesn't take focus" \
+  [ "$(ipc window-rules/get-focused-view | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['title'])")" = focus-taker ]
+check "WG15 ...its own halo shows the attention" [ "$(view_field plain-bell "bool(f.get('attention'))")" = True ]
+bell_window=$(views | python3 -c "import json,sys; print([v['id'] for v in json.load(sys.stdin)['views'] if v['title'].endswith('bell-app') and not v['widget']][0])")
+h scottland/attention "{\"window\": $bell_window, \"attention\": false}"
+sleep 0.3
+check "WG15 an integration taking back its attention leaves the app's own (the bell's)" [ "$(attention_of bell-app)" = True ]
 read -r wx wy ww wh <<<"$(views | python3 -c "
 import json,sys
 v=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('bell-app')][0]; f=v['frame']
@@ -467,7 +474,7 @@ print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
 h stipc/move_cursor "{\"x\":$((wx + ww / 2)),\"y\":$((wy + wh / 2))}"; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'
 sleep 1
 check "WG15 going to the widget answers its attention" [ "$(attention_of bell-app)" = False ]
-for t in bell-app notify-app plain-bell; do
+for t in bell-app notify-app plain-bell focus-taker; do
   id=$(views | python3 -c "
 import json,sys
 v=[v for v in json.load(sys.stdin)['views'] if v['title']==sys.argv[1] or v['title'].endswith(': '+sys.argv[1])]
@@ -475,6 +482,68 @@ print(v[0]['id'] if v else '')" $t)
   [ -n "$id" ] && h window-rules/close-view "{\"id\": $id}"
 done
 sleep 2
+
+# WG14: Esc never sends a window to another window's origin: a drag cancelled before it moved
+# stays put; a glide interrupted by another cancel still lands where it belongs.
+(tests/headless.sh run foot -T esc-a -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+(tests/headless.sh run foot -T esc-b -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+h window-rules/configure-view "{\"id\": $(view_field esc-a "v['id']"), \"geometry\": {\"x\": 120, \"y\": 120, \"width\": 260, \"height\": 140}}"
+h window-rules/configure-view "{\"id\": $(view_field esc-b "v['id']"), \"geometry\": {\"x\": 700, \"y\": 420, \"width\": 260, \"height\": 140}}"
+sleep 1
+geo() { ipc window-rules/list-views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+a0=$(geo esc-a); b0=$(geo esc-b)
+esc_key() { h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'; }
+super_drag 250 190 450 260   # A moves somewhere else (a finished drag)
+sleep 0.5
+h stipc/move_cursor '{"x":830,"y":490}'; sleep 0.2
+h scottland/test-input '{"swipe":"begin","fingers":3}'   # B picked up, not moved yet
+esc_key
+h scottland/test-input '{"swipe":"end"}'
+sleep 0.8
+check "WG14 Esc on a drag that hadn't moved: the window stays where it was (not another's origin)" [ "$(geo esc-b)" = "$b0" ]
+a1=$(geo esc-a)
+read -r ax ay <<<"$a1"
+h stipc/move_cursor "{\"x\":$((ax + 130)),\"y\":$((ay + 70))}"; sleep 0.1
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+for i in 1 2 3 4 5 6; do h stipc/move_cursor "{\"x\":$((ax + 130 + i * 30)),\"y\":$((ay + 70))}"; sleep 0.02; done
+esc_key; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+h stipc/move_cursor '{"x":830,"y":490}'; sleep 0.05
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+for i in 1 2 3 4 5 6; do h stipc/move_cursor "{\"x\":$((830 - i * 30)),\"y\":490}"; sleep 0.02; done
+esc_key; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+sleep 1
+check "WG14 two cancels in a row: each window back at its own origin" [ "$(geo esc-a)/$(geo esc-b)" = "$a1/$b0" ]
+check "WG14 ...and drawn there (no glide offset left behind)" \
+  python3 -c "
+import json,subprocess,sys
+vs=json.loads(subprocess.run(['tests/headless.sh','ipc','window-rules/list-views'],capture_output=True,text=True).stdout)
+ls=json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views']
+ok=True
+for t in ('esc-a','esc-b'):
+    g=[v for v in vs if v['title']==t][0]['geometry']; f=[v for v in ls if v['title']==t][0]['frame']
+    ok &= abs((f['x']+f['width']/2) - (g['x']+g['width']/2)) < 1.5 and abs((f['y']+f['height']/2) - (g['y']+g['height']/2)) < 1.5
+sys.exit(0 if ok else 1)"
+for t in esc-a esc-b; do h window-rules/close-view "{\"id\": $(view_field $t "v['id']")}"; done
+sleep 1
+
+# L20: a resize right after another stays centered.
+(tests/headless.sh run foot -T resize-app -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+center0=$(view_field resize-app "(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))")
+resize() { h stipc/move_cursor '{"x":640,"y":360}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key":"KEY_LEFTALT","state":true}'
+  h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+  for i in $(seq 1 $1); do h stipc/move_cursor "{\"x\":$((640 + i * 6)),\"y\":$((360 - i * 3))}"; sleep 0.03; done
+  h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'; h stipc/feed_key '{"key":"KEY_LEFTALT","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'; }
+resize 4; resize 25
+sleep 1
+check "L20 a resize started right after another stays centered" \
+  [ "$(view_field resize-app "(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))")" = "$center0" ]
+h window-rules/close-view "{\"id\": $(view_field resize-app "v['id']")}"
+sleep 1
 
 # WG5: unloading the plugin (a reload) gives the app its window back and ends the widget; the
 # widget service drops its objects.

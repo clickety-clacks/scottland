@@ -109,8 +109,12 @@ class Bridge:
             return
         for window, address in listed.items():
             if again or window not in self.asserted:
-                self.asserted[window] = address
-                self.ipc.call("scottland/attention", {"window": window, "attention": True})
+                reply = self.ipc.call("scottland/attention", {"window": window, "attention": True})
+                if reply.get("in_front"):
+                    self.dismiss(address)  # the user is looking at it: answered
+                    self.asserted.pop(window, None)
+                else:
+                    self.asserted[window] = address
         for window in [w for w in self.asserted if w not in listed]:
             del self.asserted[window]
             self.ipc.call("scottland/attention", {"window": window, "attention": False})
@@ -120,7 +124,10 @@ class Bridge:
         window = event.get("window")
         if event.get("attention") or window not in self.asserted:
             return
-        address = self.asserted.pop(window)
+        self.dismiss(self.asserted.pop(window))
+
+    @staticmethod
+    def dismiss(address):
         if shutil.which("window-attention"):
             subprocess.run(["window-attention", "dismiss", address], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=10)
