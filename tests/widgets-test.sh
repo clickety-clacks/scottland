@@ -37,7 +37,26 @@ super_drag() {  # super_drag x1 y1 x2 y2
 
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
 test_widgets=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-widgets.XXXXXX")
-mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon"
+mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon" "$test_widgets/stubborn"
+# Shows a window that refuses to close when asked.
+cat >"$test_widgets/stubborn/widget.toml" <<'TOML'
+id = "stubborn"
+apps = ["^scottland-test-stubborn$"]
+exec = "python3 ./widget.py"
+TOML
+cat >"$test_widgets/stubborn/widget.py" <<'PY'
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk
+app = Gtk.Application(application_id="org.scottland.TestStubborn")
+def activate(application):
+    window = Gtk.ApplicationWindow(application=application, title="stubborn-widget")
+    window.set_default_size(260, 90)
+    window.connect("close-request", lambda *_: True)  # refuse
+    window.present()
+app.connect("activate", activate)
+app.run()
+PY
 # Forks its window off and exits at once; gets the app's title (with "$" in it) as an argument.
 cat >"$test_widgets/daemon/widget.toml" <<'TOML'
 id = "daemon"
@@ -335,6 +354,26 @@ check "WG5 (hide) shown again, the app's window is visible and not widgetized, a
   [ "$(view_field remap-app "not v['hidden'] and not v['widgetized']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = True/0 ]
 h window-rules/close-view "{\"id\": $(view_field remap-app "v['id']")}"
 sleep 1
+
+# WG5: the close dot on a widget that refuses to close: the app's window closes, and the widget
+# is ended 3 s later.
+(tests/headless.sh run foot --app-id scottland-test-stubborn -T stubborn-app -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field stubborn-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 4
+read -r dx dy <<<"$(views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin)['views'] if v['widget']][0]; f=v['frame']
+print(round(f['x'] + f['width']/2), round(f['y'] + f['height'] + f['thickness']/2))")"
+h stipc/move_cursor "{\"x\":$dx,\"y\":$dy}"; sleep 0.2
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'
+sleep 1
+check "WG5 (close dot) the app's window closes with the widget" \
+  [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['title']=='stubborn-app'))")" = 0 ]
+sleep 5
+check "WG5 (close dot) the widget that refused to close is ended" \
+  [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['title']=='stubborn-widget'))")" = 0 ]
 
 # WG5: unloading the plugin (a reload) gives the app its window back and ends the widget; the
 # widget service drops its objects.

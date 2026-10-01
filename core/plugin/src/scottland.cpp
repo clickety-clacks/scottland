@@ -906,6 +906,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 handle_pressed(v, h, finger);
             };
+            // A widget's close dot closes it and its app's window together, and a widget that
+            // ignores the request is ended (WG5).
+            frame->on_close = [=] (wayfire_toplevel_view v)
+            {
+                if (auto link = link_of_widget(v))
+                {
+                    close_linked(*link);
+                } else
+                {
+                    v->close();
+                }
+            };
             frame->set_focused(wf::get_core().seat->get_active_view() == view);
             node->add_transformer(frame, wf::TRANSFORMER_2D, TRANSFORMER);
             view->damage();
@@ -1718,7 +1730,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["pid"]    = (int64_t)(window ? view_pid(window) : 0);
             entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : (link.launcher ? link.launcher->pid : 0));
             entry["widget_unit"] = link.launcher ? link.launcher->unit : "";
-            entry["launcher_pid"] = (int64_t)(link.launcher ? link.launcher->pid : 0);
+            // Only while it runs (its pidfd says so): a number that may since have been reused is
+            // no one's identity.
+            entry["launcher_pid"] = (int64_t)(alive(link.launcher) ? link.launcher->pid : 0);
             entry["rail"]    = link.rail;
             entry["focused"] = widget && (active == widget);
             entry["urgent"]  = wants_attention.count(id) > 0;

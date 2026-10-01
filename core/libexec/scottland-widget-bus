@@ -18,6 +18,7 @@ import json
 import os
 import socket
 import struct
+import subprocess
 import sys
 import time
 
@@ -129,11 +130,16 @@ def in_scope(pid, unit):
         return False
 
 
+def scope_exists(unit):
+    return bool(unit) and subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit]).returncode == 0
+
+
 def is_widget_process(pid, state):
-    """Is `pid` one of this widget's processes: in its scope, or (without one) started by its
-    launch process or its window's process?"""
-    return (in_scope(pid, state["_widget_unit"])
-            or any(root > 1 and pid_descends_from(pid, root) for root in (state["_launcher_pid"], state["_widget_pid"])))
+    """Is `pid` one of this widget's processes? With a scope, membership decides. Without one,
+    descent from its window's process or its launch process (reported only while it runs)."""
+    if scope_exists(state["_widget_unit"]):
+        return in_scope(pid, state["_widget_unit"])
+    return any(root > 1 and pid_descends_from(pid, root) for root in (state["_launcher_pid"], state["_widget_pid"]))
 
 
 def pid_descends_from(pid, ancestor):
@@ -187,6 +193,9 @@ class Service:
             wid = entry["id"]
             seen.add(wid)
             state = self.widgets.get(wid) or self.new_widget(wid)
+            if state["_widget_unit"] != entry.get("widget_unit", ""):
+                state["_widget_unit"] = entry.get("widget_unit", "")  # a new launch: learn its app again
+                state["_desktop"] = ""
             self.learn_desktop(wid)
             updates = {
                 "AppId": entry.get("app_id", ""),
@@ -227,9 +236,12 @@ class Service:
             return
         try:
             with open(os.path.join(RUNTIME, f"{wid}.launch.json")) as source:
-                state["_desktop"] = json.load(source).get("desktop", "") or ""
+                launch = json.load(source)
         except (OSError, ValueError):
             return
+        if state["_widget_unit"] and launch.get("unit") != state["_widget_unit"]:
+            return  # another launch's file (e.g. left by a crashed session): wait for this one's
+        state["_desktop"] = launch.get("desktop", "") or ""
         if state["_desktop"] in self.badges:
             self.update(wid, {"Badge": self.badge(state["_desktop"])})
 

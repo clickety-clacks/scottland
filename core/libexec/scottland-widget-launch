@@ -204,7 +204,9 @@ def main():
     try:
         launch = os.path.join(RUNTIME, f"{widget_id}.launch.json")
         with open(f"{launch}.{os.getpid()}", "w") as out:
-            json.dump({"desktop": desktop_id or ""}, out)
+            # The launch it belongs to (unique per launch): a file left by a crashed session for
+            # a window with the same id isn't taken for this one's.
+            json.dump({"desktop": desktop_id or "", "unit": str(context.get("unit", ""))}, out)
         os.replace(f"{launch}.{os.getpid()}", launch)
     except OSError as error:
         log(f"couldn't write {launch}: {error}")

@@ -410,6 +410,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** Called when the halo or a corner is pressed (by the pointer, or by finger touch_id >= 0);
      *  the plugin starts the move or resize. The close dot is handled here. */
     std::function<void(wayfire_toplevel_view, handle_t, int touch_id)> on_press;
+    std::function<void(wayfire_toplevel_view)> on_close;  // the close dot (default: close the view)
 
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
@@ -796,7 +797,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             release();
             if (close)
             {
-                v->close();
+                on_close ? on_close(v) : v->close();
             }
         }
 
@@ -863,7 +864,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         {
             if (auto v = toplevel())
             {
-                v->close();
+                on_close ? on_close(v) : v->close();
             }
         }
     }
