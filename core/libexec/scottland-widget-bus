@@ -9,7 +9,7 @@ and lets apps learn their own state (org.scottland.Windows). It also listens for
 prefer a file to D-Bus (the default card).
 
 Driven by events, not polling: it subscribes to the compositor's IPC events (Scottland's
-scottland-widgets# and scottland-scale#, and window title/focus changes).
+scottland-widgets# and scottland-scale#, and windows opening, closing, retitling and focusing).
 
   scottland-widget-bus          run (started with the session; needs WAYFIRE_SOCKET)
 """
@@ -154,7 +154,8 @@ class Service:
         if not isinstance(views, list):
             views = []
         self.window_pids = {v.get("id"): int(v.get("pid", 0) or 0) for v in views if isinstance(v, dict)}
-        self.scales = {v["id"]: v.get("applied_scale", 1.0) for v in layout.get("views", [])}
+        # Target scales (what scottland-scale# announces), never a step of an animation.
+        self.scales = {v["id"]: v.get("target_scale", v.get("applied_scale", 1.0)) for v in layout.get("views", [])}
         seen = set()
         for entry in reply.get("widgets", []):
             wid = entry["id"]
@@ -283,7 +284,8 @@ class Service:
     def watch_compositor(self):
         events = Ipc()
         reply = events.call("window-rules/events/watch", {
-            "events": ["scottland-widgets#", "scottland-scale#", "view-title-changed", "view-focused"]})
+            "events": ["scottland-widgets#", "scottland-scale#", "view-title-changed", "view-focused",
+                       "view-mapped", "view-unmapped"]})
         if reply.get("result") != "ok":
             log(f"couldn't watch compositor events: {reply}")
             sys.exit(1)

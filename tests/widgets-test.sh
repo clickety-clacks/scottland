@@ -37,8 +37,19 @@ super_drag() {  # super_drag x1 y1 x2 y2
 
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
 test_widgets=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-widgets.XXXXXX")
-mkdir -p "$test_widgets/sleeper"
-printf 'id = "sleeper"\napps = ["^scottland-test-sleeper$"]\nexec = "sleep 120"\n' >"$test_widgets/sleeper/widget.toml"
+mkdir -p "$test_widgets/sleeper" "$test_widgets/sender"
+# Never shows a window, ignores SIGTERM, and leaves a child behind: all of it must still end.
+cat >"$test_widgets/sleeper/widget.toml" <<'TOML'
+id = "sleeper"
+apps = ["^scottland-test-sleeper$"]
+exec = 'sh -c "trap \"\" TERM; sleep 121 & wait"'
+TOML
+# A real widget (a terminal window) that sends its app a message over the mailbox (WG11).
+cat >"$test_widgets/sender/widget.toml" <<'TOML'
+id = "sender"
+apps = ["^scottland-test-sender$"]
+exec = 'foot -T sender-widget sh -c "sleep 2; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Send s \"{\\\"hi\\\": 1}\"; exec sleep 600"'
+TOML
 export SCOTTLAND_WIDGET_PATH=$test_widgets
 
 tests/headless.sh stop >/dev/null 2>&1
@@ -188,15 +199,88 @@ sleep 1.5
 read -r ax ay aw ah <<<"$(view_field widget-app4 "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 1
-sleeper=$(ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['widget_pid'] if w else '')")
+unit=$(ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['widget_unit'] if w else '')")
+procs=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/$unit/cgroup.procs" 2>/dev/null | tr '\n' ' ')
+check "WG5 (timeout) the widget runs in its own scope, with its child" [ "$(echo $procs | wc -w)" -ge 2 ]
 check "WG5 (timeout) the widget launched and the app's window is hidden" \
   [ "$(view_field widget-app4 "v['hidden']")" = True ]
-sleep 9
+sleep 11
 check "WG5 (timeout) the app's window is restored after 8 s" \
   [ "$(view_field widget-app4 "not v['hidden'] and not v['widgetized']")" = True ]
-check "WG5 (timeout) the widget's process was ended" bash -c "[ -n '$sleeper' ] && ! kill -0 '$sleeper' 2>/dev/null"
+check "WG5 (timeout) every process of the widget was ended (it ignored SIGTERM; its child too)" \
+  bash -c "for p in $procs; do kill -0 \$p 2>/dev/null && exit 1; done; ! systemctl --user is-active --quiet '$unit'"
 h window-rules/close-view "{\"id\": $(view_field widget-app4 "v['id']")}"
 sleep 1
+
+# WG9/WG11: a real widget sends its app a message; live title; Restore() over D-Bus.
+(tests/headless.sh run foot --app-id scottland-test-sender -T sender-app -W 40x10 sh -c 'sleep 6; printf "\033]2;sender-renamed\007"; exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field sender-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+sender_pid=$(ipc window-rules/list-views | python3 -c "import json,sys; print([v['pid'] for v in json.load(sys.stdin) if v['title']=='sender-app'][0])")
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 5
+id=$(widget_id)
+check "WG11 a widget's Send reaches its app (Received with the app's pid)" \
+  grep -q "Received (uint32 $sender_pid, uint64 $id, '{\"hi\": 1}')" "$signals"
+sleep 2
+check "WG9 the Title property follows the app's title live" \
+  [ "$(bus get-property org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Title)" = 's "sender-renamed"' ]
+check "WG9 ...with a PropertiesChanged signal" grep -q "sender-renamed" "$signals"
+bus call org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Restore >/dev/null 2>&1
+sleep 1.5
+check "WG9 Restore() brings the app's window back and the widget goes" \
+  [ "$(view_field sender-renamed "not v['hidden'] and not v['widgetized']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = True/0 ]
+h window-rules/close-view "{\"id\": $(view_field sender-renamed "v['id']")}"
+sleep 1
+
+# WG12: an app with two windows (one foot server); GetState, asked from the app's own process
+# tree, reports the first window's target scale, then, once that window closes while the
+# other keeps focus, the remaining window's.
+(tests/headless.sh run foot --server >/dev/null 2>&1 &)
+sleep 1
+ask=$XDG_RUNTIME_DIR/scottland-widgets-test-ask
+rm -f "$ask".*
+(tests/headless.sh run footclient -T two-a -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1
+read -r ax ay aw ah <<<"$(view_field two-a "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w * 4 / 5)) $((ay + ah / 2))
+sleep 1
+(tests/headless.sh run footclient -T two-b -W 40x10 sh -c "for n in 1 2; do while [ ! -e $ask.go\$n ]; do sleep 0.2; done; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.Windows GetState > $ask.answer\$n; done; exec sleep 3600" >/dev/null 2>&1 &)
+sleep 1
+read -r bx by bw bh <<<"$(view_field two-b "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+h stipc/move_cursor "{\"x\":$((bx + bw / 2)),\"y\":$((by + bh / 2))}"; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'
+sleep 0.5
+target_a=$(view_field two-a "round(v['target_scale'], 3)")
+touch "$ask.go1"; sleep 1.5
+check "WG12 a two-window app: GetState gives the first window's target scale ($target_a)" \
+  python3 -c "import sys; w=open('$ask.answer1').read().split(); sys.exit(0 if w[1]=='false' and abs(float(w[2]) - $target_a) < 0.005 and $target_a < 0.99 else 1)"
+h window-rules/close-view "{\"id\": $(view_field two-a "v['id']")}"
+sleep 1
+touch "$ask.go2"; sleep 1.5
+check "WG12 ...after the first window closes (focus unchanged), the remaining window's 100%" \
+  grep -q "^bd false 1$" "$ask.answer2"
+h window-rules/close-view "{\"id\": $(view_field two-b "v['id']")}"
+rm -f "$ask".*
+sleep 1
+
+# A reload after an update replaces a widget service running older code (and keeps a current one).
+hooks_dir=$(tests/headless.sh run sh -c 'echo $SCOTTLAND_HOOKS')
+bus_pid_file=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.widget-bus.pid
+old_bus=$(cat "$bus_pid_file")
+tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 1
+check "reload keeps a widget service that runs the installed code" [ "$(cat "$bus_pid_file")" = "$old_bus" ]
+touch "$(readlink -f "$hooks_dir/libexec/scottland-widget-bus")"
+tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 2
+new_bus=$(cat "$bus_pid_file")
+check "reload replaces a widget service older than the installed code" \
+  bash -c "[ '$new_bus' != '$old_bus' ] && ! kill -0 '$old_bus' 2>/dev/null && kill -0 '$new_bus' && tests/headless.sh run busctl --user status org.scottland.Widgets >/dev/null"
+
+# WG10: the session's palette file (what the card's colors follow).
+palette=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.palette.json
+tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" once
+check "WG10 the session's palette file has every color" \
+  python3 -c "import json,re,sys; p=json.load(open('$palette')); sys.exit(0 if p['scheme'] in ('light','dark') and all(re.fullmatch('#[0-9a-fA-F]{6}', p[k]) for k in ('background','foreground','muted','accent','alert')) else 1)"
+rm -f "$palette"
 
 # WG5: unloading the plugin (a reload) gives the app its window back and ends the widget; the
 # widget service drops its objects.

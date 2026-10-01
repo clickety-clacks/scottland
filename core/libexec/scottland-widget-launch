@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sys
 import time
 import tomllib
@@ -125,7 +126,7 @@ def packages():
                 continue
             widget_id = data.get("id") or name
             if widget_id not in found and data.get("exec"):
-                found[widget_id] = {**data, "id": widget_id, "dir": os.path.join(folder, name)}
+                found[widget_id] = {**data, "id": widget_id, "dir": os.path.abspath(os.path.join(folder, name))}
     return found
 
 
@@ -211,6 +212,18 @@ def main():
     # Placeholders are filled per word after splitting, so values with spaces stay one argument.
     argv = [re.sub(r"%(.)", lambda m: values.get(m.group(1), m.group(0)), word)
             for word in shlex.split(widget["exec"])]
+    # In its own systemd scope (named by the compositor), so ending the widget ends every process
+    # it started; else in its own session, at least apart from the compositor's.
+    unit = str(context.get("unit", ""))
+    if unit and shutil.which("systemd-run") and os.path.exists(
+            os.path.join(os.environ.get("XDG_RUNTIME_DIR", ""), "systemd", "private")):
+        argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}",
+                "--property=TimeoutStopSec=2", "--", *argv]
+    else:
+        try:
+            os.setsid()
+        except OSError:
+            pass  # already leads its own group
     log(f"{app_id} ({desktop_id or 'no .desktop'}): widget {widget['id']} from {why}: {argv}")
     os.chdir(widget["dir"])
     try:

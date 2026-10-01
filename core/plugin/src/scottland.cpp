@@ -1095,6 +1095,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
+            announced_scale.erase(toplevel->get_id());
             if (auto frame = frame_of(toplevel, false))
             {
                 forget_owner(frame);
@@ -1106,7 +1107,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (auto link = link_of_window(toplevel))
             {
                 auto widget = wf::toplevel_cast(link->widget.lock());
-                pid_t launcher = link->launcher;
+                auto launcher = link->launcher;
                 widget_links.erase(uint64_t(link->window_id));
                 announce_widgets();
                 close_view_or_process(widget, launcher);
@@ -1133,12 +1134,31 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // and a widget program is launched in its place; the widget's window, recognized by its
     // process, floats where the window was dropped at 100%. The two are tied: closing either
     // closes both; dragging the widget off the rail restores the window there.
+    /** A widget's processes: its systemd scope (the launcher runs the widget in one, so ending
+     *  it ends every process the widget started, escalating to SIGKILL), and as a fallback where
+     *  there's no systemd, a pidfd on its first process, opened at launch so a recycled process
+     *  id is never signalled. */
+    struct widget_process_t
+    {
+        pid_t pid = 0;
+        int pidfd = -1;
+        std::string unit;
+        ~widget_process_t()
+        {
+            if (pidfd >= 0)
+            {
+                ::close(pidfd);
+            }
+        }
+    };
+    using widget_process = std::shared_ptr<widget_process_t>;
+
     struct widget_link_t
     {
         uint64_t window_id = 0;
         std::weak_ptr<wf::view_interface_t> window;  // the app's window (hidden)
         std::weak_ptr<wf::view_interface_t> widget;  // the widget's window, once it maps
-        pid_t launcher = 0;                          // the widget process (or its shell)
+        widget_process launcher;                     // the widget's processes
         wf::output_t *output = nullptr;
         wf::pointf_t drop;                           // where the window was dropped (output coords)
         std::string rail;                            // "left" or "right"
@@ -1279,40 +1299,58 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    /** Widget processes asked to go, ended if they're still running at the deadline. Held as
-     *  pidfds, so a recycled process id is never signalled. */
+
+    /** Widgets asked to go, ended if they're still running at their deadline. */
     struct ending_t
     {
-        int pidfd;
+        widget_process process;
         uint32_t deadline;
     };
     std::vector<ending_t> endings;
     wf::wl_timer<true> ending_timer;
 
-    /** End widget process `pid` after `delay_ms` (0: now), unless it has gone by then. */
-    void end_process(pid_t pid, uint32_t delay_ms)
+    void end_now(const widget_process& process)
     {
-        int fd = pid > 1 ? pidfd_open(pid, 0) : -1;
-        if (fd < 0)
+        if (!process)
         {
-            return;  // already gone
+            return;
+        }
+
+        if (!process->unit.empty())
+        {
+            // Stopping a scope that already ended (the widget exited) does nothing.
+            wf::get_core().run("systemctl --user stop --no-block " + shell_quote(process->unit) +
+                " >/dev/null 2>&1");
+        }
+
+        if (process->pidfd >= 0)
+        {
+            pidfd_send_signal(process->pidfd, SIGTERM, nullptr, 0);  // fails harmlessly if it exited
+        }
+    }
+
+    /** End a widget's processes after `delay_ms` (0: now). */
+    void end_process(const widget_process& process, uint32_t delay_ms)
+    {
+        if (!process)
+        {
+            return;
         }
 
         if (delay_ms == 0)
         {
-            pidfd_send_signal(fd, SIGTERM, nullptr, 0);
-            ::close(fd);
+            end_now(process);
             return;
         }
 
-        endings.push_back({fd, now_msec() + delay_ms});
+        endings.push_back({process, now_msec() + delay_ms});
         if (!ending_timer.is_connected())
         {
             ending_timer.set_timeout(250, [=] () { return end_due_processes(false); });
         }
     }
 
-    /** Signal the processes past their deadline (all of them with `all`); true while some wait. */
+    /** End the widgets past their deadline (all of them with `all`); true while some wait. */
     bool end_due_processes(bool all)
     {
         auto now = now_msec();
@@ -1323,8 +1361,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 return false;
             }
 
-            pidfd_send_signal(e.pidfd, SIGTERM, nullptr, 0);  // fails harmlessly if it exited
-            ::close(e.pidfd);
+            end_now(e.process);
             return true;
         }), endings.end());
         return !endings.empty();
@@ -1332,15 +1369,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** Close a widget's window; one that won't go is ended. A widget that never showed a window
      *  (still launching) is ended now. */
-    void close_view_or_process(wayfire_view view, pid_t pid)
+    void close_view_or_process(wayfire_view view, const widget_process& process)
     {
         if (view)
         {
             view->close();
-            end_process(pid, 3000);  // a moment to close on its own first
+            end_process(process, 3000);  // a moment to close on its own first
         } else
         {
-            end_process(pid, 0);
+            end_process(process, 0);
         }
     }
 
@@ -1393,13 +1430,27 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         context["title"]  = view->get_title();
         context["pid"]    = (int64_t)view_pid(view);
         context["rail"]   = link.rail;
-        link.launcher = wf::get_core().run(shell_quote(widget_launcher()) + " " +
+        auto process = std::make_shared<widget_process_t>();
+        const char *display = getenv("WAYLAND_DISPLAY");
+        process->unit = "scottland-widget-" + std::string(display ? display : "wayland") + "-" +
+            std::to_string(link.window_id) + "-" + std::to_string(link.launched_at) + ".scope";
+        for (auto& c : process->unit)
+        {
+            c = (std::isalnum((unsigned char)c) || (c == '-') || (c == '.')) ? c : '_';
+        }
+
+        context["unit"] = process->unit;  // the launcher runs the widget in this scope
+        process->pid = wf::get_core().run(shell_quote(widget_launcher()) + " " +
             shell_quote(context.serialize()));
-        if (link.launcher <= 0)
+        if (process->pid <= 0)
         {
             LOGE("scottland: couldn't launch a widget for ", view->get_app_id());
             return;
         }
+
+        // Taken right away, while the process is certainly the one just started.
+        process->pidfd = pidfd_open(process->pid, 0);
+        link.launcher  = process;
 
         set_hidden(view, true);
         if (wf::get_core().seat->get_active_view() == view)
@@ -1449,7 +1500,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         pid_t pid = view_pid(view);
         for (auto& [id, link] : widget_links)
         {
-            if (link.widget.lock() || !descends_from(pid, link.launcher))
+            if (link.widget.lock() || !link.launcher || !descends_from(pid, link.launcher->pid))
             {
                 continue;
             }
@@ -1515,7 +1566,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         uint64_t id = link.window_id;
-        pid_t launcher = link.launcher;
+        auto launcher = link.launcher;
         close_view_or_process(widget, launcher);
         widget_links.erase(id);
         announce_widgets();
@@ -1526,7 +1577,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto window = wf::toplevel_cast(link.window.lock());
         auto widget = wf::toplevel_cast(link.widget.lock());
-        pid_t launcher = link.launcher;
+        auto launcher = link.launcher;
         widget_links.erase(uint64_t(link.window_id));
         announce_widgets();
         close_view_or_process(widget, launcher);
@@ -1598,7 +1649,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["app_id"] = window ? window->get_app_id() : "";
             entry["title"]  = window ? window->get_title() : "";
             entry["pid"]    = (int64_t)(window ? view_pid(window) : 0);
-            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : link.launcher);
+            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : (link.launcher ? link.launcher->pid : 0));
+            entry["widget_unit"] = link.launcher ? link.launcher->unit : "";
             entry["rail"]    = link.rail;
             entry["focused"] = widget && (active == widget);
             entry["urgent"]  = wants_attention.count(id) > 0;
@@ -2475,6 +2527,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto transformer = view->get_transformed_node()->get_transformer<
                 wf::scene::view_2d_transformer_t>(TRANSFORMER);
             entry["applied_scale"] = transformer ? transformer->scale_x : 1.0;
+            // Where it's going, exactly as scottland-scale# announced it, not a step of an animation.
+            auto announced = announced_scale.find(view->get_id());
+            entry["target_scale"] = announced != announced_scale.end() ? announced->second : displayed_scale(view);
             if (auto frame = frame_of(view, false))
             {
                 auto r = frame->screen_rect();

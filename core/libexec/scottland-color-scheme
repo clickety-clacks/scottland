@@ -135,18 +135,23 @@ def provider_palette():
     return {}
 
 
+PALETTE_LOCK = threading.Lock()  # the scheme and accent watchers both write it
+
+
 def write_palette(scheme, accent=None):
     palette = {"scheme": scheme, **NEUTRAL.get(scheme, NEUTRAL["dark"]), **provider_palette()}
     if accent:
         palette["accent"] = accent
     path = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".palette.json")
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(f"{path}.{os.getpid()}", "w") as out:
-            json.dump(palette, out)
-        os.replace(f"{path}.{os.getpid()}", path)
-    except OSError as error:
-        print(f"scottland-color-scheme: {path}: {error}", file=sys.stderr)
+    temporary = f"{path}.{os.getpid()}.{threading.get_ident()}"
+    with PALETTE_LOCK:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(temporary, "w") as out:
+                json.dump(palette, out)
+            os.replace(temporary, path)
+        except OSError as error:
+            print(f"scottland-color-scheme: {path}: {error}", file=sys.stderr)
 
 
 def set_option(name, value):
@@ -167,16 +172,42 @@ def apply(scheme, accent=None):
 PID_FILE = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
 
 
-def watcher_running():
+def watcher_pid():
     try:
         with open(PID_FILE) as source:
-            os.kill(int(source.read().strip()), 0)
-        return True
+            pid = int(source.read().strip())
+        with open(f"/proc/{pid}/cmdline", "rb") as source:
+            if b"scottland-color-scheme" in source.read():
+                return pid
     except (OSError, ValueError):
+        pass
+    return None
+
+
+def watcher_running():
+    """A watcher runs, and it runs this code: one started before an update is replaced."""
+    pid = watcher_pid()
+    if pid is None:
         return False
+    try:
+        outdated = os.path.getmtime(os.path.realpath(__file__)) > os.stat(f"/proc/{pid}").st_mtime
+    except OSError:
+        return False
+    if outdated:
+        try:
+            # Its own session when ensure started it: end its monitors along with it.
+            os.killpg(pid, 15) if os.getpgid(pid) == pid else os.kill(pid, 15)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def watch():
+    try:
+        os.setsid()  # its monitors share its session, so replacing it ends them too
+    except OSError:
+        pass
     os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
     with open(PID_FILE, "w") as target:
         target.write(f"{os.getpid()}\n")

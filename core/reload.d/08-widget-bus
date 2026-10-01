@@ -1,10 +1,15 @@
 #!/bin/sh
-# Start the widget service if this session doesn't have one (it predates the service, or it died).
+# Start the widget service if this session doesn't have one (it predates the service, or it died),
+# and replace one that runs older code than what's installed (an update, then a reload).
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+service="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-widget-bus"
 pid=$(cat "$runtime/${WAYLAND_DISPLAY:-wayland}.widget-bus.pid" 2>/dev/null)
 if [ -n "$pid" ] && grep -q scottland-widget-bus "/proc/$pid/cmdline" 2>/dev/null; then
-  exit 0
+  [ "$(readlink -f "$service")" -nt "/proc/$pid" ] || exit 0
+  kill "$pid"
+  # It must let go of its bus name before the new one can take it.
+  for _ in $(seq 50); do [ -d "/proc/$pid" ] || break; sleep 0.1; done
 fi
 state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
 mkdir -p "$state"
-setsid -f "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-widget-bus" 2>>"$state/widgets.log" </dev/null >/dev/null
+setsid -f "$service" 2>>"$state/widgets.log" </dev/null >/dev/null
