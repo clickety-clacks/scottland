@@ -15,6 +15,7 @@ scheme, background, foreground, muted, accent, alert), for widgets and other Sco
 neutral light or dark colors, overlaid by a provider's full palette (accent.d providers that
 print a JSON object of those colors when run with --palette).
 """
+import hashlib
 import json
 import os
 import re
@@ -172,28 +173,31 @@ def apply(scheme, accent=None):
 PID_FILE = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
 
 
-def watcher_pid():
+def fingerprint():
+    with open(os.path.realpath(__file__), "rb") as source:
+        return hashlib.sha256(source.read()).hexdigest()
+
+
+def watcher():
+    """(pid, fingerprint of its code) of this session's watcher, or (None, None)."""
     try:
         with open(PID_FILE) as source:
-            pid = int(source.read().strip())
+            lines = source.read().split()
+        pid = int(lines[0])
         with open(f"/proc/{pid}/cmdline", "rb") as source:
             if b"scottland-color-scheme" in source.read():
-                return pid
-    except (OSError, ValueError):
+                return pid, (lines[1] if len(lines) > 1 else "")
+    except (OSError, ValueError, IndexError):
         pass
-    return None
+    return None, None
 
 
 def watcher_running():
     """A watcher runs, and it runs this code: one started before an update is replaced."""
-    pid = watcher_pid()
+    pid, running = watcher()
     if pid is None:
         return False
-    try:
-        outdated = os.path.getmtime(os.path.realpath(__file__)) > os.stat(f"/proc/{pid}").st_mtime
-    except OSError:
-        return False
-    if outdated:
+    if running != fingerprint():
         try:
             # Its own session when ensure started it: end its monitors along with it.
             os.killpg(pid, 15) if os.getpgid(pid) == pid else os.kill(pid, 15)
@@ -210,7 +214,7 @@ def watch():
         pass
     os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
     with open(PID_FILE, "w") as target:
-        target.write(f"{os.getpid()}\n")
+        target.write(f"{os.getpid()}\n{fingerprint()}\n")
     applied = current()
     apply(applied)
     threading.Thread(target=watch_accent, daemon=True).start()

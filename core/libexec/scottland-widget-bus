@@ -13,6 +13,7 @@ scottland-widgets# and scottland-scale#, and windows opening, closing, retitling
 
   scottland-widget-bus          run (started with the session; needs WAYFIRE_SOCKET)
 """
+import hashlib
 import json
 import os
 import socket
@@ -112,6 +113,11 @@ class Ipc:
         return data
 
 
+def fingerprint():
+    with open(os.path.realpath(__file__), "rb") as source:
+        return hashlib.sha256(source.read()).hexdigest()
+
+
 def pid_descends_from(pid, ancestor):
     for _ in range(8):
         if pid <= 1:
@@ -153,7 +159,9 @@ class Service:
             return
         if not isinstance(views, list):
             views = []
-        self.window_pids = {v.get("id"): int(v.get("pid", 0) or 0) for v in views if isinstance(v, dict)}
+        # Open windows only: Wayfire also lists views that exist but aren't mapped.
+        self.window_pids = {v.get("id"): int(v.get("pid", 0) or 0) for v in views
+                            if isinstance(v, dict) and v.get("mapped", True) and v.get("role") == "toplevel"}
         # Target scales (what scottland-scale# announces), never a step of an animation.
         self.scales = {v["id"]: v.get("target_scale", v.get("applied_scale", 1.0)) for v in layout.get("views", [])}
         seen = set()
@@ -398,7 +406,8 @@ class Service:
         # One service per session: the reload hook checks this before starting another.
         pid_file = os.path.join(os.path.dirname(os.path.dirname(RUNTIME)), DISPLAY + ".widget-bus.pid")
         with open(pid_file, "w") as out:
-            out.write(f"{os.getpid()}\n")
+            # Its pid and a fingerprint of the code it runs: a reload replaces it once that differs.
+            out.write(f"{os.getpid()}\n{fingerprint()}\n")
         Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE, self.on_bus, None,
                          lambda *_: (log("couldn't own org.scottland.Widgets (another service?)"), sys.exit(1)))
         self.watch_compositor()

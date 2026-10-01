@@ -1,11 +1,14 @@
 #!/bin/sh
 # Start the widget service if this session doesn't have one (it predates the service, or it died),
-# and replace one that runs older code than what's installed (an update, then a reload).
+# and replace one that runs other code than what's installed (an update, then a reload): the
+# service records a fingerprint of its code next to its pid.
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
 service="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-widget-bus"
-pid=$(cat "$runtime/${WAYLAND_DISPLAY:-wayland}.widget-bus.pid" 2>/dev/null)
+pid_file="$runtime/${WAYLAND_DISPLAY:-wayland}.widget-bus.pid"
+pid=$(sed -n 1p "$pid_file" 2>/dev/null)
 if [ -n "$pid" ] && grep -q scottland-widget-bus "/proc/$pid/cmdline" 2>/dev/null; then
-  [ "$(readlink -f "$service")" -nt "/proc/$pid" ] || exit 0
+  installed=$(sha256sum "$(readlink -f "$service")" | cut -d" " -f1)
+  [ "$(sed -n 2p "$pid_file")" = "$installed" ] && exit 0
   kill "$pid"
   # It must let go of its bus name before the new one can take it.
   for _ in $(seq 50); do [ -d "/proc/$pid" ] || break; sleep 0.1; done

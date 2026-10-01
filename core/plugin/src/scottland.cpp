@@ -1267,6 +1267,29 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return false;
     }
 
+    /** Is process `pid` in systemd scope `unit`? (A widget's processes stay in its scope even
+     *  when a launcher forks and exits.) */
+    static bool in_scope(pid_t pid, const std::string& unit)
+    {
+        if ((pid <= 1) || unit.empty())
+        {
+            return false;
+        }
+
+        std::ifstream cgroup("/proc/" + std::to_string(pid) + "/cgroup");
+        std::string line;
+        while (std::getline(cgroup, line))
+        {
+            if ((line.size() > unit.size()) && (line.compare(line.size() - unit.size() - 1, std::string::npos,
+                "/" + unit) == 0))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     widget_link_t *link_of_window(wayfire_view view)
     {
         auto found = view ? widget_links.find(view->get_id()) : widget_links.end();
@@ -1305,9 +1328,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         widget_process process;
         uint32_t deadline;
+        bool terminated = false;  // SIGTERM sent: SIGKILL at the next deadline if it's still there
     };
     std::vector<ending_t> endings;
     wf::wl_timer<true> ending_timer;
+
+    static bool alive(const widget_process& process)
+    {
+        return process && (process->pidfd >= 0) && (pidfd_send_signal(process->pidfd, 0, nullptr, 0) == 0);
+    }
 
     void end_now(const widget_process& process)
     {
@@ -1340,28 +1369,60 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (delay_ms == 0)
         {
             end_now(process);
-            return;
+            delay_ms = 2000;  // then SIGKILL, if it ignored that (no scope to do it for us)
+            endings.push_back({process, now_msec() + delay_ms, true});
+        } else
+        {
+            endings.push_back({process, now_msec() + delay_ms});
         }
 
-        endings.push_back({process, now_msec() + delay_ms});
         if (!ending_timer.is_connected())
         {
             ending_timer.set_timeout(250, [=] () { return end_due_processes(false); });
         }
     }
 
-    /** End the widgets past their deadline (all of them with `all`); true while some wait. */
+    /** End the widgets past their deadline: SIGTERM (and their scope stopped), then SIGKILL two
+     *  seconds later for a first process still there. With `all` (unloading), everything now,
+     *  waiting at most half a second before the SIGKILLs. True while some wait. */
     bool end_due_processes(bool all)
     {
         auto now = now_msec();
+        for (auto& e : endings)
+        {
+            if ((all || ((int32_t)(e.deadline - now) <= 0)) && !e.terminated)
+            {
+                end_now(e.process);
+                e.terminated = true;
+                e.deadline   = now + 2000;
+            }
+        }
+
+        if (all)
+        {
+            for (int waited = 0; waited < 500; waited += 20)
+            {
+                if (std::none_of(endings.begin(), endings.end(), [] (auto& e) { return alive(e.process); }))
+                {
+                    break;
+                }
+
+                usleep(20 * 1000);
+            }
+        }
+
         endings.erase(std::remove_if(endings.begin(), endings.end(), [&] (const ending_t& e)
         {
-            if (!all && ((int32_t)(e.deadline - now) > 0))
+            if (!all && (!e.terminated || ((int32_t)(e.deadline - now) > 0)))
             {
                 return false;
             }
 
-            end_now(e.process);
+            if (alive(e.process))
+            {
+                pidfd_send_signal(e.process->pidfd, SIGKILL, nullptr, 0);
+            }
+
             return true;
         }), endings.end());
         return !endings.empty();
@@ -1500,7 +1561,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         pid_t pid = view_pid(view);
         for (auto& [id, link] : widget_links)
         {
-            if (link.widget.lock() || !link.launcher || !descends_from(pid, link.launcher->pid))
+            if (link.widget.lock() || !link.launcher ||
+                !(in_scope(pid, link.launcher->unit) || descends_from(pid, link.launcher->pid)))
             {
                 continue;
             }

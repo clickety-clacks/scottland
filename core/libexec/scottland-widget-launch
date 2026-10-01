@@ -215,10 +215,11 @@ def main():
     # In its own systemd scope (named by the compositor), so ending the widget ends every process
     # it started; else in its own session, at least apart from the compositor's.
     unit = str(context.get("unit", ""))
-    if unit and shutil.which("systemd-run") and os.path.exists(
+    if unit and os.environ.get("SCOTTLAND_WIDGET_SCOPE") != "0" and shutil.which("systemd-run") and os.path.exists(
             os.path.join(os.environ.get("XDG_RUNTIME_DIR", ""), "systemd", "private")):
+        # --expand-environment=no: the arguments are final (a title may contain "$").
         argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}",
-                "--property=TimeoutStopSec=2", "--", *argv]
+                "--expand-environment=no", "--property=TimeoutStopSec=2", "--", *argv]
     else:
         try:
             os.setsid()

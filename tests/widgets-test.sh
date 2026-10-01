@@ -37,7 +37,15 @@ super_drag() {  # super_drag x1 y1 x2 y2
 
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
 test_widgets=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-widgets.XXXXXX")
-mkdir -p "$test_widgets/sleeper" "$test_widgets/sender"
+mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon"
+# Forks its window off and exits at once; gets the app's title (with "$" in it) as an argument.
+cat >"$test_widgets/daemon/widget.toml" <<'TOML'
+id = "daemon"
+apps = ["^scottland-test-daemon$"]
+exec = "./start %t"
+TOML
+printf '#!/bin/sh\nsetsid -f foot -T "$1" sh -c "exec sleep 600"\nexit 0\n' >"$test_widgets/daemon/start"
+chmod +x "$test_widgets/daemon/start"
 # Never shows a window, ignores SIGTERM, and leaves a child behind: all of it must still end.
 cat >"$test_widgets/sleeper/widget.toml" <<'TOML'
 id = "sleeper"
@@ -212,6 +220,33 @@ check "WG5 (timeout) every process of the widget was ended (it ignored SIGTERM; 
 h window-rules/close-view "{\"id\": $(view_field widget-app4 "v['id']")}"
 sleep 1
 
+# WG2/WG8: a widget whose launcher forks its window off and exits is still adopted (by its scope),
+# and its arguments reach it literally ("$" isn't expanded on the way).
+weird='${HOME} $$ two words'
+(tests/headless.sh run foot --app-id scottland-test-daemon -T "$weird" -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin)['views'] if v.get('app_id')=='scottland-test-daemon' and not v['widget']][0]; f=v['frame']
+print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 3.5
+check "WG2 a widget that forks its window off and exits is adopted (placed, at 100%)" \
+  python3 -c "
+import json,subprocess,sys
+w=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views'] if v['widget']]
+f=w[0]['frame'] if w else {}
+sys.exit(0 if len(w)==1 and round(w[0]['applied_scale'],2)==1.0 and f['x'] + f['width'] >= $screen_w - 40 else 1)"
+check "WG8 its argument arrived literally (\$ not expanded)" \
+  python3 -c "
+import json,subprocess,sys
+w=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views'] if v['widget']]
+sys.exit(0 if w and w[0]['title']==sys.argv[1] else 1)" "$weird"
+h window-rules/close-view "{\"id\": $(views | python3 -c "import json,sys; print([v['id'] for v in json.load(sys.stdin)['views'] if v['widget']][0])")}"
+sleep 2
+check "WG5 ...and closing it closes the app" \
+  [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v.get('app_id')=='scottland-test-daemon'))")" = 0 ]
+
 # WG9/WG11: a real widget sends its app a message; live title; Restore() over D-Bus.
 (tests/headless.sh run foot --app-id scottland-test-sender -T sender-app -W 40x10 sh -c 'sleep 6; printf "\033]2;sender-renamed\007"; exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
@@ -266,12 +301,12 @@ sleep 1
 # A reload after an update replaces a widget service running older code (and keeps a current one).
 hooks_dir=$(tests/headless.sh run sh -c 'echo $SCOTTLAND_HOOKS')
 bus_pid_file=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.widget-bus.pid
-old_bus=$(cat "$bus_pid_file")
+old_bus=$(sed -n 1p "$bus_pid_file")
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 1
-check "reload keeps a widget service that runs the installed code" [ "$(cat "$bus_pid_file")" = "$old_bus" ]
-touch "$(readlink -f "$hooks_dir/libexec/scottland-widget-bus")"
+check "reload keeps a widget service that runs the installed code" [ "$(sed -n 1p "$bus_pid_file")" = "$old_bus" ]
+printf '%s\n%s\n' "$old_bus" "fingerprint-of-older-code" >"$bus_pid_file"  # as if it predated an update
 tests/headless.sh run "$hooks_dir/reload.d/08-widget-bus"; sleep 2
-new_bus=$(cat "$bus_pid_file")
+new_bus=$(sed -n 1p "$bus_pid_file")
 check "reload replaces a widget service older than the installed code" \
   bash -c "[ '$new_bus' != '$old_bus' ] && ! kill -0 '$old_bus' 2>/dev/null && kill -0 '$new_bus' && tests/headless.sh run busctl --user status org.scottland.Widgets >/dev/null"
 
@@ -313,6 +348,25 @@ super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 5
 check "WG5 the app's window closing closes its widget" \
   [ "$(views | python3 -c "import json,sys; print(len(json.load(sys.stdin)['views']))")" = 0 ]
+
+# WG5 without systemd scopes (fallback): a widget ignoring SIGTERM still has its first process
+# ended (SIGKILL after 2 s).
+[ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null; monitor_pid=
+tests/headless.sh stop >/dev/null 2>&1
+SCOTTLAND_WIDGET_SCOPE=0 tests/headless.sh start --widgets >/dev/null || { echo "couldn't restart headless Scottland"; exit 1; }
+h wayfire/set-config-options '{"scottland/sounds":false}'
+(tests/headless.sh run foot --app-id scottland-test-sleeper -T fallback-app -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field fallback-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 1
+first=$(ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['widget_pid'] if w else '')")
+check "WG5 (no scope) the widget runs outside any scope" \
+  bash -c "[ -n '$first' ] && ! grep -q 'scottland-widget-' /proc/$first/cgroup"
+sleep 11.5
+check "WG5 (no scope) its first process, which ignored SIGTERM, was ended" \
+  bash -c "! kill -0 '$first' 2>/dev/null || grep -q '^State:.*Z' /proc/$first/status"
+check "WG5 (no scope) the app's window is back" [ "$(view_field fallback-app "not v['hidden']")" = True ]
 
 echo
 [ "$fails" -eq 0 ] && echo "all widget checks passed" || echo "$fails check(s) failed"
