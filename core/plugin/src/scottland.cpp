@@ -1964,6 +1964,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 wf::move_view_to_output(view, output, false);
             }
 
+            keep_above(view);
             place_widget(view, output, link.drop);
             set_scale(view, 1.0);
             show_attention(link.window_id);  // asked before its widget appeared
@@ -2080,6 +2081,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             widget_links[link.window_id] = std::move(link);
             keep_above(widget);
             set_scale(widget, 1.0);
+            keep_in_place(widget_links[window->get_id()], widget);
         }
 
         announce_widgets();
@@ -2098,10 +2100,42 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
+    /** Put a widget where it belongs: centered on its drop point (its screen edge for a widget
+     *  wider than the rail), kept on screen. Only moves it if it isn't there. */
+    void keep_in_place(widget_link_t& link, wayfire_toplevel_view widget)
+    {
+        auto output = output_alive(link.output) ? link.output : widget->get_output();
+        if (!output)
+        {
+            return;
+        }
+
+        auto g = widget->get_geometry();
+        double width = output->get_relative_geometry().width;
+        // Its screen-edge side stays at the edge: the drop point's distance from the edge is
+        // measured from the widget's edge-side (a card that grows grows away from the edge).
+        wf::pointf_t at = link.drop;
+        if (link.rail == "right")
+        {
+            at.x = std::max(at.x, width - g.width / 2.0);
+        } else
+        {
+            at.x = std::min(at.x, g.width / 2.0);
+        }
+
+        auto before = g;
+        place_widget(widget, output, at);
+        auto placed = widget->get_geometry();
+        if ((placed.x != before.x) || (placed.y != before.y))
+        {
+            LOGI("scottland: widget for window ", link.window_id, " back in its place (", before.x, ",", before.y,
+                " -> ", placed.x, ",", placed.y, ")");
+        }
+    }
+
     /** Center the widget on `at`, kept wholly on screen, halo included. */
     void place_widget(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t at)
     {
-        keep_above(view);
         auto geometry = view->get_geometry();
         auto area = output ? output->workarea->get_workarea() : geometry;
         int inset = WIDGET_INSET;
@@ -2113,7 +2147,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             std::max((double)area.x, (double)(area.x + area.width - geometry.width)));
         double y = std::clamp(at.y - geometry.height / 2.0, (double)area.y,
             std::max((double)area.y, (double)(area.y + area.height - geometry.height)));
-        view->move(std::round(x), std::round(y));
+        if ((std::round(x) != geometry.x) || (std::round(y) != geometry.y))
+        {
+            view->move(std::round(x), std::round(y));
+        }
     }
 
     /** Keep the widget's window unseen (a preview, or one going away), or show it. Its frame is
@@ -2158,6 +2195,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 wf::move_view_to_output(widget, output, false);
             }
 
+            keep_above(widget);
             place_widget(widget, output, at);
             set_scale(widget, 1.0);
             set_widget_hidden(link, false);
@@ -2270,6 +2308,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 left = center.x < width / 2;  // kept a widget by the shape shown: its nearer rail
             }
 
+            link->drop = center;  // first: placing moves it, and moves put widgets at their drop point
             place_widget(view, output, center);
             auto placed_now = view->get_geometry();
             start_glide(view, center.x - (placed_now.x + placed_now.width / 2.0),
@@ -2999,6 +3038,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             bool continued = (last_drop.became == drag->view->get_id()) &&
                 ((int32_t)(now_msec() - last_drop_at) < DRAG_CHAIN_MS);
             stop_glide(drag->view);  // picked up again mid-glide: it's where it's drawn
+            dragged_widget = is_widget(drag->view) ? drag->view->get_id() : 0;
             drag_origin = origin_of(drag->view);
             if (continued)
             {
@@ -3254,6 +3294,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     drag_origin_t drag_origin;
     bool drag_cancelled = false;
+    uint64_t dragged_widget = 0;  // a widget being dragged, until its drop is handled
     static constexpr int DRAG_CHAIN_MS = 2000;  // a new drag of the same window within this continues the move
     drag_origin_t last_drop;
     uint32_t last_drop_at = 0;
@@ -3596,6 +3637,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             last_drop = {};  // the move is over
+            dragged_widget = 0;
 
             idle_neighbors.run_once([=] () { update_all_neighbors(); });
             return;
@@ -3678,6 +3720,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
+        dragged_widget = 0;
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
@@ -3709,19 +3752,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             update_neighbors(view->get_output());
 
-            // A widget that changes size (a card whose title changed) keeps its screen-edge side
-            // where it was and stays wholly on screen.
-            auto g = view->get_geometry();
-            auto link = link_of_widget(view);
-            if (link && !link->preview && (drag->view != view) && view->get_output() &&
-                ((g.width != ev->old_geometry.width) || (g.height != ev->old_geometry.height)))
+            // A widget's place is Scottland's: whatever moved or resized it (another plugin placing
+            // new windows, a card whose title changed), it goes back to its place for its drop
+            // point, wholly on screen, its screen-edge side against the edge (WG4).
+            if (auto link = link_of_widget(view); link && !link->preview && (drag->view != view) &&
+                (view->get_id() != dragged_widget))  // a drop is moving it: the drop decides
             {
-                auto old = ev->old_geometry;
-                double cx = link->rail == "right" ? old.x + old.width - g.width / 2.0 : old.x + g.width / 2.0;
-                double cy = old.y + old.height / 2.0;
-                place_widget(view, view->get_output(), {cx, cy});
-                auto placed = view->get_geometry();
-                link->drop = {placed.x + placed.width / 2.0, placed.y + placed.height / 2.0};
+                keep_in_place(*link, view);
             }
         }
 
