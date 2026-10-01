@@ -544,6 +544,14 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         return true;
     }
 
+    /** A window move takes over: stop keeping the last resized window centered. */
+    void stop_settling()
+    {
+        settle.disconnect();
+        on_geometry.disconnect();
+        recenter_view.reset();
+    }
+
   private:
     void end()
     {
@@ -1964,6 +1972,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 wf::move_view_to_output(view, output, false);
             }
 
+            if ((last_drop.became == 0) && (last_drop.first_view == link.window_id))
+            {
+                last_drop.became = view->get_id();  // dropped before it appeared: the move goes on through it
+            }
+
             keep_above(view);
             place_widget(view, output, link.drop);
             set_scale(view, 1.0);
@@ -2502,13 +2515,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         options.join_views = false;
         options.enable_snap_off = false;
         drag->start_drag(view, options);
+        note_drag_start();  // now, where the fingers began: the first update may be a while
         swipe_moving = true;
     }
 
     void swipe_update(double dx, double dy)
     {
-        if (!swipe_moving)
+        if (!swipe_moving || !drag->view)
         {
+            swipe_moving = false;  // its drag ended some other way
             return;
         }
 
@@ -2758,6 +2773,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         options.enable_snap_off = false;
         // Kept until the drag ends: the drag reports its start (on_drag_output) on the first motion.
         drag->start_drag(view, options);
+        note_drag_start();  // now, where the finger is: the drag may end before it moves
     }
 
     /** The lift's sound, synthesized (not a sample): a "bloop", like a bubble. A soft sine whose
@@ -3011,49 +3027,75 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     double drag_target = 1.0;     // the scale the dragged window is heading for
     double last_drag_center = 0;  // where the dragged window's center is shown (output coords)
 
+    // A drag's start, noted once per drag: where it was grabbed, where Esc sends it back, whether
+    // it continues the last move. Noted when the drag starts (Scottland's own drags: a three-
+    // finger swipe, a touch lift) or at its first motion (Wayfire's move plugin moves it at once),
+    // never later: a drag that ends before it moves must still keep the move's origin.
+    bool drag_started = false;
+    wf::pointf_t drag_start_cursor{0, 0};  // where the drag was grabbed (layout coords)
+    static constexpr double CLICK_SLOP = 6.0;  // a press and release within this is a click, not a move
+
+    void note_drag_start()
+    {
+        if (drag_started || !drag->view)
+        {
+            return;
+        }
+
+        drag_started = true;
+        drag_start_cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
+        // Every resize's after-care stops: it would move the window back toward its center.
+        for (auto& [output, instance] : output_instance)
+        {
+            instance->stop_settling();
+        }
+
+        // Remember where across the window it was grabbed. The drag keeps the grabbed point at
+        // the same fraction of the view's bounding box (which includes the halo margin), so
+        // measure it the same way, or the predicted center (and zone, and scale) drifts from
+        // where the window really lands.
+        auto output = drag->view->get_output();
+        auto cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
+        double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
+        // Use the window's resting box (its scaled width plus the halo margin), not the live
+        // bounding box: a just-lifted window is mid-bulge, which inflates the box for a moment.
+        auto geometry = drag->view->get_geometry();
+        double drawn  = geometry.width * displayed_scale(drag->view);
+        auto frame    = frame_of(drag->view, false);
+        drag_margin   = frame ? frame->margin() :
+            std::max(0.0, (drag->view->get_bounding_box().width - drawn) / 2.0);
+        double box   = drawn + 2 * drag_margin;
+        double left  = geometry.x + geometry.width / 2.0 - box / 2.0;
+        drag_relative_x = box > 0 ? (local_x - left) / box : 0.5;
+        // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
+        // reset on the touchpad, out of room), it's the same move: keep the first origin.
+        bool continued = (last_drop.became == drag->view->get_id()) &&
+            ((int32_t)(now_msec() - last_drop_at) < DRAG_CHAIN_MS);
+        stop_glide(drag->view);  // picked up again mid-glide: it's where it's drawn
+        dragged_widget = is_widget(drag->view) ? drag->view->get_id() : 0;
+        drag_origin = origin_of(drag->view);
+        if (continued)
+        {
+            auto view = drag_origin.view;
+            drag_origin = last_drop;
+            drag_origin.view = view;  // the window being dragged now (maybe the other form)
+        }
+
+        LOGI("scottland: drag start: window ", drag->view->get_id(), continued ? " continues the move" :
+            " starts a move", " (", (int32_t)(now_msec() - last_drop_at), " ms after the last drop, of window ",
+            last_drop.became, "); Esc goes to ", drag_origin.position.x, ",", drag_origin.position.y);
+        drag_cancelled = false;
+        auto running = transitions.find(drag->view->get_id());
+        drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
+        update_neighbors(output);
+    }
+
     wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> on_drag_output =
         [=] (wf::move_drag::drag_focus_output_signal *ev)
     {
-        if (!ev->previous_focus_output && drag->view)
+        if (!ev->previous_focus_output)
         {
-            // Drag just began: remember where across the window it was grabbed.
-            // The drag keeps the grabbed point at the same fraction of the view's bounding box (which
-            // includes the halo margin), so measure it the same way, or the predicted center (and
-            // zone, and scale) drifts from where the window really lands.
-            auto output = drag->view->get_output();
-            auto cursor = drag_input_override.value_or(wf::get_core().get_cursor_position());
-            double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
-            // Use the window's resting box (its scaled width plus the halo margin), not the live
-            // bounding box: a just-lifted window is mid-bulge, which inflates the box for a moment.
-            auto geometry = drag->view->get_geometry();
-            double drawn  = geometry.width * displayed_scale(drag->view);
-            auto frame    = frame_of(drag->view, false);
-            drag_margin   = frame ? frame->margin() :
-                std::max(0.0, (drag->view->get_bounding_box().width - drawn) / 2.0);
-            double box   = drawn + 2 * drag_margin;
-            double left  = geometry.x + geometry.width / 2.0 - box / 2.0;
-            drag_relative_x = box > 0 ? (local_x - left) / box : 0.5;
-            // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
-            // reset on the touchpad, out of room), it's the same move: keep the first origin.
-            bool continued = (last_drop.became == drag->view->get_id()) &&
-                ((int32_t)(now_msec() - last_drop_at) < DRAG_CHAIN_MS);
-            stop_glide(drag->view);  // picked up again mid-glide: it's where it's drawn
-            dragged_widget = is_widget(drag->view) ? drag->view->get_id() : 0;
-            drag_origin = origin_of(drag->view);
-            if (continued)
-            {
-                auto view = drag_origin.view;
-                drag_origin = last_drop;
-                drag_origin.view = view;  // the window being dragged now (maybe the other form)
-            }
-
-            LOGI("scottland: drag start: window ", drag->view->get_id(), continued ? " continues the move" :
-                " starts a move", " (", (int32_t)(now_msec() - last_drop_at), " ms after the last drop, of window ",
-                last_drop.became, "); Esc goes to ", drag_origin.position.x, ",", drag_origin.position.y);
-            drag_cancelled = false;
-            auto running = transitions.find(drag->view->get_id());
-            drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
-            update_neighbors(output);
+            note_drag_start();
         }
     };
 
@@ -3295,7 +3337,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     drag_origin_t drag_origin;
     bool drag_cancelled = false;
     uint64_t dragged_widget = 0;  // a widget being dragged, until its drop is handled
-    static constexpr int DRAG_CHAIN_MS = 2000;  // a new drag of the same window within this continues the move
+    static constexpr int DRAG_CHAIN_MS = 2500;  // a new drag of the same window within this continues the move
     drag_origin_t last_drop;
     uint32_t last_drop_at = 0;
 
@@ -3423,33 +3465,60 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      *  began. True if it did. */
     bool cancel_form_change(wayfire_toplevel_view view, const drag_origin_t& origin)
     {
+        auto layout_origin = [] (wf::output_t *output)
+        {
+            auto g = output ? output->get_layout_geometry() : wf::geometry_t{0, 0, 0, 0};
+            return wf::pointf_t{(double)g.x, (double)g.y};
+        };
         auto g = view->get_geometry();
-        wf::pointf_t from{g.x + g.width / 2.0, g.y + g.height / 2.0};
+        auto view_origin = layout_origin(view->get_output());
+        wf::pointf_t from{view_origin.x + g.x + g.width / 2.0, view_origin.y + g.y + g.height / 2.0};  // layout
         wf::pointf_t home{origin.position.x + origin.first_size.width / 2.0,
-            origin.position.y + origin.first_size.height / 2.0};
+            origin.position.y + origin.first_size.height / 2.0};  // on the screen it began on
+        auto home_output = output_alive(origin.output) ? origin.output : view->get_output();
+
         if (auto link = link_of_widget(view); link && !origin.first_widget &&
             (link->window_id == origin.first_view))
         {
             // It began as a window and became this widget: the window comes back where it began.
             auto window = wf::toplevel_cast(link->window.lock());
-            if (window && output_alive(origin.output) && (window->get_output() != origin.output))
-            {
-                wf::move_view_to_output(window, origin.output, false);
-            }
-
             restore_window(*link, home);
             if (window)
             {
+                if (home_output && (window->get_output() != home_output))
+                {
+                    wf::move_view_to_output(window, home_output, false);
+                    auto wg = window->get_geometry();
+                    window->move(std::round(home.x - wg.width / 2.0), std::round(home.y - wg.height / 2.0));
+                }
+
                 apply(window);
-                start_glide(window, from.x - home.x, from.y - home.y);
+                auto to = layout_origin(window->get_output());
+                start_glide(window, from.x - (to.x + home.x), from.y - (to.y + home.y));
             }
 
             return true;
         }
 
-        if (origin.first_widget && !is_widget(view) && !link_of_window(view))
+        if (origin.first_widget && !is_widget(view))
         {
-            // It began as a widget and became this window: a widget again, where it was.
+            // It began as a widget and became this window: a widget again, where it was (a widget
+            // previewed on the way, dragging back toward a rail, goes).
+            if (auto preview = link_of_window(view); preview && preview->preview)
+            {
+                cancel_preview(*preview);
+            }
+
+            if (link_of_window(view))
+            {
+                return false;
+            }
+
+            if (home_output && (view->get_output() != home_output))
+            {
+                wf::move_view_to_output(view, home_output, false);
+            }
+
             view->move(std::round(home.x - g.width / 2.0), std::round(home.y - g.height / 2.0));
             widgetize(view);
             if (auto link = link_of_window(view))
@@ -3524,6 +3593,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto view   = drag->view;
         auto output = drag->current_output;
+        note_drag_start();
         if (view && output && !view->pending_fullscreen())
         {
             update_drag_morph(view, output, ev->current_position);
@@ -3627,6 +3697,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // the zone says the other size. Then keep the size shown, and nudge the window sideways
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
+        swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
         if (drag_cancelled)
         {
             drag_cancelled = false;
@@ -3638,6 +3709,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             last_drop = {};  // the move is over
             dragged_widget = 0;
+            drag_started = false;
 
             idle_neighbors.run_once([=] () { update_all_neighbors(); });
             return;
@@ -3658,6 +3730,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (morph && main && (morph->dragged.lock().get() == main.get()))
         {
             widget_shaped = morph_widget_shaped();
+        }
+
+        // A click on a halo (pressed and let go where it was) is no move: it never changes a
+        // widget into its window or the reverse.
+        auto released_at = drag_input_override.value_or(wf::get_core().get_cursor_position());
+        if (main && drag_started && (std::hypot(released_at.x - drag_start_cursor.x,
+            released_at.y - drag_start_cursor.y) < CLICK_SLOP))
+        {
+            widget_shaped = is_widget(main);
         }
 
         end_morph();
@@ -3721,6 +3802,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         dragged_widget = 0;
+        drag_started = false;
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };

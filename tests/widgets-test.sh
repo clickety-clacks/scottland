@@ -487,6 +487,27 @@ print(v[0]['id'] if v else '')" $t)
 done
 sleep 2
 
+# WG13: clicking a widget's halo (a press and release, no move) leaves it a widget, in place.
+(tests/headless.sh run foot -T halo-click -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field halo-click "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 2.5
+read -r hx hy before <<<"$(views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('halo-click')][0]; f=v['frame']
+print(round(f['x'] + f['width'] / 2), round(f['y'] - f['thickness'] / 2), str(round(f['x'])) + ',' + str(round(f['y'])))")"
+h stipc/move_cursor "{\"x\":$hx,\"y\":$hy}"; sleep 0.3
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'
+sleep 1.5
+check "WG13 a click on a widget's halo leaves it a widget, where it was" \
+  [ "$(views | python3 -c "
+import json,sys
+w=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('halo-click')]
+print(str(round(w[0]['frame']['x'])) + ',' + str(round(w[0]['frame']['y'])) if w else 'gone')")/$(view_field halo-click "v['hidden']")" = "$before/True" ]
+h window-rules/close-view "{\"id\": $(view_field halo-click "v['id']")}"
+sleep 2
+
 # WG16: Super+M collapses all widgets to their icons, and expands them back.
 (tests/headless.sh run foot -T mini-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
@@ -583,6 +604,49 @@ sleep 1
 check "AT2 going to the window answers it (attention off, the source's answered command ran)" \
   bash -c "[ \"\$(tests/headless.sh ipc scottland/layout-state | python3 -c \"import json,sys; print([bool(v['frame'].get('attention')) for v in json.load(sys.stdin)['views'] if v['id']==$src_id][0])\")\" = False ] && [ -e '$src/answered-t$src_id' ]"
 for t in src-app src-front; do h window-rules/close-view "{\"id\": $(view_field $t "v['id']")}"; done
+sleep 1
+
+# L27/WG14: the move chain under real-input sequences (three-finger swipes): a re-grab that ends
+# without moving keeps the move's origin; a re-grab begun within the window counts even if its
+# first motion comes later; a swipe drag ended by a click leaves no stale state.
+(tests/headless.sh run foot -T chain-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+geo_of() { ipc window-rules/list-views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+center_of() { view_field "$1" "round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2)"; }
+swipe() {  # swipe <title> <updates>: grab it with three fingers, move left-down
+  read -r cx cy <<<"$(center_of "$1")"
+  h stipc/move_cursor "{\"x\":$cx,\"y\":$cy}"
+  h scottland/test-input '{"swipe":"begin","fingers":3}'
+  for i in $(seq 1 "$2"); do h scottland/test-input '{"swipe":"update","dx":-20,"dy":10}'; sleep 0.02; done
+}
+o0=$(geo_of chain-app)
+swipe chain-app 4; h scottland/test-input '{"swipe":"end"}'; sleep 0.3
+swipe chain-app 0; h scottland/test-input '{"swipe":"end"}'; sleep 0.3     # no motion
+swipe chain-app 4
+h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'
+h scottland/test-input '{"swipe":"end"}'; sleep 1
+check "L27 a re-grab that didn't move keeps the move's origin (Esc goes back to the start)" [ "$(geo_of chain-app)" = "$o0" ]
+swipe chain-app 4; h scottland/test-input '{"swipe":"end"}'; sleep 2.2
+read -r cx cy <<<"$(center_of chain-app)"
+h stipc/move_cursor "{\"x\":$cx,\"y\":$cy}"
+h scottland/test-input '{"swipe":"begin","fingers":3}'; sleep 0.5          # begun at 2.2 s, first motion at 2.7 s
+for i in 1 2 3; do h scottland/test-input '{"swipe":"update","dx":-20,"dy":10}'; sleep 0.02; done
+h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'
+h scottland/test-input '{"swipe":"end"}'; sleep 1
+check "L27 a re-grab begun within the window counts, though its first motion came later" [ "$(geo_of chain-app)" = "$o0" ]
+sleep 3
+swipe chain-app 3
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'                    # a click ends the swipe drag
+for i in 1 2 3; do h scottland/test-input '{"swipe":"update","dx":-20,"dy":10}'; sleep 0.02; done
+h scottland/test-input '{"swipe":"end"}'; sleep 3
+p1=$(geo_of chain-app)
+swipe chain-app 4
+h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'
+h scottland/test-input '{"swipe":"end"}'; sleep 1
+check "L27 after a swipe drag ended by a click, the next move's Esc goes to its own start" [ "$(geo_of chain-app)" = "$p1" ]
+h window-rules/close-view "{\"id\": $(view_field chain-app "v['id']")}"
 sleep 1
 
 # WG14: Esc never sends a window to another window's origin: a drag cancelled before it moved
