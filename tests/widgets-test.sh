@@ -562,9 +562,53 @@ h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key"
 h stipc/feed_key '{"key":"KEY_M","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
 sleep 1.5
 check "WG16 Super+M again: the card again" [ "$(card_width)" = "$wide" ]
-check "WG16 ...the new one too" [ "$(card2_width)" -gt 96 ]
+# Its text was never shown before: it must still be measured (its title is longer than mini-app's).
+check "WG16 ...the new one too, with its title" [ "$(card2_width)" -ge "$wide" ]
 h window-rules/close-view "{\"id\": $(view_field mini2-app "v['id']")}"
 h window-rules/close-view "{\"id\": $(view_field mini-app "v['id']")}"
+sleep 2
+
+# WG1: the pointer, not the window's center, enters and leaves the rail.
+is_widget_of() { ipc scottland/widgets | python3 -c "import json,sys; print(any(w['title']==sys.argv[1] for w in json.load(sys.stdin)['widgets']))" "$1"; }
+(tests/headless.sh run foot -T edge-app -W 100x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field edge-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw - 8)) $((ay + ah / 2)) $((screen_w - 6)) $((ay + ah / 2))  # grabbed by its far edge
+sleep 2.5
+check "WG1 the pointer entering the rail makes a widget (the window's center never reaches it)" [ "$(is_widget_of edge-app)" = True ]
+read -r cx cy <<<"$(views | python3 -c "import json,sys; f=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('edge-app')][0]['frame']; print(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))")"
+super_drag $cx $cy $cx $((cy + 80))  # grabbed by its middle, outside the narrow rail zone
+sleep 2
+check "WG1 a widget moved along its rail stays a widget, wherever it's grabbed" [ "$(is_widget_of edge-app)" = True ]
+super_drag $cx $((cy + 80)) $((screen_w / 2)) $((cy + 80))
+sleep 2
+check "WG1 the pointer leaving the rail makes the window again" [ "$(is_widget_of edge-app)" = False ]
+read -r ax ay aw ah <<<"$(view_field edge-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + 8)) $((ay + ah / 2)) $((screen_w * 96 / 100 - 12)) $((ay + ah / 2))  # by its near edge: center in the rail
+sleep 2.5
+check "WG1 the window's center in the rail doesn't make a widget while the pointer isn't" [ "$(is_widget_of edge-app)" = False ]
+h window-rules/close-view "{\"id\": $(view_field edge-app "v['id']")}"
+sleep 2
+
+# WG18: a finger drag anywhere on a card moves it at once (no long press); a tap still opens it.
+(tests/headless.sh run foot -T touchy-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field touchy-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 6)) $((ay + ah / 2))
+sleep 2.5
+card_center() { views | python3 -c "import json,sys; f=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('touchy-app')][0]['frame']; print(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))"; }
+read -r cx cy <<<"$(card_center)"
+h stipc/touch "{\"finger\":0,\"x\":$cx,\"y\":$cy}"
+for i in $(seq 1 10); do h stipc/touch "{\"finger\":0,\"x\":$cx,\"y\":$((cy + i * 12))}"; sleep 0.015; done
+h stipc/touch_release '{"finger":0}'
+sleep 1.5
+read -r nx ny <<<"$(card_center)"
+check "WG18 a finger drag on a card moves it straight away, still a widget" \
+  [ "$(is_widget_of touchy-app)/$(( ny - cy > 90 && ny - cy < 150 ))" = "True/1" ]
+h stipc/touch "{\"finger\":0,\"x\":$nx,\"y\":$ny}"; sleep 0.05; h stipc/touch_release '{"finger":0}'
+sleep 1.5
+check "WG18 a tap on the card still opens its window" [ "$(is_widget_of touchy-app)" = False ]
+h window-rules/close-view "{\"id\": $(view_field touchy-app "v['id']")}"
 sleep 2
 
 # L23: lifting three fingers ends the drag at once (no grace period); a second three-finger

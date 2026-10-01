@@ -23,6 +23,8 @@ import os
 import re
 import shlex
 import shutil
+import socket
+import struct
 import sys
 import time
 import tomllib
@@ -158,6 +160,33 @@ def choose(app_id, desktop_id, entry, available):
     return available.get("card"), "the default"
 
 
+def tell_traits(context, widget):
+    """Tell Scottland what of the widget's manifest it acts on (WG18): touch_drag = true means a
+    finger drag anywhere on the widget moves it, with no long press (taps are still the widget's).
+    For widgets with nothing a finger drags, like the card; off by default, so a widget's own
+    drags (sliders, drawing) stay its own."""
+    socket_path = os.environ.get("WAYFIRE_SOCKET")
+    if not socket_path or not context.get("unit"):
+        return
+    body = json.dumps({"method": "scottland/widget-traits", "data": {
+        "window": int(context.get("window", 0)), "unit": str(context["unit"]),
+        "touch_drag": bool(widget.get("touch_drag", False))}}).encode()
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.settimeout(5)
+            sock.connect(socket_path)
+            sock.sendall(struct.pack("<I", len(body)) + body)
+            size = struct.unpack("<I", sock.recv(4))[0]
+            reply = b""
+            while len(reply) < size:
+                chunk = sock.recv(size - len(reply))
+                if not chunk:
+                    break
+                reply += chunk
+    except (OSError, struct.error) as error:
+        log(f"couldn't tell Scottland the widget's traits: {error}")
+
+
 def main():
     context = json.loads(sys.argv[1])
     app_id = context.get("app_id", "")
@@ -169,6 +198,7 @@ def main():
         sys.exit(1)
 
     widget_id = str(context.get("id", ""))
+    tell_traits(context, widget)
     os.makedirs(RUNTIME, exist_ok=True)
     values = {
         "a": app_id,

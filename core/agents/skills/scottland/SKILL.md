@@ -104,6 +104,7 @@ id = "my-widget"
 name = "My widget"
 apps = ['^org\.example\.App$']      # app-id regexes it's for (optional)
 exec = "quickshell -p %d/shell.qml"  # any program; %d = this folder
+touch_drag = true   # optional: a finger drag anywhere moves it (only if it drags nothing itself)
 ```
 
 A widget is any program (QML via Quickshell, GTK, a web view, a TUI...), fully interactive, with

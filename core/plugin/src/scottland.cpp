@@ -1296,6 +1296,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                                                      // window isn't hidden yet, the widget is kept unseen
         bool widget_hidden = false;                  // holds a disable on the widget's window
         bool minimized = false;                      // shown as just its icon (Super+M, WG16)
+        bool touch_drag = false;                     // a finger drag anywhere moves it (its manifest, WG18)
         uint32_t launched_at = 0;
     };
 
@@ -2105,6 +2106,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.rail   = entry["rail"].as_string();
             link.drop   = {entry["x"].as_double(), entry["y"].as_double()};
             link.minimized   = entry["minimized"].as_bool();
+            link.touch_drag  = entry.has_member("touch_drag") && entry["touch_drag"].as_bool();
             link.launched_at = now_msec();
             auto process  = std::make_shared<widget_process_t>();
             process->pid  = (pid_t)entry["pid"].as_int64();
@@ -2382,7 +2384,31 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** A drop: windows dropped on a rail become widgets; widgets dropped off the rail restore.
      *  After a drag that morphed (WG13), the shape shown at the drop decides (`widget_shaped`). */
-    void handle_widget_drop(wayfire_toplevel_view view, std::optional<bool> widget_shaped = {})
+    /**
+     * Is the pointer, at `at` (output coords), on a rail? Entering one means reaching the rail zone
+     * at the screen's edge. A widget (or a drag already showing one) is on it while the pointer is
+     * anywhere between the edge and the widget's inner side, which is wider than the rail zone:
+     * it leaves when the pointer goes past it. So a widget grabbed anywhere stays one until moved
+     * off the rail, and the form changes as the pointer crosses, not when the window's center does.
+     */
+    bool on_rail(double at, double width, wayfire_toplevel_view widget)
+    {
+        if (place_at(std::clamp(at, 0.0, width - 1), width).zone == zone_t::widget)
+        {
+            return true;
+        }
+
+        if (!widget || !widget->is_mapped())
+        {
+            return false;
+        }
+
+        double from_edge = (at < width / 2) ? at : width - at;
+        return from_edge <= WIDGET_INSET + widget->get_geometry().width;
+    }
+
+    /** A drop, released at `pointer` (layout coords): the pointer's place says widget or window. */
+    void handle_widget_drop(wayfire_toplevel_view view, std::optional<bool> widget_shaped, wf::pointf_t pointer)
     {
         if (!view || !view->is_mapped() || !view->get_output())
         {
@@ -2394,24 +2420,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double width  = output->get_relative_geometry().width;
         wf::pointf_t center{geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
         auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
+        double at = pointer.x - output->get_layout_geometry().x;
+        bool on_rail = widget_shaped.value_or(this->on_rail(at, width, is_widget(view) ? view : nullptr));
         if (auto link = link_of_widget(view))
         {
-            // A widget is wider than the rail and kept on screen, so its center can sit outside
-            // the rail: it stays a widget while any of it (halo included) is on a rail, and
-            // leaves when none is.
-            double x1 = geometry.x - WIDGET_INSET, x2 = geometry.x + geometry.width + WIDGET_INSET;
-            bool left  = (x1 < width / 2) && in_rail(x1);
-            bool right = (x2 > width / 2) && in_rail(x2);
-            if (widget_shaped ? !*widget_shaped : (!left && !right))
+            if (!on_rail)
             {
                 restore_window(*link, center);
                 return;
             }
 
-            if (!left && !right)
-            {
-                left = center.x < width / 2;  // kept a widget by the shape shown: its nearer rail
-            }
+            bool left = in_rail(at) ? (at < width / 2) : (center.x < width / 2);  // else its nearer rail
 
             link->drop = center;  // first: placing moves it, and moves put widgets at their drop point
             place_widget(view, output, center);
@@ -2428,9 +2447,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             auto placed = view->get_geometry();
             link->drop = {placed.x + placed.width / 2.0, placed.y + placed.height / 2.0};
-        } else if (widget_shaped ? *widget_shaped : in_rail(center.x))
+        } else if (on_rail)
         {
-            widgetize(view);
+            widgetize(view, false, (in_rail(at) ? at : center.x) < width / 2 ? "left" : "right");
         } else if (auto link = link_of_window(view); link && link->preview)
         {
             cancel_preview(*link);
@@ -2472,6 +2491,29 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         reply["widgets"] = list;
         return reply;
+    };
+
+    // What the widget's manifest says that Scottland acts on, told by the launcher once it has
+    // chosen the widget: {window, unit, touch_drag}. The unit names the launch, so a late call
+    // from an earlier launch for the same window changes nothing.
+    wf::ipc::method_callback widget_traits = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("window") || !data["window"].is_int64() || !data.has_member("unit") ||
+            !data["unit"].is_string())
+        {
+            return wf::ipc::json_error("widget-traits needs \"window\" and \"unit\"");
+        }
+
+        auto found = widget_links.find((uint64_t)data["window"].as_int64());
+        if ((found == widget_links.end()) || !found->second.launcher ||
+            (found->second.launcher->unit != data["unit"].as_string()))
+        {
+            return wf::ipc::json_error("no such widget launch");
+        }
+
+        found->second.touch_drag = data.has_member("touch_drag") && data["touch_drag"].is_bool() &&
+            data["touch_drag"].as_bool();
+        return wf::ipc::json_ok();
     };
 
     wf::ipc::method_callback widget_action = [=] (wf::json_t data) -> wf::json_t
@@ -2896,7 +2938,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto at = wf::get_core().get_touch_position(hold_finger);
         if (std::hypot(at.x - hold_origin.x, at.y - hold_origin.y) > HOLD_SLOP)
         {
-            cancel_hold();  // it moved: the touch is the app's (scroll, rotate, draw...)
+            // A widget whose manifest says drags are never its own (WG18) moves now, no long
+            // press; a tap is still the widget's. Anything else: the touch is the app's (scroll,
+            // rotate, draw...).
+            auto view = wf::toplevel_cast(hold_view.lock());
+            auto link = view ? link_of_widget(view) : nullptr;
+            if (link && link->touch_drag)
+            {
+                lift_held_window(false);
+            } else
+            {
+                cancel_hold();
+            }
         }
     };
 
@@ -2928,7 +2981,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     };
 
-    void lift_held_window()
+    void lift_held_window(bool pop = true)
     {
         int finger = hold_finger;
         auto view  = wf::toplevel_cast(hold_view.lock());
@@ -2960,7 +3013,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         wf::get_core().default_wm->focus_raise_view(view);
         frame->lift();
-        play_pop();
+        if (pop)
+        {
+            play_pop();
+        }
+
         lifted_frame = frame;
         start_touch_drag(view, finger);
     }
@@ -3432,25 +3489,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         morph->center_x = (x1 + x2) / 2.0;
         auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
 
-        // The same rules as a drop: the widget shape stays while any of it (halo included) is on a
-        // rail; the window shape turns into a widget when its center reaches one.
-        bool want_widget;
-        if (morph_widget_shaped())
-        {
-            double a = x1 - WIDGET_INSET, b = x2 + WIDGET_INSET;
-            want_widget = ((a < width / 2) && in_rail(a)) || ((b > width / 2) && in_rail(b));
-        } else
-        {
-            want_widget = in_rail(morph->center_x);
-        }
-
+        // The pointer (or finger) decides, not the window's geometry (WG1): entering the rail
+        // makes it a widget, leaving the rail's widgets makes it a window. The drop follows the
+        // shape shown.
+        double at = pointer.x - origin;
+        bool want_widget = on_rail(at, width, morph_widget_shaped() ?
+            (morph->from_widget ? view : morph_other()) : nullptr);
         bool toward = morph->from_widget ? !want_widget : want_widget;
         if (toward != morph->toward)
         {
             if (!morph->from_widget && toward)
             {
                 // Launched now, unseen, so it's ready to fade in; on the rail the drag is over.
-                widgetize(view, true, morph->center_x < width / 2 ? "left" : "right");
+                widgetize(view, true, at < width / 2 ? "left" : "right");
             }
 
             morph->toward = toward;
@@ -4015,7 +4066,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             bool was_widget = is_widget(main);
             auto link = was_widget ? link_of_widget(main) : nullptr;
             uint64_t app_window = link ? link->window_id : 0;
-            handle_widget_drop(main, widget_shaped);
+            handle_widget_drop(main, widget_shaped, released_at);
             if (was_widget && !link_of_window(view_by_id(app_window)))
             {
                 last_drop.became = app_window;  // restored: the window stands for it
@@ -4346,6 +4397,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
+        ipc_repo->register_method("scottland/widget-traits", widget_traits);
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
         take_handover();
@@ -4411,6 +4463,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widgets");
         on_hints.disconnect();
         ipc_repo->unregister_method("scottland/widget-action");
+        ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);
         on_focus_request.disconnect();
@@ -4442,6 +4495,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["x"] = link.drop.x;
                 entry["y"] = link.drop.y;
                 entry["minimized"] = link.minimized;
+                entry["touch_drag"] = link.touch_drag;
                 handover.append(entry);
                 set_widget_hidden(link, false);
                 continue;  // the window keeps its disable: the next plugin holds it

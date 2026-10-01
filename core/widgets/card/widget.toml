@@ -4,3 +4,5 @@ name = "Card"
 # Used for any app with no other widget; it claims no apps of its own.
 apps = []
 exec = "quickshell -p %d/shell.qml"
+# Nothing on the card is dragged: a finger drag anywhere moves it; a tap opens its window.
+touch_drag = true

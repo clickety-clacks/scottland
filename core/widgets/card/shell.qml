@@ -23,8 +23,11 @@ FloatingWindow {
     readonly property bool showsText: hasText && !minimized
     // Without text the row is just the icon: centered in the square card.
     readonly property int rowPad: showsText ? pad : (implicitHeight - iconSize) / 2
+    // Measured from the strings, not the Text items: a card that starts collapsed has never shown
+    // its text, and a Text that has never been visible isn't laid out (its width reads 0).
+    readonly property bool showsName: appName !== "" && appName !== appTitle
     readonly property int textWidth: Math.min(maxWidth - 2 * pad - iconSize - gap,
-        Math.ceil(Math.max(titleText.visible ? titleText.implicitWidth : 0, nameText.visible ? nameText.implicitWidth : 0)))
+        Math.ceil(Math.max(appTitle !== "" ? titleMetrics.advanceWidth : 0, showsName ? nameMetrics.advanceWidth : 0)))
     implicitWidth: showsText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
     implicitHeight: 96
     // An open window keeps its size when the implicit size changes: pin it, so the card follows
@@ -45,6 +48,9 @@ FloatingWindow {
         || Quickshell.iconPath(appId.toLowerCase(), true)
         || Quickshell.iconPath("application-x-executable", true)
     property int badge: parseInt(Quickshell.env("SCOTTLAND_WIDGET_BADGE") || "0") || 0
+
+    TextMetrics { id: titleMetrics; text: root.appTitle; font: titleText.font }
+    TextMetrics { id: nameMetrics; text: root.appName; font: nameText.font }
 
     // Live state from the widget service.
     FileView {
@@ -183,7 +189,7 @@ FloatingWindow {
                 Text {
                     id: nameText
                     width: parent.width
-                    visible: root.appName !== "" && root.appName !== root.appTitle
+                    visible: root.showsName
                     text: root.appName
                     color: root.foreground
                     font.pixelSize: 14
