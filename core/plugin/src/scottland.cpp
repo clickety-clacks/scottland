@@ -1328,6 +1328,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t view = 0;                // the window this origin is for (the one being dragged)
         wf::output_t *output = nullptr;
         wf::point_t position{0, 0};
+        std::string rail;                 // widget origin, independent of its changing width
         // The move began with this window, in this form (a re-grab can continue a move whose drop
         // changed the form: a window that became a widget, or the reverse).
         uint64_t first_view = 0;
@@ -2144,7 +2145,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             keep_above(view);
-            place_widget(view, output, link.drop);
+            keep_in_place(link, view);
             set_scale(view, 1.0);
             show_attention(link.window_id);  // asked before its widget appeared
             return true;
@@ -2452,7 +2453,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             keep_above(widget);
-            place_widget(widget, output, at);
+            keep_in_place(link, widget);
             set_scale(widget, 1.0);
             // It was let go at `at` (the dragged window was drawn there as the widget): glide to
             // its place against the screen edge rather than jump.
@@ -2584,16 +2585,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             bool left = in_rail(at) ? (at < width / 2) : (center.x < width / 2);  // else its nearer rail
 
-            link->drop = center;  // first: placing moves it, and moves put widgets at their drop point
-            place_widget(view, output, center);
+            bool changed_rail = (link->rail != (left ? "left" : "right")) || (link->output != output);
+            link->rail = left ? "left" : "right";
+            link->output = output;
+            link->drop = center;
+            keep_in_place(*link, view);
             auto placed_now = view->get_geometry();
             start_glide(view, center.x - (placed_now.x + placed_now.width / 2.0),
                 center.y - (placed_now.y + placed_now.height / 2.0));
-            auto rail = left ? "left" : "right";
-            if ((link->rail != rail) || (link->output != output))
+            if (changed_rail)
             {
-                link->rail   = rail;
-                link->output = output;
                 announce_widgets();
             }
 
@@ -2736,6 +2737,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             drag["origin_x"] = model.drag.origin.position.x;
             drag["origin_y"] = model.drag.origin.position.y;
             drag["origin_widget"] = model.drag.origin.first_widget;
+            drag["origin_rail"] = model.drag.origin.rail;
             drag["chain_window"] = (int64_t)model.drag.last_drop.became;
             drag["chain_at"] = (int64_t)model.drag.last_drop_at;
             auto held = model.drag.held_above.lock();
@@ -4172,6 +4174,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         origin.output   = view->get_output();
         origin.position = {g.x, g.y};
         origin.first_widget = is_widget(view);
+        if (auto link = link_of_widget(view))
+        {
+            origin.rail = link->rail;
+        }
         origin.first_size   = {g.width, g.height};
         return origin;
     }
@@ -4261,7 +4267,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         LOGI("scottland: Esc: window ", view->get_id(), " (", view->get_title(), ") back from ", g.x, ",", g.y,
             " to ", origin.position.x, ",", origin.position.y);
         move_window(view, origin.position.x, origin.position.y);
-        wf::point_t to = origin.position;
+        if (auto link = link_of_widget(view))
+        {
+            // Esc restores the anchor too. A later title/collapse resize must not move the
+            // widget back to its cancelled drop, or to a rail crossed during this move.
+            link->rail = origin.rail;
+            link->output = view->get_output();
+            link->drop = {origin.position.x + origin.first_size.width / 2.0,
+                origin.position.y + origin.first_size.height / 2.0};
+            keep_in_place(*link, view);
+            announce_widgets();
+        }
+        auto placed = view->get_geometry();
+        wf::point_t to{(int)placed.x, (int)placed.y};
         if (view->get_output())
         {
             auto layout = view->get_output()->get_layout_geometry();
@@ -4343,7 +4361,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             move_window(view, std::round(home.x - g.width / 2.0), std::round(home.y - g.height / 2.0));
-            widgetize(view);
+            widgetize(view, false, origin.rail);
             if (auto link = link_of_window(view))
             {
                 link->drop = home;

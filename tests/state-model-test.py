@@ -203,6 +203,26 @@ try:
     time.sleep(0.6)
     audit("cards expanded, including the one started collapsed")
 
+    # A widget moved, resized by Super+M, then re-grabbed: Esc restores the original rail
+    # anchor, and a later resize must not jump back to the cancelled drop point.
+    time.sleep(2.6)  # begin a fresh move in widget form
+    before, _ = shown(b)
+    f = before["frame"]
+    old_y = f["y"]
+    drag(b, 6, f["y"] + f["height"] / 2 + 45)
+    audit("widget moved before collapsed re-grab")
+    combo("KEY_LEFTMETA", "KEY_M")
+    time.sleep(0.5)
+    audit("collapsed during re-grab chain")
+    drag(b, width / 2, cancel=True)
+    audit("Esc restores the widget anchor after collapse")
+    restored, link = shown(b)
+    check("Esc restored the original rail and vertical anchor", link["rail"] == "left"
+          and abs(restored["frame"]["y"] - old_y) < 1.5)
+    combo("KEY_LEFTMETA", "KEY_M")
+    time.sleep(0.5)
+    audit("expanding after Esc retains the restored anchor")
+
     events = Ipc()
     current = events.call("scottland/subscribe", {"slice": "widgets"})
     check("late subscription reads complete current widgets", len(current["widgets"]) == 2)
