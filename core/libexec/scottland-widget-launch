@@ -160,7 +160,7 @@ def choose(app_id, desktop_id, entry, available):
     return available.get("card"), "the default"
 
 
-def tell_traits(context, widget):
+def tell_traits(context, widget, desktop, entry):
     """Tell Scottland what of the widget's manifest it acts on (WG18): touch_drag = true means a
     finger drag anywhere on the widget moves it, with no long press (taps are still the widget's).
     For widgets with nothing a finger drags, like the card; off by default, so a widget's own
@@ -170,7 +170,9 @@ def tell_traits(context, widget):
         return
     body = json.dumps({"method": "scottland/widget-traits", "data": {
         "window": int(context.get("window", 0)), "unit": str(context["unit"]),
-        "touch_drag": bool(widget.get("touch_drag", False))}}).encode()
+        "touch_drag": bool(widget.get("touch_drag", False)), "desktop": desktop or "",
+        "name": entry.get("Name", "") or context.get("app_id", ""),
+        "icon": entry.get("Icon", "") or context.get("app_id", ""), "card": widget["id"] == "card"}}).encode()
     try:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.settimeout(5)
@@ -187,6 +189,34 @@ def tell_traits(context, widget):
         log(f"couldn't tell Scottland the widget's traits: {error}")
 
 
+def prepare_state(context):
+    if not os.environ.get("WAYFIRE_SOCKET"):
+        return  # standalone choice/exec tests have no compositor or widget service
+    import gi
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio, GLib
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    # Subscribe before checking ownership. A service starting with the session can appear late;
+    # wait for its name event, never poll a state file or start with captured launch values.
+    loop = GLib.MainLoop()
+    watching = bus.signal_subscribe(
+        "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus",
+        "org.scottland.Widgets", Gio.DBusSignalFlags.NONE,
+        lambda _c, _s, _p, _i, _n, params: loop.quit() if params.unpack()[2] else None)
+    owned = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                          "NameHasOwner", GLib.Variant("(s)", ("org.scottland.Widgets",)),
+                          GLib.VariantType("(b)"), Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
+    if not owned:
+        timeout = GLib.timeout_add_seconds(6, lambda: (loop.quit(), False)[1])
+        loop.run()
+        if GLib.MainContext.default().find_source_by_id(timeout):
+            GLib.source_remove(timeout)
+    bus.signal_unsubscribe(watching)
+    bus.call_sync("org.scottland.Widgets", "/org/scottland/Widgets", "org.scottland.WidgetLaunch",
+                  "Prepare", GLib.Variant("(ss)", (str(context["id"]), str(context["unit"]))),
+                  GLib.VariantType("(s)"), Gio.DBusCallFlags.NONE, 5000, None)
+
+
 def main():
     context = json.loads(sys.argv[1])
     app_id = context.get("app_id", "")
@@ -198,7 +228,7 @@ def main():
         sys.exit(1)
 
     widget_id = str(context.get("id", ""))
-    tell_traits(context, widget)
+    tell_traits(context, widget, desktop_id, entry)
     os.makedirs(RUNTIME, exist_ok=True)
     values = {
         "a": app_id,
@@ -214,16 +244,11 @@ def main():
     env.update({
         "SCOTTLAND_WIDGET_ID": widget_id,
         "SCOTTLAND_WIDGET_APP_ID": values["a"],
-        "SCOTTLAND_WIDGET_TITLE": values["t"],
         "SCOTTLAND_WIDGET_ICON": values["i"],
         "SCOTTLAND_WIDGET_PID": values["p"],
         "SCOTTLAND_WIDGET_WINDOW": values["w"],
-        "SCOTTLAND_WIDGET_RAIL": values["r"],
-        # "1" when widgets are collapsed to their icons (Super+M) as it starts; then live
-        "SCOTTLAND_WIDGET_MINIMIZED": "1" if context.get("minimized") else "",
         "SCOTTLAND_WIDGET_NAME": entry.get("Name", ""),
         "SCOTTLAND_WIDGET_DESKTOP": desktop_id or "",
-        "SCOTTLAND_WIDGET_BADGE": "0",
         # Live title and badge for widgets that want them without D-Bus (the card does). The
         # widget service is this file's only writer.
         # Named by the launch, so a file left by an earlier launch (or a crashed session) for a
@@ -233,18 +258,8 @@ def main():
         "SCOTTLAND_PALETTE": PALETTE,
     })
 
-    # Tell the widget service what only the launcher knows, the app's .desktop id (badges are
-    # announced per .desktop), in a file of the launcher's own.
-    try:
-        # Named by the launch (unique), so a window's earlier and later launches never share it.
-        launch = os.path.join(RUNTIME, f"{context.get('unit') or widget_id}.launch.json")
-        with open(f"{launch}.{os.getpid()}", "w") as out:
-            # The launch it belongs to (unique per launch): a file left by a crashed session for
-            # a window with the same id isn't taken for this one's.
-            json.dump({"desktop": desktop_id or "", "unit": str(context.get("unit", ""))}, out)
-        os.replace(f"{launch}.{os.getpid()}", launch)
-    except OSError as error:
-        log(f"couldn't write {launch}: {error}")
+    # Prepare is synchronous: only the service writes this file, and exec cannot precede it.
+    prepare_state(context)
 
     # Placeholders are filled per word after splitting, so values with spaces stay one argument.
     argv = [re.sub(r"%(.)", lambda m: values.get(m.group(1), m.group(0)), word)

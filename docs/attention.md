@@ -30,7 +30,7 @@ plugged in by configuration, never by code that names a particular app. Rows say
 | AT3 | Sources plug in by configuration: Scottland's built-ins plus configured ones (attention.d), including ones fed over the network, e.g. a watcher subscribed to an agent hub's event stream that maps agents to their terminal windows. No Scottland code names a particular app. | partly (list-command sources, polled or file-watched; push sources not yet) |
 | AT4 | Per-app configuration, by the user or the user's agent: which sources count for an app (default when none is set: the built-ins, so a bell works out of the box), in a config file documented in the Scottland skill. | not built |
 | AT5 | Sources address windows by what they know: a window id, a process (and its children), an app-id, a title, or richer identity (a terminal pane, an SSH/mosh host and session, an agent id), resolved to windows by Scottland. | not built |
-| AT6 | Showing attention is separate from detecting it: the halo (window or widget), and later anything else (a list, a sound), read one attention state. | partly (halo only) |
+| AT6 | Showing attention is separate from detecting it: the halo (window or widget), and later anything else (a list, a sound), read one plugin-owned attention source set in the desktop model. Subscribers receive complete versioned attention slices, including the current state immediately; configured sources read their marked state from that snapshot, never from a mirrored `marked` map or a reload drift check. See [desktop-model.md](desktop-model.md), DM1-DM3, DM5. | implemented (headless; halo display only) |
 
 ## Notes
 

@@ -71,6 +71,11 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | S5 | Cancel or Escape restores the values from when the panel opened and saves nothing. | verified |
 | S6 | If the running session's plugin predates a setting, the panel says "Restart Scottland to use: …" and keeps the saved value instead of resetting it. | implemented |
 
+## Desktop state
+
+The single desktop model and its reactive subscription/launch/audit contracts are in
+[../docs/desktop-model.md](../docs/desktop-model.md) (DM1-DM6).
+
 ## Session
 
 | ID | Invariant | Status |

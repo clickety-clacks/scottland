@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Unit test for scottland-widget-bus's bookkeeping, with a fake compositor and no D-Bus:
-launch files per launch (WG10 badges), mailbox identity (WG11) without systemd.
+full snapshots and service-owned data (WG10 badges), mailbox identity (WG11) without systemd.
 
   python3 tests/widget-bus-test.py
 """
@@ -31,64 +31,87 @@ def check(name, condition):
 
 class FakeIpc:
     def __init__(self):
-        self.widgets = []
+        self.snapshot = {"version": 0, "collapsed": False, "windows": [], "widgets": []}
 
     def call(self, method, data=None):
-        if method == "scottland/widgets":
-            return {"widgets": self.widgets}
-        if method == "scottland/layout-state":
-            return {"views": []}
-        return []
+        assert method == "scottland/desktop-model" and data == {"slice": "widgets"}
+        return self.snapshot
 
 
 service = bus.Service.__new__(bus.Service)
 service.ipc = FakeIpc()
 service.widgets, service.registrations, service.badges = {}, {}, {}
 service.scales, service.window_pids, service.announced = {}, {}, {}
+service.data, service.rendered = {}, {}
+service.model_version, service.model_snapshot = -1, {}
+service.session = "unit-test"
 service.bus = None
 
 
-def launch_file(wid, desktop, unit):
-    with open(os.path.join(bus.RUNTIME, f"{unit}.launch.json"), "w") as out:
-        json.dump({"desktop": desktop, "unit": unit}, out)
+def entry(wid, unit, desktop="", title="t", collapsed=False):
+    return {"id": wid, "window": int(wid), "app_id": "x", "title": title, "pid": 0, "rail": "right",
+            "widget_pid": 0, "launcher_pid": 0, "widget_unit": unit, "desktop": desktop,
+            "name": "X", "icon": "x", "focused": False, "urgent": False, "minimized": collapsed,
+            "lifecycle": "docked", "card": True}
 
 
-def entry(wid, unit, pid=0, launcher=0):
-    return {"id": wid, "window": int(wid), "app_id": "x", "title": "t", "pid": 0, "rail": "right",
-            "widget_pid": pid, "launcher_pid": launcher, "widget_unit": unit}
+def replace(entries):
+    service.ipc.snapshot = {"version": service.model_version + 1, "session": "unit-test", "collapsed": False,
+                            "windows": [], "widgets": entries}
+    service.refresh()
 
 
-# A crashed session left window 42's launch file for app A, whose badge is 7.
+# A late subscriber gets the complete identity without launch files or captured defaults.
 service.badges["app-a"] = (7, True)
-launch_file("42", "app-a", "scottland-widget-old.scope")
-service.ipc.widgets = [entry("42", "scottland-widget-new.scope")]
-service.refresh()
-check("WG10 another launch's file (stale) isn't taken: no desktop, no badge",
-      service.widgets["42"]["_desktop"] == "" and service.widgets["42"]["Badge"] == 0)
-launch_file("42", "app-b", "scottland-widget-new.scope")
-service.refresh()
-check("WG10 this launch's file is: app B, which has no badge",
-      service.widgets["42"]["_desktop"] == "app-b" and service.widgets["42"]["Badge"] == 0)
-service.badges["app-b"] = (3, True)
-service.widgets["42"]["_desktop"] = ""
-service.refresh()
-check("WG10 ...and its badge when it has one", service.widgets["42"]["Badge"] == 3)
-service.ipc.widgets = [entry("42", "scottland-widget-newer.scope")]
-service.refresh()
-check("WG10 a new launch with the same id starts without the old launch's badge",
-      service.widgets["42"]["Badge"] == 0 and service.widgets["42"]["_desktop"] == "")
+replace([entry("42", "scottland-widget-new.scope", "app-a", "Inbox", True)])
+state = json.load(open(service.state_path("42")))
+check("late subscriber gets title, collapsed mode and badge from a full snapshot",
+      state["title"] == "Inbox" and state["minimized"] and state["badge"] == 7)
+check("the first state file includes resolved name, icon and model version",
+      state["name"] == "X" and state["icon"] == "x" and state["version"] == service.model_version)
 
-# A widget goes while its window is already being widgetized again: cleanup removes only the
-# departing launch's file, never the new launch's.
-launch_file("42", "app-c", "scottland-widget-newest.scope")
-service.ipc.widgets = []
+# Removed values cannot survive a newer snapshot. Queued older updates cannot win.
+old = service.ipc.snapshot
+replace([entry("42", "scottland-widget-new.scope")])
+service.replace_snapshot(old)
+check("newer snapshots replace cleared fields; an older queued snapshot is ignored",
+      service.widgets["42"]["Title"] == "t" and service.widgets["42"]["Badge"] == 0
+      and not service.widgets["42"]["Minimized"] and service.widgets["42"]["_desktop"] == "")
+
+# A launch's mailbox data is service-owned, and survives compositor snapshots only for that launch.
+service.data["scottland-widget-new.scope"] = '{"unread": 3}'
+replace([entry("42", "scottland-widget-new.scope", title="Changed")])
+check("service-owned mailbox survives a title snapshot", service.widgets["42"]["Data"] == '{"unread": 3}')
+old_path = service.state_path("42")
+replace([entry("42", "scottland-widget-newer.scope")])
+check("a new launch with the same window id drops the old file, badge and mailbox",
+      not os.path.exists(old_path) and service.widgets["42"]["Data"] == "" and service.widgets["42"]["Badge"] == 0)
+
+# Same public content need not rewrite a card file for unrelated window motion.
+path = service.state_path("42")
+revision = json.load(open(path))["revision"]
+replace([entry("42", "scottland-widget-newer.scope")])
+check("unchanged presentation leaves the card file revision alone",
+      json.load(open(path))["revision"] == revision)
+replace([])
+check("removal in a full snapshot removes the D-Bus replica and state file",
+      not service.widgets and not os.path.exists(path))
+replace([entry("42", "scottland-widget-newest.scope", "app-c")])
+check("a later launch learns identity directly from its snapshot", service.widgets["42"]["_desktop"] == "app-c")
+
+# The badge/mailbox owner restarts without turning a current value into a default.
+service.badges["app-c"] = (9, True)
+service.data["scottland-widget-newest.scope"] = '{"unread": 2}'
+service.write_owned()
+service.session = None
+service.badges, service.data = {}, {}
 service.refresh()
-check("WG10 cleanup of a departing launch keeps the next launch's file",
-      os.path.exists(os.path.join(bus.RUNTIME, "scottland-widget-newest.scope.launch.json"))
-      and not os.path.exists(os.path.join(bus.RUNTIME, "scottland-widget-newer.scope.launch.json")))
-service.ipc.widgets = [entry("42", "scottland-widget-newest.scope")]
-service.refresh()
-check("WG10 ...and the next launch learns its app from it", service.widgets["42"]["_desktop"] == "app-c")
+check("service restart reconstructs its owned badge and mailbox snapshot",
+      service.widgets["42"]["Badge"] == 9 and service.widgets["42"]["Data"] == '{"unread": 2}')
+service.ipc.snapshot = {**service.ipc.snapshot, "session": "a-different-session", "version": 1}
+service.replace_snapshot(service.ipc.snapshot)
+check("a new compositor session accepts its version and never inherits old badges or data",
+      service.model_version == 1 and service.widgets["42"]["Badge"] == 0 and service.widgets["42"]["Data"] == "")
 
 # WG11 without systemd: no systemctl on PATH; identity by process tree, and only live roots.
 child = subprocess.Popen(["sleep", "30"])

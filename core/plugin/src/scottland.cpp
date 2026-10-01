@@ -900,21 +900,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return transformer ? transformer->scale_x : 1.0;
     }
 
-    std::map<uint64_t, double> announced_scale;
-
     /** Move a window toward `target`, animating jumps. */
     void set_scale(wayfire_toplevel_view view, double target)
     {
-        // Apps can follow their own scale over IPC/D-Bus (WG12): announce target changes.
-        auto& last = announced_scale[view->get_id()];
-        if (std::abs(last - target) > 0.01)
-        {
-            last = target;
-            wf::json_t event;
-            event["window"] = (int64_t)view->get_id();
-            event["scale"]  = target;
-            send_ipc_event(event, "scottland-scale#");
-        }
+        observe_view(view);
+        model.windows[view->get_id()].scale = target;
+        publish_model();
 
         auto found = transitions.find(view->get_id());
         if (found != transitions.end())
@@ -1195,6 +1186,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
+        for (auto& [id, state] : model.windows)
+        {
+            state.focused = active && active->get_id() == id;
+        }
+        publish_model();
+
         // Focus usually comes with raising: stacking decides whose liquid is in front.
         update_all_neighbors();
     }
@@ -1215,7 +1212,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
-            announced_scale.erase(toplevel->get_id());
+            model.windows.erase(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
             {
@@ -1230,7 +1227,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 transition_widget(*link, widget_link_t::lifecycle_t::closing);  // if it maps again, it's an ordinary window
                 auto widget = wf::toplevel_cast(link->widget.lock());
                 auto launcher = link->launcher;
-                widget_links.erase(uint64_t(link->window_id));
+                model.widgets.erase(uint64_t(link->window_id));
                 announce_widgets();
                 close_view_or_process(widget, launcher);
             } else if (auto link = link_of_widget(toplevel))
@@ -1239,7 +1236,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 {
                     auto launcher = link->launcher;
                     bool preview  = link->previewing();
-                    widget_links.erase(uint64_t(link->window_id));
+                    model.widgets.erase(uint64_t(link->window_id));
                     if (preview)
                     {
                         end_process(launcher, 0);  // whatever else it started goes with it
@@ -1253,6 +1250,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
             }
         }
+
+        publish_model();
 
         // Neighbors are recomputed without it once it's gone from the stacking list.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
@@ -1291,6 +1290,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::output_t *output = nullptr;
         wf::pointf_t drop;                           // where the window was dropped (output coords)
         std::string rail;                            // "left" or "right"
+        std::string desktop, name, icon;             // launcher-resolved identity, owned here
+        bool card = false;                          // the built-in renderer can report in tests
         enum class lifecycle_t { previewing, docked, restoring, closing, handed_over };
         lifecycle_t lifecycle = lifecycle_t::previewing;
         bool collapsed = false;                      // presentation, independent of lifecycle
@@ -1301,18 +1302,64 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint32_t launched_at = 0;
     };
 
-    std::map<uint64_t, widget_link_t> widget_links;  // by the app window's id
-    std::set<uint64_t> wants_attention;              // windows demanding attention (urgency hint)
-    std::set<uint64_t> asked_attention;              // windows that asked another way (WG15):
-                                                     // activation requests, desktop notifications
-    std::map<uint64_t, std::set<std::string>> told_attention;  // set over IPC, per source (a
-                                                     // name the caller gives): each takes back its own
+    struct window_state_t
+    {
+        std::weak_ptr<wf::view_interface_t> view;
+        std::string app_id, title;
+        pid_t pid = 0;
+        wf::geometryf_t geometry = {0, 0, 0, 0};
+        zone_t zone = zone_t::center;
+        double scale = 1.0;                           // target, never an animation sample
+        bool focused = false;
+        bool above = false;
+        std::set<std::string> attention;
+    };
+
+    struct desktop_model_t
+    {
+        uint64_t version = 0;
+        std::string session;
+        std::map<uint64_t, window_state_t> windows;
+        std::map<uint64_t, widget_link_t> widgets;    // keyed by the app window
+        bool collapsed = false;
+        std::set<uint64_t> selected;                 // reserved for future multi-select
+    } model;
 
     bool needs_attention(uint64_t window) const
     {
-        auto told = told_attention.find(window);
-        return wants_attention.count(window) || asked_attention.count(window) ||
-               ((told != told_attention.end()) && !told->second.empty());
+        auto found = model.windows.find(window);
+        return found != model.windows.end() && !found->second.attention.empty();
+    }
+
+    /** Wayfire facts enter the model here, on map/geometry/title/focus signals. Rendering does
+     *  not become a second owner: transformations and disable leases follow model targets. */
+    void observe_view(wayfire_toplevel_view view)
+    {
+        if (!view || !view->is_mapped())
+        {
+            return;
+        }
+
+        auto& state = model.windows[view->get_id()];
+        state.view = view->weak_from_this();
+        state.app_id = view->get_app_id();
+        state.title = view->get_title();
+        state.pid = view_pid(view);
+        auto g = view->get_geometry();
+        state.geometry = g;
+        state.above = view->has_data("wm-actions-above");
+        state.zone = placement_of(view).zone;
+        state.focused = wf::get_core().seat->get_active_view() == view;
+    }
+
+    void move_window(wayfire_toplevel_view view, double x, double y)
+    {
+        observe_view(view);
+        auto& state = model.windows[view->get_id()];
+        state.geometry.x = x;
+        state.geometry.y = y;
+        view->move(state.geometry.x, state.geometry.y);
+        publish_model();
     }
 
     static wayfire_toplevel_view view_by_id(uint64_t id)
@@ -1333,9 +1380,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void show_attention(uint64_t window)
     {
         bool on   = needs_attention(window);
-        auto link = widget_links.find(window);
+        auto link = model.widgets.find(window);
         auto view = view_by_id(window);
-        bool widgetized = (link != widget_links.end()) && !link->second.previewing();
+        bool widgetized = (link != model.widgets.end()) && !link->second.previewing();
         if (view && view->is_mapped())
         {
             if (auto frame = frame_of(view, false))
@@ -1344,7 +1391,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        if (link != widget_links.end())
+        if (link != model.widgets.end())
         {
             if (auto widget = wf::toplevel_cast(link->second.widget.lock()))
             {
@@ -1357,19 +1404,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             announce_widgets();
         }
 
-        wf::json_t event;
-        event["window"]    = (int64_t)window;
-        event["attention"] = on;
-        send_ipc_event(event, "scottland-attention#");
+        publish_model();
     }
 
     /** The user went to it (focused its widget, or its window): attention is answered. */
     void clear_attention(uint64_t window)
     {
         bool had = needs_attention(window);
-        wants_attention.erase(window);
-        asked_attention.erase(window);
-        told_attention.erase(window);
+        if (auto state = model.windows.find(window); state != model.windows.end())
+        {
+            state->second.attention.clear();
+        }
         if (had)
         {
             show_attention(window);
@@ -1379,12 +1424,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Super+M (WG16): all widgets collapse to just their icons, or (if they all are) expand back.
     // Widgets learn it from the widget service (Minimized, and the state file); the default card
     // shrinks to its icon. It's a mode: a widget made while widgets are collapsed starts collapsed.
-    bool widgets_collapsed = false;
     wf::option_wrapper_t<wf::keybinding_t> minimize_key{"scottland/minimize_widget"};
     wf::key_callback on_minimize_key = [=] (const wf::keybinding_t&)
     {
         bool all_minimized = true, any = false;
-        for (auto& [id, link] : widget_links)
+        for (auto& [id, link] : model.widgets)
         {
             if (!link.previewing())
             {
@@ -1398,7 +1442,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return false;  // no widgets: the key goes on to the app
         }
 
-        for (auto& [id, link] : widget_links)
+        for (auto& [id, link] : model.widgets)
         {
             if (!link.previewing())
             {
@@ -1406,7 +1450,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        widgets_collapsed = !all_minimized;
+        model.collapsed = !all_minimized;
 
         LOGI("scottland: Super+M: all widgets ", all_minimized ? "expanded" : "collapsed");
         announce_widgets();
@@ -1478,7 +1522,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        asked_attention.insert(view->get_id());
+        model.windows[view->get_id()].attention.insert("builtin:activation");
         show_attention(view->get_id());
     }
 
@@ -1516,34 +1560,36 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t window = (uint64_t)data["window"].as_int64();
         std::string source = (data.has_member("source") && data["source"].is_string()) ?
             data["source"].as_string() : "ipc";
+        if (source.rfind("builtin:", 0) == 0)
+        {
+            return wf::ipc::json_error("builtin attention sources are owned by the plugin");
+        }
+        if (!model.windows.count(window))
+        {
+            return wf::ipc::json_error("no such mapped window");
+        }
         if (data["attention"].as_bool())
         {
             auto active = wf::get_core().seat->get_active_view();
-            auto link   = widget_links.find(window);
+            auto link   = model.widgets.find(window);
             if (active && ((active->get_id() == window) ||
-                ((link != widget_links.end()) && (link->second.widget.lock().get() == active.get()))))
+                ((link != model.widgets.end()) && (link->second.widget.lock().get() == active.get()))))
             {
                 auto reply = wf::ipc::json_ok();
                 reply["in_front"] = true;  // already in front of the user: nothing to show, answered
                 return reply;
             }
 
-            told_attention[window].insert(source);
+            model.windows[window].attention.insert(source);
             show_attention(window);
-        } else if (auto told = told_attention.find(window); (told != told_attention.end()) && told->second.erase(source))
+        } else if (model.windows[window].attention.erase(source))
         {
-            if (told->second.empty())
-            {
-                told_attention.erase(told);
-            }
-
             show_attention(window);  // only that source's is taken back
         }
 
         return wf::ipc::json_ok();
     };
 
-    /** Tell IPC subscribers (the widget service) that widgets changed. */
     /** Send a custom IPC event (names must end in '#') to subscribed clients. */
     void send_ipc_event(wf::json_t data, const std::string& name)
     {
@@ -1555,7 +1601,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void announce_widgets()
     {
-        send_ipc_event(wf::json_t{}, "scottland-widgets#");
+        publish_model();
     }
 
     wf::signal::connection_t<wf::view_hints_changed_signal> on_hints =
@@ -1568,10 +1614,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (ev->demands_attention)
         {
-            wants_attention.insert(ev->view->get_id());
+            model.windows[ev->view->get_id()].attention.insert("builtin:urgency");
         } else
         {
-            wants_attention.erase(ev->view->get_id());
+            model.windows[ev->view->get_id()].attention.erase("builtin:urgency");
         }
 
         show_attention(ev->view->get_id());
@@ -1663,13 +1709,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     widget_link_t *link_of_window(wayfire_view view)
     {
-        auto found = view ? widget_links.find(view->get_id()) : widget_links.end();
-        return found == widget_links.end() ? nullptr : &found->second;
+        auto found = view ? model.widgets.find(view->get_id()) : model.widgets.end();
+        return found == model.widgets.end() ? nullptr : &found->second;
     }
 
     widget_link_t *link_of_widget(wayfire_view view)
     {
-        for (auto& [id, link] : widget_links)
+        for (auto& [id, link] : model.widgets)
         {
             if (view && (link.widget.lock().get() == view.get()))
             {
@@ -1910,8 +1956,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         context["title"]  = view->get_title();
         context["pid"]    = (int64_t)view_pid(view);
         context["rail"]   = link.rail;
-        context["minimized"] = widgets_collapsed;  // so it starts in the mode, even as a preview
-        link.collapsed = widgets_collapsed;
+        context["minimized"] = model.collapsed;  // so it starts in the mode, even as a preview
+        link.collapsed = model.collapsed;
         auto process = std::make_shared<widget_process_t>();
         const char *display = getenv("WAYLAND_DISPLAY");
         process->unit = "scottland-widget-" + std::string(display ? display : "wayland") + "-" +
@@ -1943,11 +1989,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        widget_links[link.window_id] = std::move(link);
-        if (!preview)
-        {
-            announce_widgets();
-        }
+        model.widgets[link.window_id] = std::move(link);
+        announce_widgets();
 
         if (!widget_watchdog.is_connected())
         {
@@ -1959,7 +2002,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool check_widget_launches()
     {
         bool waiting = false;
-        for (auto it = widget_links.begin(); it != widget_links.end();)
+        for (auto it = model.widgets.begin(); it != model.widgets.end();)
         {
             auto& link = it->second;
             if (!link.widget.lock() && (now_msec() - link.launched_at > WIDGET_ADOPT_MS))
@@ -1967,7 +2010,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 LOGE("scottland: no widget window appeared for window ", link.window_id, "; restoring it");
                 transition_widget(link, widget_link_t::lifecycle_t::restoring);
                 end_process(link.launcher, 0);  // a late widget would show up unlinked
-                it = widget_links.erase(it);
+                it = model.widgets.erase(it);
                 announce_widgets();
                 continue;
             }
@@ -1983,7 +2026,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool adopt_widget(wayfire_toplevel_view view)
     {
         pid_t pid = view_pid(view);
-        for (auto& [id, link] : widget_links)
+        for (auto& [id, link] : model.widgets)
         {
             if (link.widget.lock() || !link.launcher ||
                 !(in_scope(pid, link.launcher->unit) ||
@@ -2085,7 +2128,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void take_handover()
     {
         auto collapsed = runtime_file(".widgets-collapsed");
-        widgets_collapsed = access(collapsed.c_str(), F_OK) == 0;
+        model.collapsed = access(collapsed.c_str(), F_OK) == 0;
         std::remove(collapsed.c_str());
         auto path = runtime_file(".widget-handover.json");
         std::ifstream in(path);
@@ -2098,10 +2141,33 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         in.close();
         std::remove(path.c_str());
         wf::json_t entries;
-        if (wf::json_t::parse_string(text, entries) || !entries.is_array())
+        if (wf::json_t::parse_string(text, entries))
         {
             LOGE("scottland: unreadable widget handover");
             return;
+        }
+
+        if (!entries.is_array())
+        {
+            model.version = std::max(model.version, (uint64_t)entries["version"].as_int64());
+            model.collapsed = entries["collapsed"].as_bool();
+            auto windows = entries["windows"];
+            for (size_t i = 0; i < windows.size(); i++)
+            {
+                auto entry = windows[i];
+                auto found = model.windows.find((uint64_t)entry["id"].as_int64());
+                if (found == model.windows.end())
+                {
+                    continue;
+                }
+                found->second.scale = entry["scale"].as_double();
+                auto sources = entry["attention"];
+                for (size_t j = 0; j < sources.size(); j++)
+                {
+                    found->second.attention.insert(sources[j].as_string());
+                }
+            }
+            entries = entries["links"];
         }
 
         for (size_t i = 0; i < entries.size(); i++)
@@ -2131,6 +2197,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.drop   = {entry["x"].as_double(), entry["y"].as_double()};
             link.collapsed   = entry["minimized"].as_bool();
             link.touch_drag  = entry.has_member("touch_drag") && entry["touch_drag"].as_bool();
+            link.desktop = entry.has_member("desktop") ? entry["desktop"].as_string() : "";
+            link.name = entry.has_member("name") ? entry["name"].as_string() : "";
+            link.icon = entry.has_member("icon") ? entry["icon"].as_string() : "";
+            link.card = entry.has_member("card") && entry["card"].as_bool();
             link.launched_at = now_msec();
             auto process  = std::make_shared<widget_process_t>();
             process->pid  = (pid_t)entry["pid"].as_int64();
@@ -2141,10 +2211,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             link.launcher = process;
-            widget_links[link.window_id] = std::move(link);
+            model.widgets[link.window_id] = std::move(link);
             keep_above(widget);
             set_scale(widget, 1.0);
-            keep_in_place(widget_links[window->get_id()], widget);
+            keep_in_place(model.widgets[window->get_id()], widget);
         }
 
         announce_widgets();
@@ -2152,13 +2222,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** Widgets float above all ordinary windows (WG4), in the always-above layer Wayfire's
      *  wm-actions keeps. */
-    static void keep_above(wayfire_toplevel_view widget)
+    void keep_above(wayfire_toplevel_view widget)
     {
         if (widget && widget->get_output())
         {
             wf::wm_actions_set_above_state_signal above;
             above.view  = widget;
-            above.above = true;
+            model.windows[widget->get_id()].above = true;
+            above.above = model.windows[widget->get_id()].above;
             widget->get_output()->emit(&above);
         }
     }
@@ -2170,7 +2241,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::txn::new_transaction_signal> on_new_transaction =
         [=] (wf::txn::new_transaction_signal *ev)
     {
-        if (widget_links.empty())
+        if (model.widgets.empty())
         {
             return;
         }
@@ -2185,7 +2256,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             auto view = wf::find_view_for_toplevel(toplevel);
             pid_t pid = view ? view_pid(view) : 0;
-            for (auto& [id, link] : widget_links)
+            for (auto& [id, link] : model.widgets)
             {
                 if (link.widget.lock() || !link.launcher || !(in_scope(pid, link.launcher->unit) ||
                     (alive(link.launcher) && descends_from(pid, link.launcher->pid))))
@@ -2276,7 +2347,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             std::max((double)area.y, (double)(area.y + area.height - geometry.height)));
         if ((std::round(x) != geometry.x) || (std::round(y) != geometry.y))
         {
-            view->move(std::round(x), std::round(y));
+            move_window(view, std::round(x), std::round(y));
         }
     }
 
@@ -2323,8 +2394,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto widget   = wf::toplevel_cast(link.widget.lock());
         auto launcher = link.launcher;
         transition_widget(link, widget_link_t::lifecycle_t::restoring);
-        widget_links.erase(uint64_t(link.window_id));  // `link` is gone from here on
+        model.widgets.erase(uint64_t(link.window_id));  // `link` is gone from here on
         close_view_or_process(widget, launcher);
+        announce_widgets();
     }
 
     /** Back to the window, at `at` (output coords); the widget goes (it isn't closed: WG5). */
@@ -2345,7 +2417,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (at)
             {
                 auto g = window->get_geometry();
-                window->move(std::round(at->x - g.width / 2.0), std::round(at->y - g.height / 2.0));
+                move_window(window, std::round(at->x - g.width / 2.0), std::round(at->y - g.height / 2.0));
                 // At once at the size it has here: the drag already showed it at this size (the
                 // morph), so the drop is just a drop, no growing from its size on the rail.
                 // Opened from the widget (a click), it grows out of it instead.
@@ -2362,7 +2434,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t id = link.window_id;
         auto launcher = link.launcher;
         close_view_or_process(widget, launcher);
-        widget_links.erase(id);
+        model.widgets.erase(id);
         announce_widgets();
     }
 
@@ -2374,7 +2446,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto launcher = link.launcher;
         // Shown again first: if the app asks before closing (unsaved work), the question is visible.
         transition_widget(link, widget_link_t::lifecycle_t::closing);
-        widget_links.erase(uint64_t(link.window_id));  // `link` is gone from here on
+        model.widgets.erase(uint64_t(link.window_id));  // `link` is gone from here on
         announce_widgets();
         close_view_or_process(widget, launcher);
         if (window)
@@ -2457,41 +2529,233 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    wf::ipc::method_callback widgets_state = [=] (wf::json_t) -> wf::json_t
+    static const char *lifecycle_name(widget_link_t::lifecycle_t state)
     {
-        auto reply = wf::ipc::json_ok();
-        wf::json_t list = wf::json_t::array();
-        auto active = wf::get_core().seat->get_active_view();
-        for (auto& [id, link] : widget_links)
+        switch (state)
         {
-            if (link.previewing())
+          case widget_link_t::lifecycle_t::previewing: return "previewing";
+          case widget_link_t::lifecycle_t::docked: return "docked";
+          case widget_link_t::lifecycle_t::restoring: return "restoring";
+          case widget_link_t::lifecycle_t::closing: return "closing";
+          case widget_link_t::lifecycle_t::handed_over: return "handed-over";
+        }
+
+        return "window";
+    }
+
+    wf::json_t widget_snapshot(bool previews = false, bool external = false)
+    {
+        auto list = wf::json_t::array();
+        for (auto& [id, link] : model.widgets)
+        {
+            if (!previews && !link.docked())
             {
-                continue;  // not a widget yet (WG13)
+                continue;
             }
 
-            auto window = wf::toplevel_cast(link.window.lock());
-            auto widget = wf::toplevel_cast(link.widget.lock());
+            auto state = model.windows.find(id);
+            if (state == model.windows.end())
+            {
+                continue;
+            }
+
+            auto widget = link.widget.lock();
             wf::json_t entry;
-            entry["id"]     = std::to_string(id);
+            entry["id"] = std::to_string(id);
             entry["window"] = (int64_t)id;
             entry["widget_view"] = widget ? (int64_t)widget->get_id() : (int64_t)-1;
-            entry["app_id"] = window ? window->get_app_id() : "";
-            entry["title"]  = window ? window->get_title() : "";
-            entry["pid"]    = (int64_t)(window ? view_pid(window) : 0);
-            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : 0);  // its window's process, once it has one
+            entry["app_id"] = state->second.app_id;
+            entry["title"] = state->second.title;
+            entry["pid"] = (int64_t)state->second.pid;
+            entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : 0);
             entry["widget_unit"] = link.launcher ? link.launcher->unit : "";
-            // Only while it runs (its pidfd says so): a number that may since have been reused is
-            // no one's identity.
             entry["launcher_pid"] = (int64_t)(alive(link.launcher) ? link.launcher->pid : 0);
-            entry["rail"]    = link.rail;
-            entry["focused"] = widget && (active == widget);
+            entry["rail"] = link.rail;
+            auto shown = widget ? model.windows.find(widget->get_id()) : model.windows.end();
+            entry["focused"] = shown != model.windows.end() && shown->second.focused;
             entry["minimized"] = link.collapsed;
-            entry["urgent"]  = needs_attention(id);
+            entry["urgent"] = needs_attention(id);
+            entry["lifecycle"] = lifecycle_name(link.lifecycle);
+            entry["touch_drag"] = link.touch_drag;
+            entry["desktop"] = link.desktop;
+            entry["name"] = link.name;
+            entry["icon"] = link.icon;
+            entry["card"] = link.card;
+            if (!external)
+            {
+                entry["drop_x"] = link.drop.x;
+                entry["drop_y"] = link.drop.y;
+            }
             list.append(entry);
         }
 
-        reply["widgets"] = list;
+        return list;
+    }
+
+    wf::json_t model_snapshot(const std::string& slice)
+    {
+        auto reply = wf::ipc::json_ok();
+        reply["collapsed"] = model.collapsed;
+        reply["session"] = model.session;
+        auto windows = wf::json_t::array();
+        for (auto& [id, state] : model.windows)
+        {
+            wf::json_t entry;
+            entry["id"] = (int64_t)id;
+            entry["pid"] = (int64_t)state.pid;
+            auto sources = wf::json_t::array();
+            for (auto& source : state.attention)
+            {
+                sources.append(source);
+            }
+            entry["attention"] = sources;
+            if (slice != "attention")
+            {
+                entry["app_id"] = state.app_id;
+                entry["title"] = state.title;
+                entry["scale"] = state.scale;
+                entry["focused"] = state.focused;
+                auto link = model.widgets.find(id);
+                auto widget_link = link_of_widget(state.view.lock());
+                entry["form"] = widget_link ? "widget" : (link == model.widgets.end() ? "window" : lifecycle_name(link->second.lifecycle));
+                auto represented = widget_link ? widget_link : (link == model.widgets.end() ? nullptr : &link->second);
+                entry["rail"] = represented ? represented->rail : "";
+                entry["collapsed"] = represented && represented->collapsed;
+                if (slice == "desktop")
+                {
+                    if (morph && morph->dragged.lock().get() == state.view.lock().get())
+                    {
+                        entry["form"] = "morphing";
+                        entry["widget_shaped"] = morph_widget_shaped();
+                    }
+                    entry["zone"] = zone_name(state.zone);
+                    entry["layer"] = state.above ? "above" : "normal";
+                    entry["x"] = state.geometry.x;
+                    entry["y"] = state.geometry.y;
+                    entry["width"] = state.geometry.width;
+                    entry["height"] = state.geometry.height;
+                }
+            }
+
+            windows.append(entry);
+        }
+
+        reply["windows"] = windows;
+        if (slice == "desktop")
+        {
+            auto selected = wf::json_t::array();
+            for (auto id : model.selected)
+            {
+                selected.append((int64_t)id);
+            }
+            reply["selected"] = selected;
+        }
+        if (slice != "attention")
+        {
+            auto widgets = widget_snapshot(true, slice != "desktop");
+            reply["widgets"] = widgets;
+        }
+
         return reply;
+    }
+
+    std::map<std::string, std::string> published_slices;
+    std::map<std::string, uint64_t> published_versions;
+    void publish_model()
+    {
+        auto full = model_snapshot("desktop");
+        auto text = full.serialize();
+        if (published_slices["desktop"] == text)
+        {
+            return;
+        }
+
+        model.version++;
+        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
+        published_slices["desktop"] = text;
+        full["version"] = (int64_t)model.version;
+        send_ipc_event(full, "scottland-model#");
+        for (auto slice : {"widgets", "attention"})
+        {
+            auto snapshot = model_snapshot(slice);
+            auto value = snapshot.serialize();
+            if (published_slices[slice] != value)
+            {
+                published_slices[slice] = value;
+                published_versions[slice] = model.version;
+                snapshot["version"] = (int64_t)model.version;
+                send_ipc_event(snapshot, std::string("scottland-") + slice + "#");
+            }
+        }
+    }
+
+    wf::ipc::method_callback desktop_state = [=] (wf::json_t data) -> wf::json_t
+    {
+        std::string slice = data.has_member("slice") && data["slice"].is_string() ? data["slice"].as_string() : "desktop";
+        if ((slice != "desktop") && (slice != "widgets") && (slice != "attention"))
+        {
+            return wf::ipc::json_error("unknown desktop-model slice");
+        }
+
+        auto reply = model_snapshot(slice);
+        reply["version"] = (int64_t)model.version;
+        return reply;
+    };
+    wf::ipc::method_callback_full subscribe_model = [=] (wf::json_t data, wf::ipc::client_interface_t *client) -> wf::json_t
+    {
+        auto snapshot = desktop_state(data);
+        if (!client || snapshot.has_member("error"))
+        {
+            return client ? snapshot : wf::ipc::json_error("subscribe needs an IPC connection");
+        }
+
+        std::string slice = data.has_member("slice") && data["slice"].is_string() ? data["slice"].as_string() : "desktop";
+        wf::json_t watch;
+        auto events = wf::json_t::array();
+        events.append(slice == "desktop" ? "scottland-model#" : std::string("scottland-") + slice + "#");
+        watch["events"] = events;
+        auto installed = ipc_repo->call_method("window-rules/events/watch", watch, client);
+        if (installed.has_member("error"))
+        {
+            return installed;
+        }
+
+        // Installation and the initial snapshot happen in one compositor turn. The event
+        // repository owns the connection, so subscriptions also survive plugin replacement.
+        return snapshot;
+    };
+    wf::ipc::method_callback widgets_state = [=] (wf::json_t) -> wf::json_t
+    {
+        auto reply = wf::ipc::json_ok();
+        reply["widgets"] = widget_snapshot();
+        reply["version"] = (int64_t)model.version;
+        return reply;
+    };
+
+    wf::signal::connection_t<wf::wm_actions_above_changed_signal> on_above =
+        [=] (wf::wm_actions_above_changed_signal *ev)
+    {
+        observe_view(wf::toplevel_cast(ev->view));
+        publish_model();
+    };
+
+    void handle_new_output(wf::output_t *output) override
+    {
+        wf::per_output_tracker_mixin_t<center_resize_t>::handle_new_output(output);
+        output->connect(&on_above);
+    }
+
+    void handle_output_removed(wf::output_t *output) override
+    {
+        output->disconnect(&on_above);
+        wf::per_output_tracker_mixin_t<center_resize_t>::handle_output_removed(output);
+    }
+
+    wf::signal::connection_t<wf::view_title_changed_signal> on_title =
+        [=] (wf::view_title_changed_signal *ev)
+    {
+        observe_view(wf::toplevel_cast(ev->view));
+        publish_model();
     };
 
     // What the widget's manifest says that Scottland acts on, told by the launcher once it has
@@ -2505,15 +2769,27 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return wf::ipc::json_error("widget-traits needs \"window\" and \"unit\"");
         }
 
-        auto found = widget_links.find((uint64_t)data["window"].as_int64());
-        if ((found == widget_links.end()) || !found->second.launcher ||
+        auto found = model.widgets.find((uint64_t)data["window"].as_int64());
+        if ((found == model.widgets.end()) || !found->second.launcher ||
             (found->second.launcher->unit != data["unit"].as_string()))
         {
             return wf::ipc::json_error("no such widget launch");
         }
 
-        found->second.touch_drag = data.has_member("touch_drag") && data["touch_drag"].is_bool() &&
-            data["touch_drag"].as_bool();
+        auto& link = found->second;
+        link.touch_drag = data.has_member("touch_drag") && data["touch_drag"].is_bool() && data["touch_drag"].as_bool();
+        for (auto field : {"desktop", "name", "icon"})
+        {
+            if (!data.has_member(field) || !data[field].is_string())
+            {
+                return wf::ipc::json_error("widget-traits needs resolved identity");
+            }
+        }
+        link.desktop = data["desktop"].as_string();
+        link.name = data["name"].as_string();
+        link.icon = data["icon"].as_string();
+        link.card = data.has_member("card") && data["card"].as_bool();
+        publish_model();
         return wf::ipc::json_ok();
     };
 
@@ -2533,8 +2809,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return wf::ipc::json_error("bad widget id");
         }
 
-        auto found = widget_links.find(id);
-        if (found == widget_links.end())
+        auto found = model.widgets.find(id);
+        if (found == model.widgets.end())
         {
             return wf::ipc::json_error("no such widget");
         }
@@ -3340,13 +3616,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     std::weak_ptr<wf::view_interface_t> held_above;
     wf::wl_timer<false> held_above_timer;
 
-    static void set_above(wayfire_toplevel_view view, bool above)
+    void set_above(wayfire_toplevel_view view, bool above)
     {
         if (view && view->get_output())
         {
             wf::wm_actions_set_above_state_signal signal;
             signal.view  = view;
-            signal.above = above;
+            model.windows[view->get_id()].above = above;
+            signal.above = model.windows[view->get_id()].above;
             view->get_output()->emit(&signal);
         }
     }
@@ -3783,7 +4060,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         LOGI("scottland: Esc: window ", view->get_id(), " (", view->get_title(), ") back from ", g.x, ",", g.y,
             " to ", origin.position.x, ",", origin.position.y);
-        view->move(origin.position.x, origin.position.y);
+        move_window(view, origin.position.x, origin.position.y);
         wf::point_t to = origin.position;
         if (view->get_output())
         {
@@ -3835,7 +4112,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 {
                     wf::move_view_to_output(window, home_output, false);
                     auto wg = window->get_geometry();
-                    window->move(std::round(home.x - wg.width / 2.0), std::round(home.y - wg.height / 2.0));
+                    move_window(window, std::round(home.x - wg.width / 2.0), std::round(home.y - wg.height / 2.0));
                 }
 
                 apply(window);
@@ -3865,7 +4142,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 wf::move_view_to_output(view, home_output, false);
             }
 
-            view->move(std::round(home.x - g.width / 2.0), std::round(home.y - g.height / 2.0));
+            move_window(view, std::round(home.x - g.width / 2.0), std::round(home.y - g.height / 2.0));
             widgetize(view);
             if (auto link = link_of_window(view))
             {
@@ -4110,7 +4387,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
                     if (found)
                     {
-                        main->move(geometry.x + found * d, geometry.y);
+                        move_window(main, geometry.x + found * d, geometry.y);
                         break;
                     }
                 }
@@ -4157,6 +4434,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         dragged_widget = 0;
         drag_started = false;
+        publish_model();
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
         idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
@@ -4165,7 +4443,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
-            if (!widget_links.empty())
+            observe_view(toplevel);
+            if (!model.widgets.empty())
             {
                 adopt_widget(toplevel);
             }
@@ -4180,6 +4459,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto view = wf::toplevel_cast(ev->view))
         {
+            observe_view(view);
             if (auto frame = frame_of(view, false))
             {
                 frame->damage_previous(ev->old_geometry);
@@ -4200,6 +4480,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         apply(ev->view);
+        publish_model();
     };
 
     wf::signal::connection_t<wf::view_set_output_signal> on_output = [=] (wf::view_set_output_signal *ev)
@@ -4234,9 +4515,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto transformer = view->get_transformed_node()->get_transformer<
                 wf::scene::view_2d_transformer_t>(TRANSFORMER);
             entry["applied_scale"] = transformer ? transformer->scale_x : 1.0;
-            // Where it's going, exactly as scottland-scale# announced it, not a step of an animation.
-            auto announced = announced_scale.find(view->get_id());
-            entry["target_scale"] = announced != announced_scale.end() ? announced->second : displayed_scale(view);
+            // Where it's going, as the desktop model publishes it, not a step of an animation.
+            auto state = model.windows.find(view->get_id());
+            entry["target_scale"] = state != model.windows.end() ? state->second.scale : 1.0;
             if (auto frame = frame_of(view, false))
             {
                 auto r = frame->screen_rect();
@@ -4445,6 +4726,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void init() override
     {
         init_output_tracking();
+        if (!getenv("SCOTTLAND_INTERNAL_MODEL_SESSION"))
+        {
+            auto session = std::to_string(getpid()) + "-" + std::to_string(now_msec());
+            setenv("SCOTTLAND_INTERNAL_MODEL_SESSION", session.c_str(), 1);
+        }
+        model.session = getenv("SCOTTLAND_INTERNAL_MODEL_SESSION");
+        if (auto version = getenv("SCOTTLAND_INTERNAL_MODEL_VERSION"))
+        {
+            model.version = std::strtoull(version, nullptr, 10);
+        }
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_key);
@@ -4470,11 +4761,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         synthesize_pop();
         ipc_repo->register_method("scottland/test-input", test_input);
         ipc_repo->register_method("scottland/widgets", widgets_state);
+        ipc_repo->register_method("scottland/desktop-model", desktop_state);
+        ipc_repo->register_method("scottland/subscribe", subscribe_model);
+        wf::get_core().connect(&on_title);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
         ipc_repo->register_method("scottland/widget-traits", widget_traits);
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            observe_view(wf::toplevel_cast(view));
+        }
         take_handover();
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
@@ -4499,6 +4797,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         load_color_scheme();
         apply_all();
         update_focus();
+        for (auto& [id, state] : model.windows)
+        {
+            if (!link_of_widget(state.view.lock()))
+            {
+                show_attention(id);
+            }
+        }
         LOGI("scottland: plugin loaded");
     }
 
@@ -4536,6 +4841,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         touch_pointer.reset();
         ipc_repo->unregister_method("scottland/test-input");
         ipc_repo->unregister_method("scottland/widgets");
+        ipc_repo->unregister_method("scottland/desktop-model");
+        ipc_repo->unregister_method("scottland/subscribe");
+        on_title.disconnect();
+        on_above.disconnect();
         on_hints.disconnect();
         ipc_repo->unregister_method("scottland/widget-action");
         ipc_repo->unregister_method("scottland/widget-traits");
@@ -4551,13 +4860,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         widget_watchdog.disconnect();
         release_above();  // a just-dropped window doesn't stay above for good
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
-        if (reloading && widgets_collapsed)
-        {
-            std::ofstream(runtime_file(".widgets-collapsed")) << "1\n";  // the mode, for the next plugin
-        }
 
         wf::json_t handover = wf::json_t::array();
-        for (auto& [id, link] : widget_links)
+        for (auto& [id, link] : model.widgets)
         {
             auto widget = wf::toplevel_cast(link.widget.lock());
             if (reloading && link.docked() && widget && widget->is_mapped())
@@ -4572,6 +4877,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["y"] = link.drop.y;
                 entry["minimized"] = link.collapsed;
                 entry["touch_drag"] = link.touch_drag;
+                entry["desktop"] = link.desktop;
+                entry["name"] = link.name;
+                entry["icon"] = link.icon;
+                entry["card"] = link.card;
                 handover.append(entry);
                 transition_widget(link, widget_link_t::lifecycle_t::handed_over);
                 continue;  // the window keeps its disable: the next plugin holds it
@@ -4581,10 +4890,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             close_view_or_process(widget, link.launcher);
         }
 
-        if (handover.size() > 0)
+        if (reloading)
         {
-            std::ofstream out(runtime_file(".widget-handover.json"));
-            out << handover.serialize();
+            auto snapshot = model_snapshot("desktop");
+            snapshot["version"] = (int64_t)model.version;
+            snapshot["links"] = handover;
+            auto path = runtime_file(".widget-handover.json");
+            std::ofstream out(path + ".tmp");
+            out << snapshot.serialize();
+            out.close();
+            std::rename((path + ".tmp").c_str(), path.c_str());
         }
 
         // Returning a disable is part of unloading the renderer. Only handed-over apps keep
@@ -4592,13 +4907,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto leases = disabled_nodes;
         for (auto id : leases)
         {
-            auto link = widget_links.find(id);
-            if (link == widget_links.end() || link->second.lifecycle != widget_link_t::lifecycle_t::handed_over)
+            auto link = model.widgets.find(id);
+            if (link == model.widgets.end() || link->second.lifecycle != widget_link_t::lifecycle_t::handed_over)
             {
                 render_hidden(view_by_id(id), false);
             }
         }
-        widget_links.clear();
+        model.widgets.clear();
         if (handover.size() == 0)
         {
             announce_widgets();  // the widget service drops its objects
