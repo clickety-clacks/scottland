@@ -2887,6 +2887,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scroll_down_time = scroll_last_time = now_msec();
         scroll_velocity  = {0, 0};
         touch_pointer->move_to(scroll_origin);  // the pointer goes where the finger is
+        // The app already got this touch, and an app that does something with touch (Ghostty
+        // selects text) would act on it too: tell it to forget it. Scottland scrolls, and turns
+        // a quick tap into a click.
+        auto seat  = wf::get_core().get_current_seat();
+        auto point = wlr_seat_touch_get_point(seat, finger);
+        if (point && point->client)
+        {
+            wlr_seat_touch_notify_cancel(seat, point->client);
+        }
     }
 
     void touch_scroll_motion(int finger)
