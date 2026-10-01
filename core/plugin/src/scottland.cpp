@@ -2780,7 +2780,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             double box   = drawn + 2 * drag_margin;
             double left  = geometry.x + geometry.width / 2.0 - box / 2.0;
             drag_relative_x = box > 0 ? (local_x - left) / box : 0.5;
-            drag_origin = {geometry.x, geometry.y};  // where Esc sends it back (WG14)
+            // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
+            // reset on the touchpad, out of room), it's the same move: keep the first origin.
+            bool continued = (last_drop_view == drag->view->get_id()) &&
+                ((int32_t)(now_msec() - last_drop_at) < DRAG_CHAIN_MS);
+            drag_origin = continued ? last_drop_origin : wf::point_t{geometry.x, geometry.y};
             drag_cancelled = false;
             auto running = transitions.find(drag->view->get_id());
             drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
@@ -3011,6 +3015,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // it was let go, and a drag that changed it into its other form (window/widget) morphs back.
     wf::point_t drag_origin{0, 0};
     bool drag_cancelled = false;
+    static constexpr int DRAG_CHAIN_MS = 2000;  // a new drag of the same window within this continues the move
+    uint64_t last_drop_view = 0;
+    uint32_t last_drop_at = 0;
+    wf::point_t last_drop_origin{0, 0};
     static constexpr int GLIDE_MS = 260;
     struct glide_t
     {
@@ -3215,8 +3223,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 cancel_drop(main);
             }
 
+            last_drop_view = 0;  // the move is over
+
             idle_neighbors.run_once([=] () { update_all_neighbors(); });
             return;
+        }
+
+        if (main)
+        {
+            last_drop_view   = main->get_id();
+            last_drop_at     = now_msec();
+            last_drop_origin = drag_origin;
         }
 
         std::optional<bool> widget_shaped;  // the shape a morphing drag showed at the drop (WG13)
