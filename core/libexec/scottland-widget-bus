@@ -74,6 +74,10 @@ ROOT_XML = """
       <arg name="path" type="s" direction="out"/>
     </method>
   </interface>
+  <interface name="org.scottland.Diagnostics">
+    <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
+    <method name="Rendered"><arg name="json" type="s" direction="in"/></method>
+  </interface>
   <interface name="org.scottland.Windows">
     <method name="GetState">
       <arg name="widgetized" type="b" direction="out"/>
@@ -193,11 +197,12 @@ class Service:
         self.bus = None
         self.widget_info = Gio.DBusNodeInfo.new_for_xml(WIDGET_XML).interfaces[0]
         root = Gio.DBusNodeInfo.new_for_xml(ROOT_XML)
-        self.data_info, self.launch_info, self.windows_info = root.interfaces
+        self.data_info, self.launch_info, self.diagnostics_info, self.windows_info = root.interfaces
         self.model_version = -1
         self.session = None
         self.model_snapshot = {}
         self.data = {}           # launch unit -> app-owned mailbox payload
+        self.rendered = {}       # test-only observations from the card
         os.makedirs(RUNTIME, exist_ok=True)
 
     # --- compositor ---
@@ -270,6 +275,7 @@ class Service:
         unit = self.widgets[wid]["_widget_unit"]
         if self.data.pop(unit, None) is not None:
             self.write_owned()
+        self.rendered.pop(unit, None)
         self.widgets.pop(wid)
         for path in paths:
             try:
@@ -412,6 +418,23 @@ class Service:
             self.write_state(wid)
             invocation.return_value(GLib.Variant("(s)", (self.state_path(wid),)))
             return
+        if iface == "org.scottland.Diagnostics":
+            if method == "Snapshot":
+                invocation.return_value(GLib.Variant("(s)", (json.dumps({
+                    "model": self.model_snapshot, "widgets": self.widgets, "rendered": self.rendered}),)))
+            elif method == "Rendered":
+                (payload,) = params.unpack()
+                try:
+                    report = json.loads(payload)
+                    pid = self.caller_pid(sender)
+                    state = self.widgets.get(report["id"])
+                    if state and is_widget_process(pid, state):
+                        self.rendered[state["_widget_unit"]] = report
+                except (ValueError, KeyError, GLib.Error):
+                    invocation.return_dbus_error("org.scottland.Widgets.Error", "invalid render report")
+                    return
+                invocation.return_value(None)
+            return
         try:
             pid = self.caller_pid(sender)
         except GLib.Error as error:
@@ -473,6 +496,8 @@ class Service:
         register(connection, ROOT, self.data_info, self.on_root_call, None)
         register(connection, ROOT, self.windows_info, self.on_root_call, None)
         register(connection, ROOT, self.launch_info, self.on_root_call, None)
+        if os.environ.get("SCOTTLAND_TEST_MODEL") == "1":
+            register(connection, ROOT, self.diagnostics_info, self.on_root_call, None)
         for wid in list(self.widgets):
             self.registrations[wid] = register(
                 connection, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)

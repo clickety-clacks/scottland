@@ -48,6 +48,7 @@ case ${1:-} in
         esac
       done
       export PATH=/usr/local/bin:/usr/bin:/bin
+      export SCOTTLAND_TEST_MODEL=1
       export SCOTTLAND_HOOKS=$hooks XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
       for env_hook in "$hooks"/session-env.d/*.sh; do [[ -r $env_hook ]] && . "$env_hook"; done
       "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null

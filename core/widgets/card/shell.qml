@@ -56,9 +56,28 @@ FloatingWindow {
         onLoaded: {
             try {
                 root.state = JSON.parse(this.text())
+                Qt.callLater(root.reportRendered)
             } catch (e) {}
         }
     }
+
+    property bool reportPending: false
+    function reportRendered() {
+        if (renderReport.running) { reportPending = true; return }
+        reportPending = false
+        if (Quickshell.env("SCOTTLAND_WIDGET_AUDIT") !== "1") return
+        renderReport.command = ["busctl", "--user", "call", "org.scottland.Widgets",
+            "/org/scottland/Widgets", "org.scottland.Diagnostics", "Rendered", "s",
+            JSON.stringify({id: state.id, revision: state.revision, version: state.version,
+                title: titleText.text, title_shown: titleText.visible && titleText.parent.visible,
+                collapsed: minimized, rail: rail, width: width})]
+        renderReport.running = true
+    }
+    Process {
+        id: renderReport
+        onExited: if (root.reportPending) Qt.callLater(root.reportRendered)
+    }
+    onWidthChanged: Qt.callLater(root.reportRendered)
 
     // Theme: the session's palette (SCOTTLAND_PALETTE, kept current by Scottland: light or dark,
     // the accent, and an integration's full palette such as Omarchy's theme). Followed live.

@@ -64,4 +64,12 @@ build; new reloads don't create a separate collapsed-mode file.
 | DM3 | External slices exclude geometry and animation samples; an unchanged presentation never rewrites its card file. There is no model polling or drift-repair service. | implemented (headless) |
 | DM4 | The widget service atomically writes a complete presentation file before the widget process starts. The card renders exclusively from that snapshot. Resolved launch identity enters the plugin, without a launch side file. | implemented (headless) |
 | DM5 | A marked reload preserves collapsed mode, attention sources and widget identities in one atomic model handover; its version increases afterward. | implemented (headless) |
-| DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. They run only in an isolated headless session. | implemented (validation pending) |
+| DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. They run only in an isolated headless session. | implemented (headless) |
+
+Tests: `tests/widgets-test.sh` retains the behavior regression checks;
+`tests/state-model-test.sh SEED STEPS` adds model/scene/replica/actual-render assertions after
+every operation (dock, undock, collapse, title, reload, Esc, close, finger drag and attention).
+It also checks immediate subscription/reconnect, geometry filtering, helper restart with a badge,
+attention/mode reload preservation and rejection of deliberately incorrect observations.
+The test endpoint and D-Bus render diagnostics exist only with `SCOTTLAND_TEST_MODEL=1`, set by
+the isolated headless harness. Live cards launch no reporting process.

@@ -2732,6 +2732,149 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return reply;
     };
 
+    // Test-only observations cross IPC explicitly. No live drift monitor or repair path exists.
+    wf::ipc::method_callback audit_model = [=] (wf::json_t data) -> wf::json_t
+    {
+        auto issues = wf::json_t::array();
+        auto fail = [&] (const std::string& message) { issues.append(message); };
+        for (auto& any : wf::get_core().get_all_views())
+        {
+            auto view = wf::toplevel_cast(any);
+            if (view && view->is_mapped() && !model.windows.count(view->get_id()))
+            {
+                fail("mapped window absent from model: " + std::to_string(view->get_id()));
+            }
+        }
+        for (auto& [id, state] : model.windows)
+        {
+            auto view = wf::toplevel_cast(state.view.lock());
+            if (!view || !view->is_mapped())
+            {
+                fail("model window not mapped: " + std::to_string(id));
+                continue;
+            }
+            auto g = view->get_geometry();
+            if ((g.x != state.geometry.x) || (g.y != state.geometry.y) ||
+                (g.width != state.geometry.width) || (g.height != state.geometry.height))
+            {
+                fail("scene geometry differs: " + std::to_string(id));
+            }
+            if ((view->get_title() != state.title) || (view->get_app_id() != state.app_id) ||
+                ((wf::get_core().seat->get_active_view() == view) != state.focused))
+            {
+                fail("scene identity/focus differs: " + std::to_string(id));
+            }
+            auto app_link = model.widgets.find(id);
+            auto widget_link = link_of_widget(view);
+            bool attention = widget_link ? (widget_link->docked() && needs_attention(widget_link->window_id)) :
+                (needs_attention(id) && (app_link == model.widgets.end() || !app_link->second.docked()));
+            if (auto frame = frame_of(view, false); frame && frame->needs_attention() != attention)
+            {
+                fail("scene attention differs: " + std::to_string(id));
+            }
+            if (view->has_data("wm-actions-above") != state.above)
+            {
+                fail("scene layer differs: " + std::to_string(id));
+            }
+            if (!transitions.count(id) && std::abs(displayed_scale(view) - state.scale) > 0.003)
+            {
+                fail("scene scale differs: " + std::to_string(id));
+            }
+        }
+        if (!data.has_member("service"))
+        {
+            fail("widget service observations required");
+        } else
+        {
+            auto service = data["service"];
+            auto snapshot = service["model"];
+            if (!snapshot.has_member("version") || snapshot["version"].as_int64() < (int64_t)published_versions["widgets"])
+            {
+                fail("widget service has an older snapshot");
+            }
+            auto expected = model_snapshot("widgets");
+            if (wf::json_t(snapshot["windows"]).serialize() != wf::json_t(expected["windows"]).serialize() ||
+                wf::json_t(snapshot["widgets"]).serialize() != wf::json_t(expected["widgets"]).serialize() ||
+                wf::json_t(snapshot["collapsed"]).serialize() != wf::json_t(expected["collapsed"]).serialize())
+            {
+                fail("widget service model copy differs");
+            }
+            auto widgets = service["widgets"];
+            auto rendered = service["rendered"];
+            for (auto& [id, link] : model.widgets)
+            {
+                auto window = wf::toplevel_cast(link.window.lock());
+                auto widget = wf::toplevel_cast(link.widget.lock());
+                auto label = std::to_string(id);
+                if (!window || (window->get_root_node()->is_enabled() == link.docked()))
+                {
+                    fail("app visibility differs: " + label);
+                }
+                if (!widget || !widget->is_mapped())
+                {
+                    fail("widget not mapped: " + label);
+                    continue;
+                }
+                if (widget->get_root_node()->is_enabled() != link.docked())
+                {
+                    fail("widget visibility differs: " + label);
+                }
+                if (!link.docked())
+                {
+                    continue;
+                }
+                if (!widget->has_data("wm-actions-above"))
+                {
+                    fail("widget is not in the above layer: " + label);
+                }
+                auto g = widget->get_geometry();
+                auto spot = widget_spot(widget->get_output(), link, g.width, g.height);
+                if ((std::abs(g.x - spot.x) > 1) || (std::abs(g.y - spot.y) > 1))
+                {
+                    fail("widget rail position differs: " + label);
+                }
+                if (!widgets.has_member(label))
+                {
+                    fail("widget absent from service: " + label);
+                    continue;
+                }
+                auto state = widgets[label];
+                if (state["Title"].as_string() != model.windows[id].title ||
+                    state["Rail"].as_string() != link.rail || state["Minimized"].as_bool() != link.collapsed ||
+                    state["Urgent"].as_bool() != needs_attention(id))
+                {
+                    fail("widget service presentation differs: " + label);
+                }
+                if (link.card && link.launcher)
+                {
+                    if (!rendered.has_member(link.launcher->unit))
+                    {
+                        fail("card render report absent: " + label);
+                        continue;
+                    }
+                    auto report = rendered[link.launcher->unit];
+                    bool title_shown = !link.collapsed && !model.windows[id].title.empty();
+                    if (report["revision"].as_int64() != state["_revision"].as_int64() ||
+                        report["version"].as_int64() != state["_model_version"].as_int64() ||
+                        report["title"].as_string() != model.windows[id].title ||
+                        report["title_shown"].as_bool() != title_shown ||
+                        report["collapsed"].as_bool() != link.collapsed ||
+                        report["rail"].as_string() != link.rail || std::abs(report["width"].as_double() - g.width) > 1 ||
+                        (link.collapsed && std::abs(g.width - 96) > 1) || (!link.collapsed && title_shown && g.width <= 96))
+                    {
+                        fail("card rendered presentation differs: " + label);
+                    }
+                }
+            }
+        }
+
+        auto reply = wf::ipc::json_ok();
+        reply["ok"] = issues.size() == 0;
+        reply["issues"] = issues;
+        reply["version"] = (int64_t)model.version;
+        return reply;
+    };
+
     wf::signal::connection_t<wf::wm_actions_above_changed_signal> on_above =
         [=] (wf::wm_actions_above_changed_signal *ev)
     {
@@ -4763,6 +4906,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         ipc_repo->register_method("scottland/desktop-model", desktop_state);
         ipc_repo->register_method("scottland/subscribe", subscribe_model);
+        if (getenv("SCOTTLAND_TEST_MODEL") && std::string(getenv("SCOTTLAND_TEST_MODEL")) == "1")
+        {
+            ipc_repo->register_method("scottland/audit-model", audit_model);
+        }
         wf::get_core().connect(&on_title);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
@@ -4843,6 +4990,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widgets");
         ipc_repo->unregister_method("scottland/desktop-model");
         ipc_repo->unregister_method("scottland/subscribe");
+        ipc_repo->unregister_method("scottland/audit-model");
         on_title.disconnect();
         on_above.disconnect();
         on_hints.disconnect();
