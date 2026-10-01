@@ -118,6 +118,24 @@ def fingerprint():
         return hashlib.sha256(source.read()).hexdigest()
 
 
+def in_scope(pid, unit):
+    """Is process `pid` in systemd scope `unit` (where the widget's processes all run)?"""
+    if not unit:
+        return False
+    try:
+        with open(f"/proc/{pid}/cgroup") as source:
+            return any(line.rstrip("\n").endswith("/" + unit) for line in source)
+    except OSError:
+        return False
+
+
+def is_widget_process(pid, state):
+    """Is `pid` one of this widget's processes: in its scope, or (without one) started by its
+    launch process or its window's process?"""
+    return (in_scope(pid, state["_widget_unit"])
+            or any(root > 1 and pid_descends_from(pid, root) for root in (state["_launcher_pid"], state["_widget_pid"])))
+
+
 def pid_descends_from(pid, ancestor):
     for _ in range(8):
         if pid <= 1:
@@ -179,6 +197,8 @@ class Service:
                 "Focused": bool(entry.get("focused")),
                 "Urgent": bool(entry.get("urgent")),
                 "_widget_pid": int(entry.get("widget_pid", 0)),
+                "_launcher_pid": int(entry.get("launcher_pid", 0)),
+                "_widget_unit": entry.get("widget_unit", ""),
             }
             if state.get("_desktop") in self.badges:
                 updates["Badge"] = self.badge(state["_desktop"])
@@ -189,7 +209,8 @@ class Service:
 
     def new_widget(self, wid):
         state = {"Id": wid, "AppId": "", "Title": "", "Pid": 0, "Window": 0, "Rail": "", "Focused": False,
-                 "Urgent": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_desktop": ""}
+                 "Urgent": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_launcher_pid": 0,
+                 "_widget_unit": "", "_desktop": ""}
         self.widgets[wid] = state
         self.learn_desktop(wid)
         if self.bus:
@@ -365,7 +386,7 @@ class Service:
                 self.update(wid, {"Data": payload})
         elif method == "Send":
             # A widget sends to its own app only.
-            sources = [s for s in self.widgets.values() if s["_widget_pid"] and pid_descends_from(pid, s["_widget_pid"])]
+            sources = [s for s in self.widgets.values() if is_widget_process(pid, s)]
             if not sources:
                 invocation.return_dbus_error("org.scottland.Widgets.Error", "the caller isn't a widget")
                 return

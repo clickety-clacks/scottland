@@ -82,7 +82,8 @@ accessibility, or the app talking to its own widget (WG11, or its own service) c
 - **Not covered yet by tests:** halo, three-finger and touch drags onto a rail (the drop path is
   shared with Super+drag), dialogs and fullscreen windows, input inside a widget, several
   screens, X11 apps, `Focus()`, urgency, the palette changing live (the file is tested; the card
-  watches it).
+  watches it), an app unmapping and remapping the same window while widgetized (GTK 4 makes a new
+  window when shown again, which is tested).
 - **Processes:** each widget runs in a systemd user scope; its windows are recognized by that scope
   (or, without one, by descending from the launched process). Without systemd (no user manager),
   a widget runs in its own session instead, and only its first process is ended (through a pidfd

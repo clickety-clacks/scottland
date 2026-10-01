@@ -82,8 +82,13 @@ case ${1:-} in
     [[ -f $dir/display ]] || exit 0
     name=$(display)
     # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
+    # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
+    # with its monitors.)
     for pid_file in "$runtime/scottland/$name.lua.pid" "$runtime/scottland/$name.color-scheme.pid"; do
-      [[ -f $pid_file ]] && kill "$(cat "$pid_file")" 2>/dev/null || true
+      helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
+      if [[ $helper =~ ^[0-9]+$ ]] && grep -qa -e scottland-color-scheme -e lua "/proc/$helper/cmdline" 2>/dev/null; then
+        if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
+      fi
       rm -f "$pid_file"
     done
     for lock in "$runtime"/hypr/scottland_*/hyprland.lock; do

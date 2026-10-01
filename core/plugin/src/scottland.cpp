@@ -1106,6 +1106,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // closed by the user closes the app's window (unless it's going because of a restore).
             if (auto link = link_of_window(toplevel))
             {
+                set_hidden(*link, false);  // if it maps again, it's an ordinary window
                 auto widget = wf::toplevel_cast(link->widget.lock());
                 auto launcher = link->launcher;
                 widget_links.erase(uint64_t(link->window_id));
@@ -1163,6 +1164,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::pointf_t drop;                           // where the window was dropped (output coords)
         std::string rail;                            // "left" or "right"
         bool dismissing = false;                     // restoring the window: the widget just goes
+        bool hidden = false;                         // holds a disable on the app's window
         uint32_t launched_at = 0;
     };
 
@@ -1314,12 +1316,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return link_of_widget(view) != nullptr;
     }
 
-    static void set_hidden(wayfire_view view, bool hidden)
+    /** Hide the app's window behind its widget, or show it again. Wayfire counts disables (its
+     *  own unmap is one too), so the link remembers whether it holds one and gives back exactly
+     *  that: a window unmapped and remapped while widgetized isn't left hidden. */
+    static void set_hidden(widget_link_t& link, bool hidden)
     {
-        if (view && (view->get_root_node()->is_enabled() == hidden))
+        auto window = link.window.lock();
+        if (!window || (link.hidden == hidden))
         {
-            wf::scene::set_node_enabled(view->get_root_node(), !hidden);
+            return;
         }
+
+        wf::scene::set_node_enabled(window->get_root_node(), !hidden);
+        link.hidden = hidden;
     }
 
 
@@ -1513,7 +1522,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         process->pidfd = pidfd_open(process->pid, 0);
         link.launcher  = process;
 
-        set_hidden(view, true);
+        set_hidden(link, true);
         if (wf::get_core().seat->get_active_view() == view)
         {
             wf::get_core().seat->refocus();
@@ -1537,11 +1546,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (!link.widget.lock() && (now_msec() - link.launched_at > WIDGET_ADOPT_MS))
             {
                 LOGE("scottland: no widget window appeared for window ", link.window_id, "; restoring it");
-                if (auto window = wf::toplevel_cast(link.window.lock()))
-                {
-                    set_hidden(window, false);
-                }
-
+                set_hidden(link, false);
                 end_process(link.launcher, 0);  // a late widget would show up unlinked
                 it = widget_links.erase(it);
                 announce_widgets();
@@ -1623,7 +1628,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 window->move(std::round(at->x - g.width / 2.0), std::round(at->y - g.height / 2.0));
             }
 
-            set_hidden(window, false);
+            set_hidden(link, false);
             wf::get_core().default_wm->focus_raise_view(window);
         }
 
@@ -1640,13 +1645,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto window = wf::toplevel_cast(link.window.lock());
         auto widget = wf::toplevel_cast(link.widget.lock());
         auto launcher = link.launcher;
-        widget_links.erase(uint64_t(link.window_id));
+        // Shown again first: if the app asks before closing (unsaved work), the question is visible.
+        set_hidden(link, false);
+        widget_links.erase(uint64_t(link.window_id));  // `link` is gone from here on
         announce_widgets();
         close_view_or_process(widget, launcher);
         if (window)
         {
-            // Shown again first: if the app asks before closing (unsaved work), the question is visible.
-            set_hidden(window, false);
             window->close();
         }
     }
@@ -1713,6 +1718,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["pid"]    = (int64_t)(window ? view_pid(window) : 0);
             entry["widget_pid"] = (int64_t)(widget ? view_pid(widget) : (link.launcher ? link.launcher->pid : 0));
             entry["widget_unit"] = link.launcher ? link.launcher->unit : "";
+            entry["launcher_pid"] = (int64_t)(link.launcher ? link.launcher->pid : 0);
             entry["rail"]    = link.rail;
             entry["focused"] = widget && (active == widget);
             entry["urgent"]  = wants_attention.count(id) > 0;
@@ -2869,10 +2875,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         widget_watchdog.disconnect();
         for (auto& [id, link] : widget_links)
         {
-            if (auto window = wf::toplevel_cast(link.window.lock()))
-            {
-                set_hidden(window, false);
-            }
+            set_hidden(link, false);
 
             close_view_or_process(wf::toplevel_cast(link.widget.lock()), link.launcher);
         }

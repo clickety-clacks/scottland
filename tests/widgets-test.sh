@@ -53,11 +53,15 @@ apps = ["^scottland-test-sleeper$"]
 exec = 'sh -c "trap \"\" TERM; sleep 121 & wait"'
 TOML
 # A real widget (a terminal window) that sends its app a message over the mailbox (WG11).
+# Its window is a terminal; the message is sent by the widget's launch shell, a sibling of the
+# window's process (a controller beside its renderer).
 cat >"$test_widgets/sender/widget.toml" <<'TOML'
 id = "sender"
 apps = ["^scottland-test-sender$"]
-exec = 'foot -T sender-widget sh -c "sleep 2; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Send s \"{\\\"hi\\\": 1}\"; exec sleep 600"'
+exec = "./start"
 TOML
+printf '#!/bin/sh\nfoot -T sender-widget sh -c "exec sleep 600" &\nsleep 3\nbusctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Send s %s\nwait\n' "'{\"hi\": 1}'" >"$test_widgets/sender/start"
+chmod +x "$test_widgets/sender/start"
 export SCOTTLAND_WIDGET_PATH=$test_widgets
 
 tests/headless.sh stop >/dev/null 2>&1
@@ -255,7 +259,7 @@ sender_pid=$(ipc window-rules/list-views | python3 -c "import json,sys; print([v
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 5
 id=$(widget_id)
-check "WG11 a widget's Send reaches its app (Received with the app's pid)" \
+check "WG11 a widget's Send (from a process beside its window's) reaches its app" \
   grep -q "Received (uint32 $sender_pid, uint64 $id, '{\"hi\": 1}')" "$signals"
 sleep 2
 check "WG9 the Title property follows the app's title live" \
@@ -312,10 +316,25 @@ check "reload replaces a widget service older than the installed code" \
 
 # WG10: the session's palette file (what the card's colors follow).
 palette=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.palette.json
-tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" once
+tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" ensure; sleep 2
+watcher=$(sed -n 1p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.color-scheme.pid")
 check "WG10 the session's palette file has every color" \
   python3 -c "import json,re,sys; p=json.load(open('$palette')); sys.exit(0 if p['scheme'] in ('light','dark') and all(re.fullmatch('#[0-9a-fA-F]{6}', p[k]) for k in ('background','foreground','muted','accent','alert')) else 1)"
 rm -f "$palette"
+
+# WG5: an app that hides its window while widgetized takes its widget away; shown again, the
+# window is an ordinary, visible window.
+(tests/headless.sh run env HIDE_AT=5 python3 tests/remap-app.py >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field remap-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 2
+check "WG5 (hide) the app's window became a widget" [ "$(view_field remap-app "v['hidden'] and v['widgetized']")" = True ]
+sleep 4
+check "WG5 (hide) shown again, the app's window is visible and not widgetized, and the widget is gone" \
+  [ "$(view_field remap-app "not v['hidden'] and not v['widgetized']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = True/0 ]
+h window-rules/close-view "{\"id\": $(view_field remap-app "v['id']")}"
+sleep 1
 
 # WG5: unloading the plugin (a reload) gives the app its window back and ends the widget; the
 # widget service drops its objects.
@@ -353,6 +372,7 @@ check "WG5 the app's window closing closes its widget" \
 # ended (SIGKILL after 2 s).
 [ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null; monitor_pid=
 tests/headless.sh stop >/dev/null 2>&1
+check "stopping the test session ends its color-scheme watcher" bash -c "[ -n '$watcher' ] && ! kill -0 '$watcher' 2>/dev/null"
 SCOTTLAND_WIDGET_SCOPE=0 tests/headless.sh start --widgets >/dev/null || { echo "couldn't restart headless Scottland"; exit 1; }
 h wayfire/set-config-options '{"scottland/sounds":false}'
 (tests/headless.sh run foot --app-id scottland-test-sleeper -T fallback-app -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
