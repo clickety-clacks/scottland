@@ -131,7 +131,14 @@ def in_scope(pid, unit):
 
 
 def scope_exists(unit):
-    return bool(unit) and subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit]).returncode == 0
+    """Is systemd scope `unit` running? No systemd (no systemctl): no scope."""
+    if not unit:
+        return False
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
+                              stdin=subprocess.DEVNULL, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def is_widget_process(pid, state):

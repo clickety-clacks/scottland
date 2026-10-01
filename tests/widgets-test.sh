@@ -233,6 +233,8 @@ sleep 1
 unit=$(ipc scottland/widgets | python3 -c "import json,sys; w=json.load(sys.stdin)['widgets']; print(w[0]['widget_unit'] if w else '')")
 procs=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/$unit/cgroup.procs" 2>/dev/null | tr '\n' ' ')
 check "WG5 (timeout) the widget runs in its own scope, with its child" [ "$(echo $procs | wc -w)" -ge 2 ]
+check "WG11 a widget with no window yet has no window process (widget_pid 0)" \
+  [ "$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_pid'])")" = 0 ]
 check "WG5 (timeout) the widget launched and the app's window is hidden" \
   [ "$(view_field widget-app4 "v['hidden']")" = True ]
 sleep 11
@@ -343,13 +345,13 @@ rm -f "$palette"
 
 # WG5: an app that hides its window while widgetized takes its widget away; shown again, the
 # window is an ordinary, visible window.
-(tests/headless.sh run env HIDE_AT=5 python3 tests/remap-app.py >/dev/null 2>&1 &)
+(tests/headless.sh run env HIDE_AT=9 python3 tests/remap-app.py >/dev/null 2>&1 &)
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field remap-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 2
 check "WG5 (hide) the app's window became a widget" [ "$(view_field remap-app "v['hidden'] and v['widgetized']")" = True ]
-sleep 4
+sleep 7  # it hides itself at 9 s and shows itself again at 10 s
 check "WG5 (hide) shown again, the app's window is visible and not widgetized, and the widget is gone" \
   [ "$(view_field remap-app "not v['hidden'] and not v['widgetized']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = True/0 ]
 h window-rules/close-view "{\"id\": $(view_field remap-app "v['id']")}"

@@ -8,7 +8,7 @@ and lets the user swap in any widget for any app.
 Status: designed with Mike (2026-09-30/10-01) and implemented (2026-10-01). Statuses follow
 [core/INVARIANTS.md](../core/INVARIANTS.md): **implemented (headless)** = exercised with real
 input, real widget programs and real D-Bus in a headless session (`tests/widgets-test.sh`, end
-to end) or by the launcher's unit test (`tests/widget-launch-test.py`); **verified** = also on a
+to end) or by unit tests (`tests/widget-launch-test.py`, `tests/widget-bus-test.py`); **verified** = also on a
 real session (plumbus). Pieces: the plugin (rail drops, hiding, adopting
 the widget's window, placement, tied lifecycles; IPC `scottland/widgets`, `scottland/widget-action`,
 events `scottland-widgets#`, `scottland-scale#`), `scottland-widget-launch` (choice, context,
@@ -88,7 +88,9 @@ accessibility, or the app talking to its own widget (WG11, or its own service) c
   (or, without one, by descending from the launched process). Without systemd (no user manager),
   a widget runs in its own session instead, and only its first process is ended (through a pidfd
   taken at launch: SIGTERM, then SIGKILL after 2 s). The scope command gets the widget's arguments
-  verbatim (no `$` expansion).
+  verbatim (no `$` expansion). Without systemd, the mailbox identifies a widget by process tree,
+  checked fresh from the compositor at each call; a process id reused within that call's
+  moment is the accepted residual risk.
 - **Helpers across updates:** the widget service and color-scheme watcher record a fingerprint of
   their code; a reload replaces one whose fingerprint differs from the installed code.
 - Supersedes the earlier core invariant L13 ("apps are told to render as widgets") and settles
