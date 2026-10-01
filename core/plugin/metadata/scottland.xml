@@ -49,6 +49,11 @@
 			<_long>The focused window's halo color. Set by scottland-color-scheme from the desktop's accent color, or by an integration.</_long>
 			<default>#81A1C1FF</default>
 		</option>
+		<option name="minimize_widget" type="key">
+			<_short>Minimize a widget</_short>
+			<_long>Toggles the focused widget (or the one under the pointer) between its normal form and just its icon.</_long>
+			<default>&lt;super&gt; KEY_M</default>
+		</option>
 		<option name="attention_color" type="color">
 			<_short>Attention color</_short>
 			<_long>The secondary highlight a widget's halo takes while its app needs attention (it also breathes). Set by scottland-color-scheme from the desktop's palette, or by an integration.</_long>

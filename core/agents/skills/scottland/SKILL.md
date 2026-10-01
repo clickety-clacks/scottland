@@ -121,6 +121,27 @@ in the theme's attention color (the Omarchy theme's yellow; it follows theme cha
 
 Troubleshooting: `~/.local/state/scottland/widgets.log` says which widget was chosen and why.
 
+## Attention
+
+A window (or its widget) whose app needs the user gets a breathing halo in the attention color,
+until the user goes to it. Built in: an app's bell or focus request, its urgency hint, a desktop
+notification from its own process. **Add a source** (another program that knows which windows need
+the user) with a file `~/.config/scottland/attention.d/<name>.ini`, then run `scottland-reload`:
+
+```ini
+[source]
+list = some-command --json      # prints JSON listing the windows that need attention now
+windows = items                 # where the list is in it ("a.b" for nested; empty = top level)
+window = id                     # the field of each entry that names its window
+format = id                     # id (Scottland window id) | pid | hex-offset:<base>
+interval = 2                    # seconds between listings
+watch = ~/.cache/x/state.json   # optional: re-read at once when this file changes
+answered = some-command dismiss {id}   # optional: run when the user goes to it ({field})
+```
+
+Find window ids with `scottland-ctl windows`. A source only takes back its own attention.
+Log: `~/.local/state/scottland/attention.log`.
+
 ## Don't
 
 - Don't edit Scottland's shipped files or anything under `/usr/share/scottland` or `/usr/lib/scottland`.

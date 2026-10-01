@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Attention from configured sources (docs/attention.md, AT1-AT3): any program that can list the
+windows needing the user becomes a source, by configuration alone.
+
+  scottland-attention-sources        run (started with the session; idle with no sources)
+
+A source is a file `<name>.ini` in ~/.config/scottland/attention.d/ (the user's or their agent's),
+or in the installed attention.d directories; the user's file of a name wins. Its [source] section:
+
+  list     = a command printing JSON: the windows needing attention now (required)
+  windows  = where the list is in that JSON: a key, or keys joined by "." ("" = the top level)
+  window   = the key of each entry that names its window (default: window)
+  format   = how that value names a window:
+               id                  a Scottland window id (default)
+               pid                 the process owning the window (only when it owns one window)
+               hex-offset:<base>   a hexadecimal number, the window id plus <base>
+  interval = seconds between listings (default 2); the list also is read again at once when a
+             file named by `watch` changes
+  watch    = a file whose changes mean the list changed (optional)
+  answered = a command run when the user goes to a window the source listed (optional), with
+             {field} replaced by that field of the source's entry for it, e.g. {address}
+
+Each source turns attention on and off under its own name (IPC scottland/attention), so taking
+it back never clears another source's or an app's own bell.
+"""
+import configparser
+import hashlib
+import json
+import os
+import select
+import shlex
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+HOOKS = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+SOURCE_DIRS = [os.path.join(HOOKS, "attention.d"), "/usr/share/scottland/attention.d",
+               os.path.join(CONFIG, "scottland", "attention.d")]  # later wins for a name
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "scottland")
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+DISPLAY = os.environ.get("WAYLAND_DISPLAY") or "wayland"
+
+
+def log(message):
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "attention.log"), "a") as out:
+        out.write(f"{time.strftime('%F %T')} {message}\n")
+
+
+def fingerprint():
+    with open(os.path.realpath(__file__), "rb") as source:
+        return hashlib.sha256(source.read()).hexdigest()
+
+
+class Ipc:
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(os.environ["WAYFIRE_SOCKET"])
+
+    def send(self, method, data=None):
+        body = json.dumps({"method": method, "data": data or {}}).encode()
+        self.sock.sendall(struct.pack("<I", len(body)) + body)
+
+    def receive(self):
+        size = struct.unpack("<I", self._exactly(4))[0]
+        return json.loads(self._exactly(size))
+
+    def call(self, method, data=None):
+        self.send(method, data)
+        return self.receive()
+
+    def _exactly(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError("compositor went away")
+            data += chunk
+        return data
+
+
+def load_sources():
+    files = {}
+    for folder in SOURCE_DIRS:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            if name.endswith(".ini"):
+                files[name[:-4]] = os.path.join(folder, name)
+    sources = []
+    for name, path in sorted(files.items()):
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(path)
+            section = parser["source"]
+            if not section.get("list"):
+                raise KeyError("list")
+        except (configparser.Error, KeyError) as error:
+            log(f"{path}: not a source ({error})")
+            continue
+        sources.append(Source(name, section))
+    return sources
+
+
+class Source:
+    def __init__(self, name, config):
+        self.name = name
+        self.list = config.get("list")
+        self.windows_path = [k for k in config.get("windows", "").split(".") if k]
+        self.window_key = config.get("window", "window")
+        self.format = config.get("format", "id")
+        self.interval = max(0.5, config.getfloat("interval", 2.0))
+        self.watch = os.path.expanduser(config.get("watch", "")) or None
+        self.answered = config.get("answered", "")
+        self.marked = {}   # window id -> the source's entry for it
+        self.due = 0.0
+
+    def entries(self):
+        """The source's entries, or None if it couldn't say (change nothing then)."""
+        try:
+            out = subprocess.run(shlex.split(self.list), capture_output=True, text=True, timeout=15).stdout
+            data = json.loads(out)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            log(f"{self.name}: couldn't list: {error}")
+            return None
+        for key in self.windows_path:
+            data = data.get(key, []) if isinstance(data, dict) else []
+        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+    def window_of(self, entry, views):
+        value = entry.get(self.window_key)
+        try:
+            if self.format == "id":
+                return int(value)
+            if self.format.startswith("hex-offset:"):
+                return int(str(value), 16) - int(self.format.split(":", 1)[1], 16)
+            if self.format == "pid":
+                owned = [v["id"] for v in views if v.get("pid") == int(value)]
+                return owned[0] if len(owned) == 1 else None
+        except (TypeError, ValueError):
+            return None
+        return None
+
+    def run_answered(self, entry):
+        if not self.answered:
+            return
+        fields = {k: str(v) for k, v in entry.items() if isinstance(v, (str, int, float))}
+        try:
+            command = [part.format_map(fields) for part in shlex.split(self.answered)]
+            subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, KeyError, ValueError, IndexError, subprocess.SubprocessError) as error:
+            log(f"{self.name}: answered command failed: {error}")
+
+
+class Service:
+    def __init__(self, sources):
+        self.ipc = Ipc()
+        self.sources = sources
+
+    def sync(self, source, again=False):
+        entries = source.entries()
+        if entries is None:
+            return
+        try:
+            views = self.ipc.call("window-rules/list-views")
+        except (OSError, ConnectionError, ValueError):
+            views = []
+        listed = {}
+        for entry in entries:
+            window = source.window_of(entry, views if isinstance(views, list) else [])
+            if window is not None and window >= 0:
+                listed[window] = entry
+        for window, entry in listed.items():
+            if again or window not in source.marked:
+                reply = self.ipc.call("scottland/attention",
+                                      {"window": window, "attention": True, "source": source.name})
+                if reply.get("in_front"):
+                    source.run_answered(entry)  # the user is looking at it: answered
+                    source.marked.pop(window, None)
+                else:
+                    source.marked[window] = entry
+        for window in [w for w in source.marked if w not in listed]:
+            del source.marked[window]
+            self.ipc.call("scottland/attention", {"window": window, "attention": False, "source": source.name})
+
+    def answered(self, window):
+        """The user went to a window (attention off for it in Scottland): tell its sources."""
+        for source in self.sources:
+            entry = source.marked.pop(window, None)
+            if entry is not None:
+                source.run_answered(entry)
+
+    def still_shown(self):
+        try:
+            views = self.ipc.call("scottland/layout-state").get("views", [])
+        except (OSError, ConnectionError, ValueError):
+            return True
+        shown = {v["id"] for v in views if v.get("attention")}
+        present = {v["id"] for v in views}
+        return all(w in shown or w not in present for s in self.sources for w in s.marked)
+
+    def run(self):
+        events = Ipc()
+        reply = events.call("window-rules/events/watch", {"events": ["scottland-attention#", "scottland-widgets#"]})
+        if reply.get("result") != "ok":
+            log(f"couldn't watch Scottland's events: {reply}")
+            return 1
+        watched = {}
+        for source in self.sources:
+            if source.watch:
+                folder = os.path.dirname(source.watch)
+                os.makedirs(folder, exist_ok=True)
+                proc = subprocess.Popen(["inotifywait", "-m", "-q", "-e", "close_write", "-e", "moved_to",
+                                         "--format", "%f", folder], stdout=subprocess.PIPE, text=True)
+                watched[proc.stdout] = (proc, source)
+        for source in self.sources:
+            self.sync(source)
+            source.due = time.monotonic() + source.interval
+        try:
+            while True:
+                timeout = max(0.0, min(s.due for s in self.sources) - time.monotonic())
+                ready, _, _ = select.select([events.sock, *watched], [], [], timeout)
+                for stream in ready:
+                    if stream in watched:
+                        proc, source = watched[stream]
+                        if stream.readline().strip() == os.path.basename(source.watch):
+                            self.sync(source)
+                if events.sock in ready:
+                    event = events.receive()
+                    if (event.get("event") == "scottland-attention#") and not event.get("attention"):
+                        self.answered(event.get("window"))
+                    elif event.get("event") == "scottland-widgets#" and not self.still_shown():
+                        for source in self.sources:  # a reloaded plugin starts with no attention
+                            self.sync(source, again=True)
+                now = time.monotonic()
+                for source in self.sources:
+                    if now >= source.due:
+                        self.sync(source)
+                        source.due = now + source.interval
+        except (ConnectionError, OSError):
+            return 0  # the session ended
+        finally:
+            for proc, _ in watched.values():
+                proc.terminate()
+
+
+if __name__ == "__main__":
+    if not os.environ.get("WAYFIRE_SOCKET"):
+        sys.exit("scottland-attention-sources: run it inside a Scottland session")
+    sources = load_sources()
+    if not sources:
+        sys.exit(0)  # none configured
+    os.makedirs(RUNTIME, exist_ok=True)
+    with open(os.path.join(RUNTIME, f"{DISPLAY}.attention-sources.pid"), "w") as out:
+        out.write(f"{os.getpid()}\n{fingerprint()}\n")
+    log(f"sources: {', '.join(s.name for s in sources)}")
+    sys.exit(Service(sources).run())

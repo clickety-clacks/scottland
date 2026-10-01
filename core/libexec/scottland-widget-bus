@@ -48,6 +48,7 @@ WIDGET_XML = """
     <property name="Urgent" type="b" access="read"/>
     <property name="Badge" type="x" access="read"/>
     <property name="Data" type="s" access="read"/>
+    <property name="Minimized" type="b" access="read"/>
     <method name="Restore"/>
     <method name="Close"/>
     <method name="Focus"/>
@@ -228,6 +229,7 @@ class Service:
                 "Rail": entry.get("rail", ""),
                 "Focused": bool(entry.get("focused")),
                 "Urgent": bool(entry.get("urgent")),
+                "Minimized": bool(entry.get("minimized")),
                 "_widget_pid": int(entry.get("widget_pid", 0)),
                 "_launcher_pid": int(entry.get("launcher_pid", 0)),
                 "_widget_unit": entry.get("widget_unit", ""),
@@ -241,7 +243,7 @@ class Service:
 
     def new_widget(self, wid, unit=""):
         state = {"Id": wid, "AppId": "", "Title": "", "Pid": 0, "Window": 0, "Rail": "", "Focused": False,
-                 "Urgent": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_launcher_pid": 0,
+                 "Urgent": False, "Minimized": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_launcher_pid": 0,
                  "_widget_unit": unit, "_desktop": ""}
         self.widgets[wid] = state
         self.learn_desktop(wid)
@@ -300,7 +302,7 @@ class Service:
         try:
             with open(path + ".tmp", "w") as out:
                 json.dump({"desktop": state["_desktop"], "title": state["Title"], "badge": state["Badge"],
-                           "rail": state["Rail"],
+                           "rail": state["Rail"], "minimized": state["Minimized"],
                            "focused": state["Focused"], "urgent": state["Urgent"], "data": state["Data"]}, out)
             os.replace(path + ".tmp", path)
         except OSError as error:
@@ -316,7 +318,7 @@ class Service:
 
     @staticmethod
     def variant(key, value):
-        kind = {"Pid": "u", "Window": "t", "Badge": "x", "Focused": "b", "Urgent": "b"}.get(key, "s")
+        kind = {"Pid": "u", "Window": "t", "Badge": "x", "Focused": "b", "Urgent": "b", "Minimized": "b"}.get(key, "s")
         return GLib.Variant(kind, value)
 
     def note_scale(self, window, scale):
@@ -471,7 +473,7 @@ class Service:
     def watch_notifications(self):
         """Watch org.freedesktop.Notifications.Notify calls on a monitoring connection of its own
         (a monitor can do nothing else). A notification counts for a window when the process that
-        sent it owns exactly one window (the rule Yoohoo uses); others are skipped."""
+        sent it owns exactly one window (so it's clear which window it's about); others are skipped."""
         try:
             address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
             monitor = Gio.DBusConnection.new_for_address_sync(
@@ -503,7 +505,7 @@ class Service:
         if len(windows) != 1:
             return False  # no window, or several: can't tell which one wants attention
         try:
-            self.ipc.call("scottland/attention", {"window": int(windows[0]), "attention": True})
+            self.ipc.call("scottland/attention", {"window": int(windows[0]), "attention": True, "source": "notifications"})
         except (OSError, ConnectionError, ValueError) as error:
             log(f"couldn't mark attention: {error}")
         return False

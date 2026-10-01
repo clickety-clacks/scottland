@@ -2,7 +2,7 @@
 -- Runs the Lua-function shortcuts from ~/.config/hypr/hyprland.lua inside a Scottland session.
 --
 -- Loads the Hyprland config against a stand-in `hl`, keeps each bind's function (and whatever
--- state it closes over, e.g. Yoohoo's counters), then waits on a FIFO for shortcut ids written by
+-- state it closes over, e.g. a shell plugin's counters), then waits on a FIFO for shortcut ids written by
 -- scottland-lua-call. Commands run directly; any other dispatch goes to `hyprctl dispatch`, which
 -- the Hyprland shim translates, so all Hyprland-to-Wayfire translation lives in one place.
 --

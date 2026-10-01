@@ -91,7 +91,7 @@ cleanup() {
   cp "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/wayfire.log" \
     "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-widgets-test.log" 2>/dev/null  # kept for a look
   tests/headless.sh stop >/dev/null 2>&1
-  rm -rf "$test_widgets"
+  rm -rf "$test_widgets" "${src:-/nonexistent}"
 }
 trap cleanup EXIT
 display=$(cat "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless/display")
@@ -119,6 +119,8 @@ check "WG10 the default card appeared" \
   [ "$(views | python3 -c "import json,sys; print(any(v['widget'] for v in json.load(sys.stdin)['views']))")" = True ]
 check "WG4 the widget is at 100%" \
   [ "$(views | python3 -c "import json,sys; print([round(v['applied_scale'],2) for v in json.load(sys.stdin)['views'] if v['widget']][0])")" = 1.0 ]
+check "WG4 the widget floats above ordinary windows (always on top)" \
+  [ "$(ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title'].startswith('Scottland widget')])")" = "[True]" ]
 check "WG4 the widget is placed at the drop point, wholly on screen" \
   python3 -c "
 import json,subprocess,sys
@@ -189,6 +191,8 @@ v=[v for v in json.load(sys.stdin)['views'] if v['widget']][0]; f=v['frame']
 print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
 restore_x=$((screen_w * 3 / 4))
 super_drag $((wx + ww / 2)) $((wy + wh / 2)) $restore_x 300
+check "WG13 the window dropped from a widget drag is at its size at once (no growing from the rail's)" \
+  [ "$(view_field widget-app "abs(v['applied_scale'] - v['target_scale']) < 0.01 and not v['hidden']")" = True ]
 sleep 1.5
 check "WG5 dragging the widget off the rail restores the window" \
   [ "$(view_field widget-app "not v['hidden'] and not v['widgetized']")" = True ]
@@ -482,6 +486,116 @@ print(v[0]['id'] if v else '')" $t)
   [ -n "$id" ] && h window-rules/close-view "{\"id\": $id}"
 done
 sleep 2
+
+# WG16: Super+M toggles the focused widget between its card and just its icon.
+(tests/headless.sh run foot -T mini-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field mini-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 2.5
+card_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini-app')][0])"; }
+wide=$(card_width)
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key":"KEY_M","state":true}'
+h stipc/feed_key '{"key":"KEY_M","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+sleep 1.5
+check "WG16 Super+M minimizes the widget to its icon (a square card)" \
+  [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['minimized'] for w in json.load(sys.stdin)['widgets'] if w['title']=='mini-app'][0])")/$(card_width)" = "True/96" ]
+check "WG16 ...against its screen edge" \
+  python3 -c "
+import json,subprocess,sys
+v=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views'] if v['widget'] and v['title'].endswith('mini-app')][0]['frame']
+sys.exit(0 if v['x'] + v['width'] >= $screen_w - 40 else 1)"
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key":"KEY_M","state":true}'
+h stipc/feed_key '{"key":"KEY_M","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+sleep 1.5
+check "WG16 Super+M again: the card again" [ "$(card_width)" = "$wide" ]
+h window-rules/close-view "{\"id\": $(view_field mini-app "v['id']")}"
+sleep 2
+
+# L23: lifting three fingers mid-drag and putting them back within the grace period continues
+# the same drag.
+(tests/headless.sh run foot -T grace-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+gx0=$(ipc window-rules/list-views | python3 -c "import json,sys; print([v['geometry']['x'] for v in json.load(sys.stdin) if v['title']=='grace-app'][0])")
+read -r ax ay aw ah <<<"$(view_field grace-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+h stipc/move_cursor "{\"x\":$((ax + aw / 2)),\"y\":$((ay + ah / 2))}"; sleep 0.1
+h scottland/test-input '{"swipe":"begin","fingers":3}'
+for i in 1 2 3 4; do h scottland/test-input '{"swipe":"update","dx":-15,"dy":0}'; sleep 0.02; done
+h scottland/test-input '{"swipe":"end"}'
+sleep 0.3
+check "L23 three fingers lifted: still dragging during the grace period" \
+  [ "$(ipc scottland/test-input '{}' | python3 -c "import json,sys; print(json.load(sys.stdin)['dragging'])")" = True ]
+h scottland/test-input '{"swipe":"begin","fingers":3}'
+for i in 1 2 3 4; do h scottland/test-input '{"swipe":"update","dx":-15,"dy":0}'; sleep 0.02; done
+h scottland/test-input '{"swipe":"end"}'
+sleep 1.2
+check "L23 ...and three fingers back down continued the same drag (both moves applied)" \
+  python3 -c "
+import json,subprocess,sys
+v=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','window-rules/list-views'],capture_output=True,text=True).stdout) if v['title']=='grace-app'][0]
+d=v['geometry']['x'] - $gx0; sys.exit(0 if -150 < d < -90 else 1)"
+check "L23 ...then let go after the grace period" \
+  [ "$(ipc scottland/test-input '{}' | python3 -c "import json,sys; print(json.load(sys.stdin)['dragging'])")" = False ]
+h window-rules/close-view "{\"id\": $(view_field grace-app "v['id']")}"
+sleep 1
+
+# WG14: Esc after a re-grab that crossed a form change: a window dropped on the rail (now a
+# widget), picked up again within 2 s and moved: Esc brings the window back where it began.
+(tests/headless.sh run foot -T form-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+fx0=$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(g['x'], g['y'])")
+read -r ax ay aw ah <<<"$(view_field form-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 0.8
+read -r wx wy ww wh <<<"$(views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin)['views'] if v['widget']][0]; f=v['frame']
+print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
+h stipc/move_cursor "{\"x\":$((wx + ww / 2)),\"y\":$((wy + wh / 2))}"; sleep 0.1
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+for i in 1 2 3 4 5 6; do h stipc/move_cursor "{\"x\":$((wx + ww / 2)),\"y\":$((wy + wh / 2 + i * 15))}"; sleep 0.02; done
+h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+sleep 1.5
+check "WG14 Esc after re-grabbing the widget it became: the window is back where the move began" \
+  [ "$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(g['x'], g['y'])")/$(view_field form-app "not v['hidden']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = "$fx0/True/0" ]
+h window-rules/close-view "{\"id\": $(view_field form-app "v['id']")}"
+sleep 1
+
+# AT2/AT3: a configured attention source (a list command), by configuration only.
+src=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-source.XXXXXX")
+mkdir -p "$src/config/scottland/attention.d"
+(tests/headless.sh run foot -T src-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1
+(tests/headless.sh run foot -T src-front -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+src_id=$(view_field src-app "v['id']")
+echo "{\"items\": [{\"win\": $src_id, \"tag\": \"t$src_id\"}]}" >"$src/list.json"
+cat >"$src/config/scottland/attention.d/test.ini" <<INI
+[source]
+list = cat $src/list.json
+windows = items
+window = win
+interval = 0.5
+answered = touch $src/answered-{tag}
+INI
+hooks_dir=$(tests/headless.sh run sh -c 'echo $SCOTTLAND_HOOKS')
+(tests/headless.sh run env XDG_CONFIG_HOME="$src/config" XDG_STATE_HOME="$src/state" "$hooks_dir/libexec/scottland-attention-sources" >/dev/null 2>&1 &)
+sleep 2
+check "AT3 a configured source's listed window gets attention" [ "$(view_field src-app "bool(f.get('attention'))")" = True ]
+h scottland/attention "{\"window\": $src_id, \"attention\": true, \"source\": \"other\"}"
+echo '{"items": []}' >"$src/list.json"
+sleep 1.5
+check "AT2 the source withdrawing leaves another source's attention" [ "$(view_field src-app "bool(f.get('attention'))")" = True ]
+echo "{\"items\": [{\"win\": $src_id, \"tag\": \"t$src_id\"}]}" >"$src/list.json"
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field src-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+h window-rules/focus-view "{\"id\": $src_id}"
+sleep 1
+check "AT2 going to the window answers it (attention off, the source's answered command ran)" \
+  bash -c "[ \"\$(tests/headless.sh ipc scottland/layout-state | python3 -c \"import json,sys; print([bool(v['frame'].get('attention')) for v in json.load(sys.stdin)['views'] if v['id']==$src_id][0])\")\" = False ] && [ -e '$src/answered-t$src_id' ]"
+for t in src-app src-front; do h window-rules/close-view "{\"id\": $(view_field $t "v['id']")}"; done
+sleep 1
 
 # WG14: Esc never sends a window to another window's origin: a drag cancelled before it moved
 # stays put; a glide interrupted by another cancel still lands where it belongs.

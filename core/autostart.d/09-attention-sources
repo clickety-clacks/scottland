@@ -1,0 +1,5 @@
+#!/bin/sh
+# Attention from configured sources (attention.d/*.ini; docs/attention.md). Exits if there are none.
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+mkdir -p "$state"
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-attention-sources" 2>>"$state/attention.log"

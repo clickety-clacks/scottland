@@ -18,12 +18,19 @@ FloatingWindow {
     readonly property int gap: 14
     readonly property int maxWidth: 320
     readonly property bool hasText: appName !== "" || appTitle !== ""
+    // Minimized (Super+M, from the state file): just the icon.
+    property bool minimized: false
+    readonly property bool showsText: hasText && !minimized
     // Without text the row is just the icon: centered in the square card.
-    readonly property int rowPad: hasText ? pad : (implicitHeight - iconSize) / 2
+    readonly property int rowPad: showsText ? pad : (implicitHeight - iconSize) / 2
     readonly property int textWidth: Math.min(maxWidth - 2 * pad - iconSize - gap,
-        Math.ceil(Math.max(nameText.implicitWidth, titleText.visible ? titleText.implicitWidth : 0)))
-    implicitWidth: hasText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
+        Math.ceil(Math.max(titleText.visible ? titleText.implicitWidth : 0, nameText.visible ? nameText.implicitWidth : 0)))
+    implicitWidth: showsText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
     implicitHeight: 96
+    // An open window keeps its size when the implicit size changes: pin it, so the card follows
+    // its text, the title and Super+M (and so does the compositor, through the size limits).
+    minimumSize: Qt.size(implicitWidth, implicitHeight)
+    maximumSize: Qt.size(implicitWidth, implicitHeight)
     color: "transparent"
 
     readonly property string appId: Quickshell.env("SCOTTLAND_WIDGET_APP_ID") || ""
@@ -50,6 +57,7 @@ FloatingWindow {
                 if (typeof state.title === "string") root.appTitle = state.title
                 if (typeof state.badge === "number") root.badge = state.badge
                 if (state.rail === "left" || state.rail === "right") root.rail = state.rail
+                if (typeof state.minimized === "boolean") root.minimized = state.minimized
             } catch (e) {}
         }
     }
@@ -145,17 +153,18 @@ FloatingWindow {
                 }
             }
 
-            // Two lines: the app (bold) and the window's title (regular).
+            // Two lines: what's in the window (its title, bold), then the app (regular).
             Column {
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.hasText
+                visible: root.showsText
                 width: root.textWidth
                 spacing: 2
 
                 Text {
-                    id: nameText
+                    id: titleText
                     width: parent.width
-                    text: root.appName
+                    visible: root.appTitle !== ""
+                    text: root.appTitle
                     color: root.foreground
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
@@ -164,10 +173,10 @@ FloatingWindow {
                 }
 
                 Text {
-                    id: titleText
+                    id: nameText
                     width: parent.width
-                    visible: root.appTitle !== "" && root.appTitle !== root.appName
-                    text: root.appTitle
+                    visible: root.appName !== "" && root.appName !== root.appTitle
+                    text: root.appName
                     color: root.foreground
                     font.pixelSize: 14
                     font.weight: Font.Normal

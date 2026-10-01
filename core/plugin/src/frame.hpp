@@ -412,6 +412,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
      *  the plugin starts the move or resize. The close dot is handled here. */
     std::function<void(wayfire_toplevel_view, handle_t, int touch_id)> on_press;
     std::function<void(wayfire_toplevel_view)> on_close;  // the close dot (default: close the view)
+    std::function<void()> on_reshape;  // its halo's reach changed (swelling, breathing): neighbors re-merge
 
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
@@ -1110,8 +1111,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             double dt = std::clamp((now - last_tick) / 1000.0, 0.001, 0.05);
             last_tick = now;
             damage();  // where it was: a shrinking bulge must not leave its old outline behind
+            double reach = thickness();
             step(dt);
             damage();
+            if (on_reshape && (std::abs(thickness() - reach) > 0.05))
+            {
+                on_reshape();
+            }
             if (settled())
             {
                 swell = swell_target;
