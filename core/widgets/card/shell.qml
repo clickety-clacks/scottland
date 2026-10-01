@@ -1,4 +1,5 @@
-// Scottland's default widget ("card"): the app's icon, the window title, and an alert badge.
+// Scottland's default widget ("card"): the app's icon, its name and the window title, and an alert
+// badge. The icon is on the screen-edge side of the text (SCOTTLAND_WIDGET_RAIL, then live).
 // Shown for any app with no widget configured. Inputs come from the widget launch contract
 // (docs/widgets.md, WG8): SCOTTLAND_WIDGET_APP_ID, _TITLE, _ICON (from the app's .desktop entry),
 // _BADGE; live title and badge changes arrive in the JSON file named by SCOTTLAND_WIDGET_STATE,
@@ -11,13 +12,29 @@ import Quickshell.Io
 FloatingWindow {
     id: root
     title: "Scottland widget: " + appTitle
-    implicitWidth: 300
+    // As wide as its text needs, up to a maximum; square around the icon when there's no text.
+    readonly property int pad: 16
+    readonly property int iconSize: 56
+    readonly property int gap: 14
+    readonly property int maxWidth: 320
+    readonly property bool hasText: appName !== "" || appTitle !== ""
+    readonly property int textWidth: Math.min(maxWidth - 2 * pad - iconSize - gap,
+        Math.ceil(Math.max(nameText.implicitWidth, titleText.visible ? titleText.implicitWidth : 0)))
+    implicitWidth: hasText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
     implicitHeight: 96
     color: "transparent"
 
     readonly property string appId: Quickshell.env("SCOTTLAND_WIDGET_APP_ID") || ""
-    property string appTitle: Quickshell.env("SCOTTLAND_WIDGET_TITLE") || appId
+    property string appTitle: Quickshell.env("SCOTTLAND_WIDGET_TITLE") || ""
+    // The app's name (its .desktop entry's), else its app-id.
+    readonly property string appName: Quickshell.env("SCOTTLAND_WIDGET_NAME") || appId
+    // Which screen edge the widget is on ("left" or "right"), live.
+    property string rail: Quickshell.env("SCOTTLAND_WIDGET_RAIL") || "right"
     readonly property string iconName: Quickshell.env("SCOTTLAND_WIDGET_ICON") || appId
+    // The app's icon from the theme, else a generic app icon, else none (a monogram is drawn).
+    readonly property string iconSource: Quickshell.iconPath(iconName, true)
+        || Quickshell.iconPath(appId.toLowerCase(), true)
+        || Quickshell.iconPath("application-x-executable", true)
     property int badge: parseInt(Quickshell.env("SCOTTLAND_WIDGET_BADGE") || "0") || 0
 
     // Live state from the widget service.
@@ -30,6 +47,7 @@ FloatingWindow {
                 const state = JSON.parse(this.text())
                 if (typeof state.title === "string" && state.title !== "") root.appTitle = state.title
                 if (typeof state.badge === "number") root.badge = state.badge
+                if (state.rail === "left" || state.rail === "right") root.rail = state.rail
             } catch (e) {}
         }
     }
@@ -64,30 +82,47 @@ FloatingWindow {
         radius: 16
         color: root.background
 
+        // The icon sits on the screen-edge side: left of the text on the left rail, right of it on
+        // the right rail (RightToLeft lays the row out mirrored), following the rail live.
         Row {
-            anchors.fill: parent
-            anchors.margins: 16
-            spacing: 14
+            anchors.centerIn: parent
+            spacing: root.gap
+            layoutDirection: root.rail === "right" ? Qt.RightToLeft : Qt.LeftToRight
 
             Item {
-                width: 56; height: 56
+                width: root.iconSize; height: root.iconSize
                 anchors.verticalCenter: parent.verticalCenter
 
                 Image {
                     anchors.fill: parent
-                    source: Quickshell.iconPath(root.iconName, "application-x-executable")
-                    sourceSize: Qt.size(112, 112)
+                    visible: root.iconSource !== ""
+                    source: root.iconSource
+                    sourceSize: Qt.size(2 * root.iconSize, 2 * root.iconSize)
                     smooth: true
                     mipmap: true
                 }
 
-                // Alert badge, on the icon's top-right corner.
+                // No icon anywhere: the app's initial on its accent.
+                Rectangle {
+                    anchors.fill: parent
+                    visible: root.iconSource === ""
+                    radius: 14
+                    color: root.accent
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: (root.appName || "?").charAt(0).toUpperCase()
+                        color: root.background
+                        font.pixelSize: 28
+                        font.weight: Font.Bold
+                    }
+                }
+
+                // Alert badge, on the icon's corner toward the middle of the screen.
                 Rectangle {
                     visible: root.badge > 0
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.rightMargin: -6
-                    anchors.topMargin: -6
+                    x: root.rail === "right" ? -6 : parent.width - width + 6
+                    y: -6
                     height: 22
                     width: Math.max(22, badgeText.implicitWidth + 12)
                     radius: 11
@@ -106,20 +141,34 @@ FloatingWindow {
                 }
             }
 
+            // Two lines: the app (bold) and the window's title (regular).
             Column {
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - 56 - parent.spacing
-                spacing: 3
+                visible: root.hasText
+                width: root.textWidth
+                spacing: 2
 
                 Text {
+                    id: nameText
                     width: parent.width
-                    text: root.appTitle
+                    text: root.appName
                     color: root.foreground
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
-                    maximumLineCount: 2
-                    wrapMode: Text.Wrap
+                    horizontalAlignment: root.rail === "right" ? Text.AlignRight : Text.AlignLeft
+                }
+
+                Text {
+                    id: titleText
+                    width: parent.width
+                    visible: root.appTitle !== "" && root.appTitle !== root.appName
+                    text: root.appTitle
+                    color: root.foreground
+                    font.pixelSize: 14
+                    font.weight: Font.Normal
+                    elide: Text.ElideRight
+                    horizontalAlignment: root.rail === "right" ? Text.AlignRight : Text.AlignLeft
                 }
             }
         }

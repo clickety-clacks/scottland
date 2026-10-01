@@ -378,6 +378,104 @@ sleep 5
 check "WG5 (close dot) the widget that refused to close is ended" \
   [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['title']=='stubborn-widget'))")" = 0 ]
 
+# WG13: a live morph while dragging. Held on the rail, the window is shown as its widget (frame
+# reshaped, contents cross-faded) and the widget itself stays unseen; dragged back out, it's the
+# window again; let go there, it stays a window and no widget is left.
+(tests/headless.sh run foot -T morph-app -W 50x12 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field morph-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+mx=$((ax + aw / 2)); my=$((ay + ah / 2))
+glide() { for i in $(seq 1 12); do h stipc/move_cursor "{\"x\":$(( $1 + ($3 - $1) * i / 12 )),\"y\":$(( $2 + ($4 - $2) * i / 12 ))}"; sleep 0.03; done; }
+h stipc/move_cursor "{\"x\":$mx,\"y\":$my}"; sleep 0.2
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+glide $mx $my $((screen_w - 8)) $my
+sleep 1.5
+check "WG13 held on the rail, the window shows as its widget (shape and contents)" \
+  [ "$(view_field morph-app "(f.get('morph') or {}).get('shape', 0) > 0.99 and (f.get('morph') or {}).get('fade', 0) > 0.99")" = True ]
+check "WG13 ...and is drawn at the widget's size" \
+  python3 -c "
+import json,subprocess,sys
+vs=json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/layout-state'],capture_output=True,text=True).stdout)['views']
+a=[v for v in vs if v['title']=='morph-app'][0]['frame']; w=[v for v in vs if v['widget']][0]['frame']
+sys.exit(0 if abs(a['width']-w['width']) < 2 and abs(a['height']-w['height']) < 2 else 1)"
+check "WG13 ...while the widget itself stays unseen" \
+  [ "$(views | python3 -c "import json,sys; print([v['hidden'] for v in json.load(sys.stdin)['views'] if v['widget']])")" = "[True]" ]
+glide $((screen_w - 8)) $my $((screen_w / 2)) $my
+sleep 1
+check "WG13 dragged back out, it's the window again" \
+  [ "$(view_field morph-app "not f.get('morph')")" = True ]
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+sleep 1.5
+check "WG13 let go off the rail: still a window, and the widget it previewed is gone" \
+  [ "$(view_field morph-app "not v['hidden'] and not v['widgetized']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = True/0 ]
+
+# WG14: Esc cancels a drag: back where it was picked up, in its original form.
+read -r ax ay aw ah <<<"$(view_field morph-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+mx=$((ax + aw / 2)); my=$((ay + ah / 2))
+origin=$(view_field morph-app "(round(f['x']), round(f['y']))")
+h stipc/move_cursor "{\"x\":$mx,\"y\":$my}"; sleep 0.2
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
+glide $mx $my $((screen_w - 8)) $my
+sleep 1.2
+h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'
+sleep 1
+h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+sleep 1
+check "WG14 Esc (after it turned into a widget): back where it started, a window, no widget" \
+  [ "$(view_field morph-app "(round(f['x']), round(f['y']))")/$(view_field morph-app "not v['hidden'] and not v['widgetized'] and not f.get('morph')")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = "$origin/True/0" ]
+h window-rules/close-view "{\"id\": $(view_field morph-app "v['id']")}"
+sleep 1
+
+# WG15: attention. A widgetized app that rings its bell (an activation request), or sends a
+# desktop notification from its own process, gets attention on its widget; going to the widget
+# answers it. An ordinary window's bell doesn't take focus.
+# Each app goes to the rail as it opens (they open in the same place). The bell and the
+# notification come after the last widget has taken focus (an app whose widget you're on has no
+# news for you).
+(tests/headless.sh run foot -o bell.urgent=yes -T bell-app -W 40x8 sh -c 'sleep 10; printf "\a"; exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field bell-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+sleep 1.5
+(tests/headless.sh run env NOTIFY_AT=7 python3 tests/notify-app.py >/dev/null 2>&1 &)
+sleep 1.5
+read -r ax ay aw ah <<<"$(view_field notify-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay - 150))
+sleep 1.5
+(tests/headless.sh run foot -o bell.urgent=yes -T plain-bell -W 40x8 sh -c 'sleep 4; printf "\a"; exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+focused_before=$(ipc window-rules/get-focused-view | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['id'])")
+sleep 6
+attention_of() { views | python3 -c "
+import json,sys
+w=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith(sys.argv[1])]
+print(bool(w and w[0]['frame'].get('attention')))" "$1"; }
+check "WG15 a widgetized app's bell shows attention on its widget" [ "$(attention_of bell-app)" = True ]
+check "WG15 a widgetized app's desktop notification shows attention on its widget" [ "$(attention_of notify-app)" = True ]
+check "WG15 ...also reported as Urgent" \
+  [ "$(ipc scottland/widgets | python3 -c "import json,sys; print(all(w['urgent'] for w in json.load(sys.stdin)['widgets']))")" = True ]
+check "WG15 an ordinary window's bell doesn't take focus" \
+  [ "$(ipc window-rules/get-focused-view | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['id'])")" = "$focused_before" ]
+read -r wx wy ww wh <<<"$(views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('bell-app')][0]; f=v['frame']
+print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
+h stipc/move_cursor "{\"x\":$((wx + ww / 2)),\"y\":$((wy + wh / 2))}"; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"full"}'
+sleep 1
+check "WG15 going to the widget answers its attention" [ "$(attention_of bell-app)" = False ]
+for t in bell-app notify-app plain-bell; do
+  id=$(views | python3 -c "
+import json,sys
+v=[v for v in json.load(sys.stdin)['views'] if v['title']==sys.argv[1] or v['title'].endswith(': '+sys.argv[1])]
+print(v[0]['id'] if v else '')" $t)
+  [ -n "$id" ] && h window-rules/close-view "{\"id\": $id}"
+done
+sleep 2
+
 # WG5: unloading the plugin (a reload) gives the app its window back and ends the widget; the
 # widget service drops its objects.
 (tests/headless.sh run foot -T widget-app5 -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)

@@ -300,6 +300,7 @@ class Service:
         try:
             with open(path + ".tmp", "w") as out:
                 json.dump({"desktop": state["_desktop"], "title": state["Title"], "badge": state["Badge"],
+                           "rail": state["Rail"],
                            "focused": state["Focused"], "urgent": state["Urgent"], "data": state["Data"]}, out)
             os.replace(path + ".tmp", path)
         except OSError as error:
@@ -465,6 +466,48 @@ class Service:
         connection.signal_subscribe(None, "com.canonical.Unity.LauncherEntry", "Update", None, None,
                                     Gio.DBusSignalFlags.NONE, self.on_launcher_entry)
 
+    # --- attention from desktop notifications (WG15) ---
+
+    def watch_notifications(self):
+        """Watch org.freedesktop.Notifications.Notify calls on a monitoring connection of its own
+        (a monitor can do nothing else). A notification counts for a window when the process that
+        sent it owns exactly one window (the rule Yoohoo uses); others are skipped."""
+        try:
+            address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
+            monitor = Gio.DBusConnection.new_for_address_sync(
+                address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
+                Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+            monitor.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.Monitoring",
+                              "BecomeMonitor", GLib.Variant("(asu)", ([
+                                  "type='method_call',interface='org.freedesktop.Notifications',member='Notify'"], 0)),
+                              None, Gio.DBusCallFlags.NONE, -1, None)
+        except GLib.Error as error:
+            log(f"not watching notifications (the bus doesn't allow monitoring): {error.message}")
+            return
+        monitor.add_filter(self.on_monitored)
+        self.monitor = monitor  # keep it open
+
+    def on_monitored(self, _connection, message, incoming):
+        # Called on GDBus's worker thread: hand over to the main loop.
+        if incoming and message.get_member() == "Notify" and message.get_sender():
+            GLib.idle_add(self.on_notification, message.get_sender())
+        return None  # a monitor's messages go nowhere else
+
+    def on_notification(self, sender):
+        try:
+            pid = self.caller_pid(sender)
+        except GLib.Error:
+            return False
+        self.refresh()
+        windows = [w for w, owner in self.window_pids.items() if owner == pid]
+        if len(windows) != 1:
+            return False  # no window, or several: can't tell which one wants attention
+        try:
+            self.ipc.call("scottland/attention", {"window": int(windows[0]), "attention": True})
+        except (OSError, ConnectionError, ValueError) as error:
+            log(f"couldn't mark attention: {error}")
+        return False
+
     def run(self):
         # One service per session: the reload hook checks this before starting another.
         pid_file = os.path.join(os.path.dirname(os.path.dirname(RUNTIME)), DISPLAY + ".widget-bus.pid")
@@ -475,6 +518,7 @@ class Service:
                          lambda *_: (log("couldn't own org.scottland.Widgets (another service?)"), sys.exit(1)))
         self.watch_compositor()
         self.refresh()
+        self.watch_notifications()
         GLib.MainLoop().run()
 
 

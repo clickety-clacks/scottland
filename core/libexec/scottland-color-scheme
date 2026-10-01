@@ -11,7 +11,8 @@ The accent comes from an integration's provider in accent.d/ (executables printi
 with --watch-paths they print the paths to watch for changes), else the portal's accent-color.
 
 It also keeps the session's palette file current ($XDG_RUNTIME_DIR/scottland/<display>.palette.json:
-scheme, background, foreground, muted, accent, alert), for widgets and other Scottland surfaces:
+scheme, background, foreground, muted, accent, alert, attention), for widgets and other Scottland
+surfaces, and sets the halo's attention color from it:
 neutral light or dark colors, overlaid by a provider's full palette (accent.d providers that
 print a JSON object of those colors when run with --palette).
 """
@@ -117,9 +118,9 @@ def accent_watch_paths():
 
 NEUTRAL = {
     "dark":  {"background": "#2e3440", "foreground": "#d8dee9", "muted": "#97a3ab", "accent": "#81a1c1",
-              "alert": "#bf616a"},
+              "alert": "#bf616a", "attention": "#ebcb8b"},
     "light": {"background": "#f4f5f7", "foreground": "#2e3440", "muted": "#5e6878", "accent": "#3b6ea8",
-              "alert": "#c0392b"},
+              "alert": "#c0392b", "attention": "#b7791f"},
 }
 
 
@@ -145,6 +146,7 @@ def write_palette(scheme, accent=None):
         palette["accent"] = accent
     path = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".palette.json")
     temporary = f"{path}.{os.getpid()}.{threading.get_ident()}"
+    set_option("attention_color", palette["attention"] + "ff")  # widgets needing attention (WG15)
     with PALETTE_LOCK:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)

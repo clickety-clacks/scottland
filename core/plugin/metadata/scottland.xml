@@ -49,6 +49,11 @@
 			<_long>The focused window's halo color. Set by scottland-color-scheme from the desktop's accent color, or by an integration.</_long>
 			<default>#81A1C1FF</default>
 		</option>
+		<option name="attention_color" type="color">
+			<_short>Attention color</_short>
+			<_long>The secondary highlight a widget's halo takes while its app needs attention (it also breathes). Set by scottland-color-scheme from the desktop's palette, or by an integration.</_long>
+			<default>#EBCB8BFF</default>
+		</option>
 		<option name="resize_alt" type="button">
 			<_short>Resize around center (second binding)</_short>
 			<_long>Another binding for the center-anchored resize, for trackpads without a comfortable right-drag.</_long>

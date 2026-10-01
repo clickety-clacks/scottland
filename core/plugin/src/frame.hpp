@@ -61,6 +61,7 @@ struct palette_t
 {
     bool light = false;                 // light desktop: dark neutral tone; dark desktop: light
     glm::vec3 accent{0.506, 0.631, 0.757};
+    glm::vec3 attention{0.922, 0.796, 0.545};  // secondary highlight: a widget whose app needs you
 };
 
 static palette_t palette;  // per loaded plugin copy (see meson.build)
@@ -415,6 +416,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
         focus_mix.set(0, 0);
+        attention_mix.set(0, 0);
     }
 
     ~frame_t()
@@ -449,19 +451,32 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     double screen_radius() const
     {
-        return CORNER_RADIUS * get_scale_x();
+        return CORNER_RADIUS * halo_scale();
     }
 
     // The elastic bulge of a lifted window rides on top of the layout's scale (scale_x/scale_y,
     // which the plugin sets): everything that draws or hit-tests asks these.
     float get_scale_x() const override
     {
-        return scale_x * (1.0 + bulge);
+        double own = scale_x * (1.0 + bulge);
+        return morph.shape > 0.0005 ? blend_size(own, morph.w, window_geometry().width) : own;
     }
 
     float get_scale_y() const override
     {
-        return scale_y * (1.0 + bulge);
+        double own = scale_y * (1.0 + bulge);
+        return morph.shape > 0.0005 ? blend_size(own, morph.h, window_geometry().height) : own;
+    }
+
+    /** The scale that draws a side `size` long as the blend of its own scaled length and `other`. */
+    double blend_size(double own, double other, double size) const
+    {
+        if (size <= 0)
+        {
+            return own;
+        }
+
+        return (size * own * (1.0 - morph.shape) + other * morph.shape) / size;
     }
 
     /** The window was lifted by a long press: it bulges out elastically and its halo swells. */
@@ -505,7 +520,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
      *  screen (twice the full-size halo), however small the window, so it's always easy to grab. */
     double thickness() const
     {
-        double rest = HALO * get_scale_x();
+        double rest = HALO * halo_scale();
         return std::max(rest * 0.7, rest + (SWOLLEN - rest) * swell);
     }
 
@@ -533,6 +548,30 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     }
 
     // --- state from the plugin ---
+
+    /** A widget whose app needs attention (WG15): its halo takes the attention color and keeps
+     *  breathing (the goo swells and wobbles as when hovered), until it's cleared. */
+    void set_attention(bool on)
+    {
+        if (on == attention)
+        {
+            return;
+        }
+
+        attention = on;
+        attention_mix.animate(on ? 1.0 : 0.0);
+        if (!on)
+        {
+            set_swell(hovering || lifted ? 1.0 : 0.0);
+        }
+
+        start_ticking();
+    }
+
+    bool needs_attention() const
+    {
+        return attention;
+    }
 
     void set_focused(bool focused)
     {
@@ -895,6 +934,33 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             std::ceil(2 * hw) + 1, std::ceil(2 * hh) + 1});
     }
 
+    /** A live morph between this window and its other form (window <-> widget) while it's
+     *  dragged in or out of a widget rail (WG13). `shape` blends the frame from this view's own
+     *  size to the other form's (`w` x `h` on screen, with that form's scale for corners and
+     *  halo); `fade` cross-fades the contents to the other form's snapshot. */
+    struct morph_t
+    {
+        double shape = 0.0;
+        double fade  = 0.0;
+        double w = 0.0, h = 0.0;
+        double scale = 1.0;
+        std::shared_ptr<wf::auxilliary_buffer_t> snapshot;  // the other form's contents
+        wf::geometry_t snapshot_box{};   // what the snapshot covers, in the other view's coordinates
+        wf::geometry_t other_geometry{}; // the other view's window geometry, same coordinates
+    } morph;
+
+    bool morphing() const
+    {
+        return morph.shape > 0.0005 || morph.fade > 0.0005;
+    }
+
+    /** The scale the halo and corners follow: this view's, blended toward the other form's. */
+    double halo_scale() const
+    {
+        double own = scale_x * (1.0 + bulge);
+        return own + (morph.scale - own) * morph.shape;
+    }
+
     // Animation state, read by the render instance and layout-state.
     double phase = 0.0;
     double swell = 0.0;          // 0 at rest, 1 swollen (overshoots while moving)
@@ -904,6 +970,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double bulge = 0.0;          // extra scale of a lifted window (springs, overshoots)
     double bulge_velocity = 0.0;
     wf::animation::simple_animation_t focus_mix{wf::create_option<int>(150)};
+    wf::animation::simple_animation_t attention_mix{wf::create_option<int>(400)};
 
   private:
     bool is_focused = false;
@@ -915,6 +982,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     std::array<double, 4> cloud_target{};
     double dot_target   = 0.0;
     double swell_target = 0.0;
+    bool attention = false;
     bool hovering = false;
     bool lifted = false;
     double bulge_target = 0.0;
@@ -1011,6 +1079,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             }
         }
 
+        if (attention || attention_mix.running())
+        {
+            return false;  // breathing
+        }
+
         return (std::abs(dot_glow - dot_target) < 0.002) && !focus_mix.running() &&
                (std::abs(bulge - bulge_target) < 0.0005) && (std::abs(bulge_velocity) < 0.001) &&
                (std::abs(swell - swell_target) < 0.001) && (std::abs(swell_velocity) < 0.001);
@@ -1056,6 +1129,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     void step(double dt)
     {
         phase += dt;
+        if (attention && !is_pressed())
+        {
+            // Breathing: the swell's target rises and falls (period ~1.8 s), so the goo keeps
+            // swelling and rippling the way it does when hovered.
+            swell_target = 0.55 + 0.45 * (0.5 + 0.5 * std::sin(phase * 2.0 * M_PI / 1.8));
+        }
+
         // Goo: an underdamped spring, so the swell overshoots and wobbles before settling.
         const double stiffness = 30.0, damping = 4.6;
         double accel = stiffness * (swell_target - swell) - damping * swell_velocity;
@@ -1129,6 +1209,12 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
             wf::gles::bind_render_buffer(data.target);
             auto ortho = wf::gles::render_target_orthographic_projection(data.target);
 
+            std::optional<wf::gles_texture_t> other;
+            if (self->morphing() && self->morph.snapshot && self->morph.snapshot->get_buffer())
+            {
+                other = wf::gles_texture_t::from_aux(*self->morph.snapshot);
+            }
+
             wf::gles::for_each_scissor_rect(data.target, data.damage, [&]
             {
                 if (halo)
@@ -1136,8 +1222,26 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                     draw_halo(programs.halo, ortho, pixel, alpha);
                 }
 
-                draw_window(programs.window, tex, bbox, ortho * flat, geometry, window_aa, alpha);
-                if (halo && (self->dot_glow > 0.003))
+                if (!self->morphing())
+                {
+                    draw_window(programs.window, tex, bbox, ortho * flat, geometry, window_aa, alpha);
+                } else
+                {
+                    // Morphing: both forms' contents fill the frame (scaled evenly to cover it,
+                    // centered, clipped to its rounded rectangle), cross-fading.
+                    auto r = self->screen_rect();
+                    double radius = self->screen_radius();
+                    double fade   = std::clamp(self->morph.fade, 0.0, 1.0);
+                    draw_covering(programs.window, tex, bbox, geometry, r, radius, ortho, pixel,
+                        alpha * (1.0 - fade), false);
+                    if (other && (fade > 0.001))
+                    {
+                        draw_covering(programs.window, *other, self->morph.snapshot_box,
+                            self->morph.other_geometry, r, radius, ortho, pixel, alpha * fade, false);
+                    }
+                }
+
+                if (halo && !self->morphing() && (self->dot_glow > 0.003))
                 {
                     draw_dot(programs.dot, ortho, pixel, self->dot_glow * alpha,
                         self->hovered_handle() == handle_t::close);
@@ -1166,6 +1270,9 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         glm::vec3 neutral = palette.light ? glm::vec3{0.08, 0.08, 0.1} : glm::vec3{0.9, 0.92, 0.95};
         glm::vec3 tone    = glm::mix(neutral, palette.accent, focus);
         float density     = (0.16f + (0.44f - 0.16f) * focus) * alpha;
+        float attention   = self->attention_mix;
+        tone    = glm::mix(tone, palette.attention, attention);
+        density = density + (0.5f * alpha - density) * attention;
 
         program.use(wf::TEXTURE_TYPE_RGBA);
         program.uniformMatrix4f("MVP", mvp);
@@ -1173,7 +1280,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("radius", radius);
         program.uniform1f("thickness", t);
         // Ripples along the edge while the goo moves, in proportion to how fast it's moving.
-        double travel = SWOLLEN - HALO * self->get_scale_x();
+        double travel = SWOLLEN - HALO * self->halo_scale();
         program.uniform1f("ripple", std::min(4.0, std::abs(self->swell_velocity) * travel * 0.3));
         program.uniform1f("phase", self->phase);
         program.uniform1f("aa", aa);
@@ -1227,6 +1334,43 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform4f("rect", glm::vec4{geometry.x, geometry.y, geometry.width, geometry.height});
         program.uniform1f("radius", std::min<float>(CORNER_RADIUS,
             std::min(geometry.width, geometry.height) / 2.0f));
+        program.uniform1f("aa", aa);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        program.deactivate();
+    }
+
+    /** Draw contents whose window geometry is `geometry` (and whose texture covers `box`, same
+     *  coordinates) scaled evenly to cover the on-screen rectangle `r`, centered on it, clipped
+     *  to it with rounded corners. Snapshots are stored upside down (`flip`). */
+    static void draw_covering(OpenGL::program_t& program, const wf::gles_texture_t& tex,
+        const wf::geometry_t& box, const wf::geometry_t& geometry, const rectf_t& r, double radius,
+        const glm::mat4& ortho, float aa, float alpha, bool flip)
+    {
+        if ((geometry.width <= 0) || (geometry.height <= 0) || (alpha <= 0.001))
+        {
+            return;
+        }
+
+        double c  = std::max(r.width() / geometry.width, r.height() / geometry.height);
+        double cx = (r.x1 + r.x2) / 2.0, cy = (r.y1 + r.y2) / 2.0;
+        double gx = geometry.x + geometry.width / 2.0, gy = geometry.y + geometry.height / 2.0;
+        float x1 = cx + (box.x - gx) * c, x2 = cx + (box.x + box.width - gx) * c;
+        float y1 = cy + (box.y - gy) * c, y2 = cy + (box.y + box.height - gy) * c;
+        program.use(tex.type);
+        GLfloat vertices[] = {x1, y2, x2, y2, x2, y1, x1, y1};
+        GLfloat uvs[] = {0, 0, 1, 0, 1, 1, 0, 1};
+        GLfloat flipped[] = {0, 1, 1, 1, 1, 0, 0, 0};
+        program.set_active_texture(tex);
+        glTexParameteri(tex.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(tex.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        program.attrib_pointer("position", 2, 0, vertices);
+        program.attrib_pointer("uvPosition", 2, 0, flip ? flipped : uvs);
+        program.uniformMatrix4f("MVP", ortho);
+        program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
+        program.uniform4f("rect", glm::vec4{r.x1, r.y1, r.width(), r.height()});
+        program.uniform1f("radius", std::min<float>(radius, std::min(r.width(), r.height()) / 2.0f));
         program.uniform1f("aa", aa);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);

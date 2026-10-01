@@ -32,6 +32,8 @@ extern "C" {
 #include <wlr/backend/headless.h>
 #include <wlr/backend/multi.h>
 #include <wlr/interfaces/wlr_pointer.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_compositor.h>
 #if WF_HAS_XWAYLAND
 #include <pthread.h>  // as Wayfire does: xwayland.h uses C++ keywords as names
 #define class class_t
@@ -715,12 +717,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> blend_width{"scottland/blend_width"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
+    wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
 
     void load_color_scheme()
     {
         scottland::palette.light = std::string(color_scheme) == "light";
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
+        wf::color_t attention = attention_color;
+        scottland::palette.attention = {attention.r, attention.g, attention.b};
         for (auto& view : wf::get_core().get_all_views())
         {
             if (auto toplevel = wf::toplevel_cast(view))
@@ -1101,7 +1106,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     wf::signal::connection_t<wf::keyboard_focus_changed_signal> on_focus =
-        [=] (wf::keyboard_focus_changed_signal*) { update_focus(); };
+        [=] (wf::keyboard_focus_changed_signal*)
+    {
+        update_focus();
+        // Going to a window, or to the widget standing in for it, answers its attention (WG15).
+        if (auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view()))
+        {
+            auto link = link_of_widget(active);
+            clear_attention(link ? link->window_id : active->get_id());
+        }
+    };
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
     {
@@ -1126,7 +1140,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 close_view_or_process(widget, launcher);
             } else if (auto link = link_of_widget(toplevel))
             {
-                if (link->dismissing)
+                if (link->dismissing || link->preview)  // a preview going is no reason to close the app
                 {
                     widget_links.erase(uint64_t(link->window_id));
                     announce_widgets();
@@ -1177,11 +1191,172 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::string rail;                            // "left" or "right"
         bool dismissing = false;                     // restoring the window: the widget just goes
         bool hidden = false;                         // holds a disable on the app's window
+        bool preview = false;                        // launched during a drag over a rail (WG13): the
+                                                     // window isn't hidden yet, the widget is kept unseen
+        bool widget_hidden = false;                  // holds a disable on the widget's window
         uint32_t launched_at = 0;
     };
 
     std::map<uint64_t, widget_link_t> widget_links;  // by the app window's id
-    std::set<uint64_t> wants_attention;              // windows demanding attention (urgent)
+    std::set<uint64_t> wants_attention;              // windows demanding attention (urgency hint)
+    std::set<uint64_t> asked_attention;              // windows that asked another way (WG15):
+                                                     // activation requests, desktop notifications
+
+    bool needs_attention(uint64_t window) const
+    {
+        return wants_attention.count(window) || asked_attention.count(window);
+    }
+
+    /** Show (or stop showing) on the window's widget that its app needs attention (WG15). */
+    void show_attention(uint64_t window)
+    {
+        auto found = widget_links.find(window);
+        if (found == widget_links.end())
+        {
+            return;
+        }
+
+        if (auto widget = wf::toplevel_cast(found->second.widget.lock()))
+        {
+            if (auto frame = frame_of(widget))
+            {
+                frame->set_attention(needs_attention(window));
+            }
+        }
+
+        announce_widgets();
+    }
+
+    /** The user went to it (focused its widget, or its window): attention is answered. */
+    void clear_attention(uint64_t window)
+    {
+        bool had = needs_attention(window);
+        wants_attention.erase(window);
+        asked_attention.erase(window);
+        if (had)
+        {
+            show_attention(window);
+        }
+    }
+
+    // Apps asking to be focused (xdg-activation: a terminal's bell, a finished task). Scottland
+    // implements the protocol itself (Wayfire's plugin drops requests not made from input, so a
+    // bell never arrives): a request made from input in the app you're using (a click opening a
+    // link in another app) takes focus; any other request doesn't take focus from you, it
+    // becomes attention (WG15), shown on the app's widget. A widgetized app is never focused
+    // this way: its window is hidden.
+    //
+    // The protocol object lives as long as the compositor; a reloaded plugin finds the one
+    // already made (its address in this process's environment), as a second would be a second
+    // global for apps to bind.
+    wlr_xdg_activation_v1 *activation = nullptr;
+    wf::wl_listener_wrapper on_activate;
+
+    void start_activation()
+    {
+        static const char *KEY = "SCOTTLAND_INTERNAL_XDG_ACTIVATION";
+        if (const char *found = getenv(KEY))
+        {
+            activation = reinterpret_cast<wlr_xdg_activation_v1*>(std::strtoull(found, nullptr, 16));
+        }
+
+        if (!activation)
+        {
+            activation = wlr_xdg_activation_v1_create(wf::get_core().display);
+            if (!activation)
+            {
+                LOGE("scottland: couldn't offer xdg-activation");
+                return;
+            }
+
+            char address[32];
+            snprintf(address, sizeof(address), "%llx", (unsigned long long)(uintptr_t)activation);
+            setenv(KEY, address, 1);
+        }
+
+        on_activate.set_callback([=] (void *data)
+        {
+            auto ev = static_cast<wlr_xdg_activation_v1_request_activate_event*>(data);
+            auto view = wf::toplevel_cast(ev->surface ? wf::wl_surface_to_wayfire_view(ev->surface->resource) : nullptr);
+            if (view && view->is_mapped())
+            {
+                handle_activation(view, ev->token);
+            }
+        });
+        on_activate.connect(&activation->events.request_activate);
+    }
+
+    void handle_activation(wayfire_toplevel_view view, wlr_xdg_activation_token_v1 *token)
+    {
+        auto active = wf::get_core().seat->get_active_view();
+        auto link = link_of_window(view);
+        if ((active == view) || (link && active && (link->widget.lock().get() == active.get())))
+        {
+            return;  // already in front of the user (the window, or its widget)
+        }
+
+        bool from_input = token && token->seat && token->surface;
+        auto source = from_input ? wf::wl_surface_to_wayfire_view(token->surface->resource) : nullptr;
+        bool from_active_app = source && active && (source->get_client() == active->get_client());
+        if ((!link || link->preview) && from_active_app)
+        {
+            wf::get_core().default_wm->focus_raise_view(view);
+            return;
+        }
+
+        asked_attention.insert(view->get_id());
+        show_attention(view->get_id());
+    }
+
+    // Requests from the desktop (a switcher) for a widgetized window go to its widget: its
+    // window is hidden.
+    wf::signal::connection_t<wf::view_focus_request_signal> on_focus_request =
+        [=] (wf::view_focus_request_signal *ev)
+    {
+        auto view = wf::toplevel_cast(ev->view);
+        auto link = view ? link_of_window(view) : nullptr;
+        if (!link || link->preview || ev->carried_out)
+        {
+            return;
+        }
+
+        ev->carried_out = true;
+        if (auto widget = link->widget.lock())
+        {
+            wf::get_core().default_wm->focus_raise_view(widget);
+        }
+    };
+
+    /** IPC scottland/attention {window, attention}: the widget service saw the app ask for
+     *  attention another way (a desktop notification, WG15). */
+    wf::ipc::method_callback attention_method = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("window") || !data["window"].is_int() || !data.has_member("attention") ||
+            !data["attention"].is_bool())
+        {
+            return wf::ipc::json_error("attention needs integer \"window\" and boolean \"attention\"");
+        }
+
+        uint64_t window = (uint64_t)data["window"].as_int64();
+        if (data["attention"].as_bool())
+        {
+            auto active = wf::get_core().seat->get_active_view();
+            auto link   = widget_links.find(window);
+            if (active && ((active->get_id() == window) ||
+                ((link != widget_links.end()) && (link->second.widget.lock().get() == active.get()))))
+            {
+                return wf::ipc::json_ok();  // already in front of the user (the window, or its widget)
+            }
+
+            asked_attention.insert(window);
+            show_attention(window);
+        } else
+        {
+            clear_attention(window);
+        }
+
+        return wf::ipc::json_ok();
+    };
 
     /** Tell IPC subscribers (the widget service) that widgets changed. */
     /** Send a custom IPC event (names must end in '#') to subscribed clients. */
@@ -1214,10 +1389,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             wants_attention.erase(ev->view->get_id());
         }
 
-        if (link_of_window(wf::toplevel_cast(ev->view)))
-        {
-            announce_widgets();
-        }
+        show_attention(ev->view->get_id());
     };
     wf::wl_timer<true> widget_watchdog;
     static constexpr uint32_t WIDGET_ADOPT_MS = 8000;  // no widget window by then: give up, restore
@@ -1487,10 +1659,28 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     /** The window was dropped on a rail: hide it and launch its widget. */
-    void widgetize(wayfire_toplevel_view view)
+    static bool can_widgetize(wayfire_toplevel_view view)
     {
+        return view && view->get_output() && !view->parent && !view->pending_fullscreen();
+    }
+
+    /** Turn the window into a widget. With `preview` (a drag is over a rail, WG13) the widget is
+     *  launched but the window stays, and the widget is kept unseen until the drop commits. */
+    void widgetize(wayfire_toplevel_view view, bool preview = false)
+    {
+        if (auto existing = link_of_window(view))
+        {
+            if (existing->preview && !preview)
+            {
+                auto g = view->get_geometry();
+                commit_preview(*existing, {g.x + g.width / 2.0, g.y + g.height / 2.0});
+            }
+
+            return;
+        }
+
         auto output = view->get_output();
-        if (!output || view->parent || view->pending_fullscreen() || link_of_window(view) || is_widget(view))
+        if (!can_widgetize(view) || is_widget(view))
         {
             return;
         }
@@ -1533,15 +1723,23 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Taken right away, while the process is certainly the one just started.
         process->pidfd = pidfd_open(process->pid, 0);
         link.launcher  = process;
+        link.preview   = preview;
 
-        set_hidden(link, true);
-        if (wf::get_core().seat->get_active_view() == view)
+        if (!preview)
         {
-            wf::get_core().seat->refocus();
+            set_hidden(link, true);
+            if (wf::get_core().seat->get_active_view() == view)
+            {
+                wf::get_core().seat->refocus();
+            }
         }
 
         widget_links[link.window_id] = std::move(link);
-        announce_widgets();
+        if (!preview)
+        {
+            announce_widgets();
+        }
+
         if (!widget_watchdog.is_connected())
         {
             widget_watchdog.set_timeout(500, [=] () { return check_widget_launches(); });
@@ -1588,6 +1786,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             link.widget = view->weak_from_this();
+            set_scale(view, 1.0);
+            if (link.preview)
+            {
+                // Unseen until the drop: the dragged window's frame shows it as it morphs.
+                set_widget_hidden(link, true);
+                if (auto window = wf::toplevel_cast(link.window.lock()))
+                {
+                    if (wf::get_core().seat->get_active_view() == view)
+                    {
+                        wf::get_core().default_wm->focus_raise_view(window);
+                    }
+                }
+
+                return true;
+            }
+
             auto output = output_alive(link.output) ? link.output : view->get_output();
             if (output && (view->get_output() != output))
             {
@@ -1596,7 +1810,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             place_widget(view, output, link.drop);
             set_scale(view, 1.0);
-            announce_widgets();
+            show_attention(link.window_id);  // asked before its widget appeared
             return true;
         }
 
@@ -1620,6 +1834,69 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double y = std::clamp(at.y - geometry.height / 2.0, (double)area.y,
             std::max((double)area.y, (double)(area.y + area.height - geometry.height)));
         view->move(std::round(x), std::round(y));
+    }
+
+    /** Keep the widget's window unseen (a preview, or one going away), or show it. Its frame is
+     *  made transparent too: a map animation can hold the window enabled for a moment. */
+    void set_widget_hidden(widget_link_t& link, bool hidden)
+    {
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        if (!widget || (link.widget_hidden == hidden))
+        {
+            return;
+        }
+
+        if (auto frame = frame_of(widget))
+        {
+            frame->alpha = hidden ? 0.0 : 1.0;
+            frame->damage();
+        }
+
+        wf::scene::set_node_enabled(widget->get_root_node(), !hidden);
+        link.widget_hidden = hidden;
+    }
+
+    /** A drag over a rail ended there: the preview becomes the widget, at `at`. */
+    void commit_preview(widget_link_t& link, wf::pointf_t at)
+    {
+        auto window = wf::toplevel_cast(link.window.lock());
+        link.preview = false;
+        link.drop    = at;
+        if (window && window->get_output())
+        {
+            link.output = window->get_output();
+            link.rail   = at.x < window->get_output()->get_relative_geometry().width / 2 ? "left" : "right";
+        }
+
+        set_hidden(link, true);
+        if (auto widget = wf::toplevel_cast(link.widget.lock()))
+        {
+            auto output = output_alive(link.output) ? link.output : widget->get_output();
+            if (output && (widget->get_output() != output))
+            {
+                wf::move_view_to_output(widget, output, false);
+            }
+
+            place_widget(widget, output, at);
+            set_scale(widget, 1.0);
+            set_widget_hidden(link, false);
+            wf::get_core().default_wm->focus_raise_view(widget);
+        } else if (window && (wf::get_core().seat->get_active_view() == window))
+        {
+            wf::get_core().seat->refocus();
+        }
+
+        announce_widgets();
+    }
+
+    /** A drag over a rail left it and ended elsewhere: the preview widget goes. */
+    void cancel_preview(widget_link_t& link)
+    {
+        auto widget   = wf::toplevel_cast(link.widget.lock());
+        auto launcher = link.launcher;
+        link.dismissing = true;
+        widget_links.erase(uint64_t(link.window_id));  // `link` is gone from here on
+        close_view_or_process(widget, launcher);
     }
 
     /** Back to the window, at `at` (output coords); the widget goes (it isn't closed: WG5). */
@@ -1649,6 +1926,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         uint64_t id = link.window_id;
         auto launcher = link.launcher;
+        set_widget_hidden(link, true);  // gone at once, not when its program gets round to closing
         close_view_or_process(widget, launcher);
         widget_links.erase(id);
         announce_widgets();
@@ -1671,8 +1949,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    /** A drop: windows dropped on a rail become widgets; widgets dropped off the rail restore. */
-    void handle_widget_drop(wayfire_toplevel_view view)
+    /** A drop: windows dropped on a rail become widgets; widgets dropped off the rail restore.
+     *  After a drag that morphed (WG13), the shape shown at the drop decides (`widget_shaped`). */
+    void handle_widget_drop(wayfire_toplevel_view view, std::optional<bool> widget_shaped = {})
     {
         if (!view || !view->is_mapped() || !view->get_output())
         {
@@ -1692,10 +1971,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             double x1 = geometry.x - WIDGET_INSET, x2 = geometry.x + geometry.width + WIDGET_INSET;
             bool left  = (x1 < width / 2) && in_rail(x1);
             bool right = (x2 > width / 2) && in_rail(x2);
-            if (!left && !right)
+            if (widget_shaped ? !*widget_shaped : (!left && !right))
             {
                 restore_window(*link, center);
                 return;
+            }
+
+            if (!left && !right)
+            {
+                left = center.x < width / 2;  // kept a widget by the shape shown: its nearer rail
             }
 
             place_widget(view, output, center);
@@ -1709,9 +1993,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             auto placed = view->get_geometry();
             link->drop = {placed.x + placed.width / 2.0, placed.y + placed.height / 2.0};
-        } else if (in_rail(center.x))
+        } else if (widget_shaped ? *widget_shaped : in_rail(center.x))
         {
             widgetize(view);
+        } else if (auto link = link_of_window(view); link && link->preview)
+        {
+            cancel_preview(*link);
         }
     }
 
@@ -1722,6 +2009,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto active = wf::get_core().seat->get_active_view();
         for (auto& [id, link] : widget_links)
         {
+            if (link.preview)
+            {
+                continue;  // not a widget yet (WG13)
+            }
+
             auto window = wf::toplevel_cast(link.window.lock());
             auto widget = wf::toplevel_cast(link.widget.lock());
             wf::json_t entry;
@@ -1738,7 +2030,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["launcher_pid"] = (int64_t)(alive(link.launcher) ? link.launcher->pid : 0);
             entry["rail"]    = link.rail;
             entry["focused"] = widget && (active == widget);
-            entry["urgent"]  = wants_attention.count(id) > 0;
+            entry["urgent"]  = needs_attention(id);
             list.append(entry);
         }
 
@@ -2404,20 +2696,326 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             double box   = drawn + 2 * drag_margin;
             double left  = geometry.x + geometry.width / 2.0 - box / 2.0;
             drag_relative_x = box > 0 ? (local_x - left) / box : 0.5;
+            drag_origin = {geometry.x, geometry.y};  // where Esc sends it back (WG14)
+            drag_cancelled = false;
             auto running = transitions.find(drag->view->get_id());
             drag_target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
             update_neighbors(output);
         }
     };
 
+    // Live morph (WG13): while a window is dragged over a widget rail it turns into its widget
+    // (the frame reshapes to the widget's size while the contents cross-fade to the widget's), and
+    // a widget dragged off its rail turns back into its window the same way; the drop keeps the
+    // shape shown. The widget is launched (unseen) when the drag first reaches the rail; until
+    // it shows, the frame reshapes around the window's own contents.
+    static constexpr int MORPH_MS = 240;
+    static constexpr double PROVISIONAL_WIDGET_W = 300, PROVISIONAL_WIDGET_H = 96;
+    struct drag_morph_t
+    {
+        std::weak_ptr<wf::view_interface_t> dragged;
+        bool from_widget = false;  // dragging a widget: its other form is its app's window
+        bool toward = false;       // heading for the other form
+        double center_x = 0;       // where the dragged frame is centered (output coords)
+        wf::animation::simple_animation_t shape{wf::create_option<int>(MORPH_MS)};
+        wf::animation::simple_animation_t fade{wf::create_option<int>(MORPH_MS * 3 / 4)};
+        std::shared_ptr<wf::auxilliary_buffer_t> snapshot = std::make_shared<wf::auxilliary_buffer_t>();
+        wf::geometry_t snapshot_box{}, other_geometry{};
+        bool snapshot_ready = false;
+        int ticks = 0;
+    };
+    std::optional<drag_morph_t> morph;
+    wf::wl_timer<true> morph_tick;
+
+    /** Is the dragged view showing its widget shape (or heading there)? */
+    bool morph_widget_shaped() const
+    {
+        return morph && (morph->from_widget ? !morph->toward : morph->toward);
+    }
+
+    wayfire_toplevel_view morph_other()
+    {
+        auto dragged = wf::toplevel_cast(morph ? morph->dragged.lock() : nullptr);
+        if (!dragged)
+        {
+            return nullptr;
+        }
+
+        if (morph->from_widget)
+        {
+            auto link = link_of_widget(dragged);
+            return link ? wf::toplevel_cast(link->window.lock()) : nullptr;
+        }
+
+        auto link = link_of_window(dragged);
+        return link ? wf::toplevel_cast(link->widget.lock()) : nullptr;
+    }
+
+    void end_morph()
+    {
+        if (!morph)
+        {
+            return;
+        }
+
+        if (auto dragged = wf::toplevel_cast(morph->dragged.lock()))
+        {
+            if (auto frame = frame_of(dragged, false))
+            {
+                frame->damage();
+                frame->morph = {};
+                frame->damage();
+            }
+        }
+
+        morph.reset();
+        morph_tick.disconnect();
+    }
+
+    /** Follow the drag: decide which form it should show, and start the widget if it's needed. */
+    void update_drag_morph(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t pointer)
+    {
+        bool dragging_widget = is_widget(view);
+        if (!morph || (morph->dragged.lock().get() != view.get()))
+        {
+            end_morph();
+            if (!dragging_widget && !can_widgetize(view))
+            {
+                return;
+            }
+
+            morph.emplace();
+            morph->dragged     = view->weak_from_this();
+            morph->from_widget = dragging_widget;
+            morph->shape.set(0, 0);
+            morph->fade.set(0, 0);
+        }
+
+        auto frame = frame_of(view, false);
+        if (!frame)
+        {
+            return;
+        }
+
+        // Where the frame is on screen: the drag keeps the grabbed point at the same fraction of the
+        // view's box (the frame plus its halo margin) under the pointer.
+        auto r = frame->screen_rect();
+        double margin = frame->margin();
+        double box    = r.width() + 2 * margin;
+        double origin = output->get_layout_geometry().x;
+        double width  = output->get_relative_geometry().width;
+        double x1 = pointer.x - origin - drag_relative_x * box + margin;
+        double x2 = x1 + r.width();
+        morph->center_x = (x1 + x2) / 2.0;
+        auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
+
+        // The same rules as a drop: the widget shape stays while any of it (halo included) is on a
+        // rail; the window shape turns into a widget when its center reaches one.
+        bool want_widget;
+        if (morph_widget_shaped())
+        {
+            double a = x1 - WIDGET_INSET, b = x2 + WIDGET_INSET;
+            want_widget = ((a < width / 2) && in_rail(a)) || ((b > width / 2) && in_rail(b));
+        } else
+        {
+            want_widget = in_rail(morph->center_x);
+        }
+
+        bool toward = morph->from_widget ? !want_widget : want_widget;
+        if (toward != morph->toward)
+        {
+            if (!morph->from_widget && toward)
+            {
+                widgetize(view, true);  // launched now, unseen, so it's ready to fade in
+            }
+
+            morph->toward = toward;
+            morph->shape.animate(morph->shape, toward ? 1.0 : 0.0);
+        }
+
+        if (!morph_tick.is_connected())
+        {
+            morph_tick.set_timeout(8, [=] () { return step_morph(); });
+        }
+    }
+
+    bool step_morph()
+    {
+        if (!morph)
+        {
+            return false;
+        }
+
+        auto dragged = wf::toplevel_cast(morph->dragged.lock());
+        auto frame   = dragged && dragged->is_mapped() ? frame_of(dragged, false) : nullptr;
+        if (!frame)
+        {
+            end_morph();
+            return false;
+        }
+
+        // The other form's contents, refreshed now and then (it isn't on screen to update itself).
+        auto other = morph_other();
+        if (other && other->is_mapped() && other->get_output() && (!morph->snapshot_ready || (morph->ticks % 6 == 0)))
+        {
+            other->take_snapshot(*morph->snapshot);
+            morph->snapshot_box   = other->get_surface_root_node()->get_bounding_box();
+            morph->other_geometry = other->get_geometry();
+            morph->snapshot_ready = morph->snapshot->get_buffer() != nullptr;
+        }
+
+        morph->ticks++;
+        if (!morph->toward && (drag->view != dragged) && !morph->shape.running() && !morph->fade.running())
+        {
+            end_morph();  // a cancelled drag finished morphing back
+            return false;
+        }
+
+        double fade_to = (morph->toward && morph->snapshot_ready && other) ? 1.0 : 0.0;
+        if (std::abs(morph->fade.end - fade_to) > 0.001)
+        {
+            morph->fade.animate(morph->fade, fade_to);
+        }
+
+        // The other form's size on screen: the widget at 100%, or the window at the scale it would
+        // have where the frame is now.
+        double w = PROVISIONAL_WIDGET_W, h = PROVISIONAL_WIDGET_H, scale = 1.0;
+        if (morph->from_widget && other)
+        {
+            auto output = dragged->get_output();
+            scale = output ? place_at(morph->center_x, output->get_relative_geometry().width).scale : 1.0;
+            auto g = other->get_geometry();
+            w = g.width * scale;
+            h = g.height * scale;
+        } else if (other)
+        {
+            auto g = other->get_geometry();
+            w = g.width;
+            h = g.height;
+        }
+
+        frame->damage();
+        frame->morph.shape = morph->shape;
+        frame->morph.fade  = morph->fade;
+        frame->morph.w     = w;
+        frame->morph.h     = h;
+        frame->morph.scale = scale;
+        frame->morph.snapshot       = morph->snapshot_ready ? morph->snapshot : nullptr;
+        frame->morph.snapshot_box   = morph->snapshot_box;
+        frame->morph.other_geometry = morph->other_geometry;
+        frame->damage();
+        dragged->damage();  // through the drag's own transform, so it repaints with the pointer still
+        return true;
+    }
+
+    // Esc cancels a drag (WG14): the window goes back where it was picked up, gliding from where
+    // it was let go, and a drag that changed it into its other form (window/widget) morphs back.
+    wf::point_t drag_origin{0, 0};
+    bool drag_cancelled = false;
+    static constexpr int GLIDE_MS = 260;
+    struct glide_t
+    {
+        std::weak_ptr<wf::view_interface_t> view;
+        double dx = 0, dy = 0;  // where it's drawn from, relative to where it is
+        wf::animation::simple_animation_t progress{wf::create_option<int>(GLIDE_MS)};
+    };
+    std::optional<glide_t> glide;
+    wf::wl_timer<true> glide_tick;
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_cancel_key =
+        [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
+    {
+        if ((ev->event->keycode == KEY_ESC) && (ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED) &&
+            drag->view && !drag_cancelled)
+        {
+            drag_cancelled = true;
+            ev->mode = wf::input_event_processing_mode_t::IGNORE;  // the app under it doesn't get it
+            drag->handle_input_released();
+        }
+    };
+
+    /** The drag was cancelled and just let go: put the window back, drawn gliding home. */
+    void cancel_drop(wayfire_toplevel_view view)
+    {
+        auto g = view->get_geometry();
+        double dx = g.x - drag_origin.x, dy = g.y - drag_origin.y;
+        view->move(drag_origin.x, drag_origin.y);
+        if (morph && (morph->dragged.lock().get() == view.get()) && morph->toward)
+        {
+            morph->toward = false;  // back to the form it had
+            morph->shape.animate(morph->shape, 0.0);
+        }
+
+        if (auto link = link_of_window(view); link && link->preview)
+        {
+            cancel_preview(*link);
+        }
+
+        apply(view);
+        if (auto frame = frame_of(view, false); frame && ((dx != 0) || (dy != 0)))
+        {
+            glide.emplace();
+            glide->view = view->weak_from_this();
+            glide->dx = dx;
+            glide->dy = dy;
+            glide->progress.animate(0.0, 1.0);
+            frame->translation_x = dx;
+            frame->translation_y = dy;
+            view->damage();
+            if (!glide_tick.is_connected())
+            {
+                glide_tick.set_timeout(8, [=] () { return step_glide(); });
+            }
+        }
+    }
+
+    bool step_glide()
+    {
+        auto view  = glide ? wf::toplevel_cast(glide->view.lock()) : nullptr;
+        auto frame = view ? frame_of(view, false) : nullptr;
+        if (!frame)
+        {
+            glide.reset();
+            return false;
+        }
+
+        double left = 1.0 - (double)glide->progress;
+        frame->damage();
+        frame->translation_x = glide->dx * left;
+        frame->translation_y = glide->dy * left;
+        frame->damage();
+        view->damage();
+        if (!glide->progress.running())
+        {
+            frame->translation_x = frame->translation_y = 0;
+            glide.reset();
+            return false;
+        }
+
+        return true;
+    }
+
     wf::signal::connection_t<wf::move_drag::drag_motion_signal> on_drag_motion =
         [=] (wf::move_drag::drag_motion_signal *ev)
     {
         auto view   = drag->view;
         auto output = drag->current_output;
+        if (view && output && !view->pending_fullscreen())
+        {
+            update_drag_morph(view, output, ev->current_position);
+        }
+
         if (!view || !output || view->pending_fullscreen() || is_widget(view))
         {
             return;  // widgets stay at 100% wherever they're dragged
+        }
+
+        if (morph && (morph->dragged.lock().get() == view.get()) && morph->toward)
+        {
+            // Shown as its widget: the window keeps the scale of where it is, for if it's dragged
+            // back out.
+            set_scale(view, place_at(morph->center_x, output->get_relative_geometry().width).scale);
+            return;
         }
 
         // The drag keeps the grabbed point under the pointer, so the window's center (which picks
@@ -2505,7 +3103,28 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // the zone says the other size. Then keep the size shown, and nudge the window sideways
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
-        if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen() && !is_widget(main))
+        if (drag_cancelled)
+        {
+            drag_cancelled = false;
+            drag_input_override.reset();
+            if (main && main->is_mapped())
+            {
+                cancel_drop(main);
+            }
+
+            idle_neighbors.run_once([=] () { update_all_neighbors(); });
+            return;
+        }
+
+        std::optional<bool> widget_shaped;  // the shape a morphing drag showed at the drop (WG13)
+        if (morph && main && (morph->dragged.lock().get() == main.get()))
+        {
+            widget_shaped = morph_widget_shaped();
+        }
+
+        end_morph();
+        if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen() && !is_widget(main) &&
+            !widget_shaped.value_or(false))
         {
             auto geometry = main->get_geometry();
             double screen = main->get_output()->get_relative_geometry().width;
@@ -2544,7 +3163,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag_input_override.reset();
         if (main)
         {
-            handle_widget_drop(main);
+            handle_widget_drop(main, widget_shaped);
         }
 
         // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
@@ -2577,6 +3196,21 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             update_neighbors(view->get_output());
+
+            // A widget that changes size (a card whose title changed) keeps its screen-edge side
+            // where it was and stays wholly on screen.
+            auto g = view->get_geometry();
+            auto link = link_of_widget(view);
+            if (link && !link->preview && (drag->view != view) && view->get_output() &&
+                ((g.width != ev->old_geometry.width) || (g.height != ev->old_geometry.height)))
+            {
+                auto old = ev->old_geometry;
+                double cx = link->rail == "right" ? old.x + old.width - g.width / 2.0 : old.x + g.width / 2.0;
+                double cy = old.y + old.height / 2.0;
+                place_widget(view, view->get_output(), {cx, cy});
+                auto placed = view->get_geometry();
+                link->drop = {placed.x + placed.width / 2.0, placed.y + placed.height / 2.0};
+            }
         }
 
         apply(ev->view);
@@ -2605,7 +3239,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["title"] = view->get_title();
             entry["app_id"] = view->get_app_id();
             entry["widget"] = is_widget(view);
-            entry["widgetized"] = link_of_window(view) != nullptr;
+            auto link = link_of_window(view);
+            entry["widgetized"] = link && !link->preview;
+            entry["preview"] = (link && link->preview) || (link_of_widget(view) && link_of_widget(view)->preview);
             entry["hidden"] = !view->get_root_node()->is_enabled();
             entry["zone"]  = zone_name(placement.zone);
             entry["scale"] = placement.scale;
@@ -2628,6 +3264,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["frame"]["focus"]   = (double)frame->focus_mix;
                 entry["frame"]["hovered"] = scottland::handle_name(frame->hovered_handle());
                 entry["frame"]["dot"]     = frame->dot_glow;
+                entry["frame"]["attention"] = frame->needs_attention();
+                if (frame->morphing())
+                {
+                    entry["frame"]["morph"] = wf::json_t{};
+                    entry["frame"]["morph"]["shape"] = frame->morph.shape;
+                    entry["frame"]["morph"]["fade"]  = frame->morph.fade;
+                    entry["frame"]["morph"]["snapshot"] = (bool)frame->morph.snapshot;
+                }
                 entry["frame"]["neighbors"] = (int64_t)frame->get_neighbors().size();
                 wf::json_t clouds = wf::json_t::array();
                 for (double c : frame->cloud)
@@ -2826,6 +3470,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_unmapped);
         wf::get_core().connect(&on_motion);
         wf::get_core().connect(&on_swipe_begin);
+        wf::get_core().connect(&on_cancel_key);
         wf::get_core().connect(&on_swipe_update);
         wf::get_core().connect(&on_swipe_end);
         wf::get_core().connect(&on_touchpad_button);
@@ -2837,6 +3482,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
+        ipc_repo->register_method("scottland/attention", attention_method);
+        wf::get_core().connect(&on_focus_request);
+        start_activation();
         announce_widgets();  // a widget service that outlived a reload catches up
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
@@ -2852,6 +3500,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         blend_width.set_callback([=] { apply_all(); });
         color_scheme.set_callback([=] { load_color_scheme(); });
         accent_color.set_callback([=] { load_color_scheme(); });
+        attention_color.set_callback([=] { load_color_scheme(); });
         load_color_scheme();
         apply_all();
         update_focus();
@@ -2875,6 +3524,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_motion.disconnect();
         swipe_end();
         on_swipe_begin.disconnect();
+        on_cancel_key.disconnect();
+        glide_tick.disconnect();
+        glide.reset();
         on_swipe_update.disconnect();
         on_swipe_end.disconnect();
         on_touchpad_button.disconnect();
@@ -2888,7 +3540,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widgets");
         on_hints.disconnect();
         ipc_repo->unregister_method("scottland/widget-action");
+        ipc_repo->unregister_method("scottland/attention");
+        on_focus_request.disconnect();
+        on_activate.disconnect();
         // Unloading (or reloading) forgets the links: give every app its window back.
+        end_morph();
         widget_watchdog.disconnect();
         for (auto& [id, link] : widget_links)
         {

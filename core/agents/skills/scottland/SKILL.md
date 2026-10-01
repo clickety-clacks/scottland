@@ -115,6 +115,10 @@ focus and data), and `SCOTTLAND_PALETTE` (a JSON file with the desktop's colors:
 window, `%r` rail, `%d` folder. Live properties and `Restore()`/`Close()`/`Focus()` are on D-Bus at
 `org.scottland.Widgets /org/scottland/widget/<id>` (interface `org.scottland.Widget`).
 
+The window turns into its widget while it's dragged onto the rail (and back when dragged off);
+Esc cancels a drag. A widget whose app needs attention (bell, notification) gets a breathing halo
+in the theme's attention color (the Omarchy theme's yellow; it follows theme changes).
+
 Troubleshooting: `~/.local/state/scottland/widgets.log` says which widget was chosen and why.
 
 ## Don't

@@ -14,7 +14,7 @@ if [ "${1:-}" = --palette ]; then
   printf '{'
   sep=
   for pair in "background=$bg" "foreground=$(pick foreground)" "muted=$(pick light_foreground)" \
-              "accent=$(pick accent)" "alert=$(pick red)"; do
+              "accent=$(pick accent)" "alert=$(pick red)" "attention=$(pick yellow)"; do
     [ -n "${pair#*=}" ] || continue
     printf '%s"%s": "%s"' "$sep" "${pair%%=*}" "${pair#*=}"
     sep=', '
