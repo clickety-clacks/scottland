@@ -2,6 +2,7 @@
 """Real held Alt, displayed sizing, palette replacement and screenshot pixel verification."""
 import colorsys
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -258,6 +259,30 @@ try:
     check(restored.getpixel((700,600)) == full_before.getpixel((700,600)),
           'fullscreen release removes its tint')
     ipc('wm-actions/set-fullscreen', {'view_id': large['id'], 'state': False})
+
+    time.sleep(.6)
+    ipc('wayfire/set-config-options', {'scottland/min_scale': .05, 'scottland/max_scale': .05})
+    ipc('stipc/move_cursor', {'x': 180, 'y': 550})
+    tiny = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+        str(Path('tests/hint-style-app.py').resolve()), 'TinyScale', '2000', '1000', str(palette_path)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    clients.append(tiny)
+    v = wait(lambda: next((v for v in views() if v['title'] == 'TinyScale'), None))
+    time.sleep(.5)
+    drag(v, 180, 550)
+    hold()
+    v = next(v for v in views() if v['title'] == 'TinyScale')
+    h = next(h for h in hints() if h['window'] == v['id'])
+    check(v['applied_scale'] < .051 and h['badge']['size'] == 72,
+          '5% displayed scale keeps the minimum 72px badge')
+    image = screenshot('minimum-window-scale-hints')
+    f = v['frame']
+    # Near the top-right straight edge, beyond both badge circles and the narrow resting halo.
+    point = (round(f['x']+f['width']-6+h['dx']), math.floor(f['y']+h['dy'])-1)
+    rim = tuple(n/255 for n in image.getpixel(point))
+    check(max(abs(a-b) for a,b in zip(rim,h['color'])) < .08,
+          '2px logical border stays full-color at the supported 5% window scale')
+    key('LEFTALT', False)
 
 finally:
     key('LEFTALT', False)

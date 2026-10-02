@@ -1297,7 +1297,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
     void draw_halo(OpenGL::program_t& program, const glm::mat4& mvp, float aa, float alpha)
     {
         auto r = self->screen_rect();
-        double t = self->thickness();
+        // The transient hint rim stays 2 logical px even at the supported 5% scale.
+        double t = std::max(self->thickness(), self->hint_dye ? windowing::hint_border_width : 0.0);
         double radius = self->screen_radius();
         float focus   = self->focus_mix;
         glm::vec3 neutral = palette.light ? glm::vec3{0.08, 0.08, 0.1} : glm::vec3{0.9, 0.92, 0.95};
