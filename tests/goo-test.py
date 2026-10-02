@@ -140,7 +140,7 @@ def change(a, b):
 
 try:
     default = ipc("wayfire/get-config-option", {"option": "scottland/goo"})["default"]
-    check("switch is off by default", str(default).lower() in ("false", "0"))
+    check("switch is on by default", str(default).lower() in ("true", "1"))
     options(goo=False, center_width=90, min_scale=1, max_scale=1, scale_curve="0:1 1:1", sounds=False, goo_falloff="")
     spawn("goo-a"); spawn("goo-b")
     place("goo-a", 250, 230); place("goo-b", 610, 230)
@@ -326,7 +326,7 @@ try:
     clients.append(panel); time.sleep(1)
     click(760, 150); click(420, 638); time.sleep(.4)
     reset = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
-    check("Goo Defaults restores the shipped preset and switch", abs(reset-13)<.01 and not ipc("scottland/goo-state")["enabled"])
+    check("Goo Defaults restores the shipped preset and switch", abs(reset-13)<.01 and ipc("scottland/goo-state")["enabled"])
     key("KEY_ESC", True); key("KEY_ESC", False); time.sleep(.3)
     click(*center(view("goo-b")))
     options(color_scheme="light", accent_color="#ff2040ff", attention_color="#20ff40ff")

@@ -29,7 +29,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles and keyboard inertia (WK1–WK24),
   remembered zones and contention-aware placement (WP1–WP7).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO10): the halo as one liquid for the whole screen,
-  dye for state colors, live tuning (implemented; optional, off by default).
+  dye for state colors, live tuning (implemented; on by default, with a per-window halo fallback).
 - [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).

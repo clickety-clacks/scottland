@@ -8,7 +8,7 @@ https://claude.ai/artifact/VHTqdn4TqvSN8kZ8CoRV64 (Scottland Goo Lab; its source
 [prototypes/goo-lab.html](prototypes/goo-lab.html)).
 
 This doc is the design and implementation record. `scottland/goo` selects it live; the shipped
-default is **false**, retaining the existing halo. A3, A4, A6, A9, A10 and A11's goo behavior is
+default is **true**. Switching it off, or a GPU unable to run it, retains separate per-window halo bands. A3, A4, A6, A9, A10 and A11's goo behavior is
 restated below; the original halo remains available.
 
 ## Model
@@ -79,13 +79,13 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 - **A5/A6:** the field owns move handles and exposed resize corners; resizing still keeps the center.
   Corners gain a Gaussian deposit of dye and density, with no separate corner patch. For A5's 12 pt
   minimum target, the same field is dilated only as far as needed. A shared bridge's strongest
-  contributing window owns its input; existing stable source order breaks exact ties. This resolves
-  the old front-window rule for one shared liquid without adding a second visible border.
+  contributing window owns its input; existing stable source order breaks exact ties.
 - **A7:** the existing dwell, proximity, drag and linger rules remain. Full reveal is twice the
   full-size goo thickness (26 pt at the preset), independent of window scale; the Swell control
   scales that response. Swells and grabs excite waves.
-- **A10 → GO2/GO3:** summed density naturally pools at concave joins and forms bridges. The old
-  separately drawn meniscus is replaced by pooling; no corner-specific pooling code is used.
+- **A10 → GO2/GO3:** summed density naturally pools at concave joins and forms bridges.
+  The fallback halo draws only its own band: it has no meniscus, bridge or shared-liquid grab rule.
+  No corner-specific pooling code is used.
 - **A11/A12:** the close target remains at the bottom midpoint and appears on proximity or touch.
   Its mark is a soft dye bloom and density deposit, not a separately drawn circle. Pointer and
   touch move/resize/close retain their existing behavior. Three-finger and Super drags use the
@@ -137,7 +137,7 @@ softness), with the same Left/Right and Shift steps, Up/Down/Tab navigation, typ
 Backspace and double-click opening-value reset, and modified-value color. Keyboard navigation
 scrolls the selected Goo row into view; the scrollbar reaches the falloff editor without dragging
 a parameter. The opening Goo object is published atomically for row reset bindings. Defaults resets the
-Scottland preset and the shipped off switch. Save writes the values with the zone settings to
+Scottland preset and the shipped on switch. Save writes the values with the zone settings to
 `layout.ini`; Cancel/Escape restores the opening values, including an empty/default curve, without
 writing. Live updates are batched; Save/Cancel wait for the control process to acknowledge
 them, and Save finishes an atomic file write before closing. The falloff curve is monotone cubic,
@@ -211,8 +211,8 @@ tests/headless.sh stop
 # Start with SCOTTLAND_TEST_GOO_GLES=2 for the packed path, or
 # SCOTTLAND_TEST_GOO_GLES=unsupported for goo-fallback-test.py.
 # goo-flow-test.py needs SCOTTLAND_TEST_OUTPUTS=2 at start.
-SCOTTLAND_TEST_GOO=1 tests/widgets-test.sh
-tests/widgets-test.sh
+tests/widgets-test.sh                     # shipped default: goo on
+SCOTTLAND_TEST_GOO=0 tests/widgets-test.sh  # explicit fallback halo
 ```
 
 Remaining coverage: physical screen/login, mixed DPI and rotated outputs, very large window counts,
@@ -228,7 +228,8 @@ widget lifecycle/away state, attention and drag; the existing frame supplies the
 geometry, focus/attention transitions and collapsed/morph shape. Goo screen availability is
 published in the versioned desktop snapshot. Live disable and unsupported-GPU fallback leave
 no goo screens there; widget/attention slices contain no goo field or simulation samples.
-The old halo is still the shipped default, with `scottland/goo = false`.
+At this validation the old halo was the shipped default, with `scottland/goo = false`;
+the goo-default change below supersedes that default.
 
 Main advanced during validation: after the first complete green matrix it merged Alt hints,
 focused-surface key layers and strict center placement. `a6cb985` brings that main into goo;
@@ -287,8 +288,8 @@ The branch includes main `50e563e` through merge `88595e6`: per-widget presentat
 rail anchoring, premultiplied content blending, WP7 screen padding and the WG21 lifecycle ID.
 The sole source conflict retained both `goo_sources()` and `widget-presentation.hpp`. The frame's
 animated rectangle supplies the goo island and its dye source, including interrupted transitions;
-the disabled goo path retains main's halo renderer. The shipped switch remains false and changes
-live. GO1, GO5, GO6 and WG16 were checked together.
+the disabled goo path retains main's halo renderer. At this validation the shipped switch was false and changed
+live; the goo-default change below supersedes that default. GO1, GO5, GO6 and WG16 were checked together.
 
 All tests ran on plumbus in `Projects/scottland-goo-merge`, deployed with
 `SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh plumbus --tests-only`.

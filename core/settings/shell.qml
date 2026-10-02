@@ -38,7 +38,7 @@ ShellRoot {
     { name: "goo_shine", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_relief", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 }]
   function gooDefaults() {
-    const values = { goo: false, goo_falloff: "" }
+    const values = { goo: true, goo_falloff: "" }
     for (const c of gooControls) values[c.name] = c.initial
     return values
   }
