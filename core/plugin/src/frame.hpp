@@ -565,7 +565,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     void set_hint_dye(std::optional<glm::vec3> color)
     {
         if (hint_dye == color) return;
-        damage(); hint_dye = color; damage();
+        hint_dye = color;
+        // A hint offset is itself a cached transformer. Damage from this renderer must reach
+        // its child callback, so it invalidates the whole halo as well as the app surface.
+        wf::scene::damage_node(this, get_bounding_box());
     }
 
     /** A widget whose app needs attention (WG15): its halo takes the attention color and keeps
@@ -1188,7 +1191,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 class frame_render_instance_t : public wf::scene::transformer_render_instance_t<frame_t>
 {
   public:
-    using transformer_render_instance_t::transformer_render_instance_t;
+    frame_render_instance_t(frame_t *frame, wf::scene::damage_callback push_damage, wf::output_t *output)
+        : transformer_render_instance_t(frame, push_damage, output)
+    {
+        frame->connect(&on_frame_damage);
+    }
+    wf::signal::connection_t<wf::scene::node_damage_signal> on_frame_damage =
+        [this] (wf::scene::node_damage_signal *ev) { this->_push_damage(ev->region); };
 
     void transform_damage_region(wf::regionf_t& damage) override
     {

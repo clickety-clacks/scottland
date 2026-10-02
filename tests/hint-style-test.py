@@ -220,7 +220,15 @@ try:
     accent_hue = colorsys.rgb_to_hls(*rgb(custom['accent']))[0]*360
     check(all(abs((colorsys.rgb_to_hls(*h['color'])[0]*360-accent_hue+180)%360-180) >= 100-1e-6
               for h in changed), 'palette file alone rotates the live complementary hues')
-    screenshot('light-accent-file-only-held')
+    recolored = screenshot('light-accent-file-only-held')
+    represented = {v['id']: v for v in views()}
+    for h in changed[:2]:
+        v = represented[h['window']]; f = v['frame']
+        point = (round(f['x']-5+h['dx']), round(f['y']+f['height']/2+h['dy']))
+        pixel = recolored.getpixel(point)
+        dominant = max(range(3), key=lambda channel: h['color'][channel])
+        check(pixel[dominant] > max(pixel[channel] for channel in range(3) if channel != dominant),
+              'palette change repaints the outer halo dye on '+v['title'])
     key('ESC', True); key('ESC', False)
     time.sleep(.8)
     escaped = screenshot('light-escaped')
