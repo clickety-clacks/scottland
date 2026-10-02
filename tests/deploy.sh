@@ -15,10 +15,11 @@ set -euo pipefail
 host=${1:?usage: tests/deploy.sh HOST [--reload]}
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 dest=${SCOTTLAND_DEPLOY_DIR:-Projects/scottland}
+revision=$(git -C "$repo" rev-parse --short=12 HEAD)
 rsync -a --delete --exclude build "$repo/" "$host:$dest/"
 if [[ ${2:-} == --tests-only ]]; then
   ssh "$host" "set -e; export TMPDIR=\"\$HOME/.cache/scottland-build-tmp\"; mkdir -p \"\$TMPDIR\"
-    cd ~/$dest && make test-hooks >/dev/null && echo \"built with its own test helpers: \$(git log --oneline -1)\""
+    cd ~/$dest && make test-hooks >/dev/null && echo \"built with its own test helpers: $revision\""
   exit 0
 fi
 ssh "$host" 'set -e
