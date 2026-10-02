@@ -112,9 +112,17 @@ struct key_layers_t::impl
     {
         wlr_keyboard_key_event *key;
         bool claimed;
+        bool suspended;
     };
     std::vector<event_t> events;
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc;
+    // Wayfire has no public enabled-state query. A private binding with an impossible
+    // modifier bit AND keycode probes it without matching any configurable/hardware key.
+    // In 0.11, disabling an already inhibited repository crosses zero and enables its key
+    // callbacks again. Probe first, including for nested input, and balance only our own hold.
+    wf::option_sptr_t<wf::keybinding_t> probe = wf::create_option(
+        wf::keybinding_t{0x80000000u, 0xffffffffu});
+    wf::key_callback probe_callback = [] (const wf::keybinding_t&) { return true; };
 
     bool claim(wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
@@ -171,8 +179,9 @@ struct key_layers_t::impl
         [this] (auto *ev)
     {
         bool claimed = claim(ev);
-        events.push_back({ev->event, claimed});
-        if (claimed)
+        bool suspended = claimed && wf::get_core().bindings->handle_key(probe->get_value(), 0);
+        events.push_back({ev->event, claimed, suspended});
+        if (suspended)
         {
             // Disable only until this event's post signal. Core still updates its modifier-
             // binding state and pressed keys, and delivers ordinary press/release events.
@@ -188,7 +197,7 @@ struct key_layers_t::impl
         });
         if (it != events.rend())
         {
-            if (it->claimed)
+            if (it->suspended)
             {
                 wf::get_core().bindings->set_enabled(true);
             }
@@ -376,6 +385,7 @@ key_layers_t::~key_layers_t()
 void key_layers_t::init()
 {
     priv = std::make_unique<impl>();
+    wf::get_core().bindings->add_key(priv->probe, &priv->probe_callback);
     wf::get_core().connect(&priv->before);
     wf::get_core().connect(&priv->after);
     wf::get_core().connect(&priv->unmapped);
@@ -388,9 +398,10 @@ void key_layers_t::fini()
     if (priv)
     {
         priv->ipc->unregister_method("scottland/key-layer");
+        wf::get_core().bindings->rem_binding(&priv->probe_callback);
         for (auto& event : priv->events)
         {
-            if (event.claimed)
+            if (event.suspended)
             {
                 wf::get_core().bindings->set_enabled(true);
             }

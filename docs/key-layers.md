@@ -17,7 +17,7 @@ screen exercise and the coordinating session's rehearsed live reload remain outs
 
 | ID | Rule | Status |
 |---|---|---|
-| KL1 | A layer claims only its listed chords. Unclaimed keys use the current user bindings, including changes made while the layer is active, imported function shortcuts, release bindings and remaps. | implemented |
+| KL1 | A layer claims only its listed chords. Unclaimed keys use the current user bindings, including changes made while the layer is active, imported function shortcuts, release bindings, remaps, and any pre-existing blanket shortcut inhibition. | implemented |
 | KL2 | Each mapped surface may hold one layer. Only actual keyboard focus activates it; several surfaces, even in the same process, may register independently. Registration never changes focus. | implemented |
 | KL3 | Claimed presses and releases follow Wayfire's ordinary delivery to the focused surface, with physical modifiers and client repeat intact; compositor bindings and Scottland remaps/release commands skip them. | implemented |
 | KL4 | Both native toplevels and layer-shell surfaces work. A Scottland view ID selects exactly one surface; PID plus layer namespace is a convenience selector and rejects ambiguity. | implemented |
@@ -81,9 +81,12 @@ does not claim Ctrl+Shift+=. Use both `4:equal` and `4:plus` to claim both spell
 ### Input integration and future scopes
 
 `core/plugin/src/key-layers.*` owns selection, matching, lifecycle and IPC. Before a claimed
-event, it temporarily disables Wayfire's binding repository; its post-input hook restores the
-repository. Ordinary core input processing still manages held keys, modifier-only binding
-state, input methods, and press/release delivery. Unclaimed events never change the repository.
+event, it temporarily disables Wayfire's binding repository only if it is currently enabled;
+its post-input hook balances only that suspension. A private sentinel binding with an impossible
+modifier bit/keycode queries enabled state without touching hardware/configurable shortcuts.
+This avoids Wayfire 0.11's overlapping-inhibitor counter crossing zero and accidentally enabling
+bindings. Existing blanket inhibition remains intact. Ordinary core input processing still
+manages held keys, modifier-only binding state, input methods, and press/release delivery. Unclaimed events never change the repository.
 
 Raw-key consumers inside Scottland must connect **after** `key_layers.init()` and check
 `key_layers.handles(ev)` before acting on claimed keys. The release-binding and remap handlers
