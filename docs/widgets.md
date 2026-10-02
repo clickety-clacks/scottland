@@ -243,3 +243,25 @@ Goo-default follow-up (2026-10-01): widgets passed 146 checks in each mode. Morp
 86 checks with the default goo and 76 with the explicit fallback halo. Independent-band
 pixel checks replace removed halo neighbor diagnostics; goo field/attention sampling remains.
 See [goo-default validation](goo.md#goo-default-validation-2026-10-01).
+
+## Shipped-default config regression (2026-10-02)
+
+Isolating config generation from personal settings in `33303d9` exposed a harness bug on
+osanwe: with no private base config, the builder selected `/usr/share/scottland/scottland.ini`
+from an older installed package. That config loaded Wayfire's decoration plugin, adding
+4-pixel borders and a title bar to the card's 96×96 client: its frame was 104×134. The earlier
+personal-config path had also selected a different base config; the layout slider values
+were not the cause. The current shipped base already disables decorations (core A1).
+
+`tests/headless.sh` now copies this checkout's `core/config/scottland.ini` into each session's
+private config directory before running the real config builder. Personal `layout.ini` and
+`overrides.ini` remain excluded. WG16's 96-pixel assertions stay intact: the frame and client
+must agree under the shipped defaults, including for running previews and newly collapsed
+widgets.
+
+Validation on osanwe: `make test-hooks` and `bash -n tests/headless.sh` passed;
+`tests/widgets-test.sh` passed **146 checks**, including **43 input regressions**, with the
+checkout's shipped defaults. The baseline reproduced all four WG16 assertion failures
+(142 passes). Screenshots and client/frame geometry confirmed A1's undecorated cards and
+WG16's 96×96 collapse. Each run used its own `SCOTTLAND_HEADLESS_DIR`, and the sessions were
+stopped afterward. No physical screen, live session or other checkout was used.
