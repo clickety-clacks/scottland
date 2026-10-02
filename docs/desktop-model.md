@@ -85,13 +85,14 @@ attention/mode reload preservation and rejection of deliberately incorrect obser
 The test endpoint and D-Bus render diagnostics exist only with `SCOTTLAND_TEST_MODEL=1`, set by
 the isolated headless harness. Live cards launch no reporting process.
 
-Validation after the review fixes on plumbus, 2026-10-01:
+Final validation on plumbus, 2026-10-01, after merging main's WG16 animation and
+resize-gravity change (`6137a7e`, merge `85b8a9d`):
 
 | Suite | Result |
 |---|---|
 | `tests/widgets-test.sh` | 103 checks passed, including main's L29 overlap-pixel assertions |
 | `tests/state-model-test.sh 271828 50` | 95 checks passed |
-| Seed 104729, 50 operations, `SCOTTLAND_DBUS_LEGACY=1` | 100 checks passed on each of two complete reruns |
+| Seed 104729, 50 operations, `SCOTTLAND_DBUS_LEGACY=1` | 100 checks passed on the final build |
 | `tests/state-regressions-test.sh` | 6 checks passed: unscoped exit after reload, late fullscreen adoption, reload on another output, return from fullscreen, app-ID-only changes, running attention helper survival |
 | `tests/upgrade-test.sh ~/Projects/scottland-state-fixes-main` | 2 checks passed, using a separate build of main (`ea1d0f4`) with its legacy launcher, service and card; identity/traits survive and subsequent badges route correctly |
 | `tests/attention-sources-test.py` | 5 checks passed |
@@ -100,15 +101,22 @@ Validation after the review fixes on plumbus, 2026-10-01:
 | `tests/build-config-test.sh` | 5 rounds passed, each with 20 concurrent builds |
 | `tests/omarchy-focus-test.sh` | 3 checks passed |
 
-The first legacy-seed run failed at operation 22 with a card-render presentation mismatch.
-It did not recur in two complete reruns; its cause remains unconfirmed. The audit now retains
+An earlier legacy-seed run, before the final main merge, failed at operation 22 with a
+card-render presentation mismatch. It did not recur in two complete reruns of that build
+or in the final build's run; its cause remains unconfirmed. The audit now retains
 complete service, card, desktop and scene observations on failure in
 `scottland-model-artifacts/seed-SEED-failure.json`. This is a remaining test-stability risk,
 separate from the eight fixed review findings; the audit was not weakened or disabled.
 
 All sessions used the checkout's own helpers, private D-Bus and
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-state-fixes`, with build/test scratch
-files under `~/.cache/scottland-test-tmp`. Model runs use real stipc pointer/touch/key input,
+files under `~/.cache/scottland-test-tmp`. The final session matrix also used a private
+`XDG_RUNTIME_DIR` (`/run/user/1000/scottland-state-fixes-runtime`): a prior widget run was
+interrupted when shared-host activity removed its recorded session environment while its
+compositor remained alive. That infrastructure failure's log was retained, and the complete
+session matrix was rerun successfully with the private runtime. Unit/config/focus tests create
+their own temporary runtimes and also passed after the final main merge.
+Model runs use real stipc pointer/touch/key input,
 real widget programs and audits after each operation. Expanded-card, fullscreen and
 other-output reload screenshots were retained and inspected. No live session on osanwe or
 physical screen on plumbus was touched. The isolated runtime was stopped after testing.
