@@ -140,10 +140,30 @@ def provider_palette():
 PALETTE_LOCK = threading.Lock()  # the scheme and accent watchers both write it
 
 
+def text_settings():
+    """The desktop's text scaling factor and interface font family (GTK's standard settings; on
+    Omarchy, `omarchy display text size` sets the factor), else 1.0 and sans-serif."""
+    def get(key):
+        try:
+            out = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", key],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return out
+    try:
+        scale = max(0.5, min(3.0, float(get("text-scaling-factor") or 1.0)))
+    except ValueError:
+        scale = 1.0
+    font = get("font-name").strip("'")
+    family = re.sub(r"\s+\d+(\.\d+)?$", "", font).strip() or "sans-serif"
+    return scale, family
+
+
 def write_palette(scheme, accent=None):
     palette = {"scheme": scheme, **NEUTRAL.get(scheme, NEUTRAL["dark"]), **provider_palette()}
     if accent:
         palette["accent"] = accent
+    palette["text_scale"], palette["font_family"] = text_settings()
     path = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".palette.json")
     temporary = f"{path}.{os.getpid()}.{threading.get_ident()}"
     set_option("attention_color", palette["attention"] + "ff")  # widgets needing attention (WG15)
@@ -220,6 +240,7 @@ def watch():
     applied = current()
     apply(applied)
     threading.Thread(target=watch_accent, daemon=True).start()
+    threading.Thread(target=watch_text, daemon=True).start()
     while True:
         # Any change to the appearance settings, from the portal or GNOME's settings.
         if portal_scheme() is not None:
@@ -240,6 +261,17 @@ def watch():
                         set_option("accent_color", accent + "ff")
                     write_palette(applied, accent)
         time.sleep(2)  # the monitor exited (portal restarted): start again
+
+
+def watch_text():
+    """Follow the desktop's text size and interface font (hints and other text follow them)."""
+    while True:
+        with subprocess.Popen(["gsettings", "monitor", "org.gnome.desktop.interface"],
+                              stdout=subprocess.PIPE, text=True) as proc:
+            for line in proc.stdout:
+                if line.startswith(("text-scaling-factor", "font-name")):
+                    write_palette(current(), current_accent())
+        time.sleep(2)
 
 
 def watch_accent():

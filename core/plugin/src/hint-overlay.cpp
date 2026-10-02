@@ -9,7 +9,7 @@ extern "C" {
 namespace scottland::windowing
 {
 hint_node::hint_node() : node_t(false) {}
-void hint_node::update(double x, double y, const std::string& text, double size,
+void hint_node::update(double x, double y, const std::string& text, double size, const std::string& family,
     hint_rgb color, double scale)
 {
     wf::scene::damage_node(this, box);
@@ -17,7 +17,7 @@ void hint_node::update(double x, double y, const std::string& text, double size,
     box = {std::round(x - logical_size / 2.0), std::round(y - logical_size / 2.0),
         double(logical_size), double(logical_size)};
     std::ostringstream key;
-    key << text << ':' << logical_size << ':' << color.r << ',' << color.g << ',' << color.b << ':' << scale;
+    key << text << ':' << family << ':' << logical_size << ':' << color.r << ',' << color.g << ',' << color.b << ':' << scale;
     if (key.str() != appearance)
     {
         appearance = key.str(); texture.reset();
@@ -30,7 +30,8 @@ void hint_node::update(double x, double y, const std::string& text, double size,
         double mid = logical_size / 2.0;
         cairo_arc(cr, mid, mid, mid, 0, 2 * 3.141592653589793);
         cairo_set_source_rgba(cr, color.r, color.g, color.b, hint_badge_opacity); cairo_fill(cr);
-        cairo_select_font_face(cr, "sans-serif", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+        cairo_select_font_face(cr, family.empty() ? "sans-serif" : family.c_str(), CAIRO_FONT_SLANT_NORMAL,
+            CAIRO_FONT_WEIGHT_BOLD);
         cairo_set_font_size(cr, std::round(logical_size * (text.size() > 1 ? 0.46 : 0.62)));
         cairo_text_extents_t ext; cairo_text_extents(cr, text.c_str(), &ext);
         cairo_move_to(cr, mid - ext.width / 2 - ext.x_bearing, mid - ext.height / 2 - ext.y_bearing);
