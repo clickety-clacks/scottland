@@ -223,7 +223,8 @@ try:
     pointer(10, 690)
     goo_names = ["goo_thickness", "goo_reach", "goo_thinning", "goo_swell", "goo_noise", "goo_lump",
                  "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height", "goo_spread",
-                 "goo_swirl", "goo_release", "goo_shine", "goo_relief"]
+                 "goo_swirl", "goo_release", "goo_shine", "goo_relief",
+                 "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance"]
     for i, name in enumerate(goo_names):
         if i:
             key("KEY_DOWN")
@@ -236,9 +237,9 @@ try:
         check(name + " hover hint visible", p.text(panel_x+38, row_y+30, width=365, height=23) > 35)
         pointer(10, 690)
     key("KEY_RIGHT")
-    check("last Goo keyboard step preserved", abs(option("goo_relief")-5.1)<.01)
+    check("last Goo keyboard step preserved", abs(option("goo_hover_distance")-49)<.01)
     close_panel(panel)
-    check("Escape restores Layout and Goo, writes nothing", values() == initial and abs(option("goo_relief")-5)<.01 and not layout.exists())
+    check("Escape restores Layout and Goo, writes nothing", values() == initial and abs(option("goo_hover_distance")-48)<.01 and not layout.exists())
 
     # Both sides of all three borders, on both outputs. Pause midway to check live preview.
     panel = open_panel()

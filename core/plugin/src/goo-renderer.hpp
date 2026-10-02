@@ -19,6 +19,8 @@ class renderer_t
                 const std::vector<wf::geometry_t> &area = {});
     // Draws only where `area` (output-logical) meets the damage: the goo never leaves its bands.
     void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area);
+    bool overlapping() const;
+    bool highlighting() const;
     float wave_at(glm::vec2 point);
     glm::vec4 sample_at(glm::vec2 point);
     float energy = 1;

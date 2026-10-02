@@ -16,6 +16,8 @@ struct source_t
     glm::vec4 liquid{1, 10, 1, 1}; // amount, radius, seed, release multiplier
     glm::vec3 dye{};
     glm::vec4 corners{};
+    glm::vec4 sides{}; // top, right, bottom, left: eased whole-control proximity
+    float control_extent = 26;
     glm::vec4 dot{}; // center, glow, radius
     float scale = 1, swell = 0;
     bool hinted = false; // window mode: the goo shows the hint color (dye) at once
@@ -28,6 +30,7 @@ struct settings_t
     float noise = .32, lump = 190, drift = .12;
     float wave_speed = .28, wave_damp = .985, wave_height = .55;
     float spread = .45, swirl = .9, release = .06, shine = .75, relief = 5;
+    float overlap_film = 4, hover_cloudiness = .65, hover_emissivity = .35, hover_distance = 48;
     // Empty means the prototype's exact exponential; custom curves span four reaches.
     std::array<float, 256> falloff{};
     settings_t();
@@ -38,9 +41,12 @@ struct settings_t
 
 float distance(glm::vec2 p, const source_t &source);
 float noise(glm::vec2 p);
+bool overlaps(const std::vector<source_t> &sources);
+size_t content_index(glm::vec2 p, const std::vector<source_t> &sources);
+float control_cloud(glm::vec2 p, const source_t &source);
 float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &settings, float time);
 // Conservative outer radii for the rendered field, including quantization and wave headroom.
-std::vector<float> support_radii(std::vector<source_t> sources, const settings_t &settings);
+std::vector<float> support_radii(std::vector<source_t> sources, const settings_t &settings, bool film = false);
 float union_distance(glm::vec2 p, const std::vector<source_t> &sources);
 void amounts(std::vector<source_t> &sources, const settings_t &settings);
 } // namespace scottland::goo

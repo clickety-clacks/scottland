@@ -18,7 +18,8 @@ uniform sampler2D uSources, uFalloff;
 uniform int uCount;
 uniform vec2 uRes, uSize;
 uniform float uTime, uReach, uNoise, uNoiseScale, uNoiseSpeed, uT, uPacked, uThickness;
-vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/6., (float(i)+.5)/float(max(uCount,1)))); }
+uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;
+vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/7., (float(i)+.5)/float(max(uCount,1)))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p) {
   vec2 i=floor(p), f=fract(p), u=f*f*(3.-2.*f);
@@ -36,6 +37,42 @@ float fall(float e) {
   float a=texture2D(uFalloff,vec2((lo+.5)/256.,.5)).r,b=texture2D(uFalloff,vec2((min(lo+1.,255.)+.5)/256.,.5)).r;
   return mix(a,b,index-lo)*exp(-max(0.,e/uReach-4.));
 }
+// Sources are front to back. Only sources preceding the first content at p
+// may put goo over that content. With no overlap retain the original fast path.
+vec2 backdrop(vec2 p) {
+  if(uOverlap<.5)return vec2(float(uCount),0.);
+  for(int i=0;i<1024;i++){
+    if(i>=uCount)break;vec4 r=source(i,0.);
+    float d=sdBox(p-r.xy,r.zw,source(i,1.).y);
+    if(d<=0.)return vec2(float(i),d);
+  }return vec2(float(uCount),0.);
+}
+float surfaceSdf(vec2 p){
+  float d=1e9;
+  for(int i=0;i<1024;i++){
+    if(i>=uCount)break;vec4 r=source(i,0.);float e=sdBox(p-r.xy,r.zw,source(i,1.).y);
+    if(e<=0.)return i==0 ? e : d;
+    d=min(d,e);
+  }return d;
+}
+float edgeDistance(vec2 p,vec4 r,vec4 g,vec2 back){
+  float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
+  if(back.x<float(uCount)){
+    // A narrow film deep over content opens into the full liquid at its shore.
+    float width=mix(uFilm,uThickness,1.-smoothstep(0.,uReach,-back.y));
+    e*=uThickness/max(width,.01);
+  }return e;
+}
+float controlCloud(vec2 p,int i){
+  if(uControls<.5)return 0.;
+  vec4 r=source(i,0.),corners=source(i,3.),sides=source(i,6.);
+  float extent=source(i,5.).y;
+  vec2 q=p-r.xy;
+  vec2 corner=smoothstep(r.zw-vec2(extent),r.zw-vec2(extent)+6.,abs(q));
+  float c=q.y<0.?(q.x<0.?corners.x:corners.y):(q.x<0.?corners.z:corners.w);
+  float side=abs(q.x)-r.z>abs(q.y)-r.w?(q.x>0.?sides.y:sides.w):(q.y>0.?sides.z:sides.x);
+  return mix(side,c,corner.x*corner.y);
+}
 float deposit(vec2 p,vec4 r,vec4 corners,vec4 dot) {
   float a=0.;
   for(int k=0;k<4;k++){
@@ -44,19 +81,26 @@ float deposit(vec2 p,vec4 r,vec4 corners,vec4 dot) {
   }
   float d=length(p-dot.xy)/12.; return a+dot.z*.45*exp(-d*d);
 }
-float gooField(vec2 p) {
-  float F=0.;
+vec2 gooField(vec2 p) {
+  float F=0.,cloud=0.,weight=0.;vec2 back=backdrop(p);
+  // Extend the front source under its own content for bilinear reconstruction.
+  // Rendering and the flow mask still clip that content analytically.
+  if(back.x==0.)back=vec2(1.,0.);
+  else if(back.x<float(uCount)&&uFilm<=0.)return vec2(0.);
   for(int i=0;i<1024;i++){
-    if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);
+    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);
     if(g.x<=0.)continue;
-    float e=max(sdBox(p-r.xy,r.zw,g.y),0.),fe=fall(e);
+    float e=edgeDistance(p,r,g,back),fe=fall(e);
     if(fe==0.)continue;
     float n=fbm(p*uNoiseScale+g.z*vec2(7.13,3.71)+vec2(uTime*uNoiseSpeed,-uTime*uNoiseSpeed*.73));
     float scale=clamp(abs(source(i,2.).w),0.,1.);
+    float control=controlCloud(p,i);
+    if(uControls>.5){cloud+=g.x*fe*control;weight+=g.x*fe;}
     float a=max(g.x*(1.+uNoise*scale*(n-.5)*2.),uT/max(fall(max(uThickness*.1*scale,source(i,5.).x)),.0001))
-      +deposit(p,r,source(i,3.),source(i,4.));
+      +.22*uCloudiness*control+deposit(p,r,vec4(0.),source(i,4.));
+    if(back.x<float(uCount)&&back.y<0.)a/=max(g.x,.0001);
     F+=max(a,0.)*fe;
-  } return F;
+  } return vec2(F,cloud/max(weight,.0001));
 }
 vec2 off(int k){return k==0?vec2(1,0):k==1?vec2(-1,0):k==2?vec2(0,1):vec2(0,-1);}
 vec2 decode(vec4 hv){
@@ -78,17 +122,18 @@ float field(vec2 uv){
   float f=texture2D(uField,uv).r;
   return uPacked>.5 ? exp(f*2.83321334)-1. : f;
 }
-float gooMask(vec2 uv){return smoothstep(uT*.97,uT*1.03,field(uv))*step(0.,unionSdf(uv*uRes));}
+float gooMask(vec2 uv){return smoothstep(uT*.97,uT*1.03,field(uv))*step(0.,uOverlap>.5?surfaceSdf(uv*uRes):unionSdf(uv*uRes));}
 )";
 inline const std::string field_shader = common + R"(
 void main(){
   vec2 p=gl_FragCoord.xy*uRes/uSize;
-  float d=unionSdf(p);
+  float d=uOverlap>.5?surfaceSdf(p):unionSdf(p);
   // Deep inside a window the goo is hidden and never read: any value over the threshold will do.
-  float f=d<-8.?uT*4.:gooField(p);
+  vec2 value=d<-8.?vec2(uT*4.,0.):gooField(p);
+  float f=value.x,cloud=value.y;
   // Log packing spends RGBA8 precision at the boundary, avoiding staircase edges.
   if(uPacked>.5)f=log(1.+f)/2.83321334;
-  gl_FragColor=vec4(f,step(0.,d),0,1);
+  gl_FragColor=vec4(f,step(0.,d),cloud,1);
 }
 )";
 // Mask at quarter-resolution texel centers for the two wave stencils. Dye
@@ -97,7 +142,7 @@ inline const std::string mask_shader = common + mask + R"(
 void main(){
   vec2 uv=gl_FragCoord.xy/uSize;
   float f=smoothstep(uT*.97,uT*1.03,field(uv));
-  gl_FragColor=vec4(f>0.?step(0.,unionSdf(uv*uRes)):0.,0,0,1);
+  gl_FragColor=vec4(f>0.?step(0.,uOverlap>.5?surfaceSdf(uv*uRes):unionSdf(uv*uRes)):0.,0,0,1);
 }
 )";
 inline const std::string cached_mask = R"(
@@ -143,21 +188,24 @@ void main(){
     for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=texture2D(uDyeTex,u2).rgb*w;ws+=w;}
     c=mix(c,acc/ws,uSpread);
   }
-  float ksum=1e-4,maxK=0.;vec3 nearest=vec3(0);
+  float ksum=1e-4,maxK=0.;vec3 nearest=vec3(0);vec2 back=backdrop(p);
+  // Retain the front source's dye under its own island as well: interpolation
+  // at a thin film must not mix its color with black dry texels inside content.
+  if(back.x==0.)back=vec2(1.,0.);
   for(int i=0;i<1024;i++){
-    if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
+    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back);
     float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearest+=k*source(i,2.).rgb;
   }
   for(int i=0;i<1024;i++){
-    if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
+    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back);
     float k=g.x*fall(e); if(k<maxK-.00001)continue;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
     vec3 tint=source(i,2.).rgb;
     // State marks are released dye, Gaussian deposits, never overlay geometry.
-    float cloud=deposit(p,r,source(i,3.),vec4(source(i,4.).xy,0,0));
+    float cloud=controlCloud(p,i)*uCloudiness;
     float dd=length(p-source(i,4.).xy)/12.,dot=source(i,4.).z*exp(-dd*dd);
     vec3 mark=source(i,2.).w>0.?vec3(.08,.08,.1):vec3(1.);
-    tint=mix(tint,mark,clamp(cloud*2.,0.,.8));
+    tint=mix(tint,vec3(1.),clamp(cloud*.7,0.,.8));
     tint=mix(tint,mark,clamp(dot,0.,1.));
     c=mix(c,tint,clamp(w,0.,1.));
   }
@@ -172,30 +220,39 @@ uniform mat4 uBackgroundMap;
 float height(vec2 uv){float F=field(uv)*(1.+uWaveAmp*decode(texture2D(uWave,uv)).x);return clamp(log(max(F,1e-4)/uT),0.,3.);}
 void main(){
   vec2 p=pos,uv=p/uRes,px=1./uRes;
-  float d=unionSdf(p); if(d<=0.)discard; // window interiors mask the goo: skip the field there
+  float d=uOverlap>.5?surfaceSdf(p):unionSdf(p); if(d<=0.)discard; // window interiors mask the goo: skip the field there
   float F=field(uv),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h);
   float a=smoothstep(uT*.97,uT*1.03,Fe)*smoothstep(0.,1.,d)*uAlpha;
   if(a<=0.)discard;
   // WK14: window mode tints the goo with each hinted window's color at once, blended by
   // contribution so connected goo stays smooth; there is no separate rim.
   float hintAmount=0.;vec3 hintDye=vec3(0.);
+  vec2 hintBack=backdrop(p);
   if(uHints>.5)for(int i=0;i<1024;i++){
-    if(i>=uCount)break;if(source(i,5.).x<=0.)continue;
+    if(i>=int(hintBack.x))break;if(source(i,5.).x<=0.)continue;
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sdBox(p-r.xy,r.zw,g.y),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
+  float cloud=uControls>.5?texture2D(uField,uv).b:0.;
   float ht=height(uv);
   vec3 n=normalize(vec3(-(height(uv+vec2(px.x,0))-ht)*uRelief,-(height(uv+vec2(0,px.y))-ht)*uRelief,1.));
   // Keep the shipped one-pixel exclusion around window content.
-  vec2 refr=p+n.xy*26.; if(unionSdf(refr)<1.)refr=p;
+  bool film=uOverlap>.5&&backdrop(p).x<float(uCount);
+  vec2 refr=p+n.xy*(film?2.:26.); if(unionSdf(refr)<1.)refr=p;
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
   if(hintAmount>0.)dye=hintDye/hintAmount;
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);
   float spec=pow(max(dot(reflect(-L,n),vec3(0,0,1)),0.),48.)*uShine;
   float rim=1.-smoothstep(0.,.5,ht);
-  vec3 color=mix(bg*1.4,dye*.85,.55)*diff+spec*vec3(1.,.98,.95)+dye*rim*.22;
-  gl_FragColor=vec4(clamp(color,0.,1.)*a*.96,a*.96);
+  float swirl=cloud>.001?.75+.25*fbm(p*.045+vec2(uTime*.13,-uTime*.09)):1.;
+  float milk=cloud*uCloudiness*swirl;
+  dye=mix(dye,vec3(1.),milk*.8);
+  vec3 color=mix(bg*(film?1.:1.4),dye*.85,.55+milk*.25)*diff+spec*vec3(1.,.98,.95)+dye*rim*.22;
+  // Emission is independent of normal, light and dye release. Zero really is off.
+  color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);
+  a*=film?mix(.48,.78,milk):mix(.96,1.,milk);
+  gl_FragColor=vec4(clamp(color,0.,1.)*a,a);
 }
 )";
 // Max-reduction of changes in dye and wave energy, read back as a single pixel every 30 steps.

@@ -291,12 +291,19 @@ try:
     time.sleep(.15)
     check("digits enter a Goo row value", abs(float(ipc("wayfire/get-config-option",
           {"option": "scottland/goo_thickness"})["value"])-27) < .01)
-    for _ in range(14):
+    for row in range(18):
         key("KEY_DOWN", True); key("KEY_DOWN", False)
+        if 14 <= row < 17:
+            key("KEY_RIGHT", True); key("KEY_RIGHT", False)
     time.sleep(.3); shot("07a-panel-keyboard-last-row")
     key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
     check("keyboard navigation reaches the last Goo row", abs(float(ipc("wayfire/get-config-option",
-          {"option": "scottland/goo_relief"})["value"])-5.1) < .01)
+          {"option": "scottland/goo_hover_distance"})["value"])-49) < .01)
+    for name, value in {"goo_overlap_film": 4.5, "goo_hover_cloudiness": .66, "goo_hover_emissivity": .36}.items():
+        result = subprocess.run([str(repo / "core/libexec/scottland-ctl"), "option", "scottland/"+name],
+                                capture_output=True, text=True)
+        check(name + " is live from its panel row and available through scottland-ctl", result.returncode == 0
+              and abs(float(ipc("wayfire/get-config-option", {"option":"scottland/"+name})["value"])-value)<.001)
     # The keyboard follows the selected row; use the now-lowered scrollbar thumb for the curve.
     drag(895, 480, 0, 120)
     shot("07b-panel-curve")
@@ -311,6 +318,9 @@ try:
     restored = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
     cancelled_curve = ipc("wayfire/get-config-option", {"option": "scottland/goo_falloff"})["value"]
     check("Cancel restores goo settings and writes nothing", abs(restored-13) < .01 and not layout.exists() and not cancelled_curve)
+    check("Cancel restores all four new settings", all(abs(float(ipc("wayfire/get-config-option",
+        {"option":"scottland/"+name})["value"])-value)<.001 for name,value in
+        {"goo_overlap_film":4,"goo_hover_cloudiness":.65,"goo_hover_emissivity":.35,"goo_hover_distance":48}.items()))
     if abs(restored-13) >= .01 or layout.exists() or cancelled_curve:
         print("Cancel diagnostic", restored, layout.exists(), repr(cancelled_curve), panel.poll(), flush=True)
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
@@ -321,13 +331,20 @@ try:
     key("KEY_ENTER", True); key("KEY_ENTER", False); time.sleep(.5)
     check("Save persists goo alongside layout", layout.exists() and "goo_thickness =" in layout.read_text() and "goo_falloff = 0.000:" in layout.read_text())
     if layout.exists():
+        check("Save includes all four film/control settings", all(name+" =" in layout.read_text() for name in
+            ["goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance"]))
         built = art / "saved-config.ini"
         subprocess.run([str(repo / "core/session/scottland-build-config"), "--output", str(built)],
                        env=dict(os.environ, XDG_CONFIG_HOME=str(settings_home)), check=True, stdout=subprocess.DEVNULL)
         check("saved goo is consumed by the session config builder", "goo_thickness =" in built.read_text())
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1)
-    click(760, 150); click(420, 638); time.sleep(.4)
+    click(760, 150)
+    options(goo_overlap_film=9,goo_hover_cloudiness=.2,goo_hover_emissivity=1,goo_hover_distance=100)
+    click(420, 638); time.sleep(.4)
+    check("Defaults restores all four new settings", all(abs(float(ipc("wayfire/get-config-option",
+        {"option":"scottland/"+name})["value"])-value)<.001 for name,value in
+        {"goo_overlap_film":4,"goo_hover_cloudiness":.65,"goo_hover_emissivity":.35,"goo_hover_distance":48}.items()))
     reset = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
     check("Goo Defaults restores the shipped preset and switch", abs(reset-13)<.01 and ipc("scottland/goo-state")["enabled"])
     key("KEY_ESC", True); key("KEY_ESC", False); time.sleep(.3)

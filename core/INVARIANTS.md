@@ -53,7 +53,8 @@ is in [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). Input, proximity
 
 Default-on/fallback regression results for A3–A12 are recorded in
 [goo-default validation](../docs/goo.md#goo-default-validation-2026-10-01); these are isolated
-headless checks, not physical-display verification.
+headless checks, not physical-display verification. GO11/GO12 add stacking-aware overlap film
+and whole-control cloud/glow highlights; see [their validation](../docs/goo.md#overlap-film-and-control-highlight-2026-10-02).
 
 | ID | Invariant | Status |
 |---|---|---|
@@ -82,7 +83,7 @@ headless checks, not physical-display verification.
 | S4 | Save persists zone and Goo values (`~/.config/scottland/layout.ini`); reopening shows the saved values. | zones verified; Goo Save/config-consumer and border Save/reopen checked with isolated osanwe input |
 | S5 | Cancel or Escape restores zone and Goo values from when the panel opened and saves nothing, including the live Goo switch and empty/default falloff. | zones verified; Goo and border Cancel/Escape, including a held drag, checked with isolated osanwe input |
 | S6 | If the running session's plugin predates a setting, the panel says "Restart Scottland to use: …" and keeps the saved value instead of resetting it. | implemented |
-| S10 | A Goo section beside Layout exposes the live goo switch and all fifteen settings in the same tall grab-anywhere ParameterStack rows as the zone settings (S1), including keyboard steps/navigation, typed values, opening-value reset and modified color. Keyboard navigation scrolls to the selected row; the scrollbar reaches the falloff curve in the shared editor. Save, Cancel and Defaults include goo. See [GO9](../docs/goo.md). | implemented; plumbus and osanwe headless pointer/keyboard input and screenshots checked |
+| S10 | A Goo section beside Layout exposes the live goo switch and all nineteen numeric settings in the same tall grab-anywhere ParameterStack rows as the zone settings (S1), including keyboard steps/navigation, typed values, opening-value reset and modified color. Keyboard navigation scrolls to the selected row; the scrollbar reaches the falloff curve in the shared editor. Save, Cancel and Defaults include goo. See [GO9](../docs/goo.md). | implemented; plumbus and osanwe headless pointer/keyboard input and screenshots checked |
 | S11 | Every setting in the panel explains itself: hovering (or keyboard-selecting) a row shows a short plain-language hint of what it does and what raising/lowering it looks like, over the slider. (Mike, 2026-10-02) | implemented; isolated osanwe two-output stipc input and screenshots checked; see [settings design](../docs/settings.md) |
 | S12 | The zone overlay shows the center edge softness: the blend band on each side of the center zone where windows ease from full size into the side-zone scale is visible as its own shaded region with its outer border drawn as a line like the zone edges, updating live. (Mike, 2026-10-02) | implemented; isolated osanwe two-output stipc input and screenshots checked; see [settings design](../docs/settings.md) |
 | S13 | While the panel is open, the zone borders (center zone edges, rail edges, softness band edges) can be dragged directly on screen; dragging updates the same values as the sliders, live, with the same Save/Cancel semantics. The overlay stays click-through everywhere except the border handles. (Mike, 2026-10-02) | implemented; isolated osanwe two-output stipc input and screenshots checked; see [settings design](../docs/settings.md) |

@@ -43,7 +43,7 @@ def measure(label, drag=False):
             t=time.monotonic()-start; pointer(1150+120*math.sin(t*2),550+80*math.cos(t*2))
         samples.append(state()['gpu_ms']); time.sleep(1/60 if drag else .1)
     output=proc.communicate()[0].strip(); after=state()
-    print(json.dumps({'case':label,'cost':output,'gpu_ms_median':sorted(samples)[len(samples)//2] if after['steps']!=before['steps'] else None, 'steps':after['steps']-before['steps'],'sleeping':after['sleeping']}),flush=True)
+    print(json.dumps({'case':label,'cost':output,'gpu_ms_median':sorted(samples)[len(samples)//2] if after['steps']!=before['steps'] else None, 'steps':after['steps']-before['steps'],'sleeping':after['sleeping'],'overlapping':after.get('overlapping'),'highlighting':after.get('highlighting')}),flush=True)
     subprocess.run(['grim',str(art/(label+'.png'))],check=True)
 ipc('wayfire/set-config-options',{'output:HEADLESS-1/mode':'2560x1600@60000'})
 time.sleep(1)
