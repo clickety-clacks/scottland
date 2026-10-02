@@ -34,7 +34,7 @@ float fall(float e) {
   float t=max(e,0.)/(4.*uReach);
   float index=min(t,1.)*255.,lo=floor(index);
   float a=texture2D(uFalloff,vec2((lo+.5)/256.,.5)).r,b=texture2D(uFalloff,vec2((min(lo+1.,255.)+.5)/256.,.5)).r;
-  return mix(a,b,index-lo)*(1.-smoothstep(3.5,4.,e/uReach)); // compact support (goo-model fall)
+  return mix(a,b,index-lo)*exp(-max(0.,e/uReach-4.));
 }
 float deposit(vec2 p,vec4 r,vec4 corners,vec4 dot) {
   float a=0.;
@@ -50,7 +50,7 @@ float gooField(vec2 p) {
     if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);
     if(g.x<=0.)continue;
     float e=max(sdBox(p-r.xy,r.zw,g.y),0.),fe=fall(e);
-    if(fe<1e-6)continue; // too far for this window's liquid to matter: skip its noise
+    if(fe==0.)continue;
     float n=fbm(p*uNoiseScale+g.z*vec2(7.13,3.71)+vec2(uTime*uNoiseSpeed,-uTime*uNoiseSpeed*.73));
     float scale=clamp(abs(source(i,2.).w),0.,1.);
     float a=max(g.x*(1.+uNoise*scale*(n-.5)*2.),uT/max(fall(max(uThickness*.1*scale,source(i,5.).x)),.0001))
@@ -78,9 +78,7 @@ float field(vec2 uv){
   float f=texture2D(uField,uv).r;
   return uPacked>.5 ? exp(f*2.83321334)-1. : f;
 }
-// The field pass stores "outside every window" in G once per step, so the wave and dye passes
-// read it instead of re-walking every window several times per texel.
-float gooMask(vec2 uv){vec4 f=texture2D(uField,uv);return smoothstep(uT*.97,uT*1.03,uPacked>.5?exp(f.r*2.83321334)-1.:f.r)*f.g;}
+float gooMask(vec2 uv){return smoothstep(uT*.97,uT*1.03,field(uv))*step(0.,unionSdf(uv*uRes));}
 )";
 inline const std::string field_shader = common + R"(
 void main(){
@@ -93,7 +91,23 @@ void main(){
   gl_FragColor=vec4(f,step(0.,d),0,1);
 }
 )";
-inline const std::string wave_shader = common + mask + R"(
+// Mask at quarter-resolution texel centers for the two wave stencils. Dye
+// retains its original SDF evaluations (including continuous advection positions).
+inline const std::string mask_shader = common + mask + R"(
+void main(){
+  vec2 uv=gl_FragCoord.xy/uSize;
+  float f=smoothstep(uT*.97,uT*1.03,field(uv));
+  gl_FragColor=vec4(f>0.?step(0.,unionSdf(uv*uRes)):0.,0,0,1);
+}
+)";
+inline const std::string cached_mask = R"(
+uniform sampler2D uMask;
+float gridMask(vec2 uv){
+  if(any(lessThan(uv,vec2(0.)))||any(greaterThan(uv,vec2(1.))))return gooMask(uv);
+  return smoothstep(uT*.97,uT*1.03,field(uv))*texture2D(uMask,uv).r;
+}
+)";
+inline const std::string wave_shader = common + mask + cached_mask + R"(
 uniform sampler2D uWave;
 uniform float uC2,uDamp;
 uniform vec4 uImp[8];
@@ -101,8 +115,8 @@ uniform int uImpN;
 void main(){
   vec2 uv=gl_FragCoord.xy/uSize,px=1./uSize,p=uv*uRes;
   vec2 hv=decode(texture2D(uWave,uv));
-  float m=gooMask(uv),hc=hv.x,sum=0.;
-  for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;sum+=mix(hc,decode(texture2D(uWave,u2)).x,gooMask(u2));}
+  float m=gridMask(uv),hc=hv.x,sum=0.;
+  for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;sum+=mix(hc,decode(texture2D(uWave,u2)).x,gridMask(u2));}
   float v=(hv.y+uC2*(sum-4.*hc))*uDamp,h=hc+v;
   h*=mix(.8,1.,m);v*=mix(.8,1.,m);
   h*=mix(1.,uDamp,uPacked);
@@ -124,19 +138,19 @@ void main(){
     // Both ends must contain goo: backtracing cannot pull color across a dry gap.
     c=texture2D(uDyeTex,mix(uv,adv,gooMask(adv)*m)).rgb;
   }
-  vec3 acc=c;float ws=1.;
-  for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=texture2D(uDyeTex,u2).rgb*w;ws+=w;}
-  c=mix(c,acc/ws,uSpread);
-  // One walk over the windows finds the nearest-color blend and the dominant window, whose
-  // dye is released here.
-  float ksum=1e-4,maxK=-1.,bestE=0.;vec3 nearest=vec3(0);int best=0;
+  if(m>0.){
+    vec3 acc=c;float ws=1.;
+    for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=texture2D(uDyeTex,u2).rgb*w;ws+=w;}
+    c=mix(c,acc/ws,uSpread);
+  }
+  float ksum=1e-4,maxK=0.;vec3 nearest=vec3(0);
   for(int i=0;i<1024;i++){
     if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
-    float k=g.x*fall(e);ksum+=k;nearest+=k*source(i,2.).rgb;
-    if(k>maxK){maxK=k;best=i;bestE=e;}
+    float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearest+=k*source(i,2.).rgb;
   }
-  if(uCount>0){
-    int i=best;vec4 r=source(i,0.),g=source(i,1.);float e=bestE;
+  for(int i=0;i<1024;i++){
+    if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
+    float k=g.x*fall(e); if(k<maxK-.00001)continue;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
     vec3 tint=source(i,2.).rgb;
     // State marks are released dye, Gaussian deposits, never overlay geometry.
@@ -172,8 +186,8 @@ void main(){
   }
   float ht=height(uv);
   vec3 n=normalize(vec3(-(height(uv+vec2(px.x,0))-ht)*uRelief,-(height(uv+vec2(0,px.y))-ht)*uRelief,1.));
-  // Refraction never borrows from under a window: the field pass's outside-windows mask (G).
-  vec2 refr=p+n.xy*26.; if(texture2D(uField,refr/uRes).g<.5)refr=p;
+  // Keep the shipped one-pixel exclusion around window content.
+  vec2 refr=p+n.xy*26.; if(unionSdf(refr)<1.)refr=p;
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
   if(hintAmount>0.)dye=hintDye/hintAmount;

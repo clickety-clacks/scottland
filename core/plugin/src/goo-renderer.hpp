@@ -13,7 +13,7 @@ class renderer_t
     renderer_t();
     ~renderer_t();
     bool supported();
-    // `area` (output-logical rects) limits the field, wave and dye passes; empty means everywhere.
+    // `area` (output-logical rects) limits the expensive field pass; empty means everywhere.
     bool update(const std::vector<source_t> &sources, const settings_t &settings, int width, int height,
                 float time, const std::vector<glm::vec4> &impulses,
                 const std::vector<wf::geometry_t> &area = {});

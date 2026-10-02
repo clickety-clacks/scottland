@@ -107,14 +107,11 @@ float settings_t::fall(float d) const
 {
     if (!std::isfinite(d))
         return 0;
-    // Compact support: the liquid tapers to nothing over its last half reach and is exactly zero
-    // beyond four reaches, so the goo's extent (and its damage) has a hard analytic bound.
     float t = std::max(d, 0.f) / (4 * reach) * (falloff.size() - 1);
     if (t >= falloff.size() - 1)
-        return 0;
+        return falloff.back() * std::exp(-(d / reach - 4));
     size_t i = size_t(t);
-    float u = std::clamp((d / reach - 3.5f) / .5f, 0.f, 1.f);
-    return glm::mix(falloff[i], falloff[i + 1], t - i) * (1 - u * u * (3 - 2 * u));
+    return glm::mix(falloff[i], falloff[i + 1], t - i);
 }
 float settings_t::threshold() const { return std::max(.0001f, fall(thickness)); }
 float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &s, float time)
@@ -144,6 +141,64 @@ float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_
         f += std::max(a, 0.f) * s.fall(std::max(distance(p, w), 0.f));
     }
     return f;
+}
+std::vector<float> support_radii(std::vector<source_t> sources, const settings_t &s)
+{
+    amounts(sources, s);
+    std::vector<float> peaks;
+    float total = 0;
+    for (auto &w : sources)
+    {
+        float reserve = s.threshold() / std::max(s.fall(std::max(s.thickness * .1f *
+            std::clamp(w.scale, 0.f, 1.f), w.hinted ? 1.f : 0.f)), .0001f);
+        float peak = w.emitter ? std::max(w.liquid.x * (1 + s.noise), reserve) +
+            .22f * (w.corners.x + w.corners.y + w.corners.z + w.corners.w) + .45f * w.dot.z : 0;
+        peaks.push_back(peak);
+        total += peak;
+    }
+    // Invert the render smoothstep's lower edge. Allow one full packed-field quantum
+    // (also bounds half-float rounding) before applying the maximum wave multiplier.
+    float edge = s.threshold() * .97f / (1 + 3.9f * std::max(0.f, s.wave_height));
+    edge = std::expm1(std::max(0.f, std::log1p(edge) - 2.83321334f / 255));
+    // Extremely low custom thresholds cannot be bounded after packed quantization.
+    if (edge <= 0)
+        return std::vector<float>(sources.size(), 1e6f);
+    auto root = [&](auto field, float hi)
+    {
+        float lo = 0;
+        for (int k = 0; k < 32; k++)
+        {
+            float mid = (lo + hi) / 2;
+            if (field(mid) >= edge) lo = mid; else hi = mid;
+        }
+        return hi;
+    };
+    float hi = 4 * s.reach;
+    while (total * s.fall(hi) >= edge) hi *= 2;
+    float global = root([&](float d) { return total * s.fall(d); }, hi);
+    std::vector<float> radii;
+    for (auto &a : sources)
+    {
+        // Any visible point is within global of some island. If a is its nearest
+        // rectangle, each other source is at least d away and gap(a,b)-global away.
+        // Far sources retain their exponential tails; only nearby rectangles bridge.
+        std::vector<float> gaps;
+        for (auto &b : sources)
+        {
+            auto gap = glm::max(glm::abs(glm::vec2(a.rect) - glm::vec2(b.rect)) -
+                glm::vec2(a.rect.z + b.rect.z, a.rect.w + b.rect.w), glm::vec2{0});
+            gaps.push_back(glm::length(gap) - global);
+        }
+        auto bound = [&](float d)
+        {
+            float sum = 0;
+            for (size_t j = 0; j < sources.size(); j++)
+                sum += peaks[j] * s.fall(std::max(d, gaps[j]));
+            return sum;
+        };
+        radii.push_back(root(bound, global));
+    }
+    return radii;
 }
 float union_distance(glm::vec2 p, const std::vector<source_t> &sources)
 {

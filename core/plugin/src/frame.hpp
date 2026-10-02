@@ -1086,10 +1086,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             last_tick = now;
             // The goo owns halo damage; breathing must not repaint window contents.
             bool goo = goo_enabled();
-            if (!goo) damage();
+            // A touch lift also scales window content; preserve its full old/new
+            // damage until the spring settles. Only halo-only ticks use goo bands.
+            bool content = !goo || bulge != bulge_target || bulge_velocity != 0;
+            if (content) damage();
             step(dt);
+            if (content) damage();
             if (goo) goo_wake(*this);
-            else damage();
             if (settled())
             {
                 swell = swell_target;

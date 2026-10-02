@@ -133,17 +133,17 @@ struct renderer_t::impl
     glm::vec4 sampled_value{};
     settings_t settings;
     std::vector<source_t> sources;
-    OpenGL::program_t field_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
-    target_t field, wave[2], dye[2], source, curve, background, query;
+    OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
+    target_t field, mask, wave[2], dye[2], source, curve, background, query;
     std::vector<target_t> reduction;
 
     void release()
     {
         if (timer)
             glDeleteQueries(1, &timer);
-        for (auto p : {&field_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p})
+        for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p})
             p->free_resources();
-        for (auto p : {&field, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query})
+        for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query})
             p->release();
         for (auto &t : reduction)
             t.release();
@@ -198,7 +198,7 @@ struct renderer_t::impl
         }
         field.release();
         LOGI("scottland goo: ", packed ? "packed RGBA8" : "RGBA16F", " simulation targets");
-        const std::array programs{std::make_pair(&field_p, &field_shader), std::make_pair(&wave_p, &wave_shader),
+        const std::array programs{std::make_pair(&field_p, &field_shader), std::make_pair(&mask_p, &mask_shader), std::make_pair(&wave_p, &wave_shader),
                           std::make_pair(&dye_p, &dye_shader), std::make_pair(&render_p, &render_shader),
                           std::make_pair(&energy_p, &energy_shader), std::make_pair(&query_p, &query_shader)};
         for (auto pair : programs)
@@ -238,6 +238,7 @@ struct renderer_t::impl
         bind(program, "uField", 2, field.texture);
         bind(program, "uWave", 3, wave[0].texture);
         bind(program, "uDyeTex", 4, dye[0].texture);
+        bind(program, "uMask", 7, mask.texture);
     }
     void draw_to(OpenGL::program_t &program, target_t &target)
     {
@@ -248,6 +249,10 @@ struct renderer_t::impl
     // A simulation pass over only the given output-logical rects (texels elsewhere keep their
     // values), drawn as one batch of quads. Rows run with y, as the passes map texels back to
     // positions.
+    // A conservative occupancy map: every tile that could have received a wave.
+    // Keep it until resize, rather than freezing nonzero waves after a fixed age.
+    // Its size is bounded by the output, and needs no GPU-to-CPU readback.
+    wf::region_t wave_tiles;
     std::vector<GLfloat> tiles;
     void simulate(OpenGL::program_t &program, target_t &target, const std::vector<wf::geometry_t> &area)
     {
@@ -276,7 +281,12 @@ struct renderer_t::impl
     {
         width = w;
         height = h;
+        wave_tiles.clear();
         bool ok = field.allocate((w + 1) / 2, (h + 1) / 2, packed, es3);
+        ok = mask.allocate((w + 3) / 4, (h + 3) / 4, true, es3) && ok;
+        glBindTexture(GL_TEXTURE_2D, mask.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         for (auto t : {&wave[0], &wave[1], &dye[0], &dye[1]})
         {
             ok = t->allocate((w + 3) / 4, (h + 3) / 4, packed, es3) && ok;
@@ -417,8 +427,19 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     p->settings = s;
     p->time = time;
     p->upload();
+    glBindFramebuffer(GL_FRAMEBUFFER, p->field.fb);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
     p->common(p->field_p, p->field.width, p->field.height);
     p->simulate(p->field_p, p->field, area);
+    p->common(p->mask_p, p->mask.width, p->mask.height);
+    p->draw_to(p->mask_p, p->mask);
+    for (auto &r : area)
+        p->wave_tiles |= r;
+    std::vector<wf::geometry_t> wave_area;
+    for (auto &r : p->wave_tiles)
+        wave_area.push_back(wf::geometry_t{double(r.x1), double(r.y1),
+            double(r.x2 - r.x1), double(r.y2 - r.y1)});
     for (int k = 0; k < 2; k++)
     {
         p->common(p->wave_p, p->wave[1].width, p->wave[1].height);
@@ -431,14 +452,14 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         auto id = p->wave_p.get_program_id(wf::TEXTURE_TYPE_RGBA);
         glUniform4fv(glGetUniformLocation(id, "uImp[0]"), 8, &imp[0].x);
         p->wave_p.uniform1i("uImpN", n);
-        p->simulate(p->wave_p, p->wave[1], area);
+        p->simulate(p->wave_p, p->wave[1], wave_area);
         std::swap(p->wave[0], p->wave[1]);
     }
     p->common(p->dye_p, p->dye[1].width, p->dye[1].height);
     p->dye_p.uniform1f("uSpread", s.spread);
     p->dye_p.uniform1f("uSwirl", s.swirl);
     p->dye_p.uniform1f("uRelease", s.release);
-    p->simulate(p->dye_p, p->dye[1], area);
+    p->draw_to(p->dye_p, p->dye[1]);
     std::swap(p->dye[0], p->dye[1]);
     packed = p->packed;
     steps++;
@@ -467,7 +488,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     glBindTexture(GL_TEXTURE_2D, bg.texture);
     // Keep a wallpaper cache: outside this pass's damage the framebuffer still contains
     // last frame's goo/windows. Copying all of it would feed those colors back into refraction.
-    wf::gles::for_each_scissor_rect(data.target, damage,
+    wf::gles::for_each_scissor_rect(data.target, data.damage,
                                     [&]
                                     {
                                         GLint box[4];

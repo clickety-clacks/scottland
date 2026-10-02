@@ -65,7 +65,7 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. | implemented; pointer/touch move, resize, close and hidden-corner checks |
 | GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks |
-| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. | implemented; GPU energy sleep and unchanged step count checked |
+| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Active breathing damages only conservative goo bands; expensive field work uses occupied tiles, without changing the falloff or update rate. | implemented/headless checked; see the GPU cost validation below |
 
 ## Halo jobs with goo enabled
 
@@ -404,3 +404,66 @@ All final checks passed. Logs, including retained first-run failures, are in
 the same overlapping fixtures with goo off (independent bands, empty inside corner) and on
 (smooth pooling), plus a narrow unbridged halo gap. `build/hint-style-evidence/dark-hints.png`
 showed the since-removed goo rims and smoothly blended goo.
+
+
+## GPU cost validation (2026-10-02)
+
+This work starts from `ship-goo` (`6919af6`), merged into `goo-perf` before revising
+`944b24f` and the interrupted tile WIP `a59ceae`. The shipped on switch, independent
+fallback halos and window-mode dye are retained. Tenet 1 keeps attention breathing
+continuous; neither simulation frequency nor any appearance setting is reduced.
+
+The four-reach cutoff in the WIP was removed. It changes distant contributions to
+both the visible field and dye, even near another window, so it cannot silently
+become a performance-only change. The original LUT and exponential continuation
+remain identical in the CPU and shader. Bounds invert the render threshold with
+maximum noise, clinging reserve, all corner/dot deposits, maximum wave height and
+texture quantization included. Nearby source contributions are summed; distant
+sources still contribute bounded exponential tails. Three logical pixels account
+for field reconstruction and the normal's forward sample. Damage covers current
+and previous bands to erase old outlines. The output-sized scene bounding box only
+intersects incoming damage; it does not generate whole-output repaint each tick.
+
+The half-resolution field uses a batch of quads snapped to 32-logical-pixel tiles,
+with one tile of sampling halo. Clearing the field first prevents stale density
+when a window moves. A quarter-resolution Boolean union mask avoids repeating the
+window walk in both wave stencils. Dye keeps exact SDF evaluations, including its
+continuous advection positions: reusing an interpolated mask there changed corner
+colors in the pixel comparison. The wave tile map conservatively retains every
+tile that could hold a wave until resize, so no arbitrary age freezes a residual
+wave. Both ping-pong copies stay valid. Long drags can expand this map to the whole
+output; it is bounded by output coverage and never requires a damage readback.
+
+Dry dye still evolves across the whole grid. Its original recurrence approaches
+the current nearest-source color even where there is no visible goo; freezing it
+would change color on re-entry. Expensive swirl/diffusion executes only where the
+mask is nonzero, and all equal-strength dye emitters retain their original blend.
+Thus this is deliberately conservative field/wave tiling, not a claim that every
+simulation pass is sparse. Further dye tiling needs a way to preserve that history.
+The existing sleep-energy readback and input probes remain; neither drives damage.
+
+Breathing frames wake the goo without repainting window contents. Touch-lift scale
+animation still damages both old and new content bounds. Empty outputs sleep, and
+an occluded attention wake cannot undo fullscreen suspension. The wallpaper cache
+copies compositor damage, including pixels outside current goo bands that later
+refraction may sample. Fullscreen, option changes and node removal retain necessary
+whole-output invalidation.
+
+`tests/headless.sh` now copies this checkout's base config into its private config
+directory before assembly. Previously it silently fell back to the installed base,
+which on the test machines loaded old decorations and extra plugins. Initial runs
+against that config are retained as diagnostic evidence, not the final matrix or
+benchmark. Both baseline and optimized builds use the corrected harness, their own
+plugin, and their own shipped config. The bridge/snap probe now samples the actual
+gap after the drag: its old fixed point could be inside the stationary window's
+attention-breathing border. The field/threshold assertion is unchanged.
+
+Reproduce paired measurements with `tests/goo-bench.sh REPO FRESH_HEADLESS_DIR 10`.
+It arranges six windows at 2560×1600, moves two to rails with real input, measures
+settled sleep, persistent attention on both widgets, and a real held-window drag.
+It also measures the fallback with both widgets breathing. Results include process
+GPU busy (Xe cycle counters or AMD gfx nanoseconds), CPU usage, median goo GPU query,
+and simulation step count. A sleeping GPU query is stale and is reported as null.
+Use separate sequential runs; other sessions on the same GPU affect timer latency.
+`tests/goo-visual-fixture.py` supplies repeatable bridge, overlap, held/drop and
+return-to-position screenshots with stochastic appearance disabled for comparison.
