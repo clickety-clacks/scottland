@@ -42,7 +42,8 @@ bool matches(const chord_t& chord, wlr_keyboard *keyboard, uint32_t keycode)
         return false;
     }
 
-    uint32_t mods = wlr_keyboard_get_modifiers(keyboard) & shortcut_mods;
+    uint32_t mods = wlr_keyboard_get_modifiers(keyboard) &
+        ~(WLR_MODIFIER_CAPS | WLR_MODIFIER_MOD2);  // ignore locks, not extra Mod3/Mod5
     auto code = keycode + 8;
     auto layout = xkb_state_key_get_layout(state, code);
     const xkb_keysym_t *syms;

@@ -71,8 +71,9 @@ after a plugin reload. Layers never persist across session restarts.
 | Alt | 8 |
 | Super | 64 |
 
-Add bits for combinations (`5:j` is Ctrl+Shift+J). No other bits are accepted. Lock modifiers
-(Caps Lock, Num Lock) do not alter matching, and no modifier state is changed for delivery.
+Add bits for combinations (`5:j` is Ctrl+Shift+J). No other bits are accepted. Extra Mod3/Mod5 (such as AltGr) therefore falls through.
+Lock modifiers (Caps Lock, Num Lock) do not alter matching, and no modifier state is changed for
+delivery.
 Names match the unshifted key in the **current** keyboard layout with the exact mask, or the
 produced keysym. Shift consumed to produce a symbol can be omitted: `4:plus` also claims Ctrl
 plus Shift+= on a layout that produces `plus` there. `4:j` does not claim Ctrl+Shift+J; `4:equal`
