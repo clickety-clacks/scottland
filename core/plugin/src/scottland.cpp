@@ -1547,7 +1547,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
         auto code = ev->event->keycode;
-        if ((code != minimize_key.value().get_key()) && !minimize_presses.count(code))
+        auto binding = minimize_key.value();
+        bool modifiers_held = (wf::get_core().seat->get_keyboard_modifiers() & binding.get_modifiers()) ==
+            binding.get_modifiers();
+        // Track/log only binding-modified edges or an already tracked press (including its
+        // release after Super is up). Plain typing must not become a keystroke trail; duplicate
+        // activation diagnostics still retain the entire relevant press across devices.
+        if (!minimize_presses.count(code) && ((code != binding.get_key()) || !modifiers_held))
         {
             return;
         }
