@@ -48,3 +48,10 @@ service.replace_snapshot({'session': 'test', 'version': 3, 'windows': []})
 service.sync(source)
 assert service.snapshot['windows'] == []
 print('PASS  helper continues accepting subsequent snapshots after errors')
+
+service.snapshot = {'session': 'test', 'version': 4, 'windows': [{'id': 12, 'attention': []}]}
+source.listing = [{'window': 12}]
+service.ipc.call = lambda *_: {**service.snapshot, 'in_front': True}
+service.sync(source)
+assert source.answered == [{'window': 12}]
+print('PASS  unchanged valid action reply still acknowledges a window already in front')
