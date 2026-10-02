@@ -160,7 +160,13 @@
                 auto source = view->get_output()->get_layout_geometry();
                 auto target = origin.output->get_layout_geometry();
                 from.x += source.x - target.x; from.y += source.y - target.y;
+                bool focused = wf::get_core().seat->get_active_view() == view;
                 wf::move_view_to_output(view, origin.output, false);
+                if (focused)
+                {
+                    wf::get_core().seat->focus_output(origin.output);
+                    wf::get_core().default_wm->focus_raise_view(view);
+                }
             }
             auto& state = model.windows.at(id);
             state.pinned_scale = origin.pin; state.placement = origin.memory;
@@ -307,7 +313,13 @@
                 {
                     auto target = next->get_layout_geometry();
                     m.x += box.x - target.x; m.y += box.y - target.y;
+                    bool focused = wf::get_core().seat->get_active_view() == view;
                     wf::move_view_to_output(view, next, false);
+                    if (focused)
+                    {
+                        wf::get_core().seat->focus_output(next);
+                        wf::get_core().default_wm->focus_raise_view(view);
+                    }
                 }
             }
             auto area = view->get_output()->workarea->get_workarea();

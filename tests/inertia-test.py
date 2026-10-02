@@ -113,9 +113,11 @@ def two_outputs():
     check(abs(end[1]-original[1])<1 and not state(name)['widgetized'],'crossing keeps height and ordinary window form')
     # Return with real input and check the opposite passage too.
     hold(); tap('LEFT'); release(); coast(2.5)
+    print('crossing return:',original,global_center(name),output_info(a)['output-id'],home,flush=True)
     check(output_info(a)['output-id']==left['id'] and near(global_center(name),original,4),'left arrow crosses back without bounce or lost distance')
     # Esc must restore both geometry and output from Alt-down, not just local coordinates.
     hold(); tap('RIGHT'); wait_for(lambda:output_info(a)['output-id']==right['id']); tap('ESC'); coast(.8); release()
+    print('crossing cancel:',original,global_center(name),output_info(a)['output-id'],home,flush=True)
     check(output_info(a)['output-id']==home and near(global_center(name),original,2),'Esc restores the starting output after a keyboard crossing')
     screenshot('two-output-crossing-restored')
 
@@ -256,6 +258,12 @@ try:
         check(abs(center(state('InertiaB'))[0]-before[0]-distance)<1,'hint-selected window receives subsequent impulses')
         focus(a); hold(); focus(b); before=center(state('InertiaB')); tap('LEFT'); release(); coast()
         check(abs(before[0]-center(state('InertiaB'))[0]-distance)<1,'without a selection the currently focused window is the target')
+
+        focus(b); hold(); choose(b); focus(a); before=center(state('InertiaB')); other=center(state('InertiaA'))
+        tap('DOWN'); release(); coast()
+        check(abs(center(state('InertiaB'))[1]-before[1]-distance)<1 and near(center(state('InertiaA')),other,.05),
+            'a hint that skips redundant select still owns the arrow target after focus changes')
+        drag('InertiaB',w/2,h/2)
 
         # Cancellation uses Alt-down, even if the first arrow follows a hint cycle.
         focus(b); before=center(state('InertiaB')); hold(); choose(b); choose(b); tap('DOWN'); coast(.2); tap('ESC'); coast(.6); release()

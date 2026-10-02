@@ -639,7 +639,7 @@
             if (restore && link_of_window(view)) open_widget(*link_of_window(view));
             else if (auto visible = represented_view(id)) wf::get_core().default_wm->focus_raise_view(visible);
         };
-        window_keys.move = [=] (uint64_t id, auto to) { cycle_window(id, to); };
+        window_keys.move = [=] (uint64_t id, auto to) { keyboard_selection = true; cycle_window(id, to); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
         wf::get_core().connect(&on_window_key);
