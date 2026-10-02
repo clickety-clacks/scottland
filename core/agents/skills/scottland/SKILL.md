@@ -120,9 +120,10 @@ touch_drag = true   # optional: a finger drag anywhere moves it (only if it drag
 
 A widget is any program (QML via Quickshell, GTK, a web view, a TUI...), fully interactive, with
 the user's normal access (files, network, D-Bus). It gets the window's identity in its
-environment: `SCOTTLAND_WIDGET_APP_ID`, `_TITLE`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID` (the app's
-process), `_WINDOW`, `_RAIL`, `_MINIMIZED` (`1` if it starts collapsed by Super+M), `_ID`, `_STATE` (a JSON file kept current with title, badge,
-focus and data), and `SCOTTLAND_PALETTE` (a JSON file with the desktop's colors: `scheme`,
+environment: `SCOTTLAND_WIDGET_APP_ID`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID` (the app's
+process), `_WINDOW`, `_ID`, `_STATE` (a complete JSON presentation snapshot, written atomically
+before the widget starts and replaced live: identity, title, rail, minimized, badge, focus,
+urgency, data, model version and presentation revision), and `SCOTTLAND_PALETTE` (a JSON file with the desktop's colors: `scheme`,
 `background`, `foreground`, `muted`, `accent`, `alert`, kept current). Placeholders in `exec`: `%a` app-id, `%t` title, `%i` icon, `%p` pid, `%w`
 window, `%r` rail, `%d` folder. Live properties and `Restore()`/`Close()`/`Focus()` are on D-Bus at
 `org.scottland.Widgets /org/scottland/widget/<id>` (interface `org.scottland.Widget`).
@@ -130,6 +131,12 @@ window, `%r` rail, `%d` folder. Live properties and `Restore()`/`Close()`/`Focus
 The window turns into its widget while it's dragged onto the rail (and back when dragged off);
 Esc cancels a drag. A widget whose app needs attention (bell, notification) gets a breathing halo
 in the theme's attention color (the Omarchy theme's yellow; it follows theme changes).
+
+For reactive IPC, `scottland/subscribe {"slice":"widgets"}` returns the complete current slice
+immediately and then full `scottland-widgets#` events. Replace your copy for each newer version;
+never merge fields. Slices `desktop` and `attention` provide the full model or attention source
+sets. `session` identifies the compositor; a new session replaces everything. `builtin:` attention
+source names are reserved for plugin inputs.
 
 Troubleshooting: `~/.local/state/scottland/widgets.log` says which widget was chosen and why.
 

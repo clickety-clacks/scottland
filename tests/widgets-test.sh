@@ -63,7 +63,7 @@ id = "daemon"
 apps = ["^scottland-test-daemon$"]
 exec = "./start %t"
 TOML
-printf '#!/bin/sh\nsetsid -f foot -T "$1" sh -c "exec sleep 600"\nexit 0\n' >"$test_widgets/daemon/start"
+printf '#!/bin/sh\nsetsid -f foot -T "$1" sh -c "exec sleep 600"\nsleep 3\nexit 0\n' >"$test_widgets/daemon/start"
 chmod +x "$test_widgets/daemon/start"
 # Never shows a window, ignores SIGTERM, and leaves a child behind: all of it must still end.
 cat >"$test_widgets/sleeper/widget.toml" <<'TOML'
@@ -140,7 +140,7 @@ check "WG9 its Title property is the window title" \
 
 # WG10: a badge announced the standard way (Unity launcher API, per .desktop id).
 unit=$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_unit'])")
-desktop=$(python3 -c "import json; print(json.load(open('$state_dir/$unit.launch.json')).get('desktop',''))")
+desktop=$(python3 -c "import json; print(json.load(open('$state_dir/$unit.json')).get('desktop',''))")
 bus emit /com/canonical/unity/launcherentry/1 com.canonical.Unity.LauncherEntry Update "sa{sv}" \
   "application://${desktop:-foot}.desktop" 2 count x 7 count-visible b true
 sleep 0.8
@@ -204,7 +204,7 @@ f=v['frame']; sys.exit(0 if abs(f['x']+f['width']/2 - $restore_x) < 30 and abs(f
 check "WG5 ...and the widget is gone (dismissed, not closed)" \
   [ "$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = 0 ]
 check "WG12 StateChanged told the app it's back (not widgetized)" grep -q "StateChanged (uint32 $app_pid, false" "$signals"
-check "WG9 the widget's state files are gone" bash -c "! ls '$state_dir'/$unit.json '$state_dir'/$unit.launch.json 2>/dev/null | grep -q ."
+check "WG9 the widget's state files are gone" bash -c "! ls '$state_dir'/$unit.json 2>/dev/null | grep -q ."
 
 # WG5: closing the widget closes the app's window.
 read -r ax ay aw ah <<<"$(view_field widget-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -260,6 +260,8 @@ import json,sys
 v=[v for v in json.load(sys.stdin)['views'] if v.get('app_id')=='scottland-test-daemon' and not v['widget']][0]; f=v['frame']
 print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
+check "DM2 launcher exit is published as a newer full snapshot" \
+  tests/headless.sh run python3 tests/model-process-test.py
 sleep 3.5
 check "WG2 a widget that forks its window off and exits is adopted (placed, at 100%)" \
   python3 -c "
@@ -705,7 +707,7 @@ sleep 1
 # widget), picked up again within 2 s and moved: Esc brings the window back where it began.
 (tests/headless.sh run foot -T form-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
-fx0=$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(g['x'], g['y'])")
+fx0=$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(round(g['x']), round(g['y']))")
 read -r ax ay aw ah <<<"$(view_field form-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 0.8
@@ -720,7 +722,7 @@ h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY
 h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
 sleep 1.5
 check "WG14 Esc after re-grabbing the widget it became: the window is back where the move began" \
-  [ "$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(g['x'], g['y'])")/$(view_field form-app "not v['hidden']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = "$fx0/True/0" ]
+  [ "$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(round(g['x']), round(g['y']))")/$(view_field form-app "not v['hidden']")/$(views | python3 -c "import json,sys; print(sum(1 for v in json.load(sys.stdin)['views'] if v['widget']))")" = "$fx0/True/0" ]
 h window-rules/close-view "{\"id\": $(view_field form-app "v['id']")}"
 sleep 1
 
@@ -766,7 +768,7 @@ sleep 1
 sleep 1.5
 geo_of() { ipc window-rules/list-views | python3 -c "
 import json,sys
-v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(round(g['x']), round(g['y']))" "$1"; }
 center_of() { view_field "$1" "round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2)"; }
 swipe() {  # swipe <title> <updates>: grab it with three fingers, move left-down
   read -r cx cy <<<"$(center_of "$1")"
@@ -813,7 +815,7 @@ h window-rules/configure-view "{\"id\": $(view_field esc-b "v['id']"), \"geometr
 sleep 1
 geo() { ipc window-rules/list-views | python3 -c "
 import json,sys
-v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(round(g['x']), round(g['y']))" "$1"; }
 a0=$(geo esc-a); b0=$(geo esc-b)
 esc_key() { h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'; }
 super_drag 250 190 450 260   # A moves somewhere else (a finished drag)
