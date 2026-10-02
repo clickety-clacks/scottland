@@ -122,16 +122,28 @@ try:
     # The fallback band follows each animated frame independently (A10/WG16).
     goo_on = t.ipc.call("scottland/goo-state")["enabled"]
     t.ipc.call("wayfire/set-config-options", {"scottland/goo": False})
+    title = "Morph right with a title long enough for maximum width"
+    history = [t.card(title)["frame"]]
     t.toggle()
     bands = []
     for i in range(9):
-        f = t.card("Morph right with a title long enough for maximum width")["frame"]
+        before_shot = t.card(title)["frame"]
         image = screenshot("halo-band-" + str(i))
-        y = round(f["y"] + f["height"] / 2)
-        # The band at the moving inner edge, and wallpaper safely beyond its full swell.
-        bands.append(image.getpixel((round(f["x"] - 5), y)) !=
-                     image.getpixel((round(f["x"] - 55), y)))
-    t.check("independent halo band follows the animated widget frame", all(bands), bands)
+        after_shot = t.card(title)["frame"]
+        # IPC and grim do not share an animation clock. Bracket the screenshot
+        # with geometry, including the previous repaint, and locate the band's
+        # outer edge instead of sampling a point it may already have passed.
+        recent = history[-1:] + [before_shot, after_shot]
+        left = min(f["x"] - f["thickness"] for f in recent)
+        right = max(f["x"] - f["thickness"] for f in recent)
+        y = round(before_shot["y"] + before_shot["height"] / 2)
+        background = image.getpixel((round(left - 55), y))
+        edge = next((x for x in range(round(left - 3), round(right + 4))
+                     if image.getpixel((x, y)) != background), None)
+        bands.append(edge is not None and left - 3 <= edge <= right + 3)
+        history.extend([before_shot, after_shot])
+    t.check("independent halo band follows the animated widget frame", all(bands) and
+            max(f["width"] for f in history) - min(f["width"] for f in history) > 40, bands)
     settle()
     t.toggle()
     settle()
@@ -305,9 +317,12 @@ try:
         t.check("goo attention fixture is unfocused", not requested.get("in_front", False))
         time.sleep(1)
         for label in ("collapse", "expand", "reversal"):
+            previous_frames = []
+            previous_frames.append(t.card(title)["frame"])
             t.toggle()
             if label == "reversal":
                 time.sleep(.09)
+                previous_frames.append(t.card(title)["frame"])
                 t.toggle()
             track = []
             captured = False
@@ -333,6 +348,8 @@ try:
             for v in active:
                 recent = [p["frame"]["x"] for p in track
                     if v["stamp"] - .05 <= p["stamp"] <= v["stamp"]]
+                if v["stamp"] <= .05:
+                    recent.extend(f["x"] for f in previous_frames)
                 history_errors.append(max(min(recent) - v["field_edge"],
                     v["field_edge"] - max(recent), 0))
             t.check("goo " + label + ": field follows intermediate frame", len(active) >= 4 and
