@@ -55,6 +55,8 @@ Default-on/fallback regression results for A3–A12 are recorded in
 [goo-default validation](../docs/goo.md#goo-default-validation-2026-10-01); these are isolated
 headless checks, not physical-display verification. GO11/GO12 add stacking-aware overlap film
 and whole-control cloud/glow highlights; see [their validation](../docs/goo.md#overlap-film-and-control-highlight-2026-10-02).
+GO13 adds cubic reconstruction and a device-pixel antialiased outline to goo, film and
+highlight edges; see [its headless visual and cost checks](../docs/goo.md#go13-inexpensive-antialiased-contours-2026-10-02).
 
 | ID | Invariant | Status |
 |---|---|---|

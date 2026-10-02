@@ -151,7 +151,7 @@ struct renderer_t::impl
         for (auto &t : reduction)
             t.release();
     }
-    void compile(OpenGL::program_t &program, std::string vs, std::string fs)
+    void compile(OpenGL::program_t &program, std::string vs, std::string fs, bool derivatives = false)
     {
         auto replace = [](std::string &s, const std::string &from, const std::string &to)
         {
@@ -174,7 +174,8 @@ struct renderer_t::impl
                             "#version 300 es\nprecision highp float; out vec4 goo_color;\n" + fs);
         }
         else
-            program.compile("#version 100\n" + vs, "#version 100\n" + fs);
+            program.compile("#version 100\n" + vs, std::string("#version 100\n") +
+                (derivatives ? "#extension GL_OES_standard_derivatives : require\n" : "") + fs);
     }
     bool support()
     {
@@ -184,8 +185,9 @@ struct renderer_t::impl
         const char *version = (const char *)glGetString(GL_VERSION),
                    *extensions = (const char *)glGetString(GL_EXTENSIONS);
         es3 = version && (strstr(version, "OpenGL ES 3") || strstr(version, "OpenGL ES 4"));
-        available = es3 || extension(extensions, "GL_OES_texture_float");
-        LOGI("scottland goo: ", version ? version : "no GL context", ", float textures ", available);
+        available = es3 || (extension(extensions, "GL_OES_texture_float") &&
+            extension(extensions, "GL_OES_standard_derivatives"));
+        LOGI("scottland goo: ", version ? version : "no GL context", ", float textures and derivatives ", available);
         if (!available)
             return false;
         timing = es3 && extension(extensions, "GL_EXT_disjoint_timer_query");
@@ -206,7 +208,7 @@ struct renderer_t::impl
                           std::make_pair(&energy_p, &energy_shader), std::make_pair(&query_p, &query_shader)};
         for (auto pair : programs)
         {
-            compile(*pair.first, vertex, *pair.second);
+            compile(*pair.first, vertex, *pair.second, pair.second == &render_shader);
             GLint linked = 0;
             glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
             if (!linked)
@@ -238,7 +240,7 @@ struct renderer_t::impl
             replace("else if(back.x<float(uCount)&&uFilm<=0.)", "if(back.x<float(uCount)&&uFilm<=0.)");
             replace("if(i>=int(back.x))break;", "if(i>=uCount)break;");
             replace("if(i>=int(hintBack.x))break;", "if(i>=uCount)break;");
-            compile(*pair.first, vertex, shader);
+            compile(*pair.first, vertex, shader, pair.second == &render_shader);
             GLint linked = 0;
             glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
             if (!linked) available = false;
@@ -553,6 +555,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                     });
     auto &program = p->fast ? p->render_fast : p->render_p;
     p->common(program, p->width, p->height);
+    program.uniform2f("uFieldSize", p->field.width, p->field.height);
     auto ortho = wf::gles::render_target_orthographic_projection(data.target);
     program.uniformMatrix4f("MVP", ortho);
     program.uniformMatrix4f("uBackgroundMap", ortho);

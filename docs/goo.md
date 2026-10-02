@@ -72,6 +72,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Active breathing damages only conservative goo bands; expensive field work uses occupied tiles, without changing the falloff or update rate. | implemented/headless checked; see the GPU cost validation below |
 | GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). At rest the film has the set width; when that window's outer goo expands for proximity/hover, lift while dragging, or attention breathing, its film swells in the same proportion, governed by `goo_swell`, and eases back with it. It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core; swell clarification 2026-10-02) | implemented; isolated headless validation recorded below |
 | GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | implemented; isolated headless validation recorded below |
+| GO13 | Goo outlines fade over approximately one device pixel using screen-space field derivatives, at every output/window scale. The full-resolution draw reconstructs the coarse field with smooth cubic filtering, restricted to goo bands; GO11 film and GO12 control outlines use the same coverage. Keep the existing window-edge SDF antialiasing and otherwise preserve the look, simulation and input. Added active cost stays well below one millisecond per frame, checked with the paired GO10 benchmark on Xe and RX 580. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
 
 ## Halo jobs with goo enabled
 
@@ -727,3 +728,107 @@ and compositor CPU 7.6% → 7.5%; held drag was 14.0% → 14.0%, 1.632 → 1.625
 Settled stayed at zero steps and 0.0% compositor GPU busy; goo-off breathing stayed at 0.6%.
 The paired logs are `build/go11-swell-results/perf/amd-{before,after}.log`. The unchanged
 GO10 benchmark remains within its measured GPU and CPU cost on both machines.
+
+## GO13: inexpensive antialiased contours (2026-10-02)
+
+The draw pass reconstructs the half-resolution field with a cubic B-spline (four
+bilinear texture taps). Positive weights avoid overshoot and ringing, and the packed
+path interpolates its log-encoded field before decoding, as before. The same
+reconstruction supplies the outline, relief normals and control cloudiness. Each
+normal's forward sample also uses four taps; the center sample is reused.
+Simulation masks, wave/dye updates, input hit tests and shipped settings are unchanged.
+The draw remains clipped to conservative goo bands. Their padding now covers four
+logical pixels of reconstruction, the normal's one-logical-pixel forward sample,
+and one device pixel for the AA derivative quad; previous bands are still erased.
+
+Coverage is `smoothstep(uT - aa, uT + aa, Fe)`, with
+`aa = max(0.5 * fwidth(Fe), 1e-6)`. Derivatives run before any nonuniform discard,
+in framebuffer device pixels rather than coarse-grid or logical pixels. GLES 3
+uses core derivatives; the GLES 2 draw shaders require
+`GL_OES_standard_derivatives`. A GLES 2 GPU lacking it retains the existing halo
+fallback. Film and control highlights share the same contour and coverage; their
+soft internal cloud transition does not acquire a separate outline. The existing
+`smoothstep(0., 1., d)` window-content edge is retained. Tenet 4 guides that choice:
+smooth the liquid without changing the readable window-content boundary or film's
+translucency.
+
+Validation is confined to fresh headless sessions on osanwe and plumbus, with a
+unique `SCOTTLAND_HEADLESS_DIR` per run under this checkout's `build/`. Baseline is
+an archived `459d758`, built with its own hooks under `build/aa-baseline`; it does
+not use the live checkout. Every session starts after its plugin build. Test
+scratch files, copied plugins, logs and images stay under `build/`; the widget
+harness now honors `TMPDIR` for its temporary fixture directories and puts its
+request/reply artifacts beside its other results. All owned headless sessions are
+stopped and their state directories removed. No live session is reloaded or used.
+These checks are **implemented/headless checked**, not physical-display validation.
+
+### Paired GO10 cost
+
+Unchanged six-window, two-rail-widget fixture, shipped settings, 2560×1600, ten
+seconds per case; separate sequential before/after compositors on each GPU. Logs
+are `build/aa-results/perf/{xe,amd}-{before,after}.log`.
+
+| GPU / case | Compositor GPU busy before → after | Goo GPU query median before → after | Approx. additional GPU busy per active step |
+|---|---|---|---|
+| Xe: breathing | 19.3% → 20.1% | 4.621 → 4.496 ms | +0.15 ms |
+| Xe: dragging | 18.5% → 20.2% | 4.219 → 4.673 ms | +0.25 ms |
+| RX 580: breathing | 14.3% → 15.3% | 1.642 → 1.708 ms | +0.17 ms |
+| RX 580: dragging | 14.1% → 14.5% | 1.625 → 1.679 ms | +0.07 ms |
+
+The last column normalizes compositor GPU busy by measured active steps over the
+ten-second sample; it includes compositor work outside the goo query. The RX 580
+query increase is **0.067 / 0.054 ms** for breathing/dragging. Both measurements of
+added cost are comfortably below one millisecond per frame. These are incremental
+costs, not a claim that the entire compositor or goo simulation takes less than a
+millisecond. RX 580 whole-GPU busy stayed within 0.2 percentage points of compositor
+busy in the active cases. Xe had other sessions using the GPU (whole-GPU busy
+64.5–67.9%); its elapsed query includes contention and is not an uncontended shader
+timing. No clocks, live sessions or update-rate settings were changed.
+
+Active steps stayed 593 → 590 (Xe breathing), 581 → 589 (Xe dragging), and
+577 → 577 / 572 → 572 (RX 580). Both GPUs' settled cases stayed at zero steps and
+0.0% compositor GPU busy. Goo-off breathing was 0.5% → 1.2% on the contended Xe
+and 0.6% → 0.6% on RX 580. Compositor CPU was 6.4% → 6.3% / 10.0% → 8.9% on Xe,
+and 7.5% → 7.4% / 9.5% → 9.6% on RX 580 (breathing / dragging).
+
+### Visual evidence
+
+`tests/goo-visual-fixture.py ARTIFACT_DIR [OUTPUT_SCALE]` now also captures a
+hovered highlight and can hold the same logical scene at 1×, 1.5× and 2× output
+scale. Both builds run that same fixture. Captures include curved corners, a
+bridge, overlap film, a hovered outline, a real held/released drag, and return to
+the initial geometry. Full images and geometry are in
+`build/aa-results/visual-{before,after}-{1,1.5,2}`. Nearest-neighbor zooms in
+`build/aa-results/crops` preserve the captured pixels: `curved-edge.png`,
+`bridge.png`, `film.png`, `highlight.png`, and their scale-specific companions.
+
+`python3 tests/goo-aa-image-test.py build/aa-results` checks equal paired geometry,
+actual framebuffer dimensions and coverage along a straight neutral edge in these
+rendered images. Partial coverage (5–95% of the measured rise from background)
+is 1 → 1 device pixel at 1×, 1 → 1 at 1.5×, and **2 → 1 at 2×**. This checks the
+sampled device-pixel fade; it is not a universal measurement of every animated
+contour. The inspected zooms show smoother curved contours and film reconstruction,
+with the existing content edge retained. The baseline's wider fade at 2× becomes
+crisper. This deliberately changes edge coverage and nearby relief, so the images
+are not expected to match bit-for-bit.
+
+### Regression results
+
+| Check | Result |
+|---|---|
+| Goo input, palette, live settings and sleep, Xe normal / packed GLES 2 | 46 / 46 passed |
+| Goo input, palette, live settings and sleep, RX 580 normal / packed GLES 2 | 46 / 46 passed |
+| Overlap film, swell, wave/dye join, whole-control highlight and stale-damage cleanup, Xe normal / packed | 27 / 27 passed |
+| Same overlap/highlight suite, RX 580 normal / packed | 27 / 27 passed |
+| CPU goo model | all assertions passed |
+| Widgets on RX 580 | 146 passed |
+| Widget morph on RX 580 | 86 passed |
+| Hint style on RX 580, goo on / off | 51 / 51 passed |
+| GLES 2 without derivatives: halo fallback and real input | 4 passed |
+| Paired image coverage at 1× / 1.5× / 2× | all three passed |
+
+Logs and evidence are under `build/aa-results`, including each GPU/path's
+`goo` and `goo-overlap-hover` directories and copied widget/morph/hint artifacts.
+Normal and packed film/highlight screenshots were inspected. Rendering source
+SHA-256 records match between the two hosts. Validation does not cover physical
+scanout, rotated outputs, simultaneous mixed-DPI outputs or other GPU families.

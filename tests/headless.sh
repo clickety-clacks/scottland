@@ -79,11 +79,13 @@ case ${1:-} in
         goo_value=false; [[ $test_goo == 1 ]] && goo_value=true
         sed -i "/^goo =/d; /^\[scottland\]/a goo = $goo_value" "$dir/wayfire.ini"
       fi
-      if [[ $test_gles == 2 || $test_gles == unsupported ]]; then
+      if [[ $test_gles == 2 || $test_gles == unsupported || $test_gles == no-derivatives ]]; then
         export MESA_GLES_VERSION_OVERRIDE=2.0
         export MESA_EXTENSION_OVERRIDE="-GL_EXT_color_buffer_float -GL_EXT_color_buffer_half_float -GL_OES_texture_half_float -GL_OES_texture_half_float_linear"
         if [[ $test_gles == unsupported ]]; then
           MESA_EXTENSION_OVERRIDE+=" -GL_OES_texture_float"
+        elif [[ $test_gles == no-derivatives ]]; then
+          MESA_EXTENSION_OVERRIDE+=" -GL_OES_standard_derivatives"
         fi
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \

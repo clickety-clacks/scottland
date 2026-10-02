@@ -105,12 +105,14 @@ class goo_node_t : public wf::scene::node_t
         for (size_t i = 0; i < state.sources.size(); i++)
         {
             auto &s = state.sources[i];
-            // Two logical pixels cover bilinear half-resolution field reconstruction;
-            // one more covers the normal's one-pixel forward difference.
-            double out = reach[i] + 3, in = s.liquid.y + 3;
+            // Four logical pixels cover cubic half-resolution reconstruction;
+            // one covers the normal's forward difference, and a device pixel
+            // covers the derivative AA quad beyond the threshold contour.
+            double padding = 5 + 1. / state.output->handle->scale;
+            double out = reach[i] + padding, in = s.liquid.y + padding;
             if (!film_reach.empty())
                 out = std::max(out, film_reach[i] * std::max(1.f,
-                    goo::overlap_film_width(s, state.settings) / state.settings.thickness) + 3.);
+                    goo::overlap_film_width(s, state.settings) / state.settings.thickness) + padding);
             double x1 = s.rect.x - s.rect.z, x2 = s.rect.x + s.rect.z;
             double y1 = s.rect.y - s.rect.w, y2 = s.rect.y + s.rect.w;
             auto box = [&](double a, double b, double c, double d)
