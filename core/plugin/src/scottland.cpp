@@ -17,6 +17,10 @@
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/txn/transaction-manager.hpp>
 #include <wayfire/toplevel.hpp>
+// The pre-map header also declares a pointer-only xdg signal, even when the optional
+// generated xdg-shell protocol header is not installed for external plugins.
+struct wlr_xdg_surface;
+#include <wayfire/unstable/wlr-view-events.hpp>
 #include <wayfire/touch/touch.hpp>
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/workarea.hpp>
@@ -1670,29 +1674,28 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** The app's process. X11 windows all belong to the XWayland server's client, so theirs is the
      *  _NET_WM_PID they declare (X11 apps can already see each other; no stronger check exists). */
-    static pid_t view_pid(wayfire_view view)
+    static pid_t surface_pid(wlr_surface *surface)
     {
         pid_t pid = 0;
-        if (!view)
+        if (!surface)
         {
             return pid;
         }
 
 #if WF_HAS_XWAYLAND
-        if (auto surface = view->get_wlr_surface())
+        if (auto xsurface = wlr_xwayland_surface_try_from_wlr_surface(surface))
         {
-            if (auto xsurface = wlr_xwayland_surface_try_from_wlr_surface(surface))
-            {
-                return xsurface->pid;
-            }
+            return xsurface->pid;
         }
 #endif
-        if (view->get_client())
-        {
-            wl_client_get_credentials(view->get_client(), &pid, nullptr, nullptr);
-        }
+        wl_client_get_credentials(wl_resource_get_client(surface->resource), &pid, nullptr, nullptr);
 
         return pid;
+    }
+
+    static pid_t view_pid(wayfire_view view)
+    {
+        return surface_pid(view ? view->get_wlr_surface() : nullptr);
     }
 
     /** Is `ancestor` the process `pid` or one of its ancestors (a few levels up)? */
@@ -2226,6 +2229,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
+    // get_wlr_surface()/get_client() are null until mapping applies. Capture the real client's
+    // identity from pre-map so the mapping transaction can recognize a widget before its first
+    // frame. Waiting for view-mapped can only correct an already-applied center placement.
+    wf::signal::connection_t<wf::view_pre_map_signal> on_widget_pre_map =
+        [=] (wf::view_pre_map_signal *ev)
+    {
+        if (!widget_links.empty())
+        {
+            ev->view->set_property("scottland-mapping-pid", (int)surface_pid(ev->surface));
+        }
+    };
+
     // Wayfire's place plugin positions every window as it maps (centered, cascaded...), in the
     // transaction that maps it. A widget's window has its place already: recognized as it maps,
     // it gets that place in the same transaction and is marked as positioned (startup-x/y, which
@@ -2264,7 +2279,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;
             }
 
-            pid_t pid = view ? view_pid(view) : 0;
+            pid_t pid = view ? view->get_property<int>("scottland-mapping-pid").value_or(view_pid(view)) : 0;
             for (auto& [id, link] : widget_links)
             {
                 if (link.widget.lock() || !link.launcher || !(in_scope(pid, link.launcher->unit) ||
@@ -4529,6 +4544,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
+        ev->view->erase_property("scottland-mapping-pid");
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             if (!widget_links.empty())
@@ -4809,6 +4825,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_remap_key);
         wf::get_core().connect(&on_mapped);
+        wf::get_core().connect(&on_widget_pre_map);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
         wf::get_core().connect(&on_focus);
@@ -4878,6 +4895,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_axis.disconnect();
         on_remap_key.disconnect();
         on_mapped.disconnect();
+        on_widget_pre_map.disconnect();
         on_geometry.disconnect();
         on_output.disconnect();
         on_focus.disconnect();
