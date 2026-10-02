@@ -2,8 +2,10 @@
 
 L32 in core/INVARIANTS.md defines the behavior. Drag release seeds the same independent
 velocity axes and tick integration as WK17, rather than starting a destination animation.
-Samples use monotonic receipt timestamps because Wayfire's common move-drag signal provides
+Samples use monotonic receipt timestamps because the common drag-motion signal provides
 layout coordinates but no device timestamp; this covers pointer, touch and three-finger input.
+Scottland's own live controller supplies these signals for pointer, halo, touch and swipe moves
+([L33](live-drag.md)); stock client move requests retain the same observer path.
 A least-squares fit uses the last 100 ms, with at least 20 ms of samples. A stationary tail
 accounts for time since the last event; 50 ms without motion or speed below 60 px/s means no
 coast. At the default friction, the threshold represents less than three pixels of travel.

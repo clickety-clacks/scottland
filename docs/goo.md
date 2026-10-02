@@ -845,3 +845,13 @@ then changes those hints through real keyboard input. It checks all four corners
 and side drags, normal-window resize, single-axis resize, goo highlight pixels, and fallback
 corner pixels against a fixed-size window. The combined badge/resize run passes **94/94** in
 an isolated headless session with screenshots under `build/badges-fixedsize-evidence/`.
+
+## L33 live move controller cost (2026-10-02)
+
+Scottland's own enabled drag subtree replaces stock move's overlay for Super, halo,
+touch and swipe gestures. Goo follows that subtree's transformed rectangle and actual
+scene order. The paired GO10 fixture preserves settled sleep and has small measured
+added cost on RX 580; Xe remains shared with other GPU work. See
+[live-drag.md](live-drag.md#gpu-cost) for GPU busy, query/update timing, CPU, operating-state
+caveats and the full isolated headless regression results. This changes drag ownership,
+not goo simulation/shaders, and the baseline's content freeze was not reproduced.

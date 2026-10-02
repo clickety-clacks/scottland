@@ -15,6 +15,11 @@ full-snapshot events `scottland-widgets#`, `scottland-model#`), `scottland-widge
 exec), `scottland-widget-bus` (D-Bus, badges, mailbox, state files), the card
 (`core/widgets/card/`).
 
+The L33 move-controller change rechecks WG1/WG13/WG14/WG22 through the same drag
+handlers with Scottland's enabled live scene subtree. See [live-drag.md](live-drag.md)
+for isolated headless input, pixels, regression and GPU results; prior physical
+verification of the stock move path does not verify this new path.
+
 ## Invariants
 
 | ID | Invariant | Status |
