@@ -21,6 +21,7 @@ tenet decided it; when they conflict, ask Mike.
 (IDs prefixed per doc). When a subsystem's design grows past a few rows in the files above, give it
 a doc there and leave a one-line pointer in the invariants file. Current docs:
 
+- [docs/distro-notes.md](docs/distro-notes.md): defaults that belong to a future Scottland distro, not core.
 - [docs/tenets.md](docs/tenets.md): what Scottland is for; how to decide unspecified edges.
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG19): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
