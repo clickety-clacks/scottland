@@ -29,6 +29,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
   remembered zones and contention-aware placement (WP1–WP6).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO10): the halo as one liquid for the whole screen,
   dye for state colors, live tuning (designed and prototyped; not built yet).
+- [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
 

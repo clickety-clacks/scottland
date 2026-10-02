@@ -20,7 +20,7 @@ on a physical session. This change is not tested on either machine's live displa
 | ID | Invariant | Status |
 |---|---|---|
 | WK1 | Alt alone enters hints only after the configurable short hold (300 ms default). Any other key or Ctrl, Shift, or Super already held, or pressed before the timeout, cancels eligibility for that entire Alt chord. Quick Alt+letter and quick Alt+Tab keep app/desktop behavior. Both Alt keys are supported; pressing both before entry is not Alt alone. | implemented (headless) |
-| WK2 | After entry, every key belongs to Scottland until the last held Alt is released, including Ctrl/Super combinations and unassigned keys. Presses and matching releases are consumed; one action occurs per physical press, not repeat. Alt itself is delivered immediately and its matching release is delivered, so quick app chords have no added delay or synthetic replay. | implemented (headless) |
+| WK2 | After entry, every unclaimed key belongs to Scottland until the last held Alt is released, including Ctrl/Super combinations and unassigned keys. Presses and matching releases are consumed; one action occurs per physical press, not repeat. Focused-surface key-layer claims retain ordinary delivery (KL7), including while hints are visible; a claimed press before entry cancels the hold. Alt itself is delivered immediately and its matching release is delivered, so quick app chords have no added delay or synthetic replay. | implemented (headless) |
 | WK3 | Alt release removes hints and restores purely visual displacement. Esc removes hints/displacement without another window action, and keeps keys captured until Alt release. Releasing or cancelling mid-cycle preserves every explicit step already taken; the next mode entry starts at select. | implemented (headless) |
 | WK4 | Every mapped top-level window and every widget has a large, click-through compositor hint in session palette colors, following the actual drawn center. A collapsed widget's hint is over its icon. Dialogs are selectable but retain WG1's protection against widgetizing. | implemented (headless) |
 | WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. | implemented (headless) |
@@ -41,6 +41,8 @@ on a physical session. This change is not tested on either machine's live displa
 
 ## Decisions at unspecified edges
 
+- Tenet 4 (concede as little as possible): surface layers keep exactly their claimed chords, even
+  during hints. Unclaimed navigation remains available; a claimed press before entry bypasses the hold.
 - Tenet 2 (recognition): keep assignment slots stable and reuse only closed slots. Vimarchy's
   prefix-free switch changes `a` to `aa` when capacity needs two letters; mixing `a` and `aa`
   would otherwise require a delay or extra input. Beyond two-letter capacity (676 slots), grow

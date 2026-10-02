@@ -395,12 +395,20 @@
         if (down) held_keys.insert(code); else held_keys.erase(code);
         if (!down && swallowed_keys.erase(code))
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
+        bool claimed = key_layers.handles(ev);
+        if (claimed && down) { alt_bypassed = true; alt_hold.disconnect(); }
+        if (ev->mode == wf::input_event_processing_mode_t::IGNORE)
+        {
+            if (alt) { if (down) alt_keys.insert(code); else alt_keys.erase(code); }
+            bypass_window_keys();
+            return;
+        }
         if (alt)
         {
             if (down && alt_keys.empty())
             {
                 uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
-                alt_bypassed = drag->view || held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
+                alt_bypassed = claimed || drag->view || held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
                 if (!alt_bypassed)
                     alt_hold.set_timeout(std::max(1, int(alt_hold_delay)), [=] () { begin_window_keys(); });
             }
@@ -416,6 +424,7 @@
             // app. No synthetic replay, delayed accelerator, or stuck modifier for quick chords.
             return;
         }
+        if (claimed) return; // exact focused-surface claims also bleed through active hints (KL7)
         if (!capture_chord)
         {
             if (down && !alt_keys.empty()) { alt_bypassed = true; alt_hold.disconnect(); }

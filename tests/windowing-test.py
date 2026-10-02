@@ -207,6 +207,46 @@ try:
     key('X', True); key('LEFTALT', True); time.sleep(.4)
     check(not hints()['active'], 'nonmodifier key held first prevents Alt-alone entry')
     key('LEFTALT', False); key('X', False)
+    # L31 and L20 use real pointer/key input, with no hint mode racing the drag.
+    focus(a)
+    f = view('Alpha')['frame']
+    cx, cy = f['x'] + f['width']/2, f['y'] + f['height']/2
+    ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
+    key('LEFTMETA', True)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    ipc('stipc/move_cursor', {'x': round(cx + 10), 'y': round(cy)})
+    key('LEFTMETA', False)
+    key('LEFTALT', True)
+    time.sleep(.45)
+    check(not hints()['active'], 'Alt alone during an ongoing drag never opens hints')
+    ipc('stipc/move_cursor', {'x': round(width*.2), 'y': round(height*.4)})
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    time.sleep(.45)
+    pinned = view('Alpha')['applied_scale']
+    check(pinned > .999 and view('Alpha')['zone'] == 'continuous', 'Alt drag pins full scale when dropped in periphery')
+    check(not hints()['active'], 'Alt drag chord cannot enter hints after drop')
+    release()
+    check(abs(view('Alpha')['applied_scale'] - pinned) < .003, 'Alt drop pin persists after Alt release')
+    state = ipc('scottland/desktop-model')['windows']
+    check(next(w for w in state if w['id'] == a).get('pinned_scale') == pinned, 'desktop model publishes the drag scale pin')
+    hold(); choose(a); choose(a); release()
+    check(view('Alpha')['zone'] == 'center' and view('Alpha')['applied_scale'] > .999 and
+          'pinned_scale' not in next(w for w in ipc('scottland/desktop-model')['windows'] if w['id'] == a),
+          'explicit cycle clears pin and restores full-size center')
+    f = view('Alpha')['frame']
+    cx, cy = f['x'] + f['width']/2, f['y'] + f['height']/2
+    old = view('Alpha')['geometry']
+    ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
+    key('LEFTMETA', True); key('LEFTALT', True)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    for step in range(1, 6):
+        ipc('stipc/move_cursor', {'x': round(cx+step*8), 'y': round(cy-step*5)})
+        time.sleep(.07)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    key('LEFTALT', False); key('LEFTMETA', False)
+    time.sleep(.4)
+    check(view('Alpha')['geometry']['width'] > old['width'] and not hints()['active'] and
+          near(center(view('Alpha')), (cx, cy)), 'Super+Alt real drag resizes around center without hints')
     # Stable assignment after an earlier window closes; Tab/F4 use real input.
     hold(); choose(b); tap('F4')
     wait_for(lambda: view('Beta') is None)
@@ -352,6 +392,11 @@ try:
     ga, gb = view('CardFresh')['geometry'], view('CardBlock')['geometry']
     overlap = max(0,min(ga['x']+ga['width'],gb['x']+gb['width'])-max(ga['x'],gb['x']))*max(0,min(ga['y']+ga['height'],gb['y']+gb['height'])-max(ga['y'],gb['y']))
     check(overlap < 1 and view('CardFresh')['applied_scale'] > .999, 'WG17 new center uses least-overlap full-size placement')
+    model = ipc('scottland/desktop-model')
+    check(all(next(w for w in model['windows'] if w['id'] == h['window'])['placement']['positions'] == h['memories']
+              for h in hints()['hints']), 'desktop snapshot publishes the same authoritative memories as hints')
+    live_ids = {w['id'] for w in model['windows']}
+    check(all(w['id'] in live_ids for w in model['windows'] if 'placement' in w), 'placement belongs only to live model windows')
     # Reload into a new library copy, keeping open widgets, positions, assignments, render state.
     hold(); choose(a); choose(a); choose(a); release()
     focus(a); hold(); choose(a); choose(a); choose(a); release()

@@ -81,6 +81,11 @@ built, the halo rows below point there.
 
 The single desktop model and its reactive subscription/launch/audit contracts are in
 [../docs/desktop-model.md](../docs/desktop-model.md) (DM1-DM8).
+## Key layers
+
+| ID | Invariant | Status |
+|---|---|---|
+| K1 | A focused surface can add a temporary shortcut layer: claimed keys reach that surface as ordinary press/release events with modifiers intact, while every unclaimed key uses the user's current shortcuts (including live changes, imported functions, release bindings and remaps). Native toplevels and layer-shell surfaces work independently even within one client. Unmap, close or client disconnect removes the layer; set replaces it. Full rules and IPC: [../docs/key-layers.md](../docs/key-layers.md), KL1–KL8. | implemented (plumbus headless); real-session verification and combined Alt-hints testing pending |
 
 ## Session
 
