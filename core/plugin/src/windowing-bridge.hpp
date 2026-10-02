@@ -116,7 +116,7 @@
             auto view = represented_view(e.id);
             if (e.id == excluded || !view || view->get_output() != output) continue;
             auto g = view->get_geometry();
-            double scale = is_widget(view) ? 1 : placement_of(view).scale;
+            double scale = is_widget(view) ? 1 : scale_for(view);
             rectangles.push_back({g.x + g.width * (1 - scale) / 2,
                 g.y + g.height * (1 - scale) / 2, g.width * scale, g.height * scale});
         }
@@ -240,6 +240,7 @@
         {
             model.windows[id].pending_rail = current;
             widgetize(window, false, left ? "left" : "right");
+            if (!link_of_window(window)) model.windows[id].pending_rail.reset();
             auto& memory = ensure_window_memory(id);
             memory.last_side = left ? -1 : 1;
             publish_model();
@@ -394,7 +395,10 @@
         if (!keyboard || !keyboard->keymap) return;
         if (down) held_keys.insert(code); else held_keys.erase(code);
         if (!down && swallowed_keys.erase(code))
+        {
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            return; // finish our own pair; this is not a new compositor grab
+        }
         bool claimed = key_layers.handles(ev);
         if (claimed && down) { alt_bypassed = true; alt_hold.disconnect(); }
         if (ev->mode == wf::input_event_processing_mode_t::IGNORE)
@@ -468,6 +472,22 @@
     };
     void init_window_keys()
     {
+        // Upgrade from the pre-model Alt branch: read its handover once, never write it again.
+        auto path = runtime_file(".window-positions.json"); std::ifstream in(path);
+        if (in)
+        {
+            wf::json_t records; std::string contents((std::istreambuf_iterator<char>(in)), {});
+            if (!wf::json_t::parse_string(contents, records) && records.is_array())
+                for (size_t i = 0; i < records.size(); ++i)
+                {
+                    auto r = records[i]; auto found = model.windows.find(uint64_t(r["window"].as_int64()));
+                    if (found == model.windows.end() || found->second.placement) continue;
+                    found->second.placement = read_memory(r);
+                    model.hint_width = std::max(model.hint_width,
+                        unsigned(std::clamp(r["hint_width"].as_int(), 1, 7)));
+                }
+            in.close(); std::remove(path.c_str());
+        }
         window_entries();
         window_keys.select = [=] (uint64_t id, bool restore) {
             auto view = wf::toplevel_cast(view_by_id(id));

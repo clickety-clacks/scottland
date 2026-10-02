@@ -286,7 +286,8 @@ try:
     key("A", True)
     key("A", False)
     check("unclaimed hint still selects with a registered layer",
-          ipc("scottland/hints")["selected"] == row("one")["window"] and len(keys("one", 30)) == before)
+          ipc("scottland/hints")["selected"] == row("one")["window"] and len(keys("one", 30)) == before and
+          ipc("scottland/hints")["active"])
     key("LEFTALT", False)
     time.sleep(.4)
     check("claimed Alt events leave physical hint tracking ready for next chord", not ipc("scottland/hints")["active"])

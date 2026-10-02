@@ -1647,7 +1647,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto view = wf::toplevel_cast(ev->view);
         if (auto widget_link = view ? link_of_widget(view) : nullptr;
-            widget_link && (widget_link->away || in_focus_mode(widget_link->output)))
+            widget_link && (widget_link->away || in_focus_mode(widget_link->output)) && !window_keys.active)
         {
             ev->carried_out = true;
             return;
@@ -2153,6 +2153,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 LOGE("scottland: no widget window appeared for window ", link.window_id, "; restoring it");
                 transition_widget(link, widget_link_t::lifecycle_t::restoring);
+                model.windows[link.window_id].pending_rail.reset();
                 end_process(link.launcher, 0);  // a late widget would show up unlinked
                 it = model.widgets.erase(it);
                 announce_widgets();
@@ -2211,7 +2212,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             // A late widget arrives directly hidden during fullscreen focus, never flashing
             // or taking the fullscreen window's attention before its first slide.
-            link.away = in_focus_mode(output);
+            link.away = in_focus_mode(output) && !window_keys.active;
             transition_widget(link, link.lifecycle);
             keep_above(view);
             place_cycled_widget(view, link.window_id, link.rail);
@@ -3096,8 +3097,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 {
                     continue;
                 }
-                // Independent FS1 check against Wayfire's promotion state, not link.away.
-                if (!widget->get_output()->node_for_layer(wf::scene::layer::TOP)->is_enabled() &&
+                // Independent FS1 check: asking for hints explicitly reveals widgets (WK12).
+                if (!window_keys.active && !widget->get_output()->node_for_layer(wf::scene::layer::TOP)->is_enabled() &&
                     !glides.count(widget->get_id()) && widget->get_root_node()->is_enabled())
                 {
                     fail("widget interrupts promoted fullscreen: " + label);
