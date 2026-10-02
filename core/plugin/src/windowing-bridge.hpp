@@ -92,7 +92,10 @@
     {
         auto window = wf::toplevel_cast(view_by_id(id));
         if (auto link = link_of_window(window); link && link->docked())
+        {
+            if (widget_transitions.count(id) && entering_widget(id)) return window;
             return wf::toplevel_cast(link->widget.lock());
+        }
         return window;
     }
     scottland::windowing::window_memory& ensure_window_memory(uint64_t id)
@@ -332,11 +335,12 @@
         pin_scale(window, std::nullopt); // explicit zone cycling follows the zone, including center at 100%
         if (destination == D::periphery && link_of_window(window))
             restore_window(*link_of_window(window), at, true);
-        else move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
+        else if (!rail) move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
         if (rail)
         {
             model.windows[id].pending_rail = current;
             widgetize(window, false, left ? "left" : "right");
+            if (auto link = link_of_window(window)) link->drop = {at.x, at.y};
             if (!link_of_window(window)) model.windows[id].pending_rail.reset();
             auto& memory = ensure_window_memory(id);
             memory.last_side = left ? -1 : 1;

@@ -248,8 +248,8 @@ procs=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service
 check "WG5 (timeout) the widget runs in its own scope, with its child" [ "$(echo $procs | wc -w)" -ge 2 ]
 check "WG11 a widget with no window yet has no window process (widget_pid 0)" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print(json.load(sys.stdin)['widgets'][0]['widget_pid'])")" = 0 ]
-check "WG5 (timeout) the widget launched and the app's window is hidden" \
-  [ "$(view_field widget-app4 "v['hidden']")" = True ]
+check "WG5/WG22 (timeout) the app stays visible until a card can take its image" \
+  [ "$(view_field widget-app4 "not v['hidden'] and v['widgetized']")" = True ]
 sleep 11
 check "WG5 (timeout) the app's window is restored after 8 s" \
   [ "$(view_field widget-app4 "not v['hidden'] and not v['widgetized']")" = True ]

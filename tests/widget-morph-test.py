@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Frame samples come from real Super+M input, never configure-view or a test animation clock."""
+"""Real stipc rail transitions and Super+M; compositor geometry and captured pixels."""
 import importlib.util
+import math
 import json
 import os
 import re
@@ -9,6 +10,8 @@ import subprocess
 import shutil
 import sys
 import time
+import struct
+import zlib
 
 spec = importlib.util.spec_from_file_location("widget_input", Path(__file__).with_name("widget-input-test.py"))
 t = importlib.util.module_from_spec(spec)
@@ -41,14 +44,31 @@ def settle():
 
 
 def screenshot(name):
-    path = out / (name + ".ppm")
-    subprocess.run(["grim", "-t", "ppm", str(path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    raw = path.read_bytes()
+    raw = subprocess.check_output(["grim", "-t", "ppm", "-"], stderr=subprocess.PIPE)
     header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
     width = int(header[1])
     pixels = raw[header.end():]
 
+    height = int(header[2])
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\0" + pixels[y * width * 3:(y + 1) * width * 3] for y in range(height))
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    (out / (name + ".png")).write_bytes(png + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b""))
+
     class RGB:
+        def red_source_pixels(self):
+            return sum(pixels[offset] > 220 and pixels[offset + 1] < 20 and pixels[offset + 2] < 20
+                for offset in range(0, len(pixels) - 2, 3 * 13))
+        def red_blend(self):
+            # A single red fixture is on screen. Scan across the captured image so
+            # a moving frame cannot outrun an IPC-derived sample coordinate.
+            count = 0
+            for offset in range(0, len(pixels) - 2, 3 * 13):
+                r, g, b = pixels[offset:offset + 3]
+                if r > g + 40 and r > b + 40 and abs(g - b) < 15 and 5 < g < 200:
+                    count += 1
+            return count >= 20
         def getpixel(self, at):
             x, y = at
             offset = (y * width + x) * 3
@@ -102,8 +122,170 @@ def verify(label, series, before, smaller):
                 running[-1] - running[0] if running else running)
 
 
+def entry_paths():
+    """Observe real rail requests and the rendered frames, including an early drop."""
+    for path in ("center-cycle", "periphery-cycle", "widget-cycle", "double-tap", "periphery-double-tap",
+                 "collapsed-double-tap", "double-tap-mode-switch",
+                 "held-drag", "early-drop", "collapsed-drop", "halo-drop", "esc-return", "load-recovery"):
+        title = "Entry " + path
+        if path.startswith("collapsed") or t.ipc.call("scottland/desktop-model")["collapsed"]:
+            t.launch("Entry mode seed", "left", 160)
+        process = subprocess.Popen(["foot", "-o", "colors-dark.background=ff0000", "-T", title,
+            "-W", "40x8", "sh", "-c", "exec sleep 600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t.owned.append((title, process)); t.wait_for(lambda: t.app(title)); time.sleep(.5)
+        if t.ipc.call("scottland/desktop-model")["collapsed"] != path.startswith("collapsed"):
+            t.toggle(); time.sleep(.5)
+        if path.startswith("periphery"):
+            t.drag_begin(t.app(title), t.screen["width"] * .2, 330); t.drag_end()
+        if path == "widget-cycle":
+            t.drag_begin(t.app(title), t.screen["width"] - 6, 330); t.drag_end()
+        if path == "load-recovery":
+            # Exercise the recovery entry with stock move input while Scottland
+            # is unloaded in THIS private compositor, then load the same build.
+            plugins = t.ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
+            without = " ".join(p for p in plugins.split() if p != "scottland")
+            t.ipc.call("wayfire/set-config-options", {"core/plugins": without})
+            try:
+                g = next(v["geometry"] for v in t.ipc.call("window-rules/list-views") if v["title"] == title)
+                t.move(g["x"] + g["width"] / 2, g["y"] + g["height"] / 2)
+                t.key("LEFTMETA", True)
+                t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+                t.move(t.screen["width"] - 6, 330)
+                t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+                t.key("LEFTMETA", False)
+            finally:
+                t.ipc.call("wayfire/set-config-options", {"core/plugins": plugins})
+            first = t.app(title).get("scene_frame", t.app(title).get("frame", g))
+        elif path == "esc-return":
+            t.drag_begin(t.app(title), t.screen["width"] - 6, 330); t.drag_end()
+            time.sleep(2.6)
+            t.drag_begin(t.card(title), t.screen["width"] / 2, 330); t.drag_end()
+            first = t.app(title).get("scene_frame", t.app(title)["frame"])
+            f = t.app(title)["frame"]
+            t.move(f["x"] + f["width"] / 2, f["y"] + f["height"] / 2)
+            t.key("LEFTMETA", True)
+            t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+            t.move(t.screen["width"] / 2 + 15, 330)
+            t.key("ESC", True); t.key("ESC", False)
+            t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+            t.key("LEFTMETA", False)
+        elif "cycle" in path or "double-tap" in path:
+            t.key("LEFTALT", True)
+            t.wait_for(lambda: t.ipc.call("scottland/hints")["active"])
+            label = next(h["hint"] for h in t.ipc.call("scottland/hints")["hints"]
+                         if h["window"] == t.app(title)["id"])
+            def hint():
+                for letter in label:
+                    t.key(letter.upper(), True); t.key(letter.upper(), False)
+            hint()
+            time.sleep(.07 if "double-tap" in path else .65)
+            if path == "widget-cycle":
+                hint(); time.sleep(.65)
+            first = t.app(title).get("scene_frame", t.app(title)["frame"])
+            hint()
+            if path == "double-tap-mode-switch":
+                t.key("LEFTALT", False)
+                t.toggle()
+        else:
+            f = t.app(title)["frame"]
+            t.move(f["x"] - 5 if path == "halo-drop" else f["x"] + f["width"] / 2,
+                   f["y"] + f["height"] / 2)
+            if path != "halo-drop": t.key("LEFTMETA", True)
+            t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+            t.move(t.screen["width"] - 50, 330)
+            time.sleep(.3)
+            first = t.app(title).get("scene_frame", t.app(title)["frame"])
+            t.move(t.screen["width"] - 6, 330)
+            if path != "held-drag":
+                t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+                t.key("LEFTMETA", False)
+        track = []; history = []; field_samples = []; blends = []
+        start = time.monotonic()
+        for i in range(42):
+            stamp_before = time.monotonic() - start
+            before = state()
+            history.append((stamp_before, before))
+            image = screenshot(path + "-entry-" + str(i))
+            blends.append(image.red_blend())
+            after = state()
+            history.append((time.monotonic() - start, after))
+            for v in before["views"]:
+                if v["hidden"] or not (v["title"] == title or v["title"].endswith(": " + title)): continue
+                f = v.get("scene_frame", v["frame"])
+                # Probe the goo at the currently presented frame center.
+                x = round(f["x"] + f["width"] / 2); y = round(f["y"] + f["height"] / 2)
+                if 0 <= x < t.screen["width"] and 0 <= y < t.screen["height"]:
+                    if t.ipc.call("scottland/goo-state")["enabled"]:
+                        fresh = next(w for w in after["views"] if w["id"] == v["id"])
+                        ff = fresh.get("scene_frame", fresh["frame"])
+                        x = round(ff["x"] + ff["width"] / 2); y = round(ff["y"] + ff["height"] / 2)
+                        field = t.ipc.call("scottland/goo-state", {"x": x, "y": y})["screens"][0]
+                        field_samples.append((time.monotonic() - start, ff, x, y, field["window_distance"]))
+            track.append((stamp_before, before))
+        samples[path] = track
+        t.key("LEFTALT", False)
+        if path == "held-drag": t.drag_end()
+        time.sleep(.8)
+        final = t.card(title)["frame"]
+        settled_image = screenshot(path + "-settled")
+        t.check(path + ": no app pixels remain outside the settled card",
+                settled_image.red_source_pixels() == 0, settled_image.red_source_pixels())
+        candidates = [v.get("scene_frame", v["frame"]) for _, s in track for v in s["views"]
+            if not v["hidden"] and (v["title"] == title or v["title"].endswith(": " + title))]
+        # Height differs even when a peripheral window and expanded card have similar widths.
+        low, high = sorted((first["height"], final["height"]))
+        middle = [f for f in candidates if low + 2 < f["height"] < high - 2]
+        t.check(path + ": visible intermediate shape between window and card",
+                len({round(f["height"], 1) for f in middle}) >= 3,
+                {"first": first, "final": final, "heights": [f["height"] for f in candidates]})
+        t.check(path + ": screenshots retain the app image in the crossfade",
+                any(blends), blends)
+        t.check(path + ": startup and handoff never leave the app invisible",
+                all(any(not v["hidden"] and (v["title"] == title or v["title"].endswith(": " + title))
+                        for v in s["views"]) for _, s in track))
+        if field_samples:
+            # Goo reflects the last output repaint; IPC can see a newer timer step.
+            # Compare its distance with recent real frames, including the source
+            # immediately before the transfer, rather than assuming a shared clock.
+            errors = []
+            for stamp, f, x, y, distance in field_samples:
+                if not low + 2 < f["height"] < high - 2: continue
+                recent = [v.get("scene_frame", v["frame"]) for at, s in history if stamp - .07 <= at <= stamp
+                    for v in s["views"] if not v["hidden"] and
+                    (v["title"] == title or v["title"].endswith(": " + title))]
+                def signed(r):
+                    dx = abs(x - r["x"] - r["width"] / 2) - r["width"] / 2
+                    dy = abs(y - r["y"] - r["height"] / 2) - r["height"] / 2
+                    return math.hypot(max(dx, 0), max(dy, 0)) + min(max(dx, dy), 0)
+                distances = [signed(r) for r in recent]
+                if distances: errors.append(max(min(distances) - distance, distance - max(distances), 0))
+            t.check(path + ": goo follows the intermediate frame", errors and max(errors) < 12, errors)
+        t.check(path + ": app alive behind final widget", t.app(title) and t.app(title)["hidden"])
+        t.cleanup()
+
+
+def entry_disappearance():
+    title = "Entry disappearing card"
+    t.launch(title, rail=None)
+    t.key("LEFTALT", True)
+    t.wait_for(lambda: t.ipc.call("scottland/hints")["active"])
+    label = next(h["hint"] for h in t.ipc.call("scottland/hints")["hints"] if h["window"] == t.app(title)["id"])
+    for _ in range(2):
+        for letter in label: t.key(letter.upper(), True); t.key(letter.upper(), False)
+    card = t.wait_for(lambda: t.card(title) and t.card(title)["frame"].get("presentation") and t.card(title))
+    t.ipc.call("window-rules/close-view", {"id": card["id"]})
+    t.key("LEFTALT", False)
+    time.sleep(.5)
+    t.check("WG5 card vanished mid-morph: app survives and is shown", t.app(title) and not t.app(title)["hidden"])
+    t.check("WG5 card vanished mid-morph: snapshots released", state()["widget_transition_count"] == 0)
+    t.cleanup()
+
+
 try:
     t.ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
+    entry_paths()
+    if "--baseline" not in sys.argv: entry_disappearance()
+    if "--entry-only" in sys.argv: sys.exit(bool(t.failures))
     t.launch("Morph left with a title long enough for maximum width", "left", 230)
     t.launch("Morph right with a title long enough for maximum width", "right", 500)
     t.launch("Morph neighbor with a title long enough for maximum width", "right", 625)
@@ -118,6 +300,14 @@ try:
     t.toggle()
     expanded = sample("expand")
     verify("expand", expanded, before, False)
+
+    link = t.widgets()[0]
+    wid = t.card(link["title"])["id"]
+    for smaller in (True, False):
+        before = {wid: frames(state())[wid]}
+        t.ipc.call("scottland/widget-action", {"id": str(link["id"]), "action": "minimize"})
+        verify("IPC/menu minimize" if smaller else "IPC/menu expand",
+               sample("ipc-minimize-" + str(smaller)), before, smaller)
 
     # The fallback band follows each animated frame independently (A10/WG16).
     goo_on = t.ipc.call("scottland/goo-state")["enabled"]

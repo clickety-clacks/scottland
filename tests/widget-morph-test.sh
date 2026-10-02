@@ -1,5 +1,5 @@
 #!/bin/bash
-# WG16: real-input presentation sampling, in this checkout's private headless session only.
+# WG13/WG16/WG22: real-input form and presentation sampling, in this checkout's private headless session only.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 hdir=${SCOTTLAND_HEADLESS_DIR:?set a task-specific SCOTTLAND_HEADLESS_DIR}

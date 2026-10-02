@@ -44,8 +44,12 @@ struct widget_morph_t
 {
     widget_image_t from, to;
     double width = 0, height = 0, inset = 0, fade = 0;
+    double from_width = 0, from_height = 0;
+    double from_scale = 1, scale = 1, shape = 0;
     double dx = 0, dy = 0, from_dx = 0, from_dy = 0;
     bool right = false;
+    bool cover = false; // window/card forms scale evenly to cover the changing frame
+    uint32_t duration_ms = duration;
     bool waiting = true;
     bool fallback = false;
     uint32_t response_ms = 0;
@@ -55,13 +59,17 @@ struct widget_morph_t
 
     void step(uint32_t now)
     {
-        double t = std::clamp(double(now - started) / duration, 0.0, 1.0);
-        fade = t * t * (3 - 2 * t);
-        width = from.width + (to.width - from.width) * fade;
-        height = from.height + (to.height - from.height) * fade;
+        double t = std::clamp(double(now - started) / duration_ms, 0.0, 1.0);
+        shape = cover ? wf::animation::smoothing::circle(t) : t * t * (3 - 2 * t);
+        fade = cover ? wf::animation::smoothing::circle(std::min(1.0, t * 4 / 3)) : shape;
+        double w = from_width > 0 ? from_width : from.width;
+        double h = from_height > 0 ? from_height : from.height;
+        width = w + (to.width - w) * shape;
+        height = h + (to.height - h) * shape;
+        scale = from_scale + (1 - from_scale) * shape;
         inset = from.inset + (to.inset - from.inset) * fade;
-        dx = from_dx * (1 - fade);
-        dy = from_dy * (1 - fade);
+        dx = from_dx * (1 - shape);
+        dy = from_dy * (1 - shape);
         ++steps;
     }
 
@@ -73,7 +81,7 @@ struct widget_morph_t
         // glide translation remain independent of this size-induced correction.
         dx += (right ? old.x + old.width - current.x - current.width : old.x - current.x);
         dy += old.y + old.height / 2 - current.y - current.height / 2;
-        double left = std::max(.0001, 1 - fade);
+        double left = std::max(.0001, 1 - shape);
         from_dx = dx / left;
         from_dy = dy / left;
     }
@@ -114,8 +122,14 @@ uniform sampler2D first, second;
 uniform vec4 rect, box0, box1;
 uniform vec2 size0, size1;
 uniform vec2 shift, fill, flip;
-uniform float right, fade, radius, aa, alpha;
+uniform float right, fade, radius, aa, alpha, cover;
 vec2 coordinate(vec2 p, vec2 size, vec4 box, float offset, float inside, float invert) {
+    if (cover > 0.5) {
+        float scale = max(rect.z / size.x, rect.w / size.y);
+        p = (p - rect.zw * 0.5) / scale + size * 0.5;
+        vec2 uv = (p - box.xy) / box.zw;
+        return vec2(uv.x, mix(uv.y, 1.0 - uv.y, invert));
+    }
     p.x += right * (size.x - rect.z) + offset;
     p.y += (size.y - rect.w) * 0.5;
     // Sampling never stretches the icon. The inner edge extends only the background.
@@ -174,6 +188,7 @@ void main() {
         program.uniform2f("flip", first.invert_y ? 0 : 1, second.invert_y ? 0 : 1);
         program.uniform1f("right", m.right ? 1 : 0);
         program.uniform1f("fade", m.fade);
+        program.uniform1f("cover", m.cover ? 1 : 0);
         program.uniform1f("radius", radius);
         program.uniform1f("aa", 1.0 / target.scale);
         program.uniform1f("alpha", alpha);
