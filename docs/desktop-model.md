@@ -78,7 +78,7 @@ identity file, once, before publication. Card traits come from its actual launch
 | DM5 | A marked reload between model builds preserves collapsed mode, attention sources and mapped committed widget identities (previews are ended). A legacy main upgrade migrates surviving launch identity in one atomic model handover; publication waits for every surviving link to be installed, preserving service-owned mailboxes, and its version increases afterward. | implemented (headless) |
 | DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. Independent regressions additionally assert mailbox payload, input-intended morph direction, Esc layer release, fullscreen visibility against promotion, process exit, migrated identity/badge routing and app-ID-only changes. They run only in an isolated headless session. | implemented (headless) |
 | DM7 | The drag session is a field of the desktop model: current origin, original form, re-grab chain, morph target, drag scale/grab state and temporarily held-above window have one owner. Existing Esc and re-grab behavior stays the same. | implemented (headless) |
-| DM9 | Goo reads logical visibility, attention, drag and fullscreen focus from the desktop model; attached goo screens are model state in the desktop slice. GPU fields and animation samples remain renderer resources. Live disable/fallback removes those screens without changing widget or attention slices. | implemented; merge validation pending |
+| DM9 | Goo reads logical visibility, attention, drag and fullscreen focus from the desktop model; attached goo screens are model state in the desktop slice. GPU fields and animation samples remain renderer resources. Live disable/fallback removes those screens without changing widget or attention slices. | implemented; plumbus headless input/snapshot/fallback checked |
 | DM8 | A marked reload transfers the live pidfd, including launches without systemd scopes. Legacy upgrades open a handle only for a verified live launcher; an unverifiable launcher is reported as PID zero. Launcher exit enters through a pidfd event, changes the tracked PID and publishes a newer full snapshot while a forked widget stays mapped. Serializing a snapshot never probes process liveness. | implemented (plumbus headless) |
 
 App-ID-only updates are exercised by a real GTK Wayland client in
@@ -140,3 +140,20 @@ physical screen on plumbus was touched. The isolated runtime was stopped after t
 | 6: lost launcher exit observation | Transfer the existing close-on-exec pidfd; legacy upgrades verify the live relationship before opening a new handle and use PID zero when unverifiable. | An unscoped launcher forks a widget, survives marked reload, then exits; the subscription must publish PID zero with the widget still docked (`model-process-test.py --reload`, `state-regressions-test.sh`). |
 | 7: lost legacy resolved identity | Read surviving widget launch-qualified environment and legacy unit-qualified identity once during migration; derive card traits from the actual command. | Real main-to-branch reload compares original desktop/name/icon and surviving launch, then sends a new badge for the original desktop ID (`upgrade-test.sh`). |
 | 8: stale app-ID | Observe Wayfire's app-ID change signal and publish it. | A real GTK Wayland client changes only its app-ID; subscription and late read must expose it while title and geometry stay unchanged (`app-id-app.py`, `state-regressions-test.py`). |
+
+
+## Goo merge validation (2026-10-01)
+
+Goo now reads model windows, widget lifecycle/away state, attention, drag and FS1 focus,
+with rendered geometry/cross-fades/morph size sampled from the existing frames. Available
+screens are model state in the desktop `goo` array. Real-input goo checks additionally assert
+newer versions on availability changes, exclusion from widget/attention slices, removal on
+live disable and unsupported-GPU fallback, FS1 suspension and resumption. Simulation steps,
+GPU resources and animation samples never enter snapshots.
+
+The isolated `Projects/scottland-goo-merge` checkout on plumbus passed the widget matrix with
+goo off and on (146 checks each, including nested input/process checks), the goo matrix
+(38 normal, 38 packed, 12 flow/FS1/two-output, 3 fallback), and six focused state regressions
+with goo on. The seeded model audit `271828 50` with goo on passed 95 checks, auditing after all 50 real-input operations. Unit/config/focus checks also
+passed; the complete record and retained failed infrastructure attempts are in
+[goo.md](goo.md#main-merge-validation-2026-10-01). No live session or physical screen was used.

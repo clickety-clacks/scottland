@@ -158,7 +158,7 @@ exponential. Invalid curves keep the last valid LUT.
 | Relief | relief | 5 |
 | Density falloff | falloff | empty (exponential) |
 
-## Verification record (2026-10-01)
+## Original branch verification (2026-10-01)
 
 Testing uses the isolated `Projects/scottland-goo` checkout and
 `scottland-headless-goo` session on plumbus, with real stipc pointer, key, touch and drag input.
@@ -213,3 +213,55 @@ tests/widgets-test.sh
 Remaining coverage: physical screen/login, mixed DPI and rotated outputs, very large window counts,
 and theme-file producer changes. The live palette consumer is checked, but no adapter code changes
 were made. Hardware other than plumbus's RX 580 family remains untested.
+
+
+## Main merge validation (2026-10-01)
+
+The goo branch now includes main `a198ede` (the initial code merge was `16286df`), including the desktop model, Super+M fixes,
+L29/L31, FS1 and the shared zone parameter rows. The model supplies goo's logical windows,
+widget lifecycle/away state, attention and drag; the existing frame supplies their rendered
+geometry, focus/attention transitions and collapsed/morph shape. Goo screen availability is
+published in the versioned desktop snapshot. Live disable and unsupported-GPU fallback leave
+no goo screens there; widget/attention slices contain no goo field or simulation samples.
+The old halo is still the shipped default, with `scottland/goo = false`.
+
+Both settings tabs use `ParameterStack`; Layout starts with Center edge softness. The Goo
+stack follows keyboard selection through its scroll area (tenet 2: recognition keeps the
+selected setting visible). The falloff curve still uses the shared curve editor. Real input
+checks cover live row movement, Left/Right, Shift steps, Backspace opening-value reset,
+typed values, navigation to Relief, curve editing, Save, Cancel/Escape and Defaults.
+
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh plumbus
+--tests-only`. All checks ran in that isolated checkout, with scratch files beneath
+`~/.cache/scottland-test-tmp`. Widget and seeded-model runs use the requested
+`$XDG_RUNTIME_DIR/scottland-headless-goo-merge`; goo/panel and focused state regressions
+also used private headless runtimes. Each compositor started on the current build; reload
+checks were confined to those test sessions. No live session on osanwe, other checkout,
+or physical screen on plumbus was installed, reloaded or used. Status remains
+**implemented/headless checked**, not physical-display verification under D2.
+
+| Check | Result |
+|---|---|
+| Widget suite, goo off / on | 146 / 146 passed (including nested input/process checks) |
+| Seeded desktop-model audit, `271828 50`, goo on | 95 passed; audits after all 50 real-input operations |
+| Goo input, palette, panel, screen publication and sleep, RGBA16F / packed GLES 2 | 38 / 38 passed |
+| Wave isolation, wide bridge input, model FS1 and two-output drag | 12 passed |
+| Explicit goo request on unsupported float-texture context, model availability and real halo drag | 3 passed |
+| Focused state regressions, goo on | 6 passed |
+| Attention / widget launcher / widget service unit checks | 5 / 17 / 16 passed |
+| CPU goo field unit executable | all assertions passed |
+| Config builder / focus hooks | 5 rounds of 20 concurrent builds / 3 passed |
+
+The first headless start exposed a merge-resolution newline that detached the backend
+environment; `605264f` fixes it. The first widget run used a private runtime without the
+user systemd socket: six scope/adoption checks failed, including a later fixture-cleanup
+check. Its log is retained as `widgets-off.log`; the final widget matrix uses the requested
+host runtime so the scope checks exercise the real user manager. These failures were not
+worked around by weakening assertions.
+
+Inspected screenshots include the goo bridge and dye, the rebuilt Layout/Goo panel, keyboard
+navigation to the last row, the falloff editor, fullscreen exclusion, cross-output held/drop,
+and halo restoration. Both GPU paths load the panel without QML errors. Local evidence is in `build/merge-goo-evidence`,
+`build/merge-goo-flow-evidence` and `build/merge-evidence`; the plumbus checkout retains the
+same logs and source screenshots. Coverage still excludes physical login/display, mixed DPI,
+rotation, large window counts and hardware beyond plumbus, as required by this task's isolation.
