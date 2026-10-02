@@ -169,7 +169,10 @@ try:
     drag(*center(view("goo-b")), 180, 0, True)
     pointer(20, 20)
     time.sleep(2)
-    gap = sample(590, 320)
+    # Probe the actual dry gap, not the attention-breathing border of the stationary
+    # window: at x=590 that border can cover the old bridge probe at pulse peaks.
+    left = view("goo-a")["frame"]; right = view("goo-b")["frame"]
+    gap = sample((left["x"] + left["width"] + right["x"])/2, 320)
     check("pulling apart snaps the bridge", gap["density"] < gap["threshold"])
     shot("03-gap")
     b = view("goo-b")["frame"]

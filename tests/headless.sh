@@ -54,7 +54,7 @@ case ${1:-} in
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|GOO_NO_SIM|GOO_NO_DRAW|GOO_DAMAGE_LOG|GOO_T_FIELD|GOO_T_UPDATE|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -68,6 +68,9 @@ case ${1:-} in
       # The machine's own Scottland settings (layout.ini, overrides.ini) never reach a test
       # session: it starts from the shipped defaults, whatever the person running it has tuned.
       mkdir -p "$dir/config/scottland"
+      # The private config must start from this checkout, not /usr/share's installed
+      # version (which can load old plugins and decorations into an otherwise new test).
+      cp "$repo/core/config/scottland.ini" "$dir/config/scottland/scottland.ini"
       XDG_CONFIG_HOME=$dir/config "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
       hook_list=${started[*]}
       sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
