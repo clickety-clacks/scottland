@@ -39,7 +39,7 @@ exec), `scottland-widget-bus` (D-Bus, badges, mailbox, state files), the card
 | WG16 | Super+M collapses all widgets to just their icons, or, if they all are, expands them back (`scottland/minimize_widget`). Widgets learn it from the `Minimized` property and the state file; the default card becomes a square around its icon, keeping its screen-edge side; rail gravity and pending placement preserve its screen-edge side without a follow-up corrective move (WG4). Each widget independently morphs from its old snapshot to its new client buffer over 200 ms with smoothstep easing. Capture precedes publication; a 300 ms response bound handles clients that keep their size or do not respond. The frame stays rail-anchored, content stays at natural scale with the card's icon inset interpolated, and premultiplied images mix into one result. Reversing freezes the currently displayed composition. Damage, hit testing and each widget's halo band follow the animated rectangle; when goo is enabled its outline and dye sources follow it too; snapshots and the transition timer end on settlement. See presentation rendering below. Collapsed is a mode: a window widgetized while widgets are collapsed starts collapsed (the first state-file snapshot), and the mode survives a reload. Running previews follow mode changes in `model.widgets` through versioned snapshots, and reconcile to the current mode before transitioning to docked; their apps are still windows until committed. The compatibility `scottland/widgets` read excludes previews; the model subscription includes their lifecycle. A widget docked while collapsed shows its title and app once widgets are expanded again, like any other widget. | implemented (plumbus headless, 2026-10-01: frame sampling, pixel checks and real input; no physical-screen verification) |
 | WG17 | Clicking the default card opens its app's window at its remembered center position, otherwise the least-overlapping full-size spot in the center nearest the card (the shared placement routine, [windowing-keys.md](windowing-keys.md), WP1–WP5): the window flies out of the card and grows to its size there; the card goes. (A click on the card's halo is no move, WG13.) | implemented (headless) |
 | WG18 | A widget whose manifest sets `touch_drag = true` moves with a single-finger drag anywhere on it, at once (no long press), while a tap is still the widget's. For widgets that drag nothing themselves; the default card sets it. Off by default, so a widget's own finger drags (sliders, drawing) stay its own, and it's lifted with a long press as any window. The launcher tells Scottland over IPC (`scottland/widget-traits`). | implemented (headless) |
-| WG19 | Peeking at a collapsed widget: while the pointer is over a collapsed widget it shows expanded (its title and app), and collapses again when the pointer leaves; a collapsed widget that starts needing attention shows expanded for 5 seconds, then collapses. It stays collapsed throughout (Super+M's mode is unchanged): only how it's shown changes, owned by the desktop model with the rest of its presentation. | presentation mechanism implemented (plumbus headless): `collapsed` intent and `peek` are separate, and the same morph presents/ends a peek without changing the mode. Hover and five-second attention triggers are not built. |
+| WG19 | Peeking at a collapsed widget: after 150 ms over its visible card or goo/handles it shows expanded (title and app); leaving for 100 ms collapses it again. Sweeps and brief departures do not flicker. A collapsed widget receiving attention shows expanded for 5 seconds; each renewed attention request restarts that interval, including the same source. A pointer over it at expiry keeps it expanded until leaving. Held drags preserve the current presentation until release. Collapsed intent and Super+M's mode never change: trigger state and temporary presentation belong to the desktop model. Super+M and reload end temporary peeks; fullscreen widgets never peek into view. | implemented (isolated headless); validation below |
 | WG20 | The collapse binding activates once per held key. Duplicate downs, including overlapping devices, do not toggle it again; only release of that key on all held devices rearms it (device removal clears that device). Releasing a modifier does not rearm it. No time debounce discards rapid intentional presses. Edges are tracked and logged only while the binding modifiers are held or a tracked press is in progress (including its release after the modifier); plain typing emits no collapse diagnostics. Those edges record device, input/receipt time, key and latch/mode state; activations and ignored duplicate callbacks are distinct. | verified (plumbus headless 2026-10-01: 10 input/diagnostic checks, including quiet plain-M/Shift+M typing and the tracked release after Super; duplicate down failed before the fix; device overlap/removal not exercised) |
 
 ## Window-to-widget handoff (WG22)
@@ -102,6 +102,50 @@ reversal pixel timing bound. Assertions were not widened. Final logs, sampled ge
 PNG frames are retained locally in `build/wg22-validation.tar.gz`. This is headless validation,
 not physical-display verification or a live-session deployment.
 
+## Peek triggers (WG19)
+
+Tenet 1 (managing attention) chooses a **150 ms enter delay** to ignore rail sweeps and a
+**100 ms leave delay** to absorb small pointer excursions. Tenet 2 (recognition) includes the
+revealed title area and the widget's actual goo/handle hit regions. Proximity lighting alone
+does not count as hover. The animated visible frame and stacking determine the hit, for either
+halo renderer. A held drag freezes presentation; release reconciles hover and attention expiry.
+
+Each model widget owns pointer membership, qualified hover, the pending hover deadline, and
+the attention deadline. A compositor timer observes these during active peeks and delays (including
+geometry changing beneath a stationary pointer); it stops when no peek/hover/grab remains.
+An attention raise starts or restarts five seconds, independently of whether its source was
+already present. Removing a source never renews the interval. Expiry does not acknowledge
+attention or take focus (tenet 5). At expiry, a pointer already inside takes over immediately,
+even if it has not completed the enter delay. Attention received during a grab waits for release
+without resizing under the pointer. Fullscreen suppresses peeks, preserving attention sources
+and focus (tenet 6). Lifecycle exit, Super+M and reload discard transient trigger state.
+
+### WG19 validation (2026-10-02, isolated headless)
+
+Final build in `scottland-peek` (branch `widget-peek`, based on `3f9f906`):
+
+| Suite | Result |
+|---|---|
+| `tests/widgets-test.sh` | **186 passed**, including 40 new WG19 checks and model/service/card-render audits |
+| `tests/widget-morph-test.sh`, goo off | **162 passed** |
+| `tests/widget-morph-test.sh`, goo on | **186 passed** |
+| `tests/windowing-test.sh` | **84 passed** |
+| `tests/widget-input-test.py peek`, goo off | **40 passed**, including both rails, actual handles, stationary grabs and five-second attention timing |
+
+Pointer and keyboard checks use stipc; attention uses `scottland/attention`. Hover screenshots
+were inspected: title and app are visible on the peeking card, while the other card stays
+icon-only. Both the global mode and per-widget collapsed intent remain unchanged. The goo morph
+fixture now establishes expanded intent after launching its widget: toggling without any widgets
+is intentionally a no-op, and an attention peek can no longer mask an incorrect fixture mode.
+
+All sessions used distinct `SCOTTLAND_HEADLESS_DIR` and private runtimes under this checkout's
+`build/`, with only the user manager's socket linked in for the existing process-scope tests.
+The first attempt omitted that socket and failed scope/adoption checks. An earlier concurrent run
+also missed the existing delayed re-grab timing check; the complete final run passed it without
+changing its assertion. Final and earlier logs, screenshots and frame samples are retained in
+`build/wg19-validation.tar.gz`. Headless sessions and their runtimes were stopped and removed.
+No live session or other checkout was used, and no physical-display verification is claimed.
+
 ## Presentation rendering (WG16; mechanism for WG19)
 
 Tenet 2 keeps collapsed intent intact through a temporary peek; tenet 4 keeps the animation
@@ -143,8 +187,8 @@ There is no work from the morph timer once all widgets have settled.
 
 This uses Scottland's GLES frame renderer. Non-GLES rendering retains immediate client
 presentation changes, as it already does for the custom frame effects. Scottland currently has
-no reduced-motion setting to honor. Automatic hover/attention peek triggers remain WG19 work;
-`test-peek` exists only in an isolated `SCOTTLAND_TEST_MODEL` session to exercise the mechanism.
+no reduced-motion setting to honor. WG19 drives this same mechanism from pointer and attention
+inputs; `test-peek` remains an isolated `SCOTTLAND_TEST_MODEL` rendering probe.
 
 `tests/widget-morph-test.sh` samples real Super+M input on both rails and multiple adjacent
 widgets, deliberate reversal, held dragging and gliding, fullscreen, close and marked reload.

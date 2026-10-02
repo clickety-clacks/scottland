@@ -1151,6 +1151,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void track_pointer()
     {
+        update_widget_peeks();
         auto owner = pointer_owner.lock();
         if (owner && owner->is_pressed())
         {
@@ -1321,6 +1322,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         lifecycle_t lifecycle = lifecycle_t::previewing;
         bool collapsed = false;                      // intent, independent of lifecycle and peeks
         bool peek = false;                           // temporary presentation; never changes mode
+        bool peek_pointer = false, peek_hover = false;
+        std::optional<uint32_t> peek_hover_due, peek_attention_due;
         bool minimized() const { return collapsed && !peek; }
         bool away = false;                           // slid off its screen for full-screen focus (FS1)
 
@@ -1556,6 +1559,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return result;
     }
     #include "widget-presentation.hpp"
+    #include "widget-peek.hpp"
 
     bool needs_attention(uint64_t window) const
     {
@@ -1609,7 +1613,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** Show (or stop showing) that a window's app needs attention (WG15): on its halo, or on its
      *  widget's when it's a widget. Announced to IPC subscribers as scottland-attention#. */
-    void show_attention(uint64_t window)
+    void show_attention(uint64_t window, bool raised = false)
     {
         bool on   = needs_attention(window);
         auto link = model.widgets.find(window);
@@ -1626,6 +1630,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (link != model.widgets.end())
         {
+            if (raised && link->second.collapsed && link->second.docked())
+            {
+                link->second.peek_attention_due = now_msec() + 5000;
+                update_widget_peeks();
+            }
             if (auto widget = wf::toplevel_cast(link->second.widget.lock()))
             {
                 if (auto frame = frame_of(widget))
@@ -1766,6 +1775,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         for (auto& [id, link] : model.widgets)
         {
+            reset_widget_peek(link);
             set_widget_presentation(link, !all_minimized); // snapshot before publication, previews too
         }
 
@@ -1845,7 +1855,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         model.windows[view->get_id()].attention.insert("builtin:activation");
-        show_attention(view->get_id());
+        show_attention(view->get_id(), true);
     }
 
     // Requests from the desktop (a switcher) for a widgetized window go to its widget: its
@@ -1910,7 +1920,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             model.windows[window].attention.insert(source);
-            show_attention(window);
+            show_attention(window, true);
         } else if (model.windows[window].attention.erase(source))
         {
             show_attention(window);  // only that source's is taken back
@@ -1951,7 +1961,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.windows[ev->view->get_id()].attention.erase("builtin:urgency");
         }
 
-        show_attention(ev->view->get_id());
+        show_attention(ev->view->get_id(), ev->demands_attention);
     };
     wf::wl_timer<true> widget_watchdog;
     static constexpr uint32_t WIDGET_ADOPT_MS = 8000;  // no widget window by then: give up, restore
@@ -3615,6 +3625,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         } else if (action == "minimize")
         {
+            reset_widget_peek(found->second);
             set_widget_presentation(found->second, !found->second.collapsed);
             announce_widgets();
         } else if (action == "test-peek" && getenv("SCOTTLAND_TEST_MODEL"))
@@ -5864,6 +5875,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
         installing_model = reloading;  // teardown is also part of the atomic handover
+        widget_peek_tick.disconnect();
         goo.stop();
         fini_window_keys();
         key_layers.fini();

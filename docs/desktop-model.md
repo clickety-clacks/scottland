@@ -15,7 +15,7 @@ See [widgets.md](widgets.md#presentation-rendering-wg16-mechanism-for-wg19).
 | Windows, identity, title, size, position, zone, focus, layer | Plugin's desktop model | Wayfire signals supply facts; plugin position/layer commands supply targets. |
 | Zone memories, most recent side, stable hint slot, pending rail placement, label width | Plugin's desktop model (`window_state_t`, width on desktop) | Real placements/drop establish normalized centers. Desktop snapshots publish them; marked reload uses the same atomic handover. Declutter transforms never update them. |
 | Target scale | Plugin's desktop model | Zone/drag rules set it; the scale transformer animates toward it. |
-| Widget lifecycle, rail, drop point, collapsed intent, temporary peek, touch traits | Plugin's desktop model | One lifecycle transition applies visibility; the renderer positions the widget and holds balanced disables. |
+| Widget lifecycle, rail, drop point, collapsed intent, temporary peek and its hover/attention deadlines, touch traits | Plugin's desktop model | One lifecycle transition applies visibility; the renderer positions the widget and holds balanced disables. |
 | Launcher PID, launch unit | Plugin's desktop model | A pidfd event records launcher exit and publishes it; snapshot serialization never probes process liveness. |
 | Resolved desktop identity, name, icon, built-in card trait | Plugin's desktop model | The launcher submits these once for a specific launch unit; there is no identity side file. |
 | Attention source set, per window | Plugin's desktop model | Each source adds/removes its name; `builtin:` names are reserved for plugin inputs, so a configured source cannot clear a bell/urgency. User focus answers all sources. Halos read this set. |

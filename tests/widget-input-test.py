@@ -5,6 +5,7 @@ Run in an otherwise empty --widgets session. Optional arguments select cases.
 The caller owns the headless session; this test closes only windows it launches.
 """
 import argparse
+import ast
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -158,6 +159,144 @@ def cleanup():
             process.wait(timeout=4)
     owned.clear()
     time.sleep(0.5)
+
+
+def peeking():
+    """WG19: production triggers, real pointer/keys and per-source attention IPC."""
+    def away():
+        move(screen["width"] / 2, 50)
+
+    def link(title):
+        return next(w for w in widgets() if w["title"] == title)
+
+    def over(title, handle=False):
+        f = card(title)["frame"]
+        x = f["x"] + f["width"] / 2
+        if handle:
+            x = f["x"] - 4 if link(title)["rail"] == "right" else f["x"] + f["width"] + 4
+        move(x, f["y"] + f["height"] / 2)
+
+    def shown(title, expanded):
+        wait_for(lambda: link(title)["peek"] == expanded and
+                 (card(title)["frame"]["width"] > 120 if expanded else
+                  abs(card(title)["frame"]["width"] - 96) < 1))
+        check("WG19 expanded" if expanded else "WG19 collapsed",
+              link(title)["collapsed"] and link(title)["minimized"] != expanded and
+              ipc.call("scottland/desktop-model")["collapsed"], link(title))
+
+    for rail in ("left", "right"):
+        title = "peek-" + rail
+        launch(title, rail=rail, y=240 if rail == "left" else 430)
+        away()
+        if not link(title)["collapsed"]:
+            toggle()
+        time.sleep(.6)
+        over(title)
+        time.sleep(.04)
+        check("WG19 rail sweep does not expand " + rail, not link(title)["peek"])
+        away()
+        time.sleep(.25)
+        check("WG19 leaving before hover intent cancels " + rail, not link(title)["peek"])
+        over(title)
+        shown(title, True)
+        time.sleep(.4)
+        observed = json.loads(ast.literal_eval(subprocess.check_output([
+            "gdbus", "call", "--session", "--dest", "org.scottland.Widgets",
+            "--object-path", "/org/scottland/Widgets", "--method",
+            "org.scottland.Diagnostics.Snapshot"], text=True))[0])
+        audit = ipc.call("scottland/audit-model", {"service": observed})
+        check("WG19 model, service and card text agree while peeking " + rail, audit["ok"], audit)
+        if args.log:
+            artifacts = args.log.parent.with_name(args.log.parent.name + ".results")
+            artifacts.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["grim", str(artifacts / (title + ".png"))], check=True)
+        # Cross into the newly revealed title area (outside the original icon).
+        f = card(title)["frame"]
+        move(f["x"] + (f["width"] - 25 if rail == "left" else 25), f["y"] + f["height"] / 2)
+        time.sleep(.25)
+        check("WG19 revealed title retains hover " + rail, link(title)["peek"])
+        away(); time.sleep(.03); over(title)
+        time.sleep(.2)
+        check("WG19 brief leave is absorbed by hysteresis " + rail, link(title)["peek"])
+        over(title, handle=True)
+        time.sleep(.3)
+        check("WG19 goo/handle retains hover " + rail, link(title)["peek"])
+        away()
+        shown(title, False)
+        over(title, handle=True)
+        shown(title, True)
+        away()
+        shown(title, False)
+
+    # Give another ordinary app focus: hover must neither focus nor answer attention.
+    launch("peek-focus", rail=None)
+    away()
+    title = "peek-right"
+    window = app(title)["id"]
+    focus = ipc.call("window-rules/get-focused-view")["info"]["id"]
+    def attention(on=True, source="peek-test"):
+        ipc.call("scottland/attention", {"window": window, "attention": on, "source": source})
+
+    attention()
+    started = time.monotonic()
+    shown(title, True)
+    time.sleep(max(0, 4.7 - (time.monotonic() - started)))
+    check("WG19 attention remains expanded before five seconds", link(title)["peek"])
+    wait_for(lambda: not link(title)["peek"], timeout=1)
+    elapsed = time.monotonic() - started
+    check("WG19 attention expires at five seconds", 4.95 <= elapsed < 5.4, elapsed)
+    shown(title, False)
+    check("WG19 peek expiry preserves attention and focus", link(title)["urgent"] and
+          ipc.call("window-rules/get-focused-view")["info"]["id"] == focus)
+
+    attention()  # already-raised source is still a new request
+    shown(title, True)
+    time.sleep(2.6)
+    attention()  # the same source, still raised
+    time.sleep(2.6)
+    check("WG19 re-raised same-source attention restarts five seconds", link(title)["peek"])
+    attention(source="peek-second")
+    restarted = time.monotonic()
+    time.sleep(2.6)
+    check("WG19 another source restarts five seconds", link(title)["peek"])
+    # Enter just before expiry; remaining hover may be shorter than the enter delay.
+    time.sleep(max(0, 4.92 - (time.monotonic() - restarted)))
+    over(title)
+    time.sleep(.4)
+    check("WG19 pointer holds attention peek after deadline", link(title)["peek"])
+    away(); shown(title, False)
+    attention(False); attention(False, "peek-second")
+
+    # A grab exists before its first motion: do not expand beneath a held click.
+    over(title)
+    key("LEFTMETA", True)
+    ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+    time.sleep(.4)
+    check("WG19 pending drag does not expand under a stationary grab", not link(title)["peek"])
+    move(screen["width"] - 8, 490)
+    time.sleep(.3)
+    check("WG19 icon-only drag stays icon-only while held", not link(title)["peek"])
+    drag_end(); away(); shown(title, False)
+
+    # Freeze an expanded peek while a real Super drag is held on the rail.
+    over(title); shown(title, True)
+    drag_begin(card(title), screen["width"] - 8, 520)
+    time.sleep(.35)
+    check("WG19 held widget drag keeps peek and collapsed intent", link(title)["peek"] and link(title)["collapsed"])
+    drag_end(); away(); shown(title, False)
+    check("WG19 drag release keeps widget docked", link(title)["lifecycle"] == "docked")
+
+    over(title); shown(title, True)
+    toggle(); away(); time.sleep(.6)
+    check("WG19 Super+M changes intent and ends peek", not link(title)["collapsed"] and not link(title)["peek"])
+    toggle(); time.sleep(.5)
+    over(title); time.sleep(.03)
+    ipc.call("window-rules/close-view", {"id": window})
+    time.sleep(.4)
+    check("WG19 closing during hover delay leaves no stale peek", not app(title) and not card(title))
+    # Leave expanded mode for the older cases that follow in the same session.
+    if link("peek-left")["collapsed"]:
+        toggle()
 
 
 def held_key():
@@ -384,7 +523,7 @@ def shortcuts():
 
 
 if __name__ == "__main__":
-    cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts}
+    cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts, "peek": peeking}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
     parser.add_argument("cases", nargs="*", choices=list(cases))

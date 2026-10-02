@@ -222,8 +222,8 @@ void begin_widget_transition(widget_link_t& link, bool target)
         widget_transition_tick.set_timeout(8, [=] { return step_widget_transitions(); });
 }
 
-// All presentation changes come through here, before announcing the model. A future hover
-// or attention peek uses the same operation with peek=true, without changing collapsed intent.
+// All presentation changes, including hover/attention peeks, come through here before
+// announcing the model. Peek never changes collapsed intent.
 void set_widget_presentation(widget_link_t& link, bool collapsed, bool peek = false)
 {
     bool target = collapsed && !peek;
