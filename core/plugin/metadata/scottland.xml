@@ -33,9 +33,9 @@
 			<max>1</max>
 		</option>
 		<option name="blend_width" type="double">
-			<_short>Center edge blend (pt)</_short>
+			<_short>Center edge softness (pt)</_short>
 			<_long>Width of the band just outside the center zone where the scale eases smoothly from 100% into the scale curve, instead of changing abruptly at the edge.</_long>
-			<default>3</default>
+			<default>40</default>
 			<min>0</min>
 			<max>400</max>
 		</option>

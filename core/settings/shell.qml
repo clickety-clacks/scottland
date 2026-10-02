@@ -19,7 +19,7 @@ ShellRoot {
   readonly property string layoutFile: Quickshell.env("SCOTTLAND_LAYOUT_FILE")
     || (Quickshell.env("HOME") + "/.config/scottland/layout.ini")
 
-  readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 3,
+  readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 40,
     curve: [{ x: 0, y: 1 }, { x: 1, y: 0.2 }] })
   property var original: null
   property real centerWidth: defaults.center_width
@@ -33,7 +33,7 @@ ShellRoot {
   property var unsupported: []
   readonly property var settingNames: ({ center_width: "Center zone width", rail_width: "Widget rail width",
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
-    blend_width: "Center edge blend" })
+    blend_width: "Center edge softness" })
 
   readonly property color panelColor: "#f21c1d22"
   readonly property color textColor: "#e6e6e9"
@@ -310,54 +310,30 @@ ShellRoot {
             + ". This session's plugin is older; your values are still saved."
         }
 
-        component SettingRow: ColumnLayout {
-          id: row
-          property string title
-          property string valueText
-          property alias from: slider.from
-          property alias to: slider.to
-          property alias stepSize: slider.stepSize
-          property real value
-          signal moved(real value)
-          Layout.fillWidth: true
-          spacing: 2
-
-          RowLayout {
-            Layout.fillWidth: true
-            Text { text: row.title; color: root.textColor; font.pixelSize: 14; Layout.fillWidth: true }
-            Text { text: row.valueText; color: root.accent; font.pixelSize: 14 }
-          }
-          Slider {
-            id: slider
-            Layout.fillWidth: true
-            value: row.value
-            onMoved: row.moved(value)
-          }
-        }
-
-        SettingRow {
-          title: "Center zone width"
-          valueText: root.centerWidth.toFixed(1) + "% of the screen"
-          from: 10; to: 90; stepSize: 0.5
-          value: root.centerWidth
-          onMoved: v => root.centerWidth = v
-        }
-
-        SettingRow {
+        // The zone settings: one stack of rows, each row a slider (ParameterStack.qml).
+        ParameterStack {
+          id: zoneSettings
           readonly property real screenWidth: Quickshell.screens.length > 0 ? Quickshell.screens[0].width : 0
-          title: "Widget rail width"
-          valueText: root.railWidth.toFixed(1) + "% · " + Math.round(screenWidth * root.railWidth / 100) + " pt"
-          from: 0.5; to: 10; stepSize: 0.1
-          value: root.railWidth
-          onMoved: v => root.railWidth = v
-        }
-
-        SettingRow {
-          title: "Center edge blend"
-          valueText: Math.round(root.blendWidth) + " pt"
-          from: 0; to: 100; stepSize: 1
-          value: root.blendWidth
-          onMoved: v => root.blendWidth = v
+          Layout.fillWidth: true
+          foreground: root.textColor
+          accent: root.accent
+          focus: true
+          rows: [
+            { id: "blend_width", label: "Center edge softness", min: 0, max: 300, step: 1, largeStep: 10,
+              display: v => Math.round(v) + " pt" },
+            { id: "center_width", label: "Center zone width", min: 10, max: 90, step: 0.5, largeStep: 5,
+              display: v => v.toFixed(1) + "%" },
+            { id: "rail_width", label: "Widget rail width", min: 0.5, max: 10, step: 0.1, largeStep: 1,
+              display: v => v.toFixed(1) + "% · " + Math.round(screenWidth * v / 100) + " pt" },
+          ]
+          values: ({ blend_width: root.blendWidth, center_width: root.centerWidth, rail_width: root.railWidth })
+          opening: root.original ? ({ blend_width: root.original.blend_width, center_width: root.original.center_width,
+            rail_width: root.original.rail_width }) : ({})
+          onChanged: (id, value) => {
+            if (id === "blend_width") root.blendWidth = value
+            else if (id === "center_width") root.centerWidth = value
+            else if (id === "rail_width") root.railWidth = value
+          }
         }
 
         // Scale curve editor.
