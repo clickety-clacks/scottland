@@ -123,6 +123,15 @@
         }
         return rectangles;
     }
+    // Windows Scottland places keep off the screen's edges by the halo's width plus 5 pt, whenever
+    // they fit (WP7); one bigger than the screen in a dimension isn't padded in that dimension.
+    static constexpr double SCREEN_PADDING = scottland::HALO + 5;
+    static wf::geometry_t padded(wf::geometry_t a, double w, double h)
+    {
+        int px = (w + 2 * SCREEN_PADDING <= a.width) ? int(std::ceil(SCREEN_PADDING)) : 0;
+        int py = (h + 2 * SCREEN_PADDING <= a.height) ? int(std::ceil(SCREEN_PADDING)) : 0;
+        return {a.x + px, a.y + py, a.width - 2 * px, a.height - 2 * py};
+    }
     scottland::windowing::rectangle side_region(wf::output_t *output, bool left, bool rail)
     {
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
@@ -130,6 +139,11 @@
         double center_edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
         double lo = rail ? 0 : edge + 1, hi = rail ? edge : center_edge - 1;
         if (hi < lo) hi = lo;
+        if (!rail)  // (rails keep their own inset, WIDGET_INSET, which is wider)
+        {
+            a = padded(a, 0, 0);
+        }
+
         return {left ? lo : screen.width - hi, double(a.y), hi - lo, double(a.height)};
     }
     bool placement_side(wayfire_toplevel_view window, scottland::windowing::point current, bool rail)
@@ -158,6 +172,11 @@
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
         double w = g.width, h = g.height;
+        if (z == Z::center)
+        {
+            a = padded(a, w, h);
+        }
+
         scottland::windowing::rectangle region{double(a.x), double(a.y), double(a.width), double(a.height)};
         if (z == Z::center)
         {
@@ -195,6 +214,11 @@
                     double scale = place_at(x, screen.width).scale;
                     w = g.width * scale; h = g.height * scale;
                     region.x = side.x - w / 2; region.width = side.width + w;
+                    // ...and wholly on screen with its padding (WP7), when it fits.
+                    auto pa = padded(output->workarea->get_workarea(), w, h);
+                    double right = std::min(region.x + region.width, double(pa.x + pa.width));
+                    region.x = std::max(region.x, double(pa.x));
+                    region.width = std::max(w, right - region.x);
                     spot = scottland::windowing::place_rectangle(w, h, region, obstacles, current, remembered);
                     if (std::abs(spot.x - x) < 0.01) break;
                     x = spot.x;

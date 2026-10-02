@@ -372,18 +372,19 @@ def shortcuts():
             time.sleep(0.8)
 
 
-cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts}
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
-parser.add_argument("cases", nargs="*", choices=list(cases))
-args = parser.parse_args()
-try:
-    ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
-    for name in args.cases or cases:
-        try:
-            cases[name]()
-        finally:
-            cleanup()
-finally:
-    print(f"widget input regressions: {passes} passed, {failures} failed", flush=True)
-sys.exit(bool(failures))
+if __name__ == "__main__":
+    cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts}
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
+    parser.add_argument("cases", nargs="*", choices=list(cases))
+    args = parser.parse_args()
+    try:
+        ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
+        for name in args.cases or cases:
+            try:
+                cases[name]()
+            finally:
+                cleanup()
+    finally:
+        print(f"widget input regressions: {passes} passed, {failures} failed", flush=True)
+    sys.exit(bool(failures))

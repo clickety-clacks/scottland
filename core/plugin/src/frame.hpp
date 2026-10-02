@@ -37,6 +37,7 @@
 #include <ctime>
 #include <functional>
 #include <vector>
+#include "widget-morph.hpp"
 
 namespace scottland
 {
@@ -395,6 +396,7 @@ struct gl_programs_t
             });
             ready = false;
         }
+        widget_morph_renderer().release();
     }
 };
 
@@ -415,6 +417,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     std::function<void(wayfire_toplevel_view, handle_t, int touch_id)> on_press;
     std::function<void(wayfire_toplevel_view)> on_close;  // the close dot (default: close the view)
     std::function<void()> on_reshape;  // its halo's reach changed (swelling, breathing): neighbors re-merge
+    std::shared_ptr<widget_morph_t> presentation;
 
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
@@ -462,13 +465,49 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     float get_scale_x() const override
     {
         double own = scale_x * (1.0 + bulge);
+        if (presentation && window_geometry().width > 0)
+            own = presentation->width / window_geometry().width;
         return morph.shape > 0.0005 ? blend_size(own, morph.w, window_geometry().width) : own;
     }
 
     float get_scale_y() const override
     {
         double own = scale_y * (1.0 + bulge);
+        if (presentation && window_geometry().height > 0)
+            own = presentation->height / window_geometry().height;
         return morph.shape > 0.0005 ? blend_size(own, morph.h, window_geometry().height) : own;
+    }
+
+    float get_translation_x() const override
+    {
+        // The base transformer scales about the center. Cancel its movement of the
+        // rail-side edge, without stealing the translation owned by a glide.
+        return translation_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
+            (window_geometry().width - presentation->width) * 0.5 : 0);
+    }
+
+    float get_translation_y() const override
+    {
+        return translation_y + (presentation ? presentation->dy : 0);
+    }
+
+    wf::pointf_t to_local(const wf::pointf_t& at) override
+    {
+        if (!presentation || morphing()) return view_2d_transformer_t::to_local(at);
+        auto r = screen_rect();
+        auto g = window_geometry();
+        auto& p = *presentation;
+        double target_inset = p.to ? p.to.inset : p.from.inset;
+        return {g.x + at.x - r.x1 + (p.right ? g.width - r.width() : 0) +
+            (p.right ? 1 : -1) * (p.inset - target_inset),
+            g.y + at.y - r.y1 + (g.height - r.height()) / 2};
+    }
+
+    wf::pointf_t to_global(const wf::pointf_t& at) override
+    {
+        if (!presentation || morphing()) return view_2d_transformer_t::to_global(at);
+        auto origin = to_local({0, 0});
+        return {at.x - origin.x, at.y - origin.y};
     }
 
     /** The scale that draws a side `size` long as the blend of its own scaled length and `other`. */
@@ -780,7 +819,15 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return wf::scene::input_node_t{.node = this, .local_coords = at};
         }
 
-        return view_2d_transformer_t::find_node_at(at);
+        if (presentation && round_box_distance(at, screen_rect(), screen_radius()) > 0)
+            return {};
+        auto hit = view_2d_transformer_t::find_node_at(at);
+        // During collapse some visible pixels still belong to the old, wider surface.
+        // They have no live client coordinate: consume them instead of clicking through
+        // the visible snapshot into an unrelated window underneath it.
+        if (!hit && presentation)
+            return wf::scene::input_node_t{.node = this, .local_coords = to_local(at)};
+        return hit;
     }
 
     wf::pointer_interaction_t& pointer_interaction() override
@@ -1240,7 +1287,12 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                     draw_halo(programs.halo, ortho, pixel, alpha);
                 }
 
-                if (!self->morphing())
+                if (self->presentation && !self->morphing())
+                {
+                    auto r = self->screen_rect();
+                    widget_morph_renderer().draw(*self->presentation, data.target,
+                        r.x1, r.y1, r.width(), r.height(), self->screen_radius(), alpha);
+                } else if (!self->morphing())
                 {
                     draw_window(programs.window, tex, bbox, ortho * flat, geometry, window_aa, alpha);
                 } else
@@ -1250,8 +1302,12 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                     auto r = self->screen_rect();
                     double radius = self->screen_radius();
                     double fade   = std::clamp(self->morph.fade, 0.0, 1.0);
-                    draw_covering(programs.window, tex, bbox, geometry, r, radius, ortho, pixel,
-                        alpha * (1.0 - fade), false);
+                    if (self->presentation)
+                        widget_morph_renderer().draw(*self->presentation, data.target,
+                            r.x1, r.y1, r.width(), r.height(), radius, alpha * (1.0 - fade));
+                    else
+                        draw_covering(programs.window, tex, bbox, geometry, r, radius, ortho, pixel,
+                            alpha * (1.0 - fade), false);
                     if (other && (fade > 0.001))
                     {
                         draw_covering(programs.window, *other, self->morph.snapshot_box,
