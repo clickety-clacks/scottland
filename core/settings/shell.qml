@@ -6,7 +6,7 @@ import Quickshell.Io
 import Quickshell.Wayland
 
 // Scottland layout and goo settings. Changes apply to the running session immediately while
-// a click-through overlay shows the five zones on every screen. Save writes
+// an overlay with input only on border handles shows the five zones on every screen. Save writes
 // ~/.config/scottland/layout.ini; Cancel or Escape restores the values from when it opened.
 //
 // The scale curve sets how windows shrink across the side zones: t = 0 is the center zone's
@@ -22,21 +22,21 @@ ShellRoot {
   readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 40,
     curve: [{ x: 0, y: 1 }, { x: 1, y: 0.2 }] })
   readonly property var gooControls: [
-    { name: "goo_thickness", title: "Border thickness", initial: 13, low: 4, high: 40, step: 1 },
-    { name: "goo_reach", title: "Reach", initial: 24, low: 6, high: 70, step: 1 },
-    { name: "goo_thinning", title: "Bridge draw", initial: 0.45, low: 0, high: 1, step: 0.01 },
-    { name: "goo_swell", title: "Swell", initial: 0.7, low: 0, high: 2, step: 0.01 },
-    { name: "goo_noise", title: "Mess", initial: 0.32, low: 0, high: 0.9, step: 0.01 },
-    { name: "goo_lump", title: "Lump size", initial: 190, low: 40, high: 500, step: 5 },
-    { name: "goo_drift", title: "Drift", initial: 0.12, low: 0, high: 0.6, step: 0.01 },
-    { name: "goo_wave_speed", title: "Wave speed", initial: 0.28, low: 0.05, high: 0.5, step: 0.01 },
-    { name: "goo_wave_damp", title: "Wave persistence", initial: 0.985, low: 0.9, high: 0.998, step: 0.001 },
-    { name: "goo_wave_height", title: "Wave height", initial: 0.55, low: 0, high: 1.5, step: 0.01 },
-    { name: "goo_spread", title: "Dye spread", initial: 0.45, low: 0, high: 0.9, step: 0.01 },
-    { name: "goo_swirl", title: "Dye swirl", initial: 0.9, low: 0, high: 3, step: 0.05 },
-    { name: "goo_release", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
-    { name: "goo_shine", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
-    { name: "goo_relief", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 }]
+    { name: "goo_thickness", hint: "Width of the resting goo border. Higher makes it thicker; lower makes it finer.", title: "Border thickness", initial: 13, low: 4, high: 40, step: 1 },
+    { name: "goo_reach", hint: "How far goo reaches toward nearby windows. Higher joins wider gaps; lower keeps it close.", title: "Reach", initial: 24, low: 6, high: 70, step: 1 },
+    { name: "goo_thinning", hint: "How much a bridge thins the borders feeding it. Higher thins more; lower keeps them fuller.", title: "Bridge draw", initial: 0.45, low: 0, high: 1, step: 0.01 },
+    { name: "goo_swell", hint: "How much goo grows when a window is revealed. Higher swells more; lower stays nearer its resting width.", title: "Swell", initial: 0.7, low: 0, high: 2, step: 0.01 },
+    { name: "goo_noise", hint: "Unevenness along the goo edge. Higher makes it lumpier; lower makes it smooth.", title: "Mess", initial: 0.32, low: 0, high: 0.9, step: 0.01 },
+    { name: "goo_lump", hint: "Size of the uneven patches. Higher makes broad lumps; lower makes small bumps.", title: "Lump size", initial: 190, low: 40, high: 500, step: 5 },
+    { name: "goo_drift", hint: "How fast lumps wander while goo is awake. Higher moves faster; zero holds them still.", title: "Drift", initial: 0.12, low: 0, high: 0.6, step: 0.01 },
+    { name: "goo_wave_speed", hint: "How fast ripples travel through connected goo. Higher travels faster; lower moves slowly.", title: "Wave speed", initial: 0.28, low: 0.05, high: 0.5, step: 0.01 },
+    { name: "goo_wave_damp", hint: "How long ripples linger. Higher fades slowly; lower settles sooner.", title: "Wave persistence", initial: 0.985, low: 0.9, high: 0.998, step: 0.001 },
+    { name: "goo_wave_height", hint: "How much ripples move the goo edge. Higher makes bigger waves; zero hides their motion.", title: "Wave height", initial: 0.55, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_spread", hint: "How quickly nearby dye colors mix. Higher blends faster; lower keeps colors more local.", title: "Dye spread", initial: 0.45, low: 0, high: 0.9, step: 0.01 },
+    { name: "goo_swirl", hint: "How strongly dye flows around in goo. Higher stirs more; zero stops the swirling.", title: "Dye swirl", initial: 0.9, low: 0, high: 3, step: 0.05 },
+    { name: "goo_release", hint: "How quickly a window renews its dye. Higher shows state colors sooner; lower lets old colors linger.", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
+    { name: "goo_shine", hint: "Brightness of reflected highlights. Higher looks glossier; zero removes the shine.", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 }]
   function gooDefaults() {
     const values = { goo: true, goo_falloff: "" }
     for (const c of gooControls) values[c.name] = c.initial
@@ -63,7 +63,7 @@ ShellRoot {
       if (unsupported.indexOf(key) < 0) supported[key] = values[key]
     live.write("batch " + JSON.stringify(supported) + "\n")
   }
-  onGooValuesChanged: if (loaded) push.restart()
+  onGooValuesChanged: if (loaded && !push.running) push.start()
   property var original: null
   property real centerWidth: defaults.center_width
   property real railWidth: defaults.rail_width
@@ -149,10 +149,10 @@ ShellRoot {
       min_scale: Number(points[points.length - 1].y.toFixed(3)), max_scale: Number(points[0].y.toFixed(3)) })
   }
 
-  onCenterWidthChanged: if (loaded) push.restart()
-  onRailWidthChanged: if (loaded) push.restart()
-  onCurvePointsChanged: if (loaded) push.restart()
-  onBlendWidthChanged: if (loaded) push.restart()
+  onCenterWidthChanged: if (loaded && !push.running) push.start()
+  onRailWidthChanged: if (loaded && !push.running) push.start()
+  onCurvePointsChanged: if (loaded && !push.running) push.start()
+  onBlendWidthChanged: if (loaded && !push.running) push.start()
 
   Process {
     id: reader
@@ -248,16 +248,34 @@ ShellRoot {
       anchors { top: true; bottom: true; left: true; right: true }
       color: "transparent"
       exclusionMode: ExclusionMode.Ignore
-      mask: Region {}
-      WlrLayershell.layer: WlrLayer.Overlay
+      mask: Region {
+        Region { item: centerLeftHandle }
+        Region { item: centerRightHandle }
+        Region { item: railLeftHandle }
+        Region { item: railRightHandle }
+        Region { item: blendLeftHandle }
+        Region { item: blendRightHandle }
+      }
+      WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
+      // Keep the controls above the zones even after a border receives pointer focus.
+      WlrLayershell.layer: WlrLayer.Top
       WlrLayershell.namespace: "scottland-zones"
 
       Item {
         id: zones
         anchors.fill: parent
+        focus: true
+        Keys.onEscapePressed: root.cancel()
+        Keys.onReturnPressed: root.save()
         readonly property real rail: width * root.railWidth / 100
         readonly property real centerLeft: width * (0.5 - root.centerWidth / 200)
         readonly property real centerRight: width * (0.5 + root.centerWidth / 200)
+
+        // Match place() in scottland.cpp: softness is in logical points, capped at half
+        // the available side span. Percent widths use this output, never the first screen.
+        readonly property real blend: Math.min(root.blendWidth, Math.max(0, centerLeft - rail) / 2)
+        readonly property real blendLeft: centerLeft - blend
+        readonly property real blendRight: centerRight + blend
 
         // Continuous zones: shading deepens as the curve takes windows smaller.
         component CurveShade: Rectangle {
@@ -273,16 +291,77 @@ ShellRoot {
             GradientStop { position: 1; color: shade(mirrored ? 1 : 0) }
           }
         }
-        CurveShade { x: zones.rail; width: Math.max(0, zones.centerLeft - zones.rail) }
-        CurveShade { x: zones.centerRight; width: Math.max(0, zones.width - zones.rail - zones.centerRight); mirrored: true }
+        CurveShade { x: zones.rail; width: Math.max(0, zones.blendLeft - zones.rail) }
+        CurveShade { x: zones.blendRight; width: Math.max(0, zones.width - zones.rail - zones.blendRight); mirrored: true }
 
         // Widget rails.
         Rectangle { x: 0; width: zones.rail; height: parent.height; color: Qt.rgba(0.88, 0.69, 0.41, 0.45) }
         Rectangle { x: zones.width - zones.rail; width: zones.rail; height: parent.height; color: Qt.rgba(0.88, 0.69, 0.41, 0.45) }
 
-        // Center zone edges.
-        Rectangle { x: zones.centerLeft - 1; width: 2; height: parent.height; color: root.accent }
-        Rectangle { x: zones.centerRight - 1; width: 2; height: parent.height; color: root.accent }
+        // The blend band is outside the full-scale center, distinct from the scale curve.
+        Rectangle { x: zones.blendLeft; width: zones.blend; height: parent.height
+          color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28) }
+        Rectangle { x: zones.centerRight; width: zones.blend; height: parent.height
+          color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28) }
+
+        component BorderHandle: Item {
+          id: handle
+          required property string setting
+          required property real edge
+          required property bool rightSide
+          required property int lane
+          required property color tint
+          // At zero softness (or overlapping center/rail edges), preserve every target.
+          readonly property bool crowded: setting === "center_width"
+            ? zones.blend < 14 || Math.abs(zones.centerLeft - zones.rail) < 14
+            : Math.abs(edge - (rightSide ? zones.centerRight : zones.centerLeft)) < 14
+          x: Math.round(edge) - 6
+          y: crowded ? lane * zones.height / 3 : 0
+          width: 12
+          height: crowded ? zones.height / 3 : zones.height
+          Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: borderMouse.containsMouse || borderMouse.pressed ? 4 : 2
+            height: parent.height
+            color: borderMouse.containsMouse || borderMouse.pressed ? root.textColor : handle.tint
+          }
+          // A visible grip identifies the input strip; shading elsewhere is click-through.
+          Rectangle {
+            anchors.centerIn: parent
+            width: 10; height: 36; radius: 4
+            color: borderMouse.containsMouse || borderMouse.pressed ? root.textColor : handle.tint
+          }
+          MouseArea {
+            id: borderMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            preventStealing: true
+            cursorShape: Qt.SizeHorCursor
+            property real startX
+            property real startValue
+            onPressed: mouse => {
+              zones.forceActiveFocus()
+              startX = mapToItem(zones, mouse.x, mouse.y).x
+              startValue = handle.setting === "center_width" ? root.centerWidth
+                : handle.setting === "rail_width" ? root.railWidth : zones.blend
+            }
+            onPositionChanged: mouse => {
+              if (!pressed) return
+              const dx = mapToItem(zones, mouse.x, mouse.y).x - startX
+              const direction = handle.rightSide ? 1 : -1
+              zoneSettings.typed = ""
+              if (handle.setting === "center_width") zoneSettings.set(1, startValue + direction * dx * 200 / zones.width)
+              else if (handle.setting === "rail_width") zoneSettings.set(2, startValue - direction * dx * 100 / zones.width)
+              else zoneSettings.set(0, startValue + direction * dx)
+            }
+          }
+        }
+        BorderHandle { id: centerLeftHandle; setting: "center_width"; edge: zones.centerLeft; rightSide: false; lane: 0; tint: root.accent }
+        BorderHandle { id: centerRightHandle; setting: "center_width"; edge: zones.centerRight; rightSide: true; lane: 0; tint: root.accent }
+        BorderHandle { id: railLeftHandle; setting: "rail_width"; edge: zones.rail; rightSide: false; lane: 1; tint: root.railColor }
+        BorderHandle { id: railRightHandle; setting: "rail_width"; edge: zones.width - zones.rail; rightSide: true; lane: 1; tint: root.railColor }
+        BorderHandle { id: blendLeftHandle; setting: "blend_width"; edge: zones.blendLeft; rightSide: false; lane: 2; tint: root.dimText }
+        BorderHandle { id: blendRightHandle; setting: "blend_width"; edge: zones.blendRight; rightSide: true; lane: 2; tint: root.dimText }
 
         component ZoneLabel: Rectangle {
           property alias text: label.text
@@ -405,10 +484,13 @@ ShellRoot {
           focus: true
           rows: [
             { id: "blend_width", label: "Center edge softness", min: 0, max: 300, step: 1, largeStep: 10,
+              hint: "Where shrinking eases in outside the center. Higher makes a wider, gentler band; zero makes a sharp edge.",
               display: v => Math.round(v) + " pt" },
             { id: "center_width", label: "Center zone width", min: 10, max: 90, step: 0.5, largeStep: 5,
+              hint: "Space where windows stay full size. Higher widens the center; lower gives more space to the sides.",
               display: v => v.toFixed(1) + "%" },
             { id: "rail_width", label: "Widget rail width", min: 0.5, max: 10, step: 0.1, largeStep: 1,
+              hint: "Edge strips where windows become widgets. Higher makes wider rails; lower leaves more room for windows.",
               display: v => v.toFixed(1) + "% · " + Math.round(screenWidth * v / 100) + " pt" },
           ]
           values: ({ blend_width: root.blendWidth, center_width: root.centerWidth, rail_width: root.railWidth })
@@ -436,7 +518,7 @@ ShellRoot {
           foreground: root.textColor
           accent: root.accent
           rows: root.gooControls.map(c => ({ id: c.name, label: c.title, min: c.low, max: c.high,
-            step: c.step, largeStep: c.step * 10, decimals: c.step < 0.01 ? 3 : c.step < 1 ? 2 : 0 }))
+            hint: c.hint, step: c.step, largeStep: c.step * 10, decimals: c.step < 0.01 ? 3 : c.step < 1 ? 2 : 0 }))
           values: root.gooValues
           opening: root.original && root.original.goo ? root.original.goo : ({})
           onChanged: (id, value) => root.setGoo(id, value)

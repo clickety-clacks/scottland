@@ -7,7 +7,7 @@ import QtQuick
 // double-click resets a row to the value it had when the panel opened. Escape and Return are left
 // to the panel (cancel and save). After the shared parameter-slider design (widgets skill).
 //
-// rows: [{ id, label, min, max, step, largeStep, decimals, suffix, display(value) }]
+// rows: [{ id, label, min, max, step, largeStep, decimals, suffix, hint, display(value) }]
 // values: { id: value }, kept by the owner; changes come back through changed(id, value).
 // opening: { id: value } when the panel opened, for reset and the modified color.
 FocusScope {
@@ -22,6 +22,8 @@ FocusScope {
   property int rowHeight: 58
   property int selected: 0
   property string typed: ""
+  property int hovered: -1
+  readonly property int hinted: hovered >= 0 ? hovered : activeFocus ? selected : -1
   signal changed(string id, real value)
 
   implicitHeight: rows.length * rowHeight + Math.max(0, rows.length - 1)
@@ -74,6 +76,9 @@ FocusScope {
       typed += event.text
       if (isFinite(Number(typed))) set(selected, Number(typed))
     } else return  // Escape, Return and the rest go to the panel
+    // The most recent input decides which row explains itself. A stationary pointer
+    // must not hide the hint for a newly keyboard-selected row.
+    hovered = -1
     event.accepted = true
   }
   onActiveFocusChanged: if (!activeFocus) typed = ""
@@ -132,7 +137,7 @@ FocusScope {
           Text {
             id: valueText
             anchors.right: parent.right; anchors.rightMargin: 18
-            anchors.verticalCenter: track.verticalCenter
+            y: rowItem.index === stack.hinted ? 3 : (stack.rowHeight - height) / 2
             text: stack.shown(rowItem.modelData, rowItem.index)
             color: stack.isModified(rowItem.modelData) ? stack.modified : stack.foreground
             font.pixelSize: 21
@@ -140,7 +145,22 @@ FocusScope {
             font.features: { "tnum": 1 }
           }
 
+          Text {
+            anchors { left: parent.left; right: parent.right; bottom: track.bottom
+              leftMargin: 18; rightMargin: 18; bottomMargin: 4 }
+            visible: rowItem.index === stack.hinted
+            text: rowItem.modelData.hint || ""
+            color: stack.foreground
+            opacity: 0.85
+            font.pixelSize: 11
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+          }
+
           MouseArea {
+            hoverEnabled: true
+            onEntered: stack.hovered = rowItem.index
+            onExited: if (stack.hovered === rowItem.index) stack.hovered = -1
             width: parent.width; height: stack.rowHeight
             preventStealing: true
             cursorShape: Qt.SizeHorCursor
@@ -154,7 +174,10 @@ FocusScope {
               stack.selected = rowItem.index
               apply(mouse.x)
             }
-            onPositionChanged: mouse => { if (pressed) apply(mouse.x) }
+            onPositionChanged: mouse => {
+              if (pressed) apply(mouse.x)
+              else stack.hovered = rowItem.index
+            }
             onDoubleClicked: stack.reset(rowItem.index)
           }
         }
