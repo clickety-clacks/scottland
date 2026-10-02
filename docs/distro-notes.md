@@ -13,6 +13,10 @@ come up, so the decision isn't lost while there is nowhere better to put them.
   tmux `set -g set-titles on` and `set -g set-titles-string '#S on #h'`, and no `[mosh] ` prefix
   (mosh honors `MOSH_TITLE_NOPREFIX=1` in the client's environment). The window title is what a
   widget's card shows first (WG10), so it should say what's in the window and where.
+- **agentd ([clickety-clacks/agentd](https://github.com/clickety-clacks/agentd)) as an attention
+  source**: the distro installs agentd and wires it into Scottland's attention as a configured source
+  (docs/attention.md: AT3, a source fed over the network, and AT5, resolving an agent to its terminal
+  window), so an agent that needs the user lights up its window or widget wherever the agent runs.
 - **Coding agents ring the terminal's bell when they need the user**, so Scottland's attention
   (WG15, docs/attention.md) sees them, including over mosh where desktop notifications from the
   remote host can't arrive (Claude Code: `preferredNotifChannel: terminal_bell`).
