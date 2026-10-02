@@ -10,6 +10,7 @@
         scottland::windowing::inertial_axis vx, vy, vw, vh;
         motion_clock::time_point settle_until;
         bool resizing = false;
+        bool restoring = false;
     };
     struct keyboard_origin
     {
@@ -69,7 +70,7 @@
         // a client is still committing rejected/minimum or cell-snapped sizes.
         motion.settle_until = motion_clock::now() + std::chrono::milliseconds(300);
         auto g = view->get_geometry();
-        double x = motion.x - g.width / 2.0, y = motion.y - g.height / 2.0;
+        double x = std::round(motion.x - g.width / 2.0), y = std::round(motion.y - g.height / 2.0);
         if (std::abs(g.x - x) > 0.001 || std::abs(g.y - y) > 0.001)
         {
             recentering_keyboard = true;
@@ -129,7 +130,7 @@
                 wf::get_core().tx_manager->schedule_object(view->toplevel());
                 // Keep centering late client commits after the coast has been cancelled.
                 auto& motion = keyboard_motions[view->get_id()];
-                motion.view = view->weak_from_this(); motion.resizing = true;
+                motion.view = view->weak_from_this(); motion.resizing = true; motion.restoring = true;
                 motion.x = origin.geometry.x + origin.geometry.width / 2.0;
                 motion.y = origin.geometry.y + origin.geometry.height / 2.0;
                 motion.width = origin.geometry.width; motion.height = origin.geometry.height;
@@ -175,6 +176,13 @@
             motion.width = g.width; motion.height = g.height;
         }
         if (keyboard_origins.count(id)) keyboard_origins[id].touched = true;
+        motion.restoring = false;
+        if (resize)
+        {
+            auto g = view->get_geometry();
+            if (motion.vw.velocity == 0) motion.width = g.width;
+            if (motion.vh.velocity == 0) motion.height = g.height;
+        }
         stop_glide(view);
         if (auto resizer = output_instance[view->get_output()].get()) resizer->stop_settling();
         if (!is_widget(view)) pin_scale(view, std::nullopt); // L31 is for drags, not keyboard motion
@@ -212,6 +220,13 @@
             if (!view || !view->is_mapped() || !view->get_output() || drag->view == view || view->pending_fullscreen())
             { it = keyboard_motions.erase(it); continue; }
             auto& m = it->second; auto g = view->get_geometry();
+            if (m.restoring)
+            {
+                // Only anchor late commits: leave WG14/L27 glide and scale rendering intact.
+                if (now >= m.settle_until) { remember_window(view); it = keyboard_motions.erase(it); }
+                else ++it;
+                continue;
+            }
             double dx = m.vx.step(dt, key_friction), dy = m.vy.step(dt, key_friction);
             m.x += dx; m.y += dy;
             auto screen = view->get_output()->get_relative_geometry();
@@ -225,7 +240,10 @@
             {
                 double dw = m.vw.step(dt, key_friction), dh = m.vh.step(dt, key_friction);
                 auto minimum = view->toplevel()->get_min_size(), maximum = view->toplevel()->get_max_size();
-                double maxw = area.width - 2 * SCREEN_PADDING, maxh = area.height - 2 * SCREEN_PADDING;
+                // Client sizes are integer pixels: round the cap down, never the requested
+                // size up past padding (which also changes parity and shifts a later anchor).
+                double maxw = std::floor(area.width - 2 * SCREEN_PADDING);
+                double maxh = std::floor(area.height - 2 * SCREEN_PADDING);
                 if (maximum.width > 0) maxw = std::min(maxw, double(maximum.width));
                 if (maximum.height > 0) maxh = std::min(maxh, double(maximum.height));
                 if (dw != 0) m.width = m.vw.constrain(m.width + dw, std::max(1, minimum.width), maxw);
@@ -260,6 +278,9 @@
                 if (dy != 0 || !m.resizing) m.y = m.vy.constrain(m.y, pa.y + half, pa.y + pa.height - half);
                 auto actual = view->get_geometry();
                 double x = m.x - actual.width / 2.0, y = m.y - actual.height / 2.0;
+                // Match L20's centering at the client's pixel grid, including odd dimensions.
+                // Both commit and coast paths must choose the same position.
+                if (m.resizing) { x = std::round(x); y = std::round(y); }
                 if (std::abs(actual.x - x) > 0.001 || std::abs(actual.y - y) > 0.001)
                     move_window(view, x, y);
                 set_scale_now(view, scale_for(view));

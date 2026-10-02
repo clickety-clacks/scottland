@@ -136,12 +136,13 @@ try:
 
     hold(); key('LEFTCTRL',True); key('RIGHT',True); key('UP',True); time.sleep(2); key('RIGHT',False); key('UP',False); key('LEFTCTRL',False); release(); coast(2)
     after=state('InertiaA')
-    check(after['geometry']['width']<=w-2*pad+1 and after['geometry']['height']<=h-2*pad+1,'resize maximum is screen minus padding')
+    check(after['geometry']['width']<=w-2*pad and after['geometry']['height']<=h-2*pad,'resize maximum is screen minus padding')
     check(near(center(after),origin),'maximum resize remains centered')
     screenshot('maximum-resize')
     hold(); key('LEFTCTRL',True); key('LEFT',True); key('DOWN',True); time.sleep(2); key('LEFT',False); key('DOWN',False); key('LEFTCTRL',False); release(); coast(2)
     after=state('InertiaA')
     check(after['geometry']['width']>1 and after['geometry']['height']>1,'resize respects GTK app minimum size')
+    print('minimum resize centers:',origin,center(after),after['geometry'],flush=True)
     check(near(center(after),origin),'minimum resize remains centered')
 
     drag('InertiaA',w/2,h/2); before=state('InertiaA'); hold(); tap('RIGHT'); time.sleep(.1); tap('ESC'); coast(.6)
@@ -166,11 +167,13 @@ try:
     before=center(state('InertiaA')); hold(); tap('RIGHT'); release(); coast()
     check(abs(center(state('InertiaA'))[0]-before[0]-100**2/(2*240))<1,'live impulse/friction/maximum settings control the coast')
     ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0,'scottland/key_friction':608.0,'scottland/key_max_velocity':6000.0})
-    # Odd sizes need half-pixel positions to retain the same center.
+    # L20 rounds pixel positions for odd client sizes; it must not drift after settling.
     ipc('wayfire/set-config-options',{'scottland/key_impulse':(2*608*91)**.5})
     before=state('InertiaA'); hold(); key('LEFTCTRL',True); tap('RIGHT'); key('LEFTCTRL',False); release(); coast()
     after=state('InertiaA')
-    check(near(center(before),center(after),.01) and abs(after['geometry']['width']-before['geometry']['width']-91)<1,'odd-size resize preserves exact center without repeated rounding corrections')
+    print('odd resize centers:',center(before),center(after),before['geometry'],after['geometry'],flush=True)
+    coast(.5); settled=state('InertiaA')
+    check(near(center(before),center(after),1) and abs(after['geometry']['width']-before['geometry']['width']-91)<1 and after['geometry']==settled['geometry'],'odd-size resize keeps its center within L20 rounding and stays settled')
     ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0})
     # An arrow is an explicit movement request; wait for fullscreen exit geometry first.
     ipc('wm-actions/set-fullscreen',{'view_id':a,'state':True}); coast(.4)
