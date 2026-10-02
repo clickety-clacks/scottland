@@ -70,7 +70,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. | implemented; pointer/touch move, resize, close and hidden-corner checks |
 | GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks; all nineteen hover/keyboard hints and screenshots checked on isolated headless outputs |
 | GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Active breathing damages only conservative goo bands; expensive field work uses occupied tiles, without changing the falloff or update rate. | implemented/headless checked; see the GPU cost validation below |
-| GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
+| GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). At rest the film has the set width; when that window's outer goo expands for proximity/hover, lift while dragging, or attention breathing, its film swells in the same proportion, governed by `goo_swell`, and eases back with it. It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core; swell clarification 2026-10-02) | implemented; isolated headless validation recorded below |
 | GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | implemented; isolated headless validation recorded below |
 
 ## Halo jobs with goo enabled
@@ -679,3 +679,51 @@ hundreds of pixels away around the perimeter. One Xe wide-bridge/fullscreen run 
 original stable window-ID input tie break was restored independently of rendering order and
 fresh flow runs pass. No assertion threshold was weakened. The final renderer retains front-source
 dye under its own clipped content for interpolation, avoiding black dry texels at the film edge.
+
+## GO11 film swell follow-up (2026-10-02)
+
+The overlap film now uses the same window swell as the outer goo. Its width is
+`goo_overlap_film × (swollen outer thickness / resting outer thickness)`, so it is exactly the
+configured width at rest; `goo_swell = 0` disables its expansion. The value is calculated once
+per source update and sent to the field and dye shaders. The CPU field used for input matches it.
+The previous/current damage bands include the film's expanded width, including when a small
+window or a larger film setting makes that band wider than the open-desktop goo. The existing
+shore transition, wave and dye continuity, and fallback halo remain unchanged. Tenet 4 keeps
+the film at the user's narrow setting when settled while permitting the requested temporary
+expansion.
+
+Real `stipc` pointer, attention, and held-finger drag checks use a front window overlapping a
+back window. In the Xe headless screenshots the visible film is 4 pixels at rest and 9 pixels
+during the touch lift and drag, returning to 4 after drop. Hover expands the film and eases it
+back; attention breathes it while a third, non-overlapping window has focus. The CPU model also
+checks a scaled window and wide film where the old damage bound would miss visible pixels.
+Evidence is under `build/go11-swell-results/xe-normal/`: `01a-film-swell-rest.png`,
+`01b-film-swell-hover.png`, `01c-film-swell-leaving.png`,
+`01d-film-swell-restored.png`, `01e-film-swell-zero.png`,
+`01f-film-attention-breathing.png`, `01g-film-lift-drag.png`, and
+`01h-film-lift-settled.png`. These images were inspected. The RX 580 normal and
+packed screenshots in `build/go11-swell-results/amd-{normal,packed}/` were also inspected.
+
+The isolated plumbus matrix passed: GO11/GO12 overlap and hover 27/27 on both GPU paths,
+goo 46/46 on both paths, widgets 146, widget morph 86, settings help 128, and hint style
+51/51 with goo on and off. Logs and screenshot copies are in
+`build/go11-swell-results/amd-matrix/`. The Xe GO11/GO12 run also passed 27/27; the CPU
+goo model assertions passed. All test sessions started after their builds; no live session
+was reloaded.
+
+The unchanged GO10 benchmark compares the shipped `1372aaf` build with this change in
+separate headless sessions at 2560×1600 for ten seconds per case. On Xe, compositor GPU busy
+was 0.0% → 0.0% settled, 17.9% → 17.5% with two attention widgets, 17.8% → 17.9% during
+a held window drag, and 0.5% → 0.5% with goo off. Active steps were 585 → 581 and
+586 → 589; settled stayed at zero steps. Compositor CPU was 6.7% → 7.0% for attention and
+8.9% → 9.2% for drag. Whole-GPU busy varied between 54.9% and 72.7% from other work, so
+the Xe GPU query times are not an uncontended shader comparison. Logs are in
+`build/go11-swell-results/perf/xe-{before,after}.log`.
+
+On the RX 580, whole-GPU busy stayed within 0.2 percentage points of the compositor
+measurement. Attention GPU busy was 14.9% → 14.3%, median goo GPU query 1.680 → 1.643 ms,
+and compositor CPU 7.6% → 7.5%; held drag was 14.0% → 14.0%, 1.632 → 1.625 ms, and
+9.5% → 9.5% CPU. Active steps were 577 → 577 for attention and 572 → 573 for drag.
+Settled stayed at zero steps and 0.0% compositor GPU busy; goo-off breathing stayed at 0.6%.
+The paired logs are `build/go11-swell-results/perf/amd-{before,after}.log`. The unchanged
+GO10 benchmark remains within its measured GPU and CPU cost on both machines.

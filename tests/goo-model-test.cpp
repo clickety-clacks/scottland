@@ -56,6 +56,44 @@ int main()
     assert(density({398, 300}, overlap, s, 0) > s.threshold());
     assert(density({390, 300}, overlap, s, 0) < s.threshold());
     assert(density({450, 300}, overlap, s, 0) == 0);
+    float resting_film = overlap_film_width(overlap[0], s);
+    assert(std::abs(resting_film - 4) < 1e-5);
+    assert(density({393, 300}, overlap, s, 0) < s.threshold());
+    overlap[0].swell = 1;
+    s.swell = .7;
+    amounts(overlap, s);
+    assert(std::abs(overlap_film_width(overlap[0], s) - 8) < 1e-5);
+    assert(density({393, 300}, overlap, s, 0) > s.threshold());
+    auto film_radii = support_radii(overlap, s, true);
+    assert(film_radii[0] * 8 / s.thickness > 7);
+    s.swell = 0;
+    amounts(overlap, s);
+    assert(std::abs(overlap_film_width(overlap[0], s) - resting_film) < 1e-5);
+    assert(density({393, 300}, overlap, s, 0) < s.threshold());
+    // A small window with a wider user film setting can push the swollen film
+    // farther over back content than its open-desktop goo. Damage must include it.
+    overlap[0].scale = .25;
+    overlap[0].swell = 1;
+    s.swell = .7;
+    s.overlap_film = 12;
+    amounts(overlap, s);
+    assert(std::abs(overlap_film_width(overlap[0], s) - 96) < 1e-4);
+    auto open_radii = support_radii(overlap, s);
+    film_radii = support_radii(overlap, s, true);
+    float old_out = std::max(open_radii[0], film_radii[0]) + 3;
+    float swollen_out = std::max(open_radii[0],
+        film_radii[0] * std::max(1.f, overlap_film_width(overlap[0], s) / s.thickness)) + 3;
+    bool beyond_old_bounds = false;
+    for (int x = 300; x < 400; x++)
+        if (density({float(x), 300}, overlap, s, 0) > s.threshold() * .97f)
+        {
+            assert(400 - x <= swollen_out);
+            beyond_old_bounds |= 400 - x > old_out;
+        }
+    assert(beyond_old_bounds);
+    overlap[0].scale = 1;
+    overlap[0].swell = 0;
+    s.overlap_film = 4;
     std::swap(overlap[0], overlap[1]);
     assert(density({398, 300}, overlap, s, 0) == 0);
     std::swap(overlap[0], overlap[1]);
@@ -105,5 +143,5 @@ int main()
     assert(s.curve(""));
     assert(s.fall(s.reach * 5) > 0); // performance work preserves the shipped tail
     std::cout << "PASS goo model: falloff, bridge/snap, volume draw, union clipping, finite input, curve "
-                 "validation, swell control, fullscreen islands\n";
+                 "validation, swell and overlap-film damage bounds, fullscreen islands\n";
 }
