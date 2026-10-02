@@ -17,89 +17,6 @@ double now()
 {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-std::vector<goo::source_t> snapshot(wf::output_t *output)
-{
-    std::vector<goo::source_t> result;
-    // Include ordinary windows and above-all rail widgets. No desktop-model state is copied.
-    for (auto &view : wf::get_core().get_all_views())
-    {
-        auto v = wf::toplevel_cast(view);
-        if (!v || !v->is_mapped())
-            continue;
-        auto move = v->get_transformed_node()->get_transformer<wf::scene::transformer_base_node_t>(
-            "move-drag-transformer");
-        auto frame = v->get_transformed_node()->get_transformer<frame_t>("scottland-scale");
-        // Stock Wayfire registers its move transformer under its type name, despite the
-        // historical named lookup above. Find the public scene node in the frame's chain.
-        if (!move && frame)
-            for (auto n = frame->parent(); n && n != v->get_transformed_node().get(); n = n->parent())
-                if (n->stringify() == "move-drag")
-                {
-                    move = std::dynamic_pointer_cast<wf::scene::transformer_base_node_t>(n->shared_from_this());
-                    break;
-                }
-        if (!move && v->get_output() != output)
-            continue;
-        auto root = v->get_root_node();
-        bool visible = true;
-        for (wf::scene::node_t *n = root.get(); n; n = n->parent())
-            if (!n->is_enabled())
-            {
-                visible = false;
-                break;
-            }
-        if (!visible)
-            continue;
-        if (v->pending_fullscreen())
-        {
-            // Tenet 6: a fullscreen island clips the entire goo, including transparent clients.
-            auto g = output->get_relative_geometry();
-            goo::source_t island;
-            island.id = v->get_id();
-            island.emitter = false;
-            island.rect = {g.width / 2.f, g.height / 2.f, g.width / 2.f, g.height / 2.f};
-            island.liquid = {0, 0, 0, 0};
-            // The union covers the output, so every other source is invisible here.
-            // Retain just the island and suspend the surface until fullscreen ends.
-            return {island};
-        }
-        if (!frame || frame->get_alpha() < .01)
-            continue;
-        auto r = frame->screen_rect();
-        float radius = frame->screen_radius();
-        if (move)
-        {
-            auto shown = move->get_bounding_box(), inner = move->get_children_bounding_box();
-            if (inner.width > 0 && inner.height > 0)
-            {
-                auto origin = wf::origin(output->get_layout_geometry());
-                float sx = float(shown.width) / inner.width, sy = float(shown.height) / inner.height;
-                r = {shown.x + (r.x1 - inner.x) * sx - origin.x, shown.y + (r.y1 - inner.y) * sy - origin.y,
-                     shown.x + (r.x2 - inner.x) * sx - origin.x, shown.y + (r.y2 - inner.y) * sy - origin.y};
-                radius *= sx;
-            }
-        }
-        auto extent = output->get_relative_geometry();
-        if (move && (r.x2 < 0 || r.y2 < 0 || r.x1 > extent.width || r.y1 > extent.height))
-            continue;
-        goo::source_t s;
-        s.id = v->get_id();
-        s.rect = {(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2, r.width() / 2, r.height() / 2};
-        s.liquid = {1, radius, float(s.id) * 1.618f, frame->needs_attention() ? 3.f : 1.f};
-        auto neutral = palette.light ? glm::vec3{.08, .08, .1} : glm::vec3{.9, .92, .95};
-        s.dye = glm::mix(glm::mix(neutral, palette.accent, float(frame->focus_mix)), palette.attention,
-                         float(frame->attention_mix));
-        s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
-        s.light = palette.light;
-        s.scale = frame->halo_scale();
-        s.swell = frame->swell;
-        s.attention = frame->needs_attention();
-        s.grabbed = bool(move) || frame->is_pressed() || frame->is_lifted();
-        s.dot = {s.rect.x, r.y2 + frame->thickness() / 2, float(frame->dot_glow), DOT_RADIUS};
-        result.push_back(s);
-    }
-    return result;
-}
 bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> &b)
 {
     if (a.size() != b.size())
@@ -130,7 +47,8 @@ class goo_node_t : public wf::scene::node_t
     std::map<uint64_t, double> motion_pulse;
     bool attached = true;
     std::function<void()> failed;
-    goo_node_t(wf::output_t *o) : node_t(false)
+    goo_t::source_provider_t snapshot;
+    goo_node_t(wf::output_t *o, goo_t::source_provider_t provider) : node_t(false), snapshot(std::move(provider))
     {
         state.output = o;
         state.settings = goo::current_settings;
@@ -269,6 +187,8 @@ void goo_instance_t::render(const wf::scene::render_instruction_t &data) { self-
 struct goo_t::impl
 {
     wf::wl_idle_call fallback;
+    goo_t::source_provider_t snapshot;
+    std::function<void(wf::output_t *, bool)> screen_changed;
     wf::option_wrapper_t<bool> enabled{"scottland/goo"};
     wf::option_wrapper_t<std::string> curve{"scottland/goo_falloff"};
     std::vector<std::unique_ptr<wf::option_wrapper_t<double>>> options;
@@ -323,7 +243,7 @@ struct goo_t::impl
     {
         if (!goo::enabled || nodes.count(o))
             return;
-        auto n = std::make_shared<goo_node_t>(o);
+        auto n = std::make_shared<goo_node_t>(o, snapshot);
         n->failed = [this]
         {
             fallback.run_once(
@@ -341,6 +261,7 @@ struct goo_t::impl
         // Above wallpaper, below bottom panels and the entire workspace layer.
         wf::scene::add_front(o->node_for_layer(wf::scene::layer::BACKGROUND), n);
         n->wake();
+        screen_changed(o, true);
     }
     void remove(wf::output_t *o)
     {
@@ -351,6 +272,7 @@ struct goo_t::impl
         it->second->detach();
         wf::scene::remove_child(it->second);
         nodes.erase(it);
+        screen_changed(o, false);
         o->render->damage_whole_idle();
     }
     wf::ipc::method_callback state = [this](const wf::json_t &data)
@@ -391,8 +313,10 @@ struct goo_t::impl
 };
 goo_t::goo_t() : p(std::make_unique<impl>()) {}
 goo_t::~goo_t() = default;
-void goo_t::start()
+void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed)
 {
+    p->snapshot = std::move(snapshot);
+    p->screen_changed = std::move(screen_changed);
     for (auto &field : p->fields)
     {
         auto o = std::make_unique<wf::option_wrapper_t<double>>(std::string("scottland/goo_") + field.name);

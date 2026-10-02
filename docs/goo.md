@@ -90,7 +90,7 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
   Its mark is a soft dye bloom and density deposit, not a separately drawn circle. Pointer and
   touch move/resize/close retain their existing behavior. Three-finger and Super drags use the
   same desktop input paths and continue to scale live.
-- **Fullscreen:** a fullscreen window is a non-emitting island clipping the entire output, including
+- **Fullscreen:** model-owned FS1 focus places a fullscreen window is a non-emitting island clipping the entire output, including
   transparent fullscreen clients. Its surface is suspended, including hidden attention, until
   fullscreen ends. This follows tenet 6: nothing interrupts fullscreen focus.
 
@@ -98,8 +98,12 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 
 `goo-model.*` holds source snapshots, the CPU field and falloff; `goo-hit.cpp` owns field input;
 `goo-renderer.*` and `goo-shaders.hpp` own GPU resources and the prototype shader port; `goo.cpp`
-owns output nodes, option updates, impulses and sleep. The frame supplies its geometry and existing
-state, so goo does not duplicate desktop widget or drag state. One background scene node per output
+owns output nodes, option updates, impulses and sleep. The desktop model supplies its window list, widget lifecycle/away state, attention, drag and
+FS1 fullscreen focus; goo samples geometry and state cross-fades from the frame presentation,
+including collapsed and morphing sizes. It does not duplicate widget or drag state. Model-owned
+`goo_outputs` records which screens have an available surface (including live disable and GPU
+fallback); the desktop snapshot publishes these screen names as `goo`. Simulation counters and
+source samples are renderer diagnostics, excluded from model snapshots. One background scene node per output
 sits above the wallpaper and below all windows. During a cross-output move it uses the move tool's
 current transformed geometry on each intersected output.
 

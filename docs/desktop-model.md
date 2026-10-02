@@ -17,12 +17,18 @@ leases, process handles and timers are resources, not independent logical state.
 | Attention source set, per window | Plugin's desktop model | Each source adds/removes its name; `builtin:` names are reserved for plugin inputs, so a configured source cannot clear a bell/urgency. User focus answers all sources. Halos read this set. |
 | Desktop collapsed mode | Plugin's desktop model | Super+M updates the mode and widget presentation together. |
 | Full-screen focus per screen (FS1) | Plugin's desktop model | Wayfire's fullscreen-promotion signal sets it; that screen's docked widgets are marked away (slid off and hidden) without leaving docked, and the focus.d hooks follow whether any screen is in focus. Published as `focus` (screen names). |
+| Goo availability per screen | Plugin's desktop model (`goo_outputs`) | The goo renderer reports surface attachment/removal, including GPU fallback. The desktop slice publishes `goo` (screen names); widget/attention slices exclude it and simulation samples. |
 | Selected window set | Plugin's desktop model | Reserved, empty until multi-select is implemented. |
 | Drag origin, re-grab chain, morph, scale/grab state and held-above window | Plugin's desktop model (`drag`) | One drag-session record; Wayfire's drag controller, timers and frame buffers are input/rendering resources. The full desktop snapshot includes origin, chain, morph target and held-above identity; external slices omit them. |
 | Badge count/visibility | Widget service | Unity Launcher input is a partial-update protocol; only this input is merged. The service emits complete presentation snapshots. |
 | Mailbox payload | App, held by widget service for that launch | Publish replaces the payload; compositor snapshots cannot change it. |
 | Card presentation | Derived only from one state-file snapshot | The card replaces its entire object; no mutable launch-environment defaults. |
 | Configured source listing metadata | That source | Used to run its answered command; authoritative marked attention comes from model snapshots. |
+
+Goo consumes model windows, widget lifecycle/away state, attention sources, drag origin and FS1
+focus. Geometry, focus/attention cross-fades and collapsed/morph sizes are samples of the existing
+frame presentation driven by that model. They are derived rendering data, never a second desktop
+state or a subscription consumer. GPU nodes, sources, timers and sleep remain renderer resources.
 
 ## Subscription interface
 
@@ -72,6 +78,7 @@ identity file, once, before publication. Card traits come from its actual launch
 | DM5 | A marked reload between model builds preserves collapsed mode, attention sources and mapped committed widget identities (previews are ended). A legacy main upgrade migrates surviving launch identity in one atomic model handover; publication waits for every surviving link to be installed, preserving service-owned mailboxes, and its version increases afterward. | implemented (headless) |
 | DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. Independent regressions additionally assert mailbox payload, input-intended morph direction, Esc layer release, fullscreen visibility against promotion, process exit, migrated identity/badge routing and app-ID-only changes. They run only in an isolated headless session. | implemented (headless) |
 | DM7 | The drag session is a field of the desktop model: current origin, original form, re-grab chain, morph target, drag scale/grab state and temporarily held-above window have one owner. Existing Esc and re-grab behavior stays the same. | implemented (headless) |
+| DM9 | Goo reads logical visibility, attention, drag and fullscreen focus from the desktop model; attached goo screens are model state in the desktop slice. GPU fields and animation samples remain renderer resources. Live disable/fallback removes those screens without changing widget or attention slices. | implemented; merge validation pending |
 | DM8 | A marked reload transfers the live pidfd, including launches without systemd scopes. Legacy upgrades open a handle only for a verified live launcher; an unverifiable launcher is reported as PID zero. Launcher exit enters through a pidfd event, changes the tracked PID and publishes a newer full snapshot while a forked widget stays mapped. Serializing a snapshot never probes process liveness. | implemented (plumbus headless) |
 
 App-ID-only updates are exercised by a real GTK Wayland client in
