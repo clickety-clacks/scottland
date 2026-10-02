@@ -1543,6 +1543,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto neutral = scottland::palette.light ? glm::vec3{.08, .08, .1} : glm::vec3{.9, .92, .95};
             s.dye = glm::mix(glm::mix(neutral, scottland::palette.accent, float(frame->focus_mix)), scottland::palette.attention,
                              float(frame->attention_mix));
+            // Window mode tints the goo with the hint's color (WK14); it has no separate rim.
+            if (frame->hint_dye) s.dye = *frame->hint_dye;
             s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
             s.light = scottland::palette.light;
             s.scale = frame->halo_scale();

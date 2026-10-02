@@ -3,6 +3,7 @@
 import colorsys
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -82,6 +83,17 @@ def hold():
     key('LEFTALT', True)
     wait(lambda: ipc('scottland/hints')['active'])
     time.sleep(1.5)
+
+GOO = os.environ.get('SCOTTLAND_TEST_GOO') == '1'
+
+def dyed(image, x, y, color):
+    """Within a few px of (x, y), a pixel whose strongest channel is the dye's strongest."""
+    dominant = max(range(3), key=lambda channel: color[channel])
+    for dy in range(-2, 3):
+        p = image.getpixel((x, y+dy))
+        if p[dominant] > max(p[channel] for channel in range(3) if channel != dominant) + 8:
+            return True
+    return False
 
 def screenshot(name):
     path = artifacts / (name + '.png')
@@ -189,10 +201,15 @@ try:
             after = tuple(n/255 for n in image.getpixel((x, y)))
             check(max(abs(a-b) for a, b in zip(after, mix(before, c, .07))) < .025,
                 scheme+': 7% surface tint on '+v['title'])
-            bx, by = round(f['x']+f['width']/2+h['dx']), round(f['y']-1+h['dy'])
-            rim = tuple(n/255 for n in image.getpixel((bx, by)))
-            check(max(abs(a-b) for a, b in zip(rim, c)) < .08,
-                scheme+': full-color 2px rounded rim on '+v['title'])
+            if GOO:
+                # With the goo, window mode tints the goo itself; there is no separate rim.
+                check(dyed(image, round(f['x']+f['width']/2+h['dx']), round(f['y']-4+h['dy']), c),
+                    scheme+': the goo takes the hint dye on '+v['title'])
+            else:
+                bx, by = round(f['x']+f['width']/2+h['dx']), round(f['y']-1+h['dy'])
+                rim = tuple(n/255 for n in image.getpixel((bx, by)))
+                check(max(abs(a-b) for a, b in zip(rim, c)) < .08,
+                    scheme+': full-color 2px rounded rim on '+v['title'])
             # Side of the circle avoids the central bold glyph and the card icon/title.
             cx, cy = badge['x']+badge['size']/2, badge['y']+badge['size']/2
             px, py = round(cx+badge['size']*.39), round(cy)
@@ -239,8 +256,16 @@ try:
     accent_hue = colorsys.rgb_to_hls(*rgb(custom['accent']))[0]*360
     check(all(abs((colorsys.rgb_to_hls(*h['color'])[0]*360-accent_hue+180)%360-180) >= 100-1e-6
               for h in changed), 'palette file alone rotates the live complementary hues')
-    recolored = screenshot('light-accent-file-only-held')
     represented = {v['id']: v for v in views()}
+    sampled = [(h, represented[h['window']]['frame']) for h in changed[:2]]
+    recolored = screenshot('light-accent-file-only-held')
+    # Goo dye spreads in from the edge over a moment rather than switching in one frame.
+    deadline = time.time() + (3 if GOO else 0)
+    while GOO and time.time() < deadline and not all(
+            dyed(recolored, round(f['x']-5+h['dx']), round(f['y']+f['height']/2+h['dy']), h['color'])
+            for h, f in sampled):
+        time.sleep(.25)
+        recolored = screenshot('light-accent-file-only-held')
     for h in changed[:2]:
         v = represented[h['window']]; f = v['frame']
         point = (round(f['x']-5+h['dx']), round(f['y']+f['height']/2+h['dy']))
@@ -302,9 +327,13 @@ try:
     f = v['frame']
     # Near the top-right straight edge, beyond both badge circles and the narrow resting halo.
     point = (round(f['x']+f['width']-6+h['dx']), math.floor(f['y']+h['dy'])-1)
-    rim = tuple(n/255 for n in image.getpixel(point))
-    check(max(abs(a-b) for a,b in zip(rim,h['color'])) < .08,
-          '2px logical border stays full-color at the supported 5% window scale')
+    if GOO:
+        check(dyed(image, round(f['x']+f['width']/2+h['dx']), math.floor(f['y']+h['dy'])-2, h['color']),
+              'the goo takes the hint dye at the supported 5% window scale')
+    else:
+        rim = tuple(n/255 for n in image.getpixel(point))
+        check(max(abs(a-b) for a,b in zip(rim,h['color'])) < .08,
+              '2px logical border stays full-color at the supported 5% window scale')
     key('LEFTALT', False)
 
 finally:
