@@ -57,7 +57,9 @@ def reload_plugin():
         changed = ' '.join(str(fresh) if p == 'scottland' or '/libscottland-' in p else p for p in plugins.split())
         mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.reloading')
         mark.touch()
-        try: ipc.call('wayfire/set-config-options', {'core/plugins': changed})
+        try:
+            ipc.call('wayfire/set-config-options', {'core/plugins': changed})
+            time.sleep(.8)
         finally: mark.unlink(missing_ok=True)
         time.sleep(.7)
 

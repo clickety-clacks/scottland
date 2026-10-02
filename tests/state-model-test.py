@@ -227,13 +227,44 @@ try:
     b = open_app()
     drag(b, 6)
     audit("new card starts collapsed")
-    drag(b, width / 2, cancel=True, audit_held=True)
-    drag(b, 6, audit_held=True)
     check("card started collapsed", shown(b)[1]["minimized"])
     combo("KEY_LEFTMETA", "KEY_M")
     time.sleep(0.6)
     audit("cards expanded, including the one started collapsed")
     subprocess.run(["grim", str(artifacts / f"seed-{seed}-expanded.png")], check=True)
+
+    # Stay in one held widget drag: off the rail, then back onto it. Check delivered
+    # logical direction and center against input intent, independently of the audit.
+    time.sleep(2.6)
+    roundtrip_view, _ = shown(b)
+    rf = roundtrip_view["frame"]
+    rx, ry = rf["x"] + rf["width"] / 2, rf["y"] + rf["height"] / 2
+    watch = Ipc()
+    initial = watch.call("scottland/subscribe", {"slice": "desktop"})
+    ipc.call("stipc/move_cursor", {"x": round(rx), "y": round(ry)})
+    time.sleep(.1)
+    key("KEY_LEFTMETA", True)
+    ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+    delivered = initial
+    for destination, toward in ((width / 2, True), (6, False)):
+        ipc.call("stipc/move_cursor", {"x": round(destination), "y": round(ry)})
+        time.sleep(.4)
+        previous = delivered
+        while select.select([watch.sock], [], [], .1)[0]:
+            delivered = watch.receive()
+        morph = delivered["drag"].get("morph", {})
+        check("subscription delivers widget morph " + ("off rail" if toward else "back on rail"),
+              delivered["version"] > previous["version"] and morph.get("from_widget")
+              and morph.get("toward") == toward
+              and morph.get("center_x") != previous["drag"].get("morph", {}).get("center_x"))
+        direct = ipc.call("scottland/desktop-model")
+        check("delivered and direct logical morph share the same version",
+              direct["version"] == delivered["version"] and direct["drag"]["morph"] == morph)
+    ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+    key("KEY_LEFTMETA", False)
+    watch.sock.close()
+    time.sleep(.7)
+    audit("widget round trip in one held drag")
 
     # A widget moved, resized by Super+M, then re-grabbed: Esc restores the original rail
     # anchor, and a later resize must not jump back to the cancelled drop point.

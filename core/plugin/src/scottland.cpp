@@ -5444,6 +5444,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void fini() override
     {
+        bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
+        installing_model = reloading;  // teardown is also part of the atomic handover
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
@@ -5497,8 +5499,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         end_morph();
         widget_watchdog.disconnect();
         release_above();  // a just-dropped window doesn't stay above for good
-        bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
-
         wf::json_t handover = wf::json_t::array();
         for (auto& [id, link] : model.widgets)
         {

@@ -35,6 +35,7 @@ try:
     mark.touch()
     try:
         ipc.call('wayfire/set-config-options', {'core/plugins': plugins.replace('scottland', str(branch/'build/libscottland.so'))})
+        time.sleep(.8)
     finally:
         mark.unlink(missing_ok=True)
     time.sleep(.7)

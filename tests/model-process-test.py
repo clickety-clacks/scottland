@@ -54,8 +54,10 @@ if "--reload" in sys.argv:
         mark.touch()
         try:
             call("wayfire/set-config-options", {"core/plugins": plugins.replace("scottland", str(fresh))})
+            time.sleep(.8)  # config replacement runs on the compositor idle turn
         finally:
             mark.unlink(missing_ok=True)
+        assert call("scottland/desktop-model", {})["widgets"][0]["widget_unit"] == unit
         # Library is now mapped; unlinking its file cannot affect the loaded plugin.
 while True:
     snapshot = receive()
