@@ -5,13 +5,14 @@ Alt is Scottland's window key. Hold it alone for `scottland/alt_hold_delay` mill
 existing app/desktop behavior with no replay or input delay. This is core desktop behavior, independent of integrations.
 
 The controller (`alt-mode.*`), rectangle placement (`placement.*`), force solver (`declutter.*`),
-and compositor overlay (`hint-overlay.*`, with pure palette/contrast math in `hint-style.hpp`) are separate from Wayfire integration.
+inertial axes (`inertia.*`), and compositor overlay (`hint-overlay.*`, with pure palette/contrast math in `hint-style.hpp`) are separate from Wayfire integration.
 The desktop model's `window_state_t` owns normalized zone centers, the last side, hint slot,
 and pending rail placement; its desktop snapshot publishes them and its atomic handover preserves
 them on reload. `windowing-bridge.hpp` adapts the independent algorithms to `model.windows` and
 `model.widgets`; widget changes use the existing lifecycle transitions. Cycled rail placement is refined
 from the widget's pending size and applies drop and gravity together in its mapping transaction;
-geometry notifications only record the committed memory, never issue a corrective move. Hint offsets and overlays
+cycle-placement geometry notifications only record the committed memory, never issue a corrective move.
+Keyboard resize separately recenters late client commits and recovers boundary overflow (WK21). Hint offsets and overlays
 remain rendering resources, never geometry or memory inputs.
 
 ## Invariants
@@ -24,7 +25,7 @@ on a physical session. This change is not tested on either machine's live displa
 |---|---|---|
 | WK1 | Alt alone enters hints only after the configurable short hold (300 ms default). Any other key or Ctrl, Shift, or Super already held, or pressed before the timeout, cancels eligibility for that entire Alt chord. Quick Alt+letter and quick Alt+Tab keep app/desktop behavior. Both Alt keys are supported; pressing both before entry is not Alt alone. | implemented (headless) |
 | WK2 | After entry, every unclaimed key belongs to Scottland until the last held Alt is released, including Ctrl/Super combinations and unassigned keys. Presses and matching releases are consumed; hints/cycles act once per physical press; arrows add impulses on presses and auto-repeat (WK17). Focused-surface key-layer claims retain ordinary delivery (KL7), including while hints are visible; a claimed press before entry cancels the hold. Alt itself is delivered immediately and its matching release is delivered, so quick app chords have no added delay or synthetic replay. | implemented (headless) |
-| WK3 | Alt release exits window mode and removes hints and restores purely visual displacement. Esc removes hints/displacement, restores windows touched by arrows to their Alt-down origin (WK22), and keeps keys captured until Alt release. Releasing or cancelling mid-cycle preserves explicit cycle steps on windows untouched by arrows; the next entry starts a new cycle from the current zone, skipping select if already selected. | implemented (headless) |
+| WK3 | Alt release exits window mode, removes hints and restores purely visual displacement. Esc removes hints/displacement, restores windows touched by arrows to their Alt-down origin (WK22), and keeps keys captured until Alt release. Releasing or cancelling mid-cycle preserves explicit cycle steps on windows untouched by arrows; the next entry starts a new cycle from the current zone, skipping select if already selected. | implemented (headless) |
 | WK4 | Every mapped top-level window and every widget has a large, click-through compositor hint in session palette colors, following the actual drawn center. A collapsed widget's hint is over its icon. Dialogs are selectable but retain WG1's protection against widgetizing. | implemented (headless) |
 | WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. Badges follow Vimarchy: a centered circle sized `clamp(min(displayed width, displayed height) × 0.34, 72, 132)` logical px, 21% hint-color fill, bold uppercase letters at 62% of badge height (46% for multiple letters). Output scale affects raster resolution, never logical badge size. | implemented (headless) |
 | WK6 | A window’s first hint selects, focuses, and raises it only if it is not already selected/focused. If already selected (including by Tab), the first press goes straight to the next zone. A widget’s first hint opens center as a card tap does (WG17); opening consumes the first center step of its widget-start loop. Selecting another hint resets the previous selection’s cycle. | implemented (headless) |
@@ -35,15 +36,15 @@ on a physical session. This change is not tested on either machine's live displa
 | WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Holding Alt during a drag belongs to L31 and suppresses hints for that entire chord, even after drop. Starting a drag cancels hints. Adding any modifier after entry stays in the mode (WK2). | implemented (headless) |
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
 | WK13 | Near-coincident window/widget centers repel through a deterministic force-directed graph with springs to real centers. Centers stay within readable hint bounds; already separated centers stay put. Windows themselves animate outward and back, without moving their real geometry, changing their scale, or updating memories. Hints track those transforms. | implemented (headless) |
-| WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`, checked every 250 ms while showing hints. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a 7% hint-color overlay, a 2 logical px full-color rounded border even at the supported 5% window scale, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. The optional screen-wide goo renderer uses the same transient frame dye (GO9); goo ships off by default. | implemented (headless) |
+| WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`, checked every 250 ms while showing hints. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a 7% hint-color overlay, a 2 logical px full-color rounded border even at the supported 5% window scale, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. The optional screen-wide goo renderer uses the same transient frame dye (GO6); goo ships off by default. | implemented (headless) |
 | WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing. The first press acts immediately. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, release or cancellation resets double-tap recognition. | implemented (headless) |
 | WK16 | Double-taps use physical presses, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; repeating a prefix alone does not move a window. | implemented (headless) |
 | WK17 | In entered Alt window mode, each unclaimed arrow press (including auto-repeat) adds a fixed impulse to its axis's surviving velocity, clamped independently to a maximum. Constant deceleration is integrated per tick until zero, including the final partial tick, with no restarted position animation. One default impulse travels v²/(2a) = 92.29 logical px. Hints/cycles retain physical-press-only behavior. | implemented (headless) |
 | WK18 | Arrows target the hint/Tab-selected window if selected this hold, otherwise the currently focused window (a focused widget represents its app). Different windows retain independent coasts. Left/Right change x, Up/Down change y; diagonals combine independent axes. An arrow on fullscreen explicitly exits it and waits for restored geometry before applying queued impulses. A later explicit cycle stops that window's coast before its lifecycle/placement action. Closing/unmapping or having no output discards its motion safely. | implemented (headless) |
 | WK19 | Moving windows follow their center's zone and scale live (L5/L8), even with Alt held: L31 scale pinning belongs only to drags, and arrows clear an old pin. Geometry/scale targets enter the desktop model; hints' visual declutter never enters motion coordinates. | implemented (headless) |
-| WK20 | Keyboard pushes bounce at an exposed WP7 padded screen/workarea edge or rail boundary, whichever is farther inward, using the live scaled content footprint: the outward velocity reverses on that axis and retains `key_restitution` (default 0.5, range 0–1); friction continues. An edge adjoining another output at the window center’s orthogonal coordinate permits passage instead; crossing the physical seam transfers the window while preserving its global center and velocity. Gaps and reserved workarea edges remain boundaries. No resize or widgetization. Oversized content follows WP7’s unpadded dimension exception; its center stays outside exposed rails. These bounds apply only to keyboard motion, including old remembered/user drops; mouse/touch drops and WP2 remembered cycle destinations retain their own rules. | pending combined validation |
-| WK21 | After mode entry, Ctrl+Right widens, Ctrl+Left narrows, Ctrl+Up grows height, Ctrl+Down shrinks height, with independent inertial size axes. Resizing keeps the window's center, zone and scale (L20) until its scaled footprint exceeds an exposed boundary, then pushes the center back inside the keyboard bounds (WK20), within client pixel rounding, including asynchronous client commits. Sizes respect the app minimum and maximum and screen/workarea minus padding (integer size caps round down); an app minimum larger than that limit takes precedence. Movement and resize coasts can coexist. Ctrl+arrows consume input but do nothing for widgets. | pending combined validation |
-| WK22 | Alt release commits keyboard movement/resize and lets existing velocity coast to zero; it stops adding repeats. Esc while still in mode stops inertia/repeats and glides each arrow-touched window back to its geometry and form captured at Alt-down, including size, fullscreen, widget rail, scale pin and zone memories (WG14/L27). The cancelled chord remains captured until Alt release. A later hold starts a new origin. | implemented (headless) |
+| WK20 | Keyboard pushes bounce at an exposed WP7 padded screen/workarea edge or rail boundary, whichever is farther inward, using the live scaled content footprint: the outward velocity reverses on that axis and retains `key_restitution` (default 0.5, range 0–1); friction continues. An edge adjoining another output at the window center’s orthogonal coordinate permits passage instead; crossing the physical seam transfers the window while preserving its global center, velocity and existing focus. Gaps and reserved workarea edges remain boundaries. No resize or widgetization. Oversized content follows WP7’s unpadded dimension exception; its center stays outside exposed rails. These bounds apply only to keyboard motion, including old remembered/user drops; mouse/touch drops and WP2 remembered cycle destinations retain their own rules. | implemented (headless) |
+| WK21 | After mode entry, Ctrl+Right widens, Ctrl+Left narrows, Ctrl+Up grows height, Ctrl+Down shrinks height, with independent inertial size axes. Resizing keeps the window's center, zone and scale (L20) until its scaled footprint exceeds an exposed boundary, then pushes the center back inside the keyboard bounds (WK20), within client pixel rounding, including asynchronous client commits. Sizes respect the app minimum and maximum and screen/workarea minus padding (integer size caps round down); an app minimum larger than that limit takes precedence. Movement and resize coasts can coexist. Ctrl+arrows consume input but do nothing for widgets. | implemented (headless) |
+| WK22 | Alt release commits keyboard movement/resize and lets existing velocity coast to zero; it stops adding repeats. Esc while still in mode stops inertia/repeats and glides each arrow-touched window back to its geometry and form captured at Alt-down, including output, size, fullscreen, widget rail, scale pin and zone memories (WG14/L27). The cancelled chord remains captured until Alt release. A later hold starts a new origin. | implemented (headless) |
 | WK23 | Widgets coast vertically along their current rail, bouncing at their top/bottom workarea limits with keyboard restitution and keeping their wider widget inset. Left/Right transfers to the indicated rail with the existing glide, preserving height and widget form; pressing toward the current rail leaves it there. It never opens the window. Tab can select a widget without restoring it (WK10). | implemented (headless) |
 | WK24 | Options `scottland/key_impulse` (335 px/s), `scottland/key_friction` (608 px/s²), and `scottland/key_max_velocity` (6000 px/s) retain the original inertia defaults and apply to both movement and resizing. `scottland/key_restitution` (0.5, range 0–1) controls keyboard boundary bounce only. Repeats use the keyboard's configured delay/rate, independently for held arrows, and stop on key/Alt release or cancel. Exact focused-surface claims precede arrows (KL7); quick Alt+arrow and Ctrl-first chords keep existing app/desktop routing. A pointer/touch move or resize takes over motion without enabling hints (L31). | implemented (headless) |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. | implemented (headless) |
@@ -315,3 +316,66 @@ samples are in `$XDG_RUNTIME_DIR/scottland-headless-inertia.inertia-artifacts/`;
 maximum-resize and restored-widget screenshots were inspected. All isolated sessions were
 stopped. No live session on osanwe or physical screen on plumbus was used or reloaded.
 Statuses remain **implemented (headless)**; physical verification is intentionally not claimed.
+
+## Combined window mode validation (2026-10-01)
+
+`window-mode` combines integrate's goo (off by default), hint styling and O5 shortcut rule
+with `hint-cycles` and `inertial-keys`. Code under test: `f9568ec`; the subsequent validation
+commit changes documentation only. Integrate's WK1–WK14 keep their IDs: WK6–WK9 now express
+the start-relative loops and skipped redundant select. WK15–WK16 cover double-tap recognition;
+the inertia branch's eight rules are WK17–WK24, in their original order: impulses, targeting,
+live scale, keyboard boundaries, resize, commit/cancel, widgets, settings/input routing.
+
+Keyboard bounds (WK20) reflect only the outward velocity axis, with live
+`scottland/key_restitution` (default 0.5, range 0–1), while friction continues. Touching output
+seams are open where the center meets the adjacent screen; crossing preserves global position,
+velocity and existing focus. Esc restores the starting output too. Keyboard resize (WK21)
+retains its center until the scaled footprint overflows, then pushes it inside, including late
+client commits. Mouse/touch drops and exact remembered cycle destinations keep their own rules.
+
+All 17 suites have successful runs on plumbus: **893 checks**, counting five config-concurrency
+rounds and the goo-model aggregate as one check. The duplicate model confirmation is not added
+to that total. Each suite below exited zero in its successful run.
+
+| Suite | Passed |
+|---|---:|
+| Windowing unit (palette, mixed badges, start-relative loops and double-taps) | 75 |
+| Inertia unit (including restitution, axis isolation and continued friction) | 39 |
+| Inertia real input, one output | 61 |
+| Inertia real input, two-output crossing, return and Esc | 8 |
+| Windowing end-to-end | 84 |
+| Hint appearance | 50 |
+| Key layers | 59 |
+| Widgets, goo off | 146 |
+| Widgets, goo on | 146 |
+| Widget morph | 76 |
+| Model seed 271828, 50 operations | 95 (two successful runs) |
+| Focused model regressions | 7 |
+| Attention / launcher / widget-bus units | 5 / 17 / 16 |
+| Config concurrency | 5 rounds, 20 simultaneous builds each |
+| Notification focus hooks | 3 |
+| Goo-model unit | 1 aggregate (falloff, bridging, volume, clipping, finite input, curves, swell, fullscreen) |
+
+The first bounce build's two-output return/cancel checks exposed lost keyboard focus on transfer;
+`f9568ec` fixes that and explicitly selects the arrow target when a hint skips its select step.
+The final matrix's first model attempt stopped at the initial docking audit: the card's diagnostic
+render report was revision 7/version 35 while the service was revision 8/version 37. All compared
+visible card fields matched. Two unchanged-code reruns passed all 95 checks each; no assertion,
+timeout or production code was changed to obtain these passes. The transient diagnostic mismatch's
+cause is unconfirmed, and the original failure observations/log are retained alongside the reruns.
+
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-wm tests/deploy.sh plumbus --tests-only`,
+`TMPDIR=$HOME/.cache/scottland-test-tmp` and
+`SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-wm`. Plugin and test source hashes
+matched the worktree. Every compositor started after the build, with checkout-local helpers and
+private widget D-Bus. Marked reloads were exercised only within the isolated test sessions.
+All isolated runtimes were stopped. No other checkout or live desktop was modified, and plumbus's
+physical screen was not used. Status remains **implemented (headless)**; physical verification
+is not claimed.
+
+Logs, original exit records and a successful-run manifest are on plumbus in
+`~/.cache/scottland-window-mode-results/final-f9568ec/`, with a local copy under
+`build/window-mode-results/final-f9568ec/`. Reviewed screenshots are under
+`build/window-mode-artifacts/`: `inertia/rail-boundary.png`,
+`two-output/two-output-crossing-restored.png`, `windowing/double-hints.png`,
+`appearance/dark-hints.png` and `appearance/minimum-window-scale-hints.png`.
