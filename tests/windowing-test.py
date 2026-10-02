@@ -472,6 +472,18 @@ try:
     time.sleep(.3)
     check(hint(ids[0])['hint'] == 'aa', 'two-letter labels stay stable when overflow window closes')
     close_all()
+
+    # WP7: a window Scottland places keeps off the screen's edges by the halo width plus 5 pt.
+    pad = 32 / 3 + 5
+    blockers = [launch('PadBlock%d' % i, width * x, height * .5) for i, x in enumerate((.3, .5, .7))]
+    p = launch('PadMe', width * .5, height * .2)
+    focus(p); hold(); choose(p); choose(p); release()   # select, then to the periphery (no memory)
+    time.sleep(.8)
+    f = view('PadMe')['frame']
+    inside = f['x'] >= pad - 1 and f['y'] >= pad - 1 and f['x'] + f['width'] <= width - pad + 1 \
+        and f['y'] + f['height'] <= height - pad + 1
+    check(inside, 'WP7 a placed window keeps the screen padding (halo + 5 pt)')
+    close_all()
 except Exception as error:
     check(False, 'suite exception: '+repr(error))
 finally:
