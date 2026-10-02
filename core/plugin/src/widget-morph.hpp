@@ -113,9 +113,9 @@ varying highp vec2 pos;
 uniform sampler2D first, second;
 uniform vec4 rect, box0, box1;
 uniform vec2 size0, size1;
-uniform vec2 shift, fill;
+uniform vec2 shift, fill, flip;
 uniform float right, fade, radius, aa, alpha;
-vec2 coordinate(vec2 p, vec2 size, vec4 box, float offset, float inside) {
+vec2 coordinate(vec2 p, vec2 size, vec4 box, float offset, float inside, float invert) {
     p.x += right * (size.x - rect.z) + offset;
     p.y += (size.y - rect.w) * 0.5;
     // Sampling never stretches the icon. The inner edge extends only the background.
@@ -127,12 +127,12 @@ vec2 coordinate(vec2 p, vec2 size, vec4 box, float offset, float inside) {
     if (rect.z > size.x && inside > 0.5)
         p.x = clamp(p.x, mix(0.5, inside, right), mix(size.x - inside, size.x - 0.5, right));
     vec2 uv = (p - box.xy) / box.zw;
-    return vec2(uv.x, 1.0 - uv.y);
+    return vec2(uv.x, mix(uv.y, 1.0 - uv.y, invert));
 }
 void main() {
     vec2 p = pos - rect.xy;
-    vec4 a = texture2D(first, coordinate(p, size0, box0, shift.x, fill.x));
-    vec4 b = texture2D(second, coordinate(p, size1, box1, shift.y, fill.y));
+    vec4 a = texture2D(first, coordinate(p, size0, box0, shift.x, fill.x, flip.x));
+    vec4 b = texture2D(second, coordinate(p, size1, box1, shift.y, fill.y, flip.y));
     vec2 q = abs(p - rect.zw * 0.5) - rect.zw * 0.5 + radius;
     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
     float mask = radius < 0.0 ? 1.0 : clamp(0.5 - d / aa, 0.0, 1.0);
@@ -169,6 +169,9 @@ void main() {
         double sign = m.right ? 1 : -1;
         program.uniform2f("shift", sign * (m.inset - m.from.inset), sign * (m.inset - b.inset));
         program.uniform2f("fill", m.from.edge_fill, b.edge_fill);
+        // Logical image coordinates are top-down. Honor Wayfire's wlroots texture
+        // inversion just as its built-in get_pixel() does (raw GL images are bottom-up).
+        program.uniform2f("flip", first.invert_y ? 0 : 1, second.invert_y ? 0 : 1);
         program.uniform1f("right", m.right ? 1 : 0);
         program.uniform1f("fade", m.fade);
         program.uniform1f("radius", radius);
