@@ -457,6 +457,11 @@ benchmark. Both baseline and optimized builds use the corrected harness, their o
 plugin, and their own shipped config. The bridge/snap probe now samples the actual
 gap after the drag: its old fixed point could be inside the stationary window's
 attention-breathing border. The field/threshold assertion is unchanged.
+The morph history check now compares elapsed time with its existing 50 ms allowance
+instead of comparing an absolute monotonic timestamp with 0.05. The two-output flow
+probe selects the fixture's named output rather than whichever screen happens to be
+first in a pointer-keyed map. These corrections preserve the original motion, lag,
+wave-propagation and fullscreen assertions.
 
 Reproduce paired measurements with `tests/goo-bench.sh REPO FRESH_HEADLESS_DIR 10`.
 It arranges six windows at 2560×1600, moves two to rails with real input, measures
@@ -467,3 +472,87 @@ and simulation step count. A sleeping GPU query is stale and is reported as null
 Use separate sequential runs; other sessions on the same GPU affect timer latency.
 `tests/goo-visual-fixture.py` supplies repeatable bridge, overlap, held/drop and
 return-to-position screenshots with stochastic appearance disabled for comparison.
+
+
+### Intel Xe, osanwe: paired shipped-config measurements
+
+Two sequential before/after pairs at 2560×1600, ten seconds per case. The baseline
+is `6919af6`; the optimized renderer is `2c1eed9`. Both start fresh headless
+compositors. Mike's live compositor remains untouched and contends for the GPU.
+Ranges below are the two runs, not confidence intervals.
+
+| Case | Compositor GPU busy before → after | Median goo GPU query before → after |
+|---|---|---|
+| Settled | 0.0% → 0.0% | unavailable while asleep; zero simulation steps in each ten-second sample |
+| Two attention widgets | 48.2–48.4% → 18.6–19.5% | 9.84–11.33 ms → 7.28–7.55 ms |
+| One window dragged | 48.0–48.1% → 18.6–18.7% | 11.36–11.37 ms → 7.24–7.30 ms |
+| Goo off, two widgets breathing | 0.5% → 0.6% | no goo simulation |
+
+This is about **61% less compositor GPU busy** in the two active cases. Active
+simulation remained about 59 steps/second (587–598 steps per measured interval);
+no lower-rate mode was introduced. Compositor CPU rose from 3.8–4.2% to 5.2–5.4%
+while breathing and from 6.2–6.5% to 7.6% while dragging. The analytic CPU bounds
+trade a small amount of CPU work for less GPU work. Whole-GPU busy during active
+cases was 91–92% before and 72–76% after; GPU timer queries are affected by that
+contention and must not be interpreted as uncontended shader timings.
+
+With the shipped config and deterministic visual fixture, bridge, overlap and
+return screenshots match the baseline pixel-for-pixel. Held/drop comparisons have
+31 / 11 changed RGB channels respectively, each by just one 8-bit level, across
+1280×720 images. Inspected outlines and old drag locations show no clipping or
+stale goo. These checks establish the sampled scenes, not bitwise equivalence for
+all animation phases or arbitrary custom settings. The full exponential falloff
+is preserved; no compact-cutoff appearance change is being proposed for shipping.
+
+### RX 580, plumbus: uncontended paired measurements
+
+Two further before/after pairs use the same 2560×1600 fixture and shipped configs.
+All other task test sessions were stopped first; whole-GPU busy matches the measured
+compositor to within 0.2 percentage points.
+
+| Case | Compositor GPU busy before → after | Median goo GPU query before → after |
+|---|---|---|
+| Settled | 0.0% → 0.0% | zero simulation steps in each ten-second sample |
+| Two attention widgets | 21.4–22.2% → 15.0–15.2% | 2.892–2.898 ms → 1.707–1.714 ms |
+| One window dragged | 18.6–19.0% → 14.6% | 2.880–2.883 ms → 1.678–1.679 ms |
+| Goo off, two widgets breathing | 0.6% → 0.6% | no goo simulation |
+
+That is about **31% less compositor GPU busy while breathing**, **22% less while
+dragging**, and **41% less goo GPU time**. Breathing CPU is 5.9% → 7.3%; dragging
+is 8.1% → 9.3–9.5%. Active updates remain approximately 62/second in this headless
+backend (615–627 steps per measured interval). Results are in `build/bench-amd-*.log`.
+These idle/off numbers describe this isolated fixture, not the applications or
+background services in Mike's live desktop.
+
+### Final checks and isolation
+
+Final validation uses only private headless sessions on osanwe and plumbus, with
+`SCOTTLAND_HEADLESS_DIR` per run. Plumbus deployment is `--tests-only` into
+`Projects/scottland-goo-perf-final-tests`; scratch files are under
+`~/.cache/scottland-test-tmp`. Every tested compositor starts after its build;
+reload/unload exercises are confined to those tests. No live checkout, `wayland-1`,
+installed options, physical screen or user session is changed. These remain
+**implemented/headless checked**, not physical-display verification under D2.
+The ten renderer/frame source hashes match between osanwe and plumbus.
+
+| Final check | Result |
+|---|---|
+| Goo input, palette, settings and sleep on RX 580, normal / packed GLES 2 | 40 / 40 passed |
+| Unsupported-GPU halo fallback | 4 passed |
+| Two-output flow, wave connectivity/isolation, fullscreen and cross-output drag on RX 580 | 12 passed |
+| Additional Intel Xe packed GLES 2 two-output flow | 12 passed |
+| Widgets, including nested input/process checks | 146 passed |
+| Widget morph | 86 passed after correcting the history clock comparison |
+| Hint style, goo on / explicitly off | 51 / 51 passed |
+| Windowing | 84 passed |
+| CPU goo model, including conservative-bound sweeps with 12 sources and three curves | all assertions passed |
+
+The first morph run's failure and the successful correction/recheck are both
+retained. The additional Xe flow run first exposed the output-order assumption;
+the named-output rerun passed all assertions. Other initial installed-config runs
+are also retained. Final source/render artifacts are in `build/perf-results`,
+`build/visual-shipped-{before,after}`, `build/visual-shipped-comparison.json`,
+`build/bench-shipped-*.log`, and `build/xe-packed-flow-fixed.log`. Plumbus retains
+its test screenshots beside the isolated runtime result folders and in the private
+checkout's build directory. Coverage excludes physical login/display, mixed DPI,
+rotation and GPU families beyond Xe and RX 580.

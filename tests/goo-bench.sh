@@ -3,6 +3,7 @@
 set -euo pipefail
 repo=$(realpath "${1:?repo}")
 export SCOTTLAND_HEADLESS_DIR=${2:?fresh headless dir}
+export SCOTTLAND_TEST_GOO=1 SCOTTLAND_TEST_OUTPUTS=1
 [[ ! -e $SCOTTLAND_HEADLESS_DIR ]] || { echo 'runtime already exists' >&2; exit 1; }
 runner=$(cd "$(dirname "$0")" && pwd)
 cd "$repo"
