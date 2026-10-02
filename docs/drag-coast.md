@@ -1,11 +1,11 @@
 # Drag release physics
 
 L32 in core/INVARIANTS.md defines the behavior. Drag release seeds the same independent
-velocity axes, movement friction curve and tick integration as WK17, rather than starting a destination animation.
-Scottland Settings exposes the shared law in its Window mode tab (S14); an empty curve retains
-constant deceleration. Samples use monotonic receipt timestamps because the common drag-motion
-signal provides
-layout coordinates but no device timestamp; this covers pointer, touch and three-finger input.
+velocity axes, movement friction curve and tick integration as WK17, rather than starting a
+destination animation. Scottland Settings exposes the shared law in its Window mode tab (S14);
+an empty curve retains constant deceleration. Samples use monotonic receipt timestamps because
+the common drag-motion signal provides layout coordinates but no device timestamp; this covers
+pointer, touch and three-finger input.
 Scottland's own live controller supplies these signals for pointer, halo, touch and swipe moves
 ([L33](live-drag.md)); stock client move requests retain the same observer path.
 A least-squares fit uses the last 100 ms, with at least 20 ms of samples. A stationary tail
@@ -19,8 +19,10 @@ Decisions follow the tenets:
 
 - Tenet 3 (position means priority): coasts continuously follow zones and scale. Shared screen
   edges permit passage in global layout coordinates. Explicit Alt pinning remains in force.
-- Tenet 2 (recognition): exposed edges bounce so the object remains visible; passive motion
-  never changes it into a widget. Pointer/finger rail intent keeps WG1 precedence.
+- Tenet 2 (recognition): top/bottom edges stop with at least 100 logical points visible;
+  a deliberate flick through an exposed side edge throws the window onto that side's rail
+  (WK20). Adjoining outputs permit passage. An explicit pointer/finger rail drop keeps WG1
+  precedence.
 - Tenet 4 (concede as little as possible): precise or paused drops do not drift; grabbing a
   coasting object catches it, and Esc after release stops released coasts in place.
   In entered Alt mode, Esc retains WK22's undo for arrow-touched windows. Esc during a held drag

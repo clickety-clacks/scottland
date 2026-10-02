@@ -166,7 +166,8 @@ pt/s. `move_friction_curve` and `resize_friction_curve` persist normalized speed
 one, preserving the legacy constant deceleration and 92.29-point default impulse distance.
 Strict finite-number, endpoint, range and duplicate-x validation keeps malformed curves out of
 the integrator. `cycle_overshoot` remains the WK29 hint-cycle setting (default 3%, range 0–10),
-accepted by plugin metadata and `scottland-ctl`; it is independent of the movement curves.
+accepted by plugin metadata and `scottland-ctl`; it is independent of the movement curves and
+does not yet have a Settings control.
 Nonlinear motion uses at most 1/240-second integration slices, including the
 exact final partial stop. Keyboard movement and drag coast share the movement law; Ctrl+arrow
 resize uses the resize law. The cap, impulse, restitution and both hint timings use the existing

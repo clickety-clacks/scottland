@@ -855,3 +855,66 @@ added cost on RX 580; Xe remains shared with other GPU work. See
 [live-drag.md](live-drag.md#gpu-cost) for GPU busy, query/update timing, CPU, operating-state
 caveats and the full isolated headless regression results. This changes drag ownership,
 not goo simulation/shaders, and the baseline's content freeze was not reproduced.
+
+## WK28 hint-circle cost (2026-10-02)
+
+[WK28](windowing-keys.md#wk28-pop-and-circle-liquid-2026-10-02) adds animated round,
+visual-only sources to the existing field, ahead of window islands. Circle goo
+uses its own scaled thickness over app content, independently of window film width.
+The same bands, occupied tiles, dye mixing and AA draw their connections. Input
+continues to use window/widget sources only. Small closed rings use the existing
+packed-path displacement damping on either GPU path while circles are present;
+otherwise a constant-height wave can prevent sleep. Simulated dye does not delay
+sleep when every emitter is hinted, because WK14 draws immediate weighted hint dye
+instead. Visible wave energy must still settle. Normal dye wakes on leaving hints.
+
+The paired GO10 fixture remains six windows/two rail widgets at 2560×1600, ten
+seconds per case, shipped settings and real input. Baseline is archived `85b1794`,
+built with its own hooks. There are no live installs or reloads. The optional
+`--hints` suffix adds attention and settled measurements with real Alt held, after
+the original four cases; it does not change those cases. No grid resolution or
+configured update rate was reduced. GPU clocks and other sessions are untouched.
+
+Final Xe logs are `build/wk28-results/bench-xe-pair-{before,after}.log`. RX 580
+logs are copied under `build/wk28-results/amd/`, including the initial baseline
+`bench-amd-before.log` and final `bench-amd-pair-{before,after}.log`. The two RX
+baseline runs vary substantially as other GPU work changes; both are retained.
+
+| Original GO10 case | Xe compositor GPU busy, before → after | RX 580 GPU busy, baseline range → after |
+|---|---|---|
+| Settled | 0.0% → 0.0% | 0.0% → 0.0% |
+| Two attention widgets | 15.6% → 17.1% | 9.3–14.2% → 14.7% |
+| Held window drag | 16.3% → 19.1% | 11.7–14.3% → 14.1% |
+| Goo off, attention | 0.4% → 1.0% | 0.6% → 0.6% |
+
+Xe active steps are 494 → 555 (attention) and 495 → 565 (drag). Normalizing
+compositor GPU busy by those measured steps gives changes of **−0.077 / +0.088 ms
+per update**. Query medians are 4.867 → 4.723 ms and 4.691 → 4.859 ms. Whole-GPU
+busy is 61.6–71.8% in these active samples; these elapsed queries include other
+sessions' contention. CPU is 7.7% → 7.5% / 11.8% → 10.4%. The goo-off Xe sample
+also has substantially different external GPU activity.
+
+RX 580 query medians are 0.836–1.684 → 1.694 ms for attention and
+1.670–1.685 → 1.683 ms for drag. Steps are 581–582 → 582 and 576–578 → 577.
+CPU is 6.9% → 6.9% and 9.3–9.5% → 9.2%. These preserve the original GO10
+workload's measured cost within the baseline's clock/contention variation; the
+samples do not establish an uncontended universal timing bound.
+
+The new held-hint workload is more expensive while animated: six additional
+sources and their film over app contents select the ordered-field path. It is
+reported separately, rather than claiming the added circles are free.
+
+| Held-hint case | Xe before → after | RX 580 baseline range → after |
+|---|---|---|
+| Attention GPU busy | 14.5% → 33.5% | 8.4–13.4% → 22.3% |
+| Attention goo GPU query median | 3.656 → 9.701 ms | 0.751–1.284 → 3.136 ms |
+| Attention compositor CPU | 17.3% → 15.6% | 15.4–15.5% → 12.6% |
+| Settled GPU busy | 5.9% → **0.0%** | 8.9–9.0% → **0.0%** |
+| Settled compositor CPU | 15.3% → 4.5% | 13.8–14.1% → 3.2% |
+
+Held-hint active steps are 465 → 424 on Xe and 565–567 → 563 on RX 580.
+The Xe comparison is contended, and the RX baseline's varying query times show
+clock/workload variation too. Both GPUs settle to **zero simulation steps** and
+zero visible wave energy while Alt remains held. Removing redundant hint/offset
+damage also removes the old continuous compositor drawing at rest. Hint polling
+still consumes CPU; zero GPU work is not a claim of zero total compositor CPU.

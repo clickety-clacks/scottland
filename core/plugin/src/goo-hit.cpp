@@ -27,9 +27,17 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     if (it == goo::screens.end())
         return handle_t::none;
     auto &screen = *it->second;
-    auto source = std::find_if(screen.sources.begin(), screen.sources.end(),
+    // Hint circles are click-through: neither their islands nor their liquid
+    // may mask app content or acquire a window's grab/resize ownership.
+    std::vector<goo::source_t> input_sources;
+    if (std::any_of(screen.sources.begin(), screen.sources.end(), [](auto &s) { return s.hint_circle; }))
+        std::copy_if(screen.sources.begin(), screen.sources.end(), std::back_inserter(input_sources),
+            [](auto &s) { return !s.hint_circle; });
+    if (!input_sources.empty()) goo::amounts(input_sources, screen.settings);
+    const auto &sources = input_sources.empty() ? screen.sources : input_sources;
+    auto source = std::find_if(sources.begin(), sources.end(),
         [&](const auto& s) { return s.id == v->get_id(); });
-    if (source == screen.sources.end() || !source->emitter) return handle_t::none;
+    if (source == sources.end() || !source->emitter) return handle_t::none;
     rectf_t rect{source->rect.x - source->rect.z, source->rect.y - source->rect.w,
                  source->rect.x + source->rect.z, source->rect.y + source->rect.w};
     double radius = source->liquid.y;
@@ -38,10 +46,10 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     glm::vec2 p{point.x, point.y};
     // A film over a back window belongs to a source ahead of it. Foreground
     // content still blocks input; the target never reaches through it.
-    size_t back = goo::content_index(p, screen.sources);
-    if (size_t(source - screen.sources.begin()) >= back) return handle_t::none;
-    if (back < screen.sources.size() && screen.settings.overlap_film <= 0) return handle_t::none;
-    float f = goo::density(p, screen.sources, screen.settings, screen.time);
+    size_t back = goo::content_index(p, sources);
+    if (size_t(source - sources.begin()) >= back) return handle_t::none;
+    if (back < sources.size() && screen.settings.overlap_film <= 0) return handle_t::none;
+    float f = goo::density(p, sources, screen.settings, screen.time);
     float threshold = screen.settings.threshold();
     float wave = 0;
     // Read the retained surface too: sleeping preserves its tiny residual height. Derive
@@ -65,7 +73,7 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
         if (glm::length(normal) < .001f)
             return handle_t::none;
         probe -= glm::normalize(normal) * (edge - .1f);
-        if (goo::density(probe, screen.sources, screen.settings, screen.time) < threshold)
+        if (goo::density(probe, sources, screen.settings, screen.time) < threshold)
             return handle_t::none;
     }
     // A shared bridge belongs to its strongest contributing edge. Keep the original
@@ -74,7 +82,7 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     float contribution = -1;
     for (size_t i = 0; i < back; i++)
     {
-        auto &s = screen.sources[i];
+        auto &s = sources[i];
         float c = s.liquid.x * screen.settings.fall(std::max(goo::distance(probe, s), 0.f));
         if (c > contribution + .00001f ||
             (std::abs(c - contribution) <= .00001f && owner && s.id < owner->id))

@@ -50,10 +50,10 @@ on a physical session. This change is not tested on either machine's live displa
 | WK25 | Hints follow the desktop's text size and interface font, as Vimarchy follows Omarchy's: the badge's minimum (72 px), maximum (132 px) and proportional size (0.34 of the window's shorter side) are multiplied by the text scaling factor (GTK's `text-scaling-factor`, which `omarchy display text size` sets on Omarchy), and the letters use the interface font (`font-name`'s family). The color-scheme helper records both in the palette file (`text_scale`, `font_family`) and follows changes live. | implemented (headless) |
 | WK26 | In Window mode, every widget (the default card or a third-party widget, expanded or collapsed) has its hint outside its center-facing edge: right of a left-rail widget, left of a right-rail widget, vertically centered on its drawn frame. The circle overlaps by 15% of its diameter. For large text on short widgets, overlap reduces so the arc entering the widget spans at most the middle 60% of its height, leaving the upper inward count-badge corner clear. WK5/WK25 sizing and WK14 widget tint/dye/goo remain unchanged. The exterior circle has an opaque theme background under its usual 21% hint-color fill so wallpaper cannot defeat letter contrast; window circles retain their existing transparency. Colliding hints declutter with 6 logical px clearance; widgets move only vertically as a temporary visual transform and keep their horizontal attachment, while windows retain the existing two-axis declutter. Both the hints and widget frames stay vertically on screen; horizontal screen clamping takes precedence if an unusually wide widget leaves no room. Geometry, zone memories and rail attachment are never changed. Release/Esc clears the hints and restores temporary displacement. | implemented (headless) |
 | WK27 | While any window or widget has inertial movement or resize velocity (keyboard or drag release), pause the declutter solver globally and hold its current visual offsets. Hints still follow real geometry. As soon as all velocity reaches zero, recompute from the resting geometry and interpolate to the new offsets, with no jump or geometry/memory change. | implemented (headless) |
-| WK28 | Hint circles pop in when window mode starts: each scales up from nothing with a short springy overshoot (and pops out quickly when the mode ends), and each circle has its own goo: it is a round goo source dyed its hint color, so it is part of the one liquid, joining the goo of the window or widget it touches (a widget's exterior hint visibly connects to the widget). With the goo off, circles get the fallback halo ring. Within the GO10 cost budget. (Mike, 2026-10-02) | planned |
-| WK29 | When a hint cycle (keyboard, window mode) moves a window to its next place, it comes to rest with a small elastic overshoot: an underdamped spring passes the target once in position and scale, then settles without wobble in 300 ms. `scottland/cycle_overshoot` is the peak percentage of the move (default 3%, range 0–10%; zero retains the original 260 ms position/180 ms scale motion). Geometry, zone, target scale and memories stay at the destination; drawn scale follows its own spring, never the intermediate position's zone. The live scaled content footprint is constrained to its output, including shared seams, without correcting existing off-screen memories or oversized endpoints; scale stays at least 5%. These limits may reduce overshoot. Keyboard widget opens use this window placement motion; widget morphs, rail glides, drops, drags, coasts and pointer/IPC opens retain their own motion. Window mode tab integration belongs to S14. (Mike, 2026-10-02) | implemented (headless); tab pending S14 |
-| WK30 | Widgets' hint circles are one third smaller than windows' (2/3 of the WK5/WK25 size, same min/max ratio and text scaling). Pressing a widget's hint first selects the widget (like a window that isn't selected yet); only a further press cycles it (to the center, etc.). Supersedes widget behavior in WK6-WK11/WK26 where they differ. (Mike, 2026-10-02) | planned |
-| WK31 | Hints go where you can see the window: each window's hint is placed in the part of the window that is peeking out from behind the windows in front of it (its visible region), at the most open spot there (e.g. the visible region's pole of inaccessibility / largest inscribed circle), not at the window's center. The un-overlapping (declutter) step changes to suit this: it reduces how much windows overlap on screen while hints show, rather than pushing centers apart. Window hints are sized in proportion to the window (its displayed size), within readable min/max; widgets keep one consistent circle size (WK30). (Mike, 2026-10-02) | planned |
+| WK28 | Hint circles pop in when window mode starts: each scales up from nothing with a short springy overshoot (and pops out quickly when the mode ends), and each circle has its own goo: it is a round goo source dyed its hint color, so it is part of the one liquid, joining the goo of the window or widget it touches (a widget's exterior hint visibly connects to the widget). With the goo off, circles get the fallback halo ring. Within the GO10 cost budget. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
+| WK29 | When a hint cycle (keyboard, window mode) moves a window to its next place, it comes to rest with a small elastic overshoot: an underdamped spring passes the target once in position and scale, then settles without wobble in 300 ms. `scottland/cycle_overshoot` is the peak percentage of the move (default 3%, range 0–10%; zero retains the original 260 ms position/180 ms scale motion). Geometry, zone, target scale and memories stay at the destination; drawn scale follows its own spring, never the intermediate position's zone. The live scaled content footprint is constrained to its output, including shared seams, without correcting existing off-screen memories or oversized endpoints; scale stays at least 5%. These limits may reduce overshoot. Keyboard widget opens use this window placement motion; widget morphs, rail glides, drops, drags, coasts and pointer/IPC opens retain their own motion. The cycle-overshoot setting remains available through plugin metadata and `scottland-ctl`; a Settings control is not part of the current S14 tab. (Mike, 2026-10-02) | implemented (headless); Settings control planned |
+| WK30 | Widgets' hint circles are one third smaller than windows' (2/3 of the WK5/WK25 size, same min/max ratio and text scaling). Pressing a widget's hint first selects the widget (like a window that isn't selected yet); only a further press cycles it (to the center, etc.). Supersedes widget behavior in WK6-WK11/WK26 where they differ. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
+| WK31 | Hints go where you can see the window: each window's hint is placed in the part of the window that is peeking out from behind the windows in front of it (its visible region), at the most open spot there (e.g. the visible region's pole of inaccessibility / largest inscribed circle), not at the window's center. The un-overlapping (declutter) step changes to suit this: it reduces how much windows overlap on screen while hints show, rather than pushing centers apart. Window hints are sized in proportion to the window (its displayed size), within readable min/max; widgets keep one consistent circle size (WK30). (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
@@ -480,3 +480,72 @@ failures. That does not establish the cause of every failure or prove the comple
 No broad-suite assertions or timing tolerances were changed. Physical verification and S14's
 Window mode tab remain pending. Inspect `spring-verified.cycle-artifacts/frame-strip.png` (cyan
 line = target center) and the original full-output captures beside it.
+
+## WK28: pop and circle liquid (2026-10-02)
+
+Tenet 2 (recognition, not recall) guides the motion: preserve the assignment and its
+attachment while it becomes visible. A circle grows for 200 ms with one approximately
+5% overshoot and no oscillation; its texture, including the letter, fades in with the
+scale. Release/Esc shrinks it over 100 ms. Switching between a window and its widget
+retains the hint node and eases its anchor and diameter over 160 ms. Existing declutter
+transforms and WK27's inertia pause remain the position authority. The desktop's
+`org.gnome.desktop.interface enable-animations=false` is carried as `reduced_motion`
+in the session palette and removes the pop, relocation and declutter easing. The
+palette watcher follows changes live; absent that preference, animation is enabled.
+
+Each visible circle contributes its animated center, radius, thickness and hint dye
+as a foreground round source to the existing screen liquid. Its film over app content
+uses its own thickness, even with window overlap film disabled. Exterior circles join
+the widget's source naturally. They are visual-only sources: input excludes them so
+letters, circle interiors and their liquid never acquire grab or resize ownership.
+Goo disabled or unavailable uses a soft dyed halo with a 2 px outside edge. The badge's
+settled fill, type size, palette contrast and logical sizing stay the same.
+
+Textures are cached at their target raster size and scaled during motion. Settled
+hint and displacement nodes no longer cause unconditional damage every hint tick.
+Small closed circle bands use the packed path’s existing displacement damping on
+both GPU paths while circles are present, so a constant-height wave cannot keep a
+ring awake forever. The simulation still waits for visible wave energy to settle. When every emitting
+source is hinted, the draw uses WK14's immediate contribution-weighted hint dye;
+convergence of the hidden simulation dye does not keep the output awake. Leaving
+hints changes the sources and wakes ordinary dye simulation again.
+
+`tests/hint-pop-test.sh` uses real Alt holds and retains entry/exit frame strips,
+settled goo/fallback screenshots, JSON geometry/scale samples, zero-window-film and
+reduced-motion evidence. `tests/goo-bench.sh REPO STATE_DIR 10 --hints` keeps all four
+original GO10 cases and adds held-hint attention and settled cases using the same
+six-window/two-widget fixture. All state directories, temporary files and artifacts
+for this change are under `build/wk28-results/`; no live session or installed build
+is changed. This is headless verification, not physical-display verification.
+
+Validation uses fresh isolated compositors on osanwe (Xe) and plumbus (RX 580),
+started after the tested build; all owned sessions are stopped and their state
+directories removed. No physical display, live widget service or live checkout is
+used. The plumbus test-only checkout is `Projects/scottland-wk28-hintgoo-tests`.
+
+| Check | Result |
+|---|---|
+| Pop, one overshoot, exit shrink, circle dye, widget connection, zero window film, reduced motion; Xe normal / packed GLES 2 | 19 / 19 passed |
+| Unsupported GPU: animated fallback circles | 16 passed |
+| Same pop/liquid checks on RX 580 | 19 passed |
+| Hint style, dark/light contrast, live palette, fullscreen, 5% window scale; goo on / off | 53 / 53 passed on both GPUs |
+| Widget hints: both rails, expanded/collapsed, custom widgets, text scaling and declutter | 167 passed on both GPUs |
+| Windowing input, cycles, stable assignments, fullscreen, reload and overflow labels | 84 passed on both GPUs |
+| Goo input, settings, palette, fallback and sleep on final Xe build | 46 passed |
+| CPU goo model, including round islands, zero window film and pop thickness | all assertions passed |
+
+The tiny-window style probe now samples outside the combined circle/window
+silhouette: a 72 px circle can enclose a 5%-scale window and obscure the former
+probe at its top edge. Its color threshold is unchanged. Initial failures and
+iterations are retained: one join probe crossed the antialiased inner edge; slow
+PNG capture missed short animation intervals, so motion is sampled independently
+of screenshot readback; an initial compositor startup outran first-use shader
+compilation; and the first held-hint benchmark exposed the closed-ring sleep issue.
+
+Evidence is in `build/wk28-results/`. `pop-delivery.hint-pop-artifacts/` contains
+inspected `goo-enter-strip.png`, `goo-exit-strip.png`, `goo-settled.png`,
+`fallback-enter-strip.png`, `fallback-exit-strip.png`, `fallback-settled.png`,
+`goo-zero-window-film.png` and `reduced-motion.png`, plus unscaled individual
+frames and independently sampled motion. `pop-wave-packed.hint-pop-artifacts/`
+holds the packed-path checks. The initial and final benchmark logs are retained;
+GO10's cost and the additional held-hint workload are recorded in [goo.md](goo.md#wk28-hint-circle-cost-2026-10-02).

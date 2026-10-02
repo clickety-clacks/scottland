@@ -11,6 +11,21 @@ int main()
     assert(std::abs(s.fall(s.thickness) - s.threshold()) < 1e-6);
     assert(s.fall(std::numeric_limits<float>::quiet_NaN()) == 0);
     assert(s.fall(std::numeric_limits<float>::infinity()) == 0);
+    // WK28 circles are front overlay islands in the same liquid. Their round
+    // field survives a disabled window film, and their film follows the pop scale.
+    source_t circle, island;
+    circle.id = uint64_t(1) << 63; circle.hint_circle = circle.hinted = true;
+    circle.rect = {300, 300, 36, 36}; circle.liquid.y = 36;
+    island.id = 42; island.rect = {300, 300, 150, 100};
+    std::vector<source_t> hinted{circle, island}; amounts(hinted, s);
+    assert(std::abs(distance({336,300}, circle)) < .001);
+    assert(distance({336,336}, circle) > 14);
+    s.overlap_film = 0;
+    assert(density({340,300}, hinted, s, 0) > s.threshold());
+    assert(density({300,300}, hinted, s, 0) == 0); // letter/content island stays dry
+    circle.scale = .25;
+    assert(std::abs(overlap_film_width(circle,s) - s.thickness*.25) < .001);
+    s.overlap_film = 4;
     source_t a, b;
     a.id = 1;
     b.id = 2;

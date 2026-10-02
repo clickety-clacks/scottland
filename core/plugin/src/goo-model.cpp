@@ -143,6 +143,7 @@ float control_cloud(glm::vec2 p, const source_t &w)
 }
 float overlap_film_width(const source_t &w, const settings_t &s)
 {
+    if (w.hint_circle) return s.thickness * w.scale;
     // The inner film follows the same outer swell, relative to this window's
     // resting thickness. Its unswollen width is always the user's film setting.
     float rest = std::max(s.thickness * w.scale, .01f);
@@ -156,11 +157,10 @@ float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_
         return 0;
     float f = 0;
     size_t back = content_index(p, sources);
-    if (back < sources.size() && s.overlap_film <= 0) return 0;
     for (size_t i = 0; i < back; i++)
     {
         auto &w = sources[i];
-        if (!w.emitter)
+        if (!w.emitter || (back < sources.size() && s.overlap_film <= 0 && !w.hint_circle))
             continue;
         float n = noise(p / s.lump + w.liquid.z * glm::vec2{7.13, 3.71} +
                         glm::vec2{time * s.drift, -time * s.drift * .73});

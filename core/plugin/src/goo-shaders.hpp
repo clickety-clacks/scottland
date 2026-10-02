@@ -87,10 +87,10 @@ vec2 gooField(vec2 p) {
   // Extend the front source under its own content for bilinear reconstruction.
   // Rendering and the flow mask still clip that content analytically.
   if(back.x==0.)back=vec2(1.,0.);
-  else if(back.x<float(uCount)&&uFilm<=0.)return vec2(0.);
   for(int i=0;i<1024;i++){
     if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);
-    if(g.x<=0.)continue;
+    // A hint's own halo remains visible over app content even when window film is off.
+    if(g.x<=0.||(back.y<0.&&uFilm<=0.&&source(i,5.).w<.5))continue;
     float e=edgeDistance(p,r,g,back,i),fe=fall(e);
     if(fe==0.)continue;
     float n=fbm(p*uNoiseScale+g.z*vec2(7.13,3.71)+vec2(uTime*uNoiseSpeed,-uTime*uNoiseSpeed*.73));
@@ -155,7 +155,7 @@ float gridMask(vec2 uv){
 )";
 inline const std::string wave_shader = common + mask + cached_mask + R"(
 uniform sampler2D uWave;
-uniform float uC2,uDamp;
+uniform float uC2,uDamp,uHintCircles;
 uniform vec4 uImp[8];
 uniform int uImpN;
 void main(){
@@ -165,7 +165,9 @@ void main(){
   for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;sum+=mix(hc,decode(texture2D(uWave,u2)).x,gridMask(u2));}
   float v=(hv.y+uC2*(sum-4.*hc))*uDamp,h=hc+v;
   h*=mix(.8,1.,m);v*=mix(.8,1.,m);
-  h*=mix(1.,uDamp,uPacked);
+  // Small closed hint rings can retain a constant-height wave mode forever.
+  // Damp that displacement as well as velocity, as the packed path already does.
+  h*=mix(1.,uDamp,max(uPacked,uHintCircles));
   for(int k=0;k<8;k++){if(k>=uImpN)break;float dd=distance(p,uImp[k].xy);h+=uImp[k].z*exp(-dd*dd/(uImp[k].w*uImp[k].w))*m;}
   gl_FragColor=encode(clamp(vec2(h,v),-3.9,3.9));
 }
@@ -281,13 +283,14 @@ void main(){
 inline const std::string energy_shader = common + R"(
 uniform sampler2D uWave,uDyeTex,uPrevious,uReduce;
 uniform int uFirst;
+uniform float uDyeVisible;
 uniform vec2 uInputSize;
 void main(){
   float e=0.;vec2 start=(gl_FragCoord.xy-.5)*2.;
   for(int y=0;y<2;y++)for(int x=0;x<2;x++){
     vec2 uv=(start+vec2(float(x),float(y))+.5)/uInputSize;
     float v;
-    if(uFirst==1){vec2 hv=decode(texture2D(uWave,uv));vec3 dc=abs(texture2D(uDyeTex,uv).rgb-texture2D(uPrevious,uv).rgb);v=max(max(abs(hv.x),abs(hv.y)),max(max(dc.r,dc.g),dc.b)*16.);}
+    if(uFirst==1){vec2 hv=decode(texture2D(uWave,uv));vec3 dc=abs(texture2D(uDyeTex,uv).rgb-texture2D(uPrevious,uv).rgb);v=max(max(abs(hv.x),abs(hv.y)),max(max(dc.r,dc.g),dc.b)*16.*uDyeVisible);}
     else v=texture2D(uReduce,uv).r;
     e=max(e,v);
   }

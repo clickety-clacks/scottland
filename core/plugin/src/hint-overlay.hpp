@@ -6,6 +6,7 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <chrono>
 namespace scottland::windowing
 {
 // Click-through compositor overlay; its caller follows the actual transformed window center.
@@ -14,7 +15,13 @@ class hint_node : public wf::scene::node_t
   public:
     hint_node();
     void update(double x, double y, const std::string& text, double size, const std::string& family,
-        hint_rgb color, double scale = 1, std::optional<hint_rgb> background = {});
+        hint_rgb color, double scale, std::optional<hint_rgb> background, bool goo, bool reduced_motion);
+    void hide(bool reduced_motion);
+    bool animate();
+    void relocate() { relocating = true; }
+    wf::geometry_t circle{0, 0, 0, 0};
+    hint_rgb dye{};
+    double pop = 0, opacity = 0;
     wf::geometry_t get_bounding_box() override { return box; }
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
         wf::scene::damage_callback damage, wf::output_t *output) override;
@@ -24,6 +31,12 @@ class hint_node : public wf::scene::node_t
     int pixel_size = 72;
   private:
     std::string appearance;
+    using clock = std::chrono::steady_clock;
+    clock::time_point started = clock::now(), moved = started, resized = started;
+    bool hiding = false, reduced = false, relocating = false;
+    double from = 0, cx = 0, cy = 0, diameter = 72, padding = 0;
+    double move_x = 0, move_y = 0, drawn_opacity = -1, size_from = 0, size_to = 0;
+    void geometry();
 };
 // Fullscreen surfaces have no Scottland frame. Keep their tint in their own scene subtree
 // (below the badges and other windows), with the square, inset rim fullscreen requires.

@@ -334,7 +334,11 @@ try:
     # Near the top-right straight edge, beyond both badge circles and the narrow resting halo.
     point = (round(f['x']+f['width']-6+h['dx']), math.floor(f['y']+h['dy'])-1)
     if GOO:
-        check(dyed(image, round(f['x']+f['width']/2+h['dx']), math.floor(f['y']+h['dy'])-2, h['color']),
+        # WK28: the minimum circle can enclose the whole tiny window. Its foreground
+        # island hides the old top-edge probe; sample the outside of their shared silhouette.
+        badge = h['badge']
+        check(dyed(image, math.ceil(max(f['x']+f['width']+h['dx'], badge['x']+badge['size']))+2,
+                    round(badge['y']+badge['size']/2), h['color']),
               'the goo takes the hint dye at the supported 5% window scale')
     else:
         rim = tuple(n/255 for n in image.getpixel(point))
