@@ -102,8 +102,8 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK13 (Alt-alone hold, hints,
-cycles, input ownership, full screen and visual declutter) and WP1–WP6 (zone memory,
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK21 (Alt-alone hold, hints,
+cycles, inertial arrow movement/center resize, input ownership, full screen and visual declutter) and WP1–WP7 (zone memory,
 side choice and shared rectangle placement). Statuses and verification are recorded there.
 
 L29 regression: `state-model-test.py` re-grabs an ordinary dropped window during the hold

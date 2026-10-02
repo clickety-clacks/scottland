@@ -11,6 +11,24 @@
             <min>1</min>
             <max>3000</max>
         </option>
+        <option name="key_impulse" type="double">
+            <_short>Window arrow impulse (px/s)</_short>
+            <default>335</default>
+            <min>1</min>
+            <max>10000</max>
+        </option>
+        <option name="key_friction" type="double">
+            <_short>Window arrow deceleration (px/s²)</_short>
+            <default>608</default>
+            <min>1</min>
+            <max>20000</max>
+        </option>
+        <option name="key_max_velocity" type="double">
+            <_short>Maximum window arrow velocity (px/s)</_short>
+            <default>6000</default>
+            <min>1</min>
+            <max>20000</max>
+        </option>
 		<option name="center_width" type="double">
 			<_short>Center width (%)</_short>
 			<_long>Width of the full-scale center zone, as a percentage of the screen width.</_long>

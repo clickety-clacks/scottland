@@ -161,3 +161,9 @@ this integration does not claim its cause was resolved. All sessions were stoppe
 | 6: lost launcher exit observation | Transfer the existing close-on-exec pidfd; legacy upgrades verify the live relationship before opening a new handle and use PID zero when unverifiable. | An unscoped launcher forks a widget, survives marked reload, then exits; the subscription must publish PID zero with the widget still docked (`model-process-test.py --reload`, `state-regressions-test.sh`). |
 | 7: lost legacy resolved identity | Read surviving widget launch-qualified environment and legacy unit-qualified identity once during migration; derive card traits from the actual command. | Real main-to-branch reload compares original desktop/name/icon and surviving launch, then sends a new badge for the original desktop ID (`upgrade-test.sh`). |
 | 8: stale app-ID | Observe Wayfire's app-ID change signal and publish it. | A real GTK Wayland client changes only its app-ID; subscription and late read must expose it while title and geometry stay unchanged (`app-id-app.py`, `state-regressions-test.py`). |
+
+Keyboard inertia (WK14–WK21) also writes geometry, natural scale targets and widget rail/drop
+through the model, recording placement memories after the coast. Its velocity axes, repeat clock,
+Alt-down cancellation snapshots and client-commit centering live in the input controller
+(`keyboard-motion.hpp`); they never derive coordinates from hint/renderer offsets, and do not
+survive a reload. Model geometry and committed placement still use the existing atomic handover.
