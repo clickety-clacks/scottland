@@ -128,7 +128,7 @@ def entry_paths():
     """Observe real rail requests and the rendered frames, including an early drop."""
     for path in ("center-cycle", "periphery-cycle", "widget-cycle", "double-tap", "periphery-double-tap",
                  "collapsed-double-tap", "double-tap-mode-switch",
-                 "held-drag", "early-drop", "collapsed-drop", "halo-drop", "esc-return", "load-recovery"):
+                 "push-left", "push-right", "coast-left", "coast-right", "held-drag", "early-drop", "collapsed-drop", "halo-drop", "esc-return", "load-recovery"):
         if os.environ.get("SCOTTLAND_TEST_ENTRY") and path != os.environ["SCOTTLAND_TEST_ENTRY"]:
             continue
         title = "Entry " + path
@@ -160,6 +160,30 @@ def entry_paths():
             finally:
                 t.ipc.call("wayfire/set-config-options", {"core/plugins": plugins})
             first = t.app(title).get("scene_frame", t.app(title).get("frame", g))
+        elif path.startswith(("push-", "coast-")):
+            sign = -1 if path.endswith("left") else 1
+            x, y = t.screen["width"] / 2, 330
+            t.drag_begin(t.app(title), x, y); time.sleep(.12); t.drag_end()
+            time.sleep(.4)
+            first = t.app(title).get("scene_frame", t.app(title)["frame"])
+            if path.startswith("push-"):
+                t.ipc.call("wayfire/set-config-options", {"scottland/key_impulse": 1400.0})
+                t.key("LEFTALT", True)
+                t.wait_for(lambda: t.ipc.call("scottland/hints")["active"])
+                t.key("LEFT" if sign < 0 else "RIGHT", True)
+                t.key("LEFT" if sign < 0 else "RIGHT", False)
+                t.key("LEFTALT", False)
+                t.ipc.call("wayfire/set-config-options", {"scottland/key_impulse": 335.0})
+            else:
+                t.move(x,y); t.key("LEFTMETA", True)
+                t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+                for n in range(1,7):
+                    time.sleep(.015); t.move(x + sign * 130 * n / 6,y)
+                t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+                t.key("LEFTMETA", False)
+            # Capture the contact image before startup hands it to the card.
+            t.wait_for(lambda: t.app(title)["widgetized"])
+            first = t.app(title).get("scene_frame", t.app(title)["frame"])
         elif path == "esc-return":
             t.drag_begin(t.app(title), t.screen["width"] - 6, 330); t.drag_end()
             time.sleep(2.6)
@@ -223,7 +247,10 @@ def entry_paths():
         sampler = threading.Thread(target=sample_geometry)
         sampler.start()
         try:
-            for i in range(42):
+            i = 0
+            while i < 42 or (path.startswith(("push-", "coast-")) and time.monotonic() - start < 8
+                    and (not t.card(title) or state()["widget_transition_count"])):
+                i += 1
                 stamp_before = time.monotonic() - start
                 before = state()
                 history.append((stamp_before, before))

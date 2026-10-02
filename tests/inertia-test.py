@@ -74,7 +74,10 @@ def choose(id):
     for c in h['hint']: tap(c.upper())
     time.sleep(.4)
 def drag(name,x,y):
-    v=state(name); f=v['frame']; cx=f['x']+f['width']/2; cy=f['y']+f['height']/2
+    v=state(name)
+    if v['widgetized'] or not 0 < center(v)[1] < ipc('window-rules/list-outputs')[0]['geometry']['height']:
+        ipc('scottland/present', {'window':v['id']}); coast(.7); v=state(name)
+    f=v['frame']; cx=f['x']+f['width']/2; cy=f['y']+f['height']/2
     ipc('stipc/move_cursor',{'x':round(cx),'y':round(cy)}); key('LEFTMETA',True)
     ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'press'})
     for n in range(1,11):
@@ -155,23 +158,65 @@ try:
 
         pad=32/3+5
         ipc('wayfire/set-config-options',{'scottland/key_impulse':1000.0,'scottland/key_restitution':.5})
-        for code,axis,sign in [('RIGHT',0,1),('LEFT',0,-1),('UP',1,-1),('DOWN',1,1)]:
+        for code,sign in [('UP',-1),('DOWN',1)]:
             drag('InertiaA',w/2,h/2); hold(); tap(code); release()
             samples=[]; start=time.monotonic()
             while time.monotonic()-start<2.2:
                 samples.append(state('InertiaA')); time.sleep(.015)
-            positions=[center(v)[axis] for v in samples]
-            check(any((b-a)*sign < -.1 for a,b in zip(positions,positions[1:])),code+' reverses outward velocity at the boundary')
-            check(all(v['frame']['y']>=math.ceil(pad)-1 and v['frame']['y']+v['frame']['height']<=h-math.ceil(pad)+1 for v in samples),code+' stays inside vertical WP7 padding')
-            check(all(v['frame']['x']>=max(w*.02,math.ceil(pad))-1.5 and v['frame']['x']+v['frame']['width']<=w-max(w*.02,math.ceil(pad))+1.5 for v in samples),code+' keeps its scaled footprint off exposed rails')
-            check(not state('InertiaA')['widgetized'],code+' bounce never widgetizes')
-        end=center(state('InertiaA')); coast(.4)
-        check(near(end,center(state('InertiaA')),.05),'friction settles the bounced coast')
-        screenshot('rail-boundary')
-        drag('InertiaA',w/2,h/2)
-        ipc('wayfire/set-config-options',{'scottland/key_restitution':0.0})
-        hold(); tap('UP'); release(); coast(2)
-        check(abs(state('InertiaA')['frame']['y']-math.ceil(pad))<1,'live zero restitution stops at the padded edge')
+            positions=[center(v)[1] for v in samples]
+            check(all((b-a)*sign >= -.1 for a,b in zip(positions,positions[1:])),code+' stops without reversing')
+            f=samples[-1]['frame']
+            visible=min(h,f['y']+f['height'])-max(0,f['y'])
+            check(abs(visible-100)<1.1,code+' leaves 100 logical pt of scaled footprint visible')
+            end=center(samples[-1]); coast(.3)
+            check(near(end,center(state('InertiaA')),.05),code+' remains stopped')
+            screenshot(code.lower()+'-100pt')
+            (out/(code.lower()+'-samples.json')).write_text(json.dumps(samples))
+        # The remaining strip is measured after scaling, and only y stops.
+        for code in ('UP','DOWN'):
+            drag('InertiaA',w*.2,h/2); hold(); tap(code); release(); coast(2)
+            v=state('InertiaA'); f=v['frame']
+            visible=min(h,f['y']+f['height'])-max(0,f['y'])
+            check(v['applied_scale']<.9 and abs(visible-min(100,f['height']))<1.1,code+' measures visible strip in scaled logical points')
+        drag('InertiaA',w/2,h/2); hold(); tap('UP'); release(); coast(2)
+        origin=center(state('InertiaA'))
+        ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0})
+        hold(); tap('RIGHT'); tap('UP'); release(); coast()
+        check(abs(center(state('InertiaA'))[0]-origin[0]-distance)<1 and abs(center(state('InertiaA'))[1]-origin[1])<1,'vertical contact zeros only y; horizontal coast continues')
+        ipc('wayfire/set-config-options',{'scottland/key_impulse':1000.0})
+        for code,rail in [('LEFT','left'),('RIGHT','right')]:
+            drag('InertiaA',w/2,h/2); hold(); tap(code); release()
+            samples=[]; start=time.monotonic()
+            while time.monotonic()-start<8:
+                sample=ipc('scottland/layout-state'); samples.append(sample)
+                if time.monotonic()-start>=2.2 and sample['widget_transition_count']==0 and any(v['widget'] for v in sample['views']): break
+                time.sleep(.008)
+            contact=next(v for sample in samples for v in sample['views'] if v['id']==a and v['widgetized'])
+            f=contact.get('scene_frame',contact['frame'])
+            edge=f['x'] if rail=='left' else f['x']+f['width']
+            check(abs(edge-(w*.02 if rail=='left' else w*.98))<2,code+' begins morph at scaled footprint contact with the rail')
+            links=ipc('scottland/widgets')['widgets']
+            check(len([v for v in links if int(v['id'])==a and v['rail']==rail])==1,code+' widgetizes once onto matching rail')
+            cards=[v for sample in samples for v in sample['views'] if v['widget'] and v['frame'].get('presentation')]
+            check(len(cards)>=3 and len({round(v['frame']['width'],1) for v in cards})>=3,code+' has intermediate WG22 morph frames')
+            check(all(any(not v['hidden'] and (v['id']==a or v['widget']) for v in sample['views']) for sample in samples),code+' retains a visible representation throughout handoff')
+            (out/(code.lower()+'-morph.json')).write_text(json.dumps(samples))
+            screenshot(code.lower()+'-rail')
+        drag('InertiaA',w*.05,h/2); origin=center(state('InertiaA'))
+        check(not state('InertiaA')['widgetized'],'precise pointer drop may already overlap the rail')
+        hold(); tap('LEFT'); wait_for(lambda:state('InertiaA')['widgetized'])
+        contact=state('InertiaA'); f=contact.get('scene_frame',contact['frame'])
+        check(abs(f['x']+f['width']/2-origin[0])<2,'outward push from an overlapping drop morphs without snapping inward')
+        tap('ESC'); coast(.8); release()
+        # WK22 still undoes the automatic form change within the same Alt hold.
+        drag('InertiaA',w/2,h/2); origin=center(state('InertiaA')); hold(); tap('LEFT'); coast(1.5); tap('ESC'); coast(.8); release()
+        check(not state('InertiaA')['widgetized'] and near(center(state('InertiaA')),origin,2),'Esc undoes inertial widgetization and restores Alt-down position')
+        drag('InertiaA',w/2,h/2); origin=center(state('InertiaA')); hold(); tap('RIGHT')
+        wait_for(lambda:state('InertiaA')['widgetized']); tap('ESC'); coast(.04)
+        returning=state('InertiaA'); f=returning.get('scene_frame',returning['frame'])
+        check(f['x']+f['width']/2>origin[0]+1,'Esc during widget startup retains the return glide')
+        coast(.8); release()
+        check(not state('InertiaA')['widgetized'] and near(center(state('InertiaA')),origin,2),'Esc during inertial widget startup restores window form and position')
         ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0,'scottland/key_restitution':.5})
 
         drag('InertiaA',w/2,h/2); hold(); key('LEFT',True)
@@ -268,10 +313,12 @@ try:
 
         # Cancellation uses Alt-down, even if the first arrow follows a hint cycle.
         focus(b); before=center(state('InertiaB')); hold(); choose(b); choose(b); tap('DOWN'); coast(.2); tap('ESC'); coast(.6); release()
+        print('cycle cancel:',before,center(state('InertiaB')),flush=True)
         check(near(center(state('InertiaB')),before,2),'Esc after a cycle and an arrow restores Alt-down rather than arrow-down')
         focus(b); before=state('InertiaB'); hold(); choose(b); key('LEFTCTRL',True); tap('RIGHT'); key('LEFTCTRL',False); coast(.65)
         dock(b); wait_for(lambda:state('InertiaB')['widgetized']); coast(.3); tap('DOWN'); coast(.2); tap('ESC'); coast(.8); release()
         after=state('InertiaB')
+        print('resize dock cancel:',before['geometry'],after['geometry'],after['widgetized'],flush=True)
         check(not after['widgetized'] and near(center(after),center(before),2) and after['geometry']['width']==before['geometry']['width'],'Esc restores original window size after resize, dock cycle and widget motion')
         focus(b); hold(); dock(b); release(); wait_for(lambda:state('InertiaB')['widgetized']); coast(.8)
         def card():
