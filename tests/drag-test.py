@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Drag a window across the zones with Wayfire's stipc virtual pointer (Super+left-drag, the move
-tool's default binding), reporting the window's zone and scale at checkpoints mid-drag.
+"""Drag a window across the zones with Wayfire's stipc virtual pointer (Scottland's
+Super+left-drag binding), reporting the window's zone and scale at checkpoints mid-drag.
 
   tests/drag-test.py TITLE X1 X2 ... [--shots DIR]
 

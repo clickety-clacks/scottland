@@ -148,7 +148,8 @@ def entry_paths():
             # is unloaded in THIS private compositor, then load the same build.
             plugins = t.ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
             without = " ".join(p for p in plugins.split() if p != "scottland")
-            t.ipc.call("wayfire/set-config-options", {"core/plugins": without})
+            stock_move = t.ipc.call("wayfire/get-config-option", {"option": "move/activate"})["value"]
+            t.ipc.call("wayfire/set-config-options", {"core/plugins": without, "move/activate": "<super> BTN_LEFT"})
             try:
                 g = next(v["geometry"] for v in t.ipc.call("window-rules/list-views") if v["title"] == title)
                 t.move(g["x"] + g["width"] / 2, g["y"] + g["height"] / 2)
@@ -158,7 +159,7 @@ def entry_paths():
                 t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
                 t.key("LEFTMETA", False)
             finally:
-                t.ipc.call("wayfire/set-config-options", {"core/plugins": plugins})
+                t.ipc.call("wayfire/set-config-options", {"core/plugins": plugins, "move/activate": stock_move})
             first = t.app(title).get("scene_frame", t.app(title).get("frame", g))
         elif path == "esc-return":
             t.drag_begin(t.app(title), t.screen["width"] - 6, 330); t.drag_end()

@@ -55,6 +55,7 @@ extern "C" {
 #include <xkbcommon/xkbcommon.h>
 
 #include "frame.hpp"
+#include "live-drag.hpp"
 #include "placement.hpp"
 #include "cycle-spring.hpp"
 #include "declutter.hpp"
@@ -927,7 +928,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        // While Wayfire's move tool drags a window, its geometry only changes on release;
+        // A held drag transforms the live subtree; geometry changes only on release;
         // on_drag_motion keeps the scale live instead.
         if (drag->view == view)
         {
@@ -1388,7 +1389,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double shown_w = 0, shown_h = 0;
     };
     // One drag session owns the Esc origin, re-grab chain, morph and temporarily raised view.
-    // Wayfire's drag controller and the animation timers remain renderer/input resources.
+    // The live drag controller and animation timers remain renderer/input resources.
     struct drag_session_t
     {
         double relative_x = 0.5;
@@ -1429,7 +1430,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto r = frame->screen_rect();
         std::shared_ptr<wf::scene::transformer_base_node_t> move;
         for (auto n = frame->parent(); n && n != view->get_transformed_node().get(); n = n->parent())
-            if (n->stringify() == "move-drag")
+            if (n->stringify() == "scottland-live-drag" || n->stringify() == "move-drag")
             {
                 move = std::dynamic_pointer_cast<wf::scene::transformer_base_node_t>(n->shared_from_this());
                 break;
@@ -1478,13 +1479,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 (widget_link && (widget_link->away || widget_link->lifecycle == widget_link_t::lifecycle_t::closing)))
                 continue;
             auto move = v->get_transformed_node()->get_transformer<wf::scene::transformer_base_node_t>(
-                "move-drag-transformer");
+                "scottland-live-drag");
             auto frame = v->get_transformed_node()->get_transformer<scottland::frame_t>("scottland-scale");
-            // Stock Wayfire registers its move transformer under its type name, despite the
-            // historical named lookup above. Find the public scene node in the frame's chain.
+            // Client move requests still use stock Wayfire, whose transformer is registered
+            // by type. Find that public node in the frame's chain when no live drag exists.
             if (!move && frame)
                 for (auto n = frame->parent(); n && n != v->get_transformed_node().get(); n = n->parent())
-                    if (n->stringify() == "move-drag")
+                    if (n->stringify() == "scottland-live-drag" || n->stringify() == "move-drag")
                     {
                         move = std::dynamic_pointer_cast<wf::scene::transformer_base_node_t>(n->shared_from_this());
                         break;
@@ -1556,7 +1557,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         std::map<wf::scene::node_t*, uint64_t> roots;
         for (auto &s : result)
-            if (auto v = model.windows.at(s.id).view.lock()) roots[v->get_root_node().get()] = s.id;
+            if (auto v = model.windows.at(s.id).view.lock())
+                roots[(drag->is_live() && drag->view.get() == v.get()) ? v->get_transformed_node().get() :
+                    v->get_root_node().get()] = s.id;
         std::map<uint64_t, size_t> order;
         std::function<void(wf::scene::node_t*)> walk = [&](auto n)
         {
@@ -3681,18 +3684,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (finger >= 0)
             {
-                // Not move_request: for touch, the move plugin learns where the finger went down
-                // only after this runs, and would grab the window at a stale position.
+                // Use the finger position, even before Wayfire finishes delivering touch down.
                 start_touch_drag(view, finger);
             } else
             {
-                wf::get_core().default_wm->move_request(view);
+                start_pointer_drag(view);
             }
         }
     }
 
     // Touchpad window gestures (L23, L24). A three-finger swipe moves the window under the pointer
-    // through the same drag as Super+drag (Wayfire's move plugin finishes it, with live scaling); a
+    // through the same live drag as Super+drag; a
     // three-finger click-drag (clickfinger's middle button) resizes it around its center. A
     // three-finger click that doesn't move stays a middle click, replayed to the app on release.
     wf::option_wrapper_t<bool> touchpad_gestures{"scottland/touchpad_gestures"};
@@ -3745,11 +3747,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         wf::get_core().default_wm->focus_raise_view(view);
+        drag->set_input(-1, true);
         drag->set_pending_drag(wf::get_core().get_cursor_position());
-        wf::move_drag::drag_options_t options;
-        options.join_views = false;
-        options.enable_snap_off = false;
-        drag->start_drag(view, options);
+        drag->start_drag(view);
         note_drag_start();  // now, where the fingers began: the first update may be a while
         swipe_moving = true;
     }
@@ -4061,7 +4061,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             lifted_frame.reset();
-            // The move plugin ends the drag on the last finger up; finish it if nothing did.
+            // The live grab normally ends it; finish it if touch focus already changed.
             if (drag->view && wf::get_core().get_touch_state().fingers.empty())
             {
                 drag->handle_input_released();
@@ -4156,12 +4156,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         lifted_finger = finger;
         auto at = where.value_or(wf::get_core().get_touch_position(finger));
         model.drag.input_override = at;
+        drag->set_input(finger);
         drag->set_pending_drag(at);
-        wf::move_drag::drag_options_t options;
-        options.join_views = false;
-        options.enable_snap_off = false;
-        // Kept until the drag ends: the drag reports its start (on_drag_output) on the first motion.
-        drag->start_drag(view, options);
+        // Kept until the drag ends so the common start logic uses the finger, not the cursor.
+        drag->start_drag(view);
         note_drag_start();  // now, where the finger is: the drag may end before it moves
     }
 
@@ -4405,6 +4403,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["hold_armed"] = hold_finger >= 0;
         reply["lifted"]     = lifted_finger >= 0;
         reply["dragging"]   = (bool)drag->view;
+        reply["drag_renderer"] = drag->view ? (drag->is_live() ? "scottland-live" : "wayfire-move") : "none";
         reply["drag_center"] = model.drag.last_center;
         return reply;
     };
@@ -4437,7 +4436,23 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     // Live scaling while a window is dragged. The drag keeps the grabbed point of the window's
     // (transformed) bounding box under the pointer, so rescaling mid-drag stays anchored there.
-    wf::shared_data::ref_ptr_t<wf::move_drag::core_drag_t> drag;
+    std::unique_ptr<scottland::live_drag_t> drag = std::make_unique<scottland::live_drag_t>();
+
+    wf::option_wrapper_t<wf::buttonbinding_t> move_button{"scottland/move"};
+    wf::button_callback on_move = [this] (auto)
+    {
+        auto view = gesture_target();
+        if (!view || drag->view) return false;
+        start_pointer_drag(view, wf::buttonbinding_t(move_button).get_button());
+        return bool(drag->view);
+    };
+
+    void start_pointer_drag(wayfire_toplevel_view view, uint32_t button = BTN_LEFT)
+    {
+        drag->set_input(-1, false, button);
+        drag->set_pending_drag(wf::get_core().get_cursor_position());
+        drag->start_drag(view);
+    }
 
     static constexpr double CLICK_SLOP = 6.0;  // a press and release within this is a click, not a move
 
@@ -5327,7 +5342,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double screen    = output->get_relative_geometry().width;
 
         // Where the window's center is shown, read from the drag itself rather than predicted. The
-        // move tool draws the window in a box sized from the view's own box (this frame plus its
+        // live drag draws the window in a box sized from the view's own box (this frame plus its
         // halo margin) divided by its zoom, placed so the grab sits at a fixed fraction of it.
         // Measure that box, the grab fraction and the margins now; then the center at any scale s
         // follows exactly: the box grows by unscaled * ds, around the grab.
@@ -5336,7 +5351,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return pointer_x + (0.5 - model.drag.relative_x) * (unscaled * s + 2 * model.drag.margin);
         };
         auto drag_box = view->get_transformed_node()->get_transformer<wf::scene::transformer_base_node_t>(
-            "move-drag-transformer");
+            "scottland-live-drag");
         auto frame = frame_of(view, false);
         if (drag_box && frame)
         {
@@ -5937,6 +5952,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         announce_widgets();  // a widget service that outlived a reload catches up
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
+        wf::get_core().bindings->add_button(move_button, &on_move);
         drag->connect(&on_drag_output);
         drag->connect(&on_drag_motion);
         drag->connect(&on_drag_done);
@@ -5972,6 +5988,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void fini() override
     {
+        drag->handle_input_released();
+        wf::get_core().bindings->rem_binding(&on_move);
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
         installing_model = reloading;  // teardown is also part of the atomic handover
         widget_peek_tick.disconnect();
