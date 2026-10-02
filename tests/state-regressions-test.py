@@ -5,6 +5,7 @@ import os
 import socket
 import struct
 import select
+import shlex
 import subprocess
 import time
 import shutil
@@ -149,6 +150,41 @@ def main():
             assert next(v for v in late['windows'] if v['id'] == original['id'])['app_id'] == 'org.scottland.IdentityAfter'
             watch.sock.close()
             print('PASS  app-ID-only client change advances subscription and late-read identity', flush=True)
+        # The actual event-loop helper must stay running while its source keeps listing
+        # a closed window, then continue updating attention for another live window.
+        stale = open_app('scottland-attention-stale')
+        live = open_app('scottland-attention-live')
+        open_app('scottland-attention-foreground')
+        with tempfile.TemporaryDirectory() as directory:
+            listing = Path(directory)/'entries.json'
+            listing.write_text(json.dumps([{'window': stale}]))
+            lister = Path(directory)/'list.py'
+            lister.write_text('import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text())')
+            config = Path(directory)/'source.ini'
+            config.write_text('[source]\nlist = '+shlex.join(['python3',str(lister),str(listing)])+'\ninterval = 0.5\n')
+            runner = """import configparser,importlib.machinery,importlib.util,sys
+loader=importlib.machinery.SourceFileLoader('attention',sys.argv[1])
+module=importlib.util.module_from_spec(importlib.util.spec_from_loader('attention',loader)); loader.exec_module(module)
+config=configparser.ConfigParser(interpolation=None); config.read(sys.argv[2])
+sys.exit(module.Service([module.Source('closed-listing-test',config['source'])]).run())
+"""
+            helper = subprocess.Popen(['python3','-c',runner,str(Path('core/libexec/scottland-attention-sources').resolve()),str(config)])
+            try:
+                time.sleep(.8)
+                assert helper.poll() is None
+                assert 'closed-listing-test' in next(v for v in ipc.call('scottland/desktop-model')['windows'] if v['id'] == stale)['attention']
+                ipc.call('window-rules/close-view', {'id': stale})
+                time.sleep(1.2)  # at least two listings still contain the now-closed ID
+                assert helper.poll() is None, 'attention helper died after closing a listed window'
+                listing.write_text(json.dumps([{'window': stale}, {'window': live}]))
+                time.sleep(.8)
+                assert helper.poll() is None
+                assert 'closed-listing-test' in next(v for v in ipc.call('scottland/desktop-model')['windows'] if v['id'] == live)['attention']
+                print('PASS  running attention helper survives a stale closed-window listing and updates another window', flush=True)
+            finally:
+                if helper.poll() is None: helper.terminate()
+                helper.wait(timeout=5)
+
 
 
     finally:
