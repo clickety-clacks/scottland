@@ -10,6 +10,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import re
 import os
 from pathlib import Path
 import select
@@ -306,6 +307,9 @@ def shortcuts():
     loader.exec_module(importer)
     config = args.log.parent / "wayfire.ini"
     original = config.read_text()
+    # The session's config carries the user's real imported shortcuts (e.g. an Omarchy Shift+Super+M):
+    # the fixtures must be the only imports in play, or pressing their keys runs the user's commands.
+    fixture_base = re.sub(r"(?m)^(repeatable_)?(binding|command)_omarchy_\w+ = .*\n", "", original)
     launch("shortcut-regression")
     with tempfile.TemporaryDirectory(prefix="scottland-shortcuts-", dir=os.environ["XDG_RUNTIME_DIR"]) as work:
         work = Path(work)
@@ -335,10 +339,11 @@ def shortcuts():
             ):
                 marker.unlink(missing_ok=True)
                 command = "printf hit >> " + str(marker)
-                generated = generate(original + "\n" + base_text,
+                generated = generate(fixture_base + "\n" + base_text,
                                      f'hl.bind("{keys}", hl.dsp.exec_cmd({json.dumps(command)}))\n')
-                check(f"O5 importer disables the conflicting {name}", "minimize_widget = none" in generated, generated)
-                config.write_text(original + "\n" + base_text + "\n" + generated)
+                check(f"O5 Scottland's feature binding keeps its keys; the import is displaced ({name})",
+                      "minimize_widget = none" not in generated and "displaced" in generated, generated)
+                config.write_text(fixture_base + "\n" + base_text + "\n" + generated)
                 time.sleep(0.8)  # Wayfire's config file watcher
                 before = minimized("shortcut-regression")
                 if shift:
@@ -346,25 +351,31 @@ def shortcuts():
                 toggle()
                 if shift:
                     key("LEFTSHIFT", False)
-                wait_for(marker.exists)
-                time.sleep(0.1)
-                check(f"O5 real input runs the imported {name} command once", marker.read_text() == "hit")
-                check(f"O5 real input does not also toggle widgets ({name})",
-                      minimized("shortcut-regression") == before)
+                time.sleep(0.6)
+                check(f"O5 real input toggles widgets ({name})", minimized("shortcut-regression") != before)
+                check(f"O5 real input does not run the displaced import ({name})", not marker.exists())
+                if minimized("shortcut-regression") != before:
+                    if shift:
+                        key("LEFTSHIFT", True)
+                    toggle()  # back as it was for the next case, with the same keys
+                    if shift:
+                        key("LEFTSHIFT", False)
+                    time.sleep(0.4)
             generated = generate("[scottland]\n", 'hl.bind("SUPER+M", function() end)\n')
-            check("O5 Lua-function import also disables the metadata default",
-                  "minimize_widget = none" in generated and "scottland-lua-call" in generated, generated)
+            check("O5 a Lua-function import on a feature binding's keys is displaced too",
+                  "minimize_widget = none" not in generated and "displaced" in generated, generated)
             generated = generate("[scottland]\nminimize_widget = <super> KEY_N\n",
                                  'hl.bind("SUPER+M", "true")\n')
             check("O5 an explicit binding replaces its metadata default during collision detection",
-                  "minimize_widget =" not in generated, generated)
+                  "minimize_widget =" not in generated and "displaced" not in generated, generated)
             generated = generate("[scottland]\nminimize_widget = none\n", 'hl.bind("SUPER+M", "true")\n')
             check("O5 an explicit none overrides the metadata default", "minimize_widget =" not in generated)
             generated = generate("[scottland]\n", 'hl.bind("CTRL+SUPER+M", "true")\n')
             check("O5 extra modifiers are a different shortcut", "minimize_widget =" not in generated)
+            # (Keys no Scottland feature uses: on those, the user's shortcuts win over other defaults.)
             generated = generate(
-                "[wm-actions]\ntoggle_fullscreen = <super> KEY_M | <super> <shift> KEY_M | <super> KEY_N\n",
-                'hl.bind("SUPER+M", "true")\nhl.bind("SHIFT+SUPER+M", "true")\n')
+                "[wm-actions]\ntoggle_fullscreen = <super> KEY_K | <super> <shift> KEY_K | <super> KEY_N\n",
+                'hl.bind("SUPER+K", "true")\nhl.bind("SHIFT+SUPER+K", "true")\n')
             check("O5 multiple normalized collisions preserve only the unclaimed alternative",
                   "toggle_fullscreen = <super> KEY_N\n" in generated, generated)
         finally:
