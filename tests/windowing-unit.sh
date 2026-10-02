@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-build_dir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-windowing-unit.XXXXXX")
+mkdir -p build
+build_dir=$(mktemp -d "$PWD/build/scottland-windowing-unit.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT
 export TMPDIR=$build_dir
 c++ -std=c++17 -Wall -Wextra -Werror -O2 -Icore/plugin/src tests/windowing-unit.cpp \

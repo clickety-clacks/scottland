@@ -102,7 +102,7 @@ def fixture_pixels(title, label):
         for r, g, b in markers), markers)
 
 
-def verify(label, series, before, smaller):
+def verify(label, series, before, smaller, bounce=True):
     for wid, first in before.items():
         track = [(stamp, frames(s)[wid]) for stamp, s in series if wid in frames(s)]
         widths = [first["width"]] + [f["width"] for _, f in track]
@@ -110,8 +110,16 @@ def verify(label, series, before, smaller):
         t.check(f"{label} widget {wid}: sampled intermediate frames", len(active) >= 5 and
                 len({round(w, 1) for w in widths}) >= 6, widths)
         sign = -1 if smaller else 1
-        t.check(f"{label} widget {wid}: width is monotonic", all(
-            sign * (b - a) >= -.05 for a, b in zip(widths, widths[1:])), widths)
+        directed = [sign * w for w in widths]
+        peak = max(range(len(directed)), key=directed.__getitem__)
+        if bounce:
+            t.check(f"{label} widget {wid}: overshoots once, then settles without wobble",
+                directed[peak] > directed[-1] + .5 and
+                all(b >= a - .05 for a, b in zip(directed[:peak], directed[1:peak+1])) and
+                all(b <= a + .05 for a, b in zip(directed[peak:], directed[peak+1:])), widths)
+        else:
+            t.check(f"{label} widget {wid}: zero bounce is monotonic", all(
+                b >= a - .05 for a, b in zip(directed, directed[1:])), widths)
         edge = first["x"] if first["x"] < 100 else first["x"] + first["width"]
         edges = [f["x"] if first["x"] < 100 else f["x"] + f["width"] for _, f in track]
         t.check(f"{label} widget {wid}: rail edge fixed", max(abs(e - edge) for e in edges) < .05, edges)
@@ -120,7 +128,8 @@ def verify(label, series, before, smaller):
         t.check(f"{label} widget {wid}: no final snap", abs(last_active - end) < 3, (last_active, end))
         t.check(f"{label} widget {wid}: exact final size", abs(end - (96 if smaller else 320)) < .001, end)
         running = [stamp for stamp, f in track if "presentation" in f and not f["presentation"]["waiting"]]
-        t.check(f"{label} widget {wid}: roughly 200 ms of animation", running and .16 < running[-1] - running[0] < .26,
+        t.check(f"{label} widget {wid}: bounded animation duration", running and
+                ((.30 < running[-1] - running[0] < .41) if bounce else (.16 < running[-1] - running[0] < .26)),
                 running[-1] - running[0] if running else running)
 
 
@@ -239,12 +248,23 @@ def entry_paths():
             connection = t.Ipc()
             try:
                 while not stop_sampling.is_set():
-                    track.append((time.monotonic() - start, connection.call("scottland/layout-state")))
+                    snapshot = connection.call("scottland/layout-state")
+                    track.append((time.monotonic() - start, snapshot))
+                    # Geometry and goo must be sampled independently of PNG encoding.
+                    if goo_enabled:
+                        for v in snapshot["views"]:
+                            if v["hidden"] or not (v["title"] == title or v["title"].endswith(": " + title)): continue
+                            f = v.get("scene_frame", v["frame"])
+                            x = round(f["x"] + f["width"] / 2); y = round(f["y"] + f["height"] / 2)
+                            if 0 <= x < t.screen["width"] and 0 <= y < t.screen["height"]:
+                                field = connection.call("scottland/goo-state", {"x": x, "y": y})["screens"][0]
+                                field_samples.append((time.monotonic() - start, f, x, y, field["window_distance"]))
                     stop_sampling.wait(.006)
             except Exception as error:
                 sampling_errors.append(error)
             finally:
                 connection.sock.close()
+        goo_enabled = t.ipc.call("scottland/goo-state")["enabled"]
         sampler = threading.Thread(target=sample_geometry)
         sampler.start()
         try:
@@ -303,7 +323,7 @@ def entry_paths():
             errors = []
             for stamp, f, x, y, distance in field_samples:
                 if not low + 2 < f["height"] < high - 2: continue
-                recent = [v.get("scene_frame", v["frame"]) for at, s in history if stamp - .07 <= at <= stamp
+                recent = [v.get("scene_frame", v["frame"]) for at, s in track + history if stamp - .07 <= at <= stamp
                     for v in s["views"] if not v["hidden"] and
                     (v["title"] == title or v["title"].endswith(": " + title))]
                 def signed(r):
@@ -419,6 +439,40 @@ try:
     expanded = sample("expand")
     verify("expand", expanded, before, False)
 
+    # Live option through the settings-facing CLI: 0 preserves the monotonic transition.
+    subprocess.check_call(["core/libexec/scottland-ctl", "set", "widget_bounce", "0"])
+    for smaller in (True, False):
+        before = frames(state())
+        t.toggle()
+        verify("bounce disabled", sample("zero-" + str(smaller)), before, smaller, bounce=False)
+    subprocess.check_call(["core/libexec/scottland-ctl", "set", "widget_bounce", "0.04"])
+
+    # Real pointer hover and leave exercise the same spring without changing collapse intent.
+    t.toggle(); settle()
+    title = "Morph left with a title long enough for maximum width"
+    wid = t.card(title)["id"]
+    before = {wid: frames(state())[wid]}
+    f = before[wid]
+    t.move(f["x"] + 40, f["y"] + 48)
+    verify("hover peek", sample("hover-peek", 1.0), before, False)
+    before = {wid: frames(state())[wid]}
+    t.move(t.screen["width"] / 2, 60)
+    verify("hover leave", sample("hover-leave", 1.0), before, True)
+    focus_title = "Bounce attention focus"
+    t.launch(focus_title, rail=None)
+    before = {wid: frames(state())[wid]}
+    t.ipc.call("scottland/attention", {"window": t.app(title)["id"],
+        "attention": True, "source": "bounce-test"})
+    verify("attention peek", sample("attention-peek"), before, False)
+    # Attention expiry is a production timer; capture across its five-second deadline.
+    time.sleep(3.8)
+    before = {wid: frames(state())[wid]}
+    verify("attention expiry", sample("attention-expiry", 1.2), before, True)
+    t.ipc.call("scottland/attention", {"window": t.app(title)["id"],
+        "attention": False, "source": "bounce-test"})
+    t.ipc.call("window-rules/close-view", {"id": t.app(focus_title)["id"]})
+    t.toggle(); settle()
+
     link = t.widgets()[0]
     wid = t.card(link["title"])["id"]
     for smaller in (True, False):
@@ -486,7 +540,7 @@ try:
     for wid, f in at_reverse.items():
         track = [frames(s)[wid]["width"] for _, s in reversal]
         t.check(f"reversal widget {wid}: starts at shown width", abs(track[0] - f["width"]) < 20, track)
-        t.check(f"reversal widget {wid}: smoothly reaches expanded", all(b >= a - .05 for a, b in zip(track, track[1:])) and abs(track[-1] - 320) < .001, track)
+        t.check(f"reversal widget {wid}: bounces and reaches expanded exactly", max(track) > 320 and abs(track[-1] - 320) < .001, track)
 
     # More than one reversal must flatten the previous composition, not recapture the surface.
     for _ in range(4):
@@ -642,11 +696,13 @@ try:
             captured = False
             start = time.monotonic()
             while time.monotonic() - start < .6:
-                stamp = time.monotonic()
                 f = t.card(title)["frame"]
                 x = t.screen["width"] / 2
                 field = t.ipc.call("scottland/goo-state", {"x": x,
                     "y": f["y"] + f["height"] / 2})["screens"][0]
+                # Timestamp the field read, not the two preceding IPC requests;
+                # under compositor load that request time can exceed a render frame.
+                stamp = time.monotonic()
                 edge = x + field["window_distance"]
                 track.append({"stamp": stamp, "frame": f, "field_edge": edge})
                 if not captured and 140 < f["width"] < 270:

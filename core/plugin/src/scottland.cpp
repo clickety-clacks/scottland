@@ -4659,6 +4659,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             model.drag.morph.emplace();
+            double bounce = std::clamp(double(widget_bounce), 0.0, 0.1);
+            if (bounce > 0)
+                model.drag.morph->shape = wf::animation::simple_animation_t{
+                    wf::create_option<int>(360), [bounce] (double t) { return scottland::widget_spring(t, bounce); }};
             model.drag.morph->dragged     = view->weak_from_this();
             model.drag.morph->from_widget = dragging_widget;
             model.drag.morph->shape.set(0, 0);

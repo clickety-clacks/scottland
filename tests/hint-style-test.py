@@ -156,14 +156,14 @@ try:
         (artifacts/(scheme+'-state.json')).write_text(json.dumps({'hints': state, 'views': views()}, indent=2))
         check(len(state) == 4 and all(h['visible'] for h in state), scheme+': every window and card has a hint')
         sizes = [h['badge']['size'] for h in state]
-        check(min(sizes) == 72 and max(sizes) == 132, scheme+': badges reach both 72 and 132 logical px')
+        check(min(sizes) == 48 and max(sizes) == 132, scheme+': widget badges reach 48px and window badges reach 132px')
         represented = {v['id']: v for v in views()}
         links = {int(w['id']): w['widget_view'] for w in ipc('scottland/widgets')['widgets']}
         all_sizes = True
         for h in state:
             v = represented[links.get(h['window'], h['window'])]
             f = v['frame']
-            all_sizes &= h['badge']['size'] == round(max(72, min(132, min(f['width'], f['height'])*.34)))
+            all_sizes &= h['badge']['size'] == round((2/3 if v['widget'] else 1) * max(72, min(132, min(f['width'], f['height'])*.34)))
         check(all_sizes, scheme+': sizing uses displayed dimensions including scaled windows and cards')
         if scheme == 'dark':
             # WK5: badges follow the desktop's text size (text_scale in the palette file).
@@ -177,8 +177,8 @@ try:
             for h in hints():
                 v = represented[links.get(h['window'], h['window'])]
                 f = v['frame']
-                ok &= h['badge']['size'] == round(max(108, min(198, min(f['width'], f['height'])*.34*1.5)))
-            check(ok, 'badges scale with the desktop text size (1.5: 108-198 px)')
+                ok &= h['badge']['size'] == round((2/3 if v['widget'] else 1) * max(108, min(198, min(f['width'], f['height'])*.34*1.5)))
+            check(ok, 'badges scale with desktop text size, retaining the widget 2/3 factor')
             key('LEFTALT', False); time.sleep(.3)
             theme('dark')
             time.sleep(.8)

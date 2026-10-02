@@ -75,13 +75,19 @@
         auto g = view->get_geometry();
         return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
     }
+    double hint_size(wayfire_toplevel_view view)
+    {
+        auto r = hint_rectangle(view);
+        return scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale) *
+            (link_of_widget(view) ? 2.0 / 3.0 : 1.0);
+    }
     scottland::windowing::point hint_anchor(wayfire_toplevel_view view)
     {
         auto r = hint_rectangle(view);
         double x = (r.x1 + r.x2) / 2;
         if (auto link = link_of_widget(view))
         {
-            double diameter = std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale));
+            double diameter = std::round(hint_size(view));
             // WK26: attach to the center-facing edge; retain space at the count corner.
             double outside = diameter / 2 - scottland::windowing::widget_hint_overlap(diameter, r.height());
             x = link->rail == "left" ? r.x2 + outside : r.x1 - outside;
@@ -451,7 +457,7 @@
             auto r = hint_rectangle(view);
             auto anchor = hint_anchor(view);
             signature << ':' << std::round(anchor.x) << ',' << std::round(anchor.y) << ',' << std::round(r.height())
-                << ',' << std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale)) << ';';
+                << ',' << std::round(hint_size(view)) << ';';
             by_output[view->get_output()].push_back(e.id);
         }
         bool coasting = inertia_active();
@@ -468,7 +474,7 @@
                     anchors.push_back(hint_anchor(view));
                     bool widget = bool(link_of_widget(view));
                     constraints.push_back({widget, widget ? r.height() / 2 : 0});
-                    diameters.push_back(std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale))); }
+                    diameters.push_back(std::round(hint_size(view))); }
                 auto screen = output->get_relative_geometry();
                 auto displaced = scottland::windowing::declutter(anchors,
                     {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints);
@@ -516,7 +522,6 @@
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
                     wf::scene::add_front(view->get_output()->node_for_layer(wf::scene::layer::OVERLAY), visual.hint);
                 }
-                auto r = hint_rectangle(view);
                 auto anchor = hint_anchor(view);
                 unsigned slot = ensure_window_memory(it->first).hint_slot;
                 auto text = upper(window_keys.label(slot));
@@ -536,7 +541,7 @@
                     visual.fullscreen_tint->update(view->get_geometry(), color);
                 }
                 visual.hint->update(anchor.x + offset->translation_x, anchor.y + offset->translation_y, text,
-                    scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale),
+                    hint_size(view),
                     hints_palette.font_family, color,
                     view->get_output()->get_scale(), link_of_widget(view) ?
                         std::optional{hints_palette.background} : std::nullopt,

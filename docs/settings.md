@@ -231,3 +231,7 @@ Evidence: `build/settings-design-evidence/{before-layout,after-layout,after-wind
 `build/settings-help-evidence/{02-layout-hover,03-curve-selected,05-window-playground,
 06-window-friction,06a-window-timelines,07-light-theme}.png`, plus `wheel-samples.json` and
 `touchpad-samples.json`. Goo evidence remains in `build/goo-evidence`.
+
+## Widget elasticity integration (WG23 / S19)
+
+`scottland-ctl get`, `set` and `stdin` expose `widget_bounce`: a value from 0 to 0.1, default 0.04 (4% size overshoot). Zero keeps the existing monotonic easing; nonzero uses a 360 ms single bounce with bounded overshoot on large contractions. The Widgets tab remains planned under S19; it should label this control “Widget bounce”, show a percentage, and include it in Save/Cancel/Defaults. Peek timing remains a separate future control.

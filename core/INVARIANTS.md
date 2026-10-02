@@ -39,7 +39,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L31 | Holding Alt while dragging a window keeps the scale it has, wherever it goes (into the periphery at 100%, say), and dropping it with Alt still held leaves it at that scale there; letting go of Alt mid-drag returns it to the zones, and dragging it again without Alt makes it follow the zones again. (With Super+drag, press Alt after the drag starts: Super+Alt+drag resizes, L20.) Holding Alt during a drag never opens the Alt window hints. | implemented (headless) |
 | L32 | Pointer, touch and three-finger move releases coast from a least-squares fit of the last 100 ms of timestamped input positions, with no coast below 60 logical px/s or after a 50 ms pause. The same per-axis movement friction law (constant deceleration by default) and velocity cap as keyboard inertia apply (WK17/WK20/WK24), including the final partial tick. Zone/scale follow the center live; an L31 scale pin survives and sets the collision footprint. Exposed boundaries follow WK20: top/bottom stop with 100 pt of the live scaled footprint visible; an exposed side widgetizes once that footprint touches the rail boundary, using WG22's morph, and adjacent outputs permit passage. All app motion axes end at that handoff; WG1-ineligible windows stop at side contact without changing form. An explicit pointer/finger rail drop still widgetizes without coast (WG1). Esc after release stops motion where it is; a new grab catches that window immediately. Esc while held retains L27 return behavior. Stationary drops retain their exact position. See [drag-coast.md](../docs/drag-coast.md). | implemented (headless) |
 | L17 | Trackpad (two-finger) scrolling honors `input/touchpad_scroll_speed`, applied live; the shipped default is 0.2. (Wayfire 0.11 ignores it for touchpads, WayfireWM/wayfire#3148; the plugin applies it until the fix ships.) | verified (on Mike's trackpad, osanwe) |
-| L13 | A window moved onto a widget rail becomes a widget (any program, chosen per app, default card); see [docs/widgets.md](../docs/widgets.md) (WG1–WG22, including continuous window → widget morphs). | implemented (headless) |
+| L13 | A window moved onto a widget rail becomes a widget (any program, chosen per app, default card); see [docs/widgets.md](../docs/widgets.md) (WG1–WG23, including continuous window → widget morphs and elastic size transitions). | implemented (headless) |
 | L14 | Tiling rules apply to windows. | not built (rules not yet specified) |
 | L15 | Scottland copies the display scale the user's Hyprland uses (e.g. 4K panels are not tiny). | not built |
 | L16 | How widgets sit on a rail: free-floating where dropped, at the widget's own size ([docs/widgets.md](../docs/widgets.md), WG4). | implemented (headless) |
@@ -81,7 +81,7 @@ highlight edges; see [its headless visual and cost checks](../docs/goo.md#go13-i
 
 ## Layout configurator (`scottland-settings`)
 
-The settings app (Scottland Settings: Layout, Goo and Window mode tabs, zone overlay, hints): see [docs/settings.md](../docs/settings.md) (S1–S18).
+The settings app (Scottland Settings: Layout, Goo and Window mode tabs, zone overlay, hints): see [docs/settings.md](../docs/settings.md) (S1–S19; Widgets tab planned).
 
 ## Desktop state
 
@@ -108,7 +108,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK27 (window mode: Alt-alone hold, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK31 (window mode: Alt-alone hold, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and visual declutter)
 and WP1–WP7 (zone memory, side choice and shared rectangle placement). Statuses and verification are recorded there.
 

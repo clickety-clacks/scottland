@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include "widget-spring.hpp"
 
 namespace scottland
 {
@@ -45,6 +46,7 @@ struct widget_morph_t
     widget_image_t from, to;
     double width = 0, height = 0, inset = 0, fade = 0;
     double from_width = 0, from_height = 0;
+    double bounce = 0;
     double from_scale = 1, scale = 1, shape = 0;
     double dx = 0, dy = 0, from_dx = 0, from_dy = 0;
     bool right = false;
@@ -61,11 +63,14 @@ struct widget_morph_t
     {
         double t = std::clamp(double(now - started) / duration_ms, 0.0, 1.0);
         shape = cover ? wf::animation::smoothing::circle(t) : t * t * (3 - 2 * t);
-        fade = cover ? wf::animation::smoothing::circle(std::min(1.0, t * 4 / 3)) : shape;
+        // Only size bounces. Keep the established 180/200 ms content handoff.
+        double content = std::clamp(double(now - started) / (cover ? 180 : duration), 0.0, 1.0);
+        fade = cover ? wf::animation::smoothing::circle(content) : content * content * (3 - 2 * content);
         double w = from_width > 0 ? from_width : from.width;
         double h = from_height > 0 ? from_height : from.height;
-        width = w + (to.width - w) * shape;
-        height = h + (to.height - h) * shape;
+        double size_progress = bounce > 0 ? widget_spring(t, bounce) : shape;
+        width = widget_spring_size(w, to.width, size_progress);
+        height = widget_spring_size(h, to.height, size_progress);
         scale = from_scale + (1 - from_scale) * shape;
         inset = from.inset + (to.inset - from.inset) * fade;
         dx = from_dx * (1 - shape);

@@ -1,5 +1,7 @@
 // Included inside scottland_plugin_t: presentation transitions are per-widget renderer
 // resources, deliberately separate from the one model-owned window/widget drag morph.
+wf::option_wrapper_t<double> widget_bounce{"scottland/widget_bounce"};
+
 struct widget_transition_t
 {
     std::weak_ptr<wf::view_interface_t> view;
@@ -69,6 +71,8 @@ void begin_window_widget_transition(wayfire_toplevel_view window)
     }
     pixels->width = pixels->from_width = transition->origin.width();
     pixels->height = pixels->from_height = transition->origin.height();
+    pixels->bounce = std::clamp(double(widget_bounce), 0.0, 0.1);
+    if (pixels->bounce > 0) pixels->duration_ms = 360;
     transition->pixels = pixels;
     window->get_transformed_node()->begin_transform_update();
     stop_glide(window);
@@ -172,6 +176,8 @@ void begin_widget_transition(widget_link_t& link, bool target)
     }
     pixels->right = link.rail == "right";
     pixels->requested = now_msec();
+    pixels->bounce = std::clamp(double(widget_bounce), 0.0, 0.1);
+    if (pixels->bounce > 0) pixels->duration_ms = 360;
     transition->pixels = pixels;
 
     // Listen at the leaf, not at a transformer or transaction. wlr_surface_node_t::apply_state

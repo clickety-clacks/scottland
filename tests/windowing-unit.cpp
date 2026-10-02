@@ -2,6 +2,7 @@
 #include "declutter.hpp"
 #include "alt-mode.hpp"
 #include "hint-style.hpp"
+#include "widget-spring.hpp"
 #include <set>
 #include <tuple>
 #include <cmath>
@@ -16,6 +17,16 @@ double score(point p, double w, double h, const std::vector<rectangle>& others)
 { double s = 0; for (auto r : others) s += overlap({p.x-w/2,p.y-h/2,w,h}, r); return s; }
 int main()
 {
+    for (double amount : {0.0, 0.01, 0.04, 0.1})
+    {
+        std::vector<double> path;
+        for (int i = 0; i <= 1000; ++i) path.push_back(scottland::widget_spring(i / 1000.0, amount));
+        auto peak = std::max_element(path.begin(), path.end());
+        check(path.front() == 0 && path.back() == 1, "widget spring endpoints exact");
+        check(std::is_sorted(path.begin(), peak + 1) && std::is_sorted(peak, path.end(), std::greater<double>()),
+            "widget spring has only one peak and no wobble");
+        check(std::abs(*peak - 1 - amount) < 1e-8, "widget bounce option controls overshoot; zero disables it");
+    }
     rectangle region{0,0,500,400};
     check(near(place_rectangle(100,80,region,{}, {150,90}), {150,90}), "empty region retains preferred position");
     check(near(place_rectangle(100,80,region,{}, {-100,-100}), {50,40}), "screen edges constrain a new position");
@@ -140,9 +151,9 @@ int main()
     moves.clear();press('s');check(selected==2 && !restore,"unselected periphery first press only selects");
     for(int i=0;i<6;++i)press('s');
     check(moves==std::vector<D>{D::center,D::widget,D::periphery,D::center,D::widget,D::periphery},"periphery repeats its full loop");
-    moves.clear(); press('d');check(selected==3 && restore && moves.empty(),"unselected widget first press restores");
+    moves.clear(); press('d');check(selected==3 && !restore && moves.empty(),"unselected widget first press selects without opening");
     for(int i=0;i<5;++i) press('d');
-    check(moves==std::vector<D>{D::periphery,D::widget,D::center,D::periphery,D::widget},"widget restore consumes first center step of its loop");
+    check(moves==std::vector<D>{D::center,D::periphery,D::widget,D::center,D::periphery},"widget next press starts its full center-first loop");
     for (unsigned slot=0; slot<3; ++slot)
     {
         mode.end(); moves.clear(); unsigned before = selections;

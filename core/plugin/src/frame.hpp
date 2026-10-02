@@ -423,7 +423,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         double own = scale_x * (1.0 + bulge);
         if (presentation && window_geometry().width > 0)
             own = presentation->width / window_geometry().width;
-        return morph.shape > 0.0005 ? blend_size(own, morph.w, window_geometry().width) : own;
+        return std::abs(morph.shape) > 0.0005 ? blend_size(own, morph.w, window_geometry().width) : own;
     }
 
     float get_scale_y() const override
@@ -431,7 +431,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         double own = scale_y * (1.0 + bulge);
         if (presentation && window_geometry().height > 0)
             own = presentation->height / window_geometry().height;
-        return morph.shape > 0.0005 ? blend_size(own, morph.h, window_geometry().height) : own;
+        return std::abs(morph.shape) > 0.0005 ? blend_size(own, morph.h, window_geometry().height) : own;
     }
 
     float get_translation_x() const override
@@ -474,7 +474,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return own;
         }
 
-        return (size * own * (1.0 - morph.shape) + other * morph.shape) / size;
+        return (morph.shape < 0 ?
+            scottland::widget_spring_size(other, size * own, 1 - morph.shape) :
+            scottland::widget_spring_size(size * own, other, morph.shape)) / size;
     }
 
     /** The window was lifted by a long press: it bulges out elastically and its halo swells. */
@@ -970,14 +972,14 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     bool morphing() const
     {
-        return morph.shape > 0.0005 || morph.fade > 0.0005;
+        return std::abs(morph.shape) > 0.0005 || morph.fade > 0.0005;
     }
 
     /** The scale the halo and corners follow: this view's, blended toward the other form's. */
     double halo_scale() const
     {
         double own = presentation && presentation->cover ? presentation->scale : scale_x * (1.0 + bulge);
-        return own + (morph.scale - own) * morph.shape;
+        return own + (morph.scale - own) * std::clamp(morph.shape, 0.0, 1.0);
     }
 
     // Animation state, read by the render instance and layout-state.
