@@ -89,3 +89,6 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 | E6 | Scottland ships an agent skill (`scottland`) and links it into each installed coding-agent harness's skills folder at login (Claude Code, Codex, ~/.agents, pi, Hermes), as Omarchy does with its own: how to configure Scottland, find app-ids (`scottland-ctl windows`), set touchscreen scrolling, and later the widget system. | implemented |
 | E3 | Personal overrides in `~/.config/scottland/overrides.ini` are applied last and win over shipped defaults; Scottland never writes that file. | implemented |
 | E7 | The session's config is never left empty or half-written by Scottland: config builds (the config watcher, `scottland-reload`, session start) run one at a time, each from its own temporary file, and an empty build never replaces the config. (An interleaved pair once emptied it, and Wayfire loaded every setting at its default: snapping on, natural scrolling off.) | implemented (tests/build-config-test.sh) |
+
+L29 regression: `state-model-test.py` re-grabs an ordinary dropped window during the hold
+and cancels with real Esc input; the scene must return to its ordinary layer and the hold ends.

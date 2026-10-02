@@ -263,6 +263,14 @@ try:
           and not select.select([events.sock], [], [], 0)[0])
     events.sock.close()
     audit("geometry filtered from external slice")
+    # Re-grab during the ordinary drop hold, then Esc: it must rejoin the normal layer.
+    view, _ = shown(c)
+    f = view["frame"]
+    drag(c, f["x"] + f["width"] / 2 + 20, cancel=True)
+    scene = next(v for v in ipc.call("window-rules/list-views") if v["id"] == c)
+    check("Esc after re-grab releases the ordinary window above widgets", not scene["always-on-top"])
+    check("Esc ends model hold ownership", ipc.call("scottland/desktop-model")["drag"]["held_above"] == -1)
+
     for source in ("reload-a", "reload-b"):
         ipc.call("scottland/attention", {"window": a, "source": source, "attention": True})
     audit("two background attention sources")

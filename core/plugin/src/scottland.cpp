@@ -4866,9 +4866,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 cancel_drop(main);
             }
 
+            release_above();  // Esc ends the move and its temporary layer ownership
             model.drag.last_drop = {};  // the move is over
             model.drag.widget = 0;
             model.drag.started = false;
+            publish_model();
 
             idle_neighbors.run_once([=] () { update_all_neighbors(); });
             return;
