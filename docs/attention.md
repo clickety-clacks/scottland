@@ -40,3 +40,7 @@ plugged in by configuration, never by code that names a particular app. Rows say
   writing on/off lines), the next step for AT3.
 - Mike's setup: his attention app's list is a configured source in his own
   ~/.config/scottland/attention.d/ (personal configuration, not Scottland code).
+
+Action replies are validated before replacing a snapshot. Stale listed IDs are ignored; a
+window closing during marking or removal leaves the helper running for other sources/windows.
+Regression: `tests/attention-sources-test.py` exercises stale listings and both close races.

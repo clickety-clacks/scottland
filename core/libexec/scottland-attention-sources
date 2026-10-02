@@ -164,6 +164,11 @@ class Service:
         self.snapshot = {"version": -1, "windows": []}
 
     def replace_snapshot(self, snapshot):
+        # Action errors (including a window closing after a listing) aren't snapshots.
+        if (not isinstance(snapshot, dict) or snapshot.get("error")
+                or not isinstance(snapshot.get("windows"), list)
+                or not isinstance(snapshot.get("version"), int)):
+            return False
         if snapshot.get("session") == self.snapshot.get("session") and snapshot.get("version", -1) <= self.snapshot["version"]:
             return
         previous = {v["id"]: set(v["attention"]) for v in self.snapshot["windows"]}
@@ -177,16 +182,18 @@ class Service:
                     entry = source.entries_by_window.get(window)
                     if entry is not None:
                         source.run_answered(entry)
+        return True
 
     def sync(self, source):
         entries = source.entries()
         if entries is None:
             return
         views = self.snapshot["windows"]
+        live = {v["id"] for v in views}
         listed = {}
         for entry in entries:
             window = source.window_of(entry, views if isinstance(views, list) else [])
-            if window is not None and window >= 0:
+            if window in live:
                 listed[window] = entry
         source.entries_by_window = listed
         marked = {v["id"] for v in self.snapshot["windows"] if source.name in v["attention"]}
@@ -194,8 +201,8 @@ class Service:
             if window not in marked:
                 reply = self.ipc.call("scottland/attention",
                                       {"window": window, "attention": True, "source": source.name})
-                self.replace_snapshot(reply)
-                if reply.get("in_front"):
+                accepted = self.replace_snapshot(reply)
+                if accepted and reply.get("in_front"):
                     source.run_answered(entry)
         for window in marked - listed.keys():
             self.replace_snapshot(self.ipc.call("scottland/attention",
