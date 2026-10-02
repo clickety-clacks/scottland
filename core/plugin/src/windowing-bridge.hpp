@@ -2,6 +2,7 @@
 // renderer live separately; this bridge reads and updates the plugin-owned desktop model.
     scottland::windowing::alt_mode window_keys;
     wf::option_wrapper_t<int> alt_hold_delay{"scottland/alt_hold_delay"};
+    wf::option_wrapper_t<int> window_double_tap_delay{"scottland/window_double_tap_delay"};
     std::set<uint32_t> swallowed_keys, alt_keys, held_keys;
     wf::wl_timer<false> alt_hold;
     bool capture_chord = false;
@@ -237,6 +238,8 @@
         { deferred_moves.emplace_back(id, destination); return; }
         auto window = wf::toplevel_cast(view_by_id(id)); auto visible = represented_view(id);
         if (!window || !window->get_output()) return;
+        // A rail request is idempotent, including while its widget is still launching.
+        if (destination == D::widget && link_of_window(window)) return;
         auto g = (visible ? visible : window)->get_geometry();
         scottland::windowing::point current{g.x + g.width / 2.0, g.y + g.height / 2.0};
         if (visible) remember_window(visible);
@@ -264,7 +267,9 @@
             (left ? Z::left_rail : Z::right_rail) : (left ? Z::left_periphery : Z::right_periphery);
         auto at = zone_spot(window, z, current); auto real = window->get_geometry();
         pin_scale(window, std::nullopt); // explicit zone cycling follows the zone, including center at 100%
-        move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
+        if (destination == D::periphery && link_of_window(window))
+            restore_window(*link_of_window(window), at, true);
+        else move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
         if (rail)
         {
             model.windows[id].pending_rail = current;
@@ -475,7 +480,11 @@
             auto layout = xkb_state_key_get_layout(keyboard->xkb_state, code + 8);
             if (xkb_keymap_key_get_syms_by_level(keyboard->keymap, code + 8, layout, 0, &syms) == 1 &&
                 syms[0] >= XKB_KEY_a && syms[0] <= XKB_KEY_z)
-                window_keys.letter(char('a' + syms[0] - XKB_KEY_a));
+            {
+                window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
+                window_keys.refresh(window_entries());
+                window_keys.letter(char('a' + syms[0] - XKB_KEY_a), now_msec());
+            }
         }
     };
     wf::ipc::method_callback hints_state = [=] (wf::json_t) -> wf::json_t

@@ -112,17 +112,18 @@ def choose(identifier):
         tap(letter.upper())
     time.sleep(.65)
 
-def rapid_hint(identifier, count):
+def rapid_hint(identifier, count, interval=0):
     # One persistent stipc connection avoids shell/Python startup between physical presses.
     # The helper inherits the recorded session environment through headless.sh run.
     script = """
-import json, os, socket, struct, sys
+import json, os, socket, struct, sys, time
 sock = socket.socket(socket.AF_UNIX); sock.connect(os.environ['WAYFIRE_SOCKET'])
 def receive(size):
     data = b''
     while len(data) < size: data += sock.recv(size-len(data))
     return data
-for _ in range(int(sys.argv[2])):
+for index in range(int(sys.argv[2])):
+    if index: time.sleep(float(sys.argv[3]))
     for letter in sys.argv[1]:
         for down in (True, False):
             body = json.dumps({'method':'stipc/feed_key',
@@ -132,7 +133,7 @@ for _ in range(int(sys.argv[2])):
             if 'error' in reply: raise RuntimeError(reply)
 """
     subprocess.run(['tests/headless.sh', 'run', 'python3', '-c', script,
-                    hint(identifier)['hint'], str(count)], check=True)
+                    hint(identifier)['hint'], str(count), str(interval)], check=True)
 
 def launch(name, x=None, y=None):
     if x is not None:
@@ -216,16 +217,20 @@ try:
     subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'hints.png')], check=True)
     before = sum(delivered(n).count('f') for n in ('Alpha','Beta'))
     tap('F')
-    check(sum(delivered(n).count('f') for n in ('Alpha','Beta')) == before, 'letters in hint mode never reach apps')
+    check(sum(delivered(n).count('f') for n in ('Alpha','Beta')) == before, 'letters in window mode never reach apps')
     tap('TAB')
     check(focused() == b and hints()['selected'] == b, 'held-Alt Tab selects next hint')
     key('LEFTSHIFT', True); tap('TAB'); key('LEFTSHIFT', False)
     check(focused() == a and hints()['selected'] == a, 'held-Alt Shift+Tab selects previous hint')
+    choose(b)
+    check(focused() == b and near(center(view('Beta')), saved[1]), 'unselected window first press selects without moving')
+    choose(a)
+    check(focused() == a and near(center(view('Alpha')), saved[0]), 'switching hints resets selection without moving')
     key('LEFTCTRL', True); key('LEFTMETA', True); tap('F')
-    check(hints()['active'], 'Ctrl and Super added after entry stay inside hint mode')
+    check(hints()['active'], 'Ctrl and Super added after entry stay inside window mode')
     key('LEFTCTRL', False); key('LEFTMETA', False)
     tap('ESC')
-    check(not hints()['active'], 'Esc leaves hint mode')
+    check(not hints()['active'], 'Esc leaves window mode')
     before = delivered('Alpha').count('b')
     tap('B'); time.sleep(.1)
     check(delivered('Alpha').count('b') == before, 'Esc keeps remaining Alt chord captured')
@@ -241,7 +246,7 @@ try:
     key('X', True); key('LEFTALT', True); time.sleep(.4)
     check(not hints()['active'], 'nonmodifier key held first prevents Alt-alone entry')
     key('LEFTALT', False); key('X', False)
-    # L31 and L20 use real pointer/key input, with no hint mode racing the drag.
+    # L31 and L20 use real pointer/key input, with no window mode racing the drag.
     focus(a)
     f = view('Alpha')['frame']
     cx, cy = f['x'] + f['width']/2, f['y'] + f['height']/2
@@ -263,7 +268,7 @@ try:
     check(abs(view('Alpha')['applied_scale'] - pinned) < .003, 'Alt drop pin persists after Alt release')
     state = ipc('scottland/desktop-model')['windows']
     check(next(w for w in state if w['id'] == a).get('pinned_scale') == pinned, 'desktop model publishes the drag scale pin')
-    hold(); choose(a); choose(a); release()
+    hold(); choose(a); release()
     check(view('Alpha')['zone'] == 'center' and view('Alpha')['applied_scale'] > .999 and
           'pinned_scale' not in next(w for w in ipc('scottland/desktop-model')['windows'] if w['id'] == a),
           'explicit cycle clears pin and restores full-size center')
@@ -301,34 +306,63 @@ try:
           near((spot['x'] * width, spot['y'] * height), center_memory),
           'real drop publishes a newer complete snapshot with normalized center memory')
     watch.sock.close()
-    hold(); choose(a)
-    check(near(center(view('Cycle')), center_memory), 'center first hint press only selects')
-    choose(a)
+    hold()
+    key('A', True); key('A', True); key('A', False); time.sleep(.65)
+    check(not view('Cycle')['widgetized'], 'held-key repeat cannot trigger double-tap')
     p = center(view('Cycle'))
-    check(view('Cycle')['zone'] == 'continuous', 'center second press moves to periphery')
+    check(view('Cycle')['zone'] == 'continuous', 'selected center first press skips select and moves to periphery')
     choose(a)
     wait_for(lambda: view('Cycle')['widgetized'])
-    check(view('Cycle')['hidden'], 'center third press widgetizes')
+    check(view('Cycle')['hidden'], 'slow center second press widgetizes')
     choose(a)
-    check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), center_memory), 'center fourth press returns to exact center memory')
+    check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), center_memory), 'center full loop returns to exact center memory')
     choose(a)
-    check(near(center(view('Cycle')), p), 'cycle restores exact periphery memory')
+    check(near(center(view('Cycle')), p), 'center loop repeats with exact periphery memory')
     release(); hold(); choose(a)
-    check(near(center(view('Cycle')), p), 'releasing mid-cycle restarts at select')
+    check(near(center(view('Cycle')), center_memory), 'selected periphery skips select after a new hold')
     choose(a)
-    check(near(center(view('Cycle')), center_memory), 'periphery second press goes to center')
+    check(view('Cycle')['widgetized'], 'slow periphery second press goes to widget')
     choose(a)
-    check(view('Cycle')['widgetized'], 'periphery third press goes directly to widget')
-    choose(a); choose(a)
-    check(near(center(view('Cycle')), p), 'periphery start rejoins center loop after widget')
-    choose(a); release()
+    check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), p), 'periphery full loop restores exact periphery memory directly from widget')
+    choose(a); choose(a); choose(a)
+    check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), p), 'periphery second full loop returns to its starting memory again')
+    choose(a); choose(a); release()
     rail_memory = hint(a)['memories']
     hold(); choose(a)
-    check(near(center(view('Cycle')), center_memory) and not view('Cycle')['widgetized'], 'widget first hint press restores center like card click')
+    check(near(center(view('Cycle')), center_memory) and not view('Cycle')['widgetized'], 'widget first hint press restores center')
     choose(a)
     check(near(center(view('Cycle')), p), 'widget second press moves to periphery')
     choose(a); release()
-    check(hint(a)['memories'] == rail_memory, 'repeated cycle retains center, periphery, and rail memories')
+    check(view('Cycle')['widgetized'] and hint(a)['memories'] == rail_memory, 'widget full loop returns to widget and retains all memories')
+    # A rapid second press requests the rail from either window zone.
+    hold(); choose(a); release()
+    hold(); rapid_hint(a, 3); time.sleep(.8)
+    check(view('Cycle')['widgetized'], 'double tap from selected center sends to rail; third rapid press leaves it there')
+    release()
+    # A longer configurable interval permits inspecting the mapped widget between rapid presses.
+    ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 2000})
+    hold(); rapid_hint(a, 2); time.sleep(.8)
+    widget_before = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == a)
+    memories_before = hint(a)['memories']
+    rapid_hint(a, 1); time.sleep(.4)
+    widget_after = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == a)
+    check(widget_after['widget_view'] == widget_before['widget_view'] and hint(a)['memories'] == memories_before,
+          'rapid repeated hint on a widget does nothing: same widget and memories')
+    ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 300})
+    time.sleep(.35); choose(a)
+    check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), center_memory), 'slow press after double tap resumes widget-start loop')
+    choose(a); release()
+    hold(); rapid_hint(a, 2); time.sleep(.8); release()
+    check(view('Cycle')['widgetized'], 'double tap from selected periphery sends window to rail')
+    hold(); rapid_hint(a, 2); time.sleep(.8); release()
+    check(view('Cycle')['widgetized'], 'double tap starting on widget returns to rail')
+    # Changing the setting makes these same real presses ordinary slow cycling.
+    ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 1})
+    hold(); rapid_hint(a, 2, .03); time.sleep(.65)
+    check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), p), '1 ms setting makes 30 ms presses cycle instead of double-tap')
+    choose(a); release()
+    check(view('Cycle')['widgetized'], 'configured interval preserves widget-start full loop')
+    ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 300})
     # Actual card click and collapsed-icon hint.
     key('LEFTMETA', True); tap('M'); key('LEFTMETA', False); time.sleep(.6)
     hold()
@@ -355,10 +389,10 @@ try:
     # Occupy the remembered center. Memory wins over the obstacle.
     b = launch('Blocker')
     drag('Blocker', *center_memory)
-    focus(a); hold(); choose(a); choose(a); choose(a); choose(a); release()
+    focus(a); hold(); choose(a); choose(a); choose(a); release()
     check(near(center(view('Cycle')), center_memory), 'occupied center memory wins over contention')
     # In full screen, asking with Alt temporarily reveals widgets without ending focus mode.
-    hold(); choose(a); choose(a); choose(a); release()
+    hold(); choose(a); choose(a); release()
     full_memory = hint(b)['memories'][0]
     ipc('wm-actions/set-fullscreen', {'view_id': b, 'state': True})
     time.sleep(.7)
@@ -367,7 +401,7 @@ try:
     check(hint(a)['visible'] and not next(v for v in views() if v['widget'])['hidden'], 'Alt in full screen reveals widgets and hints')
     release()
     check(next(v for v in views() if v['widget'])['hidden'], 'Alt release restores full-screen widget hiding')
-    hold(); choose(b); choose(b); release()
+    focus(b); hold(); choose(b); release()
     check(view('Blocker')['zone'] == 'continuous' and hint(b)['memories'][0] == full_memory, 'cycling out of full screen preserves the prior center memory')
     ipc('wm-actions/set-fullscreen', {'view_id': b, 'state': False})
     time.sleep(.5)
@@ -385,7 +419,7 @@ try:
     a = launch('Peripheral', width*.18, height*.5)
     check(not hint(a)['memories'][0]['set'], 'periphery-born window starts without center memory')
     b = launch('CenterBlock', width*.5, height*.5)
-    focus(a); hold(); choose(a); choose(a); release()
+    focus(a); hold(); choose(a); release()
     v = view('Peripheral')
     check(v['zone'] == 'center' and v['applied_scale'] > .999, 'new center placement is always full size')
     ga, gb = v['geometry'], view('CenterBlock')['geometry']
@@ -397,7 +431,7 @@ try:
     drag('Peripheral', width*.8, height*.72)
     right = center(view('Peripheral'))
     drag('Peripheral', width*.5, height*.4)
-    hold(); choose(a); choose(a)
+    hold(); choose(a)
     check(near(center(view('Peripheral')), right), 'most recently used side memory wins')
     release()
     memories = hint(a)['memories']
@@ -407,11 +441,11 @@ try:
     launch('LeftHigh', width*.17, height*.25)
     launch('LeftLow', width*.17, height*.75)
     a = launch('SideChoice', width*.49, height*.5)
-    hold(); choose(a); choose(a); release()
+    hold(); choose(a); release()
     check(center(view('SideChoice'))[0] > width/2, 'no side memory chooses larger contiguous free opening')
     close_all()
     a = launch('NearSide', width*.48, height*.5)
-    hold(); choose(a); choose(a); release()
+    hold(); choose(a); release()
     check(center(view('NearSide'))[0] < width/2, 'about-equal free sides choose nearer side')
     close_all()
     a = launch('CardFresh', width*.18, height*.5)
@@ -441,8 +475,7 @@ try:
               for w in ipc('scottland/desktop-model', {'slice': slice_name})['windows']),
           'external slices omit placement and pending rail geometry')
     # Reload into a new library copy, keeping open widgets, positions, assignments, render state.
-    hold(); choose(a); choose(a); choose(a); release()
-    focus(a); hold(); choose(a); choose(a); choose(a); release()
+    hold(); rapid_hint(a, 2); time.sleep(.8); release()
     wait_for(lambda: any(v['widget'] for v in views()))
     time.sleep(.5)
     before = hints()['hints']
@@ -465,8 +498,10 @@ try:
     # Capacity changes the label width, not the stable assignment slots.
     ids = [launch(f'Overflow{i:02}') for i in range(27)]
     check(hint(ids[0])['hint'] == 'aa' and hint(ids[-1])['hint'] == 'sa', '27 open windows use prefix-free two-letter hints')
-    hold(); choose(ids[-1])
+    focus(ids[0]); hold(); choose(ids[-1])
     check(focused() == ids[-1], 'real two-letter hint selects the overflow window')
+    rapid_hint(ids[-1], 2); time.sleep(.8)
+    check(view('Overflow26')['widgetized'], 'repeating complete two-letter hint sends overflow window to rail')
     release()
     ipc('window-rules/close-view', {'id': ids[-1]})
     time.sleep(.3)
@@ -477,7 +512,7 @@ try:
     pad = 32 / 3 + 5
     blockers = [launch('PadBlock%d' % i, width * x, height * .5) for i, x in enumerate((.3, .5, .7))]
     p = launch('PadMe', width * .5, height * .2)
-    focus(p); hold(); choose(p); choose(p); release()   # select, then to the periphery (no memory)
+    focus(p); hold(); choose(p); release()   # already selected: straight to periphery (no memory)
     time.sleep(.8)
     f = view('PadMe')['frame']
     inside = f['x'] >= pad - 1 and f['y'] >= pad - 1 and f['x'] + f['width'] <= width - pad + 1 \

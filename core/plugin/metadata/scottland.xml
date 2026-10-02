@@ -5,8 +5,15 @@
 		<_long>Spatial window layout: windows scale down toward the side rails and snap into widgets.</_long>
 		<category>Window Management</category>
         <option name="alt_hold_delay" type="int">
-            <_short>Alt-alone window hints hold (ms)</_short>
+            <_short>Window mode Alt-alone hold (ms)</_short>
             <_long>Hold Alt alone for this long to show compositor window hints. A key or modifier pressed before the delay leaves the whole chord with the app and existing desktop shortcuts. Once entered, all keys control windows until Alt is released.</_long>
+            <default>300</default>
+            <min>1</min>
+            <max>3000</max>
+        </option>
+        <option name="window_double_tap_delay" type="int">
+            <_short>Window mode hint double-tap interval (ms)</_short>
+            <_long>Repeating a window hint within this interval sends it to its rail widget. A window already on the rail stays put. Slower presses follow the starting-zone cycle.</_long>
             <default>300</default>
             <min>1</min>
             <max>3000</max>

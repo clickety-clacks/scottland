@@ -23,7 +23,7 @@ screen exercise and the coordinating session's rehearsed live reload remain outs
 | KL4 | Both native toplevels and layer-shell surfaces work. A Scottland view ID selects exactly one surface; PID plus layer namespace is a convenience selector and rejects ambiguity. | implemented |
 | KL5 | A surface's unmap, close or Wayland client disconnect removes its layer. Remapping does not resurrect it. Set atomically replaces its keys; clear or an empty set removes it. A failed request preserves the previous set. | implemented |
 | KL6 | Losing focus immediately deactivates claims for new presses. A claimed held key's release finishes the existing pair even after focus loss, clear, replacement or unmap; it cannot unexpectedly fire a release shortcut below. A new claim cannot take over an already pressed unclaimed key's release. | implemented |
-| KL7 | Compositor input grabs (drag, lock) take precedence over surface layers. Alt hints are a raw-key mode: a focused surface retains exactly its claimed keys even while hints are visible; unclaimed keys continue hint navigation. A claimed press before entry cancels the pending hold for the entire Alt chord, including a claimed Alt key. Unclaimed input and unrelated bindings are unaffected. | implemented (plumbus headless, including hints) |
+| KL7 | Compositor input grabs (drag, lock) take precedence over surface layers. Window mode is a raw-key mode: a focused surface retains exactly its claimed keys even while hints are visible; unclaimed keys continue hint navigation. A claimed press before entry cancels the pending hold for the entire Alt chord, including a claimed Alt key. Unclaimed input and unrelated bindings are unaffected. | implemented (plumbus headless, including hints) |
 | KL8 | IPC is session-local `scottland/key-layer`, documented below and in the shipped skill and IPC header. The first scope is a focused surface; the separate module leaves additional scopes and stacked fall-through for future work. | implemented |
 
 ## IPC
@@ -91,10 +91,10 @@ manages held keys, modifier-only binding state, input methods, and press/release
 
 Raw-key consumers inside Scottland must connect **after** `key_layers.init()` and check
 `key_layers.handles(ev)` before acting on claimed keys. The release-binding and remap handlers
-do so, as does the collapse-key tracker. The integrated Alt hints' `on_window_key` updates physical
+do so, as does the collapse-key tracker. The integrated window mode’s `on_window_key` updates physical
 held-key tracking but skips claimed events; a claimed press cancels the pending Alt timer (`alt_bypassed = true;
 alt_hold.disconnect()`). This keeps a layer's Alt chord from navigating windows while allowing
-unclaimed Alt hints to work. While hints are active, exact claims reach the focused surface and
+unclaimed window mode navigation to work. While hints are active, exact claims reach the focused surface and
 unclaimed keys continue navigating. Tenet 4 decides this limited concession: registering one chord
 does not suppress the rest of window navigation. Drag and lock grabs still take precedence.
 The Alt key tracking runs for claimed presses/releases too, so neither side can leave hints stuck.

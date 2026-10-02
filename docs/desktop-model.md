@@ -125,10 +125,12 @@ real widget programs and audits after each operation. Expanded-card, fullscreen 
 other-output reload screenshots were retained and inspected. No live session on osanwe or
 physical screen on plumbus was touched. The isolated runtime was stopped after testing.
 
-## Window-key integration
+## Window mode integration
 
-Alt navigation reads `model.windows` and `model.widgets`; widget cycles use the same lifecycle
-as real drops and card clicks. The desktop slice publishes `placement` (slot, side and normalized
+Window mode navigation reads `model.windows` and `model.widgets`; widget cycles use the same lifecycle
+as real drops and card clicks. The controller owns the hold-local starting zone, cycle step and
+double-tap timestamp; these expire on mode exit and are not placement memories or reload state.
+The desktop slice publishes `placement` (slot, side and normalized
 positions), optional `pending_rail`, `pinned_scale` and desktop `hint_width`. External presentation
 and attention slices omit placement. Closing removes all placement state with the window. The
 atomic model handover retains memories and slots on marked reload; an older Alt-branch position

@@ -1,8 +1,8 @@
 # Window keys and placement
 
 Alt is Scottland's window key. Hold it alone for `scottland/alt_hold_delay` milliseconds
-(default 300, range 1–3000) to ask for hints. A quick chord keeps its existing app/desktop
-behavior with no replay or input delay. This is core desktop behavior, independent of integrations.
+(default 300, range 1–3000) to enter **window mode** and show hints. A quick chord keeps its
+existing app/desktop behavior with no replay or input delay. This is core desktop behavior, independent of integrations.
 
 The controller (`alt-mode.*`), rectangle placement (`placement.*`), force solver (`declutter.*`),
 and compositor overlay (`hint-overlay.*`) are separate from Wayfire integration.
@@ -24,13 +24,13 @@ on a physical session. This change is not tested on either machine's live displa
 |---|---|---|
 | WK1 | Alt alone enters hints only after the configurable short hold (300 ms default). Any other key or Ctrl, Shift, or Super already held, or pressed before the timeout, cancels eligibility for that entire Alt chord. Quick Alt+letter and quick Alt+Tab keep app/desktop behavior. Both Alt keys are supported; pressing both before entry is not Alt alone. | implemented (headless) |
 | WK2 | After entry, every unclaimed key belongs to Scottland until the last held Alt is released, including Ctrl/Super combinations and unassigned keys. Presses and matching releases are consumed; one action occurs per physical press, not repeat. Focused-surface key-layer claims retain ordinary delivery (KL7), including while hints are visible; a claimed press before entry cancels the hold. Alt itself is delivered immediately and its matching release is delivered, so quick app chords have no added delay or synthetic replay. | implemented (headless) |
-| WK3 | Alt release removes hints and restores purely visual displacement. Esc removes hints/displacement without another window action, and keeps keys captured until Alt release. Releasing or cancelling mid-cycle preserves every explicit step already taken; the next mode entry starts at select. | implemented (headless) |
+| WK3 | Alt release exits window mode and restores purely visual displacement. Esc exits without another window action, and keeps keys captured until Alt release. Releasing or cancelling mid-cycle preserves every explicit step already taken; the next entry starts a new cycle from the current zone, skipping select if already selected. | implemented; plumbus headless validation pending |
 | WK4 | Every mapped top-level window and every widget has a large, click-through compositor hint in session palette colors, following the actual drawn center. A collapsed widget's hint is over its icon. Dialogs are selectable but retain WG1's protection against widgetizing. | implemented (headless) |
 | WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. | implemented (headless) |
-| WK6 | A window's first hint selects, focuses, and raises it. A widget's first hint opens its window exactly as a card tap does (WG17), in the center. Selecting another hint resets the previous selection's cycle. | implemented (headless) |
-| WK7 | Repeating a center window's hint cycles select → periphery → widget → center → periphery → widget → center… | implemented (headless) |
-| WK8 | Repeating a periphery window's hint cycles select → center → widget → center → periphery → widget → center… | implemented (headless) |
-| WK9 | A widget's first hint opens center, then repetitions cycle periphery → widget → center… | implemented (headless) |
+| WK6 | A window’s first hint selects, focuses, and raises it only if it is not already selected/focused. If already selected (including by Tab), the first press goes straight to the next zone. A widget’s first hint opens center as a card tap does (WG17); opening consumes the first center step of its widget-start loop. Selecting another hint resets the previous selection’s cycle. | implemented; plumbus headless validation pending |
+| WK7 | All starting zones follow one start-relative loop: visit the other two zones, toward center first, then return to the start. The start is the window’s zone when cycling begins in this Alt hold (before selecting/opening); it stays fixed until another hint is selected or the hold ends. See the cycle table below. | implemented; plumbus headless validation pending |
+| WK8 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing. The first press acts immediately. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, release or cancellation resets double-tap recognition. | implemented; plumbus headless validation pending |
+| WK9 | Double-taps use physical presses, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; repeating a prefix alone does not move a window. | implemented; plumbus headless validation pending |
 | WK10 | Tab and Shift+Tab select the next/previous window or widget in hint order, wrapping. Tab focuses a widget without opening it; its hint opens it. F4 closes the selected window and its widget through normal linked lifecycle, preserving save-confirmation behavior. | implemented (headless) |
 | WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Holding Alt during a drag belongs to L31 and suppresses hints for that entire chord, even after drop. Starting a drag cancels hints. Adding any modifier after entry stays in the mode (WK2). | implemented (headless) |
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
@@ -43,7 +43,22 @@ on a physical session. This change is not tested on either machine's live displa
 | WP6 | The placement routine and force solver have no Wayfire dependencies and have standalone unit tests. The placement routine is reusable for any rectangle/region contention; it never resizes an incoming rectangle or moves obstacles. | implemented (headless) |
 | WP7 | Windows Scottland places (zone cycling, card opens: the placement routine) keep off the screen's edges by the halo's width plus 5 pt (about 16 pt), in each dimension where the window fits; one larger than the screen in a dimension is not padded there. Widgets keep their own, wider rail inset. Remembered spots (WP2) and the user's own drops are kept exactly. | implemented (headless) |
 
+## Cycle rule (WK7)
+
+An unselected ordinary window first selects without moving. Already selected windows skip that
+step. Opening a widget takes its first center step. Double-tap requests the widget step directly.
+
+| Start zone | Repeating slow presses: other zones, then back (repeat) |
+|---|---|
+| Center | periphery → widget → center → … |
+| Periphery | center → widget → periphery → … |
+| Widget | center → periphery → widget → … |
+
 ## Decisions at unspecified edges
+
+- Tenet 2 (predictability): single presses act immediately; the rapid second complete hint requests
+  the rail. Continue the original loop after its widget step. Prefix-free hints keep the same
+  complete-label meaning at every capacity, so an `aa` prefix cannot itself trigger a shortcut.
 
 - Tenet 4 (concede as little as possible): surface layers keep exactly their claimed chords, even
   during hints. Unclaimed navigation remains available; a claimed press before entry bypasses the hold.
