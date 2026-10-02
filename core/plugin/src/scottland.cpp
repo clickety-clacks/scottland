@@ -2222,6 +2222,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        // A widget resizing itself (its card expanding or collapsing, a title changing) keeps its
+        // screen-edge side still: Wayfire holds that edge, so no move (which would resend an older
+        // size to the client mid-resize) is needed for it.
+        uint32_t gravity = ((link.rail == "left") ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT) | WLR_EDGE_TOP;
+        if (widget->toplevel()->pending().gravity != gravity)
+        {
+            widget->toplevel()->pending().gravity = gravity;
+            wf::get_core().tx_manager->schedule_object(widget->toplevel());
+        }
+
         auto g = widget->get_geometry();
         double width = output->get_relative_geometry().width;
         // Its screen-edge side stays at the edge: the drop point's distance from the edge is
