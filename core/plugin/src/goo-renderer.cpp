@@ -132,7 +132,7 @@ struct renderer_t::impl
     glm::vec2 sampled_point{};
     glm::vec4 sampled_value{};
     settings_t settings;
-    bool overlap = false, controls = false, fast = true;
+    bool overlap = false, controls = false, fast = true, has_wallpaper = false;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
@@ -433,7 +433,8 @@ bool renderer_t::supported()
     return ok;
 }
 bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &s, int w, int h, float time,
-                        const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area)
+                        const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area,
+                        wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map)
 {
     state_t guard;
     if (!p->support())
@@ -477,6 +478,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     auto &wave_program = p->fast ? p->wave_fast : p->wave_p;
     auto &dye_program = p->fast ? p->dye_fast : p->dye_p;
     p->settings = s;
+    p->has_wallpaper = wallpaper && s.soak > 0;
     p->time = time;
     p->upload();
     glBindFramebuffer(GL_FRAMEBUFFER, p->field.fb);
@@ -511,6 +513,9 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     dye_program.uniform1f("uSpread", s.spread);
     dye_program.uniform1f("uSwirl", s.swirl);
     dye_program.uniform1f("uRelease", s.release);
+    dye_program.uniform1f("uSoak", wallpaper ? s.soak : 0);
+    dye_program.uniformMatrix4f("uWallpaperMap", wallpaper_map);
+    bind(dye_program, "uWallpaper", 5, wallpaper ? wf::gles_texture_t::from_aux(*wallpaper).tex_id : 0);
     p->draw_to(dye_program, p->dye[1]);
     std::swap(p->dye[0], p->dye[1]);
     packed = p->packed;
@@ -563,6 +568,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     program.uniform1f("uWaveAmp", p->settings.wave_height);
     program.uniform1f("uShine", p->settings.shine);
     program.uniform1f("uRelief", p->settings.relief);
+    program.uniform1f("uDepth", p->settings.depth);
+    program.uniform1f("uProfile", p->settings.profile);
+    program.uniform1f("uSoak", p->has_wallpaper ? p->settings.soak : 0);
     program.uniform1f("uAlpha", 1);
     program.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
         [](const source_t &s) { return s.hinted; }));

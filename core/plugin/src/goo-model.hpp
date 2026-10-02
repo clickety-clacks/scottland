@@ -30,6 +30,7 @@ struct settings_t
     float noise = .32, lump = 190, drift = .12;
     float wave_speed = .28, wave_damp = .985, wave_height = .55;
     float spread = .45, swirl = .9, release = .06, shine = .75, relief = 5;
+    float depth = 6, profile = .65, soak = .12;
     float overlap_film = 4, hover_cloudiness = .65, hover_emissivity = .35, hover_distance = 48;
     // Empty means the prototype's exact exponential; custom curves span four reaches.
     std::array<float, 256> falloff{};

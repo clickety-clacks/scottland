@@ -172,7 +172,9 @@ void main(){
 )";
 inline const std::string dye_shader = common + mask + R"(
 uniform sampler2D uDyeTex;
-uniform float uSpread,uSwirl,uRelease;
+uniform float uSpread,uSwirl,uRelease,uSoak;
+uniform sampler2D uWallpaper;
+uniform mat4 uWallpaperMap;
 void main(){
   vec2 uv=gl_FragCoord.xy/uSize,px=1./uSize,p=uv*uRes;
   float m=gooMask(uv);
@@ -189,18 +191,22 @@ void main(){
     for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=texture2D(uDyeTex,u2).rgb*w;ws+=w;}
     c=mix(c,acc/ws,uSpread);
   }
-  float ksum=1e-4,maxK=0.;vec3 nearest=vec3(0);vec2 back=backdrop(p);
+  float ksum=1e-4,maxK=0.,nearEdge=1e5;vec3 nearest=vec3(0);vec2 back=backdrop(p);
   // Retain the front source's dye under its own island as well: interpolation
   // at a thin film must not mix its color with black dry texels inside content.
   if(back.x==0.)back=vec2(1.,0.);
   for(int i=0;i<1024;i++){
     if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
-    float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearest+=k*source(i,2.).rgb;
+    float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearEdge=min(nearEdge,e);nearest+=k*source(i,2.).rgb;
   }
   for(int i=0;i<1024;i++){
     if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e); if(k<maxK-.00001)continue;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
+    // At the wall, keep state ink ahead of wallpaper color diffusing inward.
+    // The extra anchoring follows the user's release setting and vanishes in
+    // the open band; without a wallpaper source uSoak is zero.
+    if(uSoak>0.)w*=1.+3.*uSoak*(1.-smoothstep(0.,uThickness*.7,e));
     vec3 tint=source(i,2.).rgb;
     // State marks are released dye, Gaussian deposits, never overlay geometry.
     float cloud=controlCloud(p,i)*uCloudiness;
@@ -210,13 +216,25 @@ void main(){
     tint=mix(tint,mark,clamp(dot,0.,1.));
     c=mix(c,tint,clamp(w,0.,1.));
   }
+  // Watercolor pickup: release a weak wallpaper dye into history, where it
+  // advects and diffuses. The shore distance vanishes at every window wall;
+  // summed source density and bridge contributions favor thick pooled liquid.
+  // State release above remains stronger, and hint dye still wins at draw time.
+  if(m>0.&&uSoak>0.){
+    float pool=clamp((ksum-maxK)/max(maxK,1e-4),0.,1.);
+    float wash=sqrt(smoothstep(0.,uThickness*.7,nearEdge))*
+      smoothstep(uT*.7,uT*1.4,ksum)*mix(.65,1.3,pool);
+    vec2 wallpaperUV=(uWallpaperMap*vec4(p,0,1)).xy*.5+.5;
+    c=mix(c,texture2D(uWallpaper,wallpaperUV).rgb,
+      uSoak*min(.03,uRelease*.5)*wash*m);
+  }
   c=mix(c,nearest/ksum,(1.-m)*.25);
   gl_FragColor=vec4(c,1);
 }
 )";
 inline const std::string render_shader = common + mask + R"(
 uniform sampler2D uWave,uDyeTex,uBackground;
-uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints;
+uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints,uDepth,uProfile,uSoak;
 uniform vec2 uFieldSize;
 uniform mat4 uBackgroundMap;
 // Positive cubic B-spline weights: four bilinear fetches reconstruct a smooth
@@ -233,17 +251,37 @@ vec4 drawField(vec2 uv){
              mix(texture2D(uField,vec2(lo.x,hi.y)),texture2D(uField,hi),b.x),b.y);
 }
 float drawDensity(vec4 value){return uPacked>.5?exp(value.r*2.83321334)-1.:value.r;}
-float surfaceHeight(float F){return clamp(log(max(F,1e-4)/uT),0.,3.);}
-float height(vec2 uv){return surfaceHeight(drawDensity(drawField(uv))*(1.+uWaveAmp*decode(texture2D(uWave,uv)).x));}
+float surfaceHeight(float F,float wall,float filmScale){
+  // Density gives distance inward from the free surface. Combined with wall
+  // distance it parameterizes the entire band, including pooled/bridged liquid.
+  float inward=max(log(max(F,1e-4)/uT)*uReach*filmScale,0.);
+  float width=max(inward+max(wall,0.),.001);
+  float t=clamp(inward/width,0.,1.);
+  // Rounded bead, plus a wetting meniscus at the wall. Thin films and scaled
+  // borders carry proportionally less depth; broad pools keep their dome.
+  float bead=sin(3.14159265*t);
+  float wet=t*t*t; wet*=wet;
+  return uDepth*min(width/max(uThickness,1.),1.5)*(bead+uProfile*wet);
+}
 void main(){
-  vec2 p=pos,uv=p/uRes,px=1./uRes;
+  vec2 p=pos,uv=p/uRes;
   vec4 value=drawField(uv);
   float F=drawDensity(value),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h);
   // Evaluate derivatives before any nonuniform discard. fwidth is in device
   // pixels, independent of output/window scale; film and control outlines share
   // this same iso-surface. Keep the existing analytic window-edge exclusion.
   float aa=max(.5*fwidth(Fe),1e-6);
-  float d=uOverlap>.5?surfaceSdf(p):unionSdf(p); if(d<=0.)discard;
+  float d=uOverlap>.5?surfaceSdf(p):unionSdf(p);
+  bool film=uOverlap>.5&&backdrop(p).x<float(uCount);
+  float ht=surfaceHeight(Fe,d,film?min(uFilm/uThickness,1.):1.);
+  // Derivatives of the reconstructed surface replace two extra cubic samples.
+  // Invert the logical-position Jacobian: works at fractional scale and rotation.
+  // All derivatives execute before nonuniform discards, including at the shore.
+  vec2 dx=dFdx(p),dy=dFdy(p);
+  float hx=dFdx(ht),hy=dFdy(ht),det=dx.x*dy.y-dx.y*dy.x;
+  vec2 slope=vec2(hx*dy.y-hy*dx.y,hy*dx.x-hx*dy.x)/det;
+  slope*=uRelief/5.;
+  if(d<=0.)discard;
   float a=smoothstep(uT-aa,uT+aa,Fe)*smoothstep(0.,1.,d)*uAlpha;
   if(a<=0.)discard;
   // WK14: window mode tints the goo with each hinted window's color at once, blended by
@@ -256,21 +294,23 @@ void main(){
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
   float cloud=uControls>.5?value.b:0.;
-  float ht=surfaceHeight(Fe);
-  vec3 n=normalize(vec3(-(height(uv+vec2(px.x,0))-ht)*uRelief,-(height(uv+vec2(0,px.y))-ht)*uRelief,1.));
+  vec3 n=normalize(vec3(-slope,1.));
   // Keep the shipped one-pixel exclusion around window content.
-  bool film=uOverlap>.5&&backdrop(p).x<float(uCount);
-  vec2 refr=p+n.xy*(film?2.:26.); if(unionSdf(refr)<1.)refr=p;
+  vec2 refr=p-clamp(slope,vec2(-2.),vec2(2.))*(film?1.:8.); if(unionSdf(refr)<1.)refr=p;
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
   if(hintAmount>0.)dye=hintDye/hintAmount;
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);
   float spec=pow(max(dot(reflect(-L,n),vec3(0,0,1)),0.),48.)*uShine;
-  float rim=1.-smoothstep(0.,.5,ht);
+  float rim=1.-smoothstep(0.,.5,max(log(max(Fe,1e-4)/uT),0.));
   float swirl=cloud>.001?.75+.25*fbm(p*.045+vec2(uTime*.13,-uTime*.09)):1.;
   float milk=cloud*uCloudiness*swirl;
   dye=mix(dye,vec3(1.),milk*.8);
-  vec3 color=mix(bg*(film?1.:1.4),dye*.85,.55+milk*.25)*diff+spec*vec3(1.,.98,.95)+dye*rim*.22;
+  // The wet outer band can show refracted paper. At the wall, state dye
+  // supplies the color so saturated wallpaper cannot repaint a focused edge.
+  float dyeBlend=.55+milk*.25;
+  if(uSoak>0.)dyeBlend=mix(dyeBlend,1.,1.-smoothstep(0.,uThickness*.9,d));
+  vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95)+dye*rim*.22;
   // Emission is independent of normal, light and dye release. Zero really is off.
   color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);
   a*=film?mix(.48,.78,milk):mix(.96,1.,milk);

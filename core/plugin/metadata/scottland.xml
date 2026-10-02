@@ -57,6 +57,19 @@
             <_short>Goo relief</_short><default>5</default><min>0.5</min><max>12</max>
         </option>
 
+        <option name="goo_depth" type="double">
+            <_short>Liquid depth</_short><_long>Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it.</_long>
+            <default>6</default><min>0</min><max>20</max>
+        </option>
+        <option name="goo_profile" type="double">
+            <_short>Wall wetting</_short><_long>How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead.</_long>
+            <default>0.65</default><min>0</min><max>1</max>
+        </option>
+        <option name="goo_soak" type="double">
+            <_short>Wallpaper soak</_short><_long>Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.</_long>
+            <default>0.12</default><min>0</min><max>1</max>
+        </option>
+
         <option name="goo_overlap_film" type="double">
             <_short>Overlap film</_short><_long>Width of goo over windows behind. Higher covers a wider strip; zero hides the film.</_long>
             <default>4</default><min>0</min><max>20</max>

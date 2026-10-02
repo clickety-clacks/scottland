@@ -59,6 +59,8 @@ headless checks, not physical-display verification. GO11/GO12 add stacking-aware
 and whole-control cloud/glow highlights; see [their validation](../docs/goo.md#overlap-film-and-control-highlight-2026-10-02).
 GO13 adds cubic reconstruction and a device-pixel antialiased outline to goo, film and
 highlight edges; see [its headless visual and cost checks](../docs/goo.md#go13-inexpensive-antialiased-contours-2026-10-02).
+GO14/GO15 add a rounded depth profile and wallpaper dye; see [their design, controls and
+headless evidence](../docs/goo.md#go14go15-depth-and-wallpaper-dye-2026-10-02).
 
 | ID | Invariant | Status |
 |---|---|---|
