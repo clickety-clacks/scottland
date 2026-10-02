@@ -1,4 +1,5 @@
 """A widget with no startup resizes; Space requests exactly one new client size."""
+import json
 import os
 import gi
 gi.require_version("Gtk", "4.0")
@@ -8,8 +9,10 @@ app = Gtk.Application(application_id="org.scottland.TestGravity")
 
 
 def activate(application):
+    with open(os.environ["SCOTTLAND_WIDGET_STATE"]) as source:
+        state = json.load(source)
     window = Gtk.ApplicationWindow(application=application,
-                                   title="Scottland widget: " + os.environ["SCOTTLAND_WIDGET_TITLE"])
+                                   title="Scottland widget: " + state["title"])
     window.set_decorated(False)
     window.set_default_size(320, 96)
     window.small = False
