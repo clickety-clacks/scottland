@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import select
 import socket
 import struct
 import subprocess
@@ -123,8 +124,8 @@ def drag_end():
 screen = ipc.call("window-rules/list-outputs")[0]["geometry"]
 
 
-def launch(title, rail="right", y=260):
-    process = subprocess.Popen(["foot", "-T", title, "-W", "40x8", "sh", "-c", "exec sleep 600"],
+def launch(title, rail="right", y=260, app_id="foot"):
+    process = subprocess.Popen(["foot", "--app-id", app_id, "-T", title, "-W", "40x8", "sh", "-c", "exec sleep 600"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     owned.append((title, process))
     view = wait_for(lambda: app(title))
@@ -193,7 +194,51 @@ def held_key():
               trace.count("minimize-key ignored-duplicate ") == 2, trace)
 
 
-cases = {"key": held_key}
+def gravity():
+    title = "gravity-regression"
+    events = Ipc()
+    events.call("window-rules/events/watch", {"events": ["view-mapped", "view-geometry-changed"]})
+
+    def drain():
+        result = []
+        while select.select([events.sock], [], [], 0.05)[0]:
+            result.append(events.receive())
+        return result
+
+    launch(title, app_id="scottland-test-gravity")
+    widget_id = card(title)["id"]
+    mapped = [e["view"]["geometry"] for e in drain()
+              if e["event"] == "view-mapped" and e["view"]["id"] == widget_id]
+    check("WG4 widget mapping is already against its right rail",
+          len(mapped) == 1 and mapped[0]["x"] + mapped[0]["width"] == screen["width"] - 24, mapped)
+
+    def resize(label, rail, target):
+        before = card(title)["frame"]
+        edge = before["x"] + (before["width"] if rail == "right" else 0)
+        drain()
+        key("SPACE", True)
+        key("SPACE", False)
+        wait_for(lambda: round(card(title)["frame"]["width"]) == target)
+        time.sleep(0.2)
+        changes = [e["view"]["geometry"] for e in drain()
+                   if e["event"] == "view-geometry-changed" and e["view"]["id"] == widget_id]
+        check(label + " keeps its edge in every applied geometry",
+              bool(changes) and all(abs(g["x"] + (g["width"] if rail == "right" else 0) - edge) < 1
+                                    for g in changes), changes)
+        check(label + " has no follow-up corrective move",
+              len(changes) == 1, changes)
+
+    resize("WG4 first right-rail resize", "right", 96)
+    drag_begin(card(title), 6, 330)
+    drag_end()
+    resize("WG4 first resize after moving right to left", "left", 320)
+    drag_begin(card(title), screen["width"] - 6, 330)
+    drag_end()
+    resize("WG4 first resize after moving left to right", "right", 96)
+    events.sock.close()
+
+
+cases = {"key": held_key, "gravity": gravity}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
 parser.add_argument("cases", nargs="*", choices=list(cases))

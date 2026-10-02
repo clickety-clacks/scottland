@@ -2093,7 +2093,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             keep_above(view);
-            place_widget(view, output, link.drop);
+            place_widget(view, output, link);
             set_scale(view, 1.0);
             show_attention(link.window_id);  // asked before its widget appeared
             return true;
@@ -2213,7 +2213,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             widget_links[link.window_id] = std::move(link);
             keep_above(widget);
             set_scale(widget, 1.0);
-            keep_in_place(widget_links[window->get_id()], widget);
+            place_widget(widget, widget->get_output(), widget_links[window->get_id()]);
         }
 
         announce_widgets();
@@ -2247,12 +2247,29 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         for (const auto& object : ev->tx->get_objects())
         {
             auto toplevel = std::dynamic_pointer_cast<wf::toplevel_t>(object);
-            if (!toplevel || toplevel->current().mapped || !toplevel->pending().mapped)
+            if (!toplevel || !toplevel->pending().mapped)
             {
-                continue;  // not a window about to map
+                continue;
             }
 
-            auto view = wf::find_view_for_toplevel(toplevel);
+            auto view = wf::toplevel_cast(wf::find_view_for_toplevel(toplevel));
+            if (toplevel->current().mapped)
+            {
+                // Reconcile client size changes before this transaction commits, using its
+                // pending size. Never schedule a second move from a geometry notification.
+                auto link = link_of_widget(view);
+                auto& pending = toplevel->pending();
+                auto& current = toplevel->current().geometry;
+                if (link && (drag->view != view) && (view->get_id() != dragged_widget) &&
+                    ((pending.geometry.width != current.width) || (pending.geometry.height != current.height)))
+                {
+                    auto output = output_alive(link->output) ? link->output : view->get_output();
+                    position_widget(pending, output, *link);
+                }
+
+                continue;
+            }
+
             pid_t pid = view ? view_pid(view) : 0;
             for (auto& [id, link] : widget_links)
             {
@@ -2268,12 +2285,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     break;
                 }
 
-                auto& pending = toplevel->pending().geometry;
-                auto spot = widget_spot(output, link, pending.width, pending.height);
-                pending.x = spot.x;
-                pending.y = spot.y;
-                view->set_property("startup-x", spot.x);
-                view->set_property("startup-y", spot.y);
+                auto& pending = toplevel->pending();
+                position_widget(pending, output, link);
+                view->set_property("startup-x", pending.geometry.x);
+                view->set_property("startup-y", pending.geometry.y);
                 break;
             }
         }
@@ -2296,66 +2311,28 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return {(int)std::round(x), (int)std::round(y)};
     }
 
-    /** Put a widget where it belongs: centered on its drop point (its screen edge for a widget
-     *  wider than the rail), kept on screen. Only moves it if it isn't there. */
-    void keep_in_place(widget_link_t& link, wayfire_toplevel_view widget)
+    /** Rail gravity and placement always travel in the same pending state, starting with
+     *  the mapping transaction. A resize keeps its edge without a post-apply correction. */
+    void position_widget(wf::toplevel_state_t& pending, wf::output_t *output, const widget_link_t& link)
     {
-        auto output = output_alive(link.output) ? link.output : widget->get_output();
-        if (!output)
+        pending.gravity = ((link.rail == "left") ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT) | WLR_EDGE_TOP;
+        if (output)
         {
-            return;
-        }
-
-        // A widget resizing itself (its card expanding or collapsing, a title changing) keeps its
-        // screen-edge side still: Wayfire holds that edge, so no move (which would resend an older
-        // size to the client mid-resize) is needed for it.
-        uint32_t gravity = ((link.rail == "left") ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT) | WLR_EDGE_TOP;
-        if (widget->toplevel()->pending().gravity != gravity)
-        {
-            widget->toplevel()->pending().gravity = gravity;
-            wf::get_core().tx_manager->schedule_object(widget->toplevel());
-        }
-
-        auto g = widget->get_geometry();
-        double width = output->get_relative_geometry().width;
-        // Its screen-edge side stays at the edge: the drop point's distance from the edge is
-        // measured from the widget's edge-side (a card that grows grows away from the edge).
-        wf::pointf_t at = link.drop;
-        if (link.rail == "right")
-        {
-            at.x = std::max(at.x, width - g.width / 2.0);
-        } else
-        {
-            at.x = std::min(at.x, g.width / 2.0);
-        }
-
-        auto before = g;
-        place_widget(widget, output, at);
-        auto placed = widget->get_geometry();
-        if ((placed.x != before.x) || (placed.y != before.y))
-        {
-            LOGI("scottland: widget for window ", link.window_id, " back in its place (", before.x, ",", before.y,
-                " -> ", placed.x, ",", placed.y, ")");
+            auto spot = widget_spot(output, link, pending.geometry.width, pending.geometry.height);
+            pending.geometry.x = spot.x;
+            pending.geometry.y = spot.y;
         }
     }
 
-    /** Center the widget on `at`, kept wholly on screen, halo included. */
-    void place_widget(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t at)
+    /** Place a newly adopted, committed or dropped widget, using the size already pending. */
+    void place_widget(wayfire_toplevel_view view, wf::output_t *output, const widget_link_t& link)
     {
-        auto geometry = view->get_geometry();
-        auto area = output ? output->workarea->get_workarea() : geometry;
-        int inset = WIDGET_INSET;
-        area.x += inset;
-        area.y += inset;
-        area.width  -= 2 * inset;
-        area.height -= 2 * inset;
-        double x = std::clamp(at.x - geometry.width / 2.0, (double)area.x,
-            std::max((double)area.x, (double)(area.x + area.width - geometry.width)));
-        double y = std::clamp(at.y - geometry.height / 2.0, (double)area.y,
-            std::max((double)area.y, (double)(area.y + area.height - geometry.height)));
-        if ((std::round(x) != geometry.x) || (std::round(y) != geometry.y))
+        auto& pending = view->toplevel()->pending();
+        auto before = pending;
+        position_widget(pending, output, link);
+        if ((pending.geometry != before.geometry) || (pending.gravity != before.gravity))
         {
-            view->move(std::round(x), std::round(y));
+            wf::get_core().tx_manager->schedule_object(view->toplevel());
         }
     }
 
@@ -2402,12 +2379,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             keep_above(widget);
-            place_widget(widget, output, at);
+            place_widget(widget, output, link);
             set_scale(widget, 1.0);
             set_widget_hidden(link, false);
             // It was let go at `at` (the dragged window was drawn there as the widget): glide to
             // its place against the screen edge rather than jump.
-            auto placed = widget->get_geometry();
+            auto placed = widget->toplevel()->pending().geometry;
             start_glide(widget, at.x - (placed.x + placed.width / 2.0), at.y - (placed.y + placed.height / 2.0));
             wf::get_core().default_wm->focus_raise_view(widget);
         } else if (window && (wf::get_core().seat->get_active_view() == window))
@@ -2535,21 +2512,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             bool left = in_rail(at) ? (at < width / 2) : (center.x < width / 2);  // else its nearer rail
 
-            link->drop = center;  // first: placing moves it, and moves put widgets at their drop point
-            place_widget(view, output, center);
-            auto placed_now = view->get_geometry();
-            start_glide(view, center.x - (placed_now.x + placed_now.width / 2.0),
-                center.y - (placed_now.y + placed_now.height / 2.0));
             auto rail = left ? "left" : "right";
-            if ((link->rail != rail) || (link->output != output))
+            bool changed = (link->rail != rail) || (link->output != output);
+            link->drop   = center;
+            link->rail   = rail;
+            link->output = output;
+            place_widget(view, output, *link);  // position and new rail gravity in one transaction
+            auto placed = view->toplevel()->pending().geometry;
+            start_glide(view, center.x - (placed.x + placed.width / 2.0),
+                center.y - (placed.y + placed.height / 2.0));
+            if (changed)
             {
-                link->rail   = rail;
-                link->output = output;
                 announce_widgets();
             }
-
-            auto placed = view->get_geometry();
-            link->drop = {placed.x + placed.width / 2.0, placed.y + placed.height / 2.0};
         } else if (on_rail)
         {
             widgetize(view, false, (in_rail(at) ? at : center.x) < width / 2 ? "left" : "right");
@@ -4577,16 +4552,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             update_neighbors(view->get_output());
-
-            // A widget that changes size (a card whose title changed) keeps its screen-edge side
-            // against the edge, wholly on screen (WG4).
-            auto g = view->get_geometry();
-            if (auto link = link_of_widget(view); link && !link->preview && (drag->view != view) &&
-                (view->get_id() != dragged_widget) &&  // a drop is moving it: the drop decides
-                ((g.width != ev->old_geometry.width) || (g.height != ev->old_geometry.height)))
-            {
-                keep_in_place(*link, view);
-            }
         }
 
         apply(ev->view);

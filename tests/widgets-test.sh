@@ -38,6 +38,7 @@ super_drag() {  # super_drag x1 y1 x2 y2
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
 test_widgets=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-widgets.XXXXXX")
 mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon" "$test_widgets/stubborn"
+cp -a tests/widgets/gravity "$test_widgets/gravity"
 # Shows a window that refuses to close when asked.
 cat >"$test_widgets/stubborn/widget.toml" <<'TOML'
 id = "stubborn"
