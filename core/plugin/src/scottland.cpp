@@ -963,7 +963,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         observe_view(view);
         model.windows[view->get_id()].scale = target;
         publish_model();
-
         auto found = transitions.find(view->get_id());
         if (found != transitions.end())
         {
@@ -1062,9 +1061,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     v->close();
                 }
             };
-            // A halo swelling or breathing in place reaches its neighbors (or stops reaching
-            // them): re-merge (A10), once per frame at most.
-            frame->on_reshape = [=] () { idle_neighbors.run_once([=] () { update_all_neighbors(); }); };
             frame->set_focused(wf::get_core().seat->get_active_view() == view);
             node->add_transformer(frame, wf::TRANSFORMER_2D, TRANSFORMER);
             view->damage();
@@ -1081,7 +1077,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             frame->damage();
             frame->scale_x = frame->scale_y = scale;
             frame->damage();
-            update_neighbors(view->get_output());
         }
     }
 
@@ -1184,56 +1179,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         pointer_owner = frame;
     }
 
-    /** Tell each framed window where the liquid of the windows around it is (A10), so halos
-     *  merge and reach for each other. A window being dragged is drawn away from its geometry,
-     *  so it takes no part until it's dropped. */
-    void update_neighbors(wf::output_t *output)
-    {
-        auto list = frames_on(output);
-        auto dragged = drag->view;
-        for (size_t i = 0; i < list.size(); i++)
-        {
-            auto& [view, frame] = list[i];
-            std::vector<scottland::neighbor_t> neighbors;
-            if (view != dragged)
-            {
-                auto mine = frame->screen_rect().grown(frame->thickness());
-                for (size_t j = 0; j < list.size(); j++)
-                {
-                    auto& [other_view, other] = list[j];
-                    if ((j == i) || (other_view == dragged))
-                    {
-                        continue;
-                    }
-
-                    auto theirs = other->screen_rect().grown(other->thickness());
-                    double gx = std::max({mine.x1 - theirs.x2, theirs.x1 - mine.x2, 0.0});
-                    double gy = std::max({mine.y1 - theirs.y2, theirs.y1 - mine.y2, 0.0});
-                    if (std::hypot(gx, gy) < scottland::MERGE)
-                    {
-                        neighbors.push_back({other->screen_rect(), other->screen_radius(),
-                            other->thickness(), j < i});
-                    }
-                }
-            }
-
-            if (neighbors.size() > (size_t)scottland::MAX_NEIGHBORS)
-            {
-                neighbors.resize(scottland::MAX_NEIGHBORS);
-            }
-
-            frame->set_neighbors(std::move(neighbors));
-        }
-    }
-
-    void update_all_neighbors()
-    {
-        for (auto& output : wf::get_core().output_layout->get_outputs())
-        {
-            update_neighbors(output);
-        }
-    }
-
     void update_focus()
     {
         auto active = wf::get_core().seat->get_active_view();
@@ -1253,9 +1198,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             state.focused = active && active->get_id() == id;
         }
         publish_model();
-
-        // Focus usually comes with raising: stacking decides whose liquid is in front.
-        update_all_neighbors();
     }
 
     wf::signal::connection_t<wf::keyboard_focus_changed_signal> on_focus =
@@ -1287,7 +1229,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (auto frame = frame_of(toplevel, false))
             {
                 forget_owner(frame);
-                frame->set_neighbors({});
             }
 
             // Tied lifecycles (WG5): the app's window closed takes its widget along; a widget
@@ -1322,11 +1263,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         publish_model();
-
-        // Neighbors are recomputed without it once it's gone from the stacking list.
-        idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
-    wf::wl_idle_call idle_neighbors;
+    wf::wl_idle_call idle_focus;
 
     // Rail widgets (docs/widgets.md). A window dropped onto a widget rail is hidden (kept alive)
     // and a widget program is launched in its place; the widget's window, recognized by its
@@ -4514,7 +4452,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.drag.cancelled = false;
         auto running = transitions.find(drag->view->get_id());
         model.drag.target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
-        update_neighbors(output);
         publish_model();
     }
 
@@ -5129,7 +5066,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         glides.erase(found);
-        update_all_neighbors();
     }
 
     bool step_glides()
@@ -5151,9 +5087,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             frame->translation_y = glide.dy * left;
             frame->damage();
             view->damage();
-            // The halos it passes over are cut where it's in front of them: follow it, or the
-            // cut stays where it started.
-            update_neighbors(view->get_output());
             if (!glide.progress.running())
             {
                 auto done = std::move(glide.done);
@@ -5166,7 +5099,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     frame->translation_x = frame->translation_y = 0;
                 }
 
-                update_all_neighbors();
                 continue;
             }
 
@@ -5322,8 +5254,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.widget = 0;
             model.drag.started = false;
             publish_model();
-
-            idle_neighbors.run_once([=] () { update_all_neighbors(); });
             return;
         }
 
@@ -5429,8 +5359,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.drag.widget = 0;
         model.drag.started = false;
         publish_model();
-        // The dropped window rejoins its neighbors' liquid once the drag has let go of it.
-        idle_neighbors.run_once([=] () { update_all_neighbors(); });
     };
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
@@ -5446,7 +5374,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         apply(ev->view);
         hint_registration.run_once([=] () { window_entries(); });
-        idle_neighbors.run_once([=] () { update_focus(); });
+        idle_focus.run_once([=] () { update_focus(); });
     };
 
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
@@ -5463,8 +5391,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 frame->damage_previous(ev->old_geometry);
                 frame->damage();
             }
-
-            update_neighbors(view->get_output());
 
             // Widget placement during map is pending until its transaction commits. Save the
             // committed center, not the provisional center reported in view-mapped.
@@ -5550,19 +5476,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     entry["frame"]["morph"]["shape"] = frame->morph.shape;
                     entry["frame"]["morph"]["fade"]  = frame->morph.fade;
                     entry["frame"]["morph"]["snapshot"] = (bool)frame->morph.snapshot;
-                }
-                entry["frame"]["neighbors"] = (int64_t)frame->get_neighbors().size();
-                if (getenv("SCOTTLAND_TEST_MODEL"))
-                {
-                    auto rects = wf::json_t::array();
-                    for (auto& n : frame->get_neighbors())
-                    {
-                        wf::json_t rect;
-                        rect["x"] = n.window.x1; rect["y"] = n.window.y1;
-                        rect["width"] = n.window.width(); rect["height"] = n.window.height();
-                        rects.append(rect);
-                    }
-                    entry["frame"]["neighbor_rects"] = rects;
                 }
                 wf::json_t clouds = wf::json_t::array();
                 for (double c : frame->cloud)
@@ -5882,7 +5795,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_output.disconnect();
         on_focus.disconnect();
         on_unmapped.disconnect();
-        idle_neighbors.disconnect();
+        idle_focus.disconnect();
         on_motion.disconnect();
         swipe_end();
         on_swipe_begin.disconnect();

@@ -46,7 +46,8 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 
 ## Window appearance and handles
 
-The original halo remains the default (`scottland/goo = false`). With goo enabled, one liquid
+The goo is the default (`scottland/goo = true`), with independent per-window halo bands
+when switched off or when the GPU cannot run it. With goo enabled, one liquid
 field per screen replaces its drawing and field input; the restated appearance and handle behavior
 is in [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). Input, proximity and palette jobs remain.
 
@@ -60,7 +61,7 @@ is in [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). Input, proximity
 | A6 | The halo's corners are resize handles: dragging one resizes around the window's center, outward growing. When the cursor comes near a corner, that part of the halo turns cloudy (the goo thickens, more opaque) and its glints strengthen, as if the light source brightened.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A7 | When the cursor pauses for 0.5 s within 50 pt of the halo (inside or outside the window, including over another window's content; windows behind the one the cursor is over don't respond), the halo swells to a fixed on-screen thickness of twice the full-size halo (~21 pt), however small the window (only the resting halo scales; the 50 pt doesn't scale either); any motion restarts the wait. The swell moves like goo: it bulges, overshoots and settles with slow, irregular, low-frequency waves along the edge. It stays while the cursor is within the 50 pt, and sinks back the same way about 0.5 s after the cursor leaves (never while dragging). Dragging doesn't count as pausing: the wait starts when the window is let go, so the swell always animates. | implemented |
 | A9 | The halo looks like liquid: shaded as a rounded surface with a bright rim and glints, with soft organic variation, not a flat tint.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
-| A10 | Halos of different windows behave as one liquid: where they cross, the inside corners fill with a rounded meniscus (surface tension), and when two halos come within about 5 pt they reach for each other and bridge. The joining liquid belongs to the window in front, for drawing and grabbing. (Reaching will gain a meaning later.) Halos swelling or breathing in place keep merging with their neighbors as they change.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
+| A10 | Each fallback halo is its own band: halos do not merge, fill concave corners or bridge gaps, and input belongs only to the window's own band (with A5's minimum grab target). Screen-wide goo is on by default and owns pooling and bridges instead: [GO2/GO3](../docs/goo.md). Switching goo off or an unsupported GPU retains the independent halo and A3–A9/A11–A12. | implemented; isolated plumbus checks pending |
 | A11 | A close dot sits at the middle of the halo's bottom edge, appearing as the cursor comes near; clicking it closes the window. There is no minimize.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A12 | The halo works by finger with no wait: dragging it moves the window (grabbed exactly at the finger), dragging a corner resizes around the center, and touching the halo shows the close dot for a few seconds so it can be tapped. | implemented |
 | A13 | Interface sounds are synthesized at runtime (no sample files), follow the system volume and mute, and can be turned off (`scottland/sounds`). | implemented |

@@ -114,18 +114,28 @@ try:
     collapsed = sample("collapse")
     verify("collapse", collapsed, before, True)
     t.check("all widgets animate concurrently", any(s["widget_transition_count"] == 3 for _, s in collapsed))
-    neighbor_samples = []
-    for _, s in collapsed:
-        fs = frames(s)
-        for f in fs.values():
-            for n in f.get("neighbor_rects", []):
-                neighbor_samples.append(any(all(abs(n[k] - other[k]) < .3 for k in ("x", "y", "width", "height"))
-                                            for other in fs.values()))
-    t.check("neighbor halos follow the animated frame", len(neighbor_samples) > 10 and all(neighbor_samples))
     before = frames(state())
     t.toggle()
     expanded = sample("expand")
     verify("expand", expanded, before, False)
+
+    # The fallback band follows each animated frame independently (A10/WG16).
+    goo_on = t.ipc.call("scottland/goo-state")["enabled"]
+    t.ipc.call("wayfire/set-config-options", {"scottland/goo": False})
+    t.toggle()
+    bands = []
+    for i in range(9):
+        f = t.card("Morph right with a title long enough for maximum width")["frame"]
+        image = screenshot("halo-band-" + str(i))
+        y = round(f["y"] + f["height"] / 2)
+        # The band at the moving inner edge, and wallpaper safely beyond its full swell.
+        bands.append(image.getpixel((round(f["x"] - 5), y)) !=
+                     image.getpixel((round(f["x"] - 55), y)))
+    t.check("independent halo band follows the animated widget frame", all(bands), bands)
+    settle()
+    t.toggle()
+    settle()
+    t.ipc.call("wayfire/set-config-options", {"scottland/goo": goo_on})
 
     right = "Morph right with a title long enough for maximum width"
     old = t.card(right)["frame"]
