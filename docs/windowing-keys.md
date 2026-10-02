@@ -18,7 +18,7 @@ remain rendering resources, never geometry or memory inputs.
 ## Invariants
 
 Status: **implemented (headless)** means real keyboard/pointer input in an isolated headless
-Scottland on plumbus, or the named pure unit suite. **verified** additionally means exercised
+Scottland, or the named pure unit suite. **verified** additionally means exercised
 on a physical session. This change is not tested on either machine's live display.
 
 | ID | Invariant | Status |
@@ -26,8 +26,8 @@ on a physical session. This change is not tested on either machine's live displa
 | WK1 | Alt alone enters hints only after the configurable short hold (300 ms default). Any other key or Ctrl, Shift, or Super already held, or pressed before the timeout, cancels eligibility for that entire Alt chord. Quick Alt+letter and quick Alt+Tab keep app/desktop behavior. Both Alt keys are supported; pressing both before entry is not Alt alone. | implemented (headless) |
 | WK2 | After entry, every unclaimed key belongs to Scottland until the last held Alt is released, including Ctrl/Super combinations and unassigned keys. Presses and matching releases are consumed; hints/cycles act once per physical press; arrows add impulses on presses and auto-repeat (WK17). Focused-surface key-layer claims retain ordinary delivery (KL7), including while hints are visible; a claimed press before entry cancels the hold. Alt itself is delivered immediately and its matching release is delivered, so quick app chords have no added delay or synthetic replay. | implemented (headless) |
 | WK3 | Alt release exits window mode, removes hints and restores purely visual displacement. Esc removes hints/displacement, restores windows touched by arrows to their Alt-down origin (WK22), and keeps keys captured until Alt release. Releasing or cancelling mid-cycle preserves explicit cycle steps on windows untouched by arrows; the next entry starts a new cycle from the current zone, skipping select if already selected. | implemented (headless) |
-| WK4 | Every mapped top-level window and every widget has a large, click-through compositor hint in session palette colors, following the actual drawn center. A collapsed widget's hint is over its icon. Dialogs are selectable but retain WG1's protection against widgetizing. | implemented (headless) |
-| WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. Badges follow Vimarchy: a centered circle sized `clamp(min(displayed width, displayed height) × 0.34, 72, 132)` logical px, 21% hint-color fill, bold uppercase letters at 62% of badge height (46% for multiple letters). Output scale affects raster resolution, never logical badge size. | implemented (headless) |
+| WK4 | Every mapped top-level window and every widget has a large, click-through compositor hint in session palette colors, following the actual drawn center for ordinary windows; widgets use the exterior attachment in WK26, expanded or collapsed. Dialogs are selectable but retain WG1's protection against widgetizing. | implemented (headless) |
+| WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. Badges follow Vimarchy: a circle (centered on windows, beside widgets per WK26) sized `clamp(min(displayed width, displayed height) × 0.34, 72, 132)` logical px, 21% hint-color fill, bold uppercase letters at 62% of badge height (46% for multiple letters). Output scale affects raster resolution, never logical badge size. | implemented (headless) |
 | WK6 | A window’s first hint selects, focuses, and raises it only if it is not already selected/focused. If already selected (including by Tab), the first press goes straight to the next zone. A widget’s first hint opens center as a card tap does (WG17); opening consumes the first center step of its widget-start loop. Selecting another hint resets the previous selection’s cycle. | implemented (headless) |
 | WK7 | All starting zones follow one start-relative loop: visit the other two zones, toward center first, then return to the start. The start is the window’s zone when cycling begins in this Alt hold (before selecting/opening); it stays fixed until another hint is selected or the hold ends. See the cycle table below. | implemented (headless) |
 | WK8 | A periphery-start loop visits center → widget → periphery repeatedly (WK7). | implemented (headless) |
@@ -35,7 +35,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK10 | Tab and Shift+Tab select the next/previous window or widget in hint order, wrapping. Tab focuses a widget without opening it; its hint opens it. F4 closes the selected window and its widget through normal linked lifecycle, preserving save-confirmation behavior. | implemented (headless) |
 | WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Holding Alt during a drag belongs to L31 and suppresses hints for that entire chord, even after drop. Starting a drag cancels hints. Adding any modifier after entry stays in the mode (WK2). | implemented (headless) |
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
-| WK13 | Near-coincident window/widget centers repel through a deterministic force-directed graph with springs to real centers. Centers stay within readable hint bounds; already separated centers stay put. Windows themselves animate outward and back, without moving their real geometry, changing their scale, or updating memories. Hints track those transforms. | implemented (headless) |
+| WK13 | Near-coincident hint anchors repel through a deterministic force-directed graph with springs to unshifted hint anchors. Centers stay within readable hint bounds; already separated centers stay put. Windows themselves animate outward and back, without moving their real geometry, changing their scale, or updating memories. Hints track those transforms; widget anchors stay horizontally attached and declutter vertically (WK26). | implemented (headless) |
 | WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`, checked every 250 ms while showing hints. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a 7% hint-color overlay, a 2 logical px full-color rounded border even at the supported 5% window scale, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. With the screen-wide goo (on by default), window mode simply tints the goo with the hint color as dye (GO6): the window/card overlay stays, and there is no separate rim. | implemented (headless) |
 | WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing. The first press acts immediately. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, release or cancellation resets double-tap recognition. | implemented (headless) |
 | WK16 | Double-taps use physical presses, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; repeating a prefix alone does not move a window. | implemented (headless) |
@@ -48,6 +48,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK23 | Widgets coast vertically along their current rail, bouncing at their top/bottom workarea limits with keyboard restitution and keeping their wider widget inset. Left/Right transfers to the indicated rail with the existing glide, preserving height and widget form; pressing toward the current rail leaves it there. It never opens the window. Tab can select a widget without restoring it (WK10). | implemented (headless) |
 | WK24 | Options `scottland/key_impulse` (335 px/s), `scottland/key_friction` (608 px/s²), and `scottland/key_max_velocity` (6000 px/s) retain the original inertia defaults and apply to both movement and resizing. `scottland/key_restitution` (0.5, range 0–1) controls keyboard boundary bounce only. Repeats use the keyboard's configured delay/rate, independently for held arrows, and stop on key/Alt release or cancel. Exact focused-surface claims precede arrows (KL7); quick Alt+arrow and Ctrl-first chords keep existing app/desktop routing. A pointer/touch move or resize takes over motion without enabling hints (L31). | implemented (headless) |
 | WK25 | Hints follow the desktop's text size and interface font, as Vimarchy follows Omarchy's: the badge's minimum (72 px), maximum (132 px) and proportional size (0.34 of the window's shorter side) are multiplied by the text scaling factor (GTK's `text-scaling-factor`, which `omarchy display text size` sets on Omarchy), and the letters use the interface font (`font-name`'s family). The color-scheme helper records both in the palette file (`text_scale`, `font_family`) and follows changes live. | implemented (headless) |
+| WK26 | In Window mode, every widget (the default card or a third-party widget, expanded or collapsed) has its hint outside its center-facing edge: right of a left-rail widget, left of a right-rail widget, vertically centered on its drawn frame. The circle overlaps by 15% of its diameter. For large text on short widgets, overlap reduces so the arc entering the widget spans at most the middle 60% of its height, leaving the upper inward count-badge corner clear. WK5/WK25 sizing and WK14 widget tint/dye/goo remain unchanged. The exterior circle has an opaque theme background under its usual 21% hint-color fill so wallpaper cannot defeat letter contrast; window circles retain their existing transparency. Colliding hints declutter with 6 logical px clearance; widgets move only vertically as a temporary visual transform and keep their horizontal attachment, while windows retain the existing two-axis declutter. Both the hints and widget frames stay vertically on screen; horizontal screen clamping takes precedence if an unusually wide widget leaves no room. Geometry, zone memories and rail attachment are never changed. Release/Esc clears the hints and restores temporary displacement. | implemented (headless) |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
@@ -68,6 +69,12 @@ step. Opening a widget takes its first center step. Double-tap requests the widg
 | Widget | center → periphery → widget → … |
 
 ## Decisions at unspecified edges
+
+- WK26, tenet 2 (recognition): use 15% circle overlap to visibly attach a hint without covering
+  the widget's contents. Restrict the entering arc on short widgets at large text sizes to keep
+  the upper count corner free. Use the theme background under an exterior circle's tint so
+  recognition does not depend on the wallpaper. Tenet 4 (cheapest change): keep the existing temporary visual
+  declutter, constrained vertically for widgets, without changing their geometry or memories.
 
 - Tenet 2 (predictability): single presses act immediately; the rapid second complete hint requests
   the rail. Continue the original loop after its widget step. Prefix-free hints keep the same
@@ -387,3 +394,30 @@ Goo-default follow-up (2026-10-01): WK14 uses the shared goo source dye and reta
 Hint styling passed 51 checks with the default goo, 51 with the fallback halo, and 51 with
 GLES 2/packed goo. Windowing passed 84 per mode; inertia passed 61 single-output plus
 8 two-output checks per mode. See [goo-default validation](goo.md#goo-default-validation-2026-10-01).
+
+## WK26 validation (2026-10-02, osanwe headless)
+
+Based on `e63ad97`, using only this checkout's plugin and helpers. Every run had its own
+`SCOTTLAND_HEADLESS_DIR` under `build/wk26/`; screenshots, sampled geometry and logs remain
+there. Sessions were stopped and their directories removed. Neither the main checkout nor
+`wayland-1` was modified; this is headless validation, not physical-display verification.
+
+| Suite | Result |
+|---|---|
+| Windowing unit suite | **83 passed**; includes stacked mixed-size rail hints at both screen ends, free-window collisions and a window pinned to a screen boundary |
+| `tests/widget-hints-test.sh`, goo on/off | **167 passed each**; real Alt holds, Super+M and pointer drags; cards and a third-party widget; both rails, expanded/collapsed, stacked hints, release/Esc, unchanged placement, live 1.5×/3× text sizes and screen ends |
+| `tests/hint-style-test.sh`, goo on/off | **53 passed each**; existing palette, tint, goo/rim, fullscreen and size checks, plus exterior-circle fill pixels and letter contrast in both themes |
+| `tests/windowing-test.sh` | **84 passed**, including cycles, input ownership, fullscreen, geometry/memories, reload and prefix-free hints |
+| `tests/widgets-test.sh` | **146 passed**, including **43 input regressions** |
+| Shortcut fixture using `TMPDIR` under `build/` | **14 passed**; fixture storage now honors the caller's temporary directory |
+
+The final solver resolves residual rail/window collisions vertically, including when a window
+has already reached the screen's horizontal clamp. Window-only declutter remains unchanged.
+Screenshots were inspected for attachment, readable backgrounds and stacked/edge placement.
+
+A further **167-check** run staged only the card QML from `badges-fixedsize` at `c3e928f`
+in `build/wk26/count-corner-fixture/`, without merging or modifying that branch. Its relocated
+22-pixel-high rounded count badge stays clear of the exterior hint at all tested text sizes;
+the nearest rounded end is 11 pixels inward/down from the frame's upper inward corner.
+The compatibility screenshots are in `build/wk26/count-corner-integration.widget-hints-artifacts/`.
+The new suite accepts `SCOTTLAND_WIDGET_PATH` for this isolated fixture override.

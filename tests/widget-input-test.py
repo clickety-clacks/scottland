@@ -311,7 +311,8 @@ def shortcuts():
     # the fixtures must be the only imports in play, or pressing their keys runs the user's commands.
     fixture_base = re.sub(r"(?m)^(repeatable_)?(binding|command)_omarchy_\w+ = .*\n", "", original)
     launch("shortcut-regression")
-    with tempfile.TemporaryDirectory(prefix="scottland-shortcuts-", dir=os.environ["XDG_RUNTIME_DIR"]) as work:
+    # Honor the test runner's TMPDIR so fixture artifacts need not occupy runtime tmpfs.
+    with tempfile.TemporaryDirectory(prefix="scottland-shortcuts-") as work:
         work = Path(work)
         base, lua, marker = work / "base.ini", work / "hyprland.lua", work / "ran"
         importer.HYPR_CONFIG = str(lua)

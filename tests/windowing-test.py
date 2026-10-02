@@ -363,11 +363,11 @@ try:
     choose(a); release()
     check(view('Cycle')['widgetized'], 'configured interval preserves widget-start full loop')
     ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 300})
-    # Actual card click and collapsed-icon hint.
+    # Actual card click and hint on a collapsed widget (placement is covered by WK26's suite).
     key('LEFTMETA', True); tap('M'); key('LEFTMETA', False); time.sleep(.6)
     hold()
     widget = next(v for v in views() if v['widget'])
-    check(hint(a)['visible'] and widget['geometry']['width'] < 120, 'collapsed widget has a hint over its icon')
+    check(hint(a)['visible'] and widget['geometry']['width'] < 120, 'collapsed widget retains a visible hint')
     release()
     f = widget['frame']
     ipc('stipc/move_cursor', {'x': round(f['x']+f['width']/2), 'y': round(f['y']+f['height']/2)})

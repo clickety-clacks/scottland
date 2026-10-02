@@ -10,7 +10,7 @@ namespace scottland::windowing
 {
 hint_node::hint_node() : node_t(false) {}
 void hint_node::update(double x, double y, const std::string& text, double size, const std::string& family,
-    hint_rgb color, double scale)
+    hint_rgb color, double scale, std::optional<hint_rgb> background)
 {
     wf::scene::damage_node(this, box);
     int logical_size = int(std::round(size));
@@ -18,6 +18,7 @@ void hint_node::update(double x, double y, const std::string& text, double size,
         double(logical_size), double(logical_size)};
     std::ostringstream key;
     key << text << ':' << family << ':' << logical_size << ':' << color.r << ',' << color.g << ',' << color.b << ':' << scale;
+    if (background) key << ':' << background->r << ',' << background->g << ',' << background->b;
     if (key.str() != appearance)
     {
         appearance = key.str(); texture.reset();
@@ -29,7 +30,14 @@ void hint_node::update(double x, double y, const std::string& text, double size,
         cairo_scale(cr, double(pixel_size) / logical_size, double(pixel_size) / logical_size);
         double mid = logical_size / 2.0;
         cairo_arc(cr, mid, mid, mid, 0, 2 * 3.141592653589793);
-        cairo_set_source_rgba(cr, color.r, color.g, color.b, hint_badge_opacity); cairo_fill(cr);
+        // Exterior widget hints sit over arbitrary wallpaper, not the themed app surface.
+        // Give their circle the palette background under its usual tint (WK26).
+        if (background)
+        {
+            auto fill = hint_mix(*background, color, hint_badge_opacity);
+            cairo_set_source_rgb(cr, fill.r, fill.g, fill.b);
+        } else cairo_set_source_rgba(cr, color.r, color.g, color.b, hint_badge_opacity);
+        cairo_fill(cr);
         cairo_select_font_face(cr, family.empty() ? "sans-serif" : family.c_str(), CAIRO_FONT_SLANT_NORMAL,
             CAIRO_FONT_WEIGHT_BOLD);
         cairo_set_font_size(cr, std::round(logical_size * (text.size() > 1 ? 0.46 : 0.62)));

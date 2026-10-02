@@ -72,6 +72,19 @@
         auto g = view->get_geometry();
         return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
     }
+    scottland::windowing::point hint_anchor(wayfire_toplevel_view view)
+    {
+        auto r = hint_rectangle(view);
+        double x = (r.x1 + r.x2) / 2;
+        if (auto link = link_of_widget(view))
+        {
+            double diameter = std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale));
+            // WK26: attach to the center-facing edge; retain space at the count corner.
+            double outside = diameter / 2 - scottland::windowing::widget_hint_overlap(diameter, r.height());
+            x = link->rail == "left" ? r.x2 + outside : r.x1 - outside;
+        }
+        return {x, (r.y1 + r.y2) / 2};
+    }
     void clear_hint_dye(wf::view_interface_t *view)
     {
         if (auto frame = frame_of(wf::toplevel_cast(view), false)) frame->set_hint_dye(std::nullopt);
@@ -405,7 +418,8 @@
             auto g = view->get_geometry();
             signature << e.id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' << view->get_output()->to_string() << ';';
             auto r = hint_rectangle(view);
-            signature << ':' << std::round((r.x1 + r.x2) / 2) << ',' << std::round((r.y1 + r.y2) / 2)
+            auto anchor = hint_anchor(view);
+            signature << ':' << std::round(anchor.x) << ',' << std::round(anchor.y) << ',' << std::round(r.height())
                 << ',' << std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale)) << ';';
             by_output[view->get_output()].push_back(e.id);
         }
@@ -416,12 +430,15 @@
             {
                 std::vector<scottland::windowing::point> anchors;
                 std::vector<double> diameters;
-                for (auto id : ids) { auto r = hint_rectangle(represented_view(id));
-                    anchors.push_back({(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2});
+                std::vector<scottland::windowing::hint_constraint> constraints;
+                for (auto id : ids) { auto view = represented_view(id); auto r = hint_rectangle(view);
+                    anchors.push_back(hint_anchor(view));
+                    bool widget = bool(link_of_widget(view));
+                    constraints.push_back({widget, widget ? r.height() / 2 : 0});
                     diameters.push_back(std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale))); }
                 auto screen = output->get_relative_geometry();
                 auto displaced = scottland::windowing::declutter(anchors,
-                    {0, 0, double(screen.width), double(screen.height)}, 6, diameters);
+                    {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints);
                 for (size_t i = 0; i < ids.size(); ++i)
                     hint_visuals[ids[i]].target = {displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
             }
@@ -460,7 +477,7 @@
                     wf::scene::add_front(view->get_output()->node_for_layer(wf::scene::layer::OVERLAY), visual.hint);
                 }
                 auto r = hint_rectangle(view);
-                double x = (r.x1 + r.x2) / 2, y = (r.y1 + r.y2) / 2;
+                auto anchor = hint_anchor(view);
                 unsigned slot = ensure_window_memory(it->first).hint_slot;
                 auto text = upper(window_keys.label(slot));
                 auto color = color_for_hint(slot);
@@ -478,10 +495,11 @@
                     }
                     visual.fullscreen_tint->update(view->get_geometry(), color);
                 }
-                visual.hint->update(x + offset->translation_x, y + offset->translation_y, text,
+                visual.hint->update(anchor.x + offset->translation_x, anchor.y + offset->translation_y, text,
                     scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale),
                     hints_palette.font_family, color,
-                    view->get_output()->get_scale());
+                    view->get_output()->get_scale(), link_of_widget(view) ?
+                        std::optional{hints_palette.background} : std::nullopt);
             } else
             {
                 if (visual.hint) { wf::scene::remove_child(visual.hint); visual.hint.reset(); }

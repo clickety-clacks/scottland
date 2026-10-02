@@ -213,11 +213,16 @@ try:
                     scheme+': full-color 2px rounded rim on '+v['title'])
             # Side of the circle avoids the central bold glyph and the card icon/title.
             cx, cy = badge['x']+badge['size']/2, badge['y']+badge['size']/2
-            px, py = round(cx+badge['size']*.39), round(cy)
+            outward = -1 if v['widget'] and f['x'] > 640 else 1
+            px, py = round(cx+outward*badge['size']*.39), round(cy)
             fill = tuple(n/255 for n in image.getpixel((px, py)))
             if not v['widget']:
                 check(max(abs(a-b) for a, b in zip(fill, mix(mix(rgb(palettes[scheme]['background']), c, .07), c, .21))) < .025,
                     scheme+': 21% badge fill on '+v['title'])
+            else:
+                check(max(abs(a-b) for a, b in zip(fill, mix(rgb(palettes[scheme]['background']), c, .21))) < .025
+                      and contrast(c, fill) >= 3,
+                    scheme+': exterior widget badge has a theme background and readable 21% tint')
         # Replace the palette without releasing Alt or restarting: colors must change live.
         other = 'light' if scheme == 'dark' else 'dark'
         previous = {h['window']: (h['hint'], h['color']) for h in state}

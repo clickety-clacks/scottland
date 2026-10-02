@@ -27,6 +27,14 @@ inline double hint_badge_size(double width, double height, double text_scale = 1
     double s = std::clamp(text_scale, 0.5, 3.0);
     return std::clamp(std::min(width, height) * 0.34 * s, 72.0 * s, 132.0 * s);
 }
+inline double widget_hint_overlap(double diameter, double height)
+{
+    // Keep large text badges out of a short widget's upper/lower corners: the arc
+    // entering the card occupies at most its middle 60%. Normal 96px cards use 15%.
+    double radius = diameter / 2;
+    double half_arc = std::min(radius, height * 0.30);
+    return std::min(diameter * 0.15, radius - std::sqrt(radius * radius - half_arc * half_arc));
+}
 inline hint_rgb hint_mix(hint_rgb a, hint_rgb b, double amount)
 {
     return {a.r + (b.r - a.r) * amount, a.g + (b.g - a.g) * amount,
