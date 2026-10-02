@@ -53,6 +53,7 @@ extern "C" {
 #include <xkbcommon/xkbcommon.h>
 
 #include "frame.hpp"
+#include "key-layers.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -85,6 +86,8 @@ extern "C" {
 //
 //  - IPC "scottland/present" {window}: bring a window (or a widget's window) to the middle of
 //    the screen at 100%, raised and focused: "I want to see this now" (L30).
+//  - IPC "scottland/key-layer" {action,window|pid+namespace,keys}: focused-surface shortcut
+//    claims with fall-through (docs/key-layers.md; full interface in key-layers.cpp).
 //  - IPC "scottland/send-key": press/release a key with explicit modifiers on the focused
 //    surface, independent of keys physically held (Hyprland's send_key_state).
 //  - [scottland] release_key_<name> / release_command_<name>: run a command when a key is
@@ -791,6 +794,8 @@ class virtual_pointer_t
 class scottland_plugin_t : public wf::plugin_interface_t,
     public wf::per_output_tracker_mixin_t<center_resize_t>
 {
+    scottland::key_layers_t key_layers;
+
     static constexpr const char *TRANSFORMER = "scottland-scale";
 
     wf::option_wrapper_t<double> center_width{"scottland/center_width"};
@@ -4622,6 +4627,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_remap_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        if (key_layers.handles(ev))
+        {
+            return;
+        }
+
         auto seat     = wf::get_core().get_current_seat();
         auto keyboard = wlr_seat_get_keyboard(seat);
         if (!keyboard || !keyboard->keymap)
@@ -4684,7 +4694,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
-        if (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED)
+        if (key_layers.handles(ev) || (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED))
         {
             return;
         }
@@ -4704,6 +4714,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
   public:
     void init() override
     {
+        key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
         init_output_tracking();
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
@@ -4771,6 +4782,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void fini() override
     {
+        key_layers.fini();
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");

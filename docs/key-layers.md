@@ -1,0 +1,111 @@
+# Key layers
+
+A layer adds a surface's own shortcuts above the user's current shortcuts. It claims only the
+keys it lists: everything else bleeds through to the bindings and remaps that exist **now**.
+Scottland never snapshots, rewrites or replaces the underlying keymap. This is a core feature,
+independent of any app or desktop adapter.
+
+Tenet 4 (concede as little as possible) decides fall-through, including live binding changes.
+Tenet 5 (only the user grants attention) decides focus-only activation: registering a layer never
+focuses, raises or moves a surface. Compositor grabs retain their input; a focused surface cannot
+use a layer to take Esc from a drag or input from a session lock.
+
+## Invariants
+
+Status **implemented** means built and tested with real stipc input headless on plumbus; real
+screen exercise and the coordinating session's rehearsed live reload remain outstanding.
+
+| ID | Rule | Status |
+|---|---|---|
+| KL1 | A layer claims only its listed chords. Unclaimed keys use the current user bindings, including changes made while the layer is active, imported function shortcuts, release bindings and remaps. | implemented |
+| KL2 | Each mapped surface may hold one layer. Only actual keyboard focus activates it; several surfaces, even in the same process, may register independently. Registration never changes focus. | implemented |
+| KL3 | Claimed presses and releases follow Wayfire's ordinary delivery to the focused surface, with physical modifiers and client repeat intact; compositor bindings and Scottland remaps/release commands skip them. | implemented |
+| KL4 | Both native toplevels and layer-shell surfaces work. A Scottland view ID selects exactly one surface; PID plus layer namespace is a convenience selector and rejects ambiguity. | implemented |
+| KL5 | A surface's unmap, close or Wayland client disconnect removes its layer. Remapping does not resurrect it. Set atomically replaces its keys; clear or an empty set removes it. A failed request preserves the previous set. | implemented |
+| KL6 | Losing focus immediately deactivates claims for new presses. A claimed held key's release finishes the existing pair even after focus loss, clear, replacement or unmap; it cannot unexpectedly fire a release shortcut below. A new claim cannot take over an already pressed unclaimed key's release. | implemented |
+| KL7 | Compositor input grabs take precedence over surface layers. Unclaimed input and unrelated bindings are unaffected. | implemented (drag Esc); Alt-hints integration pending merge |
+| KL8 | IPC is session-local `scottland/key-layer`, documented below and in the shipped skill and IPC header. The first scope is a focused surface; the separate module leaves additional scopes and stacked fall-through for future work. | implemented |
+
+## IPC
+
+From inside Scottland, connect to **that session's** `WAYFIRE_SOCKET` using ordinary Wayfire IPC
+(length-prefixed JSON; existing bridge clients can call this alongside `scottland/present`).
+
+Method: **`scottland/key-layer`**. Actions:
+
+```json
+{"action":"list"}
+{"action":"set","window":42,"keys":["0:Escape","4:comma","4:j"]}
+{"action":"set","pid":1234,"namespace":"my-popup","keys":["0:Up","0:Down"]}
+{"action":"clear","window":42}
+{"action":"clear","pid":1234,"namespace":"my-popup"}
+```
+
+Choose **one** selector: `window` (positive integer Scottland view ID), or `pid` (positive integer
+Wayland client PID) **and** `namespace` (string). PID alone does not identify a surface. A namespace
+selector must match exactly one currently mapped layer-shell surface. When it matches several,
+use `list` and choose a `window` ID. No selector is required for `list`.
+
+`list` returns `{ "result":"ok", "surfaces":[...] }`. Each mapped native surface reports
+`window`, `pid`, `title`, `app_id`, `registered`, `active` and `keys`; layer-shell surfaces also
+report `namespace`. Use PID and title/app-id to find a toplevel among a client's windows.
+`active` reports keyboard focus with a registered layer; input grabs still take precedence.
+`set`/`clear` return `{ "result":"ok", "window":42 }`. Invalid input, an unknown/unmapped ID,
+or an ambiguous selector returns `{ "error":"..." }` without changing any layer.
+
+The application registers **after mapping** its surface, re-registers when its shortcut context
+changes, and registers again after remapping. Registration belongs to the Wayland surface, so
+closing a short-lived IPC connection does **not** clear it. The Wayland client's disconnect does.
+This is runtime state: plugin unload/reload clears registrations, so clients must register again
+after a plugin reload. Layers never persist across session restarts.
+
+### Chords
+
+`keys` is an array of strings **`MODMASK:keysym`**. Keysyms use case-sensitive XKB names (`j`,
+`Escape`, `Return`, `Page_Up`, `comma`, `equal`, `plus`, `Super_L`). Masks use these bits:
+
+| Modifier | Bit |
+|---|---|
+| Shift | 1 |
+| Ctrl | 4 |
+| Alt | 8 |
+| Super | 64 |
+
+Add bits for combinations (`5:j` is Ctrl+Shift+J). No other bits are accepted. Lock modifiers
+(Caps Lock, Num Lock) do not alter matching, and no modifier state is changed for delivery.
+Names match the unshifted key in the **current** keyboard layout with the exact mask, or the
+produced keysym. Shift consumed to produce a symbol can be omitted: `4:plus` also claims Ctrl
+plus Shift+= on a layout that produces `plus` there. `4:j` does not claim Ctrl+Shift+J; `4:equal`
+does not claim Ctrl+Shift+=. Use both `4:equal` and `4:plus` to claim both spellings.
+
+### Input integration and future scopes
+
+`core/plugin/src/key-layers.*` owns selection, matching, lifecycle and IPC. Before a claimed
+event, it temporarily disables Wayfire's binding repository; its post-input hook restores the
+repository. Ordinary core input processing still manages held keys, modifier-only binding
+state, input methods, and press/release delivery. Unclaimed events never change the repository.
+
+Raw-key consumers inside Scottland must connect **after** `key_layers.init()` and check
+`key_layers.handles(ev)` before acting on claimed keys. The release-binding and remap handlers
+do so. When merging Alt hints, its `on_window_key` must update its own physical held-key tracking
+but skip claimed events; a claimed press must cancel the pending Alt timer (`alt_bypassed = true;
+alt_hold.disconnect()`). This keeps a layer's Alt chord from navigating windows while allowing
+unclaimed Alt hints to work. The combined behavior needs exercising after that branch merges.
+
+Future cross-window scopes or stacked layers should resolve a winner here before processing an
+event. They should not copy or restore user bindings, change surface identities, or build app
+names into core.
+
+## Tests
+
+On plumbus, in this checkout's own test session (never the real screen):
+
+```bash
+SCOTTLAND_DEPLOY_DIR=Projects/scottland-key-layers tests/deploy.sh plumbus --tests-only
+```
+
+`tests/key-layers-test.sh` starts and stops its own private headless session; it refuses to replace
+a running one. `tests/key-layers-test.py` injects real stipc key and pointer events into real GTK
+surfaces, including multiple toplevel/layer-shell surfaces sharing one client, and a sandboxed
+imported Lua shortcut. Artifacts are kept under the test machine's runtime directory.
+Use the deployment's `TMPDIR` and `SCOTTLAND_HEADLESS_DIR` as required by the coordinating brief.

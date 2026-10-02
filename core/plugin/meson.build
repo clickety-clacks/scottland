@@ -6,7 +6,13 @@ wlroots = dependency('wlroots-0.20')
 xkbcommon = dependency('xkbcommon')
 libinput = dependency('libinput')
 
-shared_module('scottland', 'src/scottland.cpp',
+# wlroots' installed layer-shell header requires this generated protocol header.
+layer_shell_header = custom_target('layer-shell-header',
+  input: 'protocols/wlr-layer-shell-unstable-v1.xml',
+  output: 'wlr-layer-shell-unstable-v1-protocol.h',
+  command: [find_program('wayland-scanner'), 'server-header', '@INPUT@', '@OUTPUT@'])
+
+shared_module('scottland', ['src/scottland.cpp', 'src/key-layers.cpp', layer_shell_header],
   dependencies: [wayfire, wlroots, xkbcommon, libinput],
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become
   # process-wide "unique" symbols, so a plugin reloaded in place (scottland-reload) would share

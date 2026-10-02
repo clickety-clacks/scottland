@@ -40,6 +40,39 @@ back into its window, a window at the side flies to the middle at 100%, and eith
 and focused. A window already in the center zone stays put. Use it when the user picks a window
 (from a launcher, a list of agents); a plain focus request moves nothing.
 
+## Temporary shortcut layers for a surface
+
+An app can claim its own shortcuts while its surface has keyboard focus. Everything it doesn't
+claim bleeds through to the user's current shortcuts, release bindings and remaps. Claimed keys
+reach the surface as ordinary press/release events with modifiers intact. Registration never
+changes focus. Toplevels and layer-shell popups work independently, even within one process.
+
+Call Wayfire IPC **`scottland/key-layer`** through the app's session `WAYFIRE_SOCKET`:
+
+```json
+{"action":"list"}
+{"action":"set","window":42,"keys":["0:Escape","4:comma","4:j"]}
+{"action":"set","pid":1234,"namespace":"my-popup","keys":["0:Up","0:Down"]}
+{"action":"clear","window":42}
+```
+
+Choose either a positive Scottland `window` ID or positive client `pid` plus layer-shell
+`namespace`; ambiguity is an error. `list` returns mapped `surfaces` with `window`, `pid`,
+`title`, `app_id`, `registered`, `active`, `keys`, and `namespace` for layer-shell surfaces.
+`set`/`clear` return `{ "result":"ok", "window":42 }`; errors return `{ "error":"..." }`.
+
+Chords are case-sensitive XKB **`MODMASK:keysym`** strings. Add modifier bits: Shift=1, Ctrl=4,
+Alt=8, Super=64 (`5:j` = Ctrl+Shift+J). Names match the current keyboard layout. Locks are
+ignored for matching. Consumed Shift can be omitted for produced symbols: `4:plus` claims
+Ctrl+Shift+= where that produces plus; `4:j` does not claim Ctrl+Shift+J. The app receives the
+actual modifiers unchanged.
+
+Register after the surface maps; set replaces its previous keys atomically. Clear or empty
+`keys` removes the layer. Focus loss deactivates it; unmap, close or the Wayland client's
+disconnect removes it. A short-lived IPC connection may close without removing the layer.
+Register again after remapping or a plugin reload. Compositor grabs retain their input.
+Full rules: Scottland's `docs/key-layers.md` (KL1–KL8).
+
 ## Touchscreen scrolling for apps that ignore touch
 
 Many apps scroll with a finger on their own (browsers, most GTK and Qt apps). Some don't, notably
