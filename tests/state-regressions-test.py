@@ -65,51 +65,55 @@ def open_app(app_id):
     time.sleep(.7)
     return next(v['id'] for v in ipc.call('window-rules/list-views') if v['app-id'] == app_id)
 
-try:
-    ipc.call('wayfire/set-config-options', {'scottland/sounds': False})
-    width = ipc.call('window-rules/list-outputs')[0]['geometry']['width']
-    window = open_app('scottland-regression-daemon')
-    drag(window, width-6)
-    time.sleep(.3)
-    assert len(ipc.call('scottland/widgets')['widgets']) == 1
-    subprocess.run(['python3', 'tests/model-process-test.py', '--reload'], check=True)
-    print('PASS  unscoped launcher exit after marked reload clears PID while forked widget survives', flush=True)
-    ipc.call('window-rules/close-view', {'id': window})
-    time.sleep(.7)
-    slow = open_app('scottland-regression-slow')
-    drag(slow, width-6)
-    full = open_app('scottland-regression-full')
-    ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': True})
-    time.sleep(.5)
-    assert ipc.call('scottland/desktop-model')['focus'], 'fixture must promote fullscreen before widget maps'
-    time.sleep(4)
-    widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
-    assert widget['widget'] and widget['hidden'], widget
-    assert ipc.call('window-rules/get-focused-view')['info']['id'] == full
-    print('PASS  widget mapping late during fullscreen stays hidden and cannot steal focus', flush=True)
-    outputs = ipc.call('window-rules/list-outputs')
-    assert len(outputs) == 2
-    # Move only the pointer to the other screen, then open an ordinary window there.
-    other = next(o for o in outputs if o['name'] not in ipc.call('scottland/desktop-model')['focus'])
-    g = other['geometry']
-    ipc.call('stipc/move_cursor', {'x': g['x'] + g['width']//2, 'y': g['y'] + g['height']//2})
-    time.sleep(.2)
-    foreground = open_app('scottland-regression-other-screen')
-    assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
-    focus = ipc.call('scottland/desktop-model')['focus']
-    assert focus, 'fixture must retain fullscreen promotion on the first output'
-    reload_plugin()
-    assert ipc.call('scottland/desktop-model')['focus'] == focus
-    widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
-    assert widget['hidden']
-    assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
-    print('PASS  reload retains fullscreen focus on an output without keyboard focus', flush=True)
-    ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': False})
-    time.sleep(.7)
-    widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
-    assert not widget['hidden']
-    print('PASS  late widget reappears after leaving fullscreen', flush=True)
+def main():
+    try:
+        ipc.call('wayfire/set-config-options', {'scottland/sounds': False})
+        width = ipc.call('window-rules/list-outputs')[0]['geometry']['width']
+        window = open_app('scottland-regression-daemon')
+        drag(window, width-6)
+        time.sleep(.3)
+        assert len(ipc.call('scottland/widgets')['widgets']) == 1
+        subprocess.run(['python3', 'tests/model-process-test.py', '--reload'], check=True)
+        print('PASS  unscoped launcher exit after marked reload clears PID while forked widget survives', flush=True)
+        ipc.call('window-rules/close-view', {'id': window})
+        time.sleep(.7)
+        slow = open_app('scottland-regression-slow')
+        drag(slow, width-6)
+        full = open_app('scottland-regression-full')
+        ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': True})
+        time.sleep(.5)
+        assert ipc.call('scottland/desktop-model')['focus'], 'fixture must promote fullscreen before widget maps'
+        time.sleep(4)
+        widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
+        assert widget['widget'] and widget['hidden'], widget
+        assert ipc.call('window-rules/get-focused-view')['info']['id'] == full
+        print('PASS  widget mapping late during fullscreen stays hidden and cannot steal focus', flush=True)
+        outputs = ipc.call('window-rules/list-outputs')
+        assert len(outputs) == 2
+        # Move only the pointer to the other screen, then open an ordinary window there.
+        other = next(o for o in outputs if o['name'] not in ipc.call('scottland/desktop-model')['focus'])
+        g = other['geometry']
+        ipc.call('stipc/move_cursor', {'x': g['x'] + g['width']//2, 'y': g['y'] + g['height']//2})
+        time.sleep(.2)
+        foreground = open_app('scottland-regression-other-screen')
+        assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
+        focus = ipc.call('scottland/desktop-model')['focus']
+        assert focus, 'fixture must retain fullscreen promotion on the first output'
+        reload_plugin()
+        assert ipc.call('scottland/desktop-model')['focus'] == focus
+        widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
+        assert widget['hidden']
+        assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
+        print('PASS  reload retains fullscreen focus on an output without keyboard focus', flush=True)
+        ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': False})
+        time.sleep(.7)
+        widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
+        assert not widget['hidden']
+        print('PASS  late widget reappears after leaving fullscreen', flush=True)
 
-finally:
-    for client in clients:
-        if client.poll() is None: client.terminate()
+    finally:
+        for client in clients:
+            if client.poll() is None: client.terminate()
+
+if __name__ == '__main__':
+    main()

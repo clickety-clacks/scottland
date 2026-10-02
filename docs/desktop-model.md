@@ -56,7 +56,10 @@ session identity, so a helper restart retains these values while a new session c
 and badge are read from the file. Manifest placeholders are still expanded for a launch command.
 A marked plugin reload writes one atomic model handover containing mode, source sets, version
 and widget launch records. It reads the old handover format solely for upgrades from an older
-build; new reloads don't create a separate collapsed-mode file.
+build; new reloads don't create a separate collapsed-mode file. Legacy upgrades migrate resolved
+identity from the surviving widget's launch-qualified environment and the old unit-qualified
+identity file, once, before publication. Card traits come from its actual launch command.
+`tests/upgrade-test.sh MAIN_CHECKOUT` exercises a real main build and future badge matching.
 
 ## Invariants
 

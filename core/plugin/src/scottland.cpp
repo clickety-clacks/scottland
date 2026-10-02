@@ -2225,6 +2225,48 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
+    /** One-time upgrade input: the previous launcher left identity in its process environment
+     *  and a launch-unit-qualified file. Never used by ordinary snapshots or new launches. */
+    void migrate_widget_identity(widget_link_t& link, wayfire_toplevel_view widget,
+        const std::string& unit)
+    {
+        std::map<std::string, std::string> env;
+        std::ifstream environment("/proc/" + std::to_string(view_pid(widget)) + "/environ");
+        std::string field;
+        while (std::getline(environment, field, '\0'))
+        {
+            auto equal = field.find('=');
+            if (equal != std::string::npos) env[field.substr(0, equal)] = field.substr(equal + 1);
+        }
+        auto session_path = runtime_file("");
+        auto slash = session_path.find_last_of('/');
+        auto state = session_path.substr(0, slash) + "/widgets/" + session_path.substr(slash + 1) + "/" + unit;
+        if ((env["SCOTTLAND_WIDGET_WINDOW"] == std::to_string(link.window_id)) &&
+            (env["SCOTTLAND_WIDGET_STATE"] == state + ".json"))
+        {
+            link.desktop = env["SCOTTLAND_WIDGET_DESKTOP"];
+            link.name = env["SCOTTLAND_WIDGET_NAME"];
+            link.icon = env["SCOTTLAND_WIDGET_ICON"];
+            std::ifstream arguments("/proc/" + std::to_string(view_pid(widget)) + "/cmdline");
+            while (std::getline(arguments, field, '\0'))
+            {
+                link.card |= field == env["SCOTTLAND_HOOKS"] + "/widgets/card/shell.qml" ||
+                    field == "/usr/lib/scottland/widgets/card/shell.qml";
+            }
+        }
+        std::ifstream launch(state + ".launch.json");
+        std::string text((std::istreambuf_iterator<char>(launch)), std::istreambuf_iterator<char>());
+        wf::json_t identity;
+        if (!wf::json_t::parse_string(text, identity) && identity.has_member("unit") &&
+            (identity["unit"].as_string() == unit) && identity.has_member("desktop"))
+        {
+            link.desktop = identity["desktop"].as_string();
+        }
+        auto window = link.window.lock();
+        if (link.name.empty() && window) link.name = window->get_app_id();
+        if (link.icon.empty() && window) link.icon = window->get_app_id();
+    }
+
     /** After a reload: take over the widgets the previous plugin handed over. */
     void take_handover()
     {
@@ -2305,6 +2347,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.name = entry.has_member("name") ? entry["name"].as_string() : "";
             link.icon = entry.has_member("icon") ? entry["icon"].as_string() : "";
             link.card = entry.has_member("card") && entry["card"].as_bool();
+            if (!entry.has_member("desktop"))
+            {
+                migrate_widget_identity(link, widget, entry["unit"].as_string());
+            }
             link.launched_at = now_msec();
             process->pid  = (pid_t)entry["pid"].as_int64();
             process->unit = entry["unit"].as_string();
