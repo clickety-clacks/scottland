@@ -10,6 +10,7 @@ leases, process handles and timers are resources, not independent logical state.
 | Field | Owner | Input or rendering |
 |---|---|---|
 | Windows, identity, title, size, position, zone, focus, layer | Plugin's desktop model | Wayfire signals supply facts; plugin position/layer commands supply targets. |
+| Zone memories, most recent side, stable hint slot, pending rail placement, label width | Plugin's desktop model (`window_state_t`, width on desktop) | Real placements/drop establish normalized centers. Desktop snapshots publish them; marked reload uses the same atomic handover. Declutter transforms never update them. |
 | Target scale | Plugin's desktop model | Zone/drag rules set it; the scale transformer animates toward it. |
 | Widget lifecycle, rail, drop point, collapsed presentation, touch traits | Plugin's desktop model | One lifecycle transition applies visibility; the renderer positions the widget and holds balanced disables. |
 | Launcher PID, launch unit | Plugin's desktop model | A pidfd event records launcher exit and publishes it; snapshot serialization never probes process liveness. |
@@ -120,6 +121,30 @@ Model runs use real stipc pointer/touch/key input,
 real widget programs and audits after each operation. Expanded-card, fullscreen and
 other-output reload screenshots were retained and inspected. No live session on osanwe or
 physical screen on plumbus was touched. The isolated runtime was stopped after testing.
+
+## Window-key integration
+
+Alt navigation reads `model.windows` and `model.widgets`; widget cycles use the same lifecycle
+as real drops and card clicks. The desktop slice publishes `placement` (slot, side and normalized
+positions), optional `pending_rail`, `pinned_scale` and desktop `hint_width`. External presentation
+and attention slices omit placement. Closing removes all placement state with the window. The
+atomic model handover retains memories and slots on marked reload; an older Alt-branch position
+file is imported once, never written by the model build. Explicit zone navigation clears a drag
+scale pin; hints never engage during a drag (L31). Card restore applies normalized memory to its
+destination output, including a different logical size/scale. After merging main `e76bc56`, rail
+placement uses its pending-size/gravity transaction; geometry callbacks record committed memories
+without a corrective move. The collapse raw-key tracker connects after layers and hints and
+respects claimed/consumed input.
+
+Integrated validation of code `756b8d7` is recorded in [windowing-keys.md](windowing-keys.md).
+The later merge `56b0cc1` includes main's documentation-only tip `16286df` without changing code.
+All 146 widget checks passed, including current main's 43 collapse-input/preview checks.
+The 73 windowing checks independently assert drop subscription delivery, rendering-only declutter,
+close removal, external-slice filtering and reload preservation. All seven focused model
+regressions pass, including a real card drag/click across differently scaled outputs. The final
+native seed 271828 and legacy-D-Bus seed 104729 each ran 50 operations and passed 95 and 100 checks
+respectively. The historical legacy-card audit stability risk above did not recur in these runs;
+this integration does not claim its cause was resolved. All sessions were stopped afterward.
 
 ## Review regression coverage
 

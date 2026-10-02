@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64')
 license=('MIT')
-makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput')
+makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput' 'cairo')
 options=('!debug')
 
 _root="$startdir/../.."
@@ -18,7 +18,7 @@ build() {
 
 package_scottland() {
   # quickshell: the default widget (card) and the layout settings app
-  depends=('wayfire' 'inotify-tools' 'python' 'python-gobject' 'quickshell')
+  depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-gobject' 'quickshell')
 
   meson install -C build --destdir "$pkgdir"
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
