@@ -1489,10 +1489,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         for (auto& [id, link] : widget_links)
         {
-            if (!link.preview)
-            {
-                link.minimized = !all_minimized;
-            }
+            link.minimized = !all_minimized;  // running previews follow the mode too (WG16)
         }
 
         widgets_collapsed = !all_minimized;
@@ -2014,10 +2011,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         widget_links[link.window_id] = std::move(link);
-        if (!preview)
-        {
-            announce_widgets();
-        }
+        announce_widgets();  // the service also maintains presentation for running previews
 
         if (!widget_watchdog.is_connected())
         {
@@ -2360,6 +2354,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void commit_preview(widget_link_t& link, wf::pointf_t at)
     {
         auto window = wf::toplevel_cast(link.window.lock());
+        link.minimized = widgets_collapsed;  // reconcile even if it launched before the mode changed
         link.preview = false;
         link.drop    = at;
         if (window && window->get_output())
@@ -2403,6 +2398,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.dismissing = true;
         widget_links.erase(uint64_t(link.window_id));  // `link` is gone from here on
         close_view_or_process(widget, launcher);
+        announce_widgets();  // retire the preview's service state and launch-specific file
     }
 
     /** Back to the window, at `at` (output coords); the widget goes (it isn't closed: WG5). */
@@ -2534,14 +2530,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    wf::ipc::method_callback widgets_state = [=] (wf::json_t) -> wf::json_t
+    wf::ipc::method_callback widgets_state = [=] (wf::json_t data) -> wf::json_t
     {
+        // The service needs live previews to update their already-running programs. Ordinary
+        // consumers still see committed widgets only; a preview is not a widgetized window.
+        bool previews = data.has_member("include_previews") && data["include_previews"].is_bool() &&
+            data["include_previews"].as_bool();
         auto reply = wf::ipc::json_ok();
         wf::json_t list = wf::json_t::array();
         auto active = wf::get_core().seat->get_active_view();
         for (auto& [id, link] : widget_links)
         {
-            if (link.preview)
+            if (link.preview && !previews)
             {
                 continue;  // not a widget yet (WG13)
             }
@@ -2563,6 +2563,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["rail"]    = link.rail;
             entry["focused"] = widget && (active == widget);
             entry["minimized"] = link.minimized;
+            entry["preview"] = link.preview;
             entry["urgent"]  = needs_attention(id);
             list.append(entry);
         }
@@ -2712,7 +2713,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto found = widget_links.find(id);
-        if (found == widget_links.end())
+        if ((found == widget_links.end()) || found->second.preview)
         {
             return wf::ipc::json_error("no such widget");
         }

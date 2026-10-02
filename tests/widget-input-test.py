@@ -238,7 +238,40 @@ def gravity():
     events.sock.close()
 
 
-cases = {"key": held_key, "gravity": gravity}
+def previews():
+    anchor = "preview-anchor"
+    launch(anchor, y=180)
+    if minimized(anchor):
+        toggle()
+    for collapsed in (True, False):
+        title = "preview-collapse" if collapsed else "preview-expand"
+        launch(title, rail=None)
+        drag_begin(app(title), screen["width"] - 6, 420)
+        wait_for(lambda: card(title) and card(title)["preview"])
+        check("WG16 preview is still a window before commitment", not app(title)["widgetized"])
+        check("WG16 previews stay out of the ordinary widgets listing",
+              not any(w["title"] == title for w in widgets()))
+        key("M", True)  # Super is still held for the drag
+        key("M", False)
+        time.sleep(1)
+        width = card(title)["frame"]["width"]
+        check(f"WG16 running preview follows mode before drop ({collapsed=})",
+              (round(width) == 96) if collapsed else width > 96, width)
+        drag_end()
+        time.sleep(0.6)
+        width = card(title)["frame"]["width"]
+        check(f"WG16 committed preview has current logical mode ({collapsed=})",
+              minimized(title) == collapsed, minimized(title))
+        check(f"WG16 committed preview card has current presentation ({collapsed=})",
+              (round(width) == 96) if collapsed else width > 96, width)
+        wid = app(title)["id"]
+        prop = subprocess.check_output(["busctl", "--user", "get-property", "org.scottland.Widgets",
+                f"/org/scottland/widget/{wid}", "org.scottland.Widget", "Minimized"], text=True).strip()
+        check(f"WG16 committed preview D-Bus mode agrees ({collapsed=})",
+              prop == "b " + str(collapsed).lower(), prop)
+
+
+cases = {"key": held_key, "gravity": gravity, "previews": previews}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
 parser.add_argument("cases", nargs="*", choices=list(cases))

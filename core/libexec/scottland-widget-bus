@@ -193,7 +193,7 @@ class Service:
 
     def refresh(self):
         try:
-            reply = self.ipc.call("scottland/widgets")
+            reply = self.ipc.call("scottland/widgets", {"include_previews": True})
             layout = self.ipc.call("scottland/layout-state")
             views = self.ipc.call("window-rules/list-views")
         except (OSError, ConnectionError, ValueError) as error:
@@ -231,6 +231,7 @@ class Service:
                 "Focused": bool(entry.get("focused")),
                 "Urgent": bool(entry.get("urgent")),
                 "Minimized": bool(entry.get("minimized")),
+                "_preview": bool(entry.get("preview")),
                 "_widget_pid": int(entry.get("widget_pid", 0)),
                 "_launcher_pid": int(entry.get("launcher_pid", 0)),
                 "_widget_unit": entry.get("widget_unit", ""),
@@ -245,7 +246,7 @@ class Service:
     def new_widget(self, wid, unit=""):
         state = {"Id": wid, "AppId": "", "Title": "", "Pid": 0, "Window": 0, "Rail": "", "Focused": False,
                  "Urgent": False, "Minimized": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_launcher_pid": 0,
-                 "_widget_unit": unit, "_desktop": ""}
+                 "_widget_unit": unit, "_desktop": "", "_preview": False}
         self.widgets[wid] = state
         self.learn_desktop(wid)
         if self.bus:
@@ -334,7 +335,8 @@ class Service:
         with several windows: widgetized if any is, with that window's scale; else the scale of
         its first window. GetState and StateChanged both answer from here, so they agree."""
         owned = sorted(w for w, owner in self.window_pids.items() if owner > 1 and pid_descends_from(pid, owner))
-        widgetized = [s["Window"] for s in self.widgets.values() if s["Pid"] and pid_descends_from(pid, s["Pid"])]
+        widgetized = [s["Window"] for s in self.widgets.values()
+                      if not s["_preview"] and s["Pid"] and pid_descends_from(pid, s["Pid"])]
         window = (widgetized or owned or [None])[0]
         return bool(widgetized), round(self.scales.get(window, 1.0), 3)
 

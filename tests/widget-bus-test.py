@@ -90,6 +90,17 @@ service.ipc.widgets = [entry("42", "scottland-widget-newest.scope")]
 service.refresh()
 check("WG10 ...and the next launch learns its app from it", service.widgets["42"]["_desktop"] == "app-c")
 
+# A running preview needs Minimized updates without telling its app it has been widgetized.
+preview = dict(entry("42", "scottland-widget-newest.scope"), pid=os.getpid(), preview=True, minimized=True)
+service.ipc.widgets = [preview]
+service.refresh()
+check("WG16 the service updates a preview's presentation",
+      service.widgets["42"]["Minimized"] is True)
+check("WG16 a preview does not announce its app as widgetized", not service.app_state(os.getpid())[0])
+preview["preview"] = False
+service.refresh()
+check("WG16 commitment announces its app as widgetized", service.app_state(os.getpid())[0])
+
 # WG11 without systemd: no systemctl on PATH; identity by process tree, and only live roots.
 child = subprocess.Popen(["sleep", "30"])
 os.environ["PATH"] = root  # nothing runnable: no systemctl
