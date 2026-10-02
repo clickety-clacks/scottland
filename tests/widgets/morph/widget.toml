@@ -1,0 +1,3 @@
+id = "morph-fixture"
+apps = ["^scottland-morph-fixture$"]
+exec = "python3 ./widget.py"

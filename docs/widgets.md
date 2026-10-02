@@ -91,6 +91,39 @@ opacity, natural content scale and reversal pixels; the test records geometry sa
 checks that the transition count and step counter stop after settlement. All test sessions use
 a private runtime on plumbus, with this checkout's helpers; no physical display is used.
 
+Validation of the compositor morph on plumbus, 2026-10-01 (fresh headless sessions,
+GLES software rendering; no physical screen or live session reload):
+
+| Suite | Final result |
+|---|---|
+| `tests/widget-morph-test.sh` | **76 passed**: three simultaneous widgets, both rails, duration/geometry/reversal, neighboring halos, input clipping, peek intent, drag/glide, fullscreen, close/reload, applied buffers/fallback, pixel opacity/scale/orientation, rounded-card background and height-changing placement |
+| `tests/widgets-test.sh` | **146 passed**, including all 43 existing input regressions |
+| `tests/state-model-test.sh 271828 50` | **95 passed** |
+| `tests/state-regressions-test.sh` | **6 passed** |
+| `tests/widget-bus-test.py` | **16 passed** |
+| `tests/widget-launch-test.py` | **17 passed** |
+| `tests/attention-sources-test.py` | **5 passed** |
+| `tests/build-config-test.sh` | **5 rounds passed**, 20 concurrent builds each |
+| `tests/omarchy-focus-test.sh` | **3 passed** |
+| `tests/upgrade-test.sh` against an archived `ea1d0f4` build | **2 passed** |
+| `tests/present-test.sh` | **6 passed** |
+
+The final sampled card motions lasted 200–207 ms, after 18–39 ms for applied buffers.
+After settlement the transition count is zero and the step counter stays unchanged over a
+500 ms observation. Intermediate card and fixture screenshots were inspected. Builds ran on
+osanwe and plumbus; all tests ran on plumbus. The legacy source archive was built under this
+checkout's `build/` directory; no other checkout was modified.
+
+The private runtime is `$XDG_RUNTIME_DIR/scottland-collapse-morph-runtime`, with its own
+`scottland-headless-collapse-morph` session directory and D-Bus. It links only `systemd/` to the
+existing user manager so the suite can create its own widget scopes. An initial run without
+that socket failed six scope/lifecycle checks; the complete final matrix above passed after
+correcting the harness environment. Reload tests swap the plugin directly inside the headless
+session. Logs, frame samples and screenshots are retained in
+`~/.cache/scottland-test-tmp/collapse-morph-validation.tar.gz` on plumbus and copied to this
+worktree's `build/collapse-morph-validation.tar.gz`. WG21 labels the lifecycle invariant that
+previously duplicated WG19's ID; WG19 continues to mean peeking.
+
 Review rework validation on plumbus, 2026-10-01, after merging `main` at `480bee1`
 (desktop model, L31 and FS1) into `super-m-fixes`:
 
