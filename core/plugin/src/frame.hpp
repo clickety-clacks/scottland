@@ -96,6 +96,16 @@ inline bool is_corner(handle_t h)
            h == handle_t::bottom_right;
 }
 
+/** A zero maximum means unbounded; one free axis is still resizable. */
+inline bool can_resize(wayfire_toplevel_view view)
+{
+    if (!view || view->pending_fullscreen() || !(view->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))
+        return false;
+    auto minimum = view->toplevel()->get_min_size(), maximum = view->toplevel()->get_max_size();
+    return maximum.width <= 0 || maximum.width > minimum.width ||
+           maximum.height <= 0 || maximum.height > minimum.height;
+}
+
 struct rectf_t
 {
     double x1, y1, x2, y2;
@@ -357,6 +367,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     std::function<void(wayfire_toplevel_view, handle_t, int touch_id)> on_press;
     std::function<void(wayfire_toplevel_view)> on_close;  // the close dot (default: close the view)
     std::shared_ptr<widget_morph_t> presentation;
+    std::function<bool(wayfire_toplevel_view)> is_widget;
+
+    bool can_resize() const
+    {
+        auto v = toplevel();
+        return scottland::can_resize(v) && !(is_widget && is_widget(v));
+    }
 
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
@@ -598,9 +615,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             {r.x1 - t, r.y2 + t - reach, r.x1 - t + reach, r.y2 + t},
             {r.x2 + t - reach, r.y2 + t - reach, r.x2 + t, r.y2 + t},
         }};
+        bool resizable = can_resize();
         for (int i = 0; i < 4; i++)
         {
-            cloud_target[i] = nearness(box_distance(p, corners[i]), NEAR_RANGE);
+            cloud_target[i] = resizable ? nearness(box_distance(p, corners[i]), NEAR_RANGE) : 0;
         }
 
         if (goo_enabled())
@@ -616,7 +634,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             double strength = range > 0 ? nearness(d, range) : (d <= 0 ? 1 : 0);
             if (goo_handle(*this, p) != handle_t::none) strength = 1;
             if ((top || bottom) && (left || right))
-                cloud_target[(bottom ? 2 : 0) + (right ? 1 : 0)] = strength;
+            {
+                if (resizable) cloud_target[(bottom ? 2 : 0) + (right ? 1 : 0)] = strength;
+            }
             else
             {
                 std::array<double, 4> distances{std::abs(p.y-r.y1), std::abs(p.x-r.x2),
@@ -695,6 +715,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         {
             return handle_t::none;
         }
+
+        if (!can_resize()) return handle_t::halo;
 
         double reach = radius + grab + CORNER_EXTRA;
         bool left = p.x < r.x1 - grab + reach, right = p.x > r.x2 + grab - reach;
@@ -1152,6 +1174,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         double b_accel = b_stiffness * (bulge_target - bulge) - b_damping * bulge_velocity;
         bulge_velocity += b_accel * dt;
         bulge += bulge_velocity * dt;
+        // Size hints/actions can change while the pointer stays still. Clear a stale resize
+        // highlight immediately; the next input hit test reads the same live eligibility.
+        if (!can_resize()) { cloud = {}; cloud_target = {}; }
         // Clouds and the dot ease toward their targets.
         double ease = 1.0 - std::exp(-dt * 12.0);
         for (int i = 0; i < 4; i++)
@@ -1313,7 +1338,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("hint_border", windowing::hint_border_width);
         program.uniform3f("tone", tone.r, tone.g, tone.b);
         program.uniform1f("density", density);
-        program.uniform4f("cloud", glm::vec4{self->cloud[0], self->cloud[1], self->cloud[2], self->cloud[3]});
+        program.uniform4f("cloud", self->can_resize() ?
+            glm::vec4{self->cloud[0], self->cloud[1], self->cloud[2], self->cloud[3]} : glm::vec4{});
         program.uniform1f("corner_extra", CORNER_EXTRA);
 
         glEnable(GL_BLEND);

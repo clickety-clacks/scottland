@@ -520,7 +520,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         int finger = -1)
     {
         if (!target || !target->is_mapped() || target->pending_fullscreen() ||
-            (target->get_output() != output) || !(target->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))
+            (target->get_output() != output) || !scottland::can_resize(target))
         {
             return false;
         }
@@ -1045,6 +1045,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame && create)
         {
             frame = std::make_shared<scottland::frame_t>(view);
+            frame->is_widget = [this] (auto v) { return is_widget(v); };
             frame->on_press = [=] (wayfire_toplevel_view v, scottland::handle_t h, int finger)
             {
                 handle_pressed(v, h, finger);
@@ -1533,7 +1534,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 s.dye = *frame->hint_dye;
                 s.hinted = true;
             }
-            s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
+            if (frame->can_resize())
+                s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
             s.sides = {frame->side_cloud[0], frame->side_cloud[1], frame->side_cloud[2], frame->side_cloud[3]};
             s.control_extent = radius + scottland::CORNER_EXTRA;
             s.light = scottland::palette.light;
