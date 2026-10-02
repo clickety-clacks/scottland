@@ -79,6 +79,7 @@ def drag(name,x,y):
     ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'press'})
     for n in range(1,11):
         ipc('stipc/move_cursor',{'x':round(cx+(x-cx)*n/10),'y':round(cy+(y-cy)*n/10)}); time.sleep(.025)
+    time.sleep(.12)  # fixture placement is a deliberate stop, not a flick
     ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'release'}); key('LEFTMETA',False); time.sleep(.5)
 def coast(seconds=1.0): time.sleep(seconds)
 def screenshot(name): subprocess.run(['grim',str(out/(name+'.png'))],check=True)

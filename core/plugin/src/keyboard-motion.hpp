@@ -1,4 +1,4 @@
-// Private Wayfire integration for Alt-mode inertia. The axis mathematics are in inertia.*.
+// Shared Wayfire motion integration for keyboard impulses and drag releases. Axis math is in inertia.*.
     wf::option_wrapper_t<double> key_impulse{"scottland/key_impulse"};
     wf::option_wrapper_t<double> key_friction{"scottland/key_friction"};
     wf::option_wrapper_t<double> key_max_velocity{"scottland/key_max_velocity"};
@@ -10,6 +10,7 @@
         double x = 0, y = 0, width = 0, height = 0;
         scottland::windowing::inertial_axis vx, vy, vw, vh;
         motion_clock::time_point settle_until;
+        bool drag_coast = false;
         bool resizing = false;
         bool restoring = false;
     };
@@ -34,6 +35,28 @@
     motion_clock::time_point keyboard_sample = motion_clock::now();
     bool recentering_keyboard = false;
     bool keyboard_selection = false;
+
+    scottland::windowing::release_velocity drag_velocity;
+    bool inertia_active() const
+    {
+        for (auto& [id, m] : keyboard_motions)
+            if (m.vx.velocity || m.vy.velocity || m.vw.velocity || m.vh.velocity) return true;
+        return false;
+    }
+    void start_drag_coast(wayfire_toplevel_view view)
+    {
+        auto [vx, vy] = drag_velocity.estimate(now_msec());
+        if ((!vx && !vy) || !view || !view->is_mapped() || !view->get_output() ||
+            is_widget(view) || link_of_window(view) || view->pending_fullscreen()) return;
+        // Bring other coasts to now before adding this one to the shared clock.
+        step_keyboard_motion();
+        auto& m = keyboard_motions[view->get_id()]; m = {};
+        m.view = view->weak_from_this(); m.drag_coast = true;
+        auto g = view->get_geometry(); m.x = g.x + g.width / 2.0; m.y = g.y + g.height / 2.0;
+        m.width = g.width; m.height = g.height;
+        m.vx.impulse(vx, key_max_velocity); m.vy.impulse(vy, key_max_velocity);
+        if (!keyboard_tick.is_connected()) keyboard_tick.set_timeout(8, [=] () { return step_keyboard_motion(); });
+    }
 
     static bool arrow_key(uint32_t code)
     { return code == KEY_LEFT || code == KEY_RIGHT || code == KEY_UP || code == KEY_DOWN; }
@@ -94,7 +117,8 @@
         auto neighbors = keyboard_neighbors(view->get_output(), m.x, m.y);
         double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
         auto fits = [&] (double x, bool left) {
-            double scale = place_at(x, screen.width).scale;
+            double scale = m.drag_coast && model.windows[view->get_id()].pinned_scale ?
+                *model.windows[view->get_id()].pinned_scale : place_at(x, screen.width).scale;
             double w = g.width * scale;
             auto pa = padded(area, w, g.height * scale);
             return left ? x - w / 2 >= std::max(double(pa.x), rail) :
@@ -109,7 +133,8 @@
         if (neighbors[1]) hi = std::numeric_limits<double>::infinity();
         if (bounce) m.x = m.vx.bounce(m.x, lo, hi, key_restitution);
         else m.x = std::clamp(m.x, lo, std::max(lo, hi));
-        double scale = place_at(m.x, screen.width).scale;
+        double scale = m.drag_coast && model.windows[view->get_id()].pinned_scale ?
+            *model.windows[view->get_id()].pinned_scale : place_at(m.x, screen.width).scale;
         auto pa = padded(area, g.width * scale, g.height * scale);
         double half = std::min(g.height * scale, double(pa.height)) / 2;
         lo = neighbors[2] ? -std::numeric_limits<double>::infinity() : pa.y + half;
@@ -247,7 +272,7 @@
             motion.width = g.width; motion.height = g.height;
         }
         if (keyboard_origins.count(id)) keyboard_origins[id].touched = true;
-        motion.restoring = false;
+        motion.restoring = false; motion.drag_coast = false;
         if (resize)
         {
             auto g = view->get_geometry();

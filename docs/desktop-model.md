@@ -202,3 +202,10 @@ through the model, recording placement memories after the coast. Its velocity ax
 Alt-down cancellation snapshots and client-commit centering live in the input controller
 (`keyboard-motion.hpp`); they never derive coordinates from hint/renderer offsets, and do not
 survive a reload. Model geometry and committed placement still use the existing atomic handover.
+
+
+Drag coasts (L32) share the keyboard motion controller and its inertial axes. Recent timestamped
+input samples and velocities are transient input resources, not a second geometry owner or reload
+state. The existing drag record still owns origin, re-grab chain, form and scale pin. Released
+geometry, zone/scale targets and final placement use the same model path as keyboard coasts.
+Declutter (WK26) freezes only its rendering offsets while velocity is nonzero.

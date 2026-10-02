@@ -3,24 +3,40 @@
 import json
 import math
 import os
-import select
 import socket
 import struct
 from pathlib import Path
 import subprocess
 import sys
 import time
+import threading
 
 artifacts = Path(sys.argv[1])
 passed = failed = 0
 clients = []
 
+# Keep real-input timing independent of shell/Python startup under concurrent test load.
+# Resolve the socket through the recorded headless environment, never the caller's desktop.
+request_path = None
+
 def ipc(method, data=None):
-    args = ['tests/headless.sh', 'ipc', method]
-    if data is not None:
-        args.append(json.dumps(data))
-    result = subprocess.run(args, text=True, capture_output=True, check=True)
-    return json.loads(result.stdout)
+    global request_path
+    if request_path is None:
+        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
+    with socket.socket(socket.AF_UNIX) as request:
+        request.settimeout(10)
+        request.connect(request_path)
+        def receive(n):
+            data = b''
+            while len(data) < n:
+                chunk = request.recv(n-len(data))
+                if not chunk: raise ConnectionError('compositor disconnected')
+                data += chunk
+            return data
+        body = json.dumps({'method': method, 'data': data or {}}).encode()
+        request.sendall(struct.pack('<I', len(body))+body)
+        return json.loads(receive(struct.unpack('<I', receive(4))[0]))
 
 class ModelWatch:
     def __init__(self):
@@ -33,6 +49,11 @@ class ModelWatch:
         body = json.dumps({'method': 'scottland/subscribe', 'data': {'slice': 'desktop'}}).encode()
         self.sock.sendall(struct.pack('<I', len(body)) + body)
         self.initial = self.receive()
+        self.state = self.initial
+        self.closed = False
+        self.error = None
+        self.reader = threading.Thread(target=self.consume, daemon=True)
+        self.reader.start()
 
     def exactly(self, count):
         data = b''
@@ -45,10 +66,24 @@ class ModelWatch:
     def receive(self):
         return json.loads(self.exactly(struct.unpack('<I', self.exactly(4))[0]))
 
+    def consume(self):
+        # Consume pushed snapshots during the drag, as a real subscriber must. Leaving the
+        # socket unread until after rapid input can exhaust Wayfire's send buffer.
+        try:
+            while not self.closed: self.state = self.receive()
+        except Exception as error:
+            if not self.closed: self.error = error
+
     def latest(self):
-        state = self.initial
-        while select.select([self.sock], [], [], .1)[0]: state = self.receive()
-        return state
+        time.sleep(.1)
+        if self.error: raise self.error
+        return self.state
+
+    def close(self):
+        self.closed = True
+        self.sock.shutdown(socket.SHUT_RDWR)
+        self.reader.join(timeout=1)
+        self.sock.close()
 
 def check(ok, name):
     global passed, failed
@@ -169,6 +204,7 @@ def drag(name, x, y):
     for step in range(1, 11):
         ipc('stipc/move_cursor', {'x': round(cx+(x-cx)*step/10), 'y': round(cy+(y-cy)*step/10)})
         time.sleep(.025)
+    time.sleep(.12)  # fixture placement is a deliberate stop, not a flick
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
     key('LEFTMETA', False)
     time.sleep(.5)
@@ -305,7 +341,7 @@ try:
     check(published['version'] > watch.initial['version'] and spot['set'] and
           near((spot['x'] * width, spot['y'] * height), center_memory),
           'real drop publishes a newer complete snapshot with normalized center memory')
-    watch.sock.close()
+    watch.close()
     hold()
     key('A', True); key('A', True); key('A', False); time.sleep(.65)
     check(not view('Cycle')['widgetized'], 'held-key repeat cannot trigger double-tap')
