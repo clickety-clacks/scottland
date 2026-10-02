@@ -63,7 +63,7 @@ a value (a slider position) is usually personal unless Mike says it should ship.
 | C2 | No workspaces. Window navigation and layout are Scottland's own; Hyprland's workspace/tiling behavior is not reproduced. |
 | C3 | Stock Wayfire, not a fork: Wayfire + the scottland plugin + config + integration. The plugin must load after `move`. |
 | C4 | Core never references Omarchy, Hyprland or uwsm. Omarchy integration ships as `scottland-omarchy`. |
-| C5 | Omarchy users install one package and keep their environment; only window placement/scaling and workspaces change. Other distros (e.g. Ubuntu) run the core alone. |
+| C5 | Omarchy users install one package and keep their environment as far as possible: Scottland overrides Omarchy only where that's needed for Scottland to work consistently (its own feature shortcuts, window placement/scaling, no workspaces, and later notifications), and minimally. Other distros (e.g. Ubuntu) run the core alone. |
 | C6 | Hyprland, uwsm and the stock Omarchy shell are not modified. |
 | C7 | Scottland may tune common apps (e.g. scroll feel), but only additively: it owns its own files (under `~/.config/scottland/apps/`) and adds at most one clearly marked, optional include line to an app's config, the way Omarchy includes its theme files. It never rewrites the user's own settings, and removing that line undoes it completely. Apps Omarchy ships are the first target (adapter); cross-distro apps can be core. |
 | C8 | Generic, not per-app: Hyprland IPC goes through the shim, Hyprland-config behavior through the Lua host, compositor abilities through the plugin. No code for one particular app. |

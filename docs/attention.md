@@ -44,3 +44,6 @@ plugged in by configuration, never by code that names a particular app. Rows say
 Action replies are validated before replacing a snapshot. Stale listed IDs are ignored; a
 window closing during marking or removal leaves the helper running for other sources/windows.
 Regression: `tests/attention-sources-test.py` exercises stale listings and both close races.
+- Notifications: Scottland will redefine how notifications are shown and how they work (Mike,
+  2026-10-01), as part of attention: the desktop's own notification surfaces and behavior replace the
+  integration's where they conflict (C5). Not designed yet.

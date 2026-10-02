@@ -300,9 +300,21 @@ def main():
             skipped.append(f"{label}  {description}  (unrecognized action)")
             continue
 
-        # The Omarchy shortcut wins over a Scottland/Wayfire default on the same keys.
+        # Scottland keeps the Omarchy setup as far as it can, and overrides it only where Scottland's
+        # own features need the keys (O5): a Scottland feature binding (the [scottland] section, or a
+        # scottland_* command) keeps its keys and the Omarchy shortcut steps aside. Any other default
+        # on the same keys (Wayfire's, or Scottland's generic ones like the terminal) yields to it.
+        owners = used.get(normalized_combo(wanted), [])
+        feature = next((f"{section}/{option}" for section, option, _ in owners
+                        if section == "scottland" or (section == "command" and
+                            option.split("binding_", 1)[-1].startswith("scottland_"))), None)
+        if feature:
+            skipped.append(f"{label}  {description}  (displaced: Scottland uses these keys for {feature})")
+            continue
+
+        # The Omarchy shortcut wins over any other default on the same keys.
         replaced_command = False
-        for section, option, value in used.get(normalized_combo(wanted), []):
+        for section, option, value in owners:
             if target == (section, option):
                 continue  # this option is replaced by the imported activator below
             if (section == "command" and option.startswith(("binding_", "repeatable_binding_"))
