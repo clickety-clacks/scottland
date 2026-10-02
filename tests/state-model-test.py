@@ -81,6 +81,10 @@ def audit(label):
             check(f"audit {label}")
             return
         time.sleep(0.1)
+    observations = {"label": label, "audit": last, "service": diagnostics(),
+                    "scene": ipc.call("scottland/layout-state"), "desktop": ipc.call("scottland/desktop-model")}
+    (artifacts / f"seed-{seed}-failure.json").write_text(json.dumps(observations, indent=2))
+    print("failure observations=" + json.dumps(observations), file=sys.stderr, flush=True)
     raise AssertionError(f"audit {label}: {last}")
 
 
