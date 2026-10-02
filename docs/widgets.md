@@ -109,6 +109,14 @@ GLES software rendering; no physical screen or live session reload):
 | `tests/upgrade-test.sh` against an archived `ea1d0f4` build | **2 passed** |
 | `tests/present-test.sh` | **6 passed** |
 
+The goo integration merge at main `50e563e` rechecked WG16 on plumbus: widgets passed
+146 checks with goo off and on, morphs passed 76 with goo off and 86 with goo on, and the
+packed GLES 2 morph passed 86. Goo's field follows the presented frame through collapse,
+expansion and reversal; attention dye survives and the renderer switch remains live.
+The complete matrix and initial fixture corrections are recorded in
+[goo.md](goo.md#widget-presentation-merge-validation-2026-10-01). All were isolated headless
+sessions; physical-screen verification remains outstanding.
+
 The final sampled card motions lasted 200–207 ms, after 18–39 ms for applied buffers.
 After settlement the transition count is zero and the step counter stays unchanged over a
 500 ms observation. Intermediate card and fixture screenshots were inspected. Builds ran on

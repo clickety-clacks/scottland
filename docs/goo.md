@@ -55,12 +55,12 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 
 | ID | Invariant | Status |
 |---|---|---|
-| GO1 | One goo per screen: one field from all windows, drawn as one layer beneath all windows, outlining the union of the window and widget shapes and never drawn over their content. Widget expand/collapse follows the animated frame rectangle, including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph follows the frame |
+| GO1 | One goo per screen: one field from all windows, drawn as one layer beneath all windows, outlining the union of the window and widget shapes and never drawn over their content. Widget expand/collapse follows the animated frame rectangle, including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph: plumbus headless geometry and screenshots checked |
 | GO2 | The goo clings: each window's goo stays within a reach of its edge; between windows close enough, it bridges, drawing from both borders, and a stretched bridge thins and snaps. | implemented; prototype volume approximation, bridge/snap input checks |
 | GO3 | Inside corners (where windows meet or overlap) fill smoothly because goo pools there; no corner-specific code. | implemented; overlap pooling screenshot inspected |
 | GO4 | The goo isn't uniform: its amount along each edge wanders slowly, configurable (mess, lump size, drift). | implemented; prototype noise port, inspected; drift freezes to settle |
-| GO5 | Waves start at grabs, drops, swells and attention pulses, travel only through connected goo along the whole merged outline, and fade. | implemented; grab propagation across bridge and isolation across gap sampled |
-| GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks |
+| GO5 | Waves start at grabs, drops, swells and attention pulses, travel only through connected goo along the whole merged outline, and fade. | implemented; grab propagation across bridge and isolation across gap sampled on normal and packed GPU paths |
+| GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks; widget presentation morph retains attention dye |
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. | implemented; pointer/touch move, resize, close and hidden-corner checks |
 | GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks |
@@ -115,10 +115,10 @@ as a bridge draws from it. It is an approximation of fixed volume, not a conserv
 Noise scales down with small windows and a small clinging reserve prevents mess from erasing their
 borders. Pooling comes solely from the sum and threshold.
 
-Density is half resolution; height/velocity and dye are quarter resolution. The packed RGBA8 path stores each signed wave component in two bytes (16 bits), so small
+Density is half resolution; height/velocity and dye are quarter resolution. The packed RGBA8
+path stores each signed wave component in two bytes (16 bits), so small
 velocities propagate along thin borders while rounding toward zero lets residual waves settle.
-There are two wave
-steps and one masked curl/advection/diffusion dye step per active update. Union clipping excludes
+There are two wave steps and one masked curl/advection/diffusion dye step per active update. Union clipping excludes
 window islands from both flow and rendering. Unsupported half-float render targets use packed
 RGBA8 (log density and quantization-aware wave damping); missing float source textures, failed
 targets or shaders retain the halo with a log message.
@@ -279,3 +279,57 @@ Alt-declutter outlines, and halo restoration. Both GPU paths load the panel with
 `build/merge-goo-flow-evidence`, `build/merge-evidence` and `build/current-main-evidence`; the plumbus checkout retains the
 same logs and source screenshots. Coverage still excludes physical login/display, mixed DPI,
 rotation, large window counts and hardware beyond plumbus, as required by this task's isolation.
+
+
+## Widget presentation merge validation (2026-10-01)
+
+The branch includes main `50e563e` through merge `88595e6`: per-widget presentation snapshots,
+rail anchoring, premultiplied content blending, WP7 screen padding and the WG21 lifecycle ID.
+The sole source conflict retained both `goo_sources()` and `widget-presentation.hpp`. The frame's
+animated rectangle supplies the goo island and its dye source, including interrupted transitions;
+the disabled goo path retains main's halo renderer. The shipped switch remains false and changes
+live. GO1, GO5, GO6 and WG16 were checked together.
+
+All tests ran on plumbus in `Projects/scottland-goo-merge`, deployed with
+`SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh plumbus --tests-only`.
+Scratch files used `TMPDIR=$HOME/.cache/scottland-test-tmp` and sessions used
+`SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-goo-merge`. Every session started
+after its plugin build. No live session, other checkout or physical screen was changed or used;
+local verification was limited to building and reading screenshot evidence. This remains headless
+verification, with physical-display, mixed-DPI and rotated-output coverage outstanding.
+
+| Check | Result |
+|---|---|
+| Widgets, goo off / on | 146 / 146 passed |
+| Widget morph, goo off / on (RGBA16F) | 76 / 86 passed |
+| Widget morph, packed GLES 2 with goo on | 86 passed |
+| Goo input, dye, palette, panel, live switch and sleep, normal / packed | 40 / 40 passed |
+| Goo propagation, gap isolation, FS1 and two-output drag, normal / packed | 12 / 12 passed |
+| Unsupported texture context: halo fallback | 3 passed |
+| Window navigation and placement (including WP7), goo on | 74 passed |
+| Focused-surface key layers, goo on | 59 passed |
+| Seeded model audit `271828 50`, goo on | 95 passed |
+| Focused state regressions, goo on | 7 passed |
+| Placement, declutter and Alt-controller units | 41 passed |
+| Widget service / launcher / attention-source units | 16 / 17 / 5 passed |
+| CPU goo field unit | 19 assertions passed |
+| Config builder / focus hooks | 5 rounds of 20 concurrent builds / 3 passed |
+
+The full requested matrix passed on the merge, after correcting an attention fixture that asked
+for attention on the focused widget (correctly answered as `in_front`). A repeated field probe
+also exposed an invalid assumption that IPC timer geometry and rendered field geometry were
+synchronous. The probe now checks the recent frame history, bounds render lag, requires
+intermediate motion and checks exact final geometry; assertions on the compositor were retained.
+
+An additional packed-path propagation run exposed single-byte truncation of small velocities.
+`254c720` stores each signed wave component in two bytes within the same RGBA8 allocation.
+After this fix, the affected goo and widget-morph suites were repeated on both GPU paths,
+along with normal and packed propagation, including settlement and stopped simulation steps.
+The normal rendering values and disabled-goo path are unchanged by the packing fix.
+
+Mid-collapse, expansion and reversal screenshots with goo enabled were inspected, including
+attention dye around the shortened card and natural-size icons. Logs, geometry samples and
+screenshots are retained on plumbus and locally under `build/widget-goo-merge-evidence`;
+initial fixture, timing and packed-propagation failures are retained alongside final results.
+Plugin/test source hashes matched across 71 files. Both osanwe and plumbus builds passed;
+all tests were on plumbus. The isolated sessions were stopped afterward.

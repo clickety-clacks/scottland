@@ -303,22 +303,31 @@ try:
             captured = False
             start = time.monotonic()
             while time.monotonic() - start < .6:
+                stamp = time.monotonic()
                 f = t.card(title)["frame"]
                 x = t.screen["width"] / 2
                 field = t.ipc.call("scottland/goo-state", {"x": x,
                     "y": f["y"] + f["height"] / 2})["screens"][0]
                 edge = x + field["window_distance"]
-                track.append({"frame": f, "field_edge": edge})
+                track.append({"stamp": stamp, "frame": f, "field_edge": edge})
                 if not captured and 140 < f["width"] < 270:
                     screenshot("goo-" + label + "-mid")
                     captured = True
                 time.sleep(.006)
             active = [v for v in track if 110 < v["frame"]["width"] < 300]
             errors = [abs(v["field_edge"] - v["frame"]["x"]) for v in active]
-            # The field is sampled once per rendered frame; IPC can observe the
-            # next timer step before rendering. Allow one frame of movement.
+            # IPC sees timer geometry before the next output repaint. Compare the
+            # field with the recent presentation history, allowing up to 50 ms of
+            # render scheduling, rather than treating IPC as a synchronized frame.
+            history_errors = []
+            for v in active:
+                recent = [p["frame"]["x"] for p in track
+                    if v["stamp"] - .05 <= p["stamp"] <= v["stamp"]]
+                history_errors.append(max(min(recent) - v["field_edge"],
+                    v["field_edge"] - max(recent), 0))
             t.check("goo " + label + ": field follows intermediate frame", len(active) >= 4 and
-                max(errors, default=999) < 45 and sum(errors) / max(1, len(errors)) < 15, errors)
+                max(errors, default=999) < 45 and max(history_errors, default=999) < 1,
+                {"current_frame": errors, "recent_frames": history_errors})
             last = track[-1]
             t.check("goo " + label + ": field settles at exact final frame",
                 abs(last["field_edge"] - last["frame"]["x"]) < .1, last)
