@@ -68,8 +68,8 @@ def expected_size(h, frame, scale=1):
         return round(48*scale)
     f = frame['frame']
     desired = max(72*scale, min(132*scale, min(f['width'], f['height'])*.34*scale))
-    fit = math.floor(max(0, 2*(h['clearance']-3)/1.06))
-    return round(32*scale if fit < 32*scale else min(desired, fit))
+    fit = math.floor(max(0, 2*(h['clearance']-1)/1.06))
+    return round(min(desired, fit))
 
 def key(code, state):
     ipc('stipc/feed_key', {'key': 'KEY_' + code, 'state': state})
@@ -308,7 +308,12 @@ try:
     after = tuple(n/255 for n in full.getpixel((700,600)))
     check(max(abs(a-b) for a, b in zip(after,mix(before,c,.07))) < .025,
           'fullscreen surface receives the 7% tint without a frame')
-    rim = tuple(n/255 for n in full.getpixel((0,300)))
+    # WK31 may shift a fullscreen surface to uncover a rear window's hint.
+    # Its inset rim follows that visual transform.
+    rim_x = round(full_hint['dx'])
+    if not 0 <= rim_x < full.image.get_width():
+        rim_x = round(full.image.get_width() + full_hint['dx'] - 1)
+    rim = tuple(n/255 for n in full.getpixel((rim_x,300)))
     check(max(abs(a-b) for a, b in zip(rim,c)) < .025, 'fullscreen receives an inset 2px full-color rim')
     key('LEFTALT', False)
     time.sleep(.8)

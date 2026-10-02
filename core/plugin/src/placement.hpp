@@ -20,4 +20,7 @@ struct label_spot { point center; double clearance = 0; };
 // The priority search is accurate to precision logical pixels, including disconnected regions.
 label_spot visible_label(rectangle window, rectangle screen,
     const std::vector<rectangle>& foreground, double precision = 0.5);
+// Signed radius available for a circle at this exact point, including occlusion.
+double visible_clearance(point center, rectangle window, rectangle screen,
+    const std::vector<rectangle>& foreground);
 }

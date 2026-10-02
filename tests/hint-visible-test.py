@@ -143,7 +143,7 @@ def capture(name, order):
                 count += max(abs(a-c) for a, c in zip(p, color)) < 12
         check(count > 20, name+': '+v['title']+' letter dye is present in screenshot')
         desired = max(72, min(132, min(r[2:])*.34))
-        fit = math.floor(max(0, 2*(h['clearance']-3)/1.06))
+        fit = math.floor(max(0, 2*(h['clearance']-1)/1.06))
         check(b['size'] == round(min(desired, fit)), name+': '+v['title']+' size follows displayed footprint and visible clearance')
         foreground.append(r)
     return vs, hs
@@ -192,7 +192,7 @@ try:
         raise SystemExit(0)
     vs, hs = capture('stack-held', list(reversed(ids)))
     reduced = overlap_sum([rect(vs[i], hs[i]) for i in ids])
-    check(0 < reduced < original_overlap*.85, 'oversubscribed stack retains overlap but reduces on-screen intersection by at least 15%')
+    check(0 < reduced <= original_overlap, 'oversubscribed stack moves only to expose hints while retaining overlap')
     check(all(rect(vs[i]) == rect(before[i]) and hs[i]['memories'] == before_hints[i]['memories'] for i in ids),
           'visual separation preserves geometry, scale and memories')
     stable = {i: (h['badge'], h['dx'], h['dy']) for i, h in hs.items()}
@@ -202,21 +202,45 @@ try:
     # Explicitly raising a rear window must update occlusion without changing its letter.
     def centers(state):
         return {i: (h['badge']['x']+h['badge']['size']/2, h['badge']['y']+h['badge']['size']/2)
-                for i, h in state.items()}
+                for i, h in state.items() if h.get('visible') and 'badge' in h}
     samples = [centers(hints())]
     ipc('window-rules/focus-view', {'id': ids[0]})
+    interim_valid = True
+    invalid_sample = None
     for _ in range(10):
-        samples.append(centers(hints()))
+        current, drawn_now = hints(), views()
+        samples.append(centers(current))
+        for i, h in current.items():
+            if not h.get('visible') or 'badge' not in h:
+                continue
+            b = h['badge']; radius = b['size']/2
+            box = rect(drawn_now[i], h)
+            foreground = [rect(drawn_now[j], current[j]) for j in ([ids[0]] if i != ids[0] else [])]
+            for angle in range(8):
+                x = b['x']+radius+math.cos(angle*math.pi/4)*radius*.95
+                y = b['y']+radius+math.sin(angle*math.pi/4)*radius*.95
+                valid = (box[0] <= x <= box[0]+box[2] and box[1] <= y <= box[1]+box[3]
+                         and all(not (o[0] <= x <= o[0]+o[2] and o[1] <= y <= o[1]+o[3])
+                                 for o in foreground))
+                if not valid and invalid_sample is None:
+                    invalid_sample = {'window': i, 'hint': h, 'point': (x,y),
+                                      'own': box, 'foreground': foreground}
+                interim_valid &= valid
         time.sleep(.025)
+    if invalid_sample:
+        (artifacts/'raise-invalid.json').write_text(json.dumps(invalid_sample, indent=2))
+    check(interim_valid, 'every drawn hint stays inside its visible window during a raise')
     time.sleep(1)
     _, raised = capture('stack-raised', [ids[0], ids[2], ids[1]])
     check(all(raised[i]['hint'] == hs[i]['hint'] for i in ids), 'raising changes visible regions while retaining assignments')
     final = centers(raised)
     traveler = max(ids, key=lambda i: math.dist(samples[0][i], final[i]))
     distance = math.dist(samples[0][traveler], final[traveler])
-    steps = [math.dist(a[traveler], b[traveler]) for a, b in zip(samples, samples[1:])]
-    check(distance > 20 and max(steps) < distance*.9,
-          'changed visible-region attachment eases through intermediate positions without jumping')
+    steps = [math.dist(a[traveler], b[traveler]) for a, b in zip(samples, samples[1:])
+             if traveler in a and traveler in b]
+    check(distance > 20 and (any(traveler not in sample for sample in samples[1:]) or
+                              (steps and max(steps) < distance*.9)),
+          'changed attachment eases or briefly waits for a wholly visible path')
     (artifacts/'raise-motion.json').write_text(json.dumps(samples, indent=2))
     key('ESC', True)
     key('ESC', False)
@@ -246,7 +270,8 @@ try:
     hold()
     drawn, state = capture('fitting-stack-held', list(reversed(medium)))
     medium_held = overlap_sum([rect(drawn[i], state[i]) for i in medium])
-    check(medium_before > 0 and medium_held == 0, 'stack that fits on-screen separates completely without clipping content')
+    check(medium_before > 0 and 0 < medium_held < medium_before,
+          'windows retain overlap once their hint circles fit')
     check([state[i]['badge']['size'] for i in medium] == [95, 102, 129],
           'different displayed window sizes produce proportionally different circles')
     (artifacts/'fitting-overlap.json').write_text(json.dumps({'before': medium_before, 'held': medium_held}, indent=2))
@@ -256,8 +281,37 @@ try:
         client.wait(timeout=5)
     clients.clear()
     wait(lambda: not views())
-    # Saturating an output cannot be solved by moving or scaling away full-size content.
-    # Three output-sized windows exercise two hidden identities, including edge packing.
+    # Mike's layout: a large front window covers almost all of a back window, leaving
+    # an 80px left strip. Only enough visual movement to fit the 132px circle is allowed.
+    peeking = []
+    for name, x in [('PeekingBack', 640), ('CoveringFront', 720)]:
+        clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+            str(Path('tests/hint-style-app.py').resolve()), name, '800', '520', str(palette)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))
+        time.sleep(.5)
+        peeking.append(v['id'])
+        drag(v['id'], x, 360)
+    before_peek = views()
+    hold()
+    drawn, state = capture('mike-left-strip', list(reversed(peeking)))
+    back, front = peeking
+    check(abs(state[front]['dx']) + abs(state[front]['dy']) < 1 and
+          -66 < state[back]['dx'] < -58 and abs(state[back]['dy']) < 1,
+          'left-strip case moves only the rear window by the ~62px needed for its circle')
+    check(state[back]['badge']['x']+state[back]['badge']['size'] <= rect(drawn[front],state[front])[0]+1 and
+          state[back]['badge']['size'] == 132 and state[front]['badge']['size'] == 132,
+          'rear hint sits in its left visible strip and front hint remains inside the front window')
+    check(all(rect(drawn[i]) == rect(before_peek[i]) for i in peeking),
+          'left-strip declutter changes neither real window geometry nor scale')
+    release()
+    for client in clients:
+        client.terminate()
+        client.wait(timeout=5)
+    clients.clear()
+    wait(lambda: not views())
+    # The earlier edge fallback is forbidden: move front windows enough to expose
+    # each fully covered window's ordinary circle inside its own visible region.
     huge = []
     for name in ('HugeBack', 'HugeMiddle', 'HugeFront'):
         clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
@@ -268,16 +322,13 @@ try:
         huge.append(v['id'])
         drag(v['id'], 640, 360)
     hold()
-    state = hints()
-    check(all(state[i]['edge_label'] and state[i]['badge']['size'] == 32 for i in huge[:2]),
-          'fully hidden windows retain readable opaque edge hints')
-    a, b = (state[i]['badge'] for i in huge[:2])
-    check(math.hypot(a['x']-b['x'], a['y']-b['y']) >= 38-.02,
-          'multiple fully hidden window hints stay distinct')
-    check(not state[huge[2]]['edge_label'] and state[huge[2]]['badge']['size'] == 132,
-          'front output-sized window keeps its proportional interior hint')
+    drawn, state = capture('fully-hidden', list(reversed(huge)))
+    check(all(state[i]['visible'] and not state[i]['edge_label'] and
+              state[i]['badge']['size'] == 132 for i in huge),
+          'all three formerly covered windows have proportional interior circles')
+    check(any(math.hypot(state[i]['dx'],state[i]['dy']) > 140 for i in huge),
+          'foreground windows move temporarily to uncover screen-sized rear windows')
     (artifacts/'fully-hidden.json').write_text(json.dumps({'views': views(), 'hints': state}, indent=2))
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'fully-hidden.png')], check=True)
     release()
 finally:
     key('LEFTALT', False)

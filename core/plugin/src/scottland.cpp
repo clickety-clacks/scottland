@@ -1216,6 +1216,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::keyboard_focus_changed_signal*)
     {
         update_focus();
+        if (window_keys.active)
+        {
+            // A raise changes occlusion before the next hint tick. Conceal rear badges
+            // immediately so none can spend a frame over the newly foreground window.
+            auto front = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            declutter_signature.clear();
+            for (auto& [id, visual] : hint_visuals)
+                if (visual.hint && represented_view(id) != front &&
+                    !link_of_widget(represented_view(id)))
+                { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
+        }
         // Going to another window ends a just-dropped window's hold above the others (L29): the one
         // the user went to comes forward, now and when the hold would have ended.
         if (auto held = model.drag.held_above.lock(); held && (wf::get_core().seat->get_active_view().get() != held.get()))

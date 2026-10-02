@@ -69,8 +69,8 @@ int main()
     check(diagonal.clearance > 58 && diagonal.clearance < 59,
         "circle search uses Euclidean corner clearance in a non-convex visible region");
     auto covered = visible_label({100,100,80,60}, region, {{0,0,500,400}});
-    check(covered.clearance == 0 && near(covered.center,{100,130}),
-        "fully hidden label has a deterministic visible-edge fallback");
+    check(covered.clearance == 0,
+        "a fully hidden rectangle has no visible interior before window movement");
     bool circle_optimum = true;
     for (int trial = 0; trial < 30; ++trial)
     {
@@ -90,24 +90,37 @@ int main()
         }
     }
     check(circle_optimum,"visible label beats a dense independent circle-clearance reference grid");
-    auto rectangular = declutter_windows({{100,80,240,180},{120,100,240,180}},region);
-    rectangle first{100+rectangular[0].x,80+rectangular[0].y,240,180};
-    rectangle second{120+rectangular[1].x,100+rectangular[1].y,240,180};
-    check(overlap(first,second) < overlap({100,80,240,180},{120,100,240,180}),
-        "declutter reduces rectangle overlap even when badge centers were already distinct");
-    check(first.x >= 0 && first.y >= 0 && first.x+240 <= 500 && first.y+180 <= 400 &&
-        second.x >= 0 && second.y >= 0 && second.x+240 <= 500 && second.y+180 <= 400,
-        "rectangle declutter retains complete fitted footprints on screen");
-    auto rect_repeat = declutter_windows({{100,80,240,180},{120,100,240,180}},region);
-    check(near(rectangular[0],rect_repeat[0]) && near(rectangular[1],rect_repeat[1]),
-        "rectangle declutter is deterministic");
-    auto clear_rects = declutter_windows({{20,20,80,80},{300,220,80,80}},region);
-    check(near(clear_rects[0],{}) && near(clear_rects[1],{}),"separated window footprints stay put");
-    auto fallback = declutter({{16,200},{16,200},{60,200}},region,6,{32,32,72},
-        {{true,0,false},{true,0,false},{true,0,true}});
-    check(near(fallback[2],{60,200}) && fallback[0].x == 16 && fallback[1].x == 16 &&
-        std::hypot(fallback[0].x-fallback[1].x,fallback[0].y-fallback[1].y) >= 38-.02,
-        "edge fallbacks separate without relocating an interior circle");
+    rectangle desktop{0,0,1280,720};
+    auto enough = expose_window_hints({{{320,160,700,440},132,32},{{100,160,700,440},132,32}},desktop);
+    check(near(enough[0].offset,{}) && near(enough[1].offset,{}) && enough[1].diameter == 132,
+        "a rear window with an already wide enough left strip stays exactly put");
+    auto narrow = expose_window_hints({{{280,160,700,440},132,32},{{200,160,700,440},132,32}},desktop);
+    check(near(narrow[0].offset,{}) && narrow[1].offset.x < -60 && narrow[1].offset.x > -65 &&
+        std::abs(narrow[1].offset.y) < 1 && narrow[1].diameter == 132,
+        "narrow left strip moves the rear window only far enough for its proportional circle");
+    check(visible_clearance(narrow[1].spot.center,
+        {200+narrow[1].offset.x,160,700,440},desktop,{{280,160,700,440}}) >= 132*1.06/2,
+        "rear label circle stays inside the exposed strip and outside the front window");
+    auto same = expose_window_hints({{{280,160,700,440},132,32},{{200,160,700,440},132,32}},desktop);
+    check(near(narrow[0].offset,same[0].offset) && near(narrow[1].offset,same[1].offset),
+        "least-exposure displacement is deterministic");
+    auto hidden = expose_window_hints({{{220,180,360,270},72,32},{{250,200,300,220},72,32}},desktop);
+    check(hidden[1].diameter == 72 && hidden[1].spot.clearance >= 72*1.06/2 &&
+        (std::hypot(hidden[0].offset.x,hidden[0].offset.y)>1 ||
+         std::hypot(hidden[1].offset.x,hidden[1].offset.y)>1),
+        "fully covered ordinary window is revealed by visual movement");
+    auto full = expose_window_hints({{{0,0,1280,720},132,32},{{0,0,1280,720},132,32}},desktop);
+    check(full[0].diameter == 132 && full[1].diameter == 132 &&
+        std::hypot(full[0].offset.x,full[0].offset.y) > 140 && near(full[1].offset,{}),
+        "an output-sized front window moves to reveal the wholly covered rear window");
+    auto three = expose_window_hints({{{0,0,1280,720},132,32},{{0,0,1280,720},132,32},
+        {{0,0,1280,720},132,32}},desktop);
+    check(three.size() == 3 && three[0].diameter == 132 && three[1].diameter == 132 &&
+        three[2].diameter == 132,
+        "three output-sized windows each expose enough interior for a circle");
+    auto tiny = expose_window_hints({{{140,100,64,36},72,32}},desktop);
+    check(near(tiny[0].offset,{}) && tiny[0].diameter == 32,
+        "tiny displayed window keeps a 32px interior badge without moving");
     auto unchanged = declutter({{100,100},{300,200}},region);
     check(near(unchanged[0],{100,100}) && near(unchanged[1],{300,200}), "non-overlapping centers stay put");
     auto separated = declutter({{250,200},{250,200}},region);

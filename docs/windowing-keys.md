@@ -35,7 +35,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK10 | Tab and Shift+Tab select the next/previous window or widget in hint order, wrapping. Tab focuses a widget without opening it; its hint opens it. F4 closes the selected window and its widget through normal linked lifecycle, preserving save-confirmation behavior. | implemented (headless) |
 | WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Holding Alt during a drag belongs to L31 and suppresses hints for that entire chord, even after drop. Starting a drag cancels hints. Adding any modifier after entry stays in the mode (WK2). | implemented (headless) |
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
-| WK13 | Displayed window rectangles use bounded, deterministic separation to reduce on-screen intersection area, preferring the least travel when overlap is equal. Separated windows stay put. Widget exterior hint anchors retain the deterministic collision graph and vertical constraints (WK26). Windows themselves animate outward and back, without moving their real geometry, changing their scale, or updating memories. Hints track those transforms; widget anchors stay horizontally attached and declutter vertically (WK26). | implemented (headless) |
+| WK13 | While Alt is held, declutter moves the drawn windows only as far as needed to expose an interior circle for each window's hint (WK31). A window that already exposes enough does not move for its own hint; a foreground window can move when that is necessary to reveal a fully covered one. Windows animate back on release/Esc. The transform changes no real geometry, scale, or memories. Widget exterior hints keep their deterministic vertical collision solver and horizontal attachment (WK26). | implemented (headless) |
 | WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`, checked every 250 ms while showing hints. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a 7% hint-color overlay, a 2 logical px full-color rounded border even at the supported 5% window scale, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. With the screen-wide goo (on by default), window mode simply tints the goo with the hint color as dye (GO6): the window/card overlay stays, and there is no separate rim. The 2 logical px border applies to the fallback halo (goo off); with the goo on, the hint shows only as the window/card tint and the goo dye. | implemented (headless) |
 | WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing. The first press acts immediately. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, release or cancellation resets double-tap recognition. | implemented (headless) |
 | WK16 | Double-taps use physical presses, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; repeating a prefix alone does not move a window. | implemented (headless) |
@@ -48,12 +48,12 @@ on a physical session. This change is not tested on either machine's live displa
 | WK23 | Widgets coast vertically along their current rail, bouncing at their top/bottom workarea limits with keyboard restitution and keeping their wider widget inset. Left/Right transfers to the indicated rail with the existing glide, preserving height and widget form; pressing toward the current rail leaves it there. It never opens the window. Tab can select a widget without restoring it (WK10). | implemented (headless) |
 | WK24 | Options `scottland/key_impulse` (335 px/s), `scottland/key_friction` (608 px/s²), and `scottland/key_max_velocity` (6000 px/s) retain the original inertia defaults and apply to keyboard movement/resizing and drag release coasts (L32). `scottland/move_friction_curve` and `scottland/resize_friction_curve` optionally shape braking by current speed (S14); empty curves keep constant friction. `scottland/key_restitution` (0.5, range 0–1) controls only existing widgets bouncing vertically on their rails (WK23); it does not affect WK20 window edges. Repeats use the keyboard's configured delay/rate, independently for held arrows, and stop on key/Alt release or cancel. Exact focused-surface claims precede arrows (KL7); quick Alt+arrow and Ctrl-first chords keep existing app/desktop routing. A pointer/touch move or resize takes over motion without enabling hints (L31). | implemented (headless) |
 | WK25 | Hints follow the desktop's text size and interface font, as Vimarchy follows Omarchy's: the badge's minimum (72 px), maximum (132 px) and proportional size (0.34 of the window's shorter side) are multiplied by the text scaling factor (GTK's `text-scaling-factor`, which `omarchy display text size` sets on Omarchy), and the letters use the interface font (`font-name`'s family). The color-scheme helper records both in the palette file (`text_scale`, `font_family`) and follows changes live. | implemented (headless) |
-| WK26 | In Window mode, every widget (the default card or a third-party widget, expanded or collapsed) has its hint outside its center-facing edge: right of a left-rail widget, left of a right-rail widget, vertically centered on its drawn frame. The circle overlaps by 15% of its diameter. For large text on short widgets, overlap reduces so the arc entering the widget spans at most the middle 60% of its height, leaving the upper inward count-badge corner clear. WK30/WK31 retain a consistent 48 px × desktop text scale circle; WK14 widget tint/dye/goo remain unchanged. The exterior circle has an opaque theme background under its usual 21% hint-color fill so wallpaper cannot defeat letter contrast; contained window circles retain their existing transparency; WK31's fragment fallback has an opaque background. Colliding hints declutter with 6 logical px clearance; widgets move only vertically as a temporary visual transform and keep their horizontal attachment, while windows use WK31's two-axis rectangle declutter. Both the hints and widget frames stay vertically on screen; horizontal screen clamping takes precedence if an unusually wide widget leaves no room. Geometry, zone memories and rail attachment are never changed. Release/Esc clears the hints and restores temporary displacement. | implemented (headless) |
+| WK26 | In Window mode, every widget (the default card or a third-party widget, expanded or collapsed) has its hint outside its center-facing edge: right of a left-rail widget, left of a right-rail widget, vertically centered on its drawn frame. The circle overlaps by 15% of its diameter. For large text on short widgets, overlap reduces so the arc entering the widget spans at most the middle 60% of its height, leaving the upper inward count-badge corner clear. WK30/WK31 retain a consistent 48 px × desktop text scale circle; WK14 widget tint/dye/goo remain unchanged. The exterior circle has an opaque theme background under its usual 21% hint-color fill so wallpaper cannot defeat letter contrast; window circles keep their existing transparency. Colliding widget hints declutter with 6 logical px clearance; widgets move only vertically as a temporary visual transform and keep their horizontal attachment, while windows use WK31's exposure solver. Both the hints and widget frames stay vertically on screen; horizontal screen clamping takes precedence if an unusually wide widget leaves no room. Geometry, zone memories and rail attachment are never changed. Release/Esc clears the hints and restores temporary displacement. | implemented (headless) |
 | WK27 | While any window or widget has inertial movement or resize velocity (keyboard or drag release), pause the declutter solver globally and hold its current visual offsets. Hints still follow real geometry. As soon as all velocity reaches zero, recompute from the resting geometry and interpolate to the new offsets, with no jump or geometry/memory change. | implemented (headless) |
 | WK28 | Hint circles pop in when window mode starts: each scales up from nothing with a short springy overshoot (and pops out quickly when the mode ends), and each circle has its own goo: it is a round goo source dyed its hint color, so it is part of the one liquid, joining the goo of the window or widget it touches (a widget's exterior hint visibly connects to the widget). With the goo off, circles get the fallback halo ring. Within the GO10 cost budget. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
 | WK29 | When a hint cycle (keyboard, window mode) moves a window to its next place, it comes to rest with a small elastic overshoot: an underdamped spring passes the target once in position and scale, then settles without wobble in 300 ms. `scottland/cycle_overshoot` is the peak percentage of the move (default 3%, range 0–10%; zero retains the original 260 ms position/180 ms scale motion). Geometry, zone, target scale and memories stay at the destination; drawn scale follows its own spring, never the intermediate position's zone. The live scaled content footprint is constrained to its output, including shared seams, without correcting existing off-screen memories or oversized endpoints; scale stays at least 5%. These limits may reduce overshoot. Keyboard widget opens use this window placement motion; widget morphs, rail glides, drops, drags, coasts and pointer/IPC opens retain their own motion. The cycle-overshoot setting remains available through plugin metadata and `scottland-ctl`; a Settings control is not part of the current S14 tab. (Mike, 2026-10-02) | implemented (headless); Settings control planned |
 | WK30 | Widgets' hint circles keep a consistent 48 logical px diameter (2/3 of WK5's ordinary 72 px minimum), multiplied by desktop text scale, independent of expanded/collapsed form or client dimensions (WK31). Pressing a widget's hint first selects the widget (like a window that isn't selected yet); only a further press cycles it (to the center, etc.). Supersedes widget behavior in WK6-WK11/WK26 where they differ. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
-| WK31 | Each ordinary window's hint uses the point of greatest circular clearance in its screen-clipped visible region (its displayed rectangle minus the union of foreground rectangles), after temporary rectangle declutter. The solve follows actual scene stacking, independently of opening-order letters. Declutter reduces displayed rectangle intersection within output bounds, preserving geometry, scale and memories. Window circles use WK5/WK25 proportional sizing, capped to visible clearance including pop overshoot; when 72 px cannot fit they shrink to a readable 32 px floor, scaled with desktop text size. Smaller or wholly hidden fragments retain an opaque screen-visible edge attachment rather than losing their hint. Attachments remain fixed for an unchanged stack/geometry/text scale and follow visual transforms; changed attachments use WK28's 160 ms easing; explicit raises, lifecycle changes and resting geometry refresh them. Widgets retain a consistent 48 px × text-scale circle and WK26 exterior attachment/vertical declutter. WK27 pause and WK28 pop/liquid remain. (Mike, 2026-10-02) | implemented (headless); validation below |
+| WK31 | Every ordinary window hint is wholly inside its own screen-visible window region (the displayed rectangle minus the union of foreground rectangles). The circle uses WK5/WK25 proportional size when feasible, shrinking only as needed to a readable 32 px × desktop text scale floor; the WK28 pop fits too. If a rear window cannot fit its hint, temporarily move windows by the least bounded distance needed to expose a circle; an already adequate visible strip needs no movement. A wholly covered window is revealed by movement, including movement of a foreground window when the rear cannot expose itself. The hint goes at the most open spot after movement and never uses an exterior edge attachment; only widgets use WK26 exterior hints. During the opening animation, a window hint waits until its circle is wholly visible; a changed attachment eases when its path remains visible. Scene stacking, not hint assignment order, determines occlusion. Geometry, scale and memories do not change, and release/Esc restores visual offsets. WK27 pause and WK28 goo/pop still apply. (Mike, 2026-10-02) | implemented (headless); validation below |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
@@ -76,17 +76,13 @@ Double-tap requests the widget step directly.
 
 ## Decisions at unspecified edges
 
-- WK31, tenets 2 and 4: expose covered windows by visual movement first, with no scale,
-  client-size or memory concession. If a fragment cannot contain a readable circle even
-  after bounded separation (e.g. two output-sized windows), keep its identity visible at
-  its screen-clipped edge with an opaque 32 px × text-scale circle. This is the explicit
-  exception to circle containment; an impossibly small visible fragment must not erase a
-  selectable window. Multiple hidden edge hints pack vertically without moving interior labels.
-  Recognition also keeps widget circles at the default 48 px × text scale when a custom client
-  changes dimensions; expansion/collapse never makes its label change size. The ordinary 72–132 px range still scales with displayed size and
-  desktop text size; visible clearance can reduce it to 32 px. Reserve 3 px and the 6%
-  WK28 pop overshoot. Cache the attachment for an unchanged stack rather than chasing
-  equal poles during every animation frame. WK27 still freezes transforms during inertia.
+- WK31, tenets 2 and 4: preserve each window's visual identity within its own visible
+  content. Moving the drawn rectangle is the cheapest concession, so search for the
+  nearest circle-sized opening before reducing the proportional circle. A fully covered
+  window forces movement of a foreground window if moving the rear cannot expose it.
+  No ordinary window hint may leave its visible window, even during animation; defer its
+  pop until movement makes room. Keep a stable label point for an unchanged stack.
+  Recognition keeps widget circles at 48 px × text scale across client sizes and forms.
 
 
 - WK29, tenets 2 and 4: animate only the drawn position and scale, preserving the destination,
@@ -596,64 +592,50 @@ radius; this avoids polygon ring construction, handles disconnected pieces and u
 searches to 0.5 logical px. No third-party implementation is copied. Equal probes have a
 stable order, with center proximity breaking exact clearance ties.
 
-For overlap removal, considered [PRISM (Gansner and Hu)](https://www.graphviz.org/documentation/GH10.pdf)
-and its [Graphviz integration](https://graphviz.org/docs/attrs/overlap/): they preserve proximity
-by stress minimization and layout expansion, while this output is fixed and cannot always
-contain every window separately. Chosen: bounded coordinate descent on summed on-screen
-rectangle intersection. Each step tests obstacle-edge separation candidates and output bounds,
-accepts lower overlap, and uses distance to the original drawn position for equal-area ties.
-It runs at most 12 passes, never manufactures free space by pushing a fitted footprint off
-screen, and does not claim a global optimum or complete separation when the output is full.
+For window movement, considered [PRISM (Gansner and Hu)](https://www.graphviz.org/documentation/GH10.pdf)
+and its [Graphviz integration](https://graphviz.org/docs/attrs/overlap/): they minimize node
+overlap, but overlap itself is not WK31's goal. The first implementation minimized whole-window
+intersection; Mike's live review corrected the objective. The exposure solver instead searches
+circle centers outside foreground rectangles and chooses the least window movement that
+contains a proportional badge there. Only if that cannot fit within the output does it search
+smaller sizes down to the readable floor. A foreground window can move to expose a fully covered
+rear one. Movement is bounded so a badge-sized portion remains on screen; a whole large window
+need not fit. Fixed widgets retain vertical-only motion and their exterior circles.
 Widgets retain the existing vertical badge solver; their displaced frames and exterior circles
 are fixed obstacles for windows. Actual scene order determines foreground occlusion after the
 solve. The bridge caches local hint anchors and clearance-limited diameters until the solve
 inputs change; pure placement and declutter remain independent of Wayfire.
 
-## WK31 validation (2026-10-02, isolated headless)
+## WK13 / WK31 exposure validation (2026-10-02, isolated headless)
 
-Only `scottland-hintplace` and a checkout archive of baseline `82f2b28` under
-`build/wk31/baseline-source/` were used. All compositors started after their tested build,
-using shipped configuration, checkout-local helpers, private widget D-Bus and the normal
-runtime directory. No personal config, dev install, live checkout, physical display,
-`wayland-1` or live service was used. This is **implemented (headless)**, not physical-display
-verification. The baseline archive and all owned session directories were removed after testing.
+The initial whole-window overlap solver was superseded after Mike clarified that
+window movement serves only to reveal an interior hint circle. The final build
+uses the exposure solver above. In Mike's left-strip layout, the rear window
+moves roughly 62 logical px to fit its 132 px circle in the exposed strip;
+the front window stays put and its hint remains inside it. A completely covered
+three-window stack reveals all three proportional, interior circles by moving
+foreground surfaces temporarily. Every visible badge's circle pixels were
+checked against its own drawn rectangle and all rectangles above it; the
+real Alt hold and raise use Wayfire stipc input. A focus raise conceals
+potentially covered badges immediately, before the next placement tick.
 
-`tests/hint-visible-test.sh` uses real pointer drags and Alt holds. It checks every interior
-circle pixel against its own drawn rectangle and foreground occluders, confirms letter dye
-in screenshots, and verifies proportional/clearance-limited sizes, stable anchors, smooth
-relocation on raise, geometry/memory preservation, Esc/release and multiple hidden edge hints.
-A fitting stack now has **0 px²** of overlap, versus **283,151 px²** with the baseline's
-center-repulsion solver in the same real-input fixture (unheld: **368,000 px²**). Its three
-circle diameters are **95, 102 and 129 px**. An oversized stack retains unavoidable overlap
-but reduces intersection from **816,000 to 368,000 px² (55%)**, keeping every fitted footprint
-entirely on screen; its 100 px exposed strip after a raise receives an **88 px** circle.
-With both builds pinned to the same 1× text palette, the dense baseline had **781,575 px²**
-of overlap; the new solver reduces that by **53%** and keeps the back window on screen
-(the baseline clipped its bottom 17.5 px). The full-size hidden fixture
-retains two distinct opaque **32 px** edge hints and the front window's **132 px** circle.
+Only this checkout's build and isolated headless sessions were used. Test
+sessions used shipped config and the normal runtime directory; screenshots
+and logs are under `build/wk31-followup/`. The session directories were
+stopped and removed by the test harness. The live checkout, `wayland-1`,
+services and personal config were not changed. Physical-display verification
+remains outstanding under D2.
 
-Final evidence is under `build/wk31/`: `visible-checked.hint-visible-artifacts/` has
-`stack-before.png`, `stack-held.png`, `stack-raised.png`, `fitting-stack-held.png`,
-`fully-hidden.png`, matching JSON, overlap totals and intermediate raise-motion samples.
-Comparable baseline screenshots/JSON are in `baseline-checked-artifacts/` (dense) and
-`baseline-medium-artifacts/` (fitting). `baseline-artifacts/` retains the initial 3× run,
-which is not used as a same-palette comparison.
-`delivery-sha256.txt` records the plugin and algorithm source hashes. Logs retain initial
-failures: the first pixel loop treated float geometry as integers; the fixed-time Esc sample
-preceded full restoration; old appearance assertions demanded 72 px even for tiny fragments;
-and a reused display name inherited a previous suite's 3× palette (also affecting the
-initial dense baseline comparison). The new fixture explicitly
-sets only its fresh session's palette, and checks restoration at actual rest. No existing
-windowing or widget assertion or timing tolerance was weakened.
-
-| Suite | Result |
+| Suite | Final result |
 |---|---|
-| `tests/hint-visible-test.sh` | **39 passed**, real Alt/drag input, circle pixel masks, stacking, proportional sizes, intermediate relocation and hidden-window hints |
-| `tests/hint-style-test.sh` | **53 passed** on the final build; **53 passed** with goo disabled before the final attachment-easing-only change |
-| `tests/widget-hints-test.sh` | **170 passed**, both rails, default/custom clients, expanded/collapsed and live 1.5×/3× text scaling |
-| `tests/windowing-test.sh` | **84 passed**, including real input, fullscreen, cycles, exact geometry/memories, isolated reload and prefix-free overflow labels |
-| `tests/windowing-unit.sh` | **105 passed**, including analytic visible-region cases, independent dense reference grids, bounded overlap reduction and edge fallback packing |
+| `tests/hint-visible-test.sh` | **57 passed** (twice after the focus-transition fix): circle pixel masks, Mike's left strip, fully covered windows, proportional sizes, transient raise, stability, geometry/memory preservation, release/Esc |
+| `tests/hint-style-test.sh` | **53 passed**: surface tint, shifted fullscreen rim, 5% displayed scale and WK28 goo/pop |
+| `tests/widget-hints-test.sh` | **170 passed**: exterior attachment, consistent WK30 size, widget interactions and text scaling |
+| `tests/windowing-test.sh` | **84 passed**: real input, fullscreen, cycles, geometry/memories and overflow hints |
+| `tests/windowing-unit.sh` | **108 passed**: least exposure movement, visible clearance, full coverage and bounded placement |
 
-All requested suites passed again after adding attachment easing (`*-checked.log`). Python/shell
-syntax checks and `git diff --check` pass. All test compositors and their owned session directories
-were stopped/removed; screenshots and original failure logs remain under `build/wk31/`.
+Final screenshots: `build/wk31-followup/visible-fixed.hint-visible-artifacts/mike-left-strip.png`
+with its JSON, `fully-hidden.png`, and `stack-held.png`. The corresponding
+logs are `visible-fixed.log`, `visible-postfocus-confirm.log`,
+`style-postfocus.log`, `widgets-postfocus.log`, `windowing-postfocus.log`,
+and `unit-final.log`. No live session was reloaded.

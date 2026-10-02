@@ -502,87 +502,54 @@
 
                 using rectangle = scottland::windowing::rectangle;
                 rectangle bounds{0, 0, double(screen.width), double(screen.height)};
-                std::vector<rectangle> windows, fixed;
+                std::vector<scottland::windowing::exposure_window> windows;
                 std::vector<uint64_t> window_ids;
-                for (auto id : ids)
-                {
-                    auto view = represented_view(id); auto r = hint_rectangle(view);
-                    auto& visual = hint_visuals[id];
-                    if (link_of_widget(view))
-                    {
-                        auto anchor = hint_anchor(view); double radius = hint_size(view) / 2;
-                        fixed.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y, r.width(), r.height()});
-                        // Reserve the exterior badge as well as its frame. Ordinary window
-                        // circles must not intrude into these permanently attached circles.
-                        fixed.push_back({anchor.x + visual.target.x - radius - 6,
-                            anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
-                    } else
-                    { windows.push_back({r.x1, r.y1, r.width(), r.height()}); window_ids.push_back(id); }
-                }
-                auto offsets = scottland::windowing::declutter_windows(windows, bounds, fixed);
-                for (size_t i = 0; i < window_ids.size(); ++i) hint_visuals[window_ids[i]].target = offsets[i];
                 auto ordered = ids;
                 std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
                     auto rank = [&] (auto id) { auto found = stacking.find(id);
                         return found == stacking.end() ? stacking.size() : found->second; };
                     return rank(a) < rank(b);
                 });
-                std::vector<rectangle> foreground;
+                std::vector<rectangle> fixed_above;
                 for (auto id : ordered)
                 {
-                    auto view = represented_view(id); auto r = hint_rectangle(view);
-                    auto& visual = hint_visuals[id]; auto delta = visual.target;
-                    rectangle drawn{r.x1 + delta.x, r.y1 + delta.y, r.width(), r.height()};
-                    visual.label_offset = {}; visual.label_size = hint_size(view);
-                    visual.edge_label = false; visual.clearance = 0;
-                    if (!link_of_widget(view))
+                    auto view = represented_view(id);
+                    auto r = hint_rectangle(view);
+                    if (link_of_widget(view))
                     {
-                        auto occluders = foreground;
-                        occluders.insert(occluders.end(), fixed.begin(), fixed.end());
-                        auto spot = scottland::windowing::visible_label(drawn, bounds, occluders);
-                        double minimum = 32 * hints_palette.text_scale;
-                        // Leave room for WK28's pop overshoot and pixel rounding. A 32px
-                        // circle keeps a single letter readable if the ordinary 72px floor
-                        // cannot fit. Smaller fragments use an opaque edge attachment.
-                        double fits = std::floor(std::max(0.0, 2 * (spot.clearance - 3) / 1.06));
-                        visual.edge_label = fits < minimum;
-                        visual.clearance = spot.clearance;
-                        visual.label_size = visual.edge_label ? minimum : std::min(visual.label_size, fits);
-                        if (visual.edge_label)
-                        {
-                            double radius = visual.label_size / 2;
-                            spot.center.x = std::clamp(spot.center.x, radius, bounds.width - radius);
-                            spot.center.y = std::clamp(spot.center.y, radius, bounds.height - radius);
-                        }
-                        auto anchor = hint_anchor(view);
-                        visual.label_offset = {spot.center.x - delta.x - anchor.x,
-                            spot.center.y - delta.y - anchor.y};
+                        auto& visual = hint_visuals[id];
+                        auto anchor = hint_anchor(view); double radius = hint_size(view) / 2;
+                        fixed_above.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y,
+                            r.width(), r.height()});
+                        fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
+                            anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
+                    } else
+                    {
+                        windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
+                            32 * hints_palette.text_scale, fixed_above});
+                        window_ids.push_back(id);
                     }
-                    foreground.push_back(drawn);
                 }
-                // Multiple output-sized windows can remain wholly covered. Keep their
-                // readable edge fallbacks distinct, without moving any interior attachment
-                // or detaching a widget. This affects only the explicit containment exception.
-                std::vector<scottland::windowing::point> labels;
-                std::vector<double> sizes;
-                std::vector<scottland::windowing::hint_constraint> label_constraints;
-                bool has_edge = false;
-                for (auto id : ids)
+                auto exposed = scottland::windowing::expose_window_hints(windows, bounds);
+                for (size_t i = 0; i < window_ids.size(); ++i)
                 {
-                    auto& visual = hint_visuals[id]; auto a = hint_anchor(represented_view(id));
-                    labels.push_back({a.x + visual.target.x + visual.label_offset.x,
-                        a.y + visual.target.y + visual.label_offset.y});
-                    sizes.push_back(visual.label_size);
-                    label_constraints.push_back({true, 0, !visual.edge_label});
-                    has_edge |= visual.edge_label;
+                    auto& visual = hint_visuals[window_ids[i]];
+                    visual.target = exposed[i].offset;
+                    visual.label_size = exposed[i].diameter;
+                    visual.clearance = exposed[i].spot.clearance;
+                    visual.edge_label = false;
+                    auto anchor = hint_anchor(represented_view(window_ids[i]));
+                    visual.label_offset = {exposed[i].spot.center.x - visual.target.x - anchor.x,
+                        exposed[i].spot.center.y - visual.target.y - anchor.y};
                 }
-                if (has_edge)
+                for (auto id : ordered)
                 {
-                    auto packed = scottland::windowing::declutter(labels, bounds, 6, sizes, label_constraints);
-                    for (size_t i = 0; i < ids.size(); ++i) if (hint_visuals[ids[i]].edge_label)
+                    auto view = represented_view(id);
+                    if (link_of_widget(view))
                     {
-                        hint_visuals[ids[i]].label_offset.x += packed[i].x - labels[i].x;
-                        hint_visuals[ids[i]].label_offset.y += packed[i].y - labels[i].y;
+                        auto& visual = hint_visuals[id];
+                        visual.label_offset = {}; visual.label_size = hint_size(view);
+                        visual.edge_label = false; visual.clearance = 0;
                     }
                 }
             }
@@ -627,7 +594,24 @@
             {
                 if (visual.hint && visual.hint_output != view->get_output())
                 { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-                if (!visual.hint)
+                bool widget = bool(link_of_widget(view));
+                bool badge_ready = widget || visual.label_size > 0;
+                if (!widget)
+                {
+                    // A rear window can start fully covered. Show its badge only when its
+                    // own and foreground visual movement has opened the required region.
+                    for (auto other_id : by_output[view->get_output()])
+                    {
+                        auto& other = hint_visuals[other_id];
+                        if (other_id != it->first && !link_of_widget(represented_view(other_id)) &&
+                            stacking[other_id] >= stacking[it->first]) continue;
+                        badge_ready &= std::hypot(other.target.x - other.offset->translation_x,
+                            other.target.y - other.offset->translation_y) < .1;
+                    }
+                }
+                if (!badge_ready && visual.hint)
+                { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
+                if (badge_ready && !visual.hint)
                 {
                     visual.hint_output = view->get_output();
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
@@ -651,13 +635,49 @@
                     }
                     visual.fullscreen_tint->update(view->get_geometry(), color);
                 }
-                visual.hint->update(anchor.x + offset->translation_x + visual.label_offset.x,
-                    anchor.y + offset->translation_y + visual.label_offset.y, text,
-                    link_of_widget(view) ? hint_size(view) : visual.label_size,
-                    hints_palette.font_family, color,
-                    view->get_output()->get_scale(), (link_of_widget(view) || visual.edge_label) ?
-                        std::optional{hints_palette.background} : std::nullopt,
-                    model.goo_outputs.count(view->get_output()), hints_reduced_motion);
+                if (visual.hint)
+                {
+                    visual.hint->update(anchor.x + offset->translation_x + visual.label_offset.x,
+                        anchor.y + offset->translation_y + visual.label_offset.y, text,
+                        widget ? hint_size(view) : visual.label_size,
+                        hints_palette.font_family, color,
+                        view->get_output()->get_scale(), widget ?
+                            std::optional{hints_palette.background} : std::nullopt,
+                        model.goo_outputs.count(view->get_output()), hints_reduced_motion);
+                    if (!widget)
+                    {
+                        using rectangle = scottland::windowing::rectangle;
+                        auto r = hint_rectangle(view); auto screen = view->get_output()->get_relative_geometry();
+                        rectangle drawn{r.x1 + offset->translation_x, r.y1 + offset->translation_y,
+                            r.width(), r.height()};
+                        std::vector<rectangle> foreground;
+                        for (auto other_id : by_output[view->get_output()]) if (other_id != it->first)
+                        {
+                            auto other_view = represented_view(other_id);
+                            auto other_r = hint_rectangle(other_view); auto other_offset = hint_visuals[other_id].offset;
+                            if (stacking[other_id] < stacking[it->first])
+                            {
+                                foreground.push_back({other_r.x1 + other_offset->translation_x,
+                                    other_r.y1 + other_offset->translation_y,
+                                    other_r.width(), other_r.height()});
+                                if (link_of_widget(other_view))
+                                {
+                                    auto other_anchor = hint_anchor(other_view);
+                                    double radius = hint_size(other_view) / 2;
+                                    foreground.push_back({other_anchor.x + other_offset->translation_x - radius - 6,
+                                        other_anchor.y + other_offset->translation_y - radius - 6,
+                                        2 * radius + 12, 2 * radius + 12});
+                                }
+                            }
+                        }
+                        auto circle = visual.hint->circle;
+                        auto clearance = scottland::windowing::visible_clearance(
+                            {circle.x + circle.width / 2, circle.y + circle.height / 2}, drawn,
+                            {0, 0, double(screen.width), double(screen.height)}, foreground);
+                        if (clearance + .25 < circle.width / 2)
+                        { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
+                    }
+                }
             } else
             {
                 bool popping = visual.hint && visual.hint->animate();
