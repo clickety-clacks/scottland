@@ -1,6 +1,9 @@
 #include "placement.hpp"
 #include "declutter.hpp"
 #include "alt-mode.hpp"
+#include "hint-style.hpp"
+#include <set>
+#include <tuple>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -61,6 +64,36 @@ int main()
     check(separate,"30 coincident centers produce readable distinct hints");
     check(declutter({},region).empty(),"empty declutter");
     check(near(declutter({{100,100}},region)[0],{100,100}),"single node unchanged");
+    auto mixed = declutter({{250,200},{250,200}},region,6,{72,132});
+    check(std::hypot(mixed[0].x-mixed[1].x,mixed[0].y-mixed[1].y) >= 108-0.001,
+        "mixed badge diameters separate by their radii plus padding");
+    auto edge = declutter({{0,0},{500,400}},region,6,{72,132});
+    check(near(edge[0],{36,36}) && near(edge[1],{434,334}), "each badge stays inside screen edges by its own radius");
+    auto small_separate = declutter({{100,100},{180,100}},region,6,{72,72});
+    check(near(small_separate[0],{100,100}) && near(small_separate[1],{180,100}),
+        "separated small badges are not displaced by the large badge maximum");
+    for (auto palette : std::vector<hint_palette>{hint_palette{},
+        {true,{0.957,0.961,0.969},{0.137,0.165,0.208},{0.231,0.431,0.659}},
+        {false,{0.05,0.05,0.05},{0.9,0.9,0.9},{0.8,0.2,0.3}},
+        {true,{0.9,0.85,0.7},{0.1,0.1,0.1},{0.2,0.6,0.2}},
+        {false,{0.5,0.5,0.5},{0.9,0.9,0.9},{0.5,0.5,0.5}}})
+    {
+        bool readable = true, adjacent = true, complementary = true;
+        std::set<std::tuple<double,double,double>> colors;
+        for (unsigned slot = 0; slot < 676; ++slot)
+        {
+            auto c = hint_color(slot,palette);
+            colors.insert({c.r,c.g,c.b});
+            readable &= hint_contrast(c,palette.background) >= 3 && hint_badge_contrast(c,palette.background) >= 3 &&
+                hint_badge_contrast(c,hint_mix(palette.background,palette.foreground,0.05)) >= 3;
+            double h = hint_hue(c), accent = hint_hue(palette.accent);
+            complementary &= std::abs(std::fmod(h-accent+540,360)-180) >= 100-1e-6;
+            if (slot) adjacent &= std::abs(std::fmod(h-hint_hue(hint_color(slot-1,palette))+540,360)-180) >= 60;
+        }
+        check(readable,"676 colors reach 3:1 against background and tinted typical surfaces");
+        check(adjacent && complementary,"adjacent hues are far apart inside the complementary arc");
+        check(colors.size()==676,"two-letter capacity has distinct colors without a repeated fixed palette");
+    }
     alt_mode mode; std::vector<destination> moves; uint64_t selected=0,closed=0; bool restore=false;
     mode.select=[&](uint64_t id,bool r){selected=id;restore=r;};
     mode.move=[&](uint64_t,destination d){moves.push_back(d);}; mode.close=[&](uint64_t id){closed=id;};

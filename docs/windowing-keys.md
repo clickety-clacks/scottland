@@ -5,7 +5,7 @@ Alt is Scottland's window key. Hold it alone for `scottland/alt_hold_delay` mill
 behavior with no replay or input delay. This is core desktop behavior, independent of integrations.
 
 The controller (`alt-mode.*`), rectangle placement (`placement.*`), force solver (`declutter.*`),
-and compositor overlay (`hint-overlay.*`) are separate from Wayfire integration.
+and compositor overlay (`hint-overlay.*`, with pure palette/contrast math in `hint-style.hpp`) are separate from Wayfire integration.
 The desktop model's `window_state_t` owns normalized zone centers, the last side, hint slot,
 and pending rail placement; its desktop snapshot publishes them and its atomic handover preserves
 them on reload. `windowing-bridge.hpp` adapts the independent algorithms to `model.windows` and
@@ -26,7 +26,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK2 | After entry, every unclaimed key belongs to Scottland until the last held Alt is released, including Ctrl/Super combinations and unassigned keys. Presses and matching releases are consumed; one action occurs per physical press, not repeat. Focused-surface key-layer claims retain ordinary delivery (KL7), including while hints are visible; a claimed press before entry cancels the hold. Alt itself is delivered immediately and its matching release is delivered, so quick app chords have no added delay or synthetic replay. | implemented (headless) |
 | WK3 | Alt release removes hints and restores purely visual displacement. Esc removes hints/displacement without another window action, and keeps keys captured until Alt release. Releasing or cancelling mid-cycle preserves every explicit step already taken; the next mode entry starts at select. | implemented (headless) |
 | WK4 | Every mapped top-level window and every widget has a large, click-through compositor hint in session palette colors, following the actual drawn center. A collapsed widget's hint is over its icon. Dialogs are selectable but retain WG1's protection against widgetizing. | implemented (headless) |
-| WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. | implemented (headless) |
+| WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. Badges follow Vimarchy: a centered circle sized `clamp(min(displayed width, displayed height) × 0.34, 72, 132)` logical px, 21% hint-color fill, bold uppercase letters at 62% of badge height (46% for multiple letters). Output scale affects raster resolution, never logical badge size. | implemented (headless; style validation pending) |
 | WK6 | A window's first hint selects, focuses, and raises it. A widget's first hint opens its window exactly as a card tap does (WG17), in the center. Selecting another hint resets the previous selection's cycle. | implemented (headless) |
 | WK7 | Repeating a center window's hint cycles select → periphery → widget → center → periphery → widget → center… | implemented (headless) |
 | WK8 | Repeating a periphery window's hint cycles select → center → widget → center → periphery → widget → center… | implemented (headless) |
@@ -35,6 +35,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Holding Alt during a drag belongs to L31 and suppresses hints for that entire chord, even after drop. Starting a drag cancels hints. Adding any modifier after entry stays in the mode (WK2). | implemented (headless) |
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
 | WK13 | Near-coincident window/widget centers repel through a deterministic force-directed graph with springs to real centers. Centers stay within readable hint bounds; already separated centers stay put. Windows themselves animate outward and back, without moving their real geometry, changing their scale, or updating memories. Hints track those transforms. | implemented (headless) |
+| WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`, checked every 250 ms while showing hints. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a 7% hint-color overlay, a 2 logical px full-color rounded border, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. The optional frame dye is the integration hook for the future screen-wide goo renderer; screen-wide goo is not built here. | implemented (headless validation pending) |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
@@ -46,6 +47,16 @@ on a physical session. This change is not tested on either machine's live displa
 
 - Tenet 4 (concede as little as possible): surface layers keep exactly their claimed chords, even
   during hints. Unclaimed navigation remains available; a claimed press before entry bypasses the hold.
+- Tenet 2 (recognition): hue position follows the retained assignment slot, not the number of
+  open windows. A golden-ratio sequence distributes slots over the opposite 160° arc without
+  a fixed palette or recoloring existing letters. Adjacent hues jump about 61° or 99°.
+  Dark colors start at HSL saturation 0.78 / lightness 0.70; light colors at 0.72 / 0.34.
+  Lightness moves toward the scheme's contrasting pole until the minimum contrast reaches 3.1:1
+  (rounding headroom above 3:1), checking both background and background with 5% foreground
+  mixed in as a typical surface, under the 7% window and 21% badge tints. Unusual mid-tone
+  backgrounds may need the opposite pole. This targets theme-following surfaces; arbitrary app
+  content behind a translucent badge can differ. Missing/invalid palette values fall back to the
+  compositor scheme/accent and Scottland's neutral background/foreground.
 - Tenet 2 (recognition): keep assignment slots stable and reuse only closed slots. Vimarchy's
   prefix-free switch changes `a` to `aa` when capacity needs two letters; mixing `a` and `aa`
   would otherwise require a delay or extra input. Beyond two-letter capacity (676 slots), grow
@@ -110,3 +121,17 @@ coordinating session's rollout work.
 The final matrix includes main's Super+M, transaction gravity, preview mode and settings/import
 fixes. Rail placement uses pending widget size and the gravity transaction, and the collapse
 raw-key tracker respects focused-surface claims and keys consumed by hints.
+
+## Hint appearance validation (2026-10-01)
+
+`tests/hint-style-test.sh` uses an isolated headless widget session on plumbus, real stipc Alt
+holds and Super drags, theme-following solid GTK surfaces of different sizes, a scaled side
+window and a real default card. It saves light/dark screenshots and checks rendered pixel colors
+for surface tint, badge fill and border, min/max/displayed sizing, complementary/adjacent hues,
+contrast, live recoloring while held, stable retained colors, release/Esc cleanup and fullscreen.
+The unit suite checks 676 colors for each of five palettes (including a mid-tone background),
+contrast through the stacked opacities, distinct hues, and different-sized badge decluttering.
+The windowing suite also saves `double-hints.png` for the 27-window prefix-free labels.
+
+Final results and reviewed screenshot paths are pending. Physical verification remains pending;
+no live desktop on osanwe or plumbus is used by this branch's validation.

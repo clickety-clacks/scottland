@@ -34,7 +34,9 @@
 #include <cmath>
 #include <ctime>
 #include <functional>
+#include <optional>
 #include <vector>
+#include "hint-style.hpp"
 
 namespace scottland
 {
@@ -185,10 +187,13 @@ uniform highp vec4 color;
 uniform highp vec4 rect;
 uniform highp float radius;
 uniform highp float aa;
+uniform highp vec4 hint_tint;
 
 void main()
 {
     highp vec4 c = get_pixel(uvpos);
+    c = vec4(hint_tint.rgb * hint_tint.a + c.rgb * (1.0 - hint_tint.a),
+        hint_tint.a + c.a * (1.0 - hint_tint.a));
     c.rgb = c.rgb * color.a;
     c = c * color;
     highp vec2 hs = rect.zw * 0.5;
@@ -209,6 +214,8 @@ uniform highp float ripple;      // goo ripple amplitude (px)
 uniform highp float phase;       // animation clock
 uniform highp float aa;          // px per fragment
 uniform highp float merge;       // smooth-min width
+uniform highp vec4 hint_dye;     // transient Alt dye: shared hook for a future screen-wide goo
+uniform highp float hint_border; // logical px, independent of window/output scale
 uniform highp vec3 tone;         // base color
 uniform highp float density;     // base opacity
 uniform highp vec4 cloud;        // cloudiness per corner: tl, tr, bl, br
@@ -327,7 +334,9 @@ void main()
 
     highp float alpha = clamp(body + glint * 0.6, 0.0, 1.0) * a;
     highp vec3 rgb = tone * body * a + vec3(1.0) * glint * a;
-    gl_FragColor = vec4(min(rgb, vec3(alpha)), alpha);
+    highp float edge = cover(round_box(pos, window, radius) - hint_border) * step(0.001, hint_dye.a);
+    gl_FragColor = mix(vec4(min(rgb, vec3(alpha)), alpha),
+        vec4(hint_dye.rgb * a, a) * hint_dye.a, edge);
 })";
 
 // The close dot, with an x.
@@ -549,6 +558,15 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     }
 
     // --- state from the plugin ---
+
+    // One transient dye input for the window tint and halo. The screen-wide goo renderer can
+    // consume this same optional color; it is appearance, never attention/model state.
+    std::optional<glm::vec3> hint_dye;
+    void set_hint_dye(std::optional<glm::vec3> color)
+    {
+        if (hint_dye == color) return;
+        damage(); hint_dye = color; damage();
+    }
 
     /** A widget whose app needs attention (WG15): its halo takes the attention color and keeps
      *  breathing (the goo swells and wobbles as when hovered), until it's cleared. */
@@ -1291,6 +1309,9 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("phase", self->phase);
         program.uniform1f("aa", aa);
         program.uniform1f("merge", MERGE);
+        if (self->hint_dye) tone = *self->hint_dye;
+        program.uniform4f("hint_dye", self->hint_dye ? glm::vec4{*self->hint_dye, alpha} : glm::vec4{0});
+        program.uniform1f("hint_border", windowing::hint_border_width);
         program.uniform3f("tone", tone.r, tone.g, tone.b);
         program.uniform1f("density", density);
         program.uniform4f("cloud", glm::vec4{self->cloud[0], self->cloud[1], self->cloud[2], self->cloud[3]});
@@ -1322,7 +1343,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.deactivate();
     }
 
-    static void draw_window(OpenGL::program_t& program, const wf::gles_texture_t& tex,
+    void draw_window(OpenGL::program_t& program, const wf::gles_texture_t& tex,
         const wf::geometry_t& bbox, const glm::mat4& mvp, const wf::geometry_t& geometry, float aa,
         float alpha)
     {
@@ -1337,6 +1358,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.attrib_pointer("uvPosition", 2, 0, uvs);
         program.uniformMatrix4f("MVP", mvp);
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
+        program.uniform4f("hint_tint", self->hint_dye ?
+            glm::vec4{*self->hint_dye, windowing::hint_window_opacity} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{geometry.x, geometry.y, geometry.width, geometry.height});
         program.uniform1f("radius", std::min<float>(CORNER_RADIUS,
             std::min(geometry.width, geometry.height) / 2.0f));
@@ -1350,7 +1373,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
     /** Draw contents whose window geometry is `geometry` (and whose texture covers `box`, same
      *  coordinates) scaled evenly to cover the on-screen rectangle `r`, centered on it, clipped
      *  to it with rounded corners. Snapshots are stored upside down (`flip`). */
-    static void draw_covering(OpenGL::program_t& program, const wf::gles_texture_t& tex,
+    void draw_covering(OpenGL::program_t& program, const wf::gles_texture_t& tex,
         const wf::geometry_t& box, const wf::geometry_t& geometry, const rectf_t& r, double radius,
         const glm::mat4& ortho, float aa, float alpha, bool flip)
     {
@@ -1375,6 +1398,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.attrib_pointer("uvPosition", 2, 0, flip ? flipped : uvs);
         program.uniformMatrix4f("MVP", ortho);
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
+        program.uniform4f("hint_tint", self->hint_dye ?
+            glm::vec4{*self->hint_dye, windowing::hint_window_opacity} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{r.x1, r.y1, r.width(), r.height()});
         program.uniform1f("radius", std::min<float>(radius, std::min(r.width(), r.height()) / 2.0f));
         program.uniform1f("aa", aa);

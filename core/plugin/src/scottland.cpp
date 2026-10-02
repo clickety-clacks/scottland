@@ -1,3 +1,4 @@
+#include <chrono>
 #include <wayfire/plugin.hpp>
 #include <wayfire/core.hpp>
 #include <wayfire/output.hpp>
