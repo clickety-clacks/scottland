@@ -39,7 +39,7 @@ super_drag() {  # super_drag x1 y1 x2 y2
 headless_dir=${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}
 artifacts=$headless_dir.results
 mkdir -p "$artifacts"
-test_widgets=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-widgets.XXXXXX")
+test_widgets=$(mktemp -d "$artifacts/scottland-test-widgets.XXXXXX")
 mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon" "$test_widgets/stubborn"
 cp -a tests/widgets/gravity "$test_widgets/gravity"
 # Shows a window that refuses to close when asked.
@@ -313,7 +313,7 @@ sleep 1
 # other keeps focus, the remaining window's.
 (tests/headless.sh run foot --server >/dev/null 2>&1 &)
 sleep 1
-ask=$XDG_RUNTIME_DIR/scottland-widgets-test-ask
+ask=$artifacts/scottland-widgets-test-ask
 rm -f "$ask".*
 (tests/headless.sh run footclient -T two-a -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1
@@ -735,7 +735,7 @@ h window-rules/close-view "{\"id\": $(view_field form-app "v['id']")}"
 sleep 1
 
 # AT2/AT3: a configured attention source (a list command), by configuration only.
-src=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-source.XXXXXX")
+src=$(mktemp -d "$artifacts/scottland-test-source.XXXXXX")
 mkdir -p "$src/config/scottland/attention.d"
 (tests/headless.sh run foot -T src-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1

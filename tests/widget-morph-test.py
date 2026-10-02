@@ -578,6 +578,12 @@ try:
             t.toggle(); settle()
         title = "Goo morph with a title long enough for maximum width"
         t.launch(title, "right", 350)
+        # A toggle with no widgets leaves mode unchanged. WG19 can make an icon-mode
+        # widget look expanded on attention, so establish intent after the fixture exists.
+        t.move(t.screen["width"] / 2, 60)
+        if t.ipc.call("scottland/desktop-model")["collapsed"]:
+            t.toggle(); settle()
+        t.check("goo fixture starts with expanded intent", not t.widgets()[0]["collapsed"])
         # Asking a focused widget for attention is already answered (WG15).
         # Put keyboard focus on a separate window well away from the field probe.
         focus = t.launch("Goo morph focus fixture", rail=None)
