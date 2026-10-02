@@ -92,3 +92,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 L29 regression: `state-model-test.py` re-grabs an ordinary dropped window during the hold
 and cancels with real Esc input; the scene must return to its ordinary layer and the hold ends.
+
+FS1 regression: late-mapped widgets respect fullscreen before their first visible frame.
+`state-regressions-test.sh` covers late adoption and reload with keyboard focus on another
+headless output. The model audit checks visibility against Wayfire fullscreen promotion.

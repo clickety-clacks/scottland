@@ -1599,6 +1599,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::view_focus_request_signal *ev)
     {
         auto view = wf::toplevel_cast(ev->view);
+        if (auto widget_link = view ? link_of_widget(view) : nullptr;
+            widget_link && (widget_link->away || in_focus_mode(widget_link->output)))
+        {
+            ev->carried_out = true;
+            return;
+        }
         auto link = view ? link_of_window(view) : nullptr;
         if (!link || link->previewing() || ev->carried_out)
         {
@@ -2156,6 +2162,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 model.drag.last_drop.became = view->get_id();  // dropped before it appeared: the move goes on through it
             }
 
+            // A late widget arrives directly hidden during fullscreen focus, never flashing
+            // or taking the fullscreen window's attention before its first slide.
+            link.away = in_focus_mode(output);
+            transition_widget(link, link.lifecycle);
             keep_above(view);
             keep_in_place(link, view);
             set_scale(view, 1.0);
@@ -2965,6 +2975,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (!link.docked())
                 {
                     continue;
+                }
+                // Independent FS1 check against Wayfire's promotion state, not link.away.
+                if (!widget->get_output()->node_for_layer(wf::scene::layer::TOP)->is_enabled() &&
+                    !glides.count(widget->get_id()) && widget->get_root_node()->is_enabled())
+                {
+                    fail("widget interrupts promoted fullscreen: " + label);
                 }
                 if (!widget->has_data("wm-actions-above"))
                 {
@@ -4475,6 +4491,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto widget = wf::toplevel_cast(link.widget.lock());
         if (!widget || !widget->get_output())
         {
+            link.away = away;  // logical visibility also applies to a widget still launching
             return;
         }
 
@@ -5331,11 +5348,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             observe_view(wf::toplevel_cast(view));
         }
         take_handover();
-        // Loaded (a reload) while a fullscreen window is in front: Wayfire won't say so again.
-        if (auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
-            active && active->get_output() && active->pending_fullscreen())
+        // Wayfire's promotion manager disables each output's TOP node while fullscreen is
+        // promoted. Read that compositor fact for every screen, regardless of keyboard focus.
+        for (auto output : wf::get_core().output_layout->get_outputs())
         {
-            set_focus_mode(active->get_output(), true);
+            set_focus_mode(output, !output->node_for_layer(wf::scene::layer::TOP)->is_enabled());
         }
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
