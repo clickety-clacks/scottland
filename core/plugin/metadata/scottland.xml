@@ -88,6 +88,11 @@
             <min>1</min>
             <max>3000</max>
         </option>
+        <option name="cycle_overshoot" type="double">
+            <_short>Hint cycle overshoot (%)</_short>
+            <_long>Elastic settlement of position and scale when a keyboard hint moves a window. Higher gives a larger overshoot; zero keeps the original motion. Screen edges limit the overshoot. Drags, coasts and widget morphs are unaffected.</_long>
+            <default>3</default><min>0</min><max>10</max>
+        </option>
         <option name="key_restitution" type="double">
             <_short>Keyboard edge bounce restitution</_short>
             <_long>Fraction of outward velocity retained, reversed, when keyboard motion reaches an exposed screen boundary. Mouse and touch drops are unaffected.</_long>

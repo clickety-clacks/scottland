@@ -25,6 +25,13 @@ Super+, opens Scottland Layout: tabs for Layout (zones, scale curve), Goo (GO9) 
 
 ## Preview and help
 
+S14 integration note (WK29): the plugin metadata and `scottland-ctl get/set/stdin` expose
+`cycle_overshoot`, a percentage from 0 to 10 with default 3. Zero restores the original hint-cycle
+motion; higher values increase the single elastic excursion of position and scale. Screen edges
+and the minimum supported scale can limit it. It affects keyboard hint placement only, including
+opening a widget with its hint, not drag/coast physics or the widget morph. The Window mode tab
+owner should add it to the placement preview and Save/Cancel/Defaults; this change adds no QML.
+
 Layout and Goo use the same `ParameterStack` rows. Each numeric row explains its effect and
 what a higher or lower value looks like in a separate Quickshell `PopupWindow` beside the row.
 The bubble has 14-point padding, wrapped 15-pixel text multiplied by the desktop text scale,

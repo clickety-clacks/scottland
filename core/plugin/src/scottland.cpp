@@ -56,6 +56,7 @@ extern "C" {
 
 #include "frame.hpp"
 #include "placement.hpp"
+#include "cycle-spring.hpp"
 #include "declutter.hpp"
 #include "alt-mode.hpp"
 #include "inertia.hpp"
@@ -963,6 +964,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         observe_view(view);
         model.windows[view->get_id()].scale = target;
         publish_model();
+        // A hint cycle owns both visual channels. Geometry notifications may
+        // confirm its target, but must not restart the ordinary scale easing.
+        if (auto glide = glides.find(view->get_id()); glide != glides.end() && glide->second.cycle)
+        {
+            glide->second.scale_to = target;
+            return;
+        }
         auto found = transitions.find(view->get_id());
         if (found != transitions.end())
         {
@@ -3491,7 +3499,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** The widget clicked: its window comes back in the middle of the screen, flying out of the
      *  widget and growing to its size there (WG17). False when it has no screen to go to. */
-    bool open_widget(widget_link_t& link)
+    bool open_widget(widget_link_t& link, bool hint_cycle = false)
     {
         auto widget = wf::toplevel_cast(link.widget.lock());
         auto window = wf::toplevel_cast(link.window.lock());
@@ -3511,13 +3519,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         if (widget) remember_window(widget);
+        double from_scale = window ? displayed_scale(window) : 1.0;
         if (window) pin_scale(window, std::nullopt);
         if (window) middle = zone_spot(window, scottland::windowing::zone::center, {from.x, from.y}, nullptr, output);
         restore_window(link, middle, true);
         if (window) remember_window(window);
         if (window)
         {
-            start_glide(window, from.x - middle.x, from.y - middle.y);
+            if (hint_cycle) start_cycle_glide(window, from, from_scale);
+            else start_glide(window, from.x - middle.x, from.y - middle.y);
         }
 
         return true;
@@ -4826,10 +4836,53 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double dx = 0, dy = 0;  // where it's drawn from, relative to where it is
         bool outward = false;   // drawn going away to (dx, dy) instead (then `done`)
         std::function<void()> done;
+        bool cycle = false;
+        double overshoot = 0, scale_from = 1, scale_to = 1;
+        scottland::rectf_t bounds;
+        std::chrono::steady_clock::time_point started;
         wf::animation::simple_animation_t progress{wf::create_option<int>(GLIDE_MS)};
     };
     std::map<uint64_t, glide_t> glides;
     wf::wl_timer<true> glide_tick;
+    wf::option_wrapper_t<double> cycle_overshoot{"scottland/cycle_overshoot"};
+    static constexpr double CYCLE_MS = 300;
+
+    void start_cycle_glide(wayfire_toplevel_view view, wf::pointf_t from, double from_scale)
+    {
+        auto g = view->get_geometry();
+        double x = g.x + g.width / 2.0, y = g.y + g.height / 2.0;
+        double amount = std::clamp(double(cycle_overshoot), 0.0, 10.0) / 100;
+        if (amount == 0)
+        {
+            start_glide(view, from.x - x, from.y - y);
+            return;
+        }
+        auto frame = frame_of(view, false);
+        if (!frame || !view->get_output()) return;
+        stop_glide(view);
+        transitions.erase(view->get_id());
+        auto& glide = glides[view->get_id()];
+        glide.view = view->weak_from_this();
+        glide.cycle = true;
+        glide.dx = from.x - x; glide.dy = from.y - y;
+        glide.scale_from = from_scale; glide.scale_to = scale_for(view);
+        glide.overshoot = amount;
+        glide.started = std::chrono::steady_clock::now();
+        auto screen = view->get_output()->get_relative_geometry();
+        // WP2/WP7: don't change an existing off-screen memory or an oversized
+        // window's destination. Only permit overflow already in either endpoint.
+        glide.bounds = {std::min({0.0, from.x - g.width * from_scale / 2, x - g.width * glide.scale_to / 2}),
+            std::min({0.0, from.y - g.height * from_scale / 2, y - g.height * glide.scale_to / 2}),
+            std::max({double(screen.width), from.x + g.width * from_scale / 2, x + g.width * glide.scale_to / 2}),
+            std::max({double(screen.height), from.y + g.height * from_scale / 2, y + g.height * glide.scale_to / 2})};
+        model.windows[view->get_id()].scale = glide.scale_to;
+        publish_model();
+        frame->damage();
+        frame->translation_x = glide.dx; frame->translation_y = glide.dy;
+        frame->scale_x = frame->scale_y = from_scale;
+        frame->damage();
+        if (!glide_tick.is_connected()) glide_tick.set_timeout(8, [=] () { return step_glides(); });
+    }
 
     /** Draw `view` gliding away from where it is to (dx, dy) off it, then run `done`. */
     void start_glide_out(wayfire_toplevel_view view, double dx, double dy, std::function<void()> done)
@@ -5155,6 +5208,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             frame->damage();
             frame->translation_x = frame->translation_y = 0;
+            if (found->second.cycle) frame->scale_x = frame->scale_y = found->second.scale_to;
             frame->damage();
         }
 
@@ -5174,6 +5228,32 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             auto& glide = it->second;
+            if (glide.cycle)
+            {
+                double elapsed = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - glide.started).count();
+                double left = scottland::windowing::cycle_spring_remaining(elapsed / CYCLE_MS, glide.overshoot);
+                auto g = view->get_geometry();
+                double x = g.x + g.width / 2.0, y = g.y + g.height / 2.0;
+                double scale = glide.scale_to + (glide.scale_from - glide.scale_to) * left;
+                // Scale has its own fixed target, never the spring position's
+                // zone scale. Constrain the live footprint, even beside an output seam.
+                scale = std::min({std::max(0.05, scale), glide.bounds.width() / g.width, glide.bounds.height() / g.height});
+                frame->damage();
+                frame->scale_x = frame->scale_y = scale;
+                frame->translation_x = std::clamp(x + glide.dx * left,
+                    glide.bounds.x1 + g.width * scale / 2, glide.bounds.x2 - g.width * scale / 2) - x;
+                frame->translation_y = std::clamp(y + glide.dy * left,
+                    glide.bounds.y1 + g.height * scale / 2, glide.bounds.y2 - g.height * scale / 2) - y;
+                frame->damage(); view->damage();
+                if (elapsed >= CYCLE_MS)
+                {
+                    frame->translation_x = frame->translation_y = 0;
+                    frame->scale_x = frame->scale_y = glide.scale_to;
+                    it = glides.erase(it);
+                } else ++it;
+                continue;
+            }
             double left = glide.outward ? (double)glide.progress : 1.0 - (double)glide.progress;
             frame->damage();
             frame->translation_x = glide.dx * left;
