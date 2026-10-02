@@ -45,21 +45,22 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 
 ## Window appearance and handles
 
-The halo is being redesigned as one goo for the whole screen ([docs/goo.md](../docs/goo.md)); when that's
-built, the halo rows below point there.
+The original halo remains the default (`scottland/goo = false`). With goo enabled, one liquid
+field per screen replaces its drawing and field input; the restated appearance and handle behavior
+is in [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). Input, proximity and palette jobs remain.
 
 | ID | Invariant | Status |
 |---|---|---|
 | A1 | No window chrome: Scottland asks every app that allows it for server-side decorations and draws none (no title bars, no borders). GTK4/libadwaita apps keep the header bars they draw themselves; Chromium is switched to server-side decorations through additive app tuning (C7). | implemented (Chromium tuning not built) |
 | A2 | Every window is a rounded rectangle; the corner radius is double Omarchy's (10 pt), scaling with the window. | verified |
-| A3 | Every window has a halo, always visible: a translucent rounded band around it, as if a larger rounded rectangle hung behind it, with corners concentric to the window's. It visually separates overlapping windows. Its thickness scales with the window (about 10.7 pt at 100%). | implemented |
-| A4 | The focused window's halo is less translucent, in the theme's highlight color; other windows' halos are more translucent, in a neutral tone that follows light/dark (A8). Focus changes cross-fade, and the newly focused window's halo is disturbed: it bulges briefly and settles in slow waves. | implemented |
+| A3 | Every window has a halo, always visible: a translucent rounded band around it, as if a larger rounded rectangle hung behind it, with corners concentric to the window's. It visually separates overlapping windows. Its thickness scales with the window (about 10.7 pt at 100%).  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
+| A4 | The focused window's halo is less translucent, in the theme's highlight color; other windows' halos are more translucent, in a neutral tone that follows light/dark (A8). Focus changes cross-fade, and the newly focused window's halo is disturbed: it bulges briefly and settles in slow waves.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A5 | The halo is the move handle: dragging it anywhere outside the corners moves the window, with the same live scaling as Super+drag. Its grab area is never thinner than 12 pt on screen, even when the drawn halo is. | implemented |
-| A6 | The halo's corners are resize handles: dragging one resizes around the window's center, outward growing. When the cursor comes near a corner, that part of the halo turns cloudy (the goo thickens, more opaque) and its glints strengthen, as if the light source brightened. | implemented |
+| A6 | The halo's corners are resize handles: dragging one resizes around the window's center, outward growing. When the cursor comes near a corner, that part of the halo turns cloudy (the goo thickens, more opaque) and its glints strengthen, as if the light source brightened.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A7 | When the cursor pauses for 0.5 s within 50 pt of the halo (inside or outside the window, including over another window's content; windows behind the one the cursor is over don't respond), the halo swells to a fixed on-screen thickness of twice the full-size halo (~21 pt), however small the window (only the resting halo scales; the 50 pt doesn't scale either); any motion restarts the wait. The swell moves like goo: it bulges, overshoots and settles with slow, irregular, low-frequency waves along the edge. It stays while the cursor is within the 50 pt, and sinks back the same way about 0.5 s after the cursor leaves (never while dragging). Dragging doesn't count as pausing: the wait starts when the window is let go, so the swell always animates. | implemented |
-| A9 | The halo looks like liquid: shaded as a rounded surface with a bright rim and glints, with soft organic variation, not a flat tint. | implemented |
-| A10 | Halos of different windows behave as one liquid: where they cross, the inside corners fill with a rounded meniscus (surface tension), and when two halos come within about 5 pt they reach for each other and bridge. The joining liquid belongs to the window in front, for drawing and grabbing. (Reaching will gain a meaning later.) Halos swelling or breathing in place keep merging with their neighbors as they change. | implemented |
-| A11 | A close dot sits at the middle of the halo's bottom edge, appearing as the cursor comes near; clicking it closes the window. There is no minimize. | implemented |
+| A9 | The halo looks like liquid: shaded as a rounded surface with a bright rim and glints, with soft organic variation, not a flat tint.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
+| A10 | Halos of different windows behave as one liquid: where they cross, the inside corners fill with a rounded meniscus (surface tension), and when two halos come within about 5 pt they reach for each other and bridge. The joining liquid belongs to the window in front, for drawing and grabbing. (Reaching will gain a meaning later.) Halos swelling or breathing in place keep merging with their neighbors as they change.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
+| A11 | A close dot sits at the middle of the halo's bottom edge, appearing as the cursor comes near; clicking it closes the window. There is no minimize.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A12 | The halo works by finger with no wait: dragging it moves the window (grabbed exactly at the finger), dragging a corner resizes around the center, and touching the halo shows the close dot for a few seconds so it can be tapped. | implemented |
 | A13 | Interface sounds are synthesized at runtime (no sample files), follow the system volume and mute, and can be turned off (`scottland/sounds`). | implemented |
 | A8 | The halo's neutral tone and the close dot follow the desktop's light or dark color scheme (the desktop portal's appearance setting, or GNOME's color-scheme), switching live. The highlight color comes from the desktop portal's accent color, or from an integration (the Omarchy adapter supplies its theme's accent), and also switches live. | implemented |
@@ -75,6 +76,7 @@ built, the halo rows below point there.
 | S4 | Save persists the values (`~/.config/scottland/layout.ini`); reopening shows the saved values. | verified |
 | S5 | Cancel or Escape restores the values from when the panel opened and saves nothing. | verified |
 | S6 | If the running session's plugin predates a setting, the panel says "Restart Scottland to use: …" and keeps the saved value instead of resetting it. | implemented |
+| S10 | A Goo section beside Layout exposes the live goo switch, all fifteen sliders and the falloff curve in the same editor. Save, Cancel and Defaults include goo. See [GO9](../docs/goo.md). | implemented; plumbus headless input checked |
 
 ## Session
 

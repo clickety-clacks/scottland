@@ -38,6 +38,9 @@ case ${1:-} in
     [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
     rm -rf "$dir"; mkdir -p "$dir"
     started=(01-record-environment)
+    test_goo=${SCOTTLAND_TEST_GOO:-0}
+    test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
+    test_outputs=${SCOTTLAND_TEST_OUTPUTS:-1}
     private_bus=
     for option in "${@:2}"; do
       case $option in
@@ -51,7 +54,7 @@ case ${1:-} in
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -66,7 +69,17 @@ case ${1:-} in
       sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
         -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
         "$dir/wayfire.ini"
-      WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 \
+      if [[ $test_goo == 1 ]]; then
+        sed -i '/^goo =/d; /^\[scottland\]/a goo = true' "$dir/wayfire.ini"
+      fi
+      if [[ $test_gles == 2 || $test_gles == unsupported ]]; then
+        export MESA_GLES_VERSION_OVERRIDE=2.0
+        export MESA_EXTENSION_OVERRIDE="-GL_EXT_color_buffer_float -GL_EXT_color_buffer_half_float -GL_OES_texture_half_float -GL_OES_texture_half_float_linear"
+        if [[ $test_gles == unsupported ]]; then
+          MESA_EXTENSION_OVERRIDE+=" -GL_OES_texture_float"
+        fi
+      fi
+      WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
         setsid ${private_bus:+dbus-run-session --} wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"

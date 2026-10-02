@@ -766,7 +766,7 @@ sleep 1
 sleep 1.5
 geo_of() { ipc window-rules/list-views | python3 -c "
 import json,sys
-v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(round(g['x']), round(g['y']))" "$1"; }
 center_of() { view_field "$1" "round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2)"; }
 swipe() {  # swipe <title> <updates>: grab it with three fingers, move left-down
   read -r cx cy <<<"$(center_of "$1")"
@@ -813,7 +813,7 @@ h window-rules/configure-view "{\"id\": $(view_field esc-b "v['id']"), \"geometr
 sleep 1
 geo() { ipc window-rules/list-views | python3 -c "
 import json,sys
-v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(g['x'], g['y'])" "$1"; }
+v=[v for v in json.load(sys.stdin) if v['title']==sys.argv[1]][0]; g=v['geometry']; print(round(g['x']), round(g['y']))" "$1"; }
 a0=$(geo esc-a); b0=$(geo esc-b)
 esc_key() { h stipc/feed_key '{"key":"KEY_ESC","state":true}'; h stipc/feed_key '{"key":"KEY_ESC","state":false}'; }
 super_drag 250 190 450 260   # A moves somewhere else (a finished drag)
