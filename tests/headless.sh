@@ -65,7 +65,10 @@ case ${1:-} in
       # runs only its own, from its folder.
       mkdir -p "$dir/focus.d"; export SCOTTLAND_FOCUS_HOOKS=$dir/focus.d
       for env_hook in "$hooks"/session-env.d/*.sh; do [[ -r $env_hook ]] && . "$env_hook"; done
-      "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
+      # The machine's own Scottland settings (layout.ini, overrides.ini) never reach a test
+      # session: it starts from the shipped defaults, whatever the person running it has tuned.
+      mkdir -p "$dir/config/scottland"
+      XDG_CONFIG_HOME=$dir/config "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
       hook_list=${started[*]}
       sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
         -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
