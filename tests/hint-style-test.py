@@ -129,7 +129,7 @@ try:
             str(Path('tests/hint-style-app.py').resolve()), name, str(width), str(height), str(palette_path)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         clients.append(p)
-        v = wait(lambda: next((v for v in views() if v['title'] == name), None))
+        v = wait(lambda: next((v for v in views() if v['title'] == name and 'frame' in v), None))
         time.sleep(.4)
         drag(v, x if name != 'Card' else 1270, y)
     wait(lambda: any(v['widget'] for v in views()))
@@ -261,19 +261,24 @@ try:
     ipc('wm-actions/set-fullscreen', {'view_id': large['id'], 'state': False})
 
     time.sleep(.6)
-    ipc('wayfire/set-config-options', {'scottland/min_scale': .05, 'scottland/max_scale': .05})
+    ipc('wayfire/set-config-options', {'scottland/min_scale': .05, 'scottland/max_scale': .05,
+        'scottland/scale_curve': '', 'scottland/blend_width': 0})
     ipc('stipc/move_cursor', {'x': 180, 'y': 550})
     tiny = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
         str(Path('tests/hint-style-app.py').resolve()), 'TinyScale', '2000', '1000', str(palette_path)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     clients.append(tiny)
-    v = wait(lambda: next((v for v in views() if v['title'] == 'TinyScale'), None))
+    v = wait(lambda: next((v for v in views() if v['title'] == 'TinyScale' and 'frame' in v), None))
     time.sleep(.5)
     drag(v, 180, 550)
+    ipc('stipc/move_cursor', {'x': 640, 'y': 20})
+    wait(lambda: any(v['title'] == 'TinyScale' and v.get('frame', {}).get('thickness', 100) < 1
+                     and abs(v['frame']['swell']) < .005 for v in views()))
     hold()
     v = next(v for v in views() if v['title'] == 'TinyScale')
     h = next(h for h in hints() if h['window'] == v['id'])
-    check(v['applied_scale'] < .051 and h['badge']['size'] == 72,
+    (artifacts/'minimum-window-scale-state.json').write_text(json.dumps({'view': v, 'hint': h}, indent=2))
+    check(v['applied_scale'] < .051 and v['frame']['thickness'] < 1 and h['badge']['size'] == 72,
           '5% displayed scale keeps the minimum 72px badge')
     image = screenshot('minimum-window-scale-hints')
     f = v['frame']
