@@ -4,7 +4,8 @@ The halo around windows (core/INVARIANTS.md, A3-A12) becomes **one goo for the w
 instead of a halo per window patched together where they meet. Mike's design (2026-10-01): it should
 feel truly organic, goo reaching for goo the way liquids do, waves running through it, color
 spreading in it like food coloring in water. The interactive prototype used to explore the feel:
-https://claude.ai/artifact/VHTqdn4TqvSN8kZ8CoRV64 (Scottland Goo Lab).
+https://claude.ai/artifact/VHTqdn4TqvSN8kZ8CoRV64 (Scottland Goo Lab; its source is in
+[prototypes/goo-lab.html](prototypes/goo-lab.html)).
 
 This doc is the design; the rows say what's built. When it's built, A3, A4, A6, A9, A10 and A11
 are restated here and their rows in core/INVARIANTS.md point at it.
