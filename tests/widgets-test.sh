@@ -36,10 +36,10 @@ super_drag() {  # super_drag x1 y1 x2 y2
 }
 
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
-headless_dir=${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}
+headless_dir=${SCOTTLAND_HEADLESS_DIR:-$PWD/build/headless}
 artifacts=$headless_dir.results
-mkdir -p "$artifacts"
-test_widgets=$(mktemp -d "${TMPDIR:-/tmp}/scottland-test-widgets.XXXXXX")
+mkdir -p "$artifacts" build
+test_widgets=$(mktemp -d "${TMPDIR:-$PWD/build}/scottland-test-widgets.XXXXXX")
 mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon" "$test_widgets/stubborn"
 cp -a tests/widgets/gravity "$test_widgets/gravity"
 # Shows a window that refuses to close when asked.
@@ -93,11 +93,13 @@ monitor_pid=
 cleanup() {
   [ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null
   cp "$headless_dir/wayfire.log" "$artifacts/wayfire-final.log" 2>/dev/null
+  cp "$headless_dir/state/scottland/widgets.log" "$artifacts/widgets.log" 2>/dev/null
   tests/headless.sh stop >/dev/null 2>&1
-  rm -rf "$test_widgets" "${src:-/nonexistent}"
+  rm -rf "$test_widgets"
+  if [[ -n ${src:-} ]]; then rm -rf "$src"; fi
 }
 trap cleanup EXIT
-display=$(cat "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/display")
+display=$(cat "$headless_dir/display")
 state_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/widgets/$display
 signals=$artifacts/widget-signals.log
 tests/headless.sh run gdbus monitor --session --dest org.scottland.Widgets >"$signals" 2>&1 &
@@ -107,7 +109,7 @@ screen_w=$(ipc window-rules/list-outputs | python3 -c "import json,sys; print(in
 
 # Input-edge regressions use this same private session and close only their own windows.
 tests/headless.sh run python3 tests/widget-input-test.py --log \
-  "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/wayfire.log" \
+  "$headless_dir/wayfire.log" \
   || fail "widget input regressions"
 
 # The app: a terminal that, once widgetized, publishes data for its widget (WG11) as itself.
@@ -314,7 +316,7 @@ sleep 1
 (tests/headless.sh run foot --server >/dev/null 2>&1 &)
 sleep 1
 ask=$artifacts/scottland-widgets-test-ask
-rm -f "$ask".*
+rm -f "$ask.go1" "$ask.go2" "$ask.answer1" "$ask.answer2"
 (tests/headless.sh run footclient -T two-a -W 40x10 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1
 read -r ax ay aw ah <<<"$(view_field two-a "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -335,7 +337,7 @@ touch "$ask.go2"; sleep 1.5
 check "WG12 ...after the first window closes (focus unchanged), the remaining window's 100%" \
   grep -q "^bd false 1$" "$ask.answer2"
 h window-rules/close-view "{\"id\": $(view_field two-b "v['id']")}"
-rm -f "$ask".*
+rm -f "$ask.go1" "$ask.go2" "$ask.answer1" "$ask.answer2"
 sleep 1
 
 # A reload after an update replaces a widget service running older code (and keeps a current one).
@@ -646,7 +648,7 @@ sleep 2
 
 # FS1: full screen is focus. A fullscreen window in front sends the widgets off the screen's edges
 # (sliding) and runs the focus hooks ("on"); leaving full screen brings them back ("off").
-focus_dir="${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/focus.d"
+focus_dir="$headless_dir/focus.d"
 focus_record="$focus_dir/../focus-record"
 printf '#!/bin/sh\necho "$1" >>"%s"\n' "$focus_record" >"$focus_dir/10-record"; chmod +x "$focus_dir/10-record"
 (tests/headless.sh run foot -T docked-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
@@ -681,7 +683,7 @@ sleep 1.5
 (tests/headless.sh run foot -T front-app -o colors-dark.background=0000c0 -o colors-light.background=0000c0 -W 50x14 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
 read -r fx fy fw fh <<<"$(view_field front-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
-super_drag $((fx + fw / 2)) $((fy + fh / 2)) $((fx + fw / 2 + 400)) $((fy + fh / 2))   # partly off the back one
+super_drag $((fx + fw / 2)) $((fy + fh / 2)) $((fx + fw)) $((fy + fh / 2))   # partly off the back one
 sleep 3.2
 read -r fx fy fw fh <<<"$(view_field front-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 read -r kx ky kw kh <<<"$(view_field back-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
@@ -735,7 +737,7 @@ h window-rules/close-view "{\"id\": $(view_field form-app "v['id']")}"
 sleep 1
 
 # AT2/AT3: a configured attention source (a list command), by configuration only.
-src=$(mktemp -d "${TMPDIR:-/tmp}/scottland-test-source.XXXXXX")
+src=$(mktemp -d "${TMPDIR:-$PWD/build}/scottland-test-source.XXXXXX")
 mkdir -p "$src/config/scottland/attention.d"
 (tests/headless.sh run foot -T src-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1

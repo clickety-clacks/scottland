@@ -14,7 +14,7 @@ Super+, opens Scottland Layout: tabs for Layout (zones, scale curve), Goo (GO9) 
 | S6 | If the running session's plugin predates a setting, the panel says "Restart Scottland to use: …" and keeps the saved value instead of resetting it. | implemented |
 | S9 | A 2D curve editor sets the scale across the side zones: two endpoints (largest scale at the center edge, smallest at the rail) move vertically only; clicking adds a point, dragging shapes the curve, double-click or right-click removes a point. Points are joined by a smooth curve that doesn't overshoot them (monotone cubic), and the plugin uses the same curve. | verified |
 | S10 | A Goo section beside Layout exposes the live goo switch and all nineteen numeric settings in the same tall grab-anywhere ParameterStack rows as the zone settings (S1), including keyboard steps/navigation, typed values, opening-value reset and modified color. Keyboard navigation scrolls to the selected row; the scrollbar reaches the falloff curve in the shared editor. Save, Cancel and Defaults include goo. See [GO9](../docs/goo.md). | implemented; plumbus and osanwe headless pointer/keyboard input and screenshots checked |
-| S11 | Every Layout and Goo numeric row explains itself: hover or keyboard selection shows a separate floating popout beside the row, flipping sides when needed on its screen. Its plain-language hint explains what raising/lowering the value looks like, with a padded theme-colored bubble, the interface font at 15 px times the desktop text scale, and the row label for clear association. It never covers the dragged slider or takes input/focus, hides on pointer leave (keyboard selection persists), when the row scrolls out of view, or on close; rows contain only label and value. (Mike, 2026-10-02) | implemented; isolated headless hover/keyboard OCR, edge flip, theme/text scale, held drag, dismissal and input pass-through checked; see [settings design](../docs/settings.md) |
+| S11 | Every Layout and Goo numeric row explains itself: hover or keyboard selection shows a separate floating popout beside the row, flipping sides when needed on its screen. Its plain-language hint explains what raising/lowering the value looks like, with a padded theme-colored bubble, the interface font at 15 px times the desktop text scale, and the row label for clear association. It never covers the dragged slider or takes input/focus, hides on pointer leave (keyboard selection persists), when the row scrolls out of view, or on close; rows contain only label and value. (Mike, 2026-10-02) | implemented; isolated headless hover/keyboard identity + rectangle pixel checks, edge flip, theme/text scale, held drag, dismissal and input pass-through checked; see [settings design](../docs/settings.md) |
 | S12 | The zone overlay shows the center edge softness: the blend band on each side of the center zone where windows ease from full size into the side-zone scale is visible as its own shaded region with its outer border drawn as a line like the zone edges, updating live. (Mike, 2026-10-02) | implemented; isolated osanwe two-output stipc input and screenshots checked; see [settings design](../docs/settings.md) |
 | S13 | While the panel is open, the zone borders (center zone edges, rail edges, softness band edges) can be dragged directly on screen; dragging updates the same values as the sliders, live, with the same Save/Cancel semantics. The overlay stays click-through everywhere except the border handles; while a border is held the whole overlay takes input, so a long or fast drag stays with the pointer until release. (Mike, 2026-10-02) | implemented; isolated osanwe two-output stipc input and screenshots checked; see [settings design](../docs/settings.md) |
 | S14 | Scottland Layout has a Window mode tab beside Layout and Goo for everything that shapes the inertial transformations (keyboard pushes, inertial resize, the drag coast), plus hold and double-tap timing. Each control is the most direct interactive visualization that fits, with plain sliders only where no better visual exists: the friction law for movement and for scaling (resize) as draggable curve editors (deceleration as a function of current speed, S9 style; the default reproduces today's constant deceleration, so motion stays physical and one model drives keys and drag coasts); a live playground in the tab where you flick or arrow-push a sample window and see its trajectory, stopping distance and edge bounce drawn as it happens, with handles to drag directly (e.g. the push impulse as a velocity arrow, bounciness on the bounce trace); timings as visual timelines where that reads better. Hints (S11), Save/Cancel/Defaults as in the other tabs. (Mike, 2026-10-02) | planned, after the drag coast lands |
@@ -88,7 +88,15 @@ retain those shortcuts after a drag. Reopening reads the saved/current settings.
 
 `tests/settings-help-test.sh` requires a fresh `SCOTTLAND_HEADLESS_DIR`, starts two headless
 outputs, and stops only that session. `tests/settings-help-test.py` uses stipc pointer, button
-and keyboard input. Tesseract checks the actual row label in the popout outside the panel;
+and keyboard input. An opt-in `SCOTTLAND_HINT_PROBE` QML log identifies the visible row and
+the popout's requested dimensions/colors; independent screenshot samples check the background
+and all four borders of that rectangle beside the expected row (including left-side flipping).
+The fixture starts with an explicit palette file under `build/` (passed to the settings app),
+including colors, font and text scale, so a recycled display's palette
+cannot change its geometry. The assertion allows up to one second for Qt to handle input and
+paint the expected rectangle; it retains that final frame and never repeats input. Keyboard
+preview assertions similarly await the asynchronous setting value. No OCR is needed. This is deliberately a best-effort visual check:
+it checks identity, visibility, geometry and paint, not whether the explanation's words are legible;
 pixel checks inspect row layout, theme colors, enlarged glyphs, both band boundaries and shading;
 IPC only reads preview values and arranges the app fixture. The suite covers all numeric hints,
 both sides of all three borders on both outputs, continuous drag updates, hover highlighting,
@@ -141,3 +149,17 @@ The live-theme test caught an old popup buffer surviving a font/size change on W
 remapping only the passive hint on style changes refreshes both its pixels and geometry.
 All isolated sessions were stopped after testing. Physical displays and mixed DPI remain
 outside the explicitly headless scope of this change.
+
+## Deterministic hint checks (2026-10-02)
+
+On `bubble-test` from `68d5624`, the final `tests/settings-help-test.sh` passed **143 checks,
+0 failures in each of three consecutive runs**, using fresh two-output headless sessions.
+Screenshots were inspected for Goo hints and the flipped popout. The service and test helpers
+came from this checkout; all sessions were stopped. Evidence is retained under
+`build/validation/hint-final-{1,2,3}/` with a separate results log per run.
+
+Earlier development runs exposed recycled-display palette state, slow initial panel mapping,
+and screenshots/preview reads made before Qt handled the last input. The fixture now supplies
+its initial palette, waits for the panel to paint, and gives input and expected results bounded
+settling time. Every assertion and expected value is retained. This is headless validation only;
+no live session, live widget service, personal Scottland config or physical display was used.

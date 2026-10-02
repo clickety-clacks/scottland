@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """S11-S13, S1-S5 and S10 via real stipc input in a caller-owned headless session.
-Run with tests/headless.sh run. Requires two outputs and tesseract; screenshots and logs are retained in
+Run with tests/headless.sh run. Requires two outputs; screenshots and logs are retained in
 build/settings-help-evidence. No live config, session or services are used.
 """
 import json
 import os
-import re
 import shutil
 from pathlib import Path
 import socket
@@ -72,8 +71,20 @@ def button(mode):
 
 def key(code):
     ipc("stipc/feed_key", dict(key=code, state=True))
+    time.sleep(.03)  # Give the client a frame with the key held before releasing it.
     ipc("stipc/feed_key", dict(key=code, state=False))
-    time.sleep(.09)
+    time.sleep(.12)
+
+
+def option_reaches(name, expected, timeout=2):
+    # QML debounces previews and invokes an asynchronous ctl process. Wait for its result,
+    # not an assumed process-start/IPC latency; never resend input to make a check pass.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if abs(option(name)-expected) < .01:
+            return True
+        time.sleep(.03)
+    return False
 
 
 def click(x, y):
@@ -101,20 +112,52 @@ def drag(x, y, dx, dy=0, live_name=None, fast=False, steps=None):
 
 class Pixels:
     def __init__(self, path):
+        self.path = path
         self.img = GdkPixbuf.Pixbuf.new_from_file(str(path))
         self.data = self.img.get_pixels()
     def pixel(self, x, y):
         pos = round(y)*self.img.get_rowstride()+round(x)*self.img.get_n_channels()
         return tuple(self.data[pos:pos+3])
     def hint(self, row_y, label, x=None):
-        # Inspect the separate surface beside the panel, not white pixels in a slider.
+        # Input IPC acknowledges delivery before Qt has necessarily handled/drawn it.
+        # Wait for the expected observation + pixels, retaining the final frame as evidence.
+        # A missing/wrong bubble still fails; no input is repeated and no text is inferred.
+        deadline = time.monotonic() + 1
+        while True:
+            if self.hint_now(row_y, label, x):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(.05)
+            subprocess.run(["grim", str(self.path)], check=True)
+            self.__init__(self.path)
+
+    def hint_now(self, row_y, label, x=None):
+        # The opt-in component observation identifies the row without OCR. Pixels prove
+        # that a bubble of its requested size was actually drawn beside that row.
+        observations = {}
+        for line in (art / "panel.log").read_text().splitlines():
+            if "SCOTTLAND_HINT " in line:
+                entry = json.loads(line.split("SCOTTLAND_HINT ", 1)[1])
+                observations[entry["probe"], entry["label"]] = entry
+        active = {getattr(proc, "hint_probe", None) for proc in clients if proc.poll() is None}
+        entry = next((v for (probe, name), v in observations.items()
+                      if probe in active and name == label and v["visible"]), None)
+        if not entry or entry["width"] != 320 or entry["height"] < 40:
+            return False
         x = panel_x + 568 if x is None else x
-        y = max(0, row_y - 130)
-        crop = self.img.new_subpixbuf(round(x), round(y), 320, min(320, self.img.get_height()-round(y)))
-        _, png = crop.save_to_bufferv("png", [], [])
-        result = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "6"], input=png,
-                                capture_output=True, check=True).stdout.decode()
-        return label.lower() in re.sub(r"\s+", " ", result).lower()
+        height = round(entry["height"])
+        background, border = (tuple(bytes.fromhex(entry[k].lstrip("#"))) for k in ("background", "border"))
+        # Wayland may round a centered anchor by a pixel; SlideY clamps to the output.
+        expected_y = max(0, min(self.img.get_height()-height, round(row_y+29-height/2)))
+        for y in range(max(0, expected_y-2), min(self.img.get_height()-height, expected_y+2)+1):
+            samples = [(x+16, y), (x+160, y), (x+303, y),
+                       (x+160, y+height-1), (x, y+height//2), (x+319, y+height//2)]
+            inside = [(x+6, y+16), (x+313, y+16), (x+6, y+height-17), (x+160, y+height-7)]
+            if all(self.pixel(xx, yy) == border for xx, yy in samples) and all(
+                    self.pixel(xx, yy) == background for xx, yy in inside):
+                return True
+        return False
     def text(self, x, y, width=465, height=24):
         return sum(min(c) > 145 and max(c)-min(c) < 45
                    for yy in range(round(y), round(y+height))
@@ -130,17 +173,25 @@ def shot(name):
 
 def open_panel():
     global panel_x
+    probe = str(len(clients))
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")],
         env=dict(os.environ, SCOTTLAND_CTL=str(repo / "core/libexec/scottland-ctl"),
-                 SCOTTLAND_LAYOUT_FILE=str(layout)), stdout=log, stderr=log)
+                 SCOTTLAND_LAYOUT_FILE=str(layout), SCOTTLAND_PALETTE=str(palette_path),
+                 SCOTTLAND_HINT_PROBE=probe), stdout=log, stderr=log)
+    panel.hint_probe = probe
     clients.append(panel)
-    time.sleep(1)
-    check("settings maps", panel.poll() is None)
     # An unassigned layer panel opens on the active output; real border input changes it.
-    pixels = shot("panel-position")
-    panel_output = next(o for o in outputs if
-                        pixels.pixel(o["geometry"]["x"]+o["geometry"]["width"]/2, 100)[2]
-                        > pixels.pixel(o["geometry"]["x"]+o["geometry"]["width"]/2, 100)[0]+2)
+    panel_output = None
+    for _ in range(50):
+        time.sleep(.1)
+        pixels = shot("panel-position")
+        panel_output = next((o for o in outputs if
+                            pixels.pixel(o["geometry"]["x"]+o["geometry"]["width"]/2, 100)[2]
+                            > pixels.pixel(o["geometry"]["x"]+o["geometry"]["width"]/2, 100)[0]+2), None)
+        if panel_output or panel.poll() is not None:
+            break
+    check("settings maps", panel_output is not None and panel.poll() is None)
+    assert panel_output, "settings did not render"
     panel_x = panel_output["geometry"]["x"]+(panel_output["geometry"]["width"]-560)/2
     return panel
 
@@ -187,6 +238,12 @@ def bands(name):
 
 
 try:
+    assert os.environ["WAYLAND_DISPLAY"] != "wayland-1", "isolated headless session required"
+    # Display names are reused after shutdown; an old test's palette can otherwise supply
+    # arbitrary text scale and colors. Establish the fixture before starting any panel.
+    palette_path = art / "palette.json"
+    palette_path.write_text(json.dumps(dict(background="#1c1d22", foreground="#e6e6e9",
+        accent="#7aa2f7", font_family="DejaVu Sans", text_scale=1)))
     outputs = sorted(ipc("window-rules/list-outputs"), key=lambda o:o["geometry"]["x"])
     assert len(outputs) == 2 and all(o["geometry"]["height"] == 720 for o in outputs)
     # Quickshell's first screen is where the panel is anchored (leftmost on this backend).
@@ -221,14 +278,14 @@ try:
     check("keyboard selection shows popout without pointer hover", p.hint(235, "Center zone width"))
     before = option("center_width")
     key("KEY_RIGHT")
-    check("keyboard still adjusts center", abs(option("center_width")-round((before+.5)*2)/2) < .01)
+    check("keyboard still adjusts center", option_reaches("center_width", round((before+.5)*2)/2))
     key("KEY_BACKSPACE")
     key("KEY_UP")
     key("KEY_1"); key("KEY_2"); key("KEY_0")
-    check("numeric entry still edits softness", option("blend_width") == 120)
+    check("numeric entry still edits softness", option_reaches("blend_width", 120))
     bands("06-softness-live-slider")
     key("KEY_BACKSPACE"); key("KEY_BACKSPACE"); key("KEY_BACKSPACE"); key("KEY_BACKSPACE")
-    check("reset restores opening softness", option("blend_width") == initial["blend_width"])
+    check("reset restores opening softness", option_reaches("blend_width", initial["blend_width"]))
     # The bubble never covers or steals a held slider drag.
     pointer(panel_x+180, 195); time.sleep(.12); button("press")
     pointer(panel_x+340, 195); time.sleep(.15)
@@ -275,7 +332,7 @@ try:
         check(name + " hover hint visible", p.hint(row_y, goo_labels[i]))
         pointer(10, 690)
     key("KEY_RIGHT")
-    check("last Goo keyboard step preserved", abs(option("goo_hover_distance")-49)<.01)
+    check("last Goo keyboard step preserved", option_reaches("goo_hover_distance", 49))
     drag(panel_x+535, 480, 0, 120)
     p = shot("goo-scrolled-away")
     check("scrolling the selected row out of view hides its popout", not p.hint(550, "Control proximity"))
@@ -318,7 +375,9 @@ try:
     fixture_dir.mkdir(exist_ok=True)
     shutil.copyfile(repo / "tests/HintPopoutFixture.qml", fixture_dir / "shell.qml")
     shutil.copyfile(repo / "core/settings/ParameterStack.qml", fixture_dir / "ParameterStack.qml")
-    fixture = subprocess.Popen(["qs", "-n", "-p", str(fixture_dir)], stdout=log, stderr=log)
+    fixture = subprocess.Popen(["qs", "-n", "-p", str(fixture_dir)],
+        env=dict(os.environ, SCOTTLAND_HINT_PROBE="edge"), stdout=log, stderr=log)
+    fixture.hint_probe = "edge"
     clients.append(fixture); time.sleep(.8)
     check("edge fixture maps", fixture.poll() is None)
     # The fixture uses the active output, as does the main panel.
@@ -457,5 +516,6 @@ finally:
             proc.wait(timeout=5)
     log.close()
     sock.close()
+    palette_path.unlink(missing_ok=True)
 print(f"{passed} passed; {failed} failed", flush=True)
 raise SystemExit(bool(failed))

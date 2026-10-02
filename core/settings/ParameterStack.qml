@@ -188,6 +188,15 @@ FocusScope {
 
           PopupWindow {
             id: hint
+            // Opt-in test observation: identity/visibility and requested surface size.
+            // Tests independently check the rendered rectangle; no text recognition needed.
+            readonly property string probe: Quickshell.env("SCOTTLAND_HINT_PROBE")
+            readonly property string observation: JSON.stringify({
+              probe: probe, label: rowItem.modelData.label, visible: visible,
+              width: width, height: height, background: String(stack.hintBackground),
+              border: String(stack.hintAccent), rowY: rowY
+            })
+            onObservationChanged: if (probe) console.info("SCOTTLAND_HINT " + observation)
             // Position mapping isn't reactive; the viewport offset explicitly refreshes it.
             readonly property real rowY: {
               stack.scrollOffset

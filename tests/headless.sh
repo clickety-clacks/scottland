@@ -7,12 +7,14 @@
 #
 #   tests/headless.sh start [--omarchy] [--widgets]   start; --omarchy adds the Hyprland shim and
 #                                         Lua host; --widgets adds the widget service, on a private
-#                                         D-Bus session bus (the live session owns the real one)
+#                                         D-Bus session bus (all headless sessions have a private bus)
 #                                         (SCOTTLAND_WIDGET_PATH and SCOTTLAND_WIDGET_SCOPE pass through)
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
 #
+# Requires bubblewrap to redirect Quickshell logs into the test directory without changing
+# XDG_RUNTIME_DIR. Put SCOTTLAND_HEADLESS_DIR and TMPDIR under the checkout's build/ directory.
 # Helpers come from this checkout (make test-hooks) if built, else the dev install. Set
 # SCOTTLAND_HEADLESS_DIR to run test sessions of several checkouts at once.
 #
@@ -23,7 +25,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 # SCOTTLAND_HEADLESS_DIR: where this test session keeps its state, so test sessions of several
 # checkouts (e.g. agents on branches sharing a test machine) can run at once.
-dir=${SCOTTLAND_HEADLESS_DIR:-$runtime/scottland-headless}
+dir=${SCOTTLAND_HEADLESS_DIR:-$repo/build/headless}
 # The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
 # package's.
 hooks=$repo/build/hooks
@@ -41,7 +43,7 @@ case ${1:-} in
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
     test_outputs=${SCOTTLAND_TEST_OUTPUTS:-${SCOTTLAND_HEADLESS_OUTPUTS:-1}}
-    private_bus=
+    private_bus=1
     for option in "${@:2}"; do
       case $option in
         --omarchy) started+=(10-hyprshim 30-lua-host) ;;
@@ -60,6 +62,20 @@ case ${1:-} in
       done
       export PATH=/usr/local/bin:/usr/bin:/bin
       export SCOTTLAND_TEST_MODEL=1
+      # Isolate every child's settings and logs, not just config generation. Keep the real
+      # runtime so Wayland display names (and systemd widget scopes) remain unique.
+      export XDG_CONFIG_HOME=$dir/config XDG_STATE_HOME=$dir/state XDG_CACHE_HOME=$dir/cache
+      # Quickshell hardcodes logs under $XDG_RUNTIME_DIR/quickshell. Bind only that
+      # subtree for test clients, leaving Wayland/systemd sockets and display names alone.
+      mkdir -p "$dir/bin" "$dir/quickshell" "$dir/state" "$dir/cache"
+      command -v bwrap >/dev/null || { echo 'headless tests need bubblewrap for Quickshell logs' >&2; exit 1; }
+      cat >"$dir/bin/quickshell" <<'WRAPPER'
+#!/bin/sh
+exec bwrap --bind / / --bind "$XDG_STATE_HOME/../quickshell" "$XDG_RUNTIME_DIR/quickshell" -- /usr/bin/quickshell "$@"
+WRAPPER
+      chmod +x "$dir/bin/quickshell"
+      ln -s quickshell "$dir/bin/qs"
+      export PATH=$dir/bin:$PATH
       export SCOTTLAND_HOOKS=$hooks XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
       # Focus-mode hooks (full screen) touch the desktop (e.g. its notifications): a test session
       # runs only its own, from its folder.
@@ -69,7 +85,7 @@ case ${1:-} in
       # config or the machine's personal settings (layout.ini, overrides.ini).
       mkdir -p "$dir/config/scottland"
       cp "$repo/core/config/scottland.ini" "$dir/config/scottland/scottland.ini"
-      XDG_CONFIG_HOME=$dir/config "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
+      "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
       hook_list=${started[*]}
       sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
         -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
@@ -117,18 +133,27 @@ case ${1:-} in
     # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
     # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
     # with its monitors.)
-    for pid_file in "$runtime/scottland/$name.lua.pid" "$runtime/scottland/$name.color-scheme.pid"; do
+    for pid_file in "$runtime/scottland/$name.lua.pid" "$runtime/scottland/$name.color-scheme.pid" "$runtime/scottland/$name.widget-bus.pid"; do
       helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
-      if [[ $helper =~ ^[0-9]+$ ]] && grep -qa -e scottland-color-scheme -e lua "/proc/$helper/cmdline" 2>/dev/null; then
+      if [[ $helper =~ ^[0-9]+$ ]] && grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
         if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
       fi
       rm -f "$pid_file"
     done
-    for lock in "$runtime"/hypr/scottland_*/hyprland.lock; do
-      [[ -f $lock && $(sed -n 2p "$lock") == "$name" ]] || continue
+    signature=$(python3 - "$runtime/scottland/$name.env" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if path.exists():
+    for entry in path.read_bytes().split(b'\0'):
+        if entry.startswith(b'HYPRLAND_INSTANCE_SIGNATURE='):
+            print(entry.split(b'=', 1)[1].decode())
+PY
+)
+    lock="$runtime/hypr/$signature/hyprland.lock"
+    if [[ $signature == scottland_* && $signature != */* && -f $lock && $(sed -n 2p "$lock") == "$name" ]]; then
       kill "$(sed -n 1p "$lock")" 2>/dev/null || true
       rm -rf "$(dirname "$lock")"
-    done
+    fi
     pid=$(cat "$dir/pid")
     # With --widgets the pid is dbus-run-session's; stop its child (Wayfire) too.
     for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
