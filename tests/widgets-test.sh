@@ -665,6 +665,29 @@ h window-rules/close-view "{\"id\": $(view_field full-app "v['id']")}"
 h window-rules/close-view "{\"id\": $(view_field docked-app "v['id']")}"
 sleep 2
 
+# L29: going to another window during a just-dropped window's hold brings that window forward,
+# and the hold ending doesn't put the dropped one back in front of it.
+click() { h stipc/move_cursor "{\"x\":$1,\"y\":$2}"; sleep 0.1; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'; sleep 0.05; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"release"}'; }
+(tests/headless.sh run foot -T back-app -o colors-dark.background=c00000 -o colors-light.background=c00000 -W 50x14 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+(tests/headless.sh run foot -T front-app -o colors-dark.background=0000c0 -o colors-light.background=0000c0 -W 50x14 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+sleep 1.5
+read -r fx fy fw fh <<<"$(view_field front-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+super_drag $((fx + fw / 2)) $((fy + fh / 2)) $((fx + fw / 2 + 400)) $((fy + fh / 2))   # partly off the back one
+sleep 3.2
+read -r fx fy fw fh <<<"$(view_field front-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+read -r kx ky kw kh <<<"$(view_field back-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
+overlap() { tests/headless.sh run grim -g "$(( (fx + kx + kw) / 2 )),$((ky + kh / 2)) 1x1" -t ppm - 2>/dev/null | tail -c 3 | od -An -tu1 | tr -s ' '; }
+super_drag $((fx + fw / 2)) $((fy + fh / 2)) $((fx + fw / 2 + 10)) $((fy + fh / 2))      # dropped: held above
+sleep 0.3
+click $((kx + 20)) $((ky + kh - 20)); sleep 0.5
+check "L29 clicking another window during a drop's hold brings it forward" [ "$(overlap)" = " 192 0 0" ]
+sleep 3
+check "L29 ...and the hold ending leaves it in front" [ "$(overlap)" = " 192 0 0" ]
+h window-rules/close-view "{\"id\": $(view_field front-app "v['id']")}"
+h window-rules/close-view "{\"id\": $(view_field back-app "v['id']")}"
+sleep 2
+
 # L23: lifting three fingers ends the drag at once (no grace period); a second three-finger
 # drag right after is a new drag, which only counts as the same move for Esc (L27).
 (tests/headless.sh run foot -T grace-app -W 30x6 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)

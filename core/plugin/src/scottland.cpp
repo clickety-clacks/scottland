@@ -1202,6 +1202,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::keyboard_focus_changed_signal*)
     {
         update_focus();
+        // Going to another window ends a just-dropped window's hold above the others (L29): the one
+        // the user went to comes forward, now and when the hold would have ended.
+        if (auto held = model.drag.held_above.lock(); held && (wf::get_core().seat->get_active_view().get() != held.get()))
+        {
+            release_above();
+        }
+
         // Going to a window, or to the widget standing in for it, answers its attention (WG15).
         if (auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view()))
         {
@@ -1351,6 +1358,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::geometry_t snapshot_box{}, other_geometry{};
         bool snapshot_ready = false;
         int ticks = 0;
+        double shown_w = 0, shown_h = 0;
     };
     // One drag session owns the Esc origin, re-grab chain, morph and temporarily raised view.
     // Wayfire's drag controller and the animation timers remain renderer/input resources.
@@ -4016,6 +4024,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (view && view->is_mapped() && !is_widget(view))
         {
             set_above(view, false);
+            // Back with the ordinary windows, it must not end up in front of the one the user is on.
+            auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            if (active && (active != view) && active->is_mapped())
+            {
+                wf::get_core().default_wm->focus_raise_view(active);
+            }
         }
     }
 
@@ -4097,6 +4111,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // a widget dragged off its rail turns back into its window the same way; the drop keeps the
     // shape shown. The widget is launched (unseen) when the drag first reaches the rail; until
     // it shows, the frame reshapes around the window's own contents.
+
     wf::wl_timer<true> morph_tick;
 
     /** Is the dragged view showing its widget shape (or heading there)? */
@@ -4262,7 +4277,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         // The other form's size on screen: the widget at 100%, or the window at the scale it would
         // have where the frame is now.
+        // Until the widget exists (its program takes a moment to start the first time), aim for
+        // the size the default card will have for this window: its text, up to the card's maximum,
+        // or the square icon when widgets are collapsed.
         double w = PROVISIONAL_WIDGET_W, h = PROVISIONAL_WIDGET_H, scale = 1.0;
+        if (!model.drag.morph->from_widget)
+        {
+            size_t chars = std::max(dragged->get_title().size(), dragged->get_app_id().size());
+            w = model.collapsed ? h : std::clamp(102.0 + 7.6 * chars, h, 320.0);
+        }
+
         if (model.drag.morph->from_widget && other)
         {
             auto output = output_alive(drag->current_output) ? drag->current_output : dragged->get_output();
@@ -4277,11 +4301,24 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             h = g.height;
         }
 
+        // The widget's size it aims for changes when the widget appears: follow it smoothly
+        // (~150 ms) instead of snapping.
+        if ((model.drag.morph->shown_w <= 0) || model.drag.morph->from_widget)  // a window's size tracks the pointer exactly (L8)
+        {
+            model.drag.morph->shown_w = w;
+            model.drag.morph->shown_h = h;
+        } else
+        {
+            double follow = 1.0 - std::exp(-8.0 / 50.0);
+            model.drag.morph->shown_w += (w - model.drag.morph->shown_w) * follow;
+            model.drag.morph->shown_h += (h - model.drag.morph->shown_h) * follow;
+        }
+
         frame->damage();
         frame->morph.shape = model.drag.morph->shape;
         frame->morph.fade  = model.drag.morph->fade;
-        frame->morph.w     = w;
-        frame->morph.h     = h;
+        frame->morph.w     = model.drag.morph->shown_w;
+        frame->morph.h     = model.drag.morph->shown_h;
         frame->morph.scale = scale;
         frame->morph.snapshot       = model.drag.morph->snapshot_ready ? model.drag.morph->snapshot : nullptr;
         frame->morph.snapshot_box   = model.drag.morph->snapshot_box;

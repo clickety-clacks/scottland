@@ -22,7 +22,7 @@ tenet decided it; when they conflict, ask Mike.
 a doc there and leave a one-line pointer in the invariants file. Current docs:
 
 - [docs/tenets.md](docs/tenets.md): what Scottland is for; how to decide unspecified edges.
-- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG18): what a widget is, how it's chosen,
+- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG19): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,

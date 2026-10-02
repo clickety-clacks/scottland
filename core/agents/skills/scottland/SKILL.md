@@ -77,6 +77,10 @@ Check the live value:
 scottland-ctl option scottland/touch_scroll
 ```
 
+Apps that ignore smooth scrolling (Ghostty) get it as a high-resolution wheel instead: list them in
+`touch_scroll_wheel = <app-id regex>` (shipped: Ghostty). Wheel mode is only for apps also listed in a
+`touch_scroll_<name>` entry.
+
 ## Other common settings (`[scottland]` unless noted)
 
 | Setting | What it does |

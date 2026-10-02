@@ -52,7 +52,7 @@
 		<option name="touch_scroll_wheel" type="string">
 			<_short>Touch scrolling as a wheel</_short>
 			<_long>Apps (app-id regex) that get touchscreen scrolling as a high-resolution wheel instead of smooth scrolling, for apps that ignore smooth scrolling from Scottland's pointer.</_long>
-			<default>^com\.mitchellh\.ghostty$</default>
+			<default></default>
 		</option>
 		<option name="minimize_widget" type="key">
 			<_short>Collapse widgets</_short>
