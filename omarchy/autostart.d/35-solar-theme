@@ -1,0 +1,3 @@
+#!/bin/sh
+# Apply Omarchy's selected day/night themes only when the current mode is wrong.
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-omarchy-solar-theme"

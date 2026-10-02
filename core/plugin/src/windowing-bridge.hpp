@@ -562,6 +562,7 @@
     {
         arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
+        apply_all_opacity();
         for (auto& [id, visual] : hint_visuals)
         {
             if (auto view = visual.view.lock()) clear_hint_dye(view.get());
@@ -579,6 +580,7 @@
         auto active = wf::get_core().seat->get_active_view();
         auto link = link_of_widget(active);
         window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
+        apply_all_opacity();
         for (auto& [id, widget] : model.widgets)
             if (widget.docked() && in_focus_mode(widget.output)) slide_widget(widget, false);
         palette_read = {}; // always read the current theme on entry

@@ -39,7 +39,7 @@ FocusScope {
   // The scroll viewport supplies its offset so popups follow rows and hide when clipped.
   property Item viewport: null
   property real scrollOffset: 0
-  property int rowHeight: 58
+  property int rowHeight: 68
   property int selected: 0
   property string typed: ""
   property int hovered: -1
@@ -218,12 +218,12 @@ FocusScope {
               && (!stack.viewport || (rowY >= 0 && rowY + stack.rowHeight <= stack.viewport.height + 1))
             onRowYChanged: if (visible) anchor.updateAnchor()
             anchor.item: rowItem
-            anchor.rect: Qt.rect(-28, 0, rowItem.width + 56, stack.rowHeight)
+            anchor.rect: Qt.rect(-44, 0, rowItem.width + 88, stack.rowHeight)
             anchor.edges: Edges.Right
             anchor.gravity: Edges.Right
             // Flip across the whole row at the screen edge. Never slide horizontally over it.
             anchor.adjustment: PopupAdjustment.FlipX | PopupAdjustment.SlideY
-            implicitWidth: 320
+            implicitWidth: 240
             implicitHeight: hintContent.implicitHeight + 28
             color: "transparent"
             grabFocus: false

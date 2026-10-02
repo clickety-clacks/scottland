@@ -104,7 +104,7 @@ def offset(id):
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds':False,'scottland/alt_hold_delay':100,
-        'scottland/key_friction':608.0,'scottland/key_impulse':335.0,'scottland/key_restitution':.5})
+        'scottland/key_friction':608.0,'scottland/key_impulse':335.0})
     outputs=sorted(ipc('window-rules/list-outputs'),key=lambda o:o['geometry']['x'])
     w,h=outputs[0]['geometry']['width'],outputs[0]['geometry']['height']
     a=launch('CoastA'); place('CoastA',w/2,h/2)

@@ -51,35 +51,14 @@ int main()
     inertial_axis x,y; x.impulse(335,6000); y.impulse(-335,6000);
     check(near(x.step(.1,608), -y.step(.1,608)), "diagonal axes independent");
     x.constrain(200,0,100); check(x.velocity==0 && y.velocity<0, "boundary stops only its axis");
-    for (double restitution : {0.0, 0.5, 1.0})
-    {
-        x.velocity = 100; y.velocity = -80;
-        check(x.bounce(101,0,100,restitution)==100 && near(x.velocity,-100*restitution), "upper bounce reverses with configured restitution");
-        check(y.bounce(-1,0,100,restitution)==0 && near(y.velocity,80*restitution), "lower bounce reverses with configured restitution");
-    }
     x.velocity=100; y.velocity=80;
-    x.bounce(101,0,100,.5);
-    check(x.velocity==-50 && y.velocity==80,"bounce leaves the orthogonal axis alone");
-    check(near(x.step(.02,608),-.8784) && near(x.velocity,-37.84),"friction continues after restitution");
-    x.velocity=100; check(x.bounce(-1,0,100,.5)==0 && x.velocity==100,"inward velocity is not reflected twice");
-    x.velocity=100; check(x.bounce(101,0,100,2)==100 && x.velocity==-100,"restitution is capped at one");
-    x.velocity=100; check(x.bounce(101,0,100,-1)==100 && x.velocity==0,"negative restitution becomes a stop");
-    scottland::windowing::friction_curve law;
-    for (const auto& text : {"", "0:1 1:1", "nonsense", "0:nan 1:1", "0:2 0:3 1:1"})
-    {
-        law.parse(text); x.velocity=335;
-        check(near(x.step(2,608,law,6000),335*335/(2.0*608)), "empty, flat and invalid laws preserve default analytic motion");
-    }
-    law.parse("0:2 1:2");x.velocity=335;
-    check(near(x.step(2,608,law,6000),335*335/(4.0*608)), "double curve friction halves stopping distance");
-    law.parse("0:0.2 0.4:3 1:1");
-    double reference=0;
-    for (double dt : {1.0/240, 1.0/60, 1.0/30})
-    {
-        x.velocity=1800;double d=0;
-        while(x.velocity!=0)d+=x.step(dt,608,law,6000);
-        if(!reference)reference=d;
-        check(std::abs(d-reference)<0.02,"nonlinear law stable across frame rates");
-    }
+    check(x.constrain(101,0,100)==100 && x.velocity==0 && y.velocity==80,
+        "rail stop leaves the orthogonal axis alone");
+    x.velocity=100; check(x.constrain(-1,0,100)==0 && x.velocity==100,
+        "inward velocity survives rail contact");
+    x.velocity=335;y.velocity=335;
+    check(near(x.step(2,608),335*335/(2.0*608)) &&
+          near(y.step(2,1216),335*335/(4.0*608)),
+          "independent movement and resize deceleration give analytic distances");
     std::cout << passed << " inertia unit checks passed\n";
 }

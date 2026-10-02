@@ -1,6 +1,8 @@
 // Included inside scottland_plugin_t. WG19 trigger state belongs to model.widgets;
 // this timer is only an input resource and never survives a plugin reload.
-static constexpr uint32_t PEEK_ENTER_MS = 150, PEEK_LEAVE_MS = 100;
+wf::option_wrapper_t<int> widget_peek_enter_delay{"scottland/widget_peek_enter_delay"};
+wf::option_wrapper_t<int> widget_peek_leave_delay{"scottland/widget_peek_leave_delay"};
+wf::option_wrapper_t<int> widget_attention_peek_duration{"scottland/widget_attention_peek_duration"};
 wf::wl_timer<true> widget_peek_tick;
 
 void reset_widget_peek(widget_link_t& link)
@@ -57,7 +59,7 @@ bool step_widget_peeks()
             if (inside != link.peek_pointer)
             {
                 link.peek_pointer = inside;
-                link.peek_hover_due = now + (inside ? PEEK_ENTER_MS : PEEK_LEAVE_MS);
+                link.peek_hover_due = now + uint32_t(inside ? int(widget_peek_enter_delay) : int(widget_peek_leave_delay));
             }
             if (link.peek_hover_due && int32_t(now - *link.peek_hover_due) >= 0)
             {

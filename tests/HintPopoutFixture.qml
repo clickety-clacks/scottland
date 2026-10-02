@@ -8,7 +8,7 @@ ShellRoot {
     anchors { top: true; right: true }
     margins { top: 176; right: 24 }
     implicitWidth: 560
-    implicitHeight: 98
+    implicitHeight: 110
     color: "#1c1d22"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.layer: WlrLayer.Overlay

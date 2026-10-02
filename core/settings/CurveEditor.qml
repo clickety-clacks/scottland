@@ -34,7 +34,7 @@ FocusScope {
     showing:helpHover.hovered || editor.activeFocus
     viewport:editor.viewport;scrollOffset:editor.scrollOffset
   }
-  implicitHeight: 282
+  implicitHeight: 340
   activeFocusOnTab: true
   function toX(v) { return plotLeft+v*plotWidth }
   function toY(v) { return plotTop+(maximum-v)/(maximum-minimum)*plotHeight }

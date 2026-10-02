@@ -22,11 +22,11 @@ PopupWindow {
   visible: control.visible && showing && !refreshing && (!viewport || controlY >= 0 && controlY + control.height <= viewport.height+1)
   onControlYChanged: if(visible)anchor.updateAnchor()
   anchor.item:control
-  anchor.rect:Qt.rect(-28,0,control.width+56,control.height)
+  anchor.rect:Qt.rect(-44,0,control.width+88,control.height)
   anchor.edges:Edges.Right
   anchor.gravity:Edges.Right
   anchor.adjustment:PopupAdjustment.FlipX|PopupAdjustment.SlideY
-  implicitWidth:320
+  implicitWidth:240
   implicitHeight:content.implicitHeight+28
   color:"transparent"
   grabFocus:false

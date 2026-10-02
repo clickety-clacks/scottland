@@ -379,6 +379,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     {
         focus_mix.set(0, 0);
         attention_mix.set(0, 0);
+        opacity_mix.set(1, 1);
     }
 
     ~frame_t()
@@ -445,6 +446,20 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     float get_translation_y() const override
     {
         return translation_y + (presentation ? presentation->dy : 0);
+    }
+
+    float get_alpha() const override
+    {
+        return alpha * float(opacity_mix);
+    }
+
+    void set_configured_opacity(double target)
+    {
+        target = std::clamp(target, 0.0, 1.0);
+        if (std::abs(target - opacity_target) < 0.0005) return;
+        opacity_target = target;
+        opacity_mix.animate(target);
+        start_ticking();
     }
 
     wf::pointf_t to_local(const wf::pointf_t& at) override
@@ -993,6 +1008,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double bulge_velocity = 0.0;
     wf::animation::simple_animation_t focus_mix{wf::create_option<int>(150)};
     wf::animation::simple_animation_t attention_mix{wf::create_option<int>(400)};
+    wf::animation::simple_animation_t opacity_mix{wf::create_option<int>(180)};
+    double opacity_target = 1.0;
 
   private:
     bool is_focused = false;
@@ -1108,7 +1125,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return false;  // breathing
         }
 
-        return (std::abs(dot_glow - dot_target) < 0.002) && !focus_mix.running() &&
+        return (std::abs(dot_glow - dot_target) < 0.002) && !focus_mix.running() && !opacity_mix.running() &&
                (std::abs(bulge - bulge_target) < 0.0005) && (std::abs(bulge_velocity) < 0.001) &&
                (std::abs(swell - swell_target) < 0.001) && (std::abs(swell_velocity) < 0.001);
     }
@@ -1137,7 +1154,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             bool goo = goo_enabled();
             // A touch lift also scales window content; preserve its full old/new
             // damage until the spring settles. Only halo-only ticks use goo bands.
-            bool content = !goo || bulge != bulge_target || bulge_velocity != 0;
+            bool content = !goo || bulge != bulge_target || bulge_velocity != 0 || opacity_mix.running();
             if (content) damage();
             step(dt);
             if (content) damage();

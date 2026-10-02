@@ -12,7 +12,9 @@ import tempfile
 import time
 
 repo = Path(__file__).resolve().parents[1]
-root = Path(tempfile.mkdtemp(prefix="scottland-key-layers-", dir=os.environ["XDG_RUNTIME_DIR"]))
+artifacts = repo / "build"
+artifacts.mkdir(exist_ok=True)
+root = Path(tempfile.mkdtemp(prefix="scottland-key-layers-", dir=artifacts))
 passes = failures = 0
 processes = []
 
