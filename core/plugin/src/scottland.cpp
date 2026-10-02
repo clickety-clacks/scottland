@@ -844,6 +844,36 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             std::clamp((double)max_scale, 0.05, 1.0), scale_curve, std::max(0.0, (double)blend_width));
     }
 
+    /** Is Alt held (alone or with others) on the keyboard? */
+    static bool alt_held()
+    {
+        auto keyboard = wlr_seat_get_keyboard(wf::get_core().get_current_seat());
+        return keyboard && (wlr_keyboard_get_modifiers(keyboard) & WLR_MODIFIER_ALT);
+    }
+
+    /** The scale a window shows: the one Alt pinned it at (L31), else its zone's. */
+    double scale_for(wayfire_toplevel_view view)
+    {
+        auto found = model.windows.find(view->get_id());
+        if ((found != model.windows.end()) && found->second.pinned_scale && !view->pending_fullscreen())
+        {
+            return *found->second.pinned_scale;
+        }
+
+        return placement_of(view).scale;
+    }
+
+    void pin_scale(wayfire_toplevel_view view, std::optional<double> scale)
+    {
+        auto& state = model.windows[view->get_id()];
+        if (state.pinned_scale != scale)
+        {
+            state.pinned_scale = scale;
+            LOGI("scottland: window ", view->get_id(), scale ? " keeps its scale (Alt)" : " follows its zone again");
+            publish_model();
+        }
+    }
+
     placement_t placement_of(wayfire_toplevel_view view)
     {
         auto output = view->get_output();
@@ -879,7 +909,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        set_scale(view, placement_of(view).scale);
+        set_scale(view, scale_for(view));
     }
 
     // Scale changes bigger than this animate; smaller ones (a drag moving through a continuous
@@ -1329,6 +1359,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double scale = 1.0;                           // target, never an animation sample
         bool focused = false;
         bool above = false;
+        std::optional<double> pinned_scale;          // kept by Alt while dragging (L31), else the zone's
         std::set<std::string> attention;
     };
 
@@ -2596,7 +2627,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 // Opened from the widget (a click), it grows out of it instead.
                 if (!grow)
                 {
-                    set_scale_now(window, placement_of(window).scale);
+                    set_scale_now(window, scale_for(window));
                 }
             }
 
@@ -4141,6 +4172,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         model.drag.started = true;
+        // Dragging it again without Alt: it follows the zones again (L31).
+        if (auto view = wf::toplevel_cast(drag->view); view && !alt_held() && !is_widget(view))
+        {
+            pin_scale(view, std::nullopt);
+        }
+
         if (model.drag.held_above.lock().get() == drag->view.get())
         {
             held_above_timer.disconnect();  // picked up again: above until this drag's drop
@@ -4916,6 +4953,27 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto zone_scale = [&] (double s) { return place_at(center_at(s), screen).scale; };
         model.drag.last_center = center_at(model.drag.target);
 
+        // Alt held while dragging: the window keeps the scale it has, wherever it goes, and keeps it
+        // when dropped there (L31). Letting go of Alt mid-drag returns it to the zones.
+        if (!is_widget(view))
+        {
+            if (alt_held())
+            {
+                auto& state = model.windows[view->get_id()];
+                if (!state.pinned_scale)
+                {
+                    pin_scale(view, model.drag.target);
+                }
+
+                model.drag.target = *state.pinned_scale;
+                set_scale(view, model.drag.target);
+                return;
+            } else if (model.windows[view->get_id()].pinned_scale)
+            {
+                pin_scale(view, std::nullopt);
+            }
+        }
+
         double chosen = zone_scale(model.drag.target);
         if (std::abs(chosen - model.drag.target) > 0.001)
         {
@@ -5005,7 +5063,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto geometry = main->get_geometry();
             double screen = main->get_output()->get_relative_geometry().width;
             double center = geometry.x + geometry.width / 2.0;
-            if (std::abs(place_at(center, screen).scale - model.drag.target) > JUMP)
+            if (alt_held())
+            {
+                pin_scale(main, model.drag.target);  // dropped with Alt held: it stays this size (L31)
+            } else if (std::abs(place_at(center, screen).scale - model.drag.target) > JUMP)
             {
                 for (int d = 1; d <= 400; d++)
                 {
@@ -5032,7 +5093,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (dragged.view && dragged.view->is_mapped())
             {
-                set_scale(dragged.view, is_widget(dragged.view) ? 1.0 : placement_of(dragged.view).scale);
+                set_scale(dragged.view, is_widget(dragged.view) ? 1.0 : scale_for(dragged.view));
             }
         }
 

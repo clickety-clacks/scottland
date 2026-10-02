@@ -621,7 +621,7 @@ read -r ax ay aw ah <<<"$(view_field under-app "round(f['x']), round(f['y']), ro
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 6)) $((ay + ah / 2))
 sleep 2.5
 read -r ux uy <<<"$(views | python3 -c "import json,sys; f=[v for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('under-app')][0]['frame']; print(round(f['x'] + f['width'] / 2), round(f['y'] + f['height'] / 2))")"
-(tests/headless.sh run foot -T cover-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
+(tests/headless.sh run foot -T cover-app -o colors-dark.background=c00000 -o colors-light.background=c00000 -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)  # red: unlike any card
 sleep 1.5
 read -r ax ay aw ah <<<"$(view_field cover-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 on_top() { ipc window-rules/list-views | python3 -c "import json,sys; print([v['always-on-top'] for v in json.load(sys.stdin) if v['title']=='cover-app'][0])"; }
