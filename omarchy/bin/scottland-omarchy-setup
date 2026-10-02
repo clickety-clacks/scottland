@@ -7,7 +7,7 @@ menu=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc
 entries=(
   'system.scottland|  "system.scottland": {"icon":"󰍹","label":"Switch Desktop","description":"Scottland or Hyprland","action":"scottland-switch"},'
   'system.scottland-reload|  "system.scottland-reload": {"icon":"󰑓","label":"Reload Scottland","description":"Load updates in place","when":"printenv WAYFIRE_SOCKET >/dev/null","action":"scottland-reload"},'
-  'system.scottland-layout|  "system.scottland-layout": {"icon":"󰕰","label":"Scottland Layout","description":"Zone widths and scaling","action":"scottland-settings"},'
+  'system.scottland-layout|  "system.scottland-layout": {"icon":"󰕰","label":"Scottland Settings","description":"Zone widths and scaling","action":"scottland-settings"},'
 )
 
 mkdir -p "$(dirname "$menu")"

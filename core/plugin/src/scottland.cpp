@@ -4369,6 +4369,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Tests can't produce real touchpad gestures: this feeds the same handlers synthetic ones.
     wf::ipc::method_callback test_input = [=] (wf::json_t data) -> wf::json_t
     {
+        // Real wlroots pointer-axis input for isolated settings scroll tests. This is
+        // deliberately unavailable in ordinary sessions, and never sets QML state.
+        if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("scroll_y"))
+        {
+            if (!touch_pointer) touch_pointer = std::make_unique<virtual_pointer_t>();
+            touch_pointer->scroll(0, data["scroll_y"].as_double(),
+                data.has_member("wheel") && data["wheel"].as_bool());
+        }
         if (data.has_member("touchpad_pointers"))
         {
             test_touchpad_pointers = data["touchpad_pointers"].as_bool();

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Scottland Settings
+Comment=Layout, goo and Window mode
+Exec=scottland-exec -- scottland-settings
+Icon=preferences-desktop
+Categories=Settings;DesktopSettings;

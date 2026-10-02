@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read and change Scottland's live layout and goo settings through Wayfire IPC.
+"""Read and change Scottland's live layout, goo and Window mode settings through Wayfire IPC.
 
   scottland-ctl get                      print the layout settings as JSON
   scottland-ctl set scale_curve "0:1 0.4:0.6 1:0.2"
@@ -22,9 +22,9 @@ GOO = ("goo", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief",
        "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
-NAMES += GOO
-NAMES += ("cycle_overshoot",)
-TEXT = ("scale_curve", "goo_falloff")
+NAMES += GOO + ("cycle_overshoot", "key_impulse", "key_friction", "key_max_velocity", "key_restitution",
+                "alt_hold_delay", "window_double_tap_delay", "move_friction_curve", "resize_friction_curve")
+TEXT = ("scale_curve", "goo_falloff", "move_friction_curve", "resize_friction_curve")
 
 
 def connect():

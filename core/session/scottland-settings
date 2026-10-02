@@ -1,5 +1,5 @@
 #!/bin/sh
-# Open the Scottland layout settings (zone widths and minimum scale).
+# Open the Scottland Settings (layout, goo and Window mode).
 hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}"
 # The session's own copy (its helpers folder: the dev install, a test session's checkout), else
 # the package's.
