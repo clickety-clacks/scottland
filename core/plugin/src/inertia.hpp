@@ -8,6 +8,7 @@ struct inertial_axis
     double velocity = 0;
     void impulse(double amount, double maximum);
     double step(double seconds, double deceleration);
+    double bounce(double position, double minimum, double maximum, double restitution);
     double constrain(double position, double minimum, double maximum);
 };
 }

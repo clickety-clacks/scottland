@@ -71,6 +71,11 @@
             <min>1</min>
             <max>3000</max>
         </option>
+        <option name="key_restitution" type="double">
+            <_short>Keyboard edge bounce restitution</_short>
+            <_long>Fraction of outward velocity retained, reversed, when keyboard motion reaches an exposed screen boundary. Mouse and touch drops are unaffected.</_long>
+            <default>0.5</default><min>0</min><max>1</max>
+        </option>
         <option name="key_impulse" type="double">
             <_short>Window arrow impulse (px/s)</_short>
             <default>335</default>

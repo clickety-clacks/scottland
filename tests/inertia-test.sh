@@ -12,3 +12,11 @@ cleanup() {
 }
 trap cleanup EXIT
 tests/headless.sh run python3 tests/inertia-test.py "$artifacts"
+cleanup
+trap - EXIT
+export SCOTTLAND_TEST_OUTPUTS=2
+artifacts=$SCOTTLAND_HEADLESS_DIR.inertia-two-output-artifacts
+mkdir -p "$artifacts"
+tests/headless.sh start --widgets
+trap cleanup EXIT
+tests/headless.sh run python3 tests/inertia-test.py "$artifacts" --two-outputs

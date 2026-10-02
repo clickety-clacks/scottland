@@ -40,5 +40,18 @@ int main()
     inertial_axis x,y; x.impulse(335,6000); y.impulse(-335,6000);
     check(near(x.step(.1,608), -y.step(.1,608)), "diagonal axes independent");
     x.constrain(200,0,100); check(x.velocity==0 && y.velocity<0, "boundary stops only its axis");
+    for (double restitution : {0.0, 0.5, 1.0})
+    {
+        x.velocity = 100; y.velocity = -80;
+        check(x.bounce(101,0,100,restitution)==100 && near(x.velocity,-100*restitution), "upper bounce reverses with configured restitution");
+        check(y.bounce(-1,0,100,restitution)==0 && near(y.velocity,80*restitution), "lower bounce reverses with configured restitution");
+    }
+    x.velocity=100; y.velocity=80;
+    x.bounce(101,0,100,.5);
+    check(x.velocity==-50 && y.velocity==80,"bounce leaves the orthogonal axis alone");
+    check(near(x.step(.02,608),-.8784) && near(x.velocity,-37.84),"friction continues after restitution");
+    x.velocity=100; check(x.bounce(-1,0,100,.5)==0 && x.velocity==100,"inward velocity is not reflected twice");
+    x.velocity=100; check(x.bounce(101,0,100,2)==100 && x.velocity==-100,"restitution is capped at one");
+    x.velocity=100; check(x.bounce(101,0,100,-1)==100 && x.velocity==0,"negative restitution becomes a stop");
     std::cout << passed << " inertia unit checks passed\n";
 }

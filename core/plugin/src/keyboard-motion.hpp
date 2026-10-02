@@ -2,6 +2,7 @@
     wf::option_wrapper_t<double> key_impulse{"scottland/key_impulse"};
     wf::option_wrapper_t<double> key_friction{"scottland/key_friction"};
     wf::option_wrapper_t<double> key_max_velocity{"scottland/key_max_velocity"};
+    wf::option_wrapper_t<double> key_restitution{"scottland/key_restitution"};
     using motion_clock = std::chrono::steady_clock;
     struct keyboard_motion
     {
@@ -60,6 +61,62 @@
     {
         arrow_repeats.clear(); fullscreen_impulses.clear(); keyboard_motions.clear(); keyboard_tick.disconnect();
     }
+    // A seam is open only where the center's orthogonal coordinate meets a touching
+    // output and the workarea reaches that physical edge. Gaps and reserved edges bounce.
+    std::array<wf::output_t*, 4> keyboard_neighbors(wf::output_t *output, double x, double y)
+    {
+        std::array<wf::output_t*, 4> neighbors{}; // left, right, top, bottom
+        auto box = output->get_layout_geometry();
+        auto area = output->workarea->get_workarea();
+        double gx = box.x + x, gy = box.y + y;
+        for (auto other : wf::get_core().output_layout->get_outputs())
+        {
+            if (other == output) continue;
+            auto b = other->get_layout_geometry();
+            if (gy >= b.y && gy < b.y + b.height)
+            {
+                if (area.x == 0 && b.x + b.width == box.x) neighbors[0] = other;
+                if (area.x + area.width == box.width && b.x == box.x + box.width) neighbors[1] = other;
+            }
+            if (gx >= b.x && gx < b.x + b.width)
+            {
+                if (area.y == 0 && b.y + b.height == box.y) neighbors[2] = other;
+                if (area.y + area.height == box.height && b.y == box.y + box.height) neighbors[3] = other;
+            }
+        }
+        return neighbors;
+    }
+    void keyboard_bounds(wayfire_toplevel_view view, keyboard_motion& m, bool bounce)
+    {
+        auto screen = view->get_output()->get_relative_geometry();
+        auto area = view->get_output()->workarea->get_workarea();
+        auto g = view->get_geometry();
+        auto neighbors = keyboard_neighbors(view->get_output(), m.x, m.y);
+        double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        auto fits = [&] (double x, bool left) {
+            double scale = place_at(x, screen.width).scale;
+            double w = g.width * scale;
+            auto pa = padded(area, w, g.height * scale);
+            return left ? x - w / 2 >= std::max(double(pa.x), rail) :
+                x + w / 2 <= std::min(double(pa.x + pa.width), screen.width - rail);
+        };
+        double lo = rail + 0.01, hi = screen.width - rail - 0.01;
+        double a = lo, b = screen.width / 2.0;
+        if (fits(b, true)) { for (int n = 0; n < 40; ++n) { double x=(a+b)/2; if (fits(x,true)) b=x; else a=x; } lo=b; }
+        a = screen.width / 2.0; b = hi;
+        if (fits(a, false)) { for (int n = 0; n < 40; ++n) { double x=(a+b)/2; if (fits(x,false)) a=x; else b=x; } hi=a; }
+        if (neighbors[0]) lo = -std::numeric_limits<double>::infinity();
+        if (neighbors[1]) hi = std::numeric_limits<double>::infinity();
+        if (bounce) m.x = m.vx.bounce(m.x, lo, hi, key_restitution);
+        else m.x = std::clamp(m.x, lo, std::max(lo, hi));
+        double scale = place_at(m.x, screen.width).scale;
+        auto pa = padded(area, g.width * scale, g.height * scale);
+        double half = std::min(g.height * scale, double(pa.height)) / 2;
+        lo = neighbors[2] ? -std::numeric_limits<double>::infinity() : pa.y + half;
+        hi = neighbors[3] ? std::numeric_limits<double>::infinity() : pa.y + pa.height - half;
+        if (bounce) m.y = m.vy.bounce(m.y, lo, hi, key_restitution);
+        else m.y = std::clamp(m.y, lo, std::max(lo, hi));
+    }
     void recenter_keyboard_resize(wayfire_toplevel_view view)
     {
         if (recentering_keyboard) return;
@@ -69,6 +126,7 @@
         // A late transaction starts its own quiet period; do not drop the anchor while
         // a client is still committing rejected/minimum or cell-snapped sizes.
         motion.settle_until = motion_clock::now() + std::chrono::milliseconds(300);
+        if (!motion.restoring) keyboard_bounds(view, motion, false);
         auto g = view->get_geometry();
         double x = std::round(motion.x - g.width / 2.0), y = std::round(motion.y - g.height / 2.0);
         if (std::abs(g.x - x) > 0.001 || std::abs(g.y - y) > 0.001)
@@ -97,6 +155,13 @@
                 continue;
             }
             auto from = view->get_geometry();
+            if (output_alive(origin.output) && view->get_output() != origin.output)
+            {
+                auto source = view->get_output()->get_layout_geometry();
+                auto target = origin.output->get_layout_geometry();
+                from.x += source.x - target.x; from.y += source.y - target.y;
+                wf::move_view_to_output(view, origin.output, false);
+            }
             auto& state = model.windows.at(id);
             state.pinned_scale = origin.pin; state.placement = origin.memory;
             // A hint cycle may have changed form before an arrow. Use WG14's lifecycle path.
@@ -229,12 +294,27 @@
             }
             double dx = m.vx.step(dt, key_friction), dy = m.vy.step(dt, key_friction);
             m.x += dx; m.y += dy;
-            auto screen = view->get_output()->get_relative_geometry();
+            // Transfer only when the center crosses the physical seam. Keep velocity and
+            // the global center; neither a crossing nor a bounce is a widget lifecycle action.
+            if (!is_widget(view))
+            {
+                auto source = view->get_output();
+                auto box = source->get_layout_geometry();
+                auto neighbors = keyboard_neighbors(source, m.x, m.y);
+                auto next = m.x < 0 ? neighbors[0] : m.x >= box.width ? neighbors[1] :
+                    m.y < 0 ? neighbors[2] : m.y >= box.height ? neighbors[3] : nullptr;
+                if (next)
+                {
+                    auto target = next->get_layout_geometry();
+                    m.x += box.x - target.x; m.y += box.y - target.y;
+                    wf::move_view_to_output(view, next, false);
+                }
+            }
             auto area = view->get_output()->workarea->get_workarea();
             if (auto link = link_of_widget(view))
             {
-                m.y = m.vy.constrain(m.y, area.y + WIDGET_INSET + g.height / 2.0,
-                    area.y + area.height - WIDGET_INSET - g.height / 2.0);
+                m.y = m.vy.bounce(m.y, area.y + WIDGET_INSET + g.height / 2.0,
+                    area.y + area.height - WIDGET_INSET - g.height / 2.0, key_restitution);
                 link->drop = {m.x, m.y}; place_widget(view, view->get_output(), *link);
             } else
             {
@@ -256,26 +336,7 @@
                     pending.geometry = {g.x, g.y, std::round(m.width), std::round(m.height)};
                     wf::get_core().tx_manager->schedule_object(view->toplevel());
                 }
-                // Horizontal bounds use the footprint at the candidate center. Solve each edge
-                // independently, since natural scale varies with x; never push a window onto a rail.
-                double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
-                auto fits = [&] (double x, bool left) {
-                    double w = g.width * place_at(x, screen.width).scale;
-                    auto pa = padded(area, w, g.height * place_at(x, screen.width).scale);
-                    return left ? x - w / 2 >= std::max(double(pa.x), rail) :
-                        x + w / 2 <= std::min(double(pa.x + pa.width), screen.width - rail);
-                };
-                double lo = rail + 0.01, hi = screen.width - rail - 0.01;
-                double a = lo, b = screen.width / 2.0;
-                if (fits(b, true)) { for (int n = 0; n < 40; ++n) { double x = (a+b)/2; if (fits(x,true)) b=x; else a=x; } lo=b; }
-                a = screen.width / 2.0; b = hi;
-                if (fits(a, false)) { for (int n = 0; n < 40; ++n) { double x=(a+b)/2; if (fits(x,false)) a=x; else b=x; } hi=a; }
-                // Resizing keeps its center. Movement alone applies movement bounds.
-                if (dx != 0 || !m.resizing) m.x = m.vx.constrain(m.x, lo, hi);
-                double scale = place_at(m.x, screen.width).scale;
-                auto pa = padded(area, g.width * scale, g.height * scale);
-                double half = std::min(g.height * scale, double(pa.height)) / 2;
-                if (dy != 0 || !m.resizing) m.y = m.vy.constrain(m.y, pa.y + half, pa.y + pa.height - half);
+                keyboard_bounds(view, m, true);
                 auto actual = view->get_geometry();
                 double x = m.x - actual.width / 2.0, y = m.y - actual.height / 2.0;
                 // Match L20's centering at the client's pixel grid, including odd dimensions.
