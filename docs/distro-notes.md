@@ -24,6 +24,10 @@ come up, so the decision isn't lost while there is nowhere better to put them.
   libinput's tap-and-drag.
 - **A notification daemon with a do-not-disturb control, and a `focus.d` hook for it**, so full screen
   holds notifications (FS1, tenet 6). On Omarchy the adapter provides this.
+- **Super+, opens Scottland Layout**, winning over an Omarchy shortcut on the same keys (Omarchy's
+  "dismiss last notification"). Scottland ships the binding as a default, but its Omarchy shortcut
+  importer lets a user's existing Omarchy shortcut win on the same keys (O5); the distro makes this
+  one win. Mike has it today in his own overrides.ini.
 - **Which terminal Super+Enter opens** (`command_terminal`, today `ghostty` in core's shipped config).
 - **Linking Scottland's agent skill into the coding agents a user runs** (today core's
   autostart.d/02-link-agent-skills picks Claude Code, Codex, pi, Hermes).
