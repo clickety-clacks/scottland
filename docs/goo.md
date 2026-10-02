@@ -8,8 +8,9 @@ https://claude.ai/artifact/VHTqdn4TqvSN8kZ8CoRV64 (Scottland Goo Lab; its source
 [prototypes/goo-lab.html](prototypes/goo-lab.html)).
 
 This doc is the design and implementation record. `scottland/goo` selects it live; the shipped
-default is **true**. Switching it off, or a GPU unable to run it, retains separate per-window halo bands. A3, A4, A6, A9, A10 and A11's goo behavior is
-restated below; the original halo remains available.
+default is **true**. Switching it off, or a GPU unable to run it, retains separate per-window
+halo bands. A3, A4, A6, A9, A10 and A11's goo behavior is restated below; the original halo
+remains available.
 
 ## Model
 
@@ -80,6 +81,11 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
   Corners gain a Gaussian deposit of dye and density, with no separate corner patch. For A5's 12 pt
   minimum target, the same field is dilated only as far as needed. A shared bridge's strongest
   contributing window owns its input; existing stable source order breaks exact ties.
+- **Window-mode hints (WK14):** the transient frame color feeds the same goo source dye.
+  Palette recoloring is immediate while hints show; a two-logical-pixel full-color rim is
+  evaluated against the source rectangles and clipped by the same window union. The field's
+  clinging reserve includes that rim even at 5% scale. It adds no per-window joining layer and
+  clears with the existing hint lifecycle, without changing focus or attention state.
 - **A7:** the existing dwell, proximity, drag and linger rules remain. Full reveal is twice the
   full-size goo thickness (26 pt at the preset), independent of window scale; the Swell control
   scales that response. Swells and grabs excite waves.

@@ -186,7 +186,7 @@ uniform highp float thickness;   // halo thickness on screen (with the swell)
 uniform highp float ripple;      // goo ripple amplitude (px)
 uniform highp float phase;       // animation clock
 uniform highp float aa;          // px per fragment
-uniform highp vec4 hint_dye;     // transient Alt dye: shared hook for a future screen-wide goo
+uniform highp vec4 hint_dye;     // transient Alt dye for the fallback halo
 uniform highp float hint_border; // logical px, independent of window/output scale
 uniform highp vec3 tone;         // base color
 uniform highp float density;     // base opacity
@@ -707,7 +707,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return {(r.x1 + r.x2) / 2, r.y2 + thickness() / 2};
     }
 
-    /** How far the drawn halo, its swell and its merging can reach outside the window. */
+    /** How far the drawn halo, its swell and close dot can reach outside the window. */
     double margin() const
     {
         // Goo is drawn/damaged by its output node. Keep the view's box stable: Wayfire's

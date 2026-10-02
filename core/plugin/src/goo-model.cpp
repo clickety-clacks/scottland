@@ -127,7 +127,7 @@ float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_
                         glm::vec2{time * s.drift, -time * s.drift * .73});
         float scale = std::clamp(w.scale, 0.f, 1.f);
         float a = std::max(w.liquid.x * (1 + s.noise * scale * (n - .5f) * 2),
-                           s.threshold()/std::max(s.fall(s.thickness*.1f*scale), .0001f));
+                           s.threshold()/std::max(s.fall(std::max(s.thickness*.1f*scale, w.hint_border)), .0001f));
         // Smooth state deposits: corners and the dot thicken this same field.
         for (int k = 0; k < 4; k++)
         {

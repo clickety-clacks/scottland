@@ -47,6 +47,15 @@ int main()
     s.swell = .7;
     amounts(windows, s);
     assert(windows[0].liquid.x > unswollen && windows[1].liquid.x == 0);
+    // WK14: a hinted 5% window still has a two-logical-pixel field target.
+    windows = {a};
+    windows[0].scale = .05f;
+    windows[0].hint_border = 2;
+    amounts(windows, s);
+    auto probe = glm::vec2{a.rect.x + a.rect.z + 1.5f, a.rect.y};
+    assert(density(probe, windows, s, 0) > s.threshold());
+    windows[0].hint_border = 0;
+    assert(density(probe, windows, s, 0) < s.threshold());
     std::cout << "PASS goo model: falloff, bridge/snap, volume draw, union clipping, finite input, curve "
                  "validation, swell control, fullscreen islands\n";
 }

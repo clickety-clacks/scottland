@@ -18,6 +18,7 @@ struct source_t
     glm::vec4 corners{};
     glm::vec4 dot{}; // center, glow, radius
     float scale = 1, swell = 0;
+    float hint_border = 0; // transient logical-pixel rim; dye carries its hint color
     bool attention = false, grabbed = false, light = false, emitter = true;
 };
 
