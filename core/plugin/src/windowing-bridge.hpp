@@ -12,12 +12,63 @@
         std::weak_ptr<wf::view_interface_t> view;
         std::shared_ptr<scottland::windowing::hint_node> hint;
         wf::output_t *hint_output = nullptr;
+        std::shared_ptr<scottland::windowing::fullscreen_hint_node> fullscreen_tint;
         std::shared_ptr<wf::scene::view_2d_transformer_t> offset;
         scottland::windowing::point target;
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
     std::string declutter_signature;
     wf::wl_idle_call hint_registration;
+
+    scottland::windowing::hint_palette hints_palette;
+    std::chrono::steady_clock::time_point palette_read;
+    std::map<unsigned, scottland::windowing::hint_rgb> hint_colors;
+    scottland::windowing::hint_rgb color_for_hint(unsigned slot)
+    {
+        auto [it, inserted] = hint_colors.try_emplace(slot);
+        if (inserted) it->second = scottland::windowing::hint_color(slot, hints_palette);
+        return it->second;
+    }
+    void refresh_hint_palette()
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (now - palette_read < std::chrono::milliseconds(250)) return;
+        palette_read = now;
+        hint_colors.clear();
+        hints_palette.light = scottland::palette.light;
+        hints_palette.accent = {scottland::palette.accent.r, scottland::palette.accent.g,
+            scottland::palette.accent.b};
+        hints_palette.background = hints_palette.light ? scottland::windowing::hint_rgb{0.957, 0.961, 0.969} :
+            scottland::windowing::hint_rgb{0.122, 0.137, 0.173};
+        hints_palette.foreground = hints_palette.light ? scottland::windowing::hint_rgb{0.137, 0.165, 0.208} :
+            scottland::windowing::hint_rgb{0.847, 0.871, 0.914};
+        const char *override_path = std::getenv("SCOTTLAND_PALETTE");
+        std::ifstream in(override_path ? override_path : runtime_file(".palette.json"));
+        if (!in) return;
+        wf::json_t colors; std::string contents((std::istreambuf_iterator<char>(in)), {});
+        if (wf::json_t::parse_string(contents, colors) || !colors.is_object()) return;
+        if (colors["scheme"].as_string() == "light") hints_palette.light = true;
+        else if (colors["scheme"].as_string() == "dark") hints_palette.light = false;
+        auto read = [&] (const char *name, scottland::windowing::hint_rgb& color) {
+            auto value = colors[name].as_string();
+            if (value.size() != 7 || value[0] != '#' ||
+                value.find_first_not_of("0123456789abcdefABCDEF", 1) != std::string::npos) return;
+            unsigned rgb = std::stoul(value.substr(1), nullptr, 16);
+            color = {double((rgb >> 16) & 255) / 255, double((rgb >> 8) & 255) / 255, double(rgb & 255) / 255};
+        };
+        read("background", hints_palette.background); read("foreground", hints_palette.foreground);
+        read("accent", hints_palette.accent);
+    }
+    scottland::rectf_t hint_rectangle(wayfire_toplevel_view view)
+    {
+        if (auto frame = frame_of(view, false)) return frame->screen_rect();
+        auto g = view->get_geometry();
+        return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
+    }
+    void clear_hint_dye(wf::view_interface_t *view)
+    {
+        if (auto frame = frame_of(wf::toplevel_cast(view), false)) frame->set_hint_dye(std::nullopt);
+    }
 
     scottland::windowing::zone window_zone(wayfire_toplevel_view view)
     {
@@ -297,6 +348,7 @@
 
     bool step_hints()
     {
+        if (window_keys.active) refresh_hint_palette();
         auto entries = window_entries();
         if (window_keys.active) window_keys.refresh(entries);
         std::set<uint64_t> represented;
@@ -319,15 +371,21 @@
             auto& visual = found->second;
             if (visual.view.lock().get() != view.get())
             {
-                if (auto old = visual.view.lock()) old->get_transformed_node()->rem_transformer("scottland-hint-offset");
+                if (auto old = visual.view.lock()) { clear_hint_dye(old.get());
+                    old->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
                 if (visual.hint) wf::scene::remove_child(visual.hint);
-                visual.hint.reset(); visual.view = view->weak_from_this();
+                visual.hint.reset();
+                if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
+                visual.fullscreen_tint.reset(); visual.view = view->weak_from_this();
                 visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
                 view->get_transformed_node()->add_transformer(visual.offset, wf::TRANSFORMER_HIGHLEVEL - 1,
                     "scottland-hint-offset");
             }
             auto g = view->get_geometry();
             signature << e.id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' << view->get_output()->to_string() << ';';
+            auto r = hint_rectangle(view);
+            signature << ':' << std::round((r.x1 + r.x2) / 2) << ',' << std::round((r.y1 + r.y2) / 2)
+                << ',' << std::round(scottland::windowing::hint_badge_size(r.width(), r.height())) << ';';
             by_output[view->get_output()].push_back(e.id);
         }
         if (window_keys.active && signature.str() != declutter_signature)
@@ -336,11 +394,13 @@
             for (auto& [output, ids] : by_output)
             {
                 std::vector<scottland::windowing::point> anchors;
-                for (auto id : ids) { auto g = represented_view(id)->get_geometry();
-                    anchors.push_back({g.x + g.width / 2.0, g.y + g.height / 2.0}); }
+                std::vector<double> diameters;
+                for (auto id : ids) { auto r = hint_rectangle(represented_view(id));
+                    anchors.push_back({(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2});
+                    diameters.push_back(std::round(scottland::windowing::hint_badge_size(r.width(), r.height()))); }
                 auto screen = output->get_relative_geometry();
                 auto displaced = scottland::windowing::declutter(anchors,
-                    {40, 40, std::max(0.0, screen.width - 80), std::max(0.0, screen.height - 80)});
+                    {0, 0, double(screen.width), double(screen.height)}, 6, diameters);
                 for (size_t i = 0; i < ids.size(); ++i)
                     hint_visuals[ids[i]].target = {displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
             }
@@ -351,8 +411,10 @@
             auto& visual = it->second; auto view = wf::toplevel_cast(visual.view.lock());
             if (!view || !represented.count(it->first))
             {
-                if (view) view->get_transformed_node()->rem_transformer("scottland-hint-offset");
+                if (view) { clear_hint_dye(view.get());
+                    view->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
                 if (visual.hint) wf::scene::remove_child(visual.hint);
+                if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
                 it = hint_visuals.erase(it); continue;
             }
             auto offset = visual.offset;
@@ -376,12 +438,27 @@
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
                     wf::scene::add_front(view->get_output()->node_for_layer(wf::scene::layer::OVERLAY), visual.hint);
                 }
-                auto g = view->get_geometry(); double x = g.x + g.width / 2.0, y = g.y + g.height / 2.0;
-                if (auto frame = frame_of(view, false)) { auto r = frame->screen_rect(); x = (r.x1 + r.x2) / 2; y = (r.y1 + r.y2) / 2; }
-                auto text = upper(window_keys.label(ensure_window_memory(it->first).hint_slot));
-                auto accent = scottland::palette.accent;
+                auto r = hint_rectangle(view);
+                double x = (r.x1 + r.x2) / 2, y = (r.y1 + r.y2) / 2;
+                unsigned slot = ensure_window_memory(it->first).hint_slot;
+                auto text = upper(window_keys.label(slot));
+                auto color = color_for_hint(slot);
+                if (auto frame = frame_of(view, false))
+                {
+                    frame->set_hint_dye(glm::vec3{color.r, color.g, color.b});
+                    if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
+                    visual.fullscreen_tint.reset();
+                } else if (view->pending_fullscreen())
+                {
+                    if (!visual.fullscreen_tint)
+                    {
+                        visual.fullscreen_tint = std::make_shared<scottland::windowing::fullscreen_hint_node>();
+                        wf::scene::add_front(visual.offset, visual.fullscreen_tint);
+                    }
+                    visual.fullscreen_tint->update(view->get_geometry(), color);
+                }
                 visual.hint->update(x + offset->translation_x, y + offset->translation_y, text,
-                    window_keys.selected == it->first, scottland::palette.light, accent.r, accent.g, accent.b,
+                    scottland::windowing::hint_badge_size(r.width(), r.height()), color,
                     view->get_output()->get_scale());
             } else
             {
@@ -397,7 +474,12 @@
     {
         window_keys.end(); declutter_signature.clear();
         for (auto& [id, visual] : hint_visuals)
+        {
+            if (auto view = visual.view.lock()) clear_hint_dye(view.get());
+            if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
+            visual.fullscreen_tint.reset();
             if (visual.hint) { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
+        }
         for (auto& [id, link] : model.widgets)
             if (link.docked() && in_focus_mode(link.output)) slide_widget(link, true);
     }
@@ -410,6 +492,7 @@
         window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
         for (auto& [id, widget] : model.widgets)
             if (widget.docked() && in_focus_mode(widget.output)) slide_widget(widget, false);
+        palette_read = {}; // always read the current theme on entry
         declutter_signature.clear(); step_hints();
         hints_tick.set_timeout(8, [=] () { return step_hints(); });
     }
@@ -488,7 +571,19 @@
             wf::json_t item; item["window"] = int64_t(e.id); item["hint"] = window_keys.label(e.slot);
             item["visible"] = window_keys.active && hint_visuals.count(e.id) && bool(hint_visuals[e.id].hint);
             auto visible = represented_view(e.id);
-            if (visible) { auto g = visible->get_geometry(); item["x"] = g.x; item["y"] = g.y; }
+            if (visible)
+            {
+                auto g = visible->get_geometry(); item["x"] = g.x; item["y"] = g.y;
+                if (item["visible"].as_bool())
+                {
+                    auto& badge = hint_visuals[e.id].hint->box;
+                    item["badge"] = wf::json_t(); item["badge"]["x"] = badge.x; item["badge"]["y"] = badge.y;
+                    item["badge"]["size"] = badge.width;
+                    auto color = color_for_hint(e.slot);
+                    item["color"] = wf::json_t::array();
+                    item["color"].append(color.r); item["color"].append(color.g); item["color"].append(color.b);
+                }
+            }
             item["dx"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_x) : 0.0;
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
             item["memories"] = wf::json_t::array();
@@ -537,7 +632,9 @@
         for (auto& [id, visual] : hint_visuals)
         {
             if (visual.hint) wf::scene::remove_child(visual.hint);
-            if (auto view = visual.view.lock()) view->get_transformed_node()->rem_transformer("scottland-hint-offset");
+            if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
+            if (auto view = visual.view.lock()) { clear_hint_dye(view.get());
+                view->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
         }
         hint_visuals.clear();
     }

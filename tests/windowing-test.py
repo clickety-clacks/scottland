@@ -465,7 +465,9 @@ try:
     # Capacity changes the label width, not the stable assignment slots.
     ids = [launch(f'Overflow{i:02}') for i in range(27)]
     check(hint(ids[0])['hint'] == 'aa' and hint(ids[-1])['hint'] == 'sa', '27 open windows use prefix-free two-letter hints')
-    hold(); choose(ids[-1])
+    hold()
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'double-hints.png')], check=True)
+    choose(ids[-1])
     check(focused() == ids[-1], 'real two-letter hint selects the overflow window')
     release()
     ipc('window-rules/close-view', {'id': ids[-1]})
