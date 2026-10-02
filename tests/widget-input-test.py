@@ -5,6 +5,10 @@ Run in an otherwise empty --widgets session. Optional arguments select cases.
 The caller owns the headless session; this test closes only windows it launches.
 """
 import argparse
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +17,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -271,7 +276,81 @@ def previews():
               prop == "b " + str(collapsed).lower(), prop)
 
 
-cases = {"key": held_key, "gravity": gravity, "previews": previews}
+def shortcuts():
+    if not args.log:
+        raise AssertionError("shortcut regression needs --log to locate its private config")
+    path = Path(__file__).resolve().parents[1] / "omarchy/config.d/50-omarchy-shortcuts"
+    loader = importlib.machinery.SourceFileLoader("shortcut_import", str(path))
+    importer = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(importer)
+    config = args.log.parent / "wayfire.ini"
+    original = config.read_text()
+    launch("shortcut-regression")
+    with tempfile.TemporaryDirectory(prefix="scottland-shortcuts-", dir=os.environ["XDG_RUNTIME_DIR"]) as work:
+        work = Path(work)
+        base, lua, marker = work / "base.ini", work / "hyprland.lua", work / "ran"
+        importer.HYPR_CONFIG = str(lua)
+        # Change only the fixture's path; scan the real Lua and run the real importer.
+        importer.LUA_SCAN = importer.LUA_SCAN.replace(
+            'os.getenv("HOME") .. "/.config/hypr/hyprland.lua"', json.dumps(str(lua)))
+
+        def generate(base_text, lua_text):
+            base.write_text(base_text)
+            lua.write_text(lua_text)
+            old_argv = sys.argv
+            try:
+                sys.argv = [str(path), str(base)]
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    importer.main()
+                return output.getvalue()
+            finally:
+                sys.argv = old_argv
+
+        try:
+            for name, keys, base_text, shift in (
+                ("metadata default", "SUPER+M", "[scottland]\n", False),
+                ("normalized modifiers", "SHIFT+SUPER+M", "[scottland]\nminimize_widget = <super> <shift> KEY_M\n", True),
+                ("multiple owners", "SUPER+M", "[command]\nbinding_fixture = <super> KEY_M\ncommand_fixture = true\n", False),
+            ):
+                marker.unlink(missing_ok=True)
+                command = "printf hit >> " + str(marker)
+                generated = generate(base_text, f'hl.bind("{keys}", hl.dsp.exec_cmd({json.dumps(command)}))\n')
+                check(f"O5 importer disables the conflicting {name}", "minimize_widget = none" in generated, generated)
+                config.write_text(original + "\n" + base_text + "\n" + generated)
+                time.sleep(0.8)  # Wayfire's config file watcher
+                before = minimized("shortcut-regression")
+                if shift:
+                    key("LEFTSHIFT", True)
+                toggle()
+                if shift:
+                    key("LEFTSHIFT", False)
+                wait_for(marker.exists)
+                time.sleep(0.1)
+                check(f"O5 real input runs the imported {name} command once", marker.read_text() == "hit")
+                check(f"O5 real input does not also toggle widgets ({name})",
+                      minimized("shortcut-regression") == before)
+            generated = generate("[scottland]\n", 'hl.bind("SUPER+M", function() end)\n')
+            check("O5 Lua-function import also disables the metadata default",
+                  "minimize_widget = none" in generated and "scottland-lua-call" in generated, generated)
+            generated = generate("[scottland]\nminimize_widget = <super> KEY_N\n",
+                                 'hl.bind("SUPER+M", "true")\n')
+            check("O5 an explicit binding replaces its metadata default during collision detection",
+                  "minimize_widget =" not in generated, generated)
+            generated = generate("[scottland]\nminimize_widget = none\n", 'hl.bind("SUPER+M", "true")\n')
+            check("O5 an explicit none overrides the metadata default", "minimize_widget =" not in generated)
+            generated = generate("[scottland]\n", 'hl.bind("CTRL+SUPER+M", "true")\n')
+            check("O5 extra modifiers are a different shortcut", "minimize_widget =" not in generated)
+            generated = generate(
+                "[wm-actions]\ntoggle_fullscreen = <super> KEY_M | <super> <shift> KEY_M | <super> KEY_N\n",
+                'hl.bind("SUPER+M", "true")\nhl.bind("SHIFT+SUPER+M", "true")\n')
+            check("O5 multiple normalized collisions preserve only the unclaimed alternative",
+                  "toggle_fullscreen = <super> KEY_N\n" in generated, generated)
+        finally:
+            config.write_text(original)
+            time.sleep(0.8)
+
+
+cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
 parser.add_argument("cases", nargs="*", choices=list(cases))

@@ -38,7 +38,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O2 | The Hyprland shim answers Hyprland IPC generically (monitors, clients, workspaces, devices, options, events, dispatch exec, send-key); unsupported requests are logged to `~/.local/state/scottland/hyprshim.log`. | verified |
 | O3 | Scottland's shortcuts are generated from the user's live Hyprland config at each session start and regenerated when that config changes; no copy is made at install. | implemented |
 | O4 | Window navigation, layout, workspace and group shortcuts are not imported. | implemented |
-| O5 | Where an imported shortcut collides with a Scottland default, the user's shortcut wins. | implemented |
+| O5 | Where an imported shortcut collides with a Scottland default, the user's shortcut wins. Collision detection includes Scottland metadata defaults after explicit base INI overrides, normalizes modifier order/case, and removes every conflicting owner while preserving unclaimed alternatives. | verified (plumbus headless 2026-10-01: 14 importer/input checks; five original regression checks failed before the fix) |
 | O6 | Lua-function shortcuts (Yoohoo Super+Tab, universal copy/cut/paste) run through the Lua host with their state intact. | implemented |
 | O7 | Key-release shortcuts work (Yoohoo accepts on Super release; Voxtype push-to-talk stops on release). | implemented |
 | O8 | Injected shortcuts reach the focused window with only their own modifiers; a physically held Super does not leak in (universal copy sends plain Ctrl+C / Ctrl+Insert). | implemented (headless) |
