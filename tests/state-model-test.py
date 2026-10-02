@@ -309,6 +309,9 @@ try:
     events.sock.close()
     audit("geometry filtered from external slice")
     # Re-grab during the ordinary drop hold, then Esc: it must rejoin the normal layer.
+    scene = next(v for v in ipc.call("window-rules/list-views") if v["id"] == c)
+    check("ordinary drop fixture is temporarily above widgets", scene["always-on-top"]
+          and ipc.call("scottland/desktop-model")["drag"]["held_above"] == c)
     view, _ = shown(c)
     f = view["frame"]
     drag(c, f["x"] + f["width"] / 2 + 20, cancel=True)

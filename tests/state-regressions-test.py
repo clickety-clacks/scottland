@@ -34,9 +34,13 @@ class Ipc:
 
 ipc = Ipc()
 def key(code, state): ipc.call('stipc/feed_key', {'key': code, 'state': state})
-def drag(window, x):
+def drag(window, x, absolute=False):
     view = next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == window)
-    f = view['frame']; sx = f['x'] + f['width']/2; sy = f['y'] + f['height']/2
+    info = next(v for v in ipc.call('window-rules/list-views') if v['id'] == window)
+    output = next(o for o in ipc.call('window-rules/list-outputs') if o['id'] == info['output-id'])
+    origin = output['geometry']
+    f = view['frame']; sx = f['x'] + 20 + origin['x']; sy = f['y'] + f['height']/2 + origin['y']
+    if not absolute: x += origin['x']
     ipc.call('stipc/move_cursor', {'x': round(sx), 'y': round(sy)})
     time.sleep(.1)
     key('KEY_LEFTMETA', True)
@@ -87,20 +91,24 @@ def main():
         full = open_app('scottland-regression-full')
         ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': True})
         time.sleep(.5)
+        assert not any(v['title'] == 'regression-late-widget' for v in ipc.call('scottland/layout-state')['views'])
         assert ipc.call('scottland/desktop-model')['focus'], 'fixture must promote fullscreen before widget maps'
         time.sleep(4)
         widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
         assert widget['widget'] and widget['hidden'], widget
         assert ipc.call('window-rules/get-focused-view')['info']['id'] == full
+        artifacts = Path(os.environ['XDG_RUNTIME_DIR'])/'scottland-model-artifacts'
+        artifacts.mkdir(exist_ok=True)
+        subprocess.run(['grim',str(artifacts/'regression-late-fullscreen.png')],check=True)
         print('PASS  widget mapping late during fullscreen stays hidden and cannot steal focus', flush=True)
         outputs = ipc.call('window-rules/list-outputs')
         assert len(outputs) == 2
-        # Move only the pointer to the other screen, then open an ordinary window there.
+        # Move an ordinary window to the other screen with real pointer input.
         other = next(o for o in outputs if o['name'] not in ipc.call('scottland/desktop-model')['focus'])
         g = other['geometry']
-        ipc.call('stipc/move_cursor', {'x': g['x'] + g['width']//2, 'y': g['y'] + g['height']//2})
-        time.sleep(.2)
         foreground = open_app('scottland-regression-other-screen')
+        drag(foreground, g['x'] + g['width']//2, absolute=True)
+        time.sleep(.5)
         assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
         focus = ipc.call('scottland/desktop-model')['focus']
         assert focus, 'fixture must retain fullscreen promotion on the first output'
@@ -109,6 +117,7 @@ def main():
         widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
         assert widget['hidden']
         assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
+        subprocess.run(['grim',str(artifacts/'regression-other-output-reload.png')],check=True)
         print('PASS  reload retains fullscreen focus on an output without keyboard focus', flush=True)
         ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': False})
         time.sleep(.7)
@@ -126,7 +135,8 @@ def main():
             trigger.touch()
             deadline = time.monotonic()+4
             updated = None
-            while time.monotonic() < deadline and select.select([watch.sock], [], [], .3)[0]:
+            while time.monotonic() < deadline:
+                if not select.select([watch.sock], [], [], .3)[0]: continue
                 event = watch.receive()
                 candidate = next(v for v in event['windows'] if v['id'] == original['id'])
                 if candidate['app_id'] == 'org.scottland.IdentityAfter':

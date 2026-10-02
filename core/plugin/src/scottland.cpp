@@ -67,6 +67,7 @@ extern "C" {
 #include <sys/pidfd.h>  // glibc declares it without C linkage for C++
 }
 #include <unistd.h>
+#include <fcntl.h>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -2337,8 +2338,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.window = window->weak_from_this();
             link.widget = widget->weak_from_this();
             disabled_nodes.insert(window->get_id());  // adopt the previous renderer's lease
-            transition_widget(link, widget_link_t::lifecycle_t::docked);
             link.output = widget->get_output();
+            link.away = !link.output->node_for_layer(wf::scene::layer::TOP)->is_enabled();
+            transition_widget(link, widget_link_t::lifecycle_t::docked);
             link.rail   = entry["rail"].as_string();
             link.drop   = {entry["x"].as_double(), entry["y"].as_double()};
             link.collapsed   = entry["minimized"].as_bool();
@@ -5510,7 +5512,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["widget"] = (int64_t)widget->get_id();
                 entry["unit"]   = link.launcher ? link.launcher->unit : "";
                 entry["pid"]    = (int64_t)(link.launcher ? link.launcher->pid : 0);
-                entry["pidfd"]  = (int64_t)(link.launcher && link.launcher->pidfd >= 0 ? dup(link.launcher->pidfd) : -1);
+                entry["pidfd"]  = (int64_t)(link.launcher && link.launcher->pidfd >= 0 ? fcntl(link.launcher->pidfd, F_DUPFD_CLOEXEC, 0) : -1);
                 entry["rail"]   = link.rail;
                 entry["x"] = link.drop.x;
                 entry["y"] = link.drop.y;

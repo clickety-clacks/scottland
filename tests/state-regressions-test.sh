@@ -11,7 +11,7 @@ id = "regression-daemon"
 apps = ['^scottland-regression-daemon$']
 exec = "./start"
 TOML
-printf '#!/bin/sh\nsetsid -f foot -T regression-forked-widget sh -c "exec sleep 600"\nsleep 6\n' >"$fixtures/daemon/start"
+printf '#!/bin/sh\nfoot -T regression-forked-widget sh -c "exec sleep 600" &\nsleep 6\n' >"$fixtures/daemon/start"
 chmod +x "$fixtures/daemon/start"
 cat >"$fixtures/slow/widget.toml" <<'TOML'
 id = "regression-slow"
