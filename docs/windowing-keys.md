@@ -35,14 +35,14 @@ on a physical session. This change is not tested on either machine's live displa
 | WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Holding Alt during a drag belongs to L31 and suppresses hints for that entire chord, even after drop. Starting a drag cancels hints. Adding any modifier after entry stays in the mode (WK2). | implemented (headless) |
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
 | WK13 | Near-coincident window/widget centers repel through a deterministic force-directed graph with springs to real centers. Centers stay within readable hint bounds; already separated centers stay put. Windows themselves animate outward and back, without moving their real geometry, changing their scale, or updating memories. Hints track those transforms. | implemented (headless) |
-| WK14 | In entered Alt window mode, each unclaimed arrow press (including auto-repeat) adds a fixed impulse to its axis's surviving velocity, clamped independently to a maximum. Constant deceleration is integrated per tick until zero, including the final partial tick, with no restarted position animation. One default impulse travels v²/(2a) = 92.29 logical px. Hints/cycles retain physical-press-only behavior. | implemented; validation pending |
-| WK15 | Arrows target the hint/Tab-selected window if selected this hold, otherwise the currently focused window (a focused widget represents its app). Different windows retain independent coasts. Left/Right change x, Up/Down change y; diagonals combine independent axes. An arrow on fullscreen explicitly exits it and waits for restored geometry before applying queued impulses. A later explicit cycle stops that window's coast before its lifecycle/placement action. Closing/unmapping/output loss discards its motion safely. | implemented; validation pending |
-| WK16 | Moving windows follow their center's zone and scale live (L5/L8), even with Alt held: L31 scale pinning belongs only to drags, and arrows clear an old pin. Geometry/scale targets enter the desktop model; hints' visual declutter never enters motion coordinates. | implemented; validation pending |
-| WK17 | A keyboard move stops its outward axis at WP7 screen/workarea padding or the rail edge, whichever is farther inward, using the live scaled content footprint. No bounce, no resize, no widgetization. Oversized content follows WP7's unpadded dimension exception; its center still stays outside the rails. Keyboard movement clamps old remembered/user drops too; WP2's exact remembered placement remains the cycle rule. | implemented; validation pending |
-| WK18 | After mode entry, Ctrl+Right widens, Ctrl+Left narrows, Ctrl+Up grows height, Ctrl+Down shrinks height, with independent inertial size axes. Resizing keeps the window's center, zone and scale (L20), including asynchronous client commits. Sizes respect the app minimum and maximum and screen/workarea minus padding; an app minimum larger than that limit takes precedence. Movement and resize coasts can coexist. Ctrl+arrows consume input but do nothing for widgets. | implemented; validation pending |
-| WK19 | Alt release commits keyboard movement/resize and lets existing velocity coast to zero; it stops adding repeats. Esc while still in mode stops inertia/repeats and glides each arrow-touched window back to its geometry and form captured at Alt-down, including size, fullscreen, widget rail, scale pin and zone memories (WG14/L27). The cancelled chord remains captured until Alt release. A later hold starts a new origin. | implemented; validation pending |
-| WK20 | Widgets coast vertically along their current rail, keeping their wider widget inset. Left/Right transfers to the indicated rail with the existing glide, preserving height and widget form; pressing toward the current rail leaves it there. It never opens the window. Tab can select a widget without restoring it (WK10). | implemented; validation pending |
-| WK21 | Options `scottland/key_impulse` (335 px/s), `scottland/key_friction` (608 px/s²), and `scottland/key_max_velocity` (6000 px/s) use Ask's defaults and apply to both movement and resizing. Repeats use the keyboard's configured delay/rate, independently for held arrows, and stop on key/Alt release or cancel. Exact focused-surface claims precede arrows (KL7); quick Alt+arrow and Ctrl-first chords keep existing app/desktop routing. A pointer/touch move or resize takes over motion without enabling hints (L31). | implemented; validation pending |
+| WK14 | In entered Alt window mode, each unclaimed arrow press (including auto-repeat) adds a fixed impulse to its axis's surviving velocity, clamped independently to a maximum. Constant deceleration is integrated per tick until zero, including the final partial tick, with no restarted position animation. One default impulse travels v²/(2a) = 92.29 logical px. Hints/cycles retain physical-press-only behavior. | implemented (headless) |
+| WK15 | Arrows target the hint/Tab-selected window if selected this hold, otherwise the currently focused window (a focused widget represents its app). Different windows retain independent coasts. Left/Right change x, Up/Down change y; diagonals combine independent axes. An arrow on fullscreen explicitly exits it and waits for restored geometry before applying queued impulses. A later explicit cycle stops that window's coast before its lifecycle/placement action. Closing/unmapping or having no output discards its motion safely. | implemented (headless) |
+| WK16 | Moving windows follow their center's zone and scale live (L5/L8), even with Alt held: L31 scale pinning belongs only to drags, and arrows clear an old pin. Geometry/scale targets enter the desktop model; hints' visual declutter never enters motion coordinates. | implemented (headless) |
+| WK17 | A keyboard move stops its outward axis at WP7 screen/workarea padding or the rail edge, whichever is farther inward, using the live scaled content footprint. No bounce, no resize, no widgetization. Oversized content follows WP7's unpadded dimension exception; its center still stays outside the rails. Keyboard movement clamps old remembered/user drops too; WP2's exact remembered placement remains the cycle rule. | implemented (headless) |
+| WK18 | After mode entry, Ctrl+Right widens, Ctrl+Left narrows, Ctrl+Up grows height, Ctrl+Down shrinks height, with independent inertial size axes. Resizing keeps the window's center, zone and scale (L20), within client pixel rounding, including asynchronous client commits. Sizes respect the app minimum and maximum and screen/workarea minus padding (integer size caps round down); an app minimum larger than that limit takes precedence. Movement and resize coasts can coexist. Ctrl+arrows consume input but do nothing for widgets. | implemented (headless) |
+| WK19 | Alt release commits keyboard movement/resize and lets existing velocity coast to zero; it stops adding repeats. Esc while still in mode stops inertia/repeats and glides each arrow-touched window back to its geometry and form captured at Alt-down, including size, fullscreen, widget rail, scale pin and zone memories (WG14/L27). The cancelled chord remains captured until Alt release. A later hold starts a new origin. | implemented (headless) |
+| WK20 | Widgets coast vertically along their current rail, keeping their wider widget inset. Left/Right transfers to the indicated rail with the existing glide, preserving height and widget form; pressing toward the current rail leaves it there. It never opens the window. Tab can select a widget without restoring it (WK10). | implemented (headless) |
+| WK21 | Options `scottland/key_impulse` (335 px/s), `scottland/key_friction` (608 px/s²), and `scottland/key_max_velocity` (6000 px/s) use Ask's defaults and apply to both movement and resizing. Repeats use the keyboard's configured delay/rate, independently for held arrows, and stop on key/Alt release or cancel. Exact focused-surface claims precede arrows (KL7); quick Alt+arrow and Ctrl-first chords keep existing app/desktop routing. A pointer/touch move or resize takes over motion without enabling hints (L31). | implemented (headless) |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
@@ -141,3 +141,56 @@ coordinating session's rollout work.
 The final matrix includes main's Super+M, transaction gravity, preview mode and settings/import
 fixes. Rail placement uses pending widget size and the gravity transaction, and the collapse
 raw-key tracker respects focused-surface claims and keys consumed by hints.
+
+## Inertia validation (2026-10-01)
+
+Final code: `bd4ca0f` (with `ec0a1e9` integration and `a61ba7c` independent math).
+All 16 suites below exited zero on plumbus: **717 checks passed, zero failed**.
+Config concurrency counts five rounds, each containing 20 simultaneous config builds.
+
+| Suite | Passed |
+|---|---:|
+| `tests/inertia-unit.sh` | 28 |
+| `tests/inertia-test.sh` (real stipc input) | 43 |
+| `tests/windowing-unit.sh` | 41 |
+| `tests/windowing-test.sh` | 74 |
+| `tests/key-layers-test.sh` | 59 |
+| `tests/widgets-test.sh` | 146 |
+| `tests/widget-morph-test.sh` | 76 |
+| `tests/state-model-test.sh 271828 50` | 95 |
+| `tests/state-model-test.sh 104729 50`, legacy D-Bus | 100 |
+| `tests/state-regressions-test.sh` | 7 |
+| `tests/upgrade-test.sh` (archived legacy main `ea1d0f4`) | 2 |
+| Attention / launcher / widget-bus units | 5 / 17 / 16 |
+| `tests/build-config-test.sh` | 5 rounds |
+| `tests/omarchy-focus-test.sh` | 3 |
+
+The 43 motion checks cover a default impulse's analytic travel (within native pixel rounding),
+accumulation with repeated physical presses and timed held-key repeats, diagonal axes, stops at
+padding and rails, absence of bounce/widgetization, and live center-based scale samples. Resize
+checks cover all four directions, late client commits, strict screen-minus-padding caps, app
+minimum sizes and settled odd sizes. Esc checks include movement, resize, fullscreen, widget
+rail changes, hint-opened widgets, and resize followed by a dock cycle and widget movement.
+Quick Alt+arrow and exact KL7 movement/resize claims reach the app; selected and current-focus
+targets, live settings and Ctrl's widget no-op are independently checked.
+
+The maximum client size cap rounds down before requests: rounding up could exceed padding by a
+pixel and shift the next resize's anchor through odd-size rounding. Commit and tick centering
+both use L20's pixel rounding, with the anchor retained until 300 ms after the latest client
+geometry commit. Cancellation's settling resource leaves the existing glide/scale renderer intact.
+
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-inertia tests/deploy.sh plumbus
+--tests-only`, with `TMPDIR=$HOME/.cache/scottland-test-tmp` and
+`SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-inertia`. Every ordinary test
+compositor started after the final build, using checkout-local helpers and private D-Bus.
+The legacy upgrade used a `git archive` snapshot under this checkout's `build/legacy-upgrade`,
+with current XML metadata registering the new options and the original legacy plugin/helpers;
+no other checkout was modified. The older compositor was deliberately replaced by this build
+under open windows, and its surviving launch identity and subsequent badge routing passed.
+
+Final logs and exit/pass counts are in
+`~/.cache/scottland-inertia-results/final-bd4ca0f/` on plumbus. Inertia screenshots and scale
+samples are in `$XDG_RUNTIME_DIR/scottland-headless-inertia.inertia-artifacts/`; rail-boundary,
+maximum-resize and restored-widget screenshots were inspected. All isolated sessions were
+stopped. No live session on osanwe or physical screen on plumbus was used or reloaded.
+Statuses remain **implemented (headless)**; physical verification is intentionally not claimed.

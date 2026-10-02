@@ -34,7 +34,7 @@ behaviors and their status live in the invariants files and docs/; the bullets h
 - Scottland uses the cheapest change that does the job. Scaling is the concession for getting a window out of the way, so it belongs to the periphery only.
 - The center is full scale, always: windows centered in the center zone are at 100%, and scaling starts outside it, easing in.
 - Scaling is a transform: the app keeps its size, so its content is framed exactly as before.
-- Resizing is yours: Scottland resizes only when you do (Super+right-drag, the halo's corners), and around the window's center, so it keeps its zone and scale.
+- Resizing is yours: Scottland resizes only when you do (Super+right-drag, the halo's corners, Ctrl+arrows in window mode), and around the window's center, so it keeps its zone and scale.
 - Side-by-side: when several windows brought to the center don't fit, Scottland has nothing left to concede there. It doesn't scale them (that's the periphery's concession) or resize them (that's yours); the ones that don't fit stay in the periphery, or you make room. (Direction, not built.)
 - Tiling doesn't fit: it resizes windows to fit positions, the most expensive concession, made for you.
 5. Others may ask for your attention; only you grant it.
