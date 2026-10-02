@@ -147,10 +147,12 @@
         return l > r;
     }
     wf::pointf_t zone_spot(wayfire_toplevel_view window, scottland::windowing::zone z,
-        scottland::windowing::point current, wayfire_toplevel_view footprint = nullptr)
+        scottland::windowing::point current, wayfire_toplevel_view footprint = nullptr,
+        wf::output_t *destination_output = nullptr)
     {
         using Z = scottland::windowing::zone;
-        auto output = window->get_output(); auto screen = output->get_relative_geometry();
+        auto output = destination_output ? destination_output : window->get_output();
+        auto screen = output->get_relative_geometry();
         auto a = output->workarea->get_workarea(); auto g = window->get_geometry();
         auto& memory = ensure_window_memory(window->get_id());
         std::optional<scottland::windowing::point> remembered;

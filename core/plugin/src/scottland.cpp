@@ -3248,7 +3248,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (widget) remember_window(widget);
         if (window) pin_scale(window, std::nullopt);
-        if (window) middle = zone_spot(window, scottland::windowing::zone::center, {from.x, from.y});
+        if (window) middle = zone_spot(window, scottland::windowing::zone::center, {from.x, from.y}, nullptr, output);
         restore_window(link, middle, true);
         if (window) remember_window(window);
         if (window)
