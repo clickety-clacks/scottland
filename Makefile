@@ -1,14 +1,27 @@
 # Dev loop: build the plugin into ./build and point this machine's session at the repo.
 DEV := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/dev
 CONF := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/scottland
+RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 
-.PHONY: plugin dev-install test-hooks hooks dev-uninstall package clean
+.PHONY: plugin dev-install link-dev test-hooks hooks dev-uninstall package clean
 
 plugin:
 	meson setup build core/plugin --reconfigure 2>/dev/null || meson setup build core/plugin
 	meson compile -C build
 
+# The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
+# here doesn't touch it until the next dev-install (and reload). Refuses uncommitted work, so what
+# runs is exactly a commit. Snapshots are kept (running widgets may still use an older one).
 dev-install: plugin
+	@git diff --quiet HEAD -- . && test -z "$$(git ls-files --others --exclude-standard)" || \
+	  { echo "dev-install: commit first; the session runs exactly a commit" >&2; exit 1; }
+	@rev=$$(git rev-parse --short=12 HEAD); dest=$(RELEASES)/$$rev; \
+	rm -rf "$$dest.new" && mkdir -p "$$dest.new/build" && git archive HEAD | tar -x -C "$$dest.new" && \
+	cp build/libscottland.so "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
+	$(MAKE) --no-print-directory -C "$$dest" link-dev >/dev/null && echo "installed $$rev ($$dest)"
+
+# Points the user's session at this tree (dev-install runs it inside a snapshot).
+link-dev:
 	mkdir -p $(DEV)/plugins $(DEV)/metadata $(CONF) $(HOME)/.local/bin
 	ln -sf $(CURDIR)/build/libscottland.so $(DEV)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
