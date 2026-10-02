@@ -85,8 +85,8 @@ attention/mode reload preservation and rejection of deliberately incorrect obser
 The test endpoint and D-Bus render diagnostics exist only with `SCOTTLAND_TEST_MODEL=1`, set by
 the isolated headless harness. Live cards launch no reporting process.
 
-Final validation on plumbus, 2026-10-01, after merging main's WG16 animation and
-resize-gravity change (`6137a7e`, merge `85b8a9d`):
+Final validation on plumbus, 2026-10-01, after merging main's WG16 resize-gravity
+change and subsequent card-animation rollback (`0ca408c`, merge `cc3db98`):
 
 | Suite | Result |
 |---|---|
