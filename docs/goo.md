@@ -50,7 +50,9 @@ Every goo constant is a Scottland setting with a live control in the settings ap
 sliders and scale curve): reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
 wave persistence, wave height, dye spread, dye swirl, dye release, shine, relief, and the falloff
 curve (how density drops away from an edge) in the curve editor. Changes apply live, as the zone
-settings do. Anyone can tune it. The initial defaults are the prototype’s Scottland preset.
+settings do. Every numeric Goo row now shows a short explanation on hover or keyboard selection,
+inside the shared slider; see [settings help and preview](settings.md). Anyone can tune it.
+The initial defaults are the prototype’s Scottland preset.
 
 ## Invariants
 
@@ -64,7 +66,7 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 | GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks; widget presentation morph retains attention dye |
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. | implemented; pointer/touch move, resize, close and hidden-corner checks |
-| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks |
+| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks; all fifteen hover/keyboard hints and screenshots checked on isolated osanwe outputs |
 | GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. | implemented; GPU energy sleep and unchanged step count checked |
 | GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core) | planned, after the GO10 cost work |
 | GO12 | Nearing a window's goo clouds it where the pointer is, clearly visible: at a corner (as before) and anywhere along the sides, the goo nearest the pointer turns cloudy (denser, milkier dye with swirl), fading with distance and following the pointer along the edge. Visual only: it does not change what the sides or corners do. Strength and spread are Goo Panel settings with sensible defaults. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | planned, after the GO10 cost work |
