@@ -39,15 +39,43 @@ exec), `scottland-widget-bus` (D-Bus, badges, mailbox, state files), the card
 | WG17 | Clicking the default card opens its app's window in the middle of the screen: the window flies out of the card and grows to its size there; the card goes. (A click on the card's halo is no move, WG13.) | implemented (headless) |
 | WG18 | A widget whose manifest sets `touch_drag = true` moves with a single-finger drag anywhere on it, at once (no long press), while a tap is still the widget's. For widgets that drag nothing themselves; the default card sets it. Off by default, so a widget's own finger drags (sliders, drawing) stay its own, and it's lifted with a long press as any window. The launcher tells Scottland over IPC (`scottland/widget-traits`). | implemented (headless) |
 | WG19 | Peeking at a collapsed widget: while the pointer is over a collapsed widget it shows expanded (its title and app), and collapses again when the pointer leaves; a collapsed widget that starts needing attention shows expanded for 5 seconds, then collapses. It stays collapsed throughout (Super+M's mode is unchanged): only how it's shown changes, owned by the desktop model with the rest of its presentation. | not built (after the desktop model lands) |
-| WG20 | The collapse binding activates once per held key. Duplicate downs, including overlapping devices, do not toggle it again; only release of that key on all held devices rearms it (device removal clears that device). Releasing a modifier does not rearm it. No time debounce discards rapid intentional presses. Edges are tracked and logged only while the binding modifiers are held or a tracked press is in progress (including its release after the modifier); plain typing emits no collapse diagnostics. Those edges record device, input/receipt time, key and latch/mode state; activations and ignored duplicate callbacks are distinct. | verified (plumbus headless 2026-10-01: 7 input/diagnostic checks; duplicate down failed before the fix; device overlap/removal not exercised) |
+| WG20 | The collapse binding activates once per held key. Duplicate downs, including overlapping devices, do not toggle it again; only release of that key on all held devices rearms it (device removal clears that device). Releasing a modifier does not rearm it. No time debounce discards rapid intentional presses. Edges are tracked and logged only while the binding modifiers are held or a tracked press is in progress (including its release after the modifier); plain typing emits no collapse diagnostics. Those edges record device, input/receipt time, key and latch/mode state; activations and ignored duplicate callbacks are distinct. | verified (plumbus headless 2026-10-01: 10 input/diagnostic checks, including quiet plain-M/Shift+M typing and the tracked release after Super; duplicate down failed before the fix; device overlap/removal not exercised) |
 
-Validation on plumbus, 2026-10-01: `tests/widgets-test.sh` passed all **142 checks**, including
-40 regressions in `tests/widget-input-test.py` (WG20: 7, WG4: 7, WG16 previews: 12, O5 import: 14).
-`widget-bus-test.py` passed 11 checks and `widget-launch-test.py` passed 17. Each fix reproduced a
-failure before its implementation. The isolated headless session started after the build; mapping,
-geometry events, running cards, D-Bus, drag/touch input, lifecycle and reload were exercised. Its
-placement screenshot was inspected. No real-screen session was used; the physical source of the
-reported duplicate key input remains unproven, and the snapshot morph is still deferred.
+Review rework validation on plumbus, 2026-10-01, after merging `main` at `480bee1`
+(desktop model, L31 and FS1) into `super-m-fixes`:
+
+| Suite | Result |
+|---|---|
+| `tests/widgets-test.sh` | **146 passed**, including the 43 input regressions below |
+| `tests/widget-input-test.py` (inside the widget suite) | **43 passed**: WG20 10, WG4 7, WG16 previews 12, O5 import 14 |
+| `tests/state-model-test.sh 271828 50` | **95 passed** |
+| `tests/state-regressions-test.sh` | **6 passed**, including late fullscreen adoption and reload on another output |
+| `tests/widget-bus-test.py` | **16 passed** |
+| `tests/widget-launch-test.py` | **17 passed** |
+| `tests/attention-sources-test.py` | **5 passed** |
+| `tests/build-config-test.sh` | **5 rounds passed**, 20 concurrent builds each |
+| `tests/omarchy-focus-test.sh` | **3 passed** |
+
+The gravity fixture now reads its title from the prepared model snapshot. The first rework
+run exposed its use of the removed launch-title environment variable; aborting that input run
+left collapsed mode set and caused two later collapse assertions to fail. The corrected full
+run passed every check above, without weakening assertions. The model service supplies running
+previews through its existing versioned subscription and explicit lifecycle; no second polling
+interface or preview flag was retained.
+
+Deployed with `SCOTTLAND_DEPLOY_DIR=Projects/scottland-super-m tests/deploy.sh plumbus --tests-only`.
+Tests used `TMPDIR=$HOME/.cache/scottland-test-tmp` and
+`SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-super-m`, the checkout's helpers,
+and private D-Bus. Fresh sessions postdated the plugin build, and deployed source hashes matched
+the checkout. `make plugin` also passed on osanwe without system Vulkan headers or the former
+extra header include path; no tests or live-session changes ran there. Placement, expanded-card,
+final-scene and fullscreen screenshots were retained and inspected. The isolated session was
+stopped afterward. Runtime logs are in `~/.cache/scottland-super-m-review-163af63/` on plumbus;
+unit logs and the initial failed run are in `~/.cache/scottland-super-m-review-725bb41/`.
+
+No real-screen session was used. Physical overlapping devices and device removal remain
+unexercised, the source of the originally reported duplicate physical input remains unproven,
+and the snapshot morph remains deferred.
 
 Planned built-in widgets besides the card (not built): **live miniature** (Scottland draws the real window
 small on the rail itself; no screen capture involved) and **media** (MPRIS controls for players).
