@@ -147,12 +147,17 @@ def open_app():
     path = Path(work.name) / f"title-{number}"
     path.write_text(f"Model {number}")
     # The real application updates its own title. No compositor setter is involved.
-    program = """import pathlib,sys,time
+    program = """import pathlib,sys,time,subprocess
 p=pathlib.Path(sys.argv[1]); last=None
 while True:
     text=p.read_text()
     if text!=last:
         print('\\033]2;'+text+'\\007',end='',flush=True); last=text
+    mailbox=p.with_suffix('.mailbox')
+    if mailbox.exists():
+        subprocess.run(['busctl','--user','call','org.scottland.Widgets','/org/scottland/Widgets',
+                        'org.scottland.WidgetData','Publish','s',mailbox.read_text()],check=True)
+        mailbox.unlink()
     time.sleep(.05)
 """
     client = subprocess.Popen(["foot", "--app-id", f"scottland-model-test-{number}", "-T", f"Model {number}",
@@ -277,8 +282,13 @@ try:
     audit("widget service restart")
     check("service-owned badge survives its restart", diagnostics()["widgets"][str(a)]["Badge"] == 9)
 
+    payload = '{"unread": 431}'
+    clients[b][1].with_suffix('.mailbox').write_text(payload)
+    time.sleep(0.6)
+    check("second widget owns mailbox data before reload", diagnostics()["widgets"][str(b)]["Data"] == payload)
     before = ipc.call("scottland/desktop-model")
     reload_plugin()
+    check("complete handover preserves the second widget mailbox", diagnostics()["widgets"][str(b)]["Data"] == payload)
     audit("model reload")
     after = ipc.call("scottland/desktop-model")
     check("reload preserves widgets and increases version", after["version"] > before["version"]

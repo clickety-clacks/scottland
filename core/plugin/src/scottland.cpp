@@ -2783,10 +2783,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return reply;
     }
 
+    bool installing_model = true;  // no partial init/handover snapshots escape
     std::map<std::string, std::string> published_slices;
     std::map<std::string, uint64_t> published_versions;
     void publish_model()
     {
+        if (installing_model)
+        {
+            return;
+        }
+
         auto full = model_snapshot("desktop");
         auto text = full.serialize();
         if (published_slices["desktop"] == text)
@@ -5319,6 +5325,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
         wf::get_core().connect(&on_focus_request);
         start_activation();
+        installing_model = false;
         announce_widgets();  // a widget service that outlived a reload catches up
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
