@@ -163,8 +163,10 @@
         {
             // The zone constrains the window's CENTER; content stays full size, even if wider.
             double edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
-            double lo = std::max(edge, a.x + std::min(w, double(a.width)) / 2);
-            double hi = std::min(screen.width - edge, a.x + a.width - std::min(w, double(a.width)) / 2);
+            // Strictly inside: a center exactly on the zone's edge is already the periphery's
+            // (the softness band starts there), so it would be scaled (tenet 4).
+            double lo = std::max(edge + 1.0, a.x + std::min(w, double(a.width)) / 2);
+            double hi = std::min(screen.width - edge - 1.0, a.x + a.width - std::min(w, double(a.width)) / 2);
             if (hi < lo) lo = hi = screen.width / 2.0;
             region.x = lo - w / 2; region.width = hi - lo + w;
         } else
