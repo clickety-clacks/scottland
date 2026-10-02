@@ -166,7 +166,6 @@ bool step_widget_transitions()
         }
         frame->damage();
         wf::scene::update(frame, wf::scene::update_flag::GEOMETRY);
-        update_neighbors(view->get_output());
     }
     return !widget_transitions.empty();
 }

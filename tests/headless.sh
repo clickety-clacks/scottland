@@ -38,7 +38,7 @@ case ${1:-} in
     [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
     rm -rf "$dir"; mkdir -p "$dir"
     started=(01-record-environment)
-    test_goo=${SCOTTLAND_TEST_GOO:-0}
+    test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
     test_outputs=${SCOTTLAND_TEST_OUTPUTS:-${SCOTTLAND_HEADLESS_OUTPUTS:-1}}
     private_bus=
@@ -73,8 +73,10 @@ case ${1:-} in
       sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
         -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
         "$dir/wayfire.ini"
-      if [[ $test_goo == 1 ]]; then
-        sed -i '/^goo =/d; /^\[scottland\]/a goo = true' "$dir/wayfire.ini"
+      # No override exercises shipped defaults; 0 explicitly tests the fallback halo.
+      if [[ $test_goo == 1 || $test_goo == 0 ]]; then
+        goo_value=false; [[ $test_goo == 1 ]] && goo_value=true
+        sed -i "/^goo =/d; /^\[scottland\]/a goo = $goo_value" "$dir/wayfire.ini"
       fi
       if [[ $test_gles == 2 || $test_gles == unsupported ]]; then
         export MESA_GLES_VERSION_OVERRIDE=2.0
