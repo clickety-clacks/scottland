@@ -55,12 +55,12 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 
 | ID | Invariant | Status |
 |---|---|---|
-| GO1 | One goo per screen: one field from all windows, drawn as one layer beneath all windows, outlining the union of the window shapes and never drawn over a window. | implemented; headless union/content, two-output drag and screenshot checks |
+| GO1 | One goo per screen: one field from all windows, drawn as one layer beneath all windows, outlining the union of the window and widget shapes and never drawn over their content. Widget expand/collapse follows the animated frame rectangle, including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph follows the frame |
 | GO2 | The goo clings: each window's goo stays within a reach of its edge; between windows close enough, it bridges, drawing from both borders, and a stretched bridge thins and snaps. | implemented; prototype volume approximation, bridge/snap input checks |
 | GO3 | Inside corners (where windows meet or overlap) fill smoothly because goo pools there; no corner-specific code. | implemented; overlap pooling screenshot inspected |
 | GO4 | The goo isn't uniform: its amount along each edge wanders slowly, configurable (mess, lump size, drift). | implemented; prototype noise port, inspected; drift freezes to settle |
 | GO5 | Waves start at grabs, drops, swells and attention pulses, travel only through connected goo along the whole merged outline, and fade. | implemented; grab propagation across bridge and isolation across gap sampled |
-| GO6 | Color is dye in the goo: each window releases its state's color into its own goo; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks |
+| GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks |
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. | implemented; pointer/touch move, resize, close and hidden-corner checks |
 | GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks |
@@ -100,7 +100,10 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 `goo-renderer.*` and `goo-shaders.hpp` own GPU resources and the prototype shader port; `goo.cpp`
 owns output nodes, option updates, impulses and sleep. The desktop model supplies its window list, widget lifecycle/away state, attention, drag and
 FS1 fullscreen focus; goo samples geometry and state cross-fades from the frame presentation,
-including collapsed and morphing sizes. It does not duplicate widget or drag state. Model-owned
+including per-widget expand/collapse presentation snapshots, rail-edge anchoring, reversals,
+and the separate window/widget drag morph. The outline and dye source follow the animated
+rectangle, rather than the client's already-applied final size. It does not duplicate widget or
+drag state. Model-owned
 `goo_outputs` records which screens have an available surface (including live disable and GPU
 fallback); the desktop snapshot publishes these screen names as `goo`. Simulation counters and
 source samples are renderer diagnostics, excluded from model snapshots. One background scene node per output

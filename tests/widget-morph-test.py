@@ -268,6 +268,70 @@ try:
                     (before_pixel, after_pixel))
             settle()
         t.cleanup(); t.owned.clear()
+    if t.ipc.call("scottland/goo-state")["enabled"]:
+        # Infer the actual field's inner edge from its signed union distance, away
+        # from rounded corners. This catches sampling the client's final rect
+        # instead of the compositor's animated presentation (including reversals).
+        if t.ipc.call("scottland/desktop-model")["collapsed"]:
+            t.toggle(); settle()
+        title = "Goo morph with a title long enough for maximum width"
+        t.launch(title, "right", 350)
+        # Asking a focused widget for attention is already answered (WG15).
+        # Put keyboard focus on a separate window well away from the field probe.
+        focus = t.launch("Goo morph focus fixture", rail=None)
+        t.ipc.call("window-rules/configure-view", {"id": focus["id"],
+            "geometry": {"x": 0, "y": 0, "width": 100, "height": 60}})
+        time.sleep(.4)
+        focus_frame = t.app("Goo morph focus fixture")["frame"]
+        t.move(focus_frame["x"] + focus_frame["width"] / 2,
+            focus_frame["y"] + focus_frame["height"] / 2)
+        t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+        t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+        t.move(t.screen["width"] / 2, 60)
+        t.ipc.call("wayfire/set-config-options", {"scottland/attention_color": "#20ff40ff"})
+        link = t.widgets()[0]
+        requested = t.ipc.call("scottland/attention", {"window": int(link["id"]),
+            "attention": True, "source": "morph-test"})
+        t.check("goo attention fixture is unfocused", not requested.get("in_front", False))
+        time.sleep(1)
+        for label in ("collapse", "expand", "reversal"):
+            t.toggle()
+            if label == "reversal":
+                time.sleep(.09)
+                t.toggle()
+            track = []
+            captured = False
+            start = time.monotonic()
+            while time.monotonic() - start < .6:
+                f = t.card(title)["frame"]
+                x = t.screen["width"] / 2
+                field = t.ipc.call("scottland/goo-state", {"x": x,
+                    "y": f["y"] + f["height"] / 2})["screens"][0]
+                edge = x + field["window_distance"]
+                track.append({"frame": f, "field_edge": edge})
+                if not captured and 140 < f["width"] < 270:
+                    screenshot("goo-" + label + "-mid")
+                    captured = True
+                time.sleep(.006)
+            active = [v for v in track if 110 < v["frame"]["width"] < 300]
+            errors = [abs(v["field_edge"] - v["frame"]["x"]) for v in active]
+            # The field is sampled once per rendered frame; IPC can observe the
+            # next timer step before rendering. Allow one frame of movement.
+            t.check("goo " + label + ": field follows intermediate frame", len(active) >= 4 and
+                max(errors, default=999) < 45 and sum(errors) / max(1, len(errors)) < 15, errors)
+            last = track[-1]
+            t.check("goo " + label + ": field settles at exact final frame",
+                abs(last["field_edge"] - last["frame"]["x"]) < .1, last)
+            samples["goo-" + label] = track
+        f = t.card(title)["frame"]
+        dye = t.ipc.call("scottland/goo-state", {"x": f["x"] + f["width"] / 2,
+            "y": f["y"] - 7})["screens"][0]
+        t.check("goo morph retains the widget's attention dye", dye["green"] > dye["red"] + .15 and
+            dye["green"] > dye["blue"] + .15, dye)
+        t.ipc.call("wayfire/set-config-options", {"scottland/goo": False})
+        t.check("goo switches off live after morph", not t.ipc.call("scottland/goo-state")["enabled"])
+        t.ipc.call("wayfire/set-config-options", {"scottland/goo": True})
+        t.check("goo switches on live after morph", t.ipc.call("scottland/goo-state")["enabled"])
 finally:
     (out / "morph-samples.json").write_text(json.dumps(samples))
     t.cleanup()
