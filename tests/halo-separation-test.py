@@ -133,6 +133,34 @@ try:
     drag(244, 300, 40, 20)
     check('independent halo band still moves its own window',
           view('separate-a')['frame']['x'] > f['x'] + 25 and view('separate-a')['frame']['y'] > f['y'] + 10)
+    f = view('separate-a')['frame']
+    center = (f['x'] + f['width']/2, f['y'] + f['height']/2)
+    drag(round(f['x'] + f['width'] + 4), round(f['y'] + f['height'] + 4), 30, 20)
+    resized = view('separate-a')['frame']
+    check('fallback corner resizes around the window center',
+          resized['width'] > f['width'] + 20 and resized['height'] > f['height'] + 10 and
+          abs(resized['x'] + resized['width']/2 - center[0]) < 2 and
+          abs(resized['y'] + resized['height']/2 - center[1]) < 2)
+    x = round(resized['x'] - 6)
+    y = round(resized['y'] + resized['height']/2)
+    ipc('stipc/touch', {'finger': 0, 'x': x, 'y': y})
+    for i in range(1, 11):
+        ipc('stipc/touch', {'finger': 0, 'x': x + 4*i, 'y': y + 2*i})
+        time.sleep(.02)
+    ipc('stipc/touch_release', {'finger': 0})
+    time.sleep(.7)
+    moved = view('separate-a')['frame']
+    check('fallback halo moves immediately by finger', moved['x'] > resized['x'] + 25
+          and moved['y'] > resized['y'] + 10)
+    # Touching the band above revealed the dot for a separate tap (A12).
+    check('fallback touch reveals the close dot', moved['dot'] > .5)
+    x = round(moved['x'] + moved['width']/2)
+    y = round(moved['y'] + moved['height'] + moved['thickness']/2)
+    ipc('stipc/touch', {'finger': 0, 'x': x, 'y': y})
+    ipc('stipc/touch_release', {'finger': 0})
+    time.sleep(.5)
+    check('fallback touch reveals and taps the close dot', not any(
+        v['title'] == 'separate-a' for v in ipc('scottland/layout-state')['views']))
 finally:
     for v in ipc('scottland/layout-state')['views']:
         if v['title'].startswith('separate-'):
