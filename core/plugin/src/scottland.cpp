@@ -553,6 +553,8 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
             suspend_drag_lock();
         }
 
+        if (auto frame = target->get_transformed_node()->get_transformer<scottland::frame_t>("scottland-scale"))
+            scottland::goo_impulse(*frame, 0.8f);
         wf::get_core().set_cursor("all-scroll");
         return true;
     }
@@ -574,6 +576,9 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         }
 
         output->deactivate_plugin(&grab_interface);
+        if (auto target = wf::toplevel_cast(view.lock()))
+            if (auto frame = target->get_transformed_node()->get_transformer<scottland::frame_t>("scottland-scale"))
+                scottland::goo_impulse(*frame, 1.2f);
         view.reset();
         touch_finger = -1;
         restore_drag_lock();
@@ -804,6 +809,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     scottland::key_layers_t key_layers;
 
     static constexpr const char *TRANSFORMER = "scottland-scale";
+    scottland::goo_t goo;
 
     wf::option_wrapper_t<double> center_width{"scottland/center_width"};
     wf::option_wrapper_t<double> rail_width{"scottland/rail_width"};
@@ -1119,6 +1125,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         std::shared_ptr<scottland::frame_t> best;
         double best_distance = std::max(scottland::NEAR_RANGE, scottland::SWELL_VICINITY);
+        if (scottland::goo_enabled())
+        {
+            for (auto& [view, frame] : frames_on(output))
+                if (scottland::goo_handle(*frame, p) != scottland::handle_t::none) return frame;
+        }
         for (auto& [view, frame] : frames_on(output))
         {
             double d = frame->band_distance(p);
@@ -1439,10 +1450,105 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool collapsed = false;
         unsigned hint_width = 1; // stable prefix-free labels until all represented windows close
         drag_session_t drag;
+        std::set<wf::output_t*> goo_outputs;          // screens with an available goo surface
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
 
+    std::vector<scottland::goo::source_t> goo_sources(wf::output_t *output)
+    {
+        std::vector<scottland::goo::source_t> result;
+        // FS1 is the authoritative fullscreen focus, including transparent fullscreen clients.
+        if (in_focus_mode(output))
+        {
+            auto g = output->get_relative_geometry();
+            scottland::goo::source_t island;
+            island.emitter = false;
+            island.rect = {g.width / 2.f, g.height / 2.f, g.width / 2.f, g.height / 2.f};
+            island.liquid = {0, 0, 0, 0};
+            return {island};
+        }
+        for (auto& [id, state] : model.windows)
+        {
+            auto v = wf::toplevel_cast(state.view.lock());
+            if (!v || !v->is_mapped()) continue;
+            auto app_link = model.widgets.find(id);
+            auto widget_link = link_of_widget(v);
+            // Lifecycle owns the visible form. The scene check below also handles transient
+            // renderer leases (preview/morph) without creating another lifecycle owner.
+            if ((app_link != model.widgets.end() && app_link->second.docked()) ||
+                (widget_link && (widget_link->away || widget_link->lifecycle == widget_link_t::lifecycle_t::closing)))
+                continue;
+            auto move = v->get_transformed_node()->get_transformer<wf::scene::transformer_base_node_t>(
+                "move-drag-transformer");
+            auto frame = v->get_transformed_node()->get_transformer<scottland::frame_t>("scottland-scale");
+            // Stock Wayfire registers its move transformer under its type name, despite the
+            // historical named lookup above. Find the public scene node in the frame's chain.
+            if (!move && frame)
+                for (auto n = frame->parent(); n && n != v->get_transformed_node().get(); n = n->parent())
+                    if (n->stringify() == "move-drag")
+                    {
+                        move = std::dynamic_pointer_cast<wf::scene::transformer_base_node_t>(n->shared_from_this());
+                        break;
+                    }
+            if (!move && v->get_output() != output)
+                continue;
+            auto root = v->get_root_node();
+            bool visible = true;
+            for (wf::scene::node_t *n = root.get(); n; n = n->parent())
+                if (!n->is_enabled())
+                {
+                    visible = false;
+                    break;
+                }
+            if (!visible)
+                continue;
+            if (!frame || frame->get_alpha() < .01)
+                continue;
+            auto r = frame->screen_rect();
+            float radius = frame->screen_radius();
+            // Parent presentation transforms (e.g. Alt declutter) move the rendered island
+            // without changing model geometry. Compose them before the cross-output drag.
+            for (auto n = frame->parent(); n && n != v->get_transformed_node().get() && n != move.get(); n = n->parent())
+            {
+                auto a = n->to_global({r.x1, r.y1}), b = n->to_global({r.x2, r.y2});
+                if (r.width() > 0) radius *= std::abs((b.x - a.x) / r.width());
+                r = {a.x, a.y, b.x, b.y};
+            }
+            if (move)
+            {
+                auto shown = move->get_bounding_box(), inner = move->get_children_bounding_box();
+                if (inner.width > 0 && inner.height > 0)
+                {
+                    auto origin = wf::origin(output->get_layout_geometry());
+                    float sx = float(shown.width) / inner.width, sy = float(shown.height) / inner.height;
+                    r = {shown.x + (r.x1 - inner.x) * sx - origin.x, shown.y + (r.y1 - inner.y) * sy - origin.y,
+                         shown.x + (r.x2 - inner.x) * sx - origin.x, shown.y + (r.y2 - inner.y) * sy - origin.y};
+                    radius *= sx;
+                }
+            }
+            auto extent = output->get_relative_geometry();
+            if (move && (r.x2 < 0 || r.y2 < 0 || r.x1 > extent.width || r.y1 > extent.height))
+                continue;
+            scottland::goo::source_t s;
+            s.id = v->get_id();
+            s.rect = {(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2, r.width() / 2, r.height() / 2};
+            bool attention = needs_attention(widget_link ? widget_link->window_id : id);
+            s.liquid = {1, radius, float(s.id) * 1.618f, attention ? 3.f : 1.f};
+            auto neutral = scottland::palette.light ? glm::vec3{.08, .08, .1} : glm::vec3{.9, .92, .95};
+            s.dye = glm::mix(glm::mix(neutral, scottland::palette.accent, float(frame->focus_mix)), scottland::palette.attention,
+                             float(frame->attention_mix));
+            s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
+            s.light = scottland::palette.light;
+            s.scale = frame->halo_scale();
+            s.swell = frame->swell;
+            s.attention = attention;
+            s.grabbed = (model.drag.started && model.drag.origin.view == id) || frame->is_pressed() || frame->is_lifted();
+            s.dot = {s.rect.x, r.y2 + frame->thickness() / 2, float(frame->dot_glow), scottland::DOT_RADIUS};
+            result.push_back(s);
+        }
+        return result;
+    }
     #include "widget-presentation.hpp"
 
     bool needs_attention(uint64_t window) const
@@ -2953,6 +3059,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         reply["focus"] = focus;
+        if (slice == "desktop")
+        {
+            auto goo = wf::json_t::array();
+            for (auto output : model.goo_outputs) goo.append(output->to_string());
+            reply["goo"] = goo;
+        }
         auto windows = wf::json_t::array();
         for (auto& [id, state] : model.windows)
         {
@@ -5732,6 +5844,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 show_attention(id);
             }
         }
+        goo.start([this](wf::output_t *output) { return goo_sources(output); },
+            [this](wf::output_t *output, bool on)
+            {
+                if (on) model.goo_outputs.insert(output);
+                else model.goo_outputs.erase(output);
+                publish_model();
+            });
         LOGI("scottland: plugin loaded");
     }
 
@@ -5739,8 +5858,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
         installing_model = reloading;  // teardown is also part of the atomic handover
+        goo.stop();
         fini_window_keys();
         key_layers.fini();
+
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");

@@ -13,6 +13,7 @@
 // Shapes are signed distance fields, evaluated identically here (hit testing) and in the
 // shaders (drawing). Distances are in the coordinates the window is drawn in (after scaling).
 
+#include "goo.hpp"
 #include <wayfire/view-transform.hpp>
 #include <wayfire/opengl.hpp>
 #include <wayfire/core.hpp>
@@ -25,6 +26,7 @@
 #include <wayfire/window-manager.hpp>
 #include <wayfire/util/duration.hpp>
 #include <wayfire/config/types.hpp>
+#include <wayfire/option-wrapper.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <linux/input-event-codes.h>
@@ -65,7 +67,7 @@ struct palette_t
     glm::vec3 attention{0.922, 0.796, 0.545};  // secondary highlight: a widget whose app needs you
 };
 
-static palette_t palette;  // per loaded plugin copy (see meson.build)
+inline palette_t palette;  // per loaded plugin copy (see meson.build)
 
 enum class handle_t
 {
@@ -398,7 +400,7 @@ struct gl_programs_t
     }
 };
 
-static gl_programs_t& gl_programs()
+inline gl_programs_t& gl_programs()
 {
     static gl_programs_t programs;
     return programs;
@@ -522,6 +524,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** The window was lifted by a long press: it bulges out elastically and its halo swells. */
     void lift()
     {
+        goo_impulse(*this, 1.6f);
         lifted = true;
         bulge_target = LIFT_BULGE;
         bulge_velocity += LIFT_KICK;
@@ -560,6 +563,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
      *  screen (twice the full-size halo), however small the window, so it's always easy to grab. */
     double thickness() const
     {
+        if (goo_enabled()) return goo_thickness(halo_scale(), swell);
         double rest = HALO * halo_scale();
         return std::max(rest * 0.7, rest + (SWOLLEN - rest) * swell);
     }
@@ -622,6 +626,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             if (focused)
             {
                 // A newly focused window's liquid is disturbed: it bulges and settles in waves.
+                goo_impulse(*this, 0.8f);
                 swell_velocity += FOCUS_NUDGE;
             }
 
@@ -689,6 +694,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     {
         if (is_pressed())
         {
+            goo_impulse(*this, 1.2f);
             pressed = handle_t::none;
             if (!hovering)
             {
@@ -707,6 +713,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         {
             return handle_t::none;
         }
+
+        if (goo_enabled()) return goo_handle(*this, p);
 
         auto dot = dot_center();
         if ((dot_glow > 0.2) && (std::hypot(p.x - dot.x, p.y - dot.y) <= DOT_RADIUS + 3))
@@ -786,6 +794,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** How far the drawn halo, its swell and its merging can reach outside the window. */
     double margin() const
     {
+        // Goo is drawn/damaged by its output node. Keep the view's box stable: Wayfire's
+        // move tool and the desktop's live window/widget morph use this box for placement.
         return std::max(SWOLLEN * 1.35, MIN_GRAB) + MERGE + DOT_RADIUS + 4;
     }
 
@@ -870,6 +880,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
             // The swell waits for a pause after the drag ends, not during it: a dragged window is
             // drawn by the move tool, so a swell mid-drag would pop in unanimated at the drop.
+            goo_impulse(*this, 1.6f);
             dwell.disconnect();
             damage();
             wf::get_core().default_wm->focus_raise_view(v);
@@ -1074,6 +1085,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     void set_swell(double target)
     {
+        if (target != swell_target) goo_impulse(*this, 0.8f);
         swell_target = target;
         start_ticking();
     }
@@ -1121,7 +1133,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         // A cloudy corner keeps moving (its light shifts), so it keeps ticking.
         for (int i = 0; i < 4; i++)
         {
-            if ((std::abs(cloud[i] - cloud_target[i]) > 0.002) || (cloud[i] > 0.002))
+            if ((std::abs(cloud[i] - cloud_target[i]) > 0.002) || (!goo_enabled() && cloud[i] > 0.002))
             {
                 return false;
             }
@@ -1252,7 +1264,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         float window_aa = pixel / std::max(0.01f, self->get_scale_x());
         float alpha     = self->get_alpha();
         auto v = self->toplevel();
-        bool halo = v && !v->pending_fullscreen();
+        bool halo = v && !v->pending_fullscreen() && !goo_enabled();
 
         data.pass->custom_gles_subpass([&]
         {

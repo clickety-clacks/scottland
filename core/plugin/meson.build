@@ -14,8 +14,10 @@ layer_shell_header = custom_target('layer-shell-header',
   command: [find_program('wayland-scanner'), 'server-header', '@INPUT@', '@OUTPUT@'])
 
 shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declutter.cpp',
+  'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp',
   'src/key-layers.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp'],
   dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo],
+
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become
   # process-wide "unique" symbols, so a plugin reloaded in place (scottland-reload) would share
   # them with the copy it replaces, even across incompatible layouts, and the old copy could never
