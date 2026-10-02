@@ -194,3 +194,9 @@ matrix passed 146 checks each with goo off/on; the seeded model audit `271828 50
 passed 95 checks, including audits after all 50 real-input operations. Unit/config/focus checks also passed; the complete
 record and retained failed infrastructure attempts are in
 [goo.md](goo.md#main-merge-validation-2026-10-01). No live session or physical screen was used.
+
+Keyboard inertia (WK17–WK24) also writes geometry, natural scale targets and widget rail/drop
+through the model, recording placement memories after the coast. Its velocity axes, repeat clock,
+Alt-down cancellation snapshots and client-commit centering live in the input controller
+(`keyboard-motion.hpp`); they never derive coordinates from hint/renderer offsets, and do not
+survive a reload. Model geometry and committed placement still use the existing atomic handover.

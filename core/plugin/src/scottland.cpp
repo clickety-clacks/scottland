@@ -58,6 +58,8 @@ extern "C" {
 #include "placement.hpp"
 #include "declutter.hpp"
 #include "alt-mode.hpp"
+#include "inertia.hpp"
+#include <chrono>
 #include "hint-overlay.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
@@ -511,6 +513,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
     };
 
   public:
+    std::function<void()> on_start;
     /** Resize `target` around its center until `with_button` is released. Moving the cursor
      *  by (dx, dy) grows the window by (sign_x * dx, sign_y * dy) on each side. */
     bool start(wayfire_toplevel_view target, uint32_t with_button, int grow_x_sign, int grow_y_sign,
@@ -527,6 +530,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
             return false;
         }
 
+        if (on_start) on_start();
         input_grab->set_wants_raw_input(true);
         input_grab->grab_input(wf::scene::layer::OVERLAY);
         if (target->pending_tiled_edges())
@@ -3399,6 +3403,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void handle_new_output(wf::output_t *output) override
     {
         wf::per_output_tracker_mixin_t<center_resize_t>::handle_new_output(output);
+        output_instance[output]->on_start = [=] () { bypass_window_keys(); };
         output->connect(&on_above);
         watch_fullscreen(output);
     }
@@ -5449,6 +5454,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto view = wf::toplevel_cast(ev->view))
         {
+            recenter_keyboard_resize(view);
             observe_view(view);
             if (auto frame = frame_of(view, false))
             {

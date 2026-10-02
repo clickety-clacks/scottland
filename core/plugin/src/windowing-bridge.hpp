@@ -119,9 +119,12 @@
                 r["positions"][z]["x"].as_double(), r["positions"][z]["y"].as_double()};
         return memory;
     }
+    #include "keyboard-motion.hpp"
+
     void bypass_window_keys()
     {
         alt_bypassed = true; alt_hold.disconnect();
+        stop_keyboard_motion();
         if (capture_chord) { end_window_keys(); capture_chord = false; }
     }
     void remember_window(wayfire_toplevel_view view)
@@ -288,6 +291,9 @@
         if (cycle_waiting)
         { deferred_moves.emplace_back(id, destination); return; }
         auto window = wf::toplevel_cast(view_by_id(id)); auto visible = represented_view(id);
+        if (visible) keyboard_motions.erase(visible->get_id());
+        fullscreen_impulses.erase(std::remove_if(fullscreen_impulses.begin(), fullscreen_impulses.end(),
+            [=] (auto impulse) { return impulse.id == id; }), fullscreen_impulses.end());
         if (!window || !window->get_output()) return;
         // A rail request is idempotent, including while its widget is still launching.
         if (destination == D::widget && link_of_window(window)) return;
@@ -477,6 +483,7 @@
     }
     void end_window_keys()
     {
+        arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
         for (auto& [id, visual] : hint_visuals)
         {
@@ -491,7 +498,7 @@
     void begin_window_keys()
     {
         if (alt_bypassed || alt_keys.empty() || held_keys.size() != 1 || drag->view) return;
-        capture_chord = true;
+        capture_chord = true; keyboard_selection = false;
         auto active = wf::get_core().seat->get_active_view();
         auto link = link_of_widget(active);
         window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
@@ -510,6 +517,7 @@
         auto keyboard = wlr_seat_get_keyboard(wf::get_core().get_current_seat());
         if (!keyboard || !keyboard->keymap) return;
         if (down) held_keys.insert(code); else held_keys.erase(code);
+        if (!down) arrow_repeats.erase(code);
         if (!down && swallowed_keys.erase(code))
         {
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
@@ -527,6 +535,7 @@
         {
             if (down && alt_keys.empty())
             {
+                capture_keyboard_origins();
                 uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
                 alt_bypassed = claimed || drag->view || held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
                 if (!alt_bypassed)
@@ -551,9 +560,12 @@
             return;
         }
         ev->mode = wf::input_event_processing_mode_t::IGNORE;
-        if (!down || !swallowed_keys.insert(code).second) return;
+        if (!down) return;
+        bool first = swallowed_keys.insert(code).second;
         if (!window_keys.active) return; // Esc cancels, but this whole Alt chord remains ours.
-        if (code == KEY_ESC) end_window_keys();
+        if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
+        if (!first) return;
+        if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
         else if (code == KEY_TAB)
             window_keys.tab(held_keys.count(KEY_LEFTSHIFT) || held_keys.count(KEY_RIGHTSHIFT));
         else if (code == KEY_F4) window_keys.close_selected();
@@ -622,6 +634,7 @@
         }
         window_entries();
         window_keys.select = [=] (uint64_t id, bool restore) {
+            keyboard_selection = true;
             auto view = wf::toplevel_cast(view_by_id(id));
             if (restore && link_of_window(view)) open_widget(*link_of_window(view));
             else if (auto visible = represented_view(id)) wf::get_core().default_wm->focus_raise_view(visible);
@@ -636,6 +649,7 @@
     {
         on_window_key.disconnect(); alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
+        stop_keyboard_motion(); keyboard_origins.clear();
         window_keys.end();
         ipc_repo->unregister_method("scottland/hints");
         for (auto& [id, visual] : hint_visuals)
