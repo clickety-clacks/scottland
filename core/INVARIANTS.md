@@ -69,7 +69,7 @@ built, the halo rows below point there.
 
 | ID | Invariant | Status |
 |---|---|---|
-| S1 | The zone settings (center edge softness, center zone width, widget rail width) are one stack of tall rows, each row a slider grabbed anywhere along it (label left, value right, thin separators, one rounded block), after the shared parameter-slider design: Left/Right adjust (Shift: larger steps), Up/Down or Tab move between rows, digits type a value, Backspace resets a row, double-click resets a row to its value when the panel opened; changed values show in the accent color. Super+. opens the panel. | implemented |
+| S1 | The zone settings (center edge softness, center zone width, widget rail width) are one stack of tall rows, each row a slider grabbed anywhere along it (label left, value right, thin separators, one rounded block), after the shared parameter-slider design: Left/Right adjust (Shift: larger steps), Up/Down or Tab move between rows, digits type a value, Backspace resets a row, double-click resets a row to its value when the panel opened; changed values show in the accent color. Super+, opens the panel. | implemented |
 | S9 | A 2D curve editor sets the scale across the side zones: two endpoints (largest scale at the center edge, smallest at the rail) move vertically only; clicking adds a point, dragging shapes the curve, double-click or right-click removes a point. Points are joined by a smooth curve that doesn't overshoot them (monotone cubic), and the plugin uses the same curve. | verified |
 | S2 | While the panel is open, a click-through overlay shows the zones on every screen. | verified |
 | S3 | Moving a slider rescales windows on screen live. | verified |
