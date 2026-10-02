@@ -115,7 +115,9 @@ as a bridge draws from it. It is an approximation of fixed volume, not a conserv
 Noise scales down with small windows and a small clinging reserve prevents mess from erasing their
 borders. Pooling comes solely from the sum and threshold.
 
-Density is half resolution; height/velocity and dye are quarter resolution. There are two wave
+Density is half resolution; height/velocity and dye are quarter resolution. The packed RGBA8 path stores each signed wave component in two bytes (16 bits), so small
+velocities propagate along thin borders while rounding toward zero lets residual waves settle.
+There are two wave
 steps and one masked curl/advection/diffusion dye step per active update. Union clipping excludes
 window islands from both flow and rendering. Unsupported half-float render targets use packed
 RGBA8 (log density and quantization-aware wave damping); missing float source textures, failed

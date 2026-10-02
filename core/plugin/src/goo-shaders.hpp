@@ -58,11 +58,17 @@ float gooField(vec2 p) {
   } return F;
 }
 vec2 off(int k){return k==0?vec2(1,0):k==1?vec2(-1,0):k==2?vec2(0,1):vec2(0,-1);}
-vec2 decode(vec2 hv){return mix(hv,(hv-128./255.)*8.,uPacked);}
-vec2 encode(vec2 hv){
-  // Round toward zero in RGBA8: nearest rounding can trap residual waves forever.
-  vec2 q=sign(hv)*floor(abs(hv)*255./8.+.00001)*8./255.;
-  return mix(hv,clamp(q/8.+128./255.,0.,1.),uPacked);
+vec2 decode(vec4 hv){
+  // Two bytes per signed component retain small velocities that carry a wave
+  // along a thin border. One byte rounded them to zero before they propagated.
+  vec2 q=vec2(hv.r+hv.g*256.,hv.b+hv.a*256.)*255.;
+  return mix(hv.rg,(q-32768.)*8./65535.,uPacked);
+}
+vec4 encode(vec2 hv){
+  // Round toward zero so residual waves settle, with 16-bit precision in RGBA8.
+  vec2 q=sign(hv)*floor(abs(hv)*65535./8.+.00001)+32768.;
+  vec4 bytes=vec4(mod(q.x,256.),floor(q.x/256.),mod(q.y,256.),floor(q.y/256.))/255.;
+  return mix(vec4(hv,0,1),bytes,uPacked);
 }
 )";
 inline const std::string mask = R"(
@@ -88,14 +94,14 @@ uniform vec4 uImp[8];
 uniform int uImpN;
 void main(){
   vec2 uv=gl_FragCoord.xy/uSize,px=1./uSize,p=uv*uRes;
-  vec2 hv=decode(texture2D(uWave,uv).rg);
+  vec2 hv=decode(texture2D(uWave,uv));
   float m=gooMask(uv),hc=hv.x,sum=0.;
-  for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;sum+=mix(hc,decode(texture2D(uWave,u2).rg).x,gooMask(u2));}
+  for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;sum+=mix(hc,decode(texture2D(uWave,u2)).x,gooMask(u2));}
   float v=(hv.y+uC2*(sum-4.*hc))*uDamp,h=hc+v;
   h*=mix(.8,1.,m);v*=mix(.8,1.,m);
   h*=mix(1.,uDamp,uPacked);
   for(int k=0;k<8;k++){if(k>=uImpN)break;float dd=distance(p,uImp[k].xy);h+=uImp[k].z*exp(-dd*dd/(uImp[k].w*uImp[k].w))*m;}
-  gl_FragColor=vec4(encode(clamp(vec2(h,v),-3.9,3.9)),0,1);
+  gl_FragColor=encode(clamp(vec2(h,v),-3.9,3.9));
 }
 )";
 inline const std::string dye_shader = common + mask + R"(
@@ -138,10 +144,10 @@ inline const std::string render_shader = common + mask + R"(
 uniform sampler2D uWave,uDyeTex,uBackground;
 uniform float uWaveAmp,uShine,uRelief,uAlpha;
 uniform mat4 uBackgroundMap;
-float height(vec2 uv){float F=field(uv)*(1.+uWaveAmp*decode(texture2D(uWave,uv).rg).x);return clamp(log(max(F,1e-4)/uT),0.,3.);}
+float height(vec2 uv){float F=field(uv)*(1.+uWaveAmp*decode(texture2D(uWave,uv)).x);return clamp(log(max(F,1e-4)/uT),0.,3.);}
 void main(){
   vec2 p=pos,uv=p/uRes,px=1./uRes;
-  float F=field(uv),h=decode(texture2D(uWave,uv).rg).x,Fe=F*(1.+uWaveAmp*h),d=unionSdf(p);
+  float F=field(uv),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h),d=unionSdf(p);
   float a=smoothstep(uT*.97,uT*1.03,Fe)*smoothstep(0.,1.,d)*uAlpha;
   if(a<=0.)discard;
   float ht=height(uv);
@@ -166,7 +172,7 @@ void main(){
   for(int y=0;y<2;y++)for(int x=0;x<2;x++){
     vec2 uv=(start+vec2(float(x),float(y))+.5)/uInputSize;
     float v;
-    if(uFirst==1){vec2 hv=decode(texture2D(uWave,uv).rg);vec3 dc=abs(texture2D(uDyeTex,uv).rgb-texture2D(uPrevious,uv).rgb);v=max(max(abs(hv.x),abs(hv.y)),max(max(dc.r,dc.g),dc.b)*16.);}
+    if(uFirst==1){vec2 hv=decode(texture2D(uWave,uv));vec3 dc=abs(texture2D(uDyeTex,uv).rgb-texture2D(uPrevious,uv).rgb);v=max(max(abs(hv.x),abs(hv.y)),max(max(dc.r,dc.g),dc.b)*16.);}
     else v=texture2D(uReduce,uv).r;
     e=max(e,v);
   }
@@ -177,6 +183,6 @@ inline const std::string query_shader = common + R"(
 uniform sampler2D uWave;
 uniform vec2 uPoint;
 uniform sampler2D uDyeTex;
-void main(){float h=decode(texture2D(uWave,uPoint/uRes).rg).x;gl_FragColor=vec4(texture2D(uDyeTex,uPoint/uRes).rgb,h/8.+128./255.);}
+void main(){float h=decode(texture2D(uWave,uPoint/uRes)).x;gl_FragColor=vec4(texture2D(uDyeTex,uPoint/uRes).rgb,h/8.+128./255.);}
 )";
 } // namespace scottland::goo

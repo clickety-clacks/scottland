@@ -251,9 +251,10 @@ struct renderer_t::impl
         for (auto t : {&wave[0], &wave[1], &dye[0], &dye[1]})
         {
             ok = t->allocate((w + 3) / 4, (h + 3) / 4, packed, es3) && ok;
-            glClearColor(t == &wave[0] || t == &wave[1] ? (packed ? .5 : 0) : .6,
-                         t == &wave[0] || t == &wave[1] ? (packed ? .5 : 0) : .7,
-                         t == &wave[0] || t == &wave[1] ? 0 : .8, 1);
+            if (t == &wave[0] || t == &wave[1])
+                glClearColor(0, packed ? 128.f / 255 : 0, 0, packed ? 128.f / 255 : 1);
+            else
+                glClearColor(.6, .7, .8, 1);
             glClear(GL_COLOR_BUFFER_BIT);
         }
         query.allocate(1, 1, true, es3);
