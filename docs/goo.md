@@ -16,8 +16,9 @@ remains available.
 
 - **One field per screen.** Every window adds a goo density that peaks at its edge and falls off
   within a short reach; the goo is where the total passes a threshold. Windows are islands lying in
-  it: the goo outlines the union of the window shapes and is never drawn over any window, so there
-  is no stacking question. It is drawn as one layer beneath all windows.
+  it. On open desktop their densities sum into one outline; over a back window, only the
+  windows in front contribute a thin translucent film. The film opens into the full goo at the
+  back window's shore. One shared wave/dye grid spans both; stacking clips foreground content.
 - **Clinging, fixed volume.** Each window owns an amount of goo held to its edge (surface tension),
   so goo exists only near windows, never everywhere windows aren't. A bridge between two windows
   draws from both borders, which thin where it attaches; stretched, it necks down and snaps.
@@ -35,8 +36,8 @@ remains available.
   window's neutral color replaces it.
 - **States are dye, not decorations.** Everything that marks a window's state on the halo is dye
   dropped into the goo (and, where it needs presence, a little more goo): focus, attention, the
-  resize corner the pointer is near (a bright dye and a thickening at that corner, which blends into
-  the surrounding goo with no seams), the close dot's glow. Nothing is painted on top of the goo
+  corner or side the pointer is near (whole-control cloudy dye and internal light, blended into
+  the surrounding goo), the close dot's glow. Nothing is painted on top of the goo
   with its own edges.
 - **Input reads the same field.** Resize corners, the close dot and grab areas are found by
   evaluating the field at the pointer; hit-testing doesn't depend on drawing. A window corner tucked
@@ -48,7 +49,8 @@ remains available.
 
 Every goo constant is a Scottland setting with a live control in the settings app (beside the zone
 sliders and scale curve): reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
-wave persistence, wave height, dye spread, dye swirl, dye release, shine, relief, and the falloff
+wave persistence, wave height, dye spread, dye swirl, dye release, shine, relief, overlap film,
+control cloudiness, control glow, control proximity, and the falloff
 curve (how density drops away from an edge) in the curve editor. Changes apply live, as the zone
 settings do. Every numeric Goo row now shows a short explanation on hover or keyboard selection,
 inside the shared slider; see [settings help and preview](settings.md). Anyone can tune it.
@@ -58,7 +60,7 @@ The initial defaults are the prototype’s Scottland preset.
 
 | ID | Invariant | Status |
 |---|---|---|
-| GO1 | One goo per screen: one field from all windows, drawn as one layer beneath all windows, outlining the union of the window and widget shapes and never drawn over their content. Widget expand/collapse follows the animated frame rectangle, including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph: plumbus headless geometry and screenshots checked |
+| GO1 | One goo per screen: one field from all windows, outlining the window and widget shapes; GO11 adds stacking-aware film over content behind a window, while foreground content clips it. Widget expand/collapse follows the animated frame rectangle, including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph: plumbus headless geometry and screenshots checked |
 | GO2 | The goo clings: each window's goo stays within a reach of its edge; between windows close enough, it bridges, drawing from both borders, and a stretched bridge thins and snaps. | implemented; prototype volume approximation, bridge/snap input checks |
 | GO3 | Inside corners (where windows meet or overlap) fill smoothly because goo pools there; no corner-specific code. | implemented; overlap pooling screenshot inspected |
 | GO4 | The goo isn't uniform: its amount along each edge wanders slowly, configurable (mess, lump size, drift). | implemented; prototype noise port, inspected; drift freezes to settle |
@@ -66,10 +68,10 @@ The initial defaults are the prototype’s Scottland preset.
 | GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks; widget presentation morph retains attention dye |
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. | implemented; pointer/touch move, resize, close and hidden-corner checks |
-| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks; all fifteen hover/keyboard hints and screenshots checked on isolated osanwe outputs |
+| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks; all nineteen hover/keyboard hints and screenshots checked on isolated headless outputs |
 | GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Active breathing damages only conservative goo bands; expensive field work uses occupied tiles, without changing the falloff or update rate. | implemented/headless checked; see the GPU cost validation below |
-| GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core) | planned, after the GO10 cost work |
-| GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | planned, after the GO10 cost work |
+| GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
+| GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | implemented; isolated headless validation recorded below |
 
 ## Halo jobs with goo enabled
 
@@ -82,9 +84,10 @@ The initial defaults are the prototype’s Scottland preset.
   dependency. Tenets 1 and 5: asking for attention colors/pulses the goo without moving or raising
   the window.
 - **A5/A6:** the field owns move handles and exposed resize corners; resizing still keeps the center.
-  Corners gain a Gaussian deposit of dye and density, with no separate corner patch. For A5's 12 pt
+  Corners and sides highlight across their whole goo surface with cloudy dye and emission (GO12),
+  with a soft transition at the control ends and no separate patch. For A5's 12 pt
   minimum target, the same field is dilated only as far as needed. A shared bridge's strongest
-  contributing window owns its input; existing stable source order breaks exact ties.
+  contributing window owns its input; stable window IDs retain the original tie break independently of render order.
 - **Window-mode hints (WK14):** the transient frame color feeds the same goo source dye.
   The goo simply takes the hint color, at once while hints show (blended by contribution, so
   connected goo stays smooth); there is no separate rim. It adds no per-window joining layer and
@@ -115,8 +118,16 @@ rectangle, rather than the client's already-applied final size. It does not dupl
 drag state. Model-owned
 `goo_outputs` records which screens have an available surface (including live disable and GPU
 fallback); the desktop snapshot publishes these screen names as `goo`. Simulation counters and
-source samples are renderer diagnostics, excluded from model snapshots. One background scene node per output
-sits above the wallpaper and below all windows. During a cross-output move it uses the move tool's
+source samples are renderer diagnostics, excluded from model snapshots. One scene node per output
+retains the original position below windows when none overlap. When windows overlap, that
+same node moves above the window layers, below overlay UI and the lock screen, to composite the
+film. A whole-output invalidation on that transition refreshes the backdrop cache; ordinary
+animation still uses bounded damage.
+The source list follows actual scene order, including raised windows, widgets and move transforms.
+Its visibility mask excludes foreground contents; over back contents it admits only the sources in
+front. The backdrop cache now contains the underlying composed scene, so the film remains
+translucent over actual window content. Refraction does not bend window contents; the film blends the underlying pixel. During a
+cross-output move it uses the move tool's
 current transformed geometry on each intersected output.
 
 The prototype's volume rule is preserved: nearest-neighbor gap reduces each border's source amount
@@ -127,8 +138,12 @@ borders. Pooling comes solely from the sum and threshold.
 Density is half resolution; height/velocity and dye are quarter resolution. The packed RGBA8
 path stores each signed wave component in two bytes (16 bits), so small
 velocities propagate along thin borders while rounding toward zero lets residual waves settle.
-There are two wave steps and one masked curl/advection/diffusion dye step per active update. Union clipping excludes
-window islands from both flow and rendering. Unsupported half-float render targets use packed
+There are two wave steps and one masked curl/advection/diffusion dye step per active update.
+The same ordered field feeds flow, drawing and input. Over back content, edge distances compress
+by the film-width/thickness ratio, returning smoothly to the full reach at its shore; the source
+amount is normalized there so volume draw does not erase a thin film. The foremost source is
+extended under its own content only for field reconstruction; analytic clipping still excludes
+that content from drawing and flow. Scenes without overlapping rectangles keep the union fast path. Unsupported half-float render targets use packed
 RGBA8 (log density and quantization-aware wave damping); missing float source textures, failed
 targets or shaders retain the halo with a log message.
 GLES 2 limits the source list to 1024; GLES 3 loops use the actual source count.
@@ -140,7 +155,7 @@ reuses the settled image when other desktop damage needs painting. This interpre
 simulation work at rest; ordinary compositor repainting still costs a draw. Tenet 1 favors stillness
 after the liquid response over endless unattended motion.
 
-The Goo tab has a live switch, fifteen tall grab-anywhere `ParameterStack` rows and the shared
+The Goo tab has a live switch, nineteen tall grab-anywhere `ParameterStack` rows and the shared
 curve editor. These are the same component as the Layout rows (whose first row is Center edge
 softness), with the same Left/Right and Shift steps, Up/Down/Tab navigation, typed values,
 Backspace and double-click opening-value reset, and modified-value color. Keyboard navigation
@@ -156,6 +171,10 @@ exponential. Invalid curves keep the last valid LUT.
 | Panel control | Option suffix (`scottland/goo_…`) | Default |
 |---|---|---|
 | Border thickness | thickness | 13 |
+| Overlap film | overlap_film | 4 pt |
+| Control cloudiness | hover_cloudiness | 0.65 |
+| Control glow | hover_emissivity | 0.35 (0 disables emission) |
+| Control proximity | hover_distance | 48 pt |
 | Reach | reach | 24 |
 | Bridge draw | thinning | 0.45 |
 | Swell | swell | 0.7 |
@@ -560,3 +579,103 @@ are also retained. Final source/render artifacts are in `build/perf-results`,
 its test screenshots beside the isolated runtime result folders and in the private
 checkout's build directory. Coverage excludes physical login/display, mixed DPI,
 rotation and GPU families beyond Xe and RX 580.
+
+
+## Overlap film and control highlight (2026-10-02)
+
+GO11/GO12 extend the shared surface without changing the fallback halo. The four new settings
+are metadata-backed, exposed through `scottland-ctl`, and use the same Goo Panel rows, hints,
+Save, Cancel and Defaults as the existing values. Tenet 2 (recognition, not recall) guides the
+visible whole-control response; tenet 4 keeps the overlap film narrow and translucent so the
+back window remains readable. Corners still resize and sides still move the window.
+
+Control proximity selects a corner or side and eases its strength with the existing animation.
+The field carries that control's whole-surface cloud amount, blended where contributions meet;
+the renderer makes it milkier with a low-frequency swirl and adds emission independently of
+reflection and dye-release strength. A zero glow value removes that added light. The existing
+close-dot dye and proximity behavior remain. Settled highlights freeze their swirl and sleep,
+following GO10's existing interpretation of stillness.
+
+Damage includes previous and current perimeter bands, the full highlighted control and film
+support over content. Film bounds account for normalized source strength, custom falloff,
+wave height and film widths greater than resting thickness. GPU field and wave tiling remain;
+no simulation frequency or quality setting was reduced. A compiled shader specialization removes
+overlap/hover branches when neither is present; moving into an overlap or a hover selects the full
+path on the next update, preserving the same wave and dye textures.
+
+All sessions are isolated
+headless sessions with a private `SCOTTLAND_HEADLESS_DIR`, started after their build, on osanwe
+or plumbus. The live checkout, installed settings and live session were not used or changed.
+This is **implemented/headless checked**, not physical-display verification under D2.
+
+
+The final regression matrix uses `Projects/scottland-goo-oh-tests` on plumbus, deployed with
+`--tests-only`, and this checkout on osanwe. The thirteen changed plugin/settings/control files
+have matching SHA-256 hashes on both hosts. Every compositor starts after its build; reloads in
+the existing widget/windowing tests operate only on their private sessions. No widget-presentation
+implementation was edited.
+
+| Check | Result |
+|---|---|
+| GO11/GO12: film width/zero, reversed stacking, wave/dye join, whole side/corner highlights, proximity/easing, zero glow, film drag and stale-damage cleanup, normal / packed GLES 2 | 18 / 18 passed |
+| Goo input, palette, live settings, new rows through scottland-ctl, Save/Cancel/Defaults, sleep, normal / packed | 46 / 46 passed |
+| Unsupported-GPU fallback | 4 passed |
+| Two-output flow, connected/gapped waves, wide-bridge input, fullscreen, cross-output drag, normal / packed | 12 / 12 passed |
+| Widgets | 146 passed |
+| Widget morph | 86 passed |
+| Hint style, goo on / off | 51 / 51 passed |
+| Windowing | 84 passed |
+| Settings help, including hover and keyboard hints on all nineteen Goo rows | 127 passed |
+| CPU goo model, including ordered film visibility and whole-control coverage | all assertions passed |
+
+The original GO10 benchmark is unchanged apart from additional diagnostic output: six windows,
+two real rail widgets, 2560×1600, ten seconds per case, same shipped settings and input. Baseline
+is `1e8e57f`, built in a separate checkout with its own hooks. Neither GPU clocks nor live sessions
+are changed. Idle cases report zero GPU busy and zero simulation steps; disabled goo retains the
+fallback's cost. Added diagnostics identify the overlap/highlight path and Xe reference-counter
+rate (not the GPU core frequency).
+
+The final Xe pair (`bench-xe-clock-{before,after}.log`) gives:
+
+| Case | Compositor GPU busy, baseline → new | Compositor CPU, baseline → new |
+|---|---|---|
+| Settled | 0.0% → 0.0% | 0.1% → 0.1% |
+| Two attention widgets | 19.7% → 19.6% | 5.6% → 6.2% |
+| Held window drag | 20.4% → 18.7% | 7.7% → 8.0% |
+| Goo off, two widgets breathing | 0.9% → 0.5% | 2.3% → 2.1% |
+
+Active updates remain 592/590 per ten seconds (baseline 596/594). The Xe timer median is
+2.976 → 3.090 ms while breathing and 2.986 → 5.859 ms during the drag. Whole-GPU busy changed
+from 22.3% to 58.6% in the latter comparison, so the elapsed GPU query includes substantially
+different contention; it is not an uncontended shader-cost comparison. Client work falls from
+3.9 to 3.6 million reference cycles/second in that drag. Earlier Xe runs vary widely with other
+sessions and unpinned clocks, including rejected pre-specialization cost increases; all logs
+remain available. These figures establish sampled GPU-busy preservation, with a small CPU cost
+for the additional visibility/state work, rather than a universal performance claim.
+
+On RX 580 the two baseline runs and final build are uncontended: whole-GPU busy matches the
+compositor's busy percentage. `bench-amd-before{1,2}.log` and `bench-amd-final-matrix.log` give:
+
+| Case | GPU busy, baseline → new | Median goo GPU query, baseline → new | CPU, baseline → new |
+|---|---|---|---|
+| Two attention widgets | 15.2–15.3% → 14.9% | 1.722–1.732 ms → 1.647 ms | 7.3–7.4% → 7.6% |
+| Held window drag | 14.7% → 14.3% | 1.675–1.680 ms → 1.625 ms | 9.3–9.4% → 9.6% |
+
+The new run has 619/614 active steps per interval, comparable with the baseline's 619–620/615.
+Settled goo remains at zero steps and 0.0% GPU busy; goo-off breathing remains at 0.6%.
+These measurements preserve GO10's GPU budget without lowering the update rate. The small CPU
+increase is recorded explicitly rather than treating GPU busy as the compositor's entire cost.
+
+Evidence is in `build/go11-results`: `amd-final` contains the final matrix and its screenshots;
+`amd-morph-evidence` and `amd-settings-evidence` contain the additional visual checks. Useful
+GO11/GO12 images in `amd-final/overlap-evidence` are `01-overlap-film.png`,
+`04-reversed-stacking.png`, `04a-shared-join.png`, `06-side-hover.png`, `10-corner-hover.png`,
+`11-cloud-without-emission.png`, `12-film-drag.png`, `13-shipped-feel.png` and
+`14-separated-again.png`. Normal and packed shots were inspected, as were the new settings hints.
+
+Earlier failed probes remain alongside final passes. The overlap pixel probe now uses the
+reported frame edge. The wave-join fixture puts the rear pulse beside the join rather than
+hundreds of pixels away around the perimeter. One Xe wide-bridge/fullscreen run failed; the
+original stable window-ID input tie break was restored independently of rendering order and
+fresh flow runs pass. No assertion threshold was weakened. The final renderer retains front-source
+dye under its own clipped content for interpolation, avoiding black dry texels at the film edge.

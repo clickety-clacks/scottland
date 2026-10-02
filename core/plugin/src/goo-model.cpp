@@ -114,13 +114,43 @@ float settings_t::fall(float d) const
     return glm::mix(falloff[i], falloff[i + 1], t - i);
 }
 float settings_t::threshold() const { return std::max(.0001f, fall(thickness)); }
+bool overlaps(const std::vector<source_t> &sources)
+{
+    for (size_t i = 0; i < sources.size(); i++)
+        for (size_t j = i + 1; j < sources.size(); j++)
+        {
+            auto a = sources[i].rect, b = sources[j].rect;
+            if (std::abs(a.x - b.x) < a.z + b.z && std::abs(a.y - b.y) < a.w + b.w)
+                return true;
+        }
+    return false;
+}
+size_t content_index(glm::vec2 p, const std::vector<source_t> &sources)
+{
+    for (size_t i = 0; i < sources.size(); i++)
+        if (distance(p, sources[i]) <= 0) return i;
+    return sources.size();
+}
+float control_cloud(glm::vec2 p, const source_t &w)
+{
+    auto q = p - glm::vec2(w.rect);
+    auto corner = glm::smoothstep(glm::vec2(w.rect.z, w.rect.w) - w.control_extent,
+        glm::vec2(w.rect.z, w.rect.w) - w.control_extent + 6.f, glm::abs(q));
+    float c = w.corners[(q.y < 0 ? 0 : 2) + (q.x < 0 ? 0 : 1)];
+    float side = std::abs(q.x) - w.rect.z > std::abs(q.y) - w.rect.w ?
+        w.sides[q.x > 0 ? 1 : 3] : w.sides[q.y > 0 ? 2 : 0];
+    return glm::mix(side, c, corner.x * corner.y);
+}
 float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &s, float time)
 {
     if (!std::isfinite(p.x) || !std::isfinite(p.y))
         return 0;
     float f = 0;
-    for (auto &w : sources)
+    size_t back = content_index(p, sources);
+    if (back < sources.size() && s.overlap_film <= 0) return 0;
+    for (size_t i = 0; i < back; i++)
     {
+        auto &w = sources[i];
         if (!w.emitter)
             continue;
         float n = noise(p / s.lump + w.liquid.z * glm::vec2{7.13, 3.71} +
@@ -128,21 +158,22 @@ float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_
         float scale = std::clamp(w.scale, 0.f, 1.f);
         float a = std::max(w.liquid.x * (1 + s.noise * scale * (n - .5f) * 2),
                            s.threshold()/std::max(s.fall(s.thickness*.1f*scale), .0001f));
-        // Smooth state deposits: corners and the dot thicken this same field.
-        for (int k = 0; k < 4; k++)
-        {
-            glm::vec2 c = glm::vec2(w.rect) +
-                          glm::vec2{(k & 1 ? 1.f : -1.f) * w.rect.z, (k & 2 ? 1.f : -1.f) * w.rect.w};
-            float d = glm::length(p - c) / 30;
-            a += w.corners[k] * .22f * std::exp(-d * d);
-        }
+        a += .22f * s.hover_cloudiness * control_cloud(p, w);
         float d = glm::length(p - glm::vec2(w.dot)) / 12;
         a += w.dot.z * .45f * std::exp(-d * d);
-        f += std::max(a, 0.f) * s.fall(std::max(distance(p, w), 0.f));
+        float e = std::max(distance(p, w), 0.f);
+        if (back < sources.size())
+        {
+            float width = glm::mix(s.overlap_film, s.thickness,
+                1.f - glm::smoothstep(0.f, s.reach, -distance(p, sources[back])));
+            e *= s.thickness / std::max(width, .01f);
+            a /= std::max(w.liquid.x, .0001f);
+        }
+        f += std::max(a, 0.f) * s.fall(e);
     }
     return f;
 }
-std::vector<float> support_radii(std::vector<source_t> sources, const settings_t &s)
+std::vector<float> support_radii(std::vector<source_t> sources, const settings_t &s, bool film)
 {
     amounts(sources, s);
     std::vector<float> peaks;
@@ -152,7 +183,9 @@ std::vector<float> support_radii(std::vector<source_t> sources, const settings_t
         float reserve = s.threshold() / std::max(s.fall(std::max(s.thickness * .1f *
             std::clamp(w.scale, 0.f, 1.f), w.hinted ? 1.f : 0.f)), .0001f);
         float peak = w.emitter ? std::max(w.liquid.x * (1 + s.noise), reserve) +
-            .22f * (w.corners.x + w.corners.y + w.corners.z + w.corners.w) + .45f * w.dot.z : 0;
+            .22f * s.hover_cloudiness * std::max({w.corners.x, w.corners.y, w.corners.z, w.corners.w,
+                w.sides.x, w.sides.y, w.sides.z, w.sides.w}) + .45f * w.dot.z : 0;
+        if (film && w.emitter) peak /= std::max(w.liquid.x, .0001f);
         peaks.push_back(peak);
         total += peak;
     }

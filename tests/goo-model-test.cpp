@@ -47,6 +47,28 @@ int main()
     s.swell = .7;
     amounts(windows, s);
     assert(windows[0].liquid.x > unswollen && windows[1].liquid.x == 0);
+    // Ordered visibility: a front edge remains wet over back content, but the
+    // reverse stacking and front content itself cannot expose that edge.
+    source_t front = a, back = b;
+    front.rect = {500, 300, 100, 100}; back.rect = {400, 300, 150, 150};
+    std::vector<source_t> overlap{front, back};
+    s.swell = 0; amounts(overlap, s);
+    assert(density({398, 300}, overlap, s, 0) > s.threshold());
+    assert(density({390, 300}, overlap, s, 0) < s.threshold());
+    assert(density({450, 300}, overlap, s, 0) == 0);
+    std::swap(overlap[0], overlap[1]);
+    assert(density({398, 300}, overlap, s, 0) == 0);
+    std::swap(overlap[0], overlap[1]);
+    s.overlap_film = 0;
+    assert(density({398, 300}, overlap, s, 0) == 0);
+    s.overlap_film = 4;
+    front.sides = {0, 1, 0, 0};
+    assert(control_cloud({605, 265}, front) == 1);
+    assert(control_cloud({605, 335}, front) == 1);
+    assert(control_cloud({395, 300}, front) == 0);
+    front.corners = {0, 0, 0, 1};
+    assert(control_cloud({605, 392}, front) > .99);
+    assert(control_cloud({592, 405}, front) > .99);
     // The conservative radii must contain every potentially visible field sample,
     // including distant tails, many overlapping islands, deposits and custom curves.
     for (auto curve : {"", "0:1 .5:.8 1:.4", "0:1 .5:.25 1:0"})

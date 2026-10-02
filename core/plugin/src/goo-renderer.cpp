@@ -132,8 +132,10 @@ struct renderer_t::impl
     glm::vec2 sampled_point{};
     glm::vec4 sampled_value{};
     settings_t settings;
+    bool overlap = false, controls = false, fast = true;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
+    OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query;
     std::vector<target_t> reduction;
 
@@ -141,7 +143,8 @@ struct renderer_t::impl
     {
         if (timer)
             glDeleteQueries(1, &timer);
-        for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p})
+        for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p,
+                       &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
         for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query})
             p->release();
@@ -209,6 +212,37 @@ struct renderer_t::impl
             if (!linked)
                 available = false;
         }
+        // Specialize the common resting/breathing path. Uniform branches alone
+        // retain the overlap/hover loop state on Xe, even when both are absent.
+        const std::array fast_programs{std::make_pair(&field_fast, &field_shader),
+            std::make_pair(&mask_fast, &mask_shader), std::make_pair(&wave_fast, &wave_shader),
+            std::make_pair(&dye_fast, &dye_shader), std::make_pair(&render_fast, &render_shader)};
+        for (auto pair : fast_programs)
+        {
+            auto shader = *pair.second;
+            const std::string decl = "uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;";
+            shader.replace(shader.find(decl), decl.size(),
+                "uniform float uFilm,uCloudiness,uEmissivity; const float uOverlap=0.,uControls=0.;");
+            // A float round-trip of uCount keeps a second dynamic loop bound in
+            // some GLES compilers. In this specialization every source is eligible.
+            auto replace = [&](const std::string &from, const std::string &to)
+            {
+                size_t at = 0;
+                while ((at = shader.find(from, at)) != std::string::npos)
+                {
+                    shader.replace(at, from.size(), to);
+                    at += to.size();
+                }
+            };
+            replace("if(back.x==0.)back=vec2(1.,0.);", "");
+            replace("else if(back.x<float(uCount)&&uFilm<=0.)", "if(back.x<float(uCount)&&uFilm<=0.)");
+            replace("if(i>=int(back.x))break;", "if(i>=uCount)break;");
+            replace("if(i>=int(hintBack.x))break;", "if(i>=uCount)break;");
+            compile(*pair.first, vertex, shader);
+            GLint linked = 0;
+            glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
+            if (!linked) available = false;
+        }
         compile(copy_p, vertex,
                 "precision highp float; uniform sampler2D image; void "
                 "main(){gl_FragColor=texture2D(image,vec2(.5));}");
@@ -228,6 +262,11 @@ struct renderer_t::impl
         one("uTime", time);
         one("uReach", settings.reach);
         one("uThickness", settings.thickness);
+        one("uOverlap", overlap ? 1 : 0);
+        one("uControls", controls ? 1 : 0);
+        one("uFilm", settings.overlap_film);
+        one("uCloudiness", settings.hover_cloudiness);
+        one("uEmissivity", settings.hover_emissivity);
         one("uNoise", settings.noise);
         one("uNoiseScale", 1 / settings.lump);
         one("uNoiseSpeed", settings.drift);
@@ -321,11 +360,12 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.dye, s.light ? s.scale : -s.scale});
             data.push_back(s.corners);
             data.push_back(s.dot);
-            data.push_back(glm::vec4{s.hinted ? 1.f : 0.f, 0, 0, 0});
+            data.push_back(glm::vec4{s.hinted ? 1.f : 0.f, s.control_extent, 0, 0});
+            data.push_back(s.sides);
         }
         if (data.empty())
-            data.resize(6);
-        const std::array uploads{std::make_pair(&source, std::make_pair(6, std::max(1, int(sources.size())))),
+            data.resize(7);
+        const std::array uploads{std::make_pair(&source, std::make_pair(7, std::max(1, int(sources.size())))),
                                 std::make_pair(&curve, std::make_pair(256, 1))};
         for (auto pair : uploads)
         {
@@ -424,16 +464,25 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     if (measure_gpu)
         glBeginQuery(0x88BF /* TIME_ELAPSED_EXT */, p->timer);
     p->sources = sources;
+    p->controls = std::any_of(sources.begin(), sources.end(), [](auto &s) {
+        return glm::length(s.corners) + glm::length(s.sides) > .001f;
+    });
+    p->overlap = overlaps(sources);
+    p->fast = !p->overlap && !p->controls;
+    auto &field_program = p->fast ? p->field_fast : p->field_p;
+    auto &mask_program = p->fast ? p->mask_fast : p->mask_p;
+    auto &wave_program = p->fast ? p->wave_fast : p->wave_p;
+    auto &dye_program = p->fast ? p->dye_fast : p->dye_p;
     p->settings = s;
     p->time = time;
     p->upload();
     glBindFramebuffer(GL_FRAMEBUFFER, p->field.fb);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    p->common(p->field_p, p->field.width, p->field.height);
-    p->simulate(p->field_p, p->field, area);
-    p->common(p->mask_p, p->mask.width, p->mask.height);
-    p->draw_to(p->mask_p, p->mask);
+    p->common(field_program, p->field.width, p->field.height);
+    p->simulate(field_program, p->field, area);
+    p->common(mask_program, p->mask.width, p->mask.height);
+    p->draw_to(mask_program, p->mask);
     for (auto &r : area)
         p->wave_tiles |= r;
     std::vector<wf::geometry_t> wave_area;
@@ -442,24 +491,24 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
             double(r.x2 - r.x1), double(r.y2 - r.y1)});
     for (int k = 0; k < 2; k++)
     {
-        p->common(p->wave_p, p->wave[1].width, p->wave[1].height);
-        p->wave_p.uniform1f("uC2", s.wave_speed);
-        p->wave_p.uniform1f("uDamp", s.wave_damp);
+        p->common(wave_program, p->wave[1].width, p->wave[1].height);
+        wave_program.uniform1f("uC2", s.wave_speed);
+        wave_program.uniform1f("uDamp", s.wave_damp);
         std::array<glm::vec4, 8> imp{};
         int n = k == 0 ? std::min<size_t>(impulses.size(), 8) : 0;
         for (int i = 0; i < n; i++)
             imp[i] = impulses[i];
-        auto id = p->wave_p.get_program_id(wf::TEXTURE_TYPE_RGBA);
+        auto id = wave_program.get_program_id(wf::TEXTURE_TYPE_RGBA);
         glUniform4fv(glGetUniformLocation(id, "uImp[0]"), 8, &imp[0].x);
-        p->wave_p.uniform1i("uImpN", n);
-        p->simulate(p->wave_p, p->wave[1], wave_area);
+        wave_program.uniform1i("uImpN", n);
+        p->simulate(wave_program, p->wave[1], wave_area);
         std::swap(p->wave[0], p->wave[1]);
     }
-    p->common(p->dye_p, p->dye[1].width, p->dye[1].height);
-    p->dye_p.uniform1f("uSpread", s.spread);
-    p->dye_p.uniform1f("uSwirl", s.swirl);
-    p->dye_p.uniform1f("uRelease", s.release);
-    p->draw_to(p->dye_p, p->dye[1]);
+    p->common(dye_program, p->dye[1].width, p->dye[1].height);
+    dye_program.uniform1f("uSpread", s.spread);
+    dye_program.uniform1f("uSwirl", s.swirl);
+    dye_program.uniform1f("uRelease", s.release);
+    p->draw_to(dye_program, p->dye[1]);
     std::swap(p->dye[0], p->dye[1]);
     packed = p->packed;
     steps++;
@@ -481,12 +530,12 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     wf::gles::bind_render_buffer(data.target);
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
-    // Background beneath the single goo layer, not a made-up desktop like the lab's wallpaper.
+    // Real scene beneath the shared visible liquid, including overlapped window content.
     auto &bg = p->background;
     if (!bg.texture || bg.width != viewport[2] || bg.height != viewport[3])
         bg.allocate(viewport[2], viewport[3], true, p->es3, false);
     glBindTexture(GL_TEXTURE_2D, bg.texture);
-    // Keep a wallpaper cache: outside this pass's damage the framebuffer still contains
+    // Keep a backdrop cache: outside this pass's damage the framebuffer still contains
     // last frame's goo/windows. Copying all of it would feed those colors back into refraction.
     wf::gles::for_each_scissor_rect(data.target, data.damage,
                                     [&]
@@ -501,16 +550,17 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, x - viewport[0],
                                                                 y - viewport[1], x, y, right - x, top - y);
                                     });
-    p->common(p->render_p, p->width, p->height);
+    auto &program = p->fast ? p->render_fast : p->render_p;
+    p->common(program, p->width, p->height);
     auto ortho = wf::gles::render_target_orthographic_projection(data.target);
-    p->render_p.uniformMatrix4f("MVP", ortho);
-    p->render_p.uniformMatrix4f("uBackgroundMap", ortho);
-    bind(p->render_p, "uBackground", 5, bg.texture);
-    p->render_p.uniform1f("uWaveAmp", p->settings.wave_height);
-    p->render_p.uniform1f("uShine", p->settings.shine);
-    p->render_p.uniform1f("uRelief", p->settings.relief);
-    p->render_p.uniform1f("uAlpha", 1);
-    p->render_p.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
+    program.uniformMatrix4f("MVP", ortho);
+    program.uniformMatrix4f("uBackgroundMap", ortho);
+    bind(program, "uBackground", 5, bg.texture);
+    program.uniform1f("uWaveAmp", p->settings.wave_height);
+    program.uniform1f("uShine", p->settings.shine);
+    program.uniform1f("uRelief", p->settings.relief);
+    program.uniform1f("uAlpha", 1);
+    program.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
         [](const source_t &s) { return s.hinted; }));
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -520,10 +570,10 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         {
             GLfloat vertices[] = {
                 0, 0, float(p->width), 0, float(p->width), float(p->height), 0, float(p->height)};
-            p->render_p.attrib_pointer("position", 2, 0, vertices);
+            program.attrib_pointer("position", 2, 0, vertices);
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         });
-    p->render_p.deactivate();
+    program.deactivate();
     if (p->timer_open)
     {
         glEndQuery(0x88BF);
@@ -559,5 +609,7 @@ glm::vec4 renderer_t::sample_at(glm::vec2 point)
     p->sampled_value = result;
     return result;
 }
+bool renderer_t::overlapping() const { return p->overlap; }
+bool renderer_t::highlighting() const { return p->controls; }
 float renderer_t::wave_at(glm::vec2 point) { return sample_at(point).w; }
 } // namespace scottland::goo

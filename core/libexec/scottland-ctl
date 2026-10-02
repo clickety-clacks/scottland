@@ -20,7 +20,8 @@ import sys
 NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", "blend_width")
 GOO = ("goo", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
-       "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief")
+       "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief",
+       "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
 NAMES += GOO
 TEXT = ("scale_curve", "goo_falloff")
 
