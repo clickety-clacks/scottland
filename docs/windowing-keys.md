@@ -5,7 +5,8 @@ Alt is Scottland's window key. Hold it alone for `scottland/alt_hold_delay` mill
 behavior with no replay or input delay. This is core desktop behavior, independent of integrations.
 
 The controller (`alt-mode.*`), rectangle placement (`placement.*`), force solver (`declutter.*`),
-and compositor overlay (`hint-overlay.*`) are separate from Wayfire integration. The desktop model's `window_state_t` owns normalized zone centers, the last side, hint slot,
+and compositor overlay (`hint-overlay.*`) are separate from Wayfire integration.
+The desktop model's `window_state_t` owns normalized zone centers, the last side, hint slot,
 and pending rail placement; its desktop snapshot publishes them and its atomic handover preserves
 them on reload. `windowing-bridge.hpp` adapts the independent algorithms to `model.windows` and
 `model.widgets`; widget changes use the existing lifecycle transitions. Hint offsets and overlays
@@ -36,7 +37,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
 | WP4 | Without a memory, use the single pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. The entire periphery is eligible, with its natural scaled footprint re-evaluated at the landing position; rail placement is refined to the actual widget footprint when it maps. | implemented (headless) |
-| WP5 | Explicit zone cycling and presenting clear an Alt-drag scale pin. Center destinations keep the original window size and are always at 100%. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). | implemented (headless) |
+| WP5 | Explicit zone cycling, card opens and presenting a side window clear an Alt-drag scale pin. Center destinations keep the original window size and are always at 100%. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). | implemented (headless) |
 | WP6 | The placement routine and force solver have no Wayfire dependencies and have standalone unit tests. The placement routine is reusable for any rectangle/region contention; it never resizes an incoming rectangle or moves obstacles. | implemented (headless) |
 
 ## Decisions at unspecified edges

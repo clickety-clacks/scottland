@@ -75,9 +75,10 @@
     void remember_window(wayfire_toplevel_view view)
     {
         using Z = scottland::windowing::zone;
-        if (!view || !view->get_output() || view->pending_fullscreen()) return;
+        if (!view || !view->is_mapped() || !view->get_output() || view->pending_fullscreen()) return;
         auto link = link_of_widget(view);
         uint64_t id = link ? link->window_id : view->get_id();
+        if (!model.windows.count(id)) return;
         auto z = window_zone(view);
         auto g = view->get_geometry(); auto screen = view->get_output()->get_relative_geometry();
         auto& memory = ensure_window_memory(id);

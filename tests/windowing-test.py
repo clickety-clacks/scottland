@@ -3,6 +3,9 @@
 import json
 import math
 import os
+import select
+import socket
+import struct
 from pathlib import Path
 import subprocess
 import sys
@@ -18,6 +21,34 @@ def ipc(method, data=None):
         args.append(json.dumps(data))
     result = subprocess.run(args, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
+
+class ModelWatch:
+    def __init__(self):
+        # Ask the checkout's session helper for its socket; never inherit another desktop's.
+        path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+                "import os;print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(5)
+        self.sock.connect(path)
+        body = json.dumps({'method': 'scottland/subscribe', 'data': {'slice': 'desktop'}}).encode()
+        self.sock.sendall(struct.pack('<I', len(body)) + body)
+        self.initial = self.receive()
+
+    def exactly(self, count):
+        data = b''
+        while len(data) < count:
+            chunk = self.sock.recv(count - len(data))
+            if not chunk: raise ConnectionError('compositor disconnected')
+            data += chunk
+        return data
+
+    def receive(self):
+        return json.loads(self.exactly(struct.unpack('<I', self.exactly(4))[0]))
+
+    def latest(self):
+        state = self.initial
+        while select.select([self.sock], [], [], .1)[0]: state = self.receive()
+        return state
 
 def check(ok, name):
     global passed, failed
@@ -173,12 +204,15 @@ try:
     key('LEFTALT', True); tap('TAB'); time.sleep(.35)
     check(not hints()['active'], 'quick Alt+Tab keeps existing routing and cancels delayed entry')
     release(); focus(a)
+    memories_before = {h['window']: h['memories'] for h in hints()['hints']}
     hold()
     check(all(h['visible'] for h in hints()['hints']), 'Alt-alone hold shows every window hint')
     saved = center(view('Alpha')), center(view('Beta'))
     offsets = [(hint(i)['dx'], hint(i)['dy']) for i in (a,b)]
     check(any(math.hypot(*p) > 10 for p in offsets), 'coincident windows visually displace')
     check(near(saved[0], saved[1]), 'declutter leaves real window geometry unchanged')
+    check(all(w['placement']['positions'] == memories_before[w['id']] for w in ipc('scottland/desktop-model')['windows']
+              if w['id'] in memories_before), 'visual declutter leaves published zone memories unchanged')
     subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'hints.png')], check=True)
     before = sum(delivered(n).count('f') for n in ('Alpha','Beta'))
     tap('F')
@@ -251,14 +285,22 @@ try:
     hold(); choose(b); tap('F4')
     wait_for(lambda: view('Beta') is None)
     check(view('Alpha') is not None, 'F4 closes only the selected window')
+    check(not any(w['id'] == b for w in ipc('scottland/desktop-model')['windows']), 'closing forgets placement with its model window')
     release()
     c = launch('Gamma')
     check(hint(a)['hint'] == 'a' and hint(c)['hint'] == 's', 'closed hint reused without changing surviving letters')
     close_all()
 
     a = launch('Cycle')
+    watch = ModelWatch()
     drag('Cycle', width*.53, height*.36)
     center_memory = center(view('Cycle'))
+    published = watch.latest()
+    spot = next(w for w in published['windows'] if w['id'] == a)['placement']['positions'][0]
+    check(published['version'] > watch.initial['version'] and spot['set'] and
+          near((spot['x'] * width, spot['y'] * height), center_memory),
+          'real drop publishes a newer complete snapshot with normalized center memory')
+    watch.sock.close()
     hold(); choose(a)
     check(near(center(view('Cycle')), center_memory), 'center first hint press only selects')
     choose(a)
@@ -395,8 +437,9 @@ try:
     model = ipc('scottland/desktop-model')
     check(all(next(w for w in model['windows'] if w['id'] == h['window'])['placement']['positions'] == h['memories']
               for h in hints()['hints']), 'desktop snapshot publishes the same authoritative memories as hints')
-    live_ids = {w['id'] for w in model['windows']}
-    check(all(w['id'] in live_ids for w in model['windows'] if 'placement' in w), 'placement belongs only to live model windows')
+    check(all('placement' not in w and 'pending_rail' not in w for slice_name in ('widgets', 'attention')
+              for w in ipc('scottland/desktop-model', {'slice': slice_name})['windows']),
+          'external slices omit placement and pending rail geometry')
     # Reload into a new library copy, keeping open widgets, positions, assignments, render state.
     hold(); choose(a); choose(a); choose(a); release()
     focus(a); hold(); choose(a); choose(a); choose(a); release()

@@ -3322,7 +3322,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             remember_window(view);
             pin_scale(view, std::nullopt);
             wf::pointf_t middle = zone_spot(view, scottland::windowing::zone::center, {from.x, from.y});
-            view->move(std::round(middle.x - g.width / 2.0), std::round(middle.y - g.height / 2.0));
+            move_window(view, std::round(middle.x - g.width / 2.0), std::round(middle.y - g.height / 2.0));
             start_glide(view, from.x - middle.x, from.y - middle.y);
             remember_window(view);
             reply["presented"] = "moved";
