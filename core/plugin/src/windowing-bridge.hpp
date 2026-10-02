@@ -175,7 +175,7 @@
             if (rail)
             {
                 // Provisional footprint; refine on adoption with the actual widget size.
-                auto card = footprint ? footprint->get_geometry() : wf::geometry_t{0, 0, 320, 90};
+                auto card = footprint ? footprint->toplevel()->pending().geometry : wf::geometry_t{0, 0, 320, 90};
                 w = card.width; h = card.height;
                 double cx = left ? WIDGET_INSET + w / 2 : screen.width - WIDGET_INSET - w / 2;
                 region.x = cx - w / 2; region.width = w;
@@ -260,9 +260,8 @@
         using Z = scottland::windowing::zone;
         auto at = zone_spot(window, rail == "left" ? Z::left_rail : Z::right_rail, current, widget);
         found->second.pending_rail.reset();
-        auto g = widget->get_geometry();
         if (auto link = link_of_widget(widget)) link->drop = at;
-        move_window(widget, std::round(at.x - g.width / 2.0), std::round(at.y - g.height / 2.0));
+        // The caller places drop and gravity in one pending transaction (WG4/WG16).
         return true;
     }
     wf::wl_timer<false> deferred_cycle;

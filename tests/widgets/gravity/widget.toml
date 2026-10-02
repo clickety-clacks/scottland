@@ -1,0 +1,3 @@
+id = "gravity"
+apps = ["^scottland-test-gravity$"]
+exec = "python3 ./widget.py"

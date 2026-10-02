@@ -9,7 +9,9 @@ and compositor overlay (`hint-overlay.*`) are separate from Wayfire integration.
 The desktop model's `window_state_t` owns normalized zone centers, the last side, hint slot,
 and pending rail placement; its desktop snapshot publishes them and its atomic handover preserves
 them on reload. `windowing-bridge.hpp` adapts the independent algorithms to `model.windows` and
-`model.widgets`; widget changes use the existing lifecycle transitions. Hint offsets and overlays
+`model.widgets`; widget changes use the existing lifecycle transitions. Cycled rail placement is refined
+from the widget's pending size and applies drop and gravity together in its mapping transaction;
+geometry notifications only record the committed memory, never issue a corrective move. Hint offsets and overlays
 remain rendering resources, never geometry or memory inputs.
 
 ## Invariants
@@ -103,3 +105,5 @@ Headless screenshots show distinct hints tracking displaced windows and native/l
 No live session on osanwe or physical screen on plumbus was installed into, reloaded or used.
 Physical verification and rehearsal from the installed build before live reload remain the
 coordinating session's rollout work.
+
+Main subsequently advanced to `e76bc56` (Super+M, transaction gravity, preview mode and settings/import fixes). The branch now includes that tip; its updated matrix is pending.

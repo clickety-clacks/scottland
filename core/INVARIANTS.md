@@ -15,7 +15,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L2 | Center zone: default one third of the width (33.333%); windows there are at 100%. | verified |
 | L3 | Widget rails: thin strips at the far left and right, default 2% of the width (~50 pt on a 2560-wide screen). | verified |
 | L4 | Continuous zones: scale follows the scale curve from the largest scale (next to the center, default 100%) to the smallest (next to the rails, default 20%); without a curve it's a straight line between them. | verified |
-| L18 | Just outside the center zone, a blend band (default 3 pt, "Center edge blend" slider) eases the scale from 100% into the scale curve: flat where it meets the center, matching the curve's starting slope where it meets the curve, so there is no jump or corner at the edge. | implemented |
+| L18 | Just outside the center zone, a blend band (default 40 pt, "Center edge softness" slider, up to 300 pt) eases the scale from 100% into the scale curve: flat where it meets the center, matching the curve's starting slope where it meets the curve, so there is no jump or corner at the edge. | implemented |
 | L5 | A window's zone and scale are set by its center. It scales around its center. | verified |
 | L6 | True scaling: the real window is transformed, not a thumbnail, and stays fully interactive (click, type, scroll) at any scale. | verified (scale); interaction at small scale: implemented |
 | L7 | Scaling is the only transform: no rotation or other distortion. Wayfire's window rotation (flat and 3D) and desktop cube are not enabled. | implemented |
@@ -69,7 +69,7 @@ built, the halo rows below point there.
 
 | ID | Invariant | Status |
 |---|---|---|
-| S1 | Sliders for center width (%) and widget rail width (%). | verified |
+| S1 | The zone settings (center edge softness, center zone width, widget rail width) are one stack of tall rows, each row a slider grabbed anywhere along it (label left, value right, thin separators, one rounded block), after the shared parameter-slider design: Left/Right adjust (Shift: larger steps), Up/Down or Tab move between rows, digits type a value, Backspace resets a row, double-click resets a row to its value when the panel opened; changed values show in the accent color. Super+. opens the panel. | implemented |
 | S9 | A 2D curve editor sets the scale across the side zones: two endpoints (largest scale at the center edge, smallest at the rail) move vertically only; clicking adds a point, dragging shapes the curve, double-click or right-click removes a point. Points are joined by a smooth curve that doesn't overshoot them (monotone cubic), and the plugin uses the same curve. | verified |
 | S2 | While the panel is open, a click-through overlay shows the zones on every screen. | verified |
 | S3 | Moving a slider rescales windows on screen live. | verified |

@@ -131,7 +131,10 @@ and attention slices omit placement. Closing removes all placement state with th
 atomic model handover retains memories and slots on marked reload; an older Alt-branch position
 file is imported once, never written by the model build. Explicit zone navigation clears a drag
 scale pin; hints never engage during a drag (L31). Card restore applies normalized memory to its
-destination output, including a different logical size/scale.
+destination output, including a different logical size/scale. After merging main `e76bc56`, rail
+placement uses its pending-size/gravity transaction; geometry callbacks record committed memories
+without a corrective move. The collapse raw-key tracker connects after layers and hints and
+respects claimed/consumed input. Updated validation for that merge is pending.
 
 Integrated validation of code `9800173` is recorded in [windowing-keys.md](windowing-keys.md).
 The 73 windowing checks independently assert drop subscription delivery, rendering-only declutter,

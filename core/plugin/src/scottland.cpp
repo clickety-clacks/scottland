@@ -1539,12 +1539,99 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Widgets learn it from the widget service (Minimized, and the state file); the default card
     // shrinks to its icon. It's a mode: a widget made while widgets are collapsed starts collapsed.
     wf::option_wrapper_t<wf::keybinding_t> minimize_key{"scottland/minimize_widget"};
-    wf::key_callback on_minimize_key = [=] (const wf::keybinding_t&)
+    // One activation per held key, across devices. A duplicate down (including one from
+    // another device) is not a new press. Only the last device's release rearms it; no timer
+    // filters intentional press-release-press sequences. Keep old keys until release if the
+    // binding changes while held.
+    struct minimize_press_t
     {
+        std::set<wlr_input_device*> devices;
+        bool activated = false;
+        bool consumed = false;
+    };
+    std::map<uint32_t, minimize_press_t> minimize_presses;
+    uint64_t minimize_edge = 0;
+    uint32_t minimize_event_time = 0;
+    std::string minimize_device;
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_minimize_edge =
+        [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
+    {
+        if (key_layers.handles(ev) || (ev->mode == wf::input_event_processing_mode_t::IGNORE &&
+            !minimize_presses.count(ev->event->keycode))) return;
+        auto code = ev->event->keycode;
+        auto binding = minimize_key.value();
+        bool modifiers_held = (wf::get_core().seat->get_keyboard_modifiers() & binding.get_modifiers()) ==
+            binding.get_modifiers();
+        // Track/log only binding-modified edges or an already tracked press (including its
+        // release after Super is up). Plain typing must not become a keystroke trail; duplicate
+        // activation diagnostics still retain the entire relevant press across devices.
+        if (!minimize_presses.count(code) && ((code != binding.get_key()) || !modifiers_held))
+        {
+            return;
+        }
+
+        auto& press = minimize_presses[code];
+        bool down = ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
+        bool duplicate = down && press.devices.count(ev->device);
+        if (down)
+        {
+            press.devices.insert(ev->device);
+        } else
+        {
+            press.devices.erase(ev->device);
+        }
+
+        std::ostringstream device;
+        device << (ev->device && ev->device->name ? ev->device->name : "unknown")
+               << "@" << static_cast<void*>(ev->device);
+        minimize_device = device.str();
+        minimize_event_time = ev->event->time_msec;
+        LOGI("scottland: minimize-key edge=", ++minimize_edge, " device=", minimize_device,
+            " time_msec=", minimize_event_time, " received_msec=", now_msec(), " key=", code,
+            " state=", down ? "press" : "release", " duplicate_down=", duplicate,
+            " held_devices=", press.devices.size(), " activated=", press.activated,
+            " collapsed=", model.collapsed, " processing=", (int)ev->mode);
+        if (press.devices.empty())
+        {
+            minimize_presses.erase(code);
+        }
+    };
+
+    wf::signal::connection_t<wf::input_device_removed_signal> on_minimize_device_removed =
+        [=] (wf::input_device_removed_signal *ev)
+    {
+        for (auto it = minimize_presses.begin(); it != minimize_presses.end();)
+        {
+            if (it->second.devices.erase(ev->device->get_wlr_handle()))
+            {
+                LOGI("scottland: minimize-key device-removed key=", it->first,
+                    " device=", static_cast<void*>(ev->device->get_wlr_handle()),
+                    " received_msec=", now_msec(), " held_devices=", it->second.devices.size());
+            }
+
+            it = it->second.devices.empty() ? minimize_presses.erase(it) : std::next(it);
+        }
+    };
+
+    wf::key_callback on_minimize_key = [=] (const wf::keybinding_t& key)
+    {
+        auto& press = minimize_presses[key.get_key()];
+        if (key.get_key() && press.activated)
+        {
+            LOGI("scottland: minimize-key ignored-duplicate edge=", minimize_edge,
+                " device=", minimize_device, " time_msec=", minimize_event_time,
+                " key=", key.get_key(), " modifiers=", key.get_modifiers(),
+                " collapsed=", model.collapsed);
+            return press.consumed;
+        }
+
+        // Modifier-only bindings are invoked on release by Wayfire, with keycode zero.
+        press.activated = key.get_key() != 0;
         bool all_minimized = true, any = false;
         for (auto& [id, link] : model.widgets)
         {
-            if (!link.previewing())
+            if (link.docked())
             {
                 any = true;
                 all_minimized &= link.collapsed;
@@ -1553,20 +1640,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (!any)
         {
+            LOGI("scottland: minimize-key no-widgets edge=", minimize_edge,
+                " device=", minimize_device, " time_msec=", minimize_event_time);
             return false;  // no widgets: the key goes on to the app
         }
 
         for (auto& [id, link] : model.widgets)
         {
-            if (!link.previewing())
-            {
-                link.collapsed = !all_minimized;
-            }
+            link.collapsed = !all_minimized;  // running previews follow the mode too (WG16)
         }
 
         model.collapsed = !all_minimized;
 
-        LOGI("scottland: Super+M: all widgets ", all_minimized ? "expanded" : "collapsed");
+        press.consumed = true;
+        LOGI("scottland: minimize-key activation edge=", minimize_edge, " device=", minimize_device,
+            " time_msec=", minimize_event_time, " key=", key.get_key(),
+            " modifiers=", key.get_modifiers(), " collapsed=", model.collapsed);
         announce_widgets();
         return true;
     };
@@ -1750,29 +1839,28 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** The app's process. X11 windows all belong to the XWayland server's client, so theirs is the
      *  _NET_WM_PID they declare (X11 apps can already see each other; no stronger check exists). */
-    static pid_t view_pid(wayfire_view view)
+    static pid_t surface_pid(wlr_surface *surface)
     {
         pid_t pid = 0;
-        if (!view)
+        if (!surface)
         {
             return pid;
         }
 
 #if WF_HAS_XWAYLAND
-        if (auto surface = view->get_wlr_surface())
+        if (auto xsurface = wlr_xwayland_surface_try_from_wlr_surface(surface))
         {
-            if (auto xsurface = wlr_xwayland_surface_try_from_wlr_surface(surface))
-            {
-                return xsurface->pid;
-            }
+            return xsurface->pid;
         }
 #endif
-        if (view->get_client())
-        {
-            wl_client_get_credentials(view->get_client(), &pid, nullptr, nullptr);
-        }
+        wl_client_get_credentials(wl_resource_get_client(surface->resource), &pid, nullptr, nullptr);
 
         return pid;
+    }
+
+    static pid_t view_pid(wayfire_view view)
+    {
+        return surface_pid(view ? view->get_wlr_surface() : nullptr);
     }
 
     /** Is `ancestor` the process `pid` or one of its ancestors (a few levels up)? */
@@ -2216,7 +2304,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             transition_widget(link, link.lifecycle);
             keep_above(view);
             place_cycled_widget(view, link.window_id, link.rail);
-            keep_in_place(link, view);
+            place_widget(view, output, link);
             set_scale(view, 1.0);
             show_attention(link.window_id);  // asked before its widget appeared
             return true;
@@ -2430,7 +2518,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.widgets[link.window_id] = std::move(link);
             keep_above(widget);
             set_scale(widget, 1.0);
-            keep_in_place(model.widgets[window->get_id()], widget);
+            place_widget(widget, widget->get_output(), model.widgets[window->get_id()]);
         }
 
         announce_widgets();
@@ -2450,6 +2538,47 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
+    /** Before mapping, the view's surface accessor is still null. The wl_surface resource
+     *  already belongs to its toplevel, though: use Wayfire's public resource-to-view lookup
+     *  and read credentials from that surface's wl_client (X11 keeps its declared PID).
+     *  This lookup runs only for initial mapping transactions while widget launches exist;
+     *  it needs neither unstable Wayfire pre-map signals nor cached client identities. */
+    static pid_t mapping_pid(wayfire_toplevel_view view)
+    {
+        if (!view || view->get_wlr_surface())
+        {
+            return view_pid(view);
+        }
+
+        struct lookup_t
+        {
+            wayfire_toplevel_view view;
+            pid_t pid = 0;
+        } lookup{view};
+        wl_client *client;
+        wl_client_for_each(client, wl_display_get_client_list(wf::get_core().display))
+        {
+            wl_client_for_each_resource(client, [] (wl_resource *resource, void *data)
+            {
+                auto& lookup = *static_cast<lookup_t*>(data);
+                if ((std::string(wl_resource_get_class(resource)) == "wl_surface") &&
+                    (wf::wl_surface_to_wayfire_view(resource) == lookup.view))
+                {
+                    lookup.pid = surface_pid(wlr_surface_from_resource(resource));
+                    return WL_ITERATOR_STOP;
+                }
+
+                return WL_ITERATOR_CONTINUE;
+            }, &lookup);
+            if (lookup.pid)
+            {
+                break;
+            }
+        }
+
+        return lookup.pid;
+    }
+
     // Wayfire's place plugin positions every window as it maps (centered, cascaded...), in the
     // transaction that maps it. A widget's window has its place already: recognized as it maps,
     // it gets that place in the same transaction and is marked as positioned (startup-x/y, which
@@ -2465,13 +2594,30 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         for (const auto& object : ev->tx->get_objects())
         {
             auto toplevel = std::dynamic_pointer_cast<wf::toplevel_t>(object);
-            if (!toplevel || toplevel->current().mapped || !toplevel->pending().mapped)
+            if (!toplevel || !toplevel->pending().mapped)
             {
-                continue;  // not a window about to map
+                continue;
             }
 
-            auto view = wf::find_view_for_toplevel(toplevel);
-            pid_t pid = view ? view_pid(view) : 0;
+            auto view = wf::toplevel_cast(wf::find_view_for_toplevel(toplevel));
+            if (toplevel->current().mapped)
+            {
+                // Reconcile client size changes before this transaction commits, using its
+                // pending size. Never schedule a second move from a geometry notification.
+                auto link = link_of_widget(view);
+                auto& pending = toplevel->pending();
+                auto& current = toplevel->current().geometry;
+                if (link && (drag->view != view) && (view->get_id() != model.drag.widget) &&
+                    ((pending.geometry.width != current.width) || (pending.geometry.height != current.height)))
+                {
+                    auto output = output_alive(link->output) ? link->output : view->get_output();
+                    position_widget(view, pending, output, *link);
+                }
+
+                continue;
+            }
+
+            pid_t pid = mapping_pid(view);
             for (auto& [id, link] : model.widgets)
             {
                 if (link.widget.lock() || !link.launcher || !(in_scope(pid, link.launcher->unit) ||
@@ -2486,12 +2632,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     break;
                 }
 
-                auto& pending = toplevel->pending().geometry;
-                auto spot = widget_spot(output, link, pending.width, pending.height);
-                pending.x = spot.x;
-                pending.y = spot.y;
-                view->set_property("startup-x", spot.x);
-                view->set_property("startup-y", spot.y);
+                auto& pending = toplevel->pending();
+                position_widget(view, pending, output, link);
+                view->set_property("startup-x", pending.geometry.x);
+                view->set_property("startup-y", pending.geometry.y);
                 break;
             }
         }
@@ -2514,66 +2658,35 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return {(int)std::round(x), (int)std::round(y)};
     }
 
-    /** Put a widget where it belongs: centered on its drop point (its screen edge for a widget
-     *  wider than the rail), kept on screen. Only moves it if it isn't there. */
-    void keep_in_place(widget_link_t& link, wayfire_toplevel_view widget)
+    /** Rail gravity and placement always travel in the same pending state, starting with
+     *  the mapping transaction. A resize keeps its edge without a post-apply correction. */
+    void position_widget(wayfire_toplevel_view view, wf::toplevel_state_t& pending,
+        wf::output_t *output, const widget_link_t& link)
     {
-        auto output = output_alive(link.output) ? link.output : widget->get_output();
-        if (!output)
+        pending.gravity = ((link.rail == "left") ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT) | WLR_EDGE_TOP;
+        if (output)
         {
-            return;
+            auto spot = widget_spot(output, link, pending.geometry.width, pending.geometry.height);
+            pending.geometry.x = spot.x;
+            pending.geometry.y = spot.y;
         }
 
-        // A widget resizing itself (its card expanding or collapsing, a title changing) keeps its
-        // screen-edge side still: Wayfire holds that edge, so no move (which would resend an older
-        // size to the client mid-resize) is needed for it.
-        uint32_t gravity = ((link.rail == "left") ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT) | WLR_EDGE_TOP;
-        if (widget->toplevel()->pending().gravity != gravity)
+        if (auto state = model.windows.find(view->get_id()); state != model.windows.end())
         {
-            widget->toplevel()->pending().gravity = gravity;
-            wf::get_core().tx_manager->schedule_object(widget->toplevel());
-        }
-
-        auto g = widget->get_geometry();
-        double width = output->get_relative_geometry().width;
-        // Its screen-edge side stays at the edge: the drop point's distance from the edge is
-        // measured from the widget's edge-side (a card that grows grows away from the edge).
-        wf::pointf_t at = link.drop;
-        if (link.rail == "right")
-        {
-            at.x = std::max(at.x, width - g.width / 2.0);
-        } else
-        {
-            at.x = std::min(at.x, g.width / 2.0);
-        }
-
-        auto before = g;
-        place_widget(widget, output, at);
-        auto placed = widget->get_geometry();
-        if ((placed.x != before.x) || (placed.y != before.y))
-        {
-            LOGI("scottland: widget for window ", link.window_id, " back in its place (", before.x, ",", before.y,
-                " -> ", placed.x, ",", placed.y, ")");
+            state->second.geometry = pending.geometry;
         }
     }
 
-    /** Center the widget on `at`, kept wholly on screen, halo included. */
-    void place_widget(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t at)
+    /** Place a newly adopted, committed or dropped widget, using the size already pending. */
+    void place_widget(wayfire_toplevel_view view, wf::output_t *output, const widget_link_t& link)
     {
-        auto geometry = view->get_geometry();
-        auto area = output ? output->workarea->get_workarea() : geometry;
-        int inset = WIDGET_INSET;
-        area.x += inset;
-        area.y += inset;
-        area.width  -= 2 * inset;
-        area.height -= 2 * inset;
-        double x = std::clamp(at.x - geometry.width / 2.0, (double)area.x,
-            std::max((double)area.x, (double)(area.x + area.width - geometry.width)));
-        double y = std::clamp(at.y - geometry.height / 2.0, (double)area.y,
-            std::max((double)area.y, (double)(area.y + area.height - geometry.height)));
-        if ((std::round(x) != geometry.x) || (std::round(y) != geometry.y))
+        auto& pending = view->toplevel()->pending();
+        auto before = pending;
+        position_widget(view, pending, output, link);
+        if ((pending.geometry != before.geometry) || (pending.gravity != before.gravity))
         {
-            move_window(view, std::round(x), std::round(y));
+            wf::get_core().tx_manager->schedule_object(view->toplevel());
+            publish_model();
         }
     }
 
@@ -2581,6 +2694,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void commit_preview(widget_link_t& link, wf::pointf_t at)
     {
         auto window = wf::toplevel_cast(link.window.lock());
+        link.collapsed = model.collapsed;  // reconcile a preview launched before the mode changed
         transition_widget(link, widget_link_t::lifecycle_t::docked);
         link.drop    = at;
         if (window && window->get_output())
@@ -2599,11 +2713,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             keep_above(widget);
-            keep_in_place(link, widget);
+            place_widget(widget, output, link);
             set_scale(widget, 1.0);
             // It was let go at `at` (the dragged window was drawn there as the widget): glide to
             // its place against the screen edge rather than jump.
-            auto placed = widget->get_geometry();
+            auto placed = widget->toplevel()->pending().geometry;
             start_glide(widget, at.x - (placed.x + placed.width / 2.0), at.y - (placed.y + placed.height / 2.0));
             wf::get_core().default_wm->focus_raise_view(widget);
         } else if (window && (wf::get_core().seat->get_active_view() == window))
@@ -2733,21 +2847,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             bool left = in_rail(at) ? (at < width / 2) : (center.x < width / 2);  // else its nearer rail
 
-            bool changed_rail = (link->rail != (left ? "left" : "right")) || (link->output != output);
-            link->rail = left ? "left" : "right";
+            auto rail = left ? "left" : "right";
+            bool changed = (link->rail != rail) || (link->output != output);
+            link->drop   = center;
+            link->rail   = rail;
             link->output = output;
-            link->drop = center;
-            keep_in_place(*link, view);
-            auto placed_now = view->get_geometry();
-            start_glide(view, center.x - (placed_now.x + placed_now.width / 2.0),
-                center.y - (placed_now.y + placed_now.height / 2.0));
-            if (changed_rail)
+            place_widget(view, output, *link);  // position and new rail gravity in one transaction
+            auto placed = view->toplevel()->pending().geometry;
+            start_glide(view, center.x - (placed.x + placed.width / 2.0),
+                center.y - (placed.y + placed.height / 2.0));
+            if (changed)
             {
                 announce_widgets();
             }
-
-            auto placed = view->get_geometry();
-            link->drop = {placed.x + placed.width / 2.0, placed.y + placed.height / 2.0};
         } else if (on_rail)
         {
             widgetize(view, false, (in_rail(at) ? at : center.x) < width / 2 ? "left" : "right");
@@ -3349,7 +3461,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto found = model.widgets.find(id);
-        if (found == model.widgets.end())
+        if ((found == model.widgets.end()) || !found->second.docked())
         {
             return wf::ipc::json_error("no such widget");
         }
@@ -4760,10 +4872,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link->output = view->get_output();
             link->drop = {origin.position.x + origin.first_size.width / 2.0,
                 origin.position.y + origin.first_size.height / 2.0};
-            keep_in_place(*link, view);
+            place_widget(view, view->get_output(), *link);
             announce_widgets();
         }
-        auto placed = view->get_geometry();
+        auto placed = view->toplevel()->pending().geometry;
         wf::point_t to{(int)placed.x, (int)placed.y};
         if (view->get_output())
         {
@@ -5209,16 +5321,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             update_neighbors(view->get_output());
 
-            // A widget that changes size (a card whose title changed) keeps its screen-edge side
-            // against the edge, wholly on screen (WG4).
-            auto g = view->get_geometry();
-            if (auto link = link_of_widget(view); link && !link->previewing() && (drag->view != view) &&
-                (view->get_id() != model.drag.widget) &&  // a drop is moving it: the drop decides
-                ((g.width != ev->old_geometry.width) || (g.height != ev->old_geometry.height)))
-            {
-                keep_in_place(*link, view);
-            }
-
             // Widget placement during map is pending until its transaction commits. Save the
             // committed center, not the provisional center reported in view-mapped.
             if (auto link = link_of_widget(view); link && link->docked() &&
@@ -5533,6 +5635,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         take_handover();
         init_window_keys();
+        wf::get_core().connect(&on_minimize_edge);
+        wf::get_core().connect(&on_minimize_device_removed);
         wf::get_core().connect(&on_cancel_key);
         wf::get_core().connect(&on_key);
         wf::get_core().connect(&on_remap_key);
@@ -5585,6 +5689,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
+        on_minimize_edge.disconnect();
+        on_minimize_device_removed.disconnect();
         on_key.disconnect();
         on_axis.disconnect();
         on_remap_key.disconnect();
