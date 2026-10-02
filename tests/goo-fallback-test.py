@@ -24,8 +24,11 @@ try:
     for _ in range(50):
         if any(v['title']=='fallback-app' for v in ipc('scottland/layout-state')['views']):break
         time.sleep(.1)
+    # Explicitly request goo so the off default cannot make this fallback check vacuous.
+    ipc('wayfire/set-config-options', {'scottland/goo': True})
     time.sleep(.7)
     check('unsupported context falls back to the halo',not ipc('scottland/goo-state')['enabled'])
+    check('unsupported goo leaves no available model screens', ipc('scottland/desktop-model')['goo'] == [])
     ipc('wayfire/set-config-options',{'scottland/center_width':90,'scottland/min_scale':1,'scottland/max_scale':1,'scottland/scale_curve':'0:1 1:1'})
     time.sleep(.4);f=view()['frame'];x=f['x']-6;y=f['y']+f['height']/2
     pointer(x,y);time.sleep(.1)

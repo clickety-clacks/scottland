@@ -103,6 +103,7 @@ try:
     ipc('wm-actions/set-fullscreen',{'view_id':view('flow-b')['id'],'state':True}); time.sleep(.6)
     sample=ipc('scottland/goo-state',{'x':100,'y':100})['screens'][0]
     check('fullscreen clips the entire liquid layer',sample['window_distance']<0)
+    check('goo fullscreen suspension follows model FS1 focus', bool(ipc('scottland/desktop-model')['focus']))
     ipc('scottland/attention',{'window':view('flow-a')['id'],'attention':True,'source':'goo-flow-test'})
     time.sleep(.3); steps=ipc('scottland/goo-state')['screens'][0]['steps'];time.sleep(1)
     state=ipc('scottland/goo-state')['screens'][0]
@@ -110,6 +111,8 @@ try:
     ipc('scottland/attention',{'window':view('flow-a')['id'],'attention':False,'source':'goo-flow-test'})
     subprocess.run(['grim',str(art/'fullscreen.png')],check=True)
     ipc('wm-actions/set-fullscreen',{'view_id':view('flow-b')['id'],'state':False}); time.sleep(.5)
+    check('leaving FS1 resumes the existing window field', not ipc('scottland/desktop-model')['focus']
+          and ipc('scottland/goo-state')['screens'][0]['sources'] == 2)
     outputs=ipc('window-rules/list-outputs')
     if len(outputs)>1:
         origins=sorted(outputs,key=lambda o:o['geometry']['x'])
