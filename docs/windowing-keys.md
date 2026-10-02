@@ -71,19 +71,20 @@ are saved beside that session directory. `tests/widgets-test.sh` supplies widget
 regression coverage and now honors the supplied directory for its display, reload library, and
 artifacts too.
 
-Integrated validation on plumbus, 2026-10-01, code commit `9800173` (merges main `480bee1`
-and key-layers `9a24c92`):
+Integrated validation on plumbus, 2026-10-01, code commit `756b8d7` (merges main `e76bc56`
+and key-layers `9a24c92`). Main's subsequent documentation-only tip `16286df` is included
+by merge `56b0cc1`; it changes no code under test.
 
 | Suite | Result |
 |---|---|
 | Windowing unit | 41 passed, 0 failed |
 | Windowing end-to-end | 73 passed, 0 failed |
 | Key layers, including hints | 59 passed, 0 failed |
-| Widgets | 103 passed, 0 failed; no runner errors |
+| Widgets | 146 passed, 0 failed, including 43 collapse-input/preview checks; no runner errors |
 | Model seed 271828, 50 operations | 95 passed |
 | Model seed 104729, 50 operations, legacy D-Bus | 100 passed |
 | Focused model regressions | 7 passed, including different-scale destination-output card restore |
-| Attention / launcher / widget-bus units | 5 / 17 / 13 passed |
+| Attention / launcher / widget-bus units | 5 / 17 / 16 passed |
 | Config concurrency | 5 rounds passed, 20 simultaneous builds each |
 | Notification focus hooks | 3 passed |
 
@@ -99,11 +100,13 @@ on the preceding build; the corrected build restores the destination-relative me
 Every compositor was started after its build. Deployment used `--tests-only` in
 `~/Projects/scottland-hints-merge`; `TMPDIR=~/.cache/scottland-test-tmp` and
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-hints-merge`, with private D-Bus and
-the checkout's own helpers. Logs are in `~/.cache/scottland-hints-merge-results/final-9800173`. All suites exited zero,
+the checkout's own helpers. Logs are in `~/.cache/scottland-hints-merge-results/final-756b8d7`. All suites exited zero,
 and the isolated sessions were stopped afterward.
 Headless screenshots show distinct hints tracking displaced windows and native/layer-shell surfaces.
 No live session on osanwe or physical screen on plumbus was installed into, reloaded or used.
 Physical verification and rehearsal from the installed build before live reload remain the
 coordinating session's rollout work.
 
-Main subsequently advanced to `e76bc56` (Super+M, transaction gravity, preview mode and settings/import fixes). The branch now includes that tip; its updated matrix is pending.
+The final matrix includes main's Super+M, transaction gravity, preview mode and settings/import
+fixes. Rail placement uses pending widget size and the gravity transaction, and the collapse
+raw-key tracker respects focused-surface claims and keys consumed by hints.

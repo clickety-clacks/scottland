@@ -91,8 +91,8 @@ manages held keys, modifier-only binding state, input methods, and press/release
 
 Raw-key consumers inside Scottland must connect **after** `key_layers.init()` and check
 `key_layers.handles(ev)` before acting on claimed keys. The release-binding and remap handlers
-do so. When merging Alt hints, its `on_window_key` must update its own physical held-key tracking
-but skip claimed events; a claimed press must cancel the pending Alt timer (`alt_bypassed = true;
+do so, as does the collapse-key tracker. The integrated Alt hints' `on_window_key` updates physical
+held-key tracking but skips claimed events; a claimed press cancels the pending Alt timer (`alt_bypassed = true;
 alt_hold.disconnect()`). This keeps a layer's Alt chord from navigating windows while allowing
 unclaimed Alt hints to work. While hints are active, exact claims reach the focused surface and
 unclaimed keys continue navigating. Tenet 4 decides this limited concession: registering one chord
@@ -117,14 +117,15 @@ surfaces, including multiple toplevel/layer-shell surfaces sharing one client, a
 imported Lua shortcut. Artifacts are kept under the test machine's runtime directory.
 Use the deployment's `TMPDIR` and `SCOTTLAND_HEADLESS_DIR` as required by the coordinating brief.
 
-Integrated validation on plumbus, 2026-10-01, code commit `9800173`:
+Integrated validation on plumbus, 2026-10-01, code commit `756b8d7` (later merge `56b0cc1`
+adds only main's documentation):
 
 | Check | Result |
 |---|---|
 | `make plugin` / checkout-local test helpers | passed |
 | `tests/key-layers-test.sh` (real stipc input, GTK toplevels and layer-shell, sandboxed Lua host, combined hints) | 59 passed, 0 failed |
 | `tests/windowing-test.sh` | 73 passed, 0 failed |
-| `tests/widgets-test.sh` | 103 passed, 0 failed; no runner errors |
+| `tests/widgets-test.sh` | 146 passed, 0 failed, including 43 collapse-input/preview checks; no runner errors |
 | Native toplevel and layer-shell popup screenshot | inspected |
 
 The combined tests exercise claimed left/right Alt holds, a claimed quick Alt chord, claimed

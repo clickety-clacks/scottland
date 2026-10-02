@@ -134,9 +134,11 @@ scale pin; hints never engage during a drag (L31). Card restore applies normaliz
 destination output, including a different logical size/scale. After merging main `e76bc56`, rail
 placement uses its pending-size/gravity transaction; geometry callbacks record committed memories
 without a corrective move. The collapse raw-key tracker connects after layers and hints and
-respects claimed/consumed input. Updated validation for that merge is pending.
+respects claimed/consumed input.
 
-Integrated validation of code `9800173` is recorded in [windowing-keys.md](windowing-keys.md).
+Integrated validation of code `756b8d7` is recorded in [windowing-keys.md](windowing-keys.md).
+The later merge `56b0cc1` includes main's documentation-only tip `16286df` without changing code.
+All 146 widget checks passed, including current main's 43 collapse-input/preview checks.
 The 73 windowing checks independently assert drop subscription delivery, rendering-only declutter,
 close removal, external-slice filtering and reload preservation. All seven focused model
 regressions pass, including a real card drag/click across differently scaled outputs. The final
