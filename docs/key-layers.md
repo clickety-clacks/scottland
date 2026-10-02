@@ -23,7 +23,7 @@ screen exercise and the coordinating session's rehearsed live reload remain outs
 | KL4 | Both native toplevels and layer-shell surfaces work. A Scottland view ID selects exactly one surface; PID plus layer namespace is a convenience selector and rejects ambiguity. | implemented |
 | KL5 | A surface's unmap, close or Wayland client disconnect removes its layer. Remapping does not resurrect it. Set atomically replaces its keys; clear or an empty set removes it. A failed request preserves the previous set. | implemented |
 | KL6 | Losing focus immediately deactivates claims for new presses. A claimed held key's release finishes the existing pair even after focus loss, clear, replacement or unmap; it cannot unexpectedly fire a release shortcut below. A new claim cannot take over an already pressed unclaimed key's release. | implemented |
-| KL7 | Compositor input grabs (drag, lock) take precedence over surface layers. Alt hints are a raw-key mode: a focused surface retains exactly its claimed keys even while hints are visible; unclaimed keys continue hint navigation. A claimed press before entry cancels the pending hold for the entire Alt chord, including a claimed Alt key. Unclaimed input and unrelated bindings are unaffected. | integration implemented; combined verification pending |
+| KL7 | Compositor input grabs (drag, lock) take precedence over surface layers. Alt hints are a raw-key mode: a focused surface retains exactly its claimed keys even while hints are visible; unclaimed keys continue hint navigation. A claimed press before entry cancels the pending hold for the entire Alt chord, including a claimed Alt key. Unclaimed input and unrelated bindings are unaffected. | implemented (plumbus headless, including hints) |
 | KL8 | IPC is session-local `scottland/key-layer`, documented below and in the shipped skill and IPC header. The first scope is a focused surface; the separate module leaves additional scopes and stacked fall-through for future work. | implemented |
 
 ## IPC
@@ -117,19 +117,19 @@ surfaces, including multiple toplevel/layer-shell surfaces sharing one client, a
 imported Lua shortcut. Artifacts are kept under the test machine's runtime directory.
 Use the deployment's `TMPDIR` and `SCOTTLAND_HEADLESS_DIR` as required by the coordinating brief.
 
-Validation on plumbus, 2026-10-01:
+Integrated validation on plumbus, 2026-10-01, code commit `9800173`:
 
 | Check | Result |
 |---|---|
 | `make plugin` / checkout-local test helpers | passed |
-| `tests/key-layers-test.sh` (real stipc input, GTK toplevels and layer-shell, sandboxed Lua host) | 52 passed, 0 failed |
-| `tests/widgets-test.sh` (private headless session, drag/close/attention/fullscreen/reload regressions) | 100 passed, 0 failed; no runner errors |
-| `grim` screenshot of the native toplevel and layer-shell popup | inspected |
+| `tests/key-layers-test.sh` (real stipc input, GTK toplevels and layer-shell, sandboxed Lua host, combined hints) | 59 passed, 0 failed |
+| `tests/windowing-test.sh` | 73 passed, 0 failed |
+| `tests/widgets-test.sh` | 103 passed, 0 failed; no runner errors |
+| Native toplevel and layer-shell popup screenshot | inspected |
 
-These results describe the separate key-layers branch before integration.
-
-The widget suite ran before the final modifier-only matching adjustment; that function is not
-called without registered layers. The full key-layer suite was repeated on the final build.
-The widget runner now rounds geometry before shell arithmetic, so the two-cancel drag sequence
-runs when IPC coordinates are JSON floats. Real-screen verification and a rehearsal from the live session's build before its reload belong to the
-coordinating session after merge. No live session was reloaded by this worktree.
+The combined tests exercise claimed left/right Alt holds, a claimed quick Alt chord, claimed
+letters while hints remain active, clearing a held claim during hints, and subsequent unclaimed
+hint navigation. The widget runner rounds geometry before shell arithmetic, so cancellation
+sequences execute when IPC coordinates are JSON floats. Complete merge validation and isolation
+are recorded in [windowing-keys.md](windowing-keys.md). Real-screen verification and a rehearsal
+from the live session's build before its reload belong to the coordinating session after merge.

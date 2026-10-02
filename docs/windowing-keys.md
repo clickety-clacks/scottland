@@ -69,13 +69,37 @@ are saved beside that session directory. `tests/widgets-test.sh` supplies widget
 regression coverage and now honors the supplied directory for its display, reload library, and
 artifacts too.
 
-On plumbus (2026-10-01), `tests/windowing-unit.sh`: **41 passed, 0 failed**;
-`tests/windowing-test.sh`: **61 passed, 0 failed**; `tests/widgets-test.sh`: **100 passed,
-0 failed**, with no skipped arithmetic commands. The input suite includes actual app key/modifier
-receipt, all starting-zone cycles, drag and card input, occupied memories, both peripheries and
-rails, free-side choice, fullscreen reveal and rapid cycles, declutter/restoration, 27-window
-hints, and marked reload with a live widget. The compositor screenshot was inspected for distinct
-hints tracking the displaced windows. Every tested compositor was started after the build, in
-`$XDG_RUNTIME_DIR/scottland-headless-alt-hints`; no live session was installed into or reloaded.
+Integrated validation on plumbus, 2026-10-01, code commit `9800173` (merges main `480bee1`
+and key-layers `9a24c92`):
 
-Integration with current main is awaiting the isolated plumbus matrix; the results above describe the pre-merge branch.
+| Suite | Result |
+|---|---|
+| Windowing unit | 41 passed, 0 failed |
+| Windowing end-to-end | 73 passed, 0 failed |
+| Key layers, including hints | 59 passed, 0 failed |
+| Widgets | 103 passed, 0 failed; no runner errors |
+| Model seed 271828, 50 operations | 95 passed |
+| Model seed 104729, 50 operations, legacy D-Bus | 100 passed |
+| Focused model regressions | 7 passed, including different-scale destination-output card restore |
+| Attention / launcher / widget-bus units | 5 / 17 / 13 passed |
+| Config concurrency | 5 rounds passed, 20 simultaneous builds each |
+| Notification focus hooks | 3 passed |
+
+The windowing suite checks real app receipt and modifiers, all starting-zone cycles, L31 pinning
+without hints (also after drop), real L20 resize, occupied memories, both sides/rails, free-side
+choice, fullscreen reveal and rapid cycles, declutter/restoration, 27-window hints, and marked
+reload with a live widget. It also checks normalized memory in a newer subscribed desktop snapshot,
+unchanged model memories during declutter, removal on close, and external-slice filtering.
+The layer suite checks claimed Alt, quick claimed chords, claims during hints, a clear while held,
+and unclaimed navigation. A two-output real card drag/click reproduced the wrong-output restore
+on the preceding build; the corrected build restores the destination-relative memory at 100%.
+
+Every compositor was started after its build. Deployment used `--tests-only` in
+`~/Projects/scottland-hints-merge`; `TMPDIR=~/.cache/scottland-test-tmp` and
+`SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-hints-merge`, with private D-Bus and
+the checkout's own helpers. Logs are in `~/.cache/scottland-hints-merge-results/final-9800173`. All suites exited zero,
+and the isolated sessions were stopped afterward.
+Headless screenshots show distinct hints tracking displaced windows and native/layer-shell surfaces.
+No live session on osanwe or physical screen on plumbus was installed into, reloaded or used.
+Physical verification and rehearsal from the installed build before live reload remain the
+coordinating session's rollout work.

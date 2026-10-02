@@ -124,7 +124,22 @@ physical screen on plumbus was touched. The isolated runtime was stopped after t
 
 ## Window-key integration
 
-Alt navigation reads `model.windows` and `model.widgets`; widget cycles use the same lifecycle as real drops and card clicks. The desktop slice publishes `placement` (slot, side and normalized positions), optional `pending_rail`, `pinned_scale` and desktop `hint_width`. External presentation/attention slices omit placement. Closing removes all placement state with the window. Explicit zone navigation clears a drag scale pin; hints never engage during a drag (L31). The merge validation is pending.
+Alt navigation reads `model.windows` and `model.widgets`; widget cycles use the same lifecycle
+as real drops and card clicks. The desktop slice publishes `placement` (slot, side and normalized
+positions), optional `pending_rail`, `pinned_scale` and desktop `hint_width`. External presentation
+and attention slices omit placement. Closing removes all placement state with the window. The
+atomic model handover retains memories and slots on marked reload; an older Alt-branch position
+file is imported once, never written by the model build. Explicit zone navigation clears a drag
+scale pin; hints never engage during a drag (L31). Card restore applies normalized memory to its
+destination output, including a different logical size/scale.
+
+Integrated validation of code `9800173` is recorded in [windowing-keys.md](windowing-keys.md).
+The 73 windowing checks independently assert drop subscription delivery, rendering-only declutter,
+close removal, external-slice filtering and reload preservation. All seven focused model
+regressions pass, including a real card drag/click across differently scaled outputs. The final
+native seed 271828 and legacy-D-Bus seed 104729 each ran 50 operations and passed 95 and 100 checks
+respectively. The historical legacy-card audit stability risk above did not recur in these runs;
+this integration does not claim its cause was resolved. All sessions were stopped afterward.
 
 ## Review regression coverage
 
