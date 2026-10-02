@@ -40,7 +40,7 @@ case ${1:-} in
     started=(01-record-environment)
     test_goo=${SCOTTLAND_TEST_GOO:-0}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
-    test_outputs=${SCOTTLAND_TEST_OUTPUTS:-1}
+    test_outputs=${SCOTTLAND_TEST_OUTPUTS:-${SCOTTLAND_HEADLESS_OUTPUTS:-1}}
     private_bus=
     for option in "${@:2}"; do
       case $option in
@@ -54,11 +54,12 @@ case ${1:-} in
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
       export PATH=/usr/local/bin:/usr/bin:/bin
+      export SCOTTLAND_TEST_MODEL=1
       export SCOTTLAND_HOOKS=$hooks XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
       # Focus-mode hooks (full screen) touch the desktop (e.g. its notifications): a test session
       # runs only its own, from its folder.
@@ -80,6 +81,7 @@ case ${1:-} in
         fi
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
+
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
         setsid ${private_bus:+dbus-run-session --} wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"

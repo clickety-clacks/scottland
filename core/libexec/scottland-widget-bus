@@ -8,8 +8,8 @@ and lets apps learn their own state (org.scottland.Windows). It also listens for
 (com.canonical.Unity.LauncherEntry) and keeps each widget's state file current, for widgets that
 prefer a file to D-Bus (the default card).
 
-Driven by events, not polling: it subscribes to the compositor's IPC events (Scottland's
-scottland-widgets# and scottland-scale#, and windows opening, closing, retitling and focusing).
+Driven by full model snapshots, not polling: subscribe first, read the current widget slice,
+then replace it on every newer version. Only badges and app mailbox data are owned here.
 
   scottland-widget-bus          run (started with the session; needs WAYFIRE_SOCKET)
 """
@@ -39,6 +39,8 @@ WIDGET_XML = """
 <node>
   <interface name="org.scottland.Widget">
     <property name="Id" type="s" access="read"/>
+    <property name="Version" type="t" access="read"/>
+    <property name="Revision" type="t" access="read"/>
     <property name="AppId" type="s" access="read"/>
     <property name="Title" type="s" access="read"/>
     <property name="Pid" type="u" access="read"/>
@@ -66,6 +68,17 @@ ROOT_XML = """
       <arg name="window" type="t"/>
       <arg name="json" type="s"/>
     </signal>
+  </interface>
+  <interface name="org.scottland.WidgetLaunch">
+    <method name="Prepare">
+      <arg name="id" type="s" direction="in"/>
+      <arg name="unit" type="s" direction="in"/>
+      <arg name="path" type="s" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.scottland.Diagnostics">
+    <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
+    <method name="Rendered"><arg name="json" type="s" direction="in"/></method>
   </interface>
   <interface name="org.scottland.Windows">
     <method name="GetState">
@@ -186,95 +199,85 @@ class Service:
         self.bus = None
         self.widget_info = Gio.DBusNodeInfo.new_for_xml(WIDGET_XML).interfaces[0]
         root = Gio.DBusNodeInfo.new_for_xml(ROOT_XML)
-        self.data_info, self.windows_info = root.interfaces
+        self.data_info, self.launch_info, self.diagnostics_info, self.windows_info = root.interfaces
+        self.model_version = -1
+        self.session = None
+        self.model_snapshot = {}
+        self.data = {}           # launch unit -> app-owned mailbox payload
+        self.rendered = {}       # test-only observations from the card
         os.makedirs(RUNTIME, exist_ok=True)
 
     # --- compositor ---
 
     def refresh(self):
+        """Read a complete slice; actions needing fresh identity use this same replacement path."""
         try:
-            reply = self.ipc.call("scottland/widgets")
-            layout = self.ipc.call("scottland/layout-state")
-            views = self.ipc.call("window-rules/list-views")
+            self.replace_snapshot(self.ipc.call("scottland/desktop-model", {"slice": "widgets"}))
         except (OSError, ConnectionError, ValueError) as error:
             log(f"compositor unreachable: {error}")
-            return
-        if not isinstance(views, list):
-            views = []
-        # Open windows only: Wayfire also lists views that exist but aren't mapped.
-        self.window_pids = {v.get("id"): int(v.get("pid", 0) or 0) for v in views
-                            if isinstance(v, dict) and v.get("mapped", True) and v.get("role") == "toplevel"}
-        # Target scales (what scottland-scale# announces), never a step of an animation.
-        self.scales = {v["id"]: v.get("target_scale", v.get("applied_scale", 1.0)) for v in layout.get("views", [])}
+
+    def replace_snapshot(self, snapshot):
+        version = snapshot.get("version", -1)
+        if snapshot.get("session") != self.session:
+            self.session = snapshot.get("session")
+            self.model_version = -1
+            self.badges, self.data = {}, {}
+            try:
+                with open(os.path.join(RUNTIME, "service-owned.json")) as source:
+                    owned = json.load(source)
+                if owned.get("session") == self.session:
+                    self.badges = owned.get("badges", {})
+                    self.data = owned.get("data", {})
+            except (OSError, ValueError):
+                pass
+        if version <= self.model_version:
+            return  # queued before the initial read, or before a later synchronous action
+        self.model_version = version
+        self.model_snapshot = snapshot
+        windows = snapshot.get("windows", [])
+        self.window_pids = {v["id"]: v["pid"] for v in windows}
+        self.scales = {v["id"]: v["scale"] for v in windows}
         seen = set()
-        for entry in reply.get("widgets", []):
+        for entry in snapshot.get("widgets", []):
             wid = entry["id"]
             seen.add(wid)
-            state = self.widgets.get(wid) or self.new_widget(wid, entry.get("widget_unit", ""))
-            if state["_widget_unit"] != entry.get("widget_unit", ""):
-                # A new launch with this id: forget what came from the old one, learn its app again.
-                for path in (self.state_path(wid), self.launch_path(wid)):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-                state["_widget_unit"] = entry.get("widget_unit", "")
-                state["_desktop"] = ""
-                self.update(wid, {"Badge": 0})
-            self.learn_desktop(wid)
-            updates = {
-                "AppId": entry.get("app_id", ""),
-                "Title": entry.get("title", ""),
-                "Pid": max(0, int(entry.get("pid", 0))),
-                "Window": max(0, int(entry.get("window", 0))),
-                "Rail": entry.get("rail", ""),
-                "Focused": bool(entry.get("focused")),
-                "Urgent": bool(entry.get("urgent")),
-                "Minimized": bool(entry.get("minimized")),
-                "_widget_pid": int(entry.get("widget_pid", 0)),
-                "_launcher_pid": int(entry.get("launcher_pid", 0)),
-                "_widget_unit": entry.get("widget_unit", ""),
+            previous = self.widgets.get(wid)
+            unit = entry["widget_unit"]
+            if previous and previous["_widget_unit"] != unit:
+                self.remove_widget(wid)
+                previous = None
+            state = {
+                "Id": wid, "AppId": entry["app_id"], "Title": entry["title"], "Pid": max(0, entry["pid"]),
+                "Window": entry["window"], "Rail": entry["rail"], "Focused": entry["focused"],
+                "Urgent": entry["urgent"], "Minimized": entry["minimized"],
+                "Badge": self.badge(entry["desktop"]), "Data": self.data.get(unit, ""),
+                "_widget_pid": entry["widget_pid"], "_launcher_pid": entry["launcher_pid"],
+                "_widget_unit": unit, "_desktop": entry["desktop"], "_name": entry["name"],
+                "_icon": entry["icon"], "_lifecycle": entry["lifecycle"], "_card": entry["card"],
             }
-            if state.get("_desktop") in self.badges:
-                updates["Badge"] = self.badge(state["_desktop"])
-            self.update(wid, updates)
+            # Replace every compositor-owned field. Only the file revision is local bookkeeping.
+            changed = not previous or any(previous.get(k) != v for k, v in state.items())
+            state["_model_version"] = version if changed else previous["_model_version"]
+            state["_revision"] = previous["_revision"] if previous else 0
+            self.widgets[wid] = state
+            if not previous and self.bus:
+                self.registrations[wid] = register(
+                    self.bus, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)
+            if changed:
+                self.write_state(wid)
+                self.emit_properties(wid)
         for wid in [w for w in self.widgets if w not in seen]:
             self.remove_widget(wid)
         self.announce_changes()
 
-    def new_widget(self, wid, unit=""):
-        state = {"Id": wid, "AppId": "", "Title": "", "Pid": 0, "Window": 0, "Rail": "", "Focused": False,
-                 "Urgent": False, "Minimized": False, "Badge": 0, "Data": "", "_widget_pid": 0, "_launcher_pid": 0,
-                 "_widget_unit": unit, "_desktop": ""}
-        self.widgets[wid] = state
-        self.learn_desktop(wid)
-        if self.bus:
-            self.registrations[wid] = register(
-                self.bus, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)
-        return state
-
-    def learn_desktop(self, wid):
-        """The app's .desktop id, which the launcher leaves in <id>.launch.json (badges are
-        announced per .desktop). The widget can show up here before the launcher has run, so
-        this is retried until it's known."""
-        state = self.widgets[wid]
-        if state["_desktop"]:
-            return
-        try:
-            with open(self.launch_path(wid)) as source:
-                launch = json.load(source)
-        except (OSError, ValueError):
-            return
-        if state["_widget_unit"] and launch.get("unit") != state["_widget_unit"]:
-            return  # another launch's file (e.g. left by a crashed session): wait for this one's
-        state["_desktop"] = launch.get("desktop", "") or ""
-        if state["_desktop"] in self.badges:
-            self.update(wid, {"Badge": self.badge(state["_desktop"])})
-
     def remove_widget(self, wid):
         if wid in self.registrations:
             self.bus.unregister_object(self.registrations.pop(wid))
-        paths = (self.state_path(wid), self.launch_path(wid))  # this launch's own, not a newer one's
+        paths = (self.state_path(wid),)
+        unit = self.widgets[wid]["_widget_unit"]
+        if self.data.pop(unit, None) is not None:
+            self.write_owned()
+        self.rendered.pop(unit, None)
         self.widgets.pop(wid)
         for path in paths:
             try:
@@ -282,36 +285,48 @@ class Service:
             except OSError:
                 pass
 
-    def update(self, wid, updates):
-        state = self.widgets[wid]
-        changed = {k: v for k, v in updates.items() if state.get(k) != v}
-        if not changed:
-            return
-        state.update(changed)
-        public = {k: v for k, v in changed.items() if not k.startswith("_")}
-        if public and self.bus:
+    def write_owned(self):
+        path = os.path.join(RUNTIME, "service-owned.json")
+        temporary = f"{path}.{os.getpid()}.tmp"
+        with open(temporary, "w") as out:
+            json.dump({"session": self.session, "badges": self.badges, "data": self.data}, out)
+        os.replace(temporary, path)
+
+    def emit_properties(self, wid):
+        if self.bus:
+            state = self.widgets[wid]
+            public = {k: v for k, v in state.items() if not k.startswith("_")}
+            public.update(Version=state["_model_version"], Revision=state["_revision"])
             self.bus.emit_signal(None, f"/org/scottland/widget/{wid}", "org.freedesktop.DBus.Properties",
                                  "PropertiesChanged", GLib.Variant("(sa{sv}as)", (
-                                     "org.scottland.Widget",
-                                     {k: self.variant(k, v) for k, v in public.items()}, [])))
+                                     "org.scottland.Widget", {k: self.variant(k, v) for k, v in public.items()}, [])))
+
+    def update(self, wid, updates):
+        """Only service-owned badge/mailbox updates use this path."""
+        state = self.widgets[wid]
+        if all(state.get(k) == v for k, v in updates.items()):
+            return
+        self.widgets[wid] = {**state, **updates}
         self.write_state(wid)
+        self.emit_properties(wid)
 
     def write_state(self, wid):
-        """The state file's only writer (the launcher has its own file)."""
+        """The file's only writer; atomic replacement of the complete presentation snapshot."""
         state = self.widgets[wid]
+        state["_revision"] += 1
         path = self.state_path(wid)
+        temporary = f"{path}.{os.getpid()}.tmp"
         try:
-            with open(path + ".tmp", "w") as out:
-                json.dump({"desktop": state["_desktop"], "title": state["Title"], "badge": state["Badge"],
-                           "rail": state["Rail"], "minimized": state["Minimized"],
-                           "focused": state["Focused"], "urgent": state["Urgent"], "data": state["Data"]}, out)
-            os.replace(path + ".tmp", path)
+            with open(temporary, "w") as out:
+                json.dump({"id": state["Id"], "app_id": state["AppId"], "desktop": state["_desktop"],
+                           "name": state["_name"], "icon": state["_icon"], "title": state["Title"],
+                           "badge": state["Badge"], "rail": state["Rail"], "minimized": state["Minimized"],
+                           "focused": state["Focused"], "urgent": state["Urgent"], "data": state["Data"],
+                           "version": state["_model_version"], "revision": state["_revision"]}, out)
+            os.replace(temporary, path)
         except OSError as error:
             log(f"state file {path}: {error}")
-
-    def launch_path(self, wid):
-        """The launcher's file for this widget's launch (named by its unique scope)."""
-        return os.path.join(RUNTIME, f"{self.widgets[wid]['_widget_unit'] or wid}.launch.json")
+            raise  # Prepare must never start a widget without its complete state file
 
     def state_path(self, wid):
         """The widget's state file, named by its launch (as the launcher told the widget)."""
@@ -319,22 +334,16 @@ class Service:
 
     @staticmethod
     def variant(key, value):
-        kind = {"Pid": "u", "Window": "t", "Badge": "x", "Focused": "b", "Urgent": "b", "Minimized": "b"}.get(key, "s")
+        kind = {"Pid": "u", "Window": "t", "Version": "t", "Revision": "t", "Badge": "x", "Focused": "b", "Urgent": "b", "Minimized": "b"}.get(key, "s")
         return GLib.Variant(kind, value)
-
-    def note_scale(self, window, scale):
-        self.scales[window] = scale
-        if window not in self.window_pids:
-            self.refresh()  # a window we haven't seen: learn whose it is
-        else:
-            self.announce_changes()
 
     def app_state(self, pid):
         """(widgetized, scale) for the app owning process `pid` (or one of its helpers). Apps
         with several windows: widgetized if any is, with that window's scale; else the scale of
         its first window. GetState and StateChanged both answer from here, so they agree."""
         owned = sorted(w for w, owner in self.window_pids.items() if owner > 1 and pid_descends_from(pid, owner))
-        widgetized = [s["Window"] for s in self.widgets.values() if s["Pid"] and pid_descends_from(pid, s["Pid"])]
+        widgetized = [s["Window"] for s in self.widgets.values()
+                      if s["_lifecycle"] == "docked" and s["Pid"] and pid_descends_from(pid, s["Pid"])]
         window = (widgetized or owned or [None])[0]
         return bool(widgetized), round(self.scales.get(window, 1.0), 3)
 
@@ -356,12 +365,11 @@ class Service:
 
     def watch_compositor(self):
         events = Ipc()
-        reply = events.call("window-rules/events/watch", {
-            "events": ["scottland-widgets#", "scottland-scale#", "view-title-changed", "view-focused",
-                       "view-mapped", "view-unmapped"]})
+        reply = events.call("scottland/subscribe", {"slice": "widgets"})
         if reply.get("result") != "ok":
             log(f"couldn't watch compositor events: {reply}")
             sys.exit(1)
+        self.replace_snapshot(reply)
         channel = GLib.IOChannel.unix_new(events.sock.fileno())
         GLib.io_add_watch(channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP,
                           self.on_event, events)
@@ -375,16 +383,16 @@ class Service:
             event = events.receive()
         except (OSError, ConnectionError, ValueError):
             sys.exit(0)
-        if event.get("event") == "scottland-scale#":
-            self.note_scale(int(event.get("window", 0)), float(event.get("scale", 1.0)))
-        else:
-            self.refresh()
+        if event.get("event") == "scottland-widgets#":
+            self.replace_snapshot(event)
         return True
 
     # --- D-Bus ---
 
     def on_widget_get(self, _conn, _sender, path, _iface, prop):
         state = self.widgets.get(path.rsplit("/", 1)[-1])
+        if state and prop in ("Version", "Revision"):
+            return self.variant(prop, state["_model_version" if prop == "Version" else "_revision"])
         return self.variant(prop, state[prop]) if state and prop in state else None
 
     def on_widget_call(self, _conn, _sender, path, _iface, method, _params, invocation):
@@ -406,6 +414,34 @@ class Service:
         return reply.unpack()[0]
 
     def on_root_call(self, _conn, sender, _path, iface, method, params, invocation):
+        if iface == "org.scottland.WidgetLaunch":
+            wid, unit = params.unpack()
+            self.refresh()
+            state = self.widgets.get(wid)
+            if not state or state["_widget_unit"] != unit:
+                invocation.return_dbus_error("org.scottland.Widgets.Error", "no such launch in the desktop model")
+                return
+            self.write_state(wid)
+            self.emit_properties(wid)
+            invocation.return_value(GLib.Variant("(s)", (self.state_path(wid),)))
+            return
+        if iface == "org.scottland.Diagnostics":
+            if method == "Snapshot":
+                invocation.return_value(GLib.Variant("(s)", (json.dumps({
+                    "model": self.model_snapshot, "widgets": self.widgets, "rendered": self.rendered}),)))
+            elif method == "Rendered":
+                (payload,) = params.unpack()
+                try:
+                    report = json.loads(payload)
+                    pid = self.caller_pid(sender)
+                    state = self.widgets.get(report["id"])
+                    if state and is_widget_process(pid, state):
+                        self.rendered[state["_widget_unit"]] = report
+                except (ValueError, KeyError, GLib.Error):
+                    invocation.return_dbus_error("org.scottland.Widgets.Error", "invalid render report")
+                    return
+                invocation.return_value(None)
+            return
         try:
             pid = self.caller_pid(sender)
         except GLib.Error as error:
@@ -427,7 +463,9 @@ class Service:
                 invocation.return_dbus_error("org.scottland.Widgets.Error", "no widget for the calling app")
                 return
             for wid in targets:
+                self.data[self.widgets[wid]["_widget_unit"]] = payload
                 self.update(wid, {"Data": payload})
+            self.write_owned()
         elif method == "Send":
             # A widget sends to its own app only. Identities are taken fresh from the compositor
             # (without scopes, a launch process counts only while it still runs).
@@ -455,6 +493,7 @@ class Service:
         if "count-visible" in props:
             visible = bool(props["count-visible"])
         self.badges[desktop] = (count, visible)
+        self.write_owned()
         for wid, state in self.widgets.items():
             if state["_desktop"] == desktop:
                 self.update(wid, {"Badge": self.badge(desktop)})
@@ -463,11 +502,20 @@ class Service:
         self.bus = connection
         register(connection, ROOT, self.data_info, self.on_root_call, None)
         register(connection, ROOT, self.windows_info, self.on_root_call, None)
+        register(connection, ROOT, self.launch_info, self.on_root_call, None)
+        if os.environ.get("SCOTTLAND_TEST_MODEL") == "1":
+            register(connection, ROOT, self.diagnostics_info, self.on_root_call, None)
         for wid in list(self.widgets):
             self.registrations[wid] = register(
                 connection, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)
         connection.signal_subscribe(None, "com.canonical.Unity.LauncherEntry", "Update", None, None,
                                     Gio.DBusSignalFlags.NONE, self.on_launcher_entry)
+
+    def on_name(self, _connection, _name):
+        # Existing cards must observe a new file after a restarted service owns its bus name.
+        for wid in self.widgets:
+            self.write_state(wid)
+            self.emit_properties(wid)
 
     # --- attention from desktop notifications (WG15) ---
 
@@ -517,7 +565,7 @@ class Service:
         with open(pid_file, "w") as out:
             # Its pid and a fingerprint of the code it runs: a reload replaces it once that differs.
             out.write(f"{os.getpid()}\n{fingerprint()}\n")
-        Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE, self.on_bus, None,
+        Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE, self.on_bus, self.on_name,
                          lambda *_: (log("couldn't own org.scottland.Widgets (another service?)"), sys.exit(1)))
         self.watch_compositor()
         self.refresh()

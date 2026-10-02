@@ -117,7 +117,7 @@ class Source:
         self.interval = max(0.5, config.getfloat("interval", 2.0))
         self.watch = os.path.expanduser(config.get("watch", "")) or None
         self.answered = config.get("answered", "")
-        self.marked = {}   # window id -> the source's entry for it
+        self.entries_by_window = {}  # source-owned listing metadata for answered commands
         self.due = 0.0
 
     def entries(self):
@@ -161,55 +161,62 @@ class Service:
     def __init__(self, sources):
         self.ipc = Ipc()
         self.sources = sources
+        self.snapshot = {"version": -1, "windows": []}
 
-    def sync(self, source, again=False):
+    def replace_snapshot(self, snapshot):
+        # Action errors (including a window closing after a listing) aren't snapshots.
+        if (not isinstance(snapshot, dict) or snapshot.get("error")
+                or not isinstance(snapshot.get("windows"), list)
+                or not isinstance(snapshot.get("version"), int)
+                or any(not isinstance(v, dict) or not isinstance(v.get("id"), int)
+                       or not isinstance(v.get("attention"), list) for v in snapshot["windows"])):
+            return False
+        if snapshot.get("session") == self.snapshot.get("session") and snapshot.get("version", -1) <= self.snapshot["version"]:
+            return True  # valid action reply; in_front can acknowledge an unchanged snapshot
+        previous = {v["id"]: set(v["attention"]) for v in self.snapshot["windows"]}
+        if snapshot.get("session") != self.snapshot.get("session"):
+            previous = {}
+        current = {v["id"]: set(v["attention"]) for v in snapshot["windows"]}
+        self.snapshot = snapshot
+        for source in self.sources:
+            for window, attention in previous.items():
+                if source.name in attention and window in current and source.name not in current[window]:
+                    entry = source.entries_by_window.get(window)
+                    if entry is not None:
+                        source.run_answered(entry)
+        return True
+
+    def sync(self, source):
         entries = source.entries()
         if entries is None:
             return
-        try:
-            views = self.ipc.call("window-rules/list-views")
-        except (OSError, ConnectionError, ValueError):
-            views = []
+        views = self.snapshot["windows"]
+        live = {v["id"] for v in views}
         listed = {}
         for entry in entries:
             window = source.window_of(entry, views if isinstance(views, list) else [])
-            if window is not None and window >= 0:
+            if window in live:
                 listed[window] = entry
+        source.entries_by_window = listed
+        marked = {v["id"] for v in self.snapshot["windows"] if source.name in v["attention"]}
         for window, entry in listed.items():
-            if again or window not in source.marked:
+            if window not in marked:
                 reply = self.ipc.call("scottland/attention",
                                       {"window": window, "attention": True, "source": source.name})
-                if reply.get("in_front"):
-                    source.run_answered(entry)  # the user is looking at it: answered
-                    source.marked.pop(window, None)
-                else:
-                    source.marked[window] = entry
-        for window in [w for w in source.marked if w not in listed]:
-            del source.marked[window]
-            self.ipc.call("scottland/attention", {"window": window, "attention": False, "source": source.name})
-
-    def answered(self, window):
-        """The user went to a window (attention off for it in Scottland): tell its sources."""
-        for source in self.sources:
-            entry = source.marked.pop(window, None)
-            if entry is not None:
-                source.run_answered(entry)
-
-    def still_shown(self):
-        try:
-            views = self.ipc.call("scottland/layout-state").get("views", [])
-        except (OSError, ConnectionError, ValueError):
-            return True
-        shown = {v["id"] for v in views if v.get("attention")}
-        present = {v["id"] for v in views}
-        return all(w in shown or w not in present for s in self.sources for w in s.marked)
+                accepted = self.replace_snapshot(reply)
+                if accepted and reply.get("in_front"):
+                    source.run_answered(entry)
+        for window in marked - listed.keys():
+            self.replace_snapshot(self.ipc.call("scottland/attention",
+                                                {"window": window, "attention": False, "source": source.name}))
 
     def run(self):
         events = Ipc()
-        reply = events.call("window-rules/events/watch", {"events": ["scottland-attention#", "scottland-widgets#"]})
+        reply = events.call("scottland/subscribe", {"slice": "attention"})
         if reply.get("result") != "ok":
             log(f"couldn't watch Scottland's events: {reply}")
             return 1
+        self.replace_snapshot(reply)
         watched = {}
         for source in self.sources:
             if source.watch:
@@ -232,11 +239,8 @@ class Service:
                             self.sync(source)
                 if events.sock in ready:
                     event = events.receive()
-                    if (event.get("event") == "scottland-attention#") and not event.get("attention"):
-                        self.answered(event.get("window"))
-                    elif event.get("event") == "scottland-widgets#" and not self.still_shown():
-                        for source in self.sources:  # a reloaded plugin starts with no attention
-                            self.sync(source, again=True)
+                    if event.get("event") == "scottland-attention#":
+                        self.replace_snapshot(event)
                 now = time.monotonic()
                 for source in self.sources:
                     if now >= source.due:
