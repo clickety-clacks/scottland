@@ -4,6 +4,59 @@
 		<_short>Scottland</_short>
 		<_long>Spatial window layout: windows scale down toward the side rails and snap into widgets.</_long>
 		<category>Window Management</category>
+
+        <option name="goo" type="bool">
+            <_short>Use the screen-wide goo</_short><default>false</default>
+        </option>
+        <option name="goo_falloff" type="string">
+            <_short>Goo density falloff curve (empty: exponential)</_short><default></default>
+        </option>
+        <option name="goo_thickness" type="double">
+            <_short>Goo thickness</_short><default>13</default><min>4</min><max>40</max>
+        </option>
+        <option name="goo_reach" type="double">
+            <_short>Goo reach</_short><default>24</default><min>6</min><max>70</max>
+        </option>
+        <option name="goo_thinning" type="double">
+            <_short>Goo thinning</_short><default>0.45</default><min>0</min><max>1</max>
+        </option>
+        <option name="goo_swell" type="double">
+            <_short>Goo swell</_short><default>0.7</default><min>0</min><max>2</max>
+        </option>
+        <option name="goo_noise" type="double">
+            <_short>Goo noise</_short><default>0.32</default><min>0</min><max>0.9</max>
+        </option>
+        <option name="goo_lump" type="double">
+            <_short>Goo lump</_short><default>190</default><min>40</min><max>500</max>
+        </option>
+        <option name="goo_drift" type="double">
+            <_short>Goo drift</_short><default>0.12</default><min>0</min><max>0.6</max>
+        </option>
+        <option name="goo_wave_speed" type="double">
+            <_short>Goo wave speed</_short><default>0.28</default><min>0.05</min><max>0.5</max>
+        </option>
+        <option name="goo_wave_damp" type="double">
+            <_short>Goo wave damp</_short><default>0.985</default><min>0.9</min><max>0.998</max>
+        </option>
+        <option name="goo_wave_height" type="double">
+            <_short>Goo wave height</_short><default>0.55</default><min>0</min><max>1.5</max>
+        </option>
+        <option name="goo_spread" type="double">
+            <_short>Goo spread</_short><default>0.45</default><min>0</min><max>0.9</max>
+        </option>
+        <option name="goo_swirl" type="double">
+            <_short>Goo swirl</_short><default>0.9</default><min>0</min><max>3</max>
+        </option>
+        <option name="goo_release" type="double">
+            <_short>Goo release</_short><default>0.06</default><min>0.005</min><max>0.3</max>
+        </option>
+        <option name="goo_shine" type="double">
+            <_short>Goo shine</_short><default>0.75</default><min>0</min><max>1.5</max>
+        </option>
+        <option name="goo_relief" type="double">
+            <_short>Goo relief</_short><default>5</default><min>0.5</min><max>12</max>
+        </option>
+
 		<option name="center_width" type="double">
 			<_short>Center width (%)</_short>
 			<_long>Width of the full-scale center zone, as a percentage of the screen width.</_long>

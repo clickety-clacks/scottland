@@ -6,7 +6,7 @@ wlroots = dependency('wlroots-0.20')
 xkbcommon = dependency('xkbcommon')
 libinput = dependency('libinput')
 
-shared_module('scottland', 'src/scottland.cpp',
+shared_module('scottland', ['src/scottland.cpp', 'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp'],
   dependencies: [wayfire, wlroots, xkbcommon, libinput],
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become
   # process-wide "unique" symbols, so a plugin reloaded in place (scottland-reload) would share

@@ -543,6 +543,8 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
             suspend_drag_lock();
         }
 
+        if (auto frame = target->get_transformed_node()->get_transformer<scottland::frame_t>("scottland-scale"))
+            scottland::goo_impulse(*frame, 0.8f);
         wf::get_core().set_cursor("all-scroll");
         return true;
     }
@@ -564,6 +566,9 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         }
 
         output->deactivate_plugin(&grab_interface);
+        if (auto target = wf::toplevel_cast(view.lock()))
+            if (auto frame = target->get_transformed_node()->get_transformer<scottland::frame_t>("scottland-scale"))
+                scottland::goo_impulse(*frame, 1.2f);
         view.reset();
         touch_finger = -1;
         restore_drag_lock();
@@ -792,6 +797,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     public wf::per_output_tracker_mixin_t<center_resize_t>
 {
     static constexpr const char *TRANSFORMER = "scottland-scale";
+    scottland::goo_t goo;
 
     wf::option_wrapper_t<double> center_width{"scottland/center_width"};
     wf::option_wrapper_t<double> rail_width{"scottland/rail_width"};
@@ -1084,6 +1090,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         std::shared_ptr<scottland::frame_t> best;
         double best_distance = std::max(scottland::NEAR_RANGE, scottland::SWELL_VICINITY);
+        if (scottland::goo_enabled())
+        {
+            for (auto& [view, frame] : frames_on(output))
+                if (scottland::goo_handle(*frame, p) != scottland::handle_t::none) return frame;
+        }
         for (auto& [view, frame] : frames_on(output))
         {
             double d = frame->band_distance(p);
@@ -4802,11 +4813,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         load_color_scheme();
         apply_all();
         update_focus();
+        goo.start();
         LOGI("scottland: plugin loaded");
     }
 
     void fini() override
     {
+        goo.stop();
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
