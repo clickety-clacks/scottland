@@ -1389,8 +1389,87 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // shrinks to its icon. It's a mode: a widget made while widgets are collapsed starts collapsed.
     bool widgets_collapsed = false;
     wf::option_wrapper_t<wf::keybinding_t> minimize_key{"scottland/minimize_widget"};
-    wf::key_callback on_minimize_key = [=] (const wf::keybinding_t&)
+    // One activation per held key, across devices. A duplicate down (including one from
+    // another device) is not a new press. Only the last device's release rearms it; no timer
+    // filters intentional press-release-press sequences. Keep old keys until release if the
+    // binding changes while held.
+    struct minimize_press_t
     {
+        std::set<wlr_input_device*> devices;
+        bool activated = false;
+        bool consumed = false;
+    };
+    std::map<uint32_t, minimize_press_t> minimize_presses;
+    uint64_t minimize_edge = 0;
+    uint32_t minimize_event_time = 0;
+    std::string minimize_device;
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_minimize_edge =
+        [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
+    {
+        auto code = ev->event->keycode;
+        if ((code != minimize_key.value().get_key()) && !minimize_presses.count(code))
+        {
+            return;
+        }
+
+        auto& press = minimize_presses[code];
+        bool down = ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
+        bool duplicate = down && press.devices.count(ev->device);
+        if (down)
+        {
+            press.devices.insert(ev->device);
+        } else
+        {
+            press.devices.erase(ev->device);
+        }
+
+        std::ostringstream device;
+        device << (ev->device && ev->device->name ? ev->device->name : "unknown")
+               << "@" << static_cast<void*>(ev->device);
+        minimize_device = device.str();
+        minimize_event_time = ev->event->time_msec;
+        LOGI("scottland: minimize-key edge=", ++minimize_edge, " device=", minimize_device,
+            " time_msec=", minimize_event_time, " received_msec=", now_msec(), " key=", code,
+            " state=", down ? "press" : "release", " duplicate_down=", duplicate,
+            " held_devices=", press.devices.size(), " activated=", press.activated,
+            " collapsed=", widgets_collapsed, " processing=", (int)ev->mode);
+        if (press.devices.empty())
+        {
+            minimize_presses.erase(code);
+        }
+    };
+
+    wf::signal::connection_t<wf::input_device_removed_signal> on_minimize_device_removed =
+        [=] (wf::input_device_removed_signal *ev)
+    {
+        for (auto it = minimize_presses.begin(); it != minimize_presses.end();)
+        {
+            if (it->second.devices.erase(ev->device->get_wlr_handle()))
+            {
+                LOGI("scottland: minimize-key device-removed key=", it->first,
+                    " device=", static_cast<void*>(ev->device->get_wlr_handle()),
+                    " received_msec=", now_msec(), " held_devices=", it->second.devices.size());
+            }
+
+            it = it->second.devices.empty() ? minimize_presses.erase(it) : std::next(it);
+        }
+    };
+
+    wf::key_callback on_minimize_key = [=] (const wf::keybinding_t& key)
+    {
+        auto& press = minimize_presses[key.get_key()];
+        if (key.get_key() && press.activated)
+        {
+            LOGI("scottland: minimize-key ignored-duplicate edge=", minimize_edge,
+                " device=", minimize_device, " time_msec=", minimize_event_time,
+                " key=", key.get_key(), " modifiers=", key.get_modifiers(),
+                " collapsed=", widgets_collapsed);
+            return press.consumed;
+        }
+
+        // Modifier-only bindings are invoked on release by Wayfire, with keycode zero.
+        press.activated = key.get_key() != 0;
         bool all_minimized = true, any = false;
         for (auto& [id, link] : widget_links)
         {
@@ -1403,6 +1482,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (!any)
         {
+            LOGI("scottland: minimize-key no-widgets edge=", minimize_edge,
+                " device=", minimize_device, " time_msec=", minimize_event_time);
             return false;  // no widgets: the key goes on to the app
         }
 
@@ -1416,7 +1497,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         widgets_collapsed = !all_minimized;
 
-        LOGI("scottland: Super+M: all widgets ", all_minimized ? "expanded" : "collapsed");
+        press.consumed = true;
+        LOGI("scottland: minimize-key activation edge=", minimize_edge, " device=", minimize_device,
+            " time_msec=", minimize_event_time, " key=", key.get_key(),
+            " modifiers=", key.get_modifiers(), " collapsed=", widgets_collapsed);
         announce_widgets();
         return true;
     };
@@ -4753,6 +4837,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         init_output_tracking();
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
+        wf::get_core().connect(&on_minimize_edge);
+        wf::get_core().connect(&on_minimize_device_removed);
         wf::get_core().connect(&on_key);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_remap_key);
@@ -4820,6 +4906,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
+        on_minimize_edge.disconnect();
+        on_minimize_device_removed.disconnect();
         on_key.disconnect();
         on_axis.disconnect();
         on_remap_key.disconnect();

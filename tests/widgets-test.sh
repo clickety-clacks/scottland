@@ -102,6 +102,11 @@ monitor_pid=$!
 h wayfire/set-config-options '{"scottland/sounds":false}'
 screen_w=$(ipc window-rules/list-outputs | python3 -c "import json,sys; print(int(json.load(sys.stdin)[0]['geometry']['width']))")
 
+# Input-edge regressions use this same private session and close only their own windows.
+tests/headless.sh run python3 tests/widget-input-test.py --log \
+  "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/wayfire.log" \
+  || fail "widget input regressions"
+
 # The app: a terminal that, once widgetized, publishes data for its widget (WG11) as itself.
 mailbox_script='sleep 6; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Publish s "{\"unread\": 4}"; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.Windows GetState > "$XDG_RUNTIME_DIR/scottland-widgets-test-state.txt"; exec sleep 3600'
 (tests/headless.sh run foot -T widget-app -W 50x12 sh -c "$mailbox_script" >/dev/null 2>&1 &)
