@@ -109,10 +109,19 @@ FloatingWindow {
         }
     }
 
-    Rectangle {
+    Item {
         anchors.fill: parent
-        radius: 16
-        color: root.background
+
+        // Keep the badge's overhang inside the client surface, including at the top of a rail.
+        // Reserve it even with no count, so updates never move the card or its contents.
+        Rectangle {
+            anchors.fill: parent
+            anchors.topMargin: 6
+            anchors.leftMargin: root.rail === "right" ? 6 : 0
+            anchors.rightMargin: root.rail === "left" ? 6 : 0
+            radius: 16
+            color: root.background
+        }
 
         // A click opens the app's window in the middle of the screen (WG17).
         MouseArea {
@@ -159,28 +168,6 @@ FloatingWindow {
                         font.weight: Font.Bold
                     }
                 }
-
-                // Alert badge, on the icon's corner toward the middle of the screen.
-                Rectangle {
-                    visible: root.badge > 0
-                    x: root.rail === "right" ? -6 : parent.width - width + 6
-                    y: -6
-                    height: 22
-                    width: Math.max(22, badgeText.implicitWidth + 12)
-                    radius: 11
-                    color: root.alert
-                    border.width: 2
-                    border.color: root.background
-
-                    Text {
-                        id: badgeText
-                        anchors.centerIn: parent
-                        text: root.badge > 99 ? "99+" : String(root.badge)
-                        color: "white"
-                        font.pixelSize: 12
-                        font.bold: true
-                    }
-                }
             }
 
             // Two lines: what's in the window (its title, bold), then the app (regular).
@@ -213,6 +200,28 @@ FloatingWindow {
                     elide: Text.ElideRight
                     horizontalAlignment: root.rail === "right" ? Text.AlignRight : Text.AlignLeft
                 }
+            }
+        }
+
+        // Alert badge overlaps the card's upper corner away from the screen edge.
+        Rectangle {
+            visible: root.badge > 0
+            x: root.rail === "right" ? 0 : parent.width - width
+            y: 0
+            height: 22
+            width: Math.max(22, badgeText.implicitWidth + 12)
+            radius: 11
+            color: root.alert
+            border.width: 2
+            border.color: root.background
+
+            Text {
+                id: badgeText
+                anchors.centerIn: parent
+                text: root.badge > 99 ? "99+" : String(root.badge)
+                color: "white"
+                font.pixelSize: 12
+                font.bold: true
             }
         }
     }

@@ -88,6 +88,7 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     wf::pointf_t dot{source->dot.x, source->dot.y};
     if (frame.dot_glow > .2 && std::hypot(point.x - dot.x, point.y - dot.y) <= DOT_RADIUS + 3)
         return handle_t::close;
+    if (!frame.can_resize()) return handle_t::halo;
     auto r = rect;
     double grab = std::max(frame.thickness(), MIN_GRAB), reach = radius + grab + CORNER_EXTRA;
     bool left = point.x<r.x1 - grab + reach, right = point.x> r.x2 + grab - reach;
