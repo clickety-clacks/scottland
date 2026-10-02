@@ -23,6 +23,7 @@ GOO = ("goo", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief",
        "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
 NAMES += GOO
+NAMES += ("cycle_overshoot",)
 TEXT = ("scale_curve", "goo_falloff")
 
 

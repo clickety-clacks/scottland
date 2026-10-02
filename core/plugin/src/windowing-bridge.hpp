@@ -322,7 +322,7 @@
         auto g = (visible ? visible : window)->get_geometry();
         scottland::windowing::point current{g.x + g.width / 2.0, g.y + g.height / 2.0};
         if (visible) remember_window(visible);
-        if (destination == D::center && link_of_window(window)) { open_widget(*link_of_window(window)); return; }
+        if (destination == D::center && link_of_window(window)) { open_widget(*link_of_window(window), true); return; }
         // Fullscreen geometry is owned by its transaction: selection works, cycling waits until
         // the requested exit commits, then proceeds with the restored size.
         if (window->pending_fullscreen())
@@ -345,6 +345,12 @@
         Z z = destination == D::center ? Z::center : rail ?
             (left ? Z::left_rail : Z::right_rail) : (left ? Z::left_periphery : Z::right_periphery);
         auto at = zone_spot(window, z, current); auto real = window->get_geometry();
+        auto drawn = hint_rectangle(visible ? visible : window);
+        wf::pointf_t from{(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
+        double from_scale = displayed_scale(window);
+        // Ordinary placement takes over now. Docking first captures the drawn
+        // frame, then its existing widget handoff stops the glide itself.
+        if (!rail) stop_glide(window);
         pin_scale(window, std::nullopt); // explicit zone cycling follows the zone, including center at 100%
         if (destination == D::periphery && link_of_window(window))
             restore_window(*link_of_window(window), at, true);
@@ -358,7 +364,7 @@
             auto& memory = ensure_window_memory(id);
             memory.last_side = left ? -1 : 1;
             publish_model();
-        } else { remember_window(window); start_glide(window, current.x - at.x, current.y - at.y); }
+        } else { remember_window(window); start_cycle_glide(window, from, from_scale); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)

@@ -51,7 +51,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK26 | In Window mode, every widget (the default card or a third-party widget, expanded or collapsed) has its hint outside its center-facing edge: right of a left-rail widget, left of a right-rail widget, vertically centered on its drawn frame. The circle overlaps by 15% of its diameter. For large text on short widgets, overlap reduces so the arc entering the widget spans at most the middle 60% of its height, leaving the upper inward count-badge corner clear. WK5/WK25 sizing and WK14 widget tint/dye/goo remain unchanged. The exterior circle has an opaque theme background under its usual 21% hint-color fill so wallpaper cannot defeat letter contrast; window circles retain their existing transparency. Colliding hints declutter with 6 logical px clearance; widgets move only vertically as a temporary visual transform and keep their horizontal attachment, while windows retain the existing two-axis declutter. Both the hints and widget frames stay vertically on screen; horizontal screen clamping takes precedence if an unusually wide widget leaves no room. Geometry, zone memories and rail attachment are never changed. Release/Esc clears the hints and restores temporary displacement. | implemented (headless) |
 | WK27 | While any window or widget has inertial movement or resize velocity (keyboard or drag release), pause the declutter solver globally and hold its current visual offsets. Hints still follow real geometry. As soon as all velocity reaches zero, recompute from the resting geometry and interpolate to the new offsets, with no jump or geometry/memory change. | implemented (headless) |
 | WK28 | Hint circles pop in when window mode starts: each scales up from nothing with a short springy overshoot (and pops out quickly when the mode ends), and each circle has its own goo: it is a round goo source dyed its hint color, so it is part of the one liquid, joining the goo of the window or widget it touches (a widget's exterior hint visibly connects to the widget). With the goo off, circles get the fallback halo ring. Within the GO10 cost budget. (Mike, 2026-10-02) | planned |
-| WK29 | When a hint cycle (keyboard, window mode) moves a window to its next place, it comes to rest with a small elastic overshoot: a lightly underdamped spring that passes the target once (a few percent of the move, in position and scale) and settles without wobble. Scoped to keyboard hint cycles; drops, drags and coasts keep their own motion. Overshoot amount is a setting with a sensible default (Window mode tab, S14). (Mike, 2026-10-02) | planned |
+| WK29 | When a hint cycle (keyboard, window mode) moves a window to its next place, it comes to rest with a small elastic overshoot: an underdamped spring passes the target once in position and scale, then settles without wobble in 300 ms. `scottland/cycle_overshoot` is the peak percentage of the move (default 3%, range 0–10%; zero retains the original 260 ms position/180 ms scale motion). Geometry, zone, target scale and memories stay at the destination; drawn scale follows its own spring, never the intermediate position's zone. The live scaled content footprint is constrained to its output, including shared seams, without correcting existing off-screen memories or oversized endpoints; scale stays at least 5%. These limits may reduce overshoot. Keyboard widget opens use this window placement motion; widget morphs, rail glides, drops, drags, coasts and pointer/IPC opens retain their own motion. Window mode tab integration belongs to S14. (Mike, 2026-10-02) | implemented (headless); tab pending S14 |
 | WK30 | Widgets' hint circles are one third smaller than windows' (2/3 of the WK5/WK25 size, same min/max ratio and text scaling). Pressing a widget's hint first selects the widget (like a window that isn't selected yet); only a further press cycles it (to the center, etc.). Supersedes widget behavior in WK6-WK11/WK26 where they differ. (Mike, 2026-10-02) | planned |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
@@ -73,6 +73,15 @@ step. Opening a widget takes its first center step. Double-tap requests the widg
 | Widget | center → periphery → widget → … |
 
 ## Decisions at unspecified edges
+
+- WK29, tenets 2 and 4: animate only the drawn position and scale, preserving the destination,
+  client size and spatial memories. `cycle-spring.hpp` evaluates an underdamped unit step through
+  its first peak at 180 ms, followed by a tangent-continuous cubic return to exact rest at 300 ms.
+  The tail suppresses further oscillations. Position and scale use separate endpoint values;
+  the screen constraint uses their combined live footprint. A 3% peak gives a small visible settle
+  with only 40 ms added to the existing placement duration. A new cycle starts from the drawn
+  frame; arrow/drag takeover and docking stop its transient animation through the existing glide
+  cancellation path. The widget shape/fade animation is not changed.
 
 - WK26, tenet 2 (recognition): use 15% circle overlap to visibly attach a hint without covering
   the widget's contents. Restrict the entering arc on short widgets at large text sizes to keep
@@ -128,6 +137,17 @@ there is no simulation-clock IPC. A marked reload ends transient input/coasts an
 committed desktop state through the existing model handover.
 
 ## Verification
+
+WK29 coverage: `tests/cycle-overshoot-test.sh` takes a fresh `SCOTTLAND_HEADLESS_DIR` under
+`build/`, starts two isolated outputs, drives real Super drags to establish memories and real
+Alt/hint presses to cycle, then stops that session. Its 79 checks sample position and scale,
+one target crossing, exact settlement, zero's original easing/tolerance, both horizontal edges,
+top/bottom edges, maximum overshoot, minimum scale, stable output/zone/target scale and rapid
+double-tap handoff to the existing widget morph. It checks widget hint restoration too.
+JSON samples, original screenshots and a cropped frame strip with a target-center guide remain
+beside the session directory. `tests/cycle-spring-unit.cpp` checks four amplitudes over 10,000
+samples each: bounded first peak, one crossing, monotone return, exact endpoints and continuous
+velocity at both joins. Compile it with `-Icore/plugin/src` into `build/`.
 
 The branch-specific records below describe their original code, before this combined window-mode build.
 They are historical evidence; the final combined matrix is recorded separately.
@@ -425,3 +445,37 @@ in `build/wk26/count-corner-fixture/`, without merging or modifying that branch.
 the nearest rounded end is 11 pixels inward/down from the frame's upper inward corner.
 The compatibility screenshots are in `build/wk26/count-corner-integration.widget-hints-artifacts/`.
 The new suite accepts `SCOTTLAND_WIDGET_PATH` for this isolated fixture override.
+
+## WK29 validation (2026-10-02, osanwe headless)
+
+Only `scottland-overshoot` and its fresh headless sessions were used. All session directories,
+screenshots, frame strips, sampled JSON, build logs and source/library hashes are under
+`build/wk29/`. Each session started after its tested build. No private `XDG_RUNTIME_DIR`, personal
+config, dev install, physical display, live widget service or live checkout was used.
+
+The final spring suite (`spring-verified`) passed **79 checks**. Both free-space directions pass
+their target once, with measured peaks about 2.9–3.0% (the configured peak is 3%), then reach exact
+position and target scale by the post-340 ms samples. Screen constraints reduce the excursion at
+the edges, including the seam to the second output. Zero retains the old easing and its existing
+0.0005 scale tolerance. The maximum 10% setting stays bounded at the minimum 5% scale. The rapid
+double-tap check caught and now guards the ordering of docking's snapshot and spring cancellation:
+the existing widget transition captures the drawn frame before stopping its glide. All four pure
+spring amplitude cases passed, as did XML/Python/shell syntax checks and `git diff --check`.
+
+The requested broad suites were run. The final-source serial matrix is **not clean**:
+
+| Suite | Result |
+|---|---|
+| Windowing | 83 passed, 1 failed: the app was not yet hidden at the slow-cycle widget-arrival check; subsequent cycles and memories passed |
+| Hint appearance | 53 passed, 0 failed |
+| Inertia | 61 passed on one output; 7 passed, 1 failed on two outputs (sampled monotonicity at the seam; travel, transfer, return and Esc passed) |
+| Widget morph | 182 passed, 4 failed: Esc-return intermediate-frame/field sampling and goo collapse/reversal field sampling; cycle and double-tap paths passed |
+
+Earlier runs include 84/84 windowing and 61+8 inertia passes, but also an IPC resource exception,
+an Esc-resize failure and varying morph sampling failures. Their logs are retained, not replaced
+by the successful runs. A separate control using this same build with `cycle_overshoot=0` also
+reproduced missing intermediate goo/crossfade samples; the new spring is not required for those
+failures. That does not establish the cause of every failure or prove the complete matrix green.
+No broad-suite assertions or timing tolerances were changed. Physical verification and S14's
+Window mode tab remain pending. Inspect `spring-verified.cycle-artifacts/frame-strip.png` (cyan
+line = target center) and the original full-output captures beside it.
