@@ -23,6 +23,17 @@ int main()
             check(axis.velocity == 0, "stops without sign reversal");
         }
     }
+    scottland::windowing::release_velocity release;
+    for (uint32_t t : {0, 13, 31, 55, 80}) release.add(t, t * .4, -double(t) * .2);
+    auto vfit = release.estimate(80);
+    check(near(vfit.first, 400) && near(vfit.second, -200), "irregular input times retain physical release velocity");
+    check(release.estimate(130) == std::pair<double,double>{}, "paused release has no momentum");
+    release.clear();
+    for (uint32_t t : {0, 25, 50, 75, 100}) release.add(t, t * .02, 0);
+    check(release.estimate(100) == std::pair<double,double>{}, "slow precise drop has no momentum");
+    release.clear();
+    for (uint32_t t : {0, 25, 50, 75}) release.add(UINT32_MAX - 50 + t, t * .4, 0);
+    check(near(release.estimate(24).first, 400), "input timestamp wrap preserves velocity");
     inertial_axis axis;
     axis.impulse(335, 6000); double first = axis.step(.1, 608);
     axis.impulse(335, 6000);

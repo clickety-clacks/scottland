@@ -3416,7 +3416,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void handle_new_output(wf::output_t *output) override
     {
         wf::per_output_tracker_mixin_t<center_resize_t>::handle_new_output(output);
-        output_instance[output]->on_start = [=] () { bypass_window_keys(); };
+        output_instance[output]->on_start = [=] () { stop_keyboard_motion(); bypass_window_keys(); };
         output->connect(&on_above);
         watch_fullscreen(output);
     }
@@ -4465,6 +4465,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        keyboard_motions.erase(drag->view->get_id()); // catch the object at its current position
+        drag_velocity.clear();
+        auto input = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
+        drag_velocity.add(now_msec(), input.x, input.y);
         window_entries();
         remember_window(drag->view);
         bypass_window_keys();  // L31 owns Alt for this entire drag chord
@@ -5190,6 +5194,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto view   = drag->view;
         auto output = drag->current_output;
         note_drag_start();
+        drag_velocity.add(now_msec(), ev->current_position.x, ev->current_position.y);
         if (view && output && !view->pending_fullscreen())
         {
             update_drag_morph(view, output, ev->current_position);
@@ -5352,7 +5357,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         // A click on a halo (pressed and let go where it was) is no move: it never changes a
         // widget into its window or the reverse.
-        auto released_at = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
+        auto released_at = ev->grab_position; // authoritative for pointer, touch and touchpad drags
         if (main && model.drag.started && (std::hypot(released_at.x - model.drag.start_cursor.x,
             released_at.y - model.drag.start_cursor.y) < CLICK_SLOP))
         {
@@ -5413,6 +5418,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             handle_widget_drop(main, widget_shaped, released_at);
             auto dropped = represented_view(was_widget ? app_window : main->get_id());
             if (dropped) remember_window(dropped);
+            if (!was_widget && dropped == main && !widget_shaped.value_or(false) &&
+                std::hypot(released_at.x - model.drag.start_cursor.x,
+                    released_at.y - model.drag.start_cursor.y) >= CLICK_SLOP)
+                start_drag_coast(dropped);
             if (was_widget && !link_of_window(view_by_id(app_window)))
             {
                 model.drag.last_drop.became = app_window;  // restored: the window stands for it

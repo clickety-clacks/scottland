@@ -133,7 +133,7 @@
     void bypass_window_keys()
     {
         alt_bypassed = true; alt_hold.disconnect();
-        stop_keyboard_motion();
+        arrow_repeats.clear(); fullscreen_impulses.clear();
         if (capture_chord) { end_window_keys(); capture_chord = false; }
     }
     void remember_window(wayfire_toplevel_view view)
@@ -409,7 +409,9 @@
                 << ',' << std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale)) << ';';
             by_output[view->get_output()].push_back(e.id);
         }
-        if (window_keys.active && signature.str() != declutter_signature)
+        bool coasting = inertia_active();
+        signature << "coasting:" << coasting;
+        if (window_keys.active && !coasting && signature.str() != declutter_signature)
         {
             declutter_signature = signature.str();
             for (auto& [output, ids] : by_output)
@@ -425,6 +427,14 @@
                 for (size_t i = 0; i < ids.size(); ++i)
                     hint_visuals[ids[i]].target = {displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
             }
+        }
+        // Freeze the current visual offsets while any coast is active. Geometry still drives
+        // hints, and the existing transform interpolation resumes smoothly at rest.
+        if (coasting)
+        {
+            declutter_signature.clear();
+            for (auto& [id, visual] : hint_visuals)
+                visual.target = {visual.offset->translation_x, visual.offset->translation_y};
         }
         bool moving = false;
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
@@ -565,6 +575,14 @@
             return;
         }
         if (claimed) return; // exact focused-surface claims also bleed through active hints (KL7)
+        if (down && code == KEY_ESC && !drag->view && !capture_chord && inertia_active())
+        {
+            for (auto& [id, motion] : keyboard_motions)
+                if (auto view = wf::toplevel_cast(motion.view.lock())) remember_window(view);
+            stop_keyboard_motion(); swallowed_keys.insert(code);
+            ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            return;
+        }
         if (!capture_chord)
         {
             if (down && !alt_keys.empty()) { alt_bypassed = true; alt_hold.disconnect(); }
