@@ -1,0 +1,44 @@
+#include "inertia.hpp"
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+using scottland::windowing::inertial_axis;
+int passed = 0;
+void check(bool ok, const char *name)
+{
+    if (!ok) { std::cerr << "FAIL " << name << '\n'; std::exit(1); }
+    ++passed;
+}
+bool near(double a, double b) { return std::abs(a-b) < 1e-8; }
+int main()
+{
+    for (double dt : {0.001, 1.0/60, 0.04, 1.0})
+    {
+        for (double sign : {-1.0, 1.0})
+        {
+            inertial_axis axis; axis.impulse(sign * 335, 6000);
+            double distance = 0;
+            for (int n = 0; n < 1000 && axis.velocity != 0; ++n) distance += axis.step(dt, 608);
+            check(near(distance, sign*335*335/(2.0*608)), "single impulse analytic distance at different frame rates");
+            check(axis.velocity == 0, "stops without sign reversal");
+        }
+    }
+    inertial_axis axis;
+    axis.impulse(335, 6000); double first = axis.step(.1, 608);
+    axis.impulse(335, 6000);
+    check(near(axis.velocity, 670-60.8), "presses accumulate surviving velocity");
+    double total = first + axis.step(2, 608);
+    check(total > 2*335*335/(2.0*608), "repeated impulses travel farther than separate impulses");
+    axis.impulse(10000, 6000); check(axis.velocity == 6000, "positive speed clamp");
+    axis.impulse(-20000, 6000); check(axis.velocity == -6000, "negative speed clamp");
+    check(axis.constrain(-1, 0, 100) == 0 && axis.velocity == 0, "lower boundary stops outward velocity");
+    axis.impulse(335,6000); check(axis.constrain(101,0,100)==100 && axis.velocity==0, "upper boundary stops outward velocity");
+    axis.impulse(335,6000); check(axis.constrain(-1,0,100)==0 && axis.velocity==335, "inward velocity survives at boundary");
+    double v = axis.velocity; check(axis.step(0,608)==0 && axis.velocity==v, "zero duration preserves velocity");
+    check(axis.step(-1,608)==0 && axis.velocity==v, "negative duration preserves velocity");
+    axis.impulse(-335,6000); check(axis.velocity==0, "opposite impulse cancels velocity");
+    inertial_axis x,y; x.impulse(335,6000); y.impulse(-335,6000);
+    check(near(x.step(.1,608), -y.step(.1,608)), "diagonal axes independent");
+    x.constrain(200,0,100); check(x.velocity==0 && y.velocity<0, "boundary stops only its axis");
+    std::cout << passed << " inertia unit checks passed\n";
+}
