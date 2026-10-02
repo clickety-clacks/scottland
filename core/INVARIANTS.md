@@ -45,6 +45,9 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 
 ## Window appearance and handles
 
+The halo is being redesigned as one goo for the whole screen ([docs/goo.md](../docs/goo.md)); when that's
+built, the halo rows below point there.
+
 | ID | Invariant | Status |
 |---|---|---|
 | A1 | No window chrome: Scottland asks every app that allows it for server-side decorations and draws none (no title bars, no borders). GTK4/libadwaita apps keep the header bars they draw themselves; Chromium is switched to server-side decorations through additive app tuning (C7). | implemented (Chromium tuning not built) |
