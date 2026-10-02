@@ -26,10 +26,13 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG22): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets.
-- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles and keyboard inertia (WK1–WK24),
+- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia and the declutter pause (WK1–WK26),
   remembered zones and contention-aware placement (WP1–WP7).
-- [docs/goo.md](docs/goo.md): the goo (GO1-GO10): the halo as one liquid for the whole screen,
-  dye for state colors, live tuning (implemented; on by default, with a per-window halo fallback).
+- [docs/goo.md](docs/goo.md): the goo (GO1-GO13): the halo as one liquid for the whole screen,
+  dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).
+- [docs/settings.md](docs/settings.md): the settings app, Scottland Layout (S1-S14): zone sliders and
+  overlay with draggable borders, Goo tab, hint popouts, the planned Window mode tab with friction curves.
+- [docs/desktop-model.md](docs/desktop-model.md): the single reactive desktop state model and its snapshots.
 - [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
@@ -122,6 +125,10 @@ Before reporting anything as done:
    unrehearsed reload crashed Mike's session; the cause, statics shared across plugin copies,
    is now prevented by `-fno-gnu-unique` in core/plugin/meson.build.)
 5. Re-check every invariant the change could affect, and update its status.
+6. Keep test output out of `XDG_RUNTIME_DIR`: it is a small tmpfs (1.6 GB on osanwe) shared with the
+   live session. Put screenshots and logs under the checkout's `build/`, stop and remove headless
+   dirs when done. (2026-10-02: test leftovers and dead Quickshell logs filled it, and the live
+   session's widget cards could not start, so widgetized windows vanished.)
 
 Useful tools: `tests/headless.sh`, `tests/deploy.sh`, `tests/shell-probe.sh` (stock shell
 against the shim, headless and sandboxed), `tests/nested.sh` (Scottland in a window on
