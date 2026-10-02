@@ -3601,6 +3601,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::geometry_t snapshot_box{}, other_geometry{};
         bool snapshot_ready = false;
         int ticks = 0;
+        double shown_w = 0, shown_h = 0;  // the other form's size as drawn, following its target
     };
     std::optional<drag_morph_t> morph;
     wf::wl_timer<true> morph_tick;
@@ -3767,7 +3768,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         // The other form's size on screen: the widget at 100%, or the window at the scale it would
         // have where the frame is now.
+        // Until the widget exists (its program takes a moment to start the first time), aim for
+        // the size the default card will have for this window: its text, up to the card's maximum,
+        // or the square icon when widgets are collapsed.
         double w = PROVISIONAL_WIDGET_W, h = PROVISIONAL_WIDGET_H, scale = 1.0;
+        if (!morph->from_widget)
+        {
+            size_t chars = std::max(dragged->get_title().size(), dragged->get_app_id().size());
+            w = widgets_collapsed ? h : std::clamp(102.0 + 7.6 * chars, h, 320.0);
+        }
+
         if (morph->from_widget && other)
         {
             auto output = output_alive(drag->current_output) ? drag->current_output : dragged->get_output();
@@ -3782,11 +3792,24 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             h = g.height;
         }
 
+        // The widget's size it aims for changes when the widget appears: follow it smoothly
+        // (~150 ms) instead of snapping.
+        if ((morph->shown_w <= 0) || morph->from_widget)  // a window's size tracks the pointer exactly (L8)
+        {
+            morph->shown_w = w;
+            morph->shown_h = h;
+        } else
+        {
+            double follow = 1.0 - std::exp(-8.0 / 50.0);
+            morph->shown_w += (w - morph->shown_w) * follow;
+            morph->shown_h += (h - morph->shown_h) * follow;
+        }
+
         frame->damage();
         frame->morph.shape = morph->shape;
         frame->morph.fade  = morph->fade;
-        frame->morph.w     = w;
-        frame->morph.h     = h;
+        frame->morph.w     = morph->shown_w;
+        frame->morph.h     = morph->shown_h;
         frame->morph.scale = scale;
         frame->morph.snapshot       = morph->snapshot_ready ? morph->snapshot : nullptr;
         frame->morph.snapshot_box   = morph->snapshot_box;
