@@ -22,7 +22,8 @@ GOO = ("goo", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief",
        "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
-NAMES += GOO
+WIDGETS = ("widget_bounce",)
+NAMES += GOO + WIDGETS
 TEXT = ("scale_curve", "goo_falloff")
 
 

@@ -127,8 +127,8 @@ def capture(name, scale=1):
         check(0 <= b['x'] and b['x']+b['size'] <= 1280 and 0 <= b['y'] and b['y']+b['size'] <= 720,
               label + ' is wholly on screen')
         check(abs(h['dx']) < .01, label + ' stays attached horizontally during declutter')
-        check(b['size'] == round(max(72*scale, min(132*scale, min(f['width'], f['height'])*.34*scale))),
-              label + ' retains WK25 badge sizing')
+        check(b['size'] == round(2/3 * max(72*scale, min(132*scale, min(f['width'], f['height'])*.34*scale))),
+              label + ' uses 2/3 of WK25 window badge sizing')
         # The independent badges-fixedsize change puts a 22px-high rounded count at
         # (0, 0) on the inward side. Its nearest end-circle is centered 11px in/down;
         # wider counts extend away from the hint and retain this same end-circle.
@@ -161,7 +161,29 @@ try:
     time.sleep(.5)
     hold()
     capture('expanded-both-rails')
+    original = next(v for v in views() if v['id'] == widget(left))['frame']
+    label = next(h['hint'] for h in hints() if h['window'] == left)
+    for letter in label: tap(letter.upper())
+    time.sleep(.5)
+    check(any(int(w['id']) == left for w in links()) and
+          ipc('scottland/hints')['selected'] == left and
+          all(abs(next(v for v in views() if v['id'] == widget(left))['frame'][k] - original[k]) < .05
+              for k in ('x', 'y', 'width', 'height')),
+          'WK30 first widget hint selects without moving or opening')
+    for letter in label: tap(letter.upper())
+    time.sleep(.7)
+    check(not any(int(w['id']) == left for w in links()),
+          'WK30 second slow widget hint opens center')
     release()
+    drag(left, 10, 230)
+    hold()
+    # Tab selection counts as selection: the next slow hint opens directly.
+    while ipc('scottland/hints')['selected'] != left: tap('TAB')
+    for letter in label: tap(letter.upper())
+    time.sleep(.7)
+    check(not any(int(w['id']) == left for w in links()), 'WK30 Tab-selected widget hint opens center')
+    release()
+    drag(left, 10, 230)
     key('LEFTMETA', True); tap('M'); key('LEFTMETA', False)
     wait(lambda: all(next(v for v in views() if v['id'] == widget(i))['frame']['width'] <= 97 for i in (left,right)))
     # Third-party widgets choose how to implement collapse; the fixture uses real Space.

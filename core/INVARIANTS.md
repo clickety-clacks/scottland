@@ -41,7 +41,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | L33 | Super+drag moves windows with Scottland's own drag, not Wayfire's move plugin, so the window keeps drawing live while it is dragged (you can peek at what is happening in it), with the same zone/scale following, morphs, Esc and coast as halo drags; cost stays within the GO10 budget. (Mike, 2026-10-02) | planned, after the drag coast lands |
 | L19 | Ctrl+W deletes the previous word in every app, browsers included: the plugin remaps it to Ctrl+Backspace for browsers and Chromium web apps (shipped `key_remaps` rules), and Ctrl+Alt+W closes the browser tab (Ctrl+F4). Holding the key repeats. The remap mechanism is generic: per-app rules of app-id regex, from-combo, to-combo. | implemented (headless) |
 | L17 | Trackpad (two-finger) scrolling honors `input/touchpad_scroll_speed`, applied live; the shipped default is 0.2. (Wayfire 0.11 ignores it for touchpads, WayfireWM/wayfire#3148; the plugin applies it until the fix ships.) | verified (on Mike's trackpad, osanwe) |
-| L13 | A window moved onto a widget rail becomes a widget (any program, chosen per app, default card); see [docs/widgets.md](../docs/widgets.md) (WG1–WG22, including continuous window → widget morphs). | implemented (headless) |
+| L13 | A window moved onto a widget rail becomes a widget (any program, chosen per app, default card); see [docs/widgets.md](../docs/widgets.md) (WG1–WG23, including continuous window → widget morphs and elastic size transitions). | implemented (headless) |
 | L14 | Tiling rules apply to windows. | not built (rules not yet specified) |
 | L15 | Scottland copies the display scale the user's Hyprland uses (e.g. 4K panels are not tiny). | not built |
 | L16 | How widgets sit on a rail: free-floating where dropped, at the widget's own size ([docs/widgets.md](../docs/widgets.md), WG4). | implemented (headless) |
@@ -78,7 +78,7 @@ highlight edges; see [its headless visual and cost checks](../docs/goo.md#go13-i
 
 ## Layout configurator (`scottland-settings`)
 
-The settings app (Scottland Layout: Layout, Goo and Window mode tabs, zone overlay, hints): see [docs/settings.md](../docs/settings.md) (S1–S14).
+The settings app (Scottland Layout: Layout, Goo and Window mode tabs, zone overlay, hints): see [docs/settings.md](../docs/settings.md) (S1–S19; Widgets tab planned).
 
 ## Desktop state
 
@@ -105,7 +105,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK27 (window mode: Alt-alone hold, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK30 (window mode: Alt-alone hold, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and visual declutter)
 and WP1–WP7 (zone memory, side choice and shared rectangle placement). Statuses and verification are recorded there.
 

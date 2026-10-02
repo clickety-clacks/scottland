@@ -74,6 +74,12 @@
             <default>48</default><min>0</min><max>150</max>
         </option>
 
+        <option name="widget_bounce" type="double">
+            <_short>Widget bounce</_short>
+            <_long>Size overshoot when widgets expand or contract. 0 disables the bounce; 0.04 gives a small single bounce. Large contractions limit overshoot to keep the card recognizable.</_long>
+            <default>0.04</default><min>0</min><max>0.1</max>
+        </option>
+
         <option name="alt_hold_delay" type="int">
             <_short>Window mode Alt-alone hold (ms)</_short>
             <_long>Hold Alt alone for this long to show compositor window hints. A key or modifier pressed before the delay leaves the whole chord with the app and existing desktop shortcuts. Once entered, all keys control windows until Alt is released.</_long>

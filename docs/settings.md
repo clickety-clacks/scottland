@@ -141,3 +141,12 @@ The live-theme test caught an old popup buffer surviving a font/size change on W
 remapping only the passive hint on style changes refreshes both its pixels and geometry.
 All isolated sessions were stopped after testing. Physical displays and mixed DPI remain
 outside the explicitly headless scope of this change.
+
+## Widgets tab integration (WG23 / S19)
+
+The plugin and `scottland-ctl get`, `set`, `stdin` now expose `widget_bounce`: a double
+from 0 to 0.1, default 0.04 (4% size overshoot). Zero keeps the existing monotonic easing;
+nonzero uses a 360 ms single bounce, with a bounded overshoot on large contractions.
+The future Widgets tab should label this “Widget bounce”, display it as a percentage,
+and include it in Save/Cancel/Defaults. No settings QML is changed by `widget-elastic`;
+S19 remains owned by the settings redesign. Peek timing remains a separate future control.

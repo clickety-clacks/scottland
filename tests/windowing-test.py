@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real stipc keyboard/pointer input, app delivery, compositor state, and reload checks."""
 import json
+import errno
 import math
 import os
 import socket
@@ -176,9 +177,16 @@ def launch(name, x=None, y=None):
         ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
     log = artifacts / (name + '.keys')
     log.write_text('')
-    p = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
-                          str(Path('tests/windowing-key-recorder.py').resolve()), name, str(log)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for attempt in range(100):
+        try:
+            p = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+                                  str(Path('tests/windowing-key-recorder.py').resolve()), name, str(log)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            break
+        except BlockingIOError as error:
+            if error.errno != errno.EAGAIN or attempt == 99:
+                raise
+            time.sleep(.1)
     clients.append(p)
     v = wait_for(lambda: view(name))
     time.sleep(.4)
@@ -272,6 +280,7 @@ try:
     check(delivered('Alpha').count('b') == before, 'Esc keeps remaining Alt chord captured')
     release()
     check(near(center(view('Alpha')), saved[0]) and near(center(view('Beta')), saved[1]), 'declutter restores original geometry')
+    wait_for(lambda: all(abs(h['dx'])+abs(h['dy']) < .1 and not h['visible'] for h in hints()['hints']))
     check(all(abs(h['dx'])+abs(h['dy']) < .1 and not h['visible'] for h in hints()['hints']), 'visual offsets and hints clear after release')
     focus(a); tap('X'); time.sleep(.1)
     check(any(e['key']=='x' and e['modifiers']==0 for e in map(json.loads,(artifacts/'Alpha.keys').read_text().splitlines())), 'mode release leaves no stuck modifiers in the app')
@@ -348,7 +357,7 @@ try:
     p = center(view('Cycle'))
     check(view('Cycle')['zone'] == 'continuous', 'selected center first press skips select and moves to periphery')
     choose(a)
-    wait_for(lambda: view('Cycle')['widgetized'])
+    wait_for(lambda: view('Cycle')['widgetized'] and view('Cycle')['hidden'])
     check(view('Cycle')['hidden'], 'slow center second press widgetizes')
     choose(a)
     check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), center_memory), 'center full loop returns to exact center memory')
@@ -365,7 +374,7 @@ try:
     choose(a); choose(a); release()
     rail_memory = hint(a)['memories']
     hold(); choose(a)
-    check(near(center(view('Cycle')), center_memory) and not view('Cycle')['widgetized'], 'widget first hint press restores center')
+    check(near(center(view('Cycle')), center_memory) and not view('Cycle')['widgetized'], 'already-selected widget first hint press opens center')
     choose(a)
     check(near(center(view('Cycle')), p), 'widget second press moves to periphery')
     choose(a); release()
@@ -376,7 +385,7 @@ try:
     check(view('Cycle')['widgetized'], 'double tap from selected center sends to rail; third rapid press leaves it there')
     release()
     # A longer configurable interval permits inspecting the mapped widget between rapid presses.
-    ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 2000})
+    ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 3000})
     hold(); rapid_hint(a, 2); time.sleep(.8)
     widget_before = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == a)
     memories_before = hint(a)['memories']
@@ -559,6 +568,8 @@ try:
     close_all()
 except Exception as error:
     check(False, 'suite exception: '+repr(error))
+    import traceback
+    traceback.print_exc()
 finally:
     print(f'{passed} passed, {failed} failed', flush=True)
     for process in clients:

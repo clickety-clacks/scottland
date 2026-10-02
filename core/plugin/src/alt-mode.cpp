@@ -52,9 +52,7 @@ void alt_mode::activate(uint64_t id, bool double_tap)
         order = cycle_order(start); step = 0;
         if (!already_selected && !double_tap)
         {
-            select(id, widget);
-            // Opening a widget has already taken the first step of its loop.
-            if (widget) ++step;
+            select(id, false);
             return;
         }
     }
