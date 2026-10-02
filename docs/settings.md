@@ -22,6 +22,7 @@ Super+, opens Scottland Layout: tabs for Layout (zones, scale curve), Goo (GO9) 
 | S16 | One design system for the whole panel: tabs, Defaults/Cancel/Save and the curve editors are designed to match the tall grab-anywhere slider rows (same block shapes, separators, type, accent and modified colors, hover/pressed states), not stock controls. (Mike, 2026-10-02: the current tabs and buttons are "uglier than sin") | planned |
 | S17 | Scrolling the panel is inertial (flick to coast, smooth deceleration), for touchpad, wheel and touch. (Mike, 2026-10-02) | planned |
 | S18 | Curve knobs are easy to grab: generous hit targets (at least ~24 pt) with a visible hover/selected state. A clicked knob is selected; Delete or Backspace removes the selected knob (endpoints can't be removed); double-click/right-click removal may remain. (Mike, 2026-10-02) | planned |
+| S19 | Scottland Settings has a Widgets tab for widget behavior, starting with the elastic bounce of expand/contract (WG23); peek timing and similar widget settings belong there too. Same design system (S16). (Mike, 2026-10-02) | planned, after the settings redesign |
 
 ## Preview and help
 
