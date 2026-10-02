@@ -3,14 +3,18 @@
 #include <cmath>
 namespace scottland::windowing
 {
-std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds, double gap, const std::vector<double>& diameters)
+std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds, double gap,
+    const std::vector<double>& diameters, const std::vector<hint_constraint>& constraints)
 {
     auto nodes = anchors;
     if (gap <= 0) return nodes;
     auto radius = [&] (size_t i) { return i < diameters.size() ? diameters[i] / 2 : 0; };
+    auto vertical = [&] (size_t i) { return i < constraints.size() && constraints[i].vertical_only; };
     auto separation = [&] (size_t i, size_t j) { return gap + radius(i) + radius(j); };
     auto constrain = [&] (point p, size_t i) {
-        double x = std::min(radius(i), bounds.width / 2), y = std::min(radius(i), bounds.height / 2);
+        double height = i < constraints.size() ? constraints[i].half_height : 0;
+        double x = std::min(radius(i), bounds.width / 2), y = std::min(std::max(radius(i), height), bounds.height / 2);
+        if (vertical(i)) p.x = anchors[i].x;
         return point{std::clamp(p.x, bounds.x + x, bounds.x + bounds.width - x),
             std::clamp(p.y, bounds.y + y, bounds.y + bounds.height - y)}; };
     for (size_t i = 0; i < nodes.size(); ++i) nodes[i] = constrain(nodes[i], i);
@@ -57,6 +61,18 @@ std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds
             double gap = separation(i, j);
             if (distance >= gap - 0.001) continue;
             collision = true;
+            if (vertical(i) || vertical(j))
+            {
+                // Resolve residual collisions involving a rail vertically, preserving its
+                // attachment even when a neighboring window is pinned to a screen edge.
+                // Springs already let free windows move on both axes. Input order breaks ties.
+                double required = std::sqrt(std::max(0.0, (gap + 0.01) * (gap + 0.01) - dx * dx));
+                double correction = (required - std::abs(dy)) / 2;
+                double direction = dy < 0 ? -1 : 1;
+                nodes[i] = constrain({nodes[i].x, nodes[i].y + direction * correction}, i);
+                nodes[j] = constrain({nodes[j].x, nodes[j].y - direction * correction}, j);
+                continue;
+            }
             if (distance < 1e-6) { dx = 1; dy = 0; distance = 1; }
             double correction = (gap + 0.01 - distance) / (2 * distance);
             nodes[i] = constrain({nodes[i].x + dx * correction, nodes[i].y + dy * correction}, i);

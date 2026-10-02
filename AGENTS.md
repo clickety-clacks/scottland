@@ -26,7 +26,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG22): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets.
-- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia and the declutter pause (WK1–WK25; WK26+ in progress),
+- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia and the exterior widget hints and the declutter pause (WK1–WK27),
   remembered zones and contention-aware placement (WP1–WP7).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO13): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).

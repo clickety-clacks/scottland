@@ -72,6 +72,35 @@ int main()
     auto small_separate = declutter({{100,100},{180,100}},region,6,{72,72});
     check(near(small_separate[0],{100,100}) && near(small_separate[1],{180,100}),
         "separated small badges are not displaced by the large badge maximum");
+    for (double y : {0.0, 200.0, 400.0})
+    {
+        auto rail = declutter({{100,y},{100,y},{104,y}}, region, 6, {72,108,72},
+            {{true,48},{true,48},{true,48}});
+        bool ok = true;
+        for (size_t i = 0; i < rail.size(); ++i)
+        {
+            ok &= rail[i].x == (i == 2 ? 104 : 100) && rail[i].y >= (i == 1 ? 54 : 48)
+                && rail[i].y <= 400 - (i == 1 ? 54 : 48);
+            for (size_t j = 0; j < i; ++j)
+                ok &= std::hypot(rail[i].x-rail[j].x, rail[i].y-rail[j].y) >= (i == 1 || j == 1 ? 96 : 78) - .02;
+        }
+        check(ok, "stacked mixed-size rail hints separate vertically, including at screen ends");
+    }
+    auto rail_window = declutter({{100,200},{100,200}}, region, 6, {72,132}, {{true,48},{}});
+    check(rail_window[0].x == 100 && std::hypot(rail_window[0].x-rail_window[1].x,
+        rail_window[0].y-rail_window[1].y) >= 108-.02,
+        "window hint separates from a widget without detaching its rail hint");
+    auto pinned_window = declutter({{144,200},{-200,200}}, region, 6, {72,132}, {{true,48},{}});
+    check(pinned_window[0].x == 144 && std::hypot(pinned_window[0].x-pinned_window[1].x,
+        pinned_window[0].y-pinned_window[1].y) >= 108-.02,
+        "a screen-clamped window hint can separate vertically from a rail hint");
+    for (double diameter : {72.0, 108.0, 216.0})
+    {
+        double overlap = widget_hint_overlap(diameter, 96);
+        check(overlap > 0 && overlap <= diameter * .15 &&
+            std::hypot(diameter/2-overlap+11-.5, 37-.5) > diameter/2+11,
+            "widget circle retains slight overlap and clears the upper count corner after rounding");
+    }
     for (auto palette : std::vector<hint_palette>{hint_palette{},
         {true,{0.957,0.961,0.969},{0.137,0.165,0.208},{0.231,0.431,0.659}},
         {false,{0.05,0.05,0.05},{0.9,0.9,0.9},{0.8,0.2,0.3}},
