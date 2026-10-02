@@ -2,6 +2,7 @@
 #include "frame.hpp"
 #include "goo-runtime.hpp"
 #include <chrono>
+#include <cmath>
 #include <wayfire/config/option-wrapper.hpp>
 #include <wayfire/output-layout.hpp>
 #include <wayfire/plugins/common/shared-core-data.hpp>
@@ -78,7 +79,58 @@ class goo_node_t : public wf::scene::node_t
     {
         out.push_back(std::make_unique<goo_instance_t>(this, damage, o));
     }
-    void damage() { wf::scene::damage_node(shared_from_this(), get_bounding_box()); }
+    // Goo exists only in a band around each window (and in the gaps it bridges); window
+    // interiors mask it out. Damaging just those bands keeps a breathing or settling goo from
+    // repainting the whole screen, and every window on it, every frame (GO10).
+    std::vector<wf::geometry_t> last_bands;
+    bool whole = true;
+    std::vector<wf::geometry_t> bands() const
+    {
+        auto &st = state.settings;
+        // The widest the liquid gets: a fully swollen band, or half the widest gap it bridges
+        // (goo-model's bridge reach), plus room for noise lumps, waves and the relief's edge.
+        double out = std::max(st.thickness * (1 + st.swell / .7), 1.1 * (st.thickness + st.reach * .7)) + 12;
+        std::vector<wf::geometry_t> list;
+        for (auto &s : state.sources)
+        {
+            double in = s.liquid.y + 2;
+            double x1 = s.rect.x - s.rect.z, x2 = s.rect.x + s.rect.z;
+            double y1 = s.rect.y - s.rect.w, y2 = s.rect.y + s.rect.w;
+            auto box = [&](double a, double b, double c, double d)
+            {
+                if (c > a && d > b)
+                    list.push_back(wf::geometry_t{int(std::floor(a)), int(std::floor(b)),
+                                                  int(std::ceil(c - std::floor(a))), int(std::ceil(d - std::floor(b)))});
+            };
+            if (x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
+            {
+                box(x1 - out, y1 - out, x2 + out, y2 + out);
+                continue;
+            }
+            box(x1 - out, y1 - out, x2 + out, y1 + in);    // top
+            box(x1 - out, y2 - in, x2 + out, y2 + out);    // bottom
+            box(x1 - out, y1 + in, x1 + in, y2 - in);      // left
+            box(x2 - in, y1 + in, x2 + out, y2 - in);      // right
+        }
+        return list;
+    }
+    void damage()
+    {
+        auto node = shared_from_this();
+        if (whole)
+        {
+            whole = false;
+            wf::scene::damage_node(node, get_bounding_box());
+            last_bands = bands();
+            return;
+        }
+        auto next = bands();
+        for (auto &b : last_bands)
+            wf::scene::damage_node(node, b);
+        for (auto &b : next)
+            wf::scene::damage_node(node, b);
+        last_bands = std::move(next);
+    }
     void wake()
     {
         state.sleeping = false;
@@ -233,6 +285,7 @@ struct goo_t::impl
         for (auto &[o, n] : nodes)
         {
             n->state.settings = goo::current_settings;
+            n->whole = true;
             n->last_change = now();
             n->wake();
         }
@@ -268,6 +321,7 @@ struct goo_t::impl
         auto it = nodes.find(o);
         if (it == nodes.end())
             return;
+        it->second->whole = true;
         it->second->damage();
         it->second->detach();
         wf::scene::remove_child(it->second);

@@ -49,12 +49,13 @@ float gooField(vec2 p) {
   for(int i=0;i<1024;i++){
     if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);
     if(g.x<=0.)continue;
-    float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
+    float e=max(sdBox(p-r.xy,r.zw,g.y),0.),fe=fall(e);
+    if(fe<1e-6)continue; // too far for this window's liquid to matter: skip its noise
     float n=fbm(p*uNoiseScale+g.z*vec2(7.13,3.71)+vec2(uTime*uNoiseSpeed,-uTime*uNoiseSpeed*.73));
     float scale=clamp(abs(source(i,2.).w),0.,1.);
     float a=max(g.x*(1.+uNoise*scale*(n-.5)*2.),uT/max(fall(uThickness*.1*scale),.0001))
       +deposit(p,r,source(i,3.),source(i,4.));
-    F+=max(a,0.)*fall(e);
+    F+=max(a,0.)*fe;
   } return F;
 }
 vec2 off(int k){return k==0?vec2(1,0):k==1?vec2(-1,0):k==2?vec2(0,1):vec2(0,-1);}
@@ -77,14 +78,19 @@ float field(vec2 uv){
   float f=texture2D(uField,uv).r;
   return uPacked>.5 ? exp(f*2.83321334)-1. : f;
 }
-float gooMask(vec2 uv){return smoothstep(uT*.97,uT*1.03,field(uv))*step(0.,unionSdf(uv*uRes));}
+// The field pass stores "outside every window" in G once per step, so the wave and dye passes
+// read it instead of re-walking every window several times per texel.
+float gooMask(vec2 uv){vec4 f=texture2D(uField,uv);return smoothstep(uT*.97,uT*1.03,uPacked>.5?exp(f.r*2.83321334)-1.:f.r)*f.g;}
 )";
 inline const std::string field_shader = common + R"(
 void main(){
-  float f=gooField(gl_FragCoord.xy*uRes/uSize);
+  vec2 p=gl_FragCoord.xy*uRes/uSize;
+  float d=unionSdf(p);
+  // Deep inside a window the goo is hidden and never read: any value over the threshold will do.
+  float f=d<-8.?uT*4.:gooField(p);
   // Log packing spends RGBA8 precision at the boundary, avoiding staircase edges.
   if(uPacked>.5)f=log(1.+f)/2.83321334;
-  gl_FragColor=vec4(f,0,0,1);
+  gl_FragColor=vec4(f,step(0.,d),0,1);
 }
 )";
 inline const std::string wave_shader = common + mask + R"(
@@ -110,11 +116,14 @@ uniform float uSpread,uSwirl,uRelease;
 void main(){
   vec2 uv=gl_FragCoord.xy/uSize,px=1./uSize,p=uv*uRes;
   float m=gooMask(uv);
-  vec2 q=p*.004+vec2(0.,uTime*.03);float h=.01;
-  float gx=(fbm(q+vec2(h,0))-fbm(q-vec2(h,0)))/(2.*h),gy=(fbm(q+vec2(0,h))-fbm(q-vec2(0,h)))/(2.*h);
-  vec2 vel=vec2(gy,-gx)*uSwirl,adv=uv-vel/uRes;
-  // Both ends must contain goo: backtracing cannot pull color across a dry gap.
-  vec3 c=texture2D(uDyeTex,mix(uv,adv,gooMask(adv)*m)).rgb;
+  vec3 c=texture2D(uDyeTex,uv).rgb;
+  if(m>0.){ // the swirl only moves dye that is in goo
+    vec2 q=p*.004+vec2(0.,uTime*.03);float h=.01;
+    float gx=(fbm(q+vec2(h,0))-fbm(q-vec2(h,0)))/(2.*h),gy=(fbm(q+vec2(0,h))-fbm(q-vec2(0,h)))/(2.*h);
+    vec2 vel=vec2(gy,-gx)*uSwirl,adv=uv-vel/uRes;
+    // Both ends must contain goo: backtracing cannot pull color across a dry gap.
+    c=texture2D(uDyeTex,mix(uv,adv,gooMask(adv)*m)).rgb;
+  }
   vec3 acc=c;float ws=1.;
   for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=texture2D(uDyeTex,u2).rgb*w;ws+=w;}
   c=mix(c,acc/ws,uSpread);
@@ -147,7 +156,8 @@ uniform mat4 uBackgroundMap;
 float height(vec2 uv){float F=field(uv)*(1.+uWaveAmp*decode(texture2D(uWave,uv)).x);return clamp(log(max(F,1e-4)/uT),0.,3.);}
 void main(){
   vec2 p=pos,uv=p/uRes,px=1./uRes;
-  float F=field(uv),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h),d=unionSdf(p);
+  float d=unionSdf(p); if(d<=0.)discard; // window interiors mask the goo: skip the field there
+  float F=field(uv),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h);
   float a=smoothstep(uT*.97,uT*1.03,Fe)*smoothstep(0.,1.,d)*uAlpha;
   if(a<=0.)discard;
   float ht=height(uv);
