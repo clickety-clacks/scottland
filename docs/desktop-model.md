@@ -85,12 +85,43 @@ attention/mode reload preservation and rejection of deliberately incorrect obser
 The test endpoint and D-Bus render diagnostics exist only with `SCOTTLAND_TEST_MODEL=1`, set by
 the isolated headless harness. Live cards launch no reporting process.
 
-Validation on plumbus, 2026-10-01: `tests/widgets-test.sh` passed 97 checks (the existing 96
-plus launcher-exit subscription coverage); `tests/widget-launch-test.py` passed 17;
-`tests/widget-bus-test.py` passed 13; `tests/build-config-test.sh` passed all five rounds of
-20 concurrent builds. `tests/state-model-test.sh 271828 50` passed 84 checks; seed 104729
-with 50 operations passed 89 using `SCOTTLAND_DBUS_LEGACY=1`. The model runs use real stipc
-pointer/touch/key input, real widget programs and private D-Bus, audit after each operation,
-and retain expanded/final screenshots in `$XDG_RUNTIME_DIR/scottland-model-artifacts/`.
-Expanded-card screenshots were inspected. These are headless checks; physical screen,
-webcam and hardware input validation were not performed for this change.
+Validation after the review fixes on plumbus, 2026-10-01:
+
+| Suite | Result |
+|---|---|
+| `tests/widgets-test.sh` | 103 checks passed, including main's L29 overlap-pixel assertions |
+| `tests/state-model-test.sh 271828 50` | 95 checks passed |
+| Seed 104729, 50 operations, `SCOTTLAND_DBUS_LEGACY=1` | 100 checks passed on each of two complete reruns |
+| `tests/state-regressions-test.sh` | 6 checks passed: unscoped exit after reload, late fullscreen adoption, reload on another output, return from fullscreen, app-ID-only changes, running attention helper survival |
+| `tests/upgrade-test.sh ~/Projects/scottland-state-fixes-main` | 2 checks passed, using a separate build of main (`ea1d0f4`) with its legacy launcher, service and card; identity/traits survive and subsequent badges route correctly |
+| `tests/attention-sources-test.py` | 5 checks passed |
+| `tests/widget-launch-test.py` | 17 checks passed |
+| `tests/widget-bus-test.py` | 13 checks passed |
+| `tests/build-config-test.sh` | 5 rounds passed, each with 20 concurrent builds |
+| `tests/omarchy-focus-test.sh` | 3 checks passed |
+
+The first legacy-seed run failed at operation 22 with a card-render presentation mismatch.
+It did not recur in two complete reruns; its cause remains unconfirmed. The audit now retains
+complete service, card, desktop and scene observations on failure in
+`scottland-model-artifacts/seed-SEED-failure.json`. This is a remaining test-stability risk,
+separate from the eight fixed review findings; the audit was not weakened or disabled.
+
+All sessions used the checkout's own helpers, private D-Bus and
+`SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-state-fixes`, with build/test scratch
+files under `~/.cache/scottland-test-tmp`. Model runs use real stipc pointer/touch/key input,
+real widget programs and audits after each operation. Expanded-card, fullscreen and
+other-output reload screenshots were retained and inspected. No live session on osanwe or
+physical screen on plumbus was touched. The isolated runtime was stopped after testing.
+
+## Review regression coverage
+
+| Finding | Fix | Independent regression |
+|---|---|---|
+| 1: mailbox loss during handover | Suppress publication during marked teardown and initialization until all links are installed. | A second widget's app publishes a literal payload; the payload must survive a two-widget marked reload (`state-model-test.py`). |
+| 2: stale attention listing crashes helper | Filter missing IDs and validate action replies before replacing snapshots; preserve acknowledgement of unchanged valid replies. | Unit checks cover marking/removal races; a running helper must survive a source repeatedly listing a closed window, then mark another window (`attention-sources-test.py`, `state-regressions-test.py`). |
+| 3: late/fullscreen widget visibility | Remember away state while launching; adopt hidden and deny focus during fullscreen; reconstruct promotion from every output's compositor state before first handover rendering. | Delayed widget must stay hidden and leave the fullscreen client focused; reload while another output has keyboard focus must keep the first output's widget hidden (`state-regressions-test.py`). The audit also checks against compositor promotion, independently of `link.away`. |
+| 4: Esc strands a re-grab above widgets | Cancellation releases temporary layer ownership and publishes the completed drag. | A fixture first proves the ordinary drop is above, re-grabs and presses Esc, then requires the real scene's ordinary layer and no held owner (`state-model-test.py`). |
+| 5: missing morph subscription updates | Publish logical drag changes independently of scale. Main's estimated first-card target and smoothed actual size are in the model-owned morph. | One held widget drag goes off and back onto its rail; delivered direction and center must follow that input, advance versions and match direct reads (`state-model-test.py`). |
+| 6: lost launcher exit observation | Transfer the existing close-on-exec pidfd; legacy upgrades verify the live relationship before opening a new handle and use PID zero when unverifiable. | An unscoped launcher forks a widget, survives marked reload, then exits; the subscription must publish PID zero with the widget still docked (`model-process-test.py --reload`, `state-regressions-test.sh`). |
+| 7: lost legacy resolved identity | Read surviving widget launch-qualified environment and legacy unit-qualified identity once during migration; derive card traits from the actual command. | Real main-to-branch reload compares original desktop/name/icon and surviving launch, then sends a new badge for the original desktop ID (`upgrade-test.sh`). |
+| 8: stale app-ID | Observe Wayfire's app-ID change signal and publish it. | A real GTK Wayland client changes only its app-ID; subscription and late read must expose it while title and geometry stay unchanged (`app-id-app.py`, `state-regressions-test.py`). |
