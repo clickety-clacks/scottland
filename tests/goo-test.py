@@ -251,7 +251,8 @@ try:
     shot("05a-alt-declutter")
     key("KEY_LEFTALT", False); time.sleep(.8)
     check("goo follows the return from Alt declutter", not ipc("scottland/hints")["active"]
-          and sample(*center(view("goo-a")))["window_distance"] < 0)
+          and sample(*center(view("goo-a")))["window_distance"] < 0
+          and sample(x, y)["window_distance"] > 0)
     place("goo-b", round(saved_b["x"]), round(saved_b["y"]))
     f = view("goo-a")["frame"]; old_b = view("goo-b")["frame"]
     place("goo-b", round(f["x"]+f["width"]-50), round(f["y"]+f["height"]-50))

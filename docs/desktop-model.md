@@ -176,9 +176,16 @@ newer versions on availability changes, exclusion from widget/attention slices, 
 live disable and unsupported-GPU fallback, FS1 suspension and resumption. Simulation steps,
 GPU resources and animation samples never enter snapshots.
 
-The isolated `Projects/scottland-goo-merge` checkout on plumbus passed the widget matrix with
-goo off and on (146 checks each, including nested input/process checks), the goo matrix
-(38 normal, 38 packed, 12 flow/FS1/two-output, 3 fallback), and six focused state regressions
-with goo on. The seeded model audit `271828 50` with goo on passed 95 checks, auditing after all 50 real-input operations. Unit/config/focus checks also
-passed; the complete record and retained failed infrastructure attempts are in
+The isolated `Projects/scottland-goo-merge` checkout on plumbus first passed the full matrix
+on main `a198ede`. Main then advanced to `10774a2` with Alt hints, key layers and placement.
+The goo provider now composes parent presentation transforms before a cross-output drag;
+input uses the same derived source island rectangle, radius and close point. Declutter changes
+no model geometry or zone memory. Two additional real-Alt goo checks cover displaced clipping
+and clearing that displaced area after release.
+
+Current-main validation: goo 40 normal / 40 packed, 12 flow/FS1/two-output, 3 fallback;
+windowing 73, key layers 59, state regressions 7, pure windowing units 41. The repeated widget
+matrix passed 146 checks each with goo off/on; the seeded model audit `271828 50` with goo on
+passed 95 checks, including audits after all 50 real-input operations. Unit/config/focus checks also passed; the complete
+record and retained failed infrastructure attempts are in
 [goo.md](goo.md#main-merge-validation-2026-10-01). No live session or physical screen was used.
