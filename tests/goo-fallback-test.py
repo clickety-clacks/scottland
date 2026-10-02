@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """An unsupported GL context retains the real, draggable halo instead of blank decoration.
-Run after a fresh start --widgets with SCOTTLAND_TEST_GOO_GLES=unsupported.
+Run after a fresh start --widgets with SCOTTLAND_TEST_GOO_GLES=unsupported
+or no-derivatives.
 """
 import json
 from pathlib import Path

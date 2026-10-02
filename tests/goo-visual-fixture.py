@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Deterministic before/after screenshots, including overlap, bridge and real drag.
-Run via headless.sh run; ARG is the artifact directory. Disables only stochastic
+Run via headless.sh run; ARG is the artifact directory, optional ARG2 the output
+scale (default 1). Keeps a 1280x720 logical scene at each device-pixel scale.
+Disables only stochastic
 appearance for pixel comparison, retaining the shipped falloff and dye equations.
 """
 import json, os, socket, struct, subprocess, sys, time
@@ -25,6 +27,10 @@ def shot(name):
     (art/(name+'.json')).write_text(json.dumps(views(),indent=2))
 opts={'center_width':90,'rail_width':0,'min_scale':1,'max_scale':1,'scale_curve':'0:1 1:1',
       'goo_noise':0,'goo_drift':0,'goo_wave_height':0,'goo_swirl':0,'goo_release':1}
+scale=float(sys.argv[2]) if len(sys.argv)>2 else 1.
+ipc('wayfire/set-config-options',{'output:HEADLESS-1/mode':f'{round(1280*scale)}x{round(720*scale)}@60000',
+                                'output:HEADLESS-1/scale':scale})
+time.sleep(1)
 ipc('wayfire/set-config-options',{'scottland/'+k:v for k,v in opts.items()})
 clients=[]
 for t in ('visual-a','visual-b'):
@@ -38,6 +44,8 @@ place('visual-a',270,240); place('visual-b',610,240); time.sleep(.5)
 pointer(760,320); ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'press'}); ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'release'})
 pointer(20,20); shot('bridge')
 place('visual-b',500,330); shot('overlap')
+pointer(650,326); shot('highlight')
+pointer(20,20); time.sleep(1)
 pointer(400,340); ipc('stipc/feed_key',{'key':'KEY_LEFTMETA','state':True}); ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'press'})
 for i in range(1,31): pointer(400-i*3,340-i*2); time.sleep(.025)
 shot('drag-held')

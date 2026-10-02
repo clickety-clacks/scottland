@@ -217,13 +217,34 @@ void main(){
 inline const std::string render_shader = common + mask + R"(
 uniform sampler2D uWave,uDyeTex,uBackground;
 uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints;
+uniform vec2 uFieldSize;
 uniform mat4 uBackgroundMap;
-float height(vec2 uv){float F=field(uv)*(1.+uWaveAmp*decode(texture2D(uWave,uv)).x);return clamp(log(max(F,1e-4)/uT),0.,3.);}
+// Positive cubic B-spline weights: four bilinear fetches reconstruct a smooth
+// contour without overshoot/ringing. Only the full-resolution draw uses this;
+// waves, dye and input retain the original field. Interpolate packed log values
+// before decoding, just as the bilinear packed path does.
+vec4 drawField(vec2 uv){
+  vec2 q=uv*uFieldSize-.5,base=floor(q),f=q-base,g=1.-f;
+  vec2 w0=g*g*g/6.,w1=(3.*f*f*f-6.*f*f+4.)/6.;
+  vec2 w2=(-3.*f*f*f+3.*f*f+3.*f+1.)/6.,w3=f*f*f/6.;
+  vec2 a=w0+w1,b=w2+w3;
+  vec2 lo=(base-.5+w1/a)/uFieldSize,hi=(base+1.5+w3/b)/uFieldSize;
+  return mix(mix(texture2D(uField,lo),texture2D(uField,vec2(hi.x,lo.y)),b.x),
+             mix(texture2D(uField,vec2(lo.x,hi.y)),texture2D(uField,hi),b.x),b.y);
+}
+float drawDensity(vec4 value){return uPacked>.5?exp(value.r*2.83321334)-1.:value.r;}
+float surfaceHeight(float F){return clamp(log(max(F,1e-4)/uT),0.,3.);}
+float height(vec2 uv){return surfaceHeight(drawDensity(drawField(uv))*(1.+uWaveAmp*decode(texture2D(uWave,uv)).x));}
 void main(){
   vec2 p=pos,uv=p/uRes,px=1./uRes;
-  float d=uOverlap>.5?surfaceSdf(p):unionSdf(p); if(d<=0.)discard; // window interiors mask the goo: skip the field there
-  float F=field(uv),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h);
-  float a=smoothstep(uT*.97,uT*1.03,Fe)*smoothstep(0.,1.,d)*uAlpha;
+  vec4 value=drawField(uv);
+  float F=drawDensity(value),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h);
+  // Evaluate derivatives before any nonuniform discard. fwidth is in device
+  // pixels, independent of output/window scale; film and control outlines share
+  // this same iso-surface. Keep the existing analytic window-edge exclusion.
+  float aa=max(.5*fwidth(Fe),1e-6);
+  float d=uOverlap>.5?surfaceSdf(p):unionSdf(p); if(d<=0.)discard;
+  float a=smoothstep(uT-aa,uT+aa,Fe)*smoothstep(0.,1.,d)*uAlpha;
   if(a<=0.)discard;
   // WK14: window mode tints the goo with each hinted window's color at once, blended by
   // contribution so connected goo stays smooth; there is no separate rim.
@@ -234,8 +255,8 @@ void main(){
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sdBox(p-r.xy,r.zw,g.y),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
-  float cloud=uControls>.5?texture2D(uField,uv).b:0.;
-  float ht=height(uv);
+  float cloud=uControls>.5?value.b:0.;
+  float ht=surfaceHeight(Fe);
   vec3 n=normalize(vec3(-(height(uv+vec2(px.x,0))-ht)*uRelief,-(height(uv+vec2(0,px.y))-ht)*uRelief,1.));
   // Keep the shipped one-pixel exclusion around window content.
   bool film=uOverlap>.5&&backdrop(p).x<float(uCount);

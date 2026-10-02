@@ -198,8 +198,9 @@ std::vector<float> support_radii(std::vector<source_t> sources, const settings_t
         peaks.push_back(peak);
         total += peak;
     }
-    // Invert the render smoothstep's lower edge. Allow one full packed-field quantum
-    // (also bounds half-float rounding) before applying the maximum wave multiplier.
+    // Bound the threshold contour with the simulation mask's existing 3% margin.
+    // Draw reconstruction and device-pixel AA get spatial padding in compute_bands.
+    // Allow a full packed-field quantum (also bounds half-float rounding).
     float edge = s.threshold() * .97f / (1 + 3.9f * std::max(0.f, s.wave_height));
     edge = std::expm1(std::max(0.f, std::log1p(edge) - 2.83321334f / 255));
     // Extremely low custom thresholds cannot be bounded after packed quantization.
