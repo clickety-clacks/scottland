@@ -1503,6 +1503,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;
             auto r = frame->screen_rect();
             float radius = frame->screen_radius();
+            // Parent presentation transforms (e.g. Alt declutter) move the rendered island
+            // without changing model geometry. Compose them before the cross-output drag.
+            for (auto n = frame->parent(); n && n != v->get_transformed_node().get() && n != move.get(); n = n->parent())
+            {
+                auto a = n->to_global({r.x1, r.y1}), b = n->to_global({r.x2, r.y2});
+                if (r.width() > 0) radius *= std::abs((b.x - a.x) / r.width());
+                r = {a.x, a.y, b.x, b.y};
+            }
             if (move)
             {
                 auto shown = move->get_bounding_box(), inner = move->get_children_bounding_box();

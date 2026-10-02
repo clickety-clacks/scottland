@@ -234,6 +234,25 @@ try:
     time.sleep(.5); before = center(view("goo-b")); drag(*before, 65, 0, True)
     check("Super drag still scales live in the periphery", view("goo-b")["applied_scale"] < .9)
     options(center_width=90, min_scale=1, max_scale=1, scale_curve="0:1 1:1"); time.sleep(.4)
+    # Main's Alt declutter is a presentation transform, not a geometry command.
+    f = view("goo-a")["frame"]; saved_b = dict(view("goo-b")["frame"])
+    place("goo-b", round(f["x"]), round(f["y"]), round(f["width"]), round(f["height"]))
+    key("KEY_LEFTALT", True); time.sleep(1.2)
+    hints = ipc("scottland/hints")
+    displaced = max(hints["hints"], key=lambda h: abs(h["dx"]) + abs(h["dy"]))
+    actual = next(v["frame"] for v in views() if v["id"] == displaced["window"])
+    dx, dy = displaced["dx"], displaced["dy"]
+    x = actual["x"] + actual["width"]/2 + dx
+    y = actual["y"] + actual["height"]/2 + dy
+    if abs(dx) >= abs(dy): x = actual["x"] + dx + (actual["width"]-2 if dx > 0 else 2)
+    else: y = actual["y"] + dy + (actual["height"]-2 if dy > 0 else 2)
+    check("goo islands follow Alt declutter's rendered offsets", hints["active"] and abs(dx)+abs(dy) > 10
+          and sample(x, y)["window_distance"] < 0)
+    shot("05a-alt-declutter")
+    key("KEY_LEFTALT", False); time.sleep(.8)
+    check("goo follows the return from Alt declutter", not ipc("scottland/hints")["active"]
+          and sample(*center(view("goo-a")))["window_distance"] < 0)
+    place("goo-b", round(saved_b["x"]), round(saved_b["y"]))
     f = view("goo-a")["frame"]; old_b = view("goo-b")["frame"]
     place("goo-b", round(f["x"]+f["width"]-50), round(f["y"]+f["height"]-50))
     pointer(f["x"]+f["width"]+5, f["y"]+f["height"]-18); time.sleep(.3)
