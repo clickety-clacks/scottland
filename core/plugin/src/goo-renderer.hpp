@@ -16,7 +16,8 @@ class renderer_t
     // `area` (output-logical rects) limits the expensive field pass; empty means everywhere.
     bool update(const std::vector<source_t> &sources, const settings_t &settings, int width, int height,
                 float time, const std::vector<glm::vec4> &impulses,
-                const std::vector<wf::geometry_t> &area = {});
+                const std::vector<wf::geometry_t> &area = {},
+                wf::auxilliary_buffer_t *wallpaper = nullptr, const glm::mat4 &wallpaper_map = glm::mat4{1});
     // Draws only where `area` (output-logical) meets the damage: the goo never leaves its bands.
     void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area);
     bool overlapping() const;

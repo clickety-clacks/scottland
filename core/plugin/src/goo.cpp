@@ -63,6 +63,8 @@ class goo_node_t : public wf::scene::node_t
     ~goo_node_t() { detach(); }
     void detach()
     {
+        wallpaper_instances.clear();
+        wallpaper_nodes.clear();
         if (attached)
             state.output->render->rem_effect(&pre);
         attached = false;
@@ -191,6 +193,67 @@ class goo_node_t : public wf::scene::node_t
                                  return true;
                              });
     }
+    // GO15: render only background children, excluding this goo node. The
+    // quarter-resolution cache has its own damage callbacks: app redraws and
+    // goo damage cannot feed back into dye or keep the simulation awake.
+    wf::auxilliary_buffer_t wallpaper;
+    std::vector<wf::scene::node_ptr> wallpaper_nodes;
+    std::vector<wf::scene::render_instance_uptr> wallpaper_instances;
+    bool wallpaper_dirty = true;
+    glm::mat4 wallpaper_map{1};
+    void prepare_wallpaper()
+    {
+        if (state.settings.soak <= 0) return;
+        std::vector<wf::scene::node_ptr> next;
+        for (auto &child : state.output->node_for_layer(wf::scene::layer::BACKGROUND)->get_children())
+            if (child.get() != this && child->is_enabled()) next.push_back(child);
+        if (next != wallpaper_nodes)
+        {
+            wallpaper_instances.clear();
+            wallpaper_nodes = next;
+            for (auto &child : wallpaper_nodes)
+                child->gen_render_instances(wallpaper_instances, [this](const wf::regionf_t &) {
+                    wallpaper_dirty = true;
+                    if (state.settings.soak > 0)
+                    {
+                        last_change = now();
+                        wake();
+                    }
+                }, state.output);
+            wallpaper_dirty = true;
+            if (!above_windows)
+            {
+                // A new background-layer surface may have been inserted in front
+                // of goo. Keep the shared liquid above every wallpaper client.
+                auto node = shared_from_this();
+                wf::scene::remove_child(node);
+                wf::scene::add_front(state.output->node_for_layer(wf::scene::layer::BACKGROUND), node);
+                whole = true;
+            }
+            last_change = now();
+            wake(); // also remove old wallpaper dye when the last background disappears
+        }
+        // No wallpaper client means no color source, not an implicit black dye.
+        if (wallpaper_nodes.empty()) return;
+        auto g = get_bounding_box();
+        auto allocation = wallpaper.allocate(wf::dimensions(g), .25);
+        if (allocation == wf::buffer_reallocation_result_t::FAILED) return;
+        if (allocation == wf::buffer_reallocation_result_t::SAME && !wallpaper_dirty) return;
+        wf::render_target_t target{wallpaper};
+        target.geometry = g;
+        target.scale = .25;
+        wf::render_pass_params_t params;
+        params.instances = &wallpaper_instances;
+        params.target = target;
+        params.damage = g;
+        params.flags = wf::RPASS_CLEAR_BACKGROUND;
+        params.background_color = {0, 0, 0, 1};
+        wf::render_pass_t::run(params);
+        wallpaper_map = wf::gles::render_target_orthographic_projection(target);
+        wallpaper_dirty = false;
+        last_change = now();
+        wake();
+    }
     void prepare()
     {
         auto next = snapshot(state.output);
@@ -252,6 +315,7 @@ class goo_node_t : public wf::scene::node_t
             last_pulse = t;
             wake();
         }
+        prepare_wallpaper();
         // Drift and curl freeze after the response, then actual GPU energy decides sleep.
         if (t - last_change < 2 || attention)
             state.time += std::min(.05, t - last_step);
@@ -271,7 +335,8 @@ class goo_node_t : public wf::scene::node_t
                 {
                     goo::amounts(state.sources, state.settings);
                     bool ok = state.renderer.update(state.sources, state.settings, g.width, g.height,
-                                                    state.time, state.impulses, sim_tiles(band));
+                                                    state.time, state.impulses, sim_tiles(band),
+                                                    !wallpaper_nodes.empty() && wallpaper.get_buffer() ? &wallpaper : nullptr, wallpaper_map);
                     state.impulses.clear();
 
                     if (!ok)
@@ -328,6 +393,8 @@ struct goo_t::impl
         {"spread", &goo::settings_t::spread},       {"swirl", &goo::settings_t::swirl},
         {"release", &goo::settings_t::release},     {"shine", &goo::settings_t::shine},
         {"relief", &goo::settings_t::relief},
+        {"depth", &goo::settings_t::depth}, {"profile", &goo::settings_t::profile},
+        {"soak", &goo::settings_t::soak},
         {"overlap_film", &goo::settings_t::overlap_film},
         {"hover_cloudiness", &goo::settings_t::hover_cloudiness},
         {"hover_emissivity", &goo::settings_t::hover_emissivity},
