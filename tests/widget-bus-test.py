@@ -11,13 +11,24 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
+from unittest.mock import patch
+import errno
+import socket
+import struct
+import threading
+import time
 
-root = tempfile.mkdtemp(prefix="scottland-bus-test-")
-os.environ.update({"XDG_RUNTIME_DIR": root, "XDG_STATE_HOME": f"{root}/state", "WAYLAND_DISPLAY": "wl-test"})
+art = Path(__file__).resolve().parents[1] / "build"
+art.mkdir(exist_ok=True)
+temporary = tempfile.TemporaryDirectory(prefix="widget-bus-unit-", dir=art)
+root = temporary.name
 path = os.path.join(os.path.dirname(__file__), "..", "core", "libexec", "scottland-widget-bus")
 loader = importlib.machinery.SourceFileLoader("bus", path)
 bus = importlib.util.module_from_spec(importlib.util.spec_from_loader("bus", loader))
 loader.exec_module(bus)
+bus.RUNTIME = root
+bus.STATE_LOG = os.path.join(root, "widgets.log")
 os.makedirs(bus.RUNTIME, exist_ok=True)
 
 fails = 0
@@ -38,7 +49,7 @@ class FakeIpc:
         return self.snapshot
 
 
-service = bus.Service.__new__(bus.Service)
+service = bus.Service()
 service.ipc = FakeIpc()
 service.widgets, service.registrations, service.badges = {}, {}, {}
 service.scales, service.window_pids, service.announced = {}, {}, {}
@@ -146,6 +157,172 @@ check("WG11 without systemctl, a widget's own process is recognized (no crash)",
 check("WG11 without systemctl, an unrelated process isn't",
       not bus.is_widget_process(1, dict(state, _launcher_pid=0)))
 child.kill()
+child.wait()
+
+# ENOSPC used to escape on_event, causing GLib to remove its watch while D-Bus
+# remained alive. Drive the actual callback through GLib, with two real IPC sockets.
+service.bus = None
+service.ipc = None
+listener = socket.socket(socket.AF_UNIX)
+socket_path = os.path.join(root, "compositor.sock")
+listener.bind(socket_path)
+listener.listen()
+listener.settimeout(5)
+os.environ["WAYFIRE_SOCKET"] = socket_path
+current = {"session": "recovery", "version": 1, "windows": [],
+           "widgets": [entry("42", "recovery-a.scope"), entry("43", "recovery-b.scope")]}
+connections = []
+server_errors = []
+reject_subscription = False
+stop_server = threading.Event()
+
+
+def send(conn, payload):
+    body = json.dumps(payload).encode()
+    conn.sendall(struct.pack("<I", len(body)) + body)
+
+
+def serve():
+    try:
+        while not stop_server.is_set():
+            conn, _ = listener.accept()
+            header = conn.recv(4, socket.MSG_WAITALL)
+            request = json.loads(conn.recv(struct.unpack("<I", header)[0], socket.MSG_WAITALL))
+            assert request["method"] == "scottland/subscribe"
+            if reject_subscription:
+                send(conn, {"error": "No such method found!", "method": "scottland/subscribe"})
+                conn.close()
+            else:
+                send(conn, dict(current, result="ok"))
+                connections.append(conn)
+    except (OSError, ValueError) as error:
+        if not stop_server.is_set():
+            server_errors.append(error)
+
+
+thread = threading.Thread(target=serve, daemon=True)
+thread.start()
+context = bus.GLib.MainContext.default()
+
+
+def until(predicate, timeout=4):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        while context.pending():
+            context.iteration(False)
+        if predicate():
+            return True
+        time.sleep(.01)
+    return False
+
+
+def written(wid):
+    with open(service.state_path(wid)) as source:
+        return json.load(source)
+
+
+service.watch_compositor()
+check("initial subscription receives complete state", written("42")["title"] == "t")
+revision = written("42")["revision"]
+real_dump = bus.json.dump
+signals = []
+
+
+class RecoveryBus:
+    def emit_signal(self, _dest, path, _iface, _signal, params):
+        wid = path.rsplit("/", 1)[-1]
+        public = params.unpack()[1]
+        state = written(wid)
+        assert public["Version"] == state["version"] and public["Revision"] == state["revision"]
+        assert public["Title"] == state["title"] and public["Minimized"] == state["minimized"]
+        signals.append(wid)
+
+
+service.bus = RecoveryBus()
+
+
+def full_disk(value, out):
+    if "recovery-a.scope" in out.name:
+        out.write('{"partial":')
+        raise OSError(errno.ENOSPC, "simulated full state filesystem")
+    return real_dump(value, out)
+
+
+with patch.object(bus.json, "dump", full_disk):
+    current = dict(current, version=2, widgets=[entry("42", "recovery-a.scope", title="new", collapsed=True),
+                                              entry("43", "recovery-b.scope", title="also new")])
+    send(connections[-1], dict(current, event="scottland-widgets#"))
+    check("ENOSPC does not drop the GLib event watch or starve other widgets",
+          until(lambda: service.model_version == 2) and written("43")["title"] == "also new")
+    check("failed writes retain old complete file and revision, and remove partial tmp",
+          written("42")["title"] == "t" and service.widgets["42"]["_revision"] == revision
+          and not list(Path(root).glob("*.tmp")) and "42" not in signals)
+    current = dict(current, version=3)
+    send(connections[-1], dict(current, event="scottland-widgets#"))
+    check("event delivery continues while storage is full", until(lambda: service.model_version == 3))
+check("timer repairs latest state without another event",
+      until(lambda: not service.dirty) and written("42")["minimized"] and written("42")["title"] == "new"
+      and "42" in signals)
+
+# A real permission failure also heals on the next identical snapshot.
+os.chmod(root, 0o500)
+try:
+    current = dict(current, version=4, widgets=[entry("42", "recovery-a.scope", title="readonly")])
+    service.replace_snapshot(current)
+    check("read-only state directory leaves a pending write", "42" in service.dirty)
+finally:
+    os.chmod(root, 0o700)
+service.replace_snapshot(current)
+check("same snapshot repairs a failed file", not service.dirty and written("42")["title"] == "readonly")
+
+# Prepare must fail promptly rather than launch with an old or incomplete file.
+class Invocation:
+    error = None
+    value = None
+    def return_dbus_error(self, name, message):
+        self.error = name
+    def return_value(self, value):
+        self.value = value
+
+
+invocation = Invocation()
+with patch.object(service, "refresh"), patch.object(bus.json, "dump", full_disk):
+    service.on_root_call(None, None, None, "org.scottland.WidgetLaunch", "Prepare",
+                        bus.GLib.Variant("(ss)", ("42", "recovery-a.scope")), invocation)
+check("Prepare returns an explicit error on write failure", invocation.error and invocation.value is None)
+service.flush_writes()
+
+with patch.object(bus, "write_json", side_effect=OSError(errno.ENOSPC, "full")):
+    service.badges["test"] = (4, True)
+    service.write_owned()
+check("service-owned badge state is retried", until(lambda: not service.owned_dirty)
+      and json.loads(Path(root, "service-owned.json").read_text())["badges"]["test"] == [4, True])
+
+# Drop the real stream; reject subscribe once as during plugin reload, then restore it.
+reject_subscription = True
+connections[-1].shutdown(socket.SHUT_RDWR)
+connections[-1].close()
+check("IPC hangup schedules resubscription", until(lambda: service.reconnect_timer != 0))
+check("missing subscribe method retries without exiting", until(lambda: "No such method" in Path(bus.STATE_LOG).read_text()))
+reject_subscription = False
+current = dict(current, version=5, widgets=[entry("42", "recovery-a.scope", title="reconnected")])
+check("reconnect catches up from subscription snapshot",
+      until(lambda: service.model_version == 5) and written("42")["title"] == "reconnected")
+current = dict(current, version=6, widgets=[entry("42", "recovery-a.scope", title="live again")])
+send(connections[-1], dict(current, event="scottland-widgets#"))
+check("resubscribed stream keeps delivering updates", until(lambda: service.model_version == 6)
+      and written("42")["title"] == "live again")
+check("fake compositor had no server failures", not server_errors)
+stop_server.set()
+listener.close()
+for conn in connections:
+    conn.close()
+if service.events:
+    service.events.sock.close()
+for source in (service.event_watch, service.reconnect_timer, service.write_timer):
+    if source:
+        bus.GLib.source_remove(source)
+temporary.cleanup()
 
 print("\nall widget service checks passed" if not fails else f"\n{fails} widget service check(s) failed")
 sys.exit(1 if fails else 0)

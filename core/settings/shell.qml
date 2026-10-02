@@ -85,7 +85,8 @@ ShellRoot {
   // The session palette carries theme colors and the desktop's interface font/text scale.
   property var palette: ({})
   FileView {
-    path: Quickshell.env("XDG_RUNTIME_DIR") + "/scottland/" + Quickshell.env("WAYLAND_DISPLAY") + ".palette.json"
+    path: Quickshell.env("SCOTTLAND_PALETTE") ||
+      (Quickshell.env("XDG_RUNTIME_DIR") + "/scottland/" + Quickshell.env("WAYLAND_DISPLAY") + ".palette.json")
     printErrors: false
     watchChanges: true
     onFileChanged: reload()

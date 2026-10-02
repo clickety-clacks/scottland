@@ -28,8 +28,8 @@ exec), `scottland-widget-bus` (D-Bus, badges, mailbox, state files), the card
 | WG22 | Every window → widget transition is a continuous compositor morph, like widget → window: the visible app image moves/shrinks into the card’s place and cross-fades into it; no hide/show cut. This includes every starting-zone hint cycle, double-tap to rail, collapsed-mode arrivals, rail drops (including release before the preview is ready), Esc returning an undocked app to its original widget, and rail recovery on plugin load. The existing snapshot mixer owns the handoff; shape uses WG13’s 240 ms circle easing and contents its 180 ms fade. A card’s ordinary Wayfire map animation is suppressed so it cannot zoom/fade the composition a second time. Goo (or the fallback halo) follows the visible rectangle and interpolated scale. The app stays visible during startup; a card disappearing during the handoff restores the app and never closes it (WG5). | implemented (headless); validation below |
 | WG6 | Choosing a widget, in order: the user's assignment (`~/.config/scottland/widgets.ini`, app-id → widget), else the app's own widget (named by its `.desktop` entry, `X-Scottland-Widget=`, or installed for its app-id), else a Scottland built-in for that kind of app, else the default card (WG10). Any widget can be assigned to any app. | implemented (unit test) |
 | WG7 | A widget package is a directory with a `widget.toml` manifest (`id`, `name`, `apps` = app-id regexes it suits, `exec` = the command) and whatever the command needs. Packages are found in `$SCOTTLAND_WIDGET_PATH` (colon-separated, if set; relative entries are taken from the current directory), `~/.local/share/scottland/widgets/` (the user's), `/usr/share/scottland/widgets/` (installed with apps, removed with them) and Scottland's built-ins (`/usr/lib/scottland/widgets/`); the first package with an id wins. | implemented (unit test) |
-| WG8 | Launch context: the environment carries the window and launch identity (`SCOTTLAND_WIDGET_ID`, `_APP_ID`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID`, `_WINDOW`, `_STATE`) and the palette path (`SCOTTLAND_PALETTE`). Mutable title, rail, collapsed mode and badge come only from the complete state file, written before exec. `.desktop`-style placeholders still fill the manifest's command per argument (`%a` app-id, `%t` initial title, `%i` icon, `%p` pid, `%w` window id, `%r` initial rail, `%d` package directory, `%%`). The widget runs in its package directory. Resolved identity and traits are submitted to the plugin for that launch. See [desktop-model.md](desktop-model.md), DM4. | implemented (headless) |
-| WG9 | Live updates and actions over D-Bus: Scottland's widget service (`org.scottland.Widgets`, one per session bus) publishes one `org.scottland.Widget` object per widget (`/org/scottland/widget/<id>`) with the window's properties (Id, Version, Revision, AppId, Title, Pid, Window, Rail, Focused, Urgent, Badge, Data, with PropertiesChanged signals) and methods `Restore()`, `Close()`, `Focus()`. Widgets that don't need it ignore it. Driven by complete versioned model snapshots, not polling; property signals carry the complete public property set, with the model version and the revision of the already-written presentation file. | implemented (headless: properties, live Title, Restore, Close; not Focus, Urgent) |
+| WG8 | Launch context: the environment carries the window and launch identity (`SCOTTLAND_WIDGET_ID`, `_APP_ID`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID`, `_WINDOW`, `_STATE`) and the palette path (`SCOTTLAND_PALETTE`). Mutable title, rail, collapsed mode and badge come only from the complete state file, written before exec. Prepare returns an explicit error if it cannot write that file; it never launches with stale or partial state. `.desktop`-style placeholders still fill the manifest's command per argument (`%a` app-id, `%t` initial title, `%i` icon, `%p` pid, `%w` window id, `%r` initial rail, `%d` package directory, `%%`). The widget runs in its package directory. Resolved identity and traits are submitted to the plugin for that launch. See [desktop-model.md](desktop-model.md), DM4. | implemented (headless) |
+| WG9 | Live updates and actions over D-Bus: Scottland's widget service (`org.scottland.Widgets`, one per session bus) publishes one `org.scottland.Widget` object per widget (`/org/scottland/widget/<id>`) with the window's properties (Id, Version, Revision, AppId, Title, Pid, Window, Rail, Focused, Urgent, Badge, Data, with PropertiesChanged signals) and methods `Restore()`, `Close()`, `Focus()`. Widgets that don't need it ignore it. Driven by complete versioned model snapshots, not polling; property signals carry the complete public property set, with the model version and the revision of the already-written presentation file. Storage failures never drop the event watch or block other cards: pending files retry on the next snapshot (even the same version) and once a second until written. Broken IPC subscriptions reconnect and take a complete snapshot, including when subscribe is temporarily unavailable during reload; healthy subscriptions do not poll. | implemented (headless: properties, live Title, Restore, Close; not Focus, Urgent) |
 | WG10 | The default widget, for any app with none configured, is a card: the app's icon (from its `.desktop` entry via the icon theme; web apps are matched by their site; else the theme's generic app icon, else the app's initial), the window's title (bold: what's in it) over the app's name (regular), and an alert badge when the app publishes a count (Unity Launcher API; partial updates, e.g. progress only, keep the count). The icon is on the screen-edge side of the text (left of it on the left rail, right of it on the right rail), with the badge on its corner toward the middle of the screen. The card is as wide as its text needs, up to 320 pt, and square around the icon when there's no text; as it changes size, its screen-edge side stays put. Title, badge and rail stay live through the state file named by `SCOTTLAND_WIDGET_STATE`. Its colors follow the session's palette (`SCOTTLAND_PALETTE`), live. Mike approved the look (2026-10-01); layout, typography and sizing per his review the same day. | implemented (headless) |
 | WG11 | Optional data mailbox between an app and its widget, for apps without a service of their own: the app calls `org.scottland.WidgetData.Publish(json)` on `/org/scottland/Widgets` and its widget's `Data` property (and state file) changes; a widget's `Send(json)` is broadcast as `Received(app_pid, window, json)` for its app. Callers are identified by their D-Bus credentials and process tree: only an app (or its helpers) can publish for its windows, only a widget can send for its window. (X11 apps are identified by the process they declare, `_NET_WM_PID`: X11 offers nothing stronger, and X11 apps can already see each other.) | implemented (headless: Publish, Send, refusals of both) |
 | WG12 | Apps learn their state from Scottland: `org.scottland.Windows.GetState()` (called from the app's own process tree) returns whether it's widgetized and its window's scale (where it's going, never a step of an animation); `StateChanged(pid, widgetized, scale)` signals changes. Both give the same answer: an app with several windows is widgetized if any is, with that window's scale, else the scale of its first open window. Apps that don't listen are unaffected. | implemented (headless) |
@@ -101,6 +101,69 @@ The two final morph runs ran one at a time; an earlier concurrent run missed the
 reversal pixel timing bound. Assertions were not widened. Final logs, sampled geometry and
 PNG frames are retained locally in `build/wg22-validation.tar.gz`. This is headless validation,
 not physical-display verification or a live-session deployment.
+
+## Widget service recovery (WG8–WG9, 2026-10-02)
+
+A full state filesystem could leave the service alive on D-Bus but permanently stop its
+compositor subscription. `write_state()` raised through `on_event()`; PyGObject removed the
+GLib I/O watch when that callback failed. The replica had already advanced its model version
+and replaced its fields, so even another identical snapshot could not repair the missed file.
+Revision counters also advanced before successful writes, and partial temporary files remained.
+The old `refresh()` caught both IPC and file-write errors as “compositor unreachable”, so an
+ENOSPC message with that prefix did not establish a broken IPC connection.
+
+The live log records exactly that `on_event → replace_snapshot → write_state` traceback at
+**8:55:06 AM PT on October 2**, for a `wayland-1` card. The original implementation reproduced
+the lost watch with an injected ENOSPC under a real GLib main context: after storage recovered,
+the next socket event was never consumed and the card file stayed unchanged. Synchronous
+Prepare/refresh calls could still update files on later launches, explaining how file activity
+could continue until 10:25:08 AM PT while subsequent Super+M changes at 10:27 AM PT were missed.
+The shared historical log also contains test services, including tests that reused `wayland-1`
+under a private runtime; its unattributed subscribe/disconnect messages cannot all be assigned
+to the live service. The live owner was later found dead between 10:50 and 10:54 AM PT after a
+plugin reload, without an attributable exit line. The old event callback called `sys.exit` on
+IPC hangup, which is one plausible reload path, but the shared log cannot prove that it caused
+this death. Current service log entries include PID and display to distinguish them.
+
+Failed presentation writes now stay dirty, with their old complete file/revision intact. The
+service finishes applying the entire snapshot, keeps its I/O watch, and retries each pending
+file independently. A one-second timer runs only while output is pending; a new or duplicate
+snapshot also retries it. Successful atomic replacement advances the revision before emitting
+PropertiesChanged. Partial temporary files are removed on failure. Badge/mailbox persistence
+uses the same atomic helper and retry mechanism. Even a failure to append the diagnostic log
+cannot throw out of the event callback. Prepare returns a D-Bus error promptly on failure.
+
+EOF, socket errors and a rejected subscription close the affected sockets and schedule another
+subscription after one second. The subscription's complete snapshot catches up missed state;
+the request connection is recreated when needed too. Losing the D-Bus name quits the actual
+running main loop. This follows tenet 2: cards must remain recognizable, current stand-ins for
+their windows without requiring the user to restart a helper.
+
+`tests/widget-bus-test.py` exercises partial ENOSPC, an unwritable directory, continuation to
+another card, unchanged-snapshot and event-free recovery, successful-file-before-signal ordering,
+Prepare refusal, badge persistence retry, a real Unix-socket hangup, temporary subscribe rejection
+and subsequent event delivery through GLib. It uses files under this checkout's `build/` and
+never changes `XDG_RUNTIME_DIR` or contacts a session bus.
+
+The headless harness now gives all children private config/state/cache directories and a private
+D-Bus. Quickshell's hardcoded runtime log subtree is bind-mounted to the test directory using
+Bubblewrap **only in those clients**; the real runtime and its Wayland/systemd sockets stay in
+place. Display names and scope names therefore remain unique across live and test compositors.
+Explicit `scottland-exec --display` resolves only that display, without probing other sessions.
+The widget suite's temporary files and artifacts default to `build/`, and its cleanup names only
+files and directories it created. Stopping the harness also stops its own widget helper. Never
+use a private `XDG_RUNTIME_DIR` to isolate tests; the older validation notes below describe
+historical runs, not the current rule.
+
+The same headless suite exposed an independent WG17 card action failure: Quickshell received a
+real pointer click, but its detached command did not invoke `Open`. A Quickshell `Process`
+component now sends that D-Bus call. A scoped card was verified to inherit the private test bus,
+and its click opened the app there.
+
+Final validation: `tests/widgets-test.sh` passed 186 checks (including reload, pointer click,
+touch tap and stacking) with no failures; `tests/widget-bus-test.py` passed all 30 checks. Its
+headless session stopped. Logs and screenshots are under `build/validation/` and
+`build/widgets-complete.results/`.
 
 ## Peek triggers (WG19)
 

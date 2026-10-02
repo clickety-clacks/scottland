@@ -67,13 +67,18 @@ def main():
     if not args:
         sys.exit(__doc__.strip())
 
-    live = sessions()
     if display:
-        env = live.get(display)
-        if env is None:
-            sys.exit(f"scottland-exec: no running Scottland session on {display} "
-                     f"(running: {', '.join(live) or 'none'})")
+        # An explicit target must not probe unrelated sessions (especially isolated tests).
+        if os.path.basename(display) != display:
+            sys.exit("scottland-exec: invalid display name")
+        try:
+            env = read_env(os.path.join(RUNTIME, display + ".env"))
+        except OSError:
+            env = {}
+        if not alive(env):
+            sys.exit(f"scottland-exec: no running Scottland session on {display}")
     else:
+        live = sessions()
         caller_socket = os.environ.get("WAYFIRE_SOCKET")
         matches = [e for e in live.values() if caller_socket and e.get("WAYFIRE_SOCKET") == caller_socket]
         if matches:

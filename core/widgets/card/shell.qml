@@ -84,6 +84,13 @@ FloatingWindow {
     }
     onWidthChanged: Qt.callLater(root.reportRendered)
 
+    Process {
+        id: openWindow
+        command: ["busctl", "--user", "call", "org.scottland.Widgets",
+            "/org/scottland/widget/" + (Quickshell.env("SCOTTLAND_WIDGET_ID") || ""),
+            "org.scottland.Widget", "Open"]
+    }
+
     // Theme: the session's palette (SCOTTLAND_PALETTE, kept current by Scottland: light or dark,
     // the accent, and an integration's full palette such as Omarchy's theme). Followed live.
     property color background: "#2e3440"
@@ -118,8 +125,7 @@ FloatingWindow {
         MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: Quickshell.execDetached(["busctl", "--user", "call", "org.scottland.Widgets",
-                "/org/scottland/widget/" + (Quickshell.env("SCOTTLAND_WIDGET_ID") || ""), "org.scottland.Widget", "Open"])
+            onClicked: openWindow.running = true
         }
 
         // The icon sits on the screen-edge side: left of the text on the left rail, right of it on
@@ -217,4 +223,3 @@ FloatingWindow {
         }
     }
 }
-

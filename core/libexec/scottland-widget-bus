@@ -95,9 +95,25 @@ ROOT_XML = """
 
 
 def log(message):
-    os.makedirs(os.path.dirname(STATE_LOG), exist_ok=True)
-    with open(STATE_LOG, "a") as out:
-        out.write(f"{time.strftime('%F %T')} bus: {message}\n")
+    try:
+        os.makedirs(os.path.dirname(STATE_LOG), exist_ok=True)
+        with open(STATE_LOG, "a") as out:
+            out.write(f"{time.strftime('%F %T')} bus[{os.getpid()} {DISPLAY}]: {message}\n")
+    except OSError:
+        pass  # A full log filesystem must not disable the event watch either.
+
+
+def write_json(path, value):
+    temporary = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(temporary, "w") as out:
+            json.dump(value, out)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
 
 
 class Ipc:
@@ -105,7 +121,12 @@ class Ipc:
 
     def __init__(self):
         self.sock = socket.socket(socket.AF_UNIX)
-        self.sock.connect(os.environ["WAYFIRE_SOCKET"])
+        self.sock.settimeout(2)
+        try:
+            self.sock.connect(os.environ["WAYFIRE_SOCKET"])
+        except OSError:
+            self.sock.close()
+            raise
 
     def send(self, method, data=None):
         body = json.dumps({"method": method, "data": data or {}}).encode()
@@ -189,7 +210,13 @@ def pid_descends_from(pid, ancestor):
 
 class Service:
     def __init__(self):
-        self.ipc = Ipc()
+        self.ipc = None
+        self.events = None
+        self.event_watch = 0
+        self.reconnect_timer = 0
+        self.write_timer = 0
+        self.dirty = set()
+        self.owned_dirty = False
         self.widgets = {}        # id -> state dict
         self.registrations = {}  # id -> registration id
         self.badges = {}         # .desktop id -> (count, visible), merged from partial updates
@@ -209,14 +236,29 @@ class Service:
 
     # --- compositor ---
 
+    def call_compositor(self, method, data=None):
+        try:
+            if self.ipc is None:
+                self.ipc = Ipc()
+            return self.ipc.call(method, data)
+        except (OSError, ValueError):
+            if self.ipc is not None:
+                self.ipc.sock.close()
+                self.ipc = None
+            raise
+
     def refresh(self):
         """Read a complete slice; actions needing fresh identity use this same replacement path."""
         try:
-            self.replace_snapshot(self.ipc.call("scottland/desktop-model", {"slice": "widgets"}))
+            snapshot = self.call_compositor("scottland/desktop-model", {"slice": "widgets"})
         except (OSError, ConnectionError, ValueError) as error:
             log(f"compositor unreachable: {error}")
+            return
+        self.replace_snapshot(snapshot)
 
     def replace_snapshot(self, snapshot):
+        if "version" not in snapshot or not snapshot.get("session"):
+            return  # e.g. the plugin is temporarily absent during reload
         version = snapshot.get("version", -1)
         if snapshot.get("session") != self.session:
             self.session = snapshot.get("session")
@@ -231,6 +273,7 @@ class Service:
             except (OSError, ValueError):
                 pass
         if version <= self.model_version:
+            self.flush_writes()
             return  # queued before the initial read, or before a later synchronous action
         self.model_version = version
         self.model_snapshot = snapshot
@@ -264,11 +307,11 @@ class Service:
                 self.registrations[wid] = register(
                     self.bus, f"/org/scottland/widget/{wid}", self.widget_info, self.on_widget_call, self.on_widget_get)
             if changed:
-                self.write_state(wid)
-                self.emit_properties(wid)
+                self.dirty.add(wid)
         for wid in [w for w in self.widgets if w not in seen]:
             self.remove_widget(wid)
         self.announce_changes()
+        self.flush_writes()
 
     def remove_widget(self, wid):
         if wid in self.registrations:
@@ -278,6 +321,7 @@ class Service:
         if self.data.pop(unit, None) is not None:
             self.write_owned()
         self.rendered.pop(unit, None)
+        self.dirty.discard(wid)
         self.widgets.pop(wid)
         for path in paths:
             try:
@@ -286,11 +330,31 @@ class Service:
                 pass
 
     def write_owned(self):
-        path = os.path.join(RUNTIME, "service-owned.json")
-        temporary = f"{path}.{os.getpid()}.tmp"
-        with open(temporary, "w") as out:
-            json.dump({"session": self.session, "badges": self.badges, "data": self.data}, out)
-        os.replace(temporary, path)
+        self.owned_dirty = True
+        self.flush_writes()
+
+    def flush_writes(self):
+        """Retry only pending output, including when no new model event arrives."""
+        if self.owned_dirty:
+            try:
+                write_json(os.path.join(RUNTIME, "service-owned.json"),
+                           {"session": self.session, "badges": self.badges, "data": self.data})
+                self.owned_dirty = False
+            except OSError as error:
+                log(f"service-owned state: {error}")
+        for wid in list(self.dirty):
+            try:
+                self.write_state(wid)
+            except OSError:
+                continue  # One bad file must not starve the other widgets or drop the watch.
+            self.emit_properties(wid)
+        if (self.dirty or self.owned_dirty) and not self.write_timer:
+            self.write_timer = GLib.timeout_add_seconds(1, self.retry_writes)
+
+    def retry_writes(self):
+        self.write_timer = 0
+        self.flush_writes()
+        return False
 
     def emit_properties(self, wid):
         if self.bus:
@@ -307,23 +371,22 @@ class Service:
         if all(state.get(k) == v for k, v in updates.items()):
             return
         self.widgets[wid] = {**state, **updates}
-        self.write_state(wid)
-        self.emit_properties(wid)
+        self.dirty.add(wid)
+        self.flush_writes()
 
     def write_state(self, wid):
         """The file's only writer; atomic replacement of the complete presentation snapshot."""
         state = self.widgets[wid]
-        state["_revision"] += 1
+        self.dirty.add(wid)
         path = self.state_path(wid)
-        temporary = f"{path}.{os.getpid()}.tmp"
         try:
-            with open(temporary, "w") as out:
-                json.dump({"id": state["Id"], "app_id": state["AppId"], "desktop": state["_desktop"],
+            write_json(path, {"id": state["Id"], "app_id": state["AppId"], "desktop": state["_desktop"],
                            "name": state["_name"], "icon": state["_icon"], "title": state["Title"],
                            "badge": state["Badge"], "rail": state["Rail"], "minimized": state["Minimized"],
                            "focused": state["Focused"], "urgent": state["Urgent"], "data": state["Data"],
-                           "version": state["_model_version"], "revision": state["_revision"]}, out)
-            os.replace(temporary, path)
+                           "version": state["_model_version"], "revision": state["_revision"] + 1})
+            state["_revision"] += 1
+            self.dirty.discard(wid)
         except OSError as error:
             log(f"state file {path}: {error}")
             raise  # Prepare must never start a widget without its complete state file
@@ -364,25 +427,48 @@ class Service:
             del self.announced[pid]  # its windows are gone
 
     def watch_compositor(self):
-        events = Ipc()
-        reply = events.call("scottland/subscribe", {"slice": "widgets"})
-        if reply.get("result") != "ok":
-            log(f"couldn't watch compositor events: {reply}")
-            sys.exit(1)
-        self.replace_snapshot(reply)
+        self.reconnect_timer = 0
+        events = None
+        try:
+            events = Ipc()
+            reply = events.call("scottland/subscribe", {"slice": "widgets"})
+            if reply.get("result") != "ok":
+                raise ValueError(f"couldn't watch compositor events: {reply}")
+        except (OSError, ValueError) as error:
+            if events is not None:
+                events.sock.close()
+            log(f"compositor subscription unavailable; retrying: {error}")
+            self.schedule_reconnect()
+            return False
+        self.events = events
         channel = GLib.IOChannel.unix_new(events.sock.fileno())
-        GLib.io_add_watch(channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP,
-                          self.on_event, events)
+        self.event_watch = GLib.io_add_watch(
+            channel, GLib.PRIORITY_DEFAULT,
+            GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR,
+            self.on_event, events)
+        self.replace_snapshot(reply)
+        log("compositor subscription connected")
+        return False
+
+    def schedule_reconnect(self):
+        if self.ipc is not None:
+            self.ipc.sock.close()
+            self.ipc = None
+        if not self.reconnect_timer:
+            self.reconnect_timer = GLib.timeout_add_seconds(1, self.watch_compositor)
 
     def on_event(self, _channel, condition, events):
-        if condition & GLib.IOCondition.HUP:
-            log("compositor went away; exiting")
-            GLib.MainLoop().quit()
-            sys.exit(0)
         try:
+            if condition & (GLib.IOCondition.HUP | GLib.IOCondition.ERR):
+                raise ConnectionError("compositor event socket closed")
             event = events.receive()
-        except (OSError, ConnectionError, ValueError):
-            sys.exit(0)
+        except (OSError, ConnectionError, ValueError) as error:
+            log(f"compositor events disconnected; retrying: {error}")
+            events.sock.close()
+            self.events = None
+            self.event_watch = 0
+            self.schedule_reconnect()
+            return False
         if event.get("event") == "scottland-widgets#":
             self.replace_snapshot(event)
         return True
@@ -399,7 +485,7 @@ class Service:
         wid = path.rsplit("/", 1)[-1]
         action = {"Restore": "restore", "Open": "open", "Close": "close", "Focus": "focus"}.get(method)
         try:
-            reply = self.ipc.call("scottland/widget-action", {"id": wid, "action": action})
+            reply = self.call_compositor("scottland/widget-action", {"id": wid, "action": action})
         except (OSError, ConnectionError, ValueError) as error:
             reply = {"error": str(error)}
         if reply.get("error"):
@@ -421,7 +507,12 @@ class Service:
             if not state or state["_widget_unit"] != unit:
                 invocation.return_dbus_error("org.scottland.Widgets.Error", "no such launch in the desktop model")
                 return
-            self.write_state(wid)
+            try:
+                self.write_state(wid)
+            except OSError as error:
+                self.flush_writes()
+                invocation.return_dbus_error("org.scottland.Widgets.Error", f"state file unavailable: {error}")
+                return
             self.emit_properties(wid)
             invocation.return_value(GLib.Variant("(s)", (self.state_path(wid),)))
             return
@@ -513,9 +604,8 @@ class Service:
 
     def on_name(self, _connection, _name):
         # Existing cards must observe a new file after a restarted service owns its bus name.
-        for wid in self.widgets:
-            self.write_state(wid)
-            self.emit_properties(wid)
+        self.dirty.update(self.widgets)
+        self.flush_writes()
 
     # --- attention from desktop notifications (WG15) ---
 
@@ -554,7 +644,7 @@ class Service:
         if len(windows) != 1:
             return False  # no window, or several: can't tell which one wants attention
         try:
-            self.ipc.call("scottland/attention", {"window": int(windows[0]), "attention": True, "source": "notifications"})
+            self.call_compositor("scottland/attention", {"window": int(windows[0]), "attention": True, "source": "notifications"})
         except (OSError, ConnectionError, ValueError) as error:
             log(f"couldn't mark attention: {error}")
         return False
@@ -565,12 +655,16 @@ class Service:
         with open(pid_file, "w") as out:
             # Its pid and a fingerprint of the code it runs: a reload replaces it once that differs.
             out.write(f"{os.getpid()}\n{fingerprint()}\n")
-        Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE, self.on_bus, self.on_name,
-                         lambda *_: (log("couldn't own org.scottland.Widgets (another service?)"), sys.exit(1)))
+        loop = GLib.MainLoop()
+        def name_lost(*_args):
+            log("widget bus name lost; stopping")
+            loop.quit()
+        Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+                         self.on_bus, self.on_name, name_lost)
         self.watch_compositor()
         self.refresh()
         self.watch_notifications()
-        GLib.MainLoop().run()
+        loop.run()
 
 
 if __name__ == "__main__":
