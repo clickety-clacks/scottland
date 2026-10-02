@@ -55,11 +55,12 @@ float surfaceSdf(vec2 p){
     d=min(d,e);
   }return d;
 }
-float edgeDistance(vec2 p,vec4 r,vec4 g,vec2 back){
+float edgeDistance(vec2 p,vec4 r,vec4 g,vec2 back,int i){
   float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
   if(back.x<float(uCount)){
-    // A narrow film deep over content opens into the full liquid at its shore.
-    float width=mix(uFilm,uThickness,1.-smoothstep(0.,uReach,-back.y));
+    // Film starts at uFilm and swells by the same ratio as this source's outer goo.
+    // It still opens into the full liquid at the back window's shore.
+    float width=mix(source(i,5.).z,uThickness,1.-smoothstep(0.,uReach,-back.y));
     e*=uThickness/max(width,.01);
   }return e;
 }
@@ -90,7 +91,7 @@ vec2 gooField(vec2 p) {
   for(int i=0;i<1024;i++){
     if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);
     if(g.x<=0.)continue;
-    float e=edgeDistance(p,r,g,back),fe=fall(e);
+    float e=edgeDistance(p,r,g,back,i),fe=fall(e);
     if(fe==0.)continue;
     float n=fbm(p*uNoiseScale+g.z*vec2(7.13,3.71)+vec2(uTime*uNoiseSpeed,-uTime*uNoiseSpeed*.73));
     float scale=clamp(abs(source(i,2.).w),0.,1.);
@@ -193,11 +194,11 @@ void main(){
   // at a thin film must not mix its color with black dry texels inside content.
   if(back.x==0.)back=vec2(1.,0.);
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back);
+    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearest+=k*source(i,2.).rgb;
   }
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back);
+    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e); if(k<maxK-.00001)continue;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
     vec3 tint=source(i,2.).rgb;

@@ -360,7 +360,8 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.dye, s.light ? s.scale : -s.scale});
             data.push_back(s.corners);
             data.push_back(s.dot);
-            data.push_back(glm::vec4{s.hinted ? 1.f : 0.f, s.control_extent, 0, 0});
+            data.push_back(glm::vec4{s.hinted ? 1.f : 0.f, s.control_extent,
+                overlap_film_width(s, settings), 0});
             data.push_back(s.sides);
         }
         if (data.empty())

@@ -110,7 +110,7 @@ class goo_node_t : public wf::scene::node_t
             double out = reach[i] + 3, in = s.liquid.y + 3;
             if (!film_reach.empty())
                 out = std::max(out, film_reach[i] * std::max(1.f,
-                    state.settings.overlap_film / state.settings.thickness) + 3.);
+                    goo::overlap_film_width(s, state.settings) / state.settings.thickness) + 3.);
             double x1 = s.rect.x - s.rect.z, x2 = s.rect.x + s.rect.z;
             double y1 = s.rect.y - s.rect.w, y2 = s.rect.y + s.rect.w;
             auto box = [&](double a, double b, double c, double d)

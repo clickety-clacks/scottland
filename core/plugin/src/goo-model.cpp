@@ -141,6 +141,15 @@ float control_cloud(glm::vec2 p, const source_t &w)
         w.sides[q.x > 0 ? 1 : 3] : w.sides[q.y > 0 ? 2 : 0];
     return glm::mix(side, c, corner.x * corner.y);
 }
+float overlap_film_width(const source_t &w, const settings_t &s)
+{
+    // The inner film follows the same outer swell, relative to this window's
+    // resting thickness. Its unswollen width is always the user's film setting.
+    float rest = std::max(s.thickness * w.scale, .01f);
+    float swollen = std::max(rest * .7f,
+        rest + (2 * s.thickness - rest) * w.swell * (s.swell / .7f));
+    return s.overlap_film * swollen / rest;
+}
 float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &s, float time)
 {
     if (!std::isfinite(p.x) || !std::isfinite(p.y))
@@ -164,7 +173,7 @@ float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_
         float e = std::max(distance(p, w), 0.f);
         if (back < sources.size())
         {
-            float width = glm::mix(s.overlap_film, s.thickness,
+            float width = glm::mix(overlap_film_width(w, s), s.thickness,
                 1.f - glm::smoothstep(0.f, s.reach, -distance(p, sources[back])));
             e *= s.thickness / std::max(width, .01f);
             a /= std::max(w.liquid.x, .0001f);
@@ -261,8 +270,9 @@ void amounts(std::vector<source_t> &sources, const settings_t &s)
         }
         float bridge = std::max(0.f, 1 - gap / (2.2f * (s.thickness + s.reach * .7f)));
         // Prototype volume draw, plus A7's constant screen-sized proximity swell.
-        float thickness = s.thickness * a.scale;
-        thickness += (2 * s.thickness - thickness) * a.swell * (s.swell / .7f);
+        float rest = s.thickness * a.scale;
+        float thickness = std::max(rest * .7f,
+            rest + (2 * s.thickness - rest) * a.swell * (s.swell / .7f));
         a.liquid.x = s.threshold()/std::max(s.fall(thickness), .0001f) * (1 - s.thinning * .35f * bridge);
     }
 }

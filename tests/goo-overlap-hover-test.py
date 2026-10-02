@@ -138,6 +138,14 @@ def change(a, b):
     return sum(abs(x-y) for x, y in zip(a, b))
 
 
+def film_band(pixels, y=370):
+    # The fixture's back content is flat dark gray at this row. The film is
+    # brighter blue-gray, ending at the front window's dark content edge.
+    start = next(x for x in range(480,720) if sum(pixels.getpixel((x,y))) > 150)
+    end = next(x for x in range(start+1,720) if sum(pixels.getpixel((x,y))) <= 120)
+    return start, end-start
+
+
 try:
     options(goo=True, center_width=90, min_scale=1, max_scale=1, scale_curve="0:1 1:1", sounds=False,
             goo_noise=0, goo_drift=0, goo_wave_height=0, goo_swell=0, goo_overlap_film=4,
@@ -159,6 +167,79 @@ try:
     zero=shot("03-no-film")
     check("zero hides overlap film", change(zero.getpixel(film),zero.getpixel(clear)) < 8)
     options(goo_overlap_film=4); time.sleep(1)
+    # GO11 correction: the inner film follows the very same window swell as
+    # the outer goo. Probe a point outside the resting 4 pt film but inside a
+    # swollen one, over the back window's content and far from the shore.
+    options(goo_swell=.7)
+    pointer(30,30); time.sleep(3)
+    left = round(view("goo-front")["frame"]["x"])
+    swell_probe = (left-6, 370)
+    rest = shot("01a-film-swell-rest")
+    rest_field = sample(*swell_probe)
+    check("resting overlap film keeps its set width", rest_field["density"] < rest_field["threshold"])
+    pointer(898,360); time.sleep(1.5)
+    hovered = shot("01b-film-swell-hover")
+    hover_field = sample(*swell_probe)
+    check("real pointer hover thickens the inner film", view("goo-front")["frame"]["swell"] > .7
+          and hover_field["density"] > hover_field["threshold"]
+          and change(hovered.getpixel(swell_probe), rest.getpixel(swell_probe)) > 12)
+    pointer(30,30); time.sleep(.08)
+    shot("01c-film-swell-leaving")
+    check("inner film begins easing after pointer leaves", view("goo-front")["frame"]["swell"] > .3)
+    time.sleep(3)
+    eased = shot("01d-film-swell-restored")
+    check("inner film eases back to the set width", sample(*swell_probe)["density"] < rest_field["threshold"]
+          and change(eased.getpixel(swell_probe),rest.getpixel(swell_probe)) < 12)
+    options(goo_swell=0)
+    pointer(898,360); time.sleep(1.5)
+    no_swell = shot("01e-film-swell-zero")
+    check("zero swell setting keeps film at rest during hover", view("goo-front")["frame"]["swell"] > .7
+          and sample(*swell_probe)["density"] < rest_field["threshold"]
+          and change(no_swell.getpixel(swell_probe),rest.getpixel(swell_probe)) < 12)
+    pointer(30,30); time.sleep(3)
+    options(goo_swell=.7)
+    # A separate non-overlapping focus target lets the front window request
+    # attention while it remains visually in front of the back window.
+    spawn("goo-attention-sink"); place("goo-attention-sink",1000,100,200,150)
+    click(1090,160); pointer(30,30); time.sleep(.5)
+    ipc("scottland/attention", {"window":view("goo-front")["id"], "attention":True, "source":"film-swell"})
+    attention_swells = []
+    attention_fields = []
+    for _ in range(30):
+        attention_swells.append(view("goo-front")["frame"]["swell"])
+        attention_fields.append(sample(*swell_probe)["density"])
+        time.sleep(.09)
+    shot("01f-film-attention-breathing")
+    print("attention swell range",min(attention_swells),max(attention_swells),
+          "film density range",min(attention_fields),max(attention_fields),flush=True)
+    check("attention breathing expands the inner film", max(attention_swells) > .65
+          and max(attention_fields) > rest_field["threshold"])
+    check("attention film breathes rather than freezing", max(attention_swells)-min(attention_swells) > .08)
+    ipc("scottland/attention", {"window":view("goo-front")["id"], "attention":False, "source":"film-swell"})
+    ipc("window-rules/close-view", {"id":view("goo-attention-sink")["id"]})
+    time.sleep(3)
+    f = view("goo-front")["frame"]
+    touch_x, touch_y = round(f["x"]+f["width"]*.55), round(f["y"]+f["height"]*.35)
+    ipc("stipc/touch", {"finger":0,"x":touch_x,"y":touch_y})
+    time.sleep(.7)  # a held finger lifts the window
+    for i in range(1,6):
+        ipc("stipc/touch", {"finger":0,"x":touch_x+round(i*4),"y":touch_y})
+        time.sleep(.04)
+    dragged = view("goo-front")["frame"]
+    lifted = shot("01g-film-lift-drag")
+    rest_band, lifted_band = film_band(rest), film_band(lifted)
+    print("lift", "swell",dragged["swell"],"rest/lift film bands",rest_band,lifted_band,flush=True)
+    check("touch lift and drag swell the moving inner film", dragged["swell"] > .5
+          and ipc("scottland/desktop-model")["drag"]["started"]
+          and lifted_band[0] > rest_band[0]+10 and lifted_band[1] > rest_band[1]+2)
+    ipc("stipc/touch_release", {"finger":0})
+    pointer(30,30); time.sleep(3)
+    settled = shot("01h-film-lift-settled")
+    check("dropped film returns to resting width", film_band(settled)[1] <= rest_band[1]+1)
+    # Restore this fixture before the original stacking, join and control checks.
+    place("goo-front",530,280,360,260)
+    options(goo_swell=0)
+    pointer(30,30); time.sleep(2)
     # Real input raises the back window. The old front's left edge is now hidden.
     click(350,250); pointer(30,30); time.sleep(2)
     reversed=shot("04-reversed-stacking")
