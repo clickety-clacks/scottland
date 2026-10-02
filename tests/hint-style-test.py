@@ -152,6 +152,24 @@ try:
             f = v['frame']
             all_sizes &= h['badge']['size'] == round(max(72, min(132, min(f['width'], f['height'])*.34)))
         check(all_sizes, scheme+': sizing uses displayed dimensions including scaled windows and cards')
+        if scheme == 'dark':
+            # WK5: badges follow the desktop's text size (text_scale in the palette file).
+            key('LEFTALT', False); time.sleep(.3)
+            scaled = dict(palettes['dark'], text_scale=1.5)
+            temporary = palette_path.with_suffix('.hint-style-test.tmp')
+            temporary.write_text(json.dumps(scaled)); temporary.replace(palette_path)
+            time.sleep(.8)
+            hold()
+            ok = True
+            for h in hints():
+                v = represented[links.get(h['window'], h['window'])]
+                f = v['frame']
+                ok &= h['badge']['size'] == round(max(108, min(198, min(f['width'], f['height'])*.34*1.5)))
+            check(ok, 'badges scale with the desktop text size (1.5: 108-198 px)')
+            key('LEFTALT', False); time.sleep(.3)
+            theme('dark')
+            time.sleep(.8)
+            hold()
         colors = [h['color'] for h in state]
         hue = [colorsys.rgb_to_hls(*c)[0]*360 for c in colors]
         accent_hue = colorsys.rgb_to_hls(*rgb(palettes[scheme]['accent']))[0]*360

@@ -12,7 +12,7 @@ class hint_node : public wf::scene::node_t
 {
   public:
     hint_node();
-    void update(double x, double y, const std::string& text, double size,
+    void update(double x, double y, const std::string& text, double size, const std::string& family,
         hint_rgb color, double scale = 1);
     wf::geometry_t get_bounding_box() override { return box; }
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,

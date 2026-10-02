@@ -37,6 +37,7 @@
         palette_read = now;
         hint_colors.clear();
         hints_palette.light = scottland::palette.light;
+        hints_palette.text_scale = 1.0; hints_palette.font_family = "sans-serif";  // unless the file says
         hints_palette.accent = {scottland::palette.accent.r, scottland::palette.accent.g,
             scottland::palette.accent.b};
         hints_palette.background = hints_palette.light ? scottland::windowing::hint_rgb{0.957, 0.961, 0.969} :
@@ -59,6 +60,11 @@
         };
         read("background", hints_palette.background); read("foreground", hints_palette.foreground);
         read("accent", hints_palette.accent);
+        if (colors.has_member("text_scale") && (colors["text_scale"].is_double() || colors["text_scale"].is_int()))
+            hints_palette.text_scale = std::clamp(colors["text_scale"].is_double() ? colors["text_scale"].as_double() : double(colors["text_scale"].as_int()), 0.5, 3.0);
+        if (colors.has_member("font_family") && colors["font_family"].is_string() &&
+            !colors["font_family"].as_string().empty())
+            hints_palette.font_family = colors["font_family"].as_string();
     }
     scottland::rectf_t hint_rectangle(wayfire_toplevel_view view)
     {
@@ -396,7 +402,7 @@
             signature << e.id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' << view->get_output()->to_string() << ';';
             auto r = hint_rectangle(view);
             signature << ':' << std::round((r.x1 + r.x2) / 2) << ',' << std::round((r.y1 + r.y2) / 2)
-                << ',' << std::round(scottland::windowing::hint_badge_size(r.width(), r.height())) << ';';
+                << ',' << std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale)) << ';';
             by_output[view->get_output()].push_back(e.id);
         }
         if (window_keys.active && signature.str() != declutter_signature)
@@ -408,7 +414,7 @@
                 std::vector<double> diameters;
                 for (auto id : ids) { auto r = hint_rectangle(represented_view(id));
                     anchors.push_back({(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2});
-                    diameters.push_back(std::round(scottland::windowing::hint_badge_size(r.width(), r.height()))); }
+                    diameters.push_back(std::round(scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale))); }
                 auto screen = output->get_relative_geometry();
                 auto displaced = scottland::windowing::declutter(anchors,
                     {0, 0, double(screen.width), double(screen.height)}, 6, diameters);
@@ -469,7 +475,8 @@
                     visual.fullscreen_tint->update(view->get_geometry(), color);
                 }
                 visual.hint->update(x + offset->translation_x, y + offset->translation_y, text,
-                    scottland::windowing::hint_badge_size(r.width(), r.height()), color,
+                    scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale),
+                    hints_palette.font_family, color,
                     view->get_output()->get_scale());
             } else
             {

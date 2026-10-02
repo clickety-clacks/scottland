@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace scottland::windowing
 {
@@ -14,13 +15,17 @@ struct hint_palette
     hint_rgb background{0.122, 0.137, 0.173};
     hint_rgb foreground{0.847, 0.871, 0.914};
     hint_rgb accent{0.506, 0.631, 0.757};
+    double text_scale = 1.0;                 // the desktop's text scaling (WK5: hints follow it)
+    std::string font_family = "sans-serif";  // the desktop's interface font
 };
 constexpr double hint_badge_opacity = 0.21;
 constexpr double hint_window_opacity = 0.07;
 constexpr double hint_border_width = 2.0;
-inline double hint_badge_size(double width, double height)
+inline double hint_badge_size(double width, double height, double text_scale = 1.0)
 {
-    return std::clamp(std::min(width, height) * 0.34, 72.0, 132.0);
+    // Vimarchy's sizing, scaled with the desktop's text size as everything else that's text.
+    double s = std::clamp(text_scale, 0.5, 3.0);
+    return std::clamp(std::min(width, height) * 0.34 * s, 72.0 * s, 132.0 * s);
 }
 inline hint_rgb hint_mix(hint_rgb a, hint_rgb b, double amount)
 {
