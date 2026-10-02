@@ -24,7 +24,8 @@ bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> 
     if (a.size() != b.size())
         return false;
     for (size_t i = 0; i < a.size(); i++)
-        if (a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
+        if (a[i].shape != b[i].shape || glm::length(a[i].shape_body - b[i].shape_body) > .03f ||
+            a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
             glm::length(a[i].dye - b[i].dye) > .001f || glm::length(a[i].corners - b[i].corners) > .001f ||
             glm::length(a[i].sides - b[i].sides) > .001f ||
             std::abs(a[i].control_extent - b[i].control_extent) > .03f ||
@@ -123,7 +124,7 @@ class goo_node_t : public wf::scene::node_t
                     list.push_back(wf::geometry_t{std::floor(a), std::floor(b),
                                                   std::ceil(c - std::floor(a)), std::ceil(d - std::floor(b))});
             };
-            if (x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
+            if (s.shape || x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
             {
                 box(x1 - out, y1 - out, x2 + out, y2 + out);
                 continue;
@@ -507,6 +508,7 @@ goo_t::goo_t() : p(std::make_unique<impl>()) {}
 goo_t::~goo_t() = default;
 void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed)
 {
+    goo::shape_cache_t::prepare();
     p->snapshot = std::move(snapshot);
     p->screen_changed = std::move(screen_changed);
     for (auto &field : p->fields)

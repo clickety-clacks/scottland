@@ -34,9 +34,46 @@ float noise(glm::vec2 p)
 }
 float distance(glm::vec2 p, const source_t &s)
 {
+    if (s.shape) return s.shape->sample(p, s.rect, s.shape_body);
     float r = std::min({s.liquid.y, s.rect.z, s.rect.w});
     auto q = glm::abs(p - glm::vec2(s.rect)) - glm::vec2(s.rect.z, s.rect.w) + r;
     return glm::length(glm::max(q, glm::vec2{0})) + std::min(std::max(q.x, q.y), 0.f) - r;
+}
+glm::vec4 shape_t::presented_bounds(glm::vec4 rect) const
+{
+    auto step = logical_size / glm::vec2(width - 2 * padding, height - 2 * padding);
+    glm::vec2 low = (glm::vec2(bounds) - float(padding)) * step;
+    glm::vec2 high = logical_size - (glm::vec2(bounds.z, bounds.w) - float(padding)) * step;
+    glm::vec2 start = glm::vec2(rect) - glm::vec2(rect.z, rect.w) + low;
+    glm::vec2 end = glm::vec2(rect) + glm::vec2(rect.z, rect.w) - high;
+    auto half = glm::max((end - start) / 2.f, glm::vec2{.01f});
+    return { (start.x + end.x) / 2, (start.y + end.y) / 2, half.x, half.y };
+}
+float shape_t::sample(glm::vec2 p, glm::vec4 rect, glm::vec4 body) const
+{
+    if (body.z <= 0 || body.w <= 0) body = presented_bounds(rect);
+    glm::vec2 center = (glm::vec2(bounds) + glm::vec2(bounds.z, bounds.w)) / 2.f;
+    glm::vec2 half = glm::max((glm::vec2(bounds.z, bounds.w) - glm::vec2(bounds)) / 2.f, glm::vec2{.01f});
+    glm::vec2 step = glm::vec2(body.z, body.w) / half;
+    auto at = (p - glm::vec2(body)) / step + center;
+    auto clamped = glm::clamp(at, glm::vec2{.5f}, glm::vec2(width, height) - .5f);
+    auto q = clamped - .5f;
+    int x = int(q.x), y = int(q.y);
+    auto read = [&](int a, int b) {
+        size_t i = 4 * (std::min(b, height - 1) * width + std::min(a, width - 1));
+        return (float(pixels[i]) + 256.f * pixels[i + 1] - 32768.f) / 16.f;
+    };
+    float d = glm::mix(glm::mix(read(x, y), read(x + 1, y), q.x - x),
+        glm::mix(read(x, y + 1), read(x + 1, y + 1), q.x - x), q.y - y);
+    d += glm::length(at - clamped);
+    auto box = [](glm::vec2 p, glm::vec2 half) {
+        auto q = glm::abs(p) - half;
+        return glm::length(glm::max(q, glm::vec2{0})) + std::min(std::max(q.x, q.y), 0.f);
+    };
+    // Keep straight walls and transparent insets at their natural scale during
+    // presentation resizing. Only the mask's departure from its bounds deforms.
+    return box(p - glm::vec2(body), {body.z, body.w}) +
+        (d - box(at - center, half)) * std::min(step.x, step.y);
 }
 settings_t::settings_t() { curve(""); }
 bool settings_t::curve(const std::string &text)

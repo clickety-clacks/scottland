@@ -4,10 +4,25 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace scottland::goo
 {
+// A widget's half-resolution alpha contour. GPU jump flooding produces these
+// signed 16-bit distances (1/16 texel); retain the same image for CPU input.
+struct shape_t
+{
+    static constexpr int padding = 2;
+    int width = 0, height = 0;
+    uint64_t revision = 0;
+    glm::vec4 bounds{}; // opaque bounds in mask texels: left, top, right, bottom
+    glm::vec2 logical_size{};
+    glm::vec2 bottom_hint{}; // inside the lowest body pixel nearest its bounds' center
+    std::vector<uint8_t> pixels;
+    glm::vec4 presented_bounds(glm::vec4 rect) const; // center / half extent
+    float sample(glm::vec2 point, glm::vec4 rect, glm::vec4 body = {}) const;
+};
 // Logical output coordinates, y down. These snapshots are independent of desktop state.
 struct source_t
 {
@@ -23,6 +38,8 @@ struct source_t
     bool hint_circle = false; // visual-only round overlay; never an input island
     bool hinted = false; // window mode: the goo shows the hint color (dye) at once
     bool attention = false, grabbed = false, light = false, emitter = true;
+    std::shared_ptr<const shape_t> shape;
+    glm::vec4 shape_body{};
 };
 
 struct settings_t
