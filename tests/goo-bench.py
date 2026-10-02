@@ -43,7 +43,7 @@ def measure(label, drag=False):
             t=time.monotonic()-start; pointer(1150+120*math.sin(t*2),550+80*math.cos(t*2))
         samples.append(state()['gpu_ms']); time.sleep(1/60 if drag else .1)
     output=proc.communicate()[0].strip(); after=state()
-    print(json.dumps({'case':label,'cost':output,'gpu_ms_median':sorted(samples)[len(samples)//2] if after['steps']!=before['steps'] else None, 'steps':after['steps']-before['steps'],'sleeping':after['sleeping'],'overlapping':after.get('overlapping'),'highlighting':after.get('highlighting')}),flush=True)
+    print(json.dumps({'case':label,'cost':output,'gpu_ms_median':sorted(samples)[len(samples)//2] if after['steps']!=before['steps'] else None, 'steps':after['steps']-before['steps'],'sleeping':after['sleeping'],'overlapping':after.get('overlapping'),'highlighting':after.get('highlighting'),'energy':after.get('energy')}),flush=True)
     subprocess.run(['grim',str(art/(label+'.png'))],check=True)
 ipc('wayfire/set-config-options',{'output:HEADLESS-1/mode':'2560x1600@60000'})
 time.sleep(1)
@@ -74,3 +74,15 @@ pointer(f['x']+f['width']/2,f['y']+f['height']/2); key(True); button('press')
 measure('drag',True); button('release'); key(False)
 for w in widgets: ipc('scottland/attention',{'window':w['window'],'attention':True,'source':'perf-bench'})
 ipc('wayfire/set-config-options',{'scottland/goo':False}); time.sleep(3); measure('off-breathing')
+# Optional paired WK28 workload; the four original GO10 cases above are unchanged.
+if len(sys.argv) > 3 and sys.argv[3] == '--hints':
+    ipc('wayfire/set-config-options', {'scottland/goo':True})
+    ipc('stipc/feed_key', {'key':'KEY_LEFTALT','state':True})
+    time.sleep(3); measure('hints-attention')
+    for w in widgets: ipc('scottland/attention',{'window':w['window'],'attention':False,'source':'perf-bench'})
+    for _ in range(450):
+        if state()['sleeping']: break
+        time.sleep(.1)
+    measure('hints-settled')
+    assert state()['sleeping'], 'held hints did not settle within 45 seconds'
+    ipc('stipc/feed_key', {'key':'KEY_LEFTALT','state':False})

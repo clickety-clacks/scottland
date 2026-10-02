@@ -156,14 +156,14 @@ def text_settings():
         scale = 1.0
     font = get("font-name").strip("'")
     family = re.sub(r"\s+\d+(\.\d+)?$", "", font).strip() or "sans-serif"
-    return scale, family
+    return scale, family, get("enable-animations") == "false"
 
 
 def write_palette(scheme, accent=None):
     palette = {"scheme": scheme, **NEUTRAL.get(scheme, NEUTRAL["dark"]), **provider_palette()}
     if accent:
         palette["accent"] = accent
-    palette["text_scale"], palette["font_family"] = text_settings()
+    palette["text_scale"], palette["font_family"], palette["reduced_motion"] = text_settings()
     path = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".palette.json")
     temporary = f"{path}.{os.getpid()}.{threading.get_ident()}"
     set_option("attention_color", palette["attention"] + "ff")  # widgets needing attention (WG15)
@@ -269,7 +269,7 @@ def watch_text():
         with subprocess.Popen(["gsettings", "monitor", "org.gnome.desktop.interface"],
                               stdout=subprocess.PIPE, text=True) as proc:
             for line in proc.stdout:
-                if line.startswith(("text-scaling-factor", "font-name")):
+                if line.startswith(("text-scaling-factor", "font-name", "enable-animations")):
                     write_palette(current(), current_accent())
         time.sleep(2)
 

@@ -20,6 +20,7 @@ struct source_t
     float control_extent = 26;
     glm::vec4 dot{}; // center, glow, radius
     float scale = 1, swell = 0;
+    bool hint_circle = false; // visual-only round overlay; never an input island
     bool hinted = false; // window mode: the goo shows the hint color (dye) at once
     bool attention = false, grabbed = false, light = false, emitter = true;
 };

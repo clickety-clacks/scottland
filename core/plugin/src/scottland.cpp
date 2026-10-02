@@ -1456,7 +1456,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             island.emitter = false;
             island.rect = {g.width / 2.f, g.height / 2.f, g.width / 2.f, g.height / 2.f};
             island.liquid = {0, 0, 0, 0};
-            return {island};
+            result.push_back(island);
+            append_hint_goo(output, result);
+            return result;
         }
         for (auto& [id, state] : model.windows)
         {
@@ -1558,6 +1560,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         };
         walk(wf::get_core().scene().get());
         std::stable_sort(result.begin(), result.end(), [&](auto &a, auto &b) { return order[a.id] < order[b.id]; });
+        append_hint_goo(output, result);
         return result;
     }
     #include "widget-presentation.hpp"

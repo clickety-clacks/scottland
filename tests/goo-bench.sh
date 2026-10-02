@@ -9,4 +9,4 @@ runner=$(cd "$(dirname "$0")" && pwd)
 cd "$repo"
 tests/headless.sh start --widgets
 trap 'tests/headless.sh stop >/dev/null 2>&1' EXIT
-tests/headless.sh run python3 "$runner/goo-bench.py" "$SCOTTLAND_HEADLESS_DIR" "${3:-10}"
+tests/headless.sh run python3 "$runner/goo-bench.py" "$SCOTTLAND_HEADLESS_DIR" "${3:-10}" "${4:-}"

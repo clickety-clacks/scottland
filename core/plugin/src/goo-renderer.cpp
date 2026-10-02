@@ -237,7 +237,6 @@ struct renderer_t::impl
                 }
             };
             replace("if(back.x==0.)back=vec2(1.,0.);", "");
-            replace("else if(back.x<float(uCount)&&uFilm<=0.)", "if(back.x<float(uCount)&&uFilm<=0.)");
             replace("if(i>=int(back.x))break;", "if(i>=uCount)break;");
             replace("if(i>=int(hintBack.x))break;", "if(i>=uCount)break;");
             compile(*pair.first, vertex, shader, pair.second == &render_shader);
@@ -362,8 +361,8 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.dye, s.light ? s.scale : -s.scale});
             data.push_back(s.corners);
             data.push_back(s.dot);
-            data.push_back(glm::vec4{s.hinted ? 1.f : 0.f, s.control_extent,
-                overlap_film_width(s, settings), 0});
+            data.push_back(glm::vec4{s.hinted ? (s.hint_circle ? std::min(s.scale, 1.f) : 1.f) : 0.f, s.control_extent,
+                overlap_film_width(s, settings), s.hint_circle ? 1.f : 0.f});
             data.push_back(s.sides);
         }
         if (data.empty())
@@ -397,6 +396,12 @@ struct renderer_t::impl
             auto &t = reduction[i];
             common(energy_p, t.width, t.height);
             energy_p.uniform1i("uFirst", i == 0 ? 1 : 0);
+            // WK14 renders immediate contribution-weighted hint dye instead of the
+            // simulated dye while every emitter is hinted. Invisible half-float dye
+            // oscillations must not prevent sleep; visible waves still have to settle.
+            // Removing/changing hints wakes the normal dye simulation via source state.
+            energy_p.uniform1f("uDyeVisible", std::all_of(sources.begin(), sources.end(),
+                [](const source_t &s) { return !s.emitter || s.hinted; }) ? 0.f : 1.f);
             energy_p.uniform2f("uInputSize", iw, ih);
             bind(energy_p, "uPrevious", 5, dye[1].texture);
             bind(energy_p, "uReduce", 6, input);
@@ -497,6 +502,8 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         p->common(wave_program, p->wave[1].width, p->wave[1].height);
         wave_program.uniform1f("uC2", s.wave_speed);
         wave_program.uniform1f("uDamp", s.wave_damp);
+        wave_program.uniform1f("uHintCircles", std::any_of(sources.begin(), sources.end(),
+            [](const source_t &source) { return source.hint_circle; }) ? 1.f : 0.f);
         std::array<glm::vec4, 8> imp{};
         int n = k == 0 ? std::min<size_t>(impulses.size(), 8) : 0;
         for (int i = 0; i < n; i++)
