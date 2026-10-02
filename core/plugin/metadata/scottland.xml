@@ -57,6 +57,14 @@
             <_short>Goo relief</_short><default>5</default><min>0.5</min><max>12</max>
         </option>
 
+        <option name="alt_hold_delay" type="int">
+            <_short>Alt-alone window hints hold (ms)</_short>
+            <_long>Hold Alt alone for this long to show compositor window hints. A key or modifier pressed before the delay leaves the whole chord with the app and existing desktop shortcuts. Once entered, all keys control windows until Alt is released.</_long>
+            <default>300</default>
+            <min>1</min>
+            <max>3000</max>
+        </option>
+
 		<option name="center_width" type="double">
 			<_short>Center width (%)</_short>
 			<_long>Width of the full-scale center zone, as a percentage of the screen width.</_long>

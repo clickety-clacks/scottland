@@ -35,19 +35,20 @@ class Ipc:
 
 ipc = Ipc()
 def key(code, state): ipc.call('stipc/feed_key', {'key': code, 'state': state})
-def drag(window, x, absolute=False):
+def drag(window, x, absolute=False, y=None):
     view = next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == window)
     info = next(v for v in ipc.call('window-rules/list-views') if v['id'] == window)
     output = next(o for o in ipc.call('window-rules/list-outputs') if o['id'] == info['output-id'])
     origin = output['geometry']
     f = view['frame']; sx = f['x'] + 20 + origin['x']; sy = f['y'] + f['height']/2 + origin['y']
     if not absolute: x += origin['x']
+    ey = sy if y is None else y + (0 if absolute else origin['y'])
     ipc.call('stipc/move_cursor', {'x': round(sx), 'y': round(sy)})
     time.sleep(.1)
     key('KEY_LEFTMETA', True)
     ipc.call('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
     for i in range(1, 13):
-        ipc.call('stipc/move_cursor', {'x': round(sx+(x-sx)*i/12), 'y': round(sy)})
+        ipc.call('stipc/move_cursor', {'x': round(sx+(x-sx)*i/12), 'y': round(sy+(ey-sy)*i/12)})
         time.sleep(.025)
     time.sleep(.4)
     ipc.call('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
@@ -185,7 +186,44 @@ sys.exit(module.Service([module.Source('closed-listing-test',config['source'])])
                 if helper.poll() is None: helper.terminate()
                 helper.wait(timeout=5)
 
-
+        # A card's target screen can have a different logical size than its hidden window's.
+        for view in ipc.call('scottland/layout-state')['views']:
+            if not view['widget']: ipc.call('window-rules/close-view', {'id': view['id']})
+        time.sleep(.5)
+        outputs = ipc.call('window-rules/list-outputs')
+        small_name = outputs[0]['name']
+        ipc.call('wayfire/set-config-options', {'output:'+small_name+'/scale': 2.0})
+        time.sleep(.5)
+        outputs = ipc.call('window-rules/list-outputs')
+        small = min(outputs, key=lambda o: o['geometry']['width'])
+        large = max(outputs, key=lambda o: o['geometry']['width'])
+        sg, lg = small['geometry'], large['geometry']
+        assert lg['width'] == 2*sg['width'], 'fixture needs unequal logical screen sizes'
+        window = open_app('scottland-regression-output-memory')
+        drag(window, lg['x']+lg['width']*.48, absolute=True, y=lg['y']+lg['height']*.3)
+        memory = next(v for v in ipc.call('scottland/desktop-model')['windows'] if v['id'] == window)['placement']['positions'][0]
+        assert memory['set'], 'fixture must establish a real center drop on the larger output'
+        drag(window, lg['x']+6, absolute=True, y=lg['y']+lg['height']*.3)
+        time.sleep(.8)
+        widget_id = next(w['widget_view'] for w in ipc.call('scottland/widgets')['widgets'] if w['window'] == window)
+        drag(widget_id, sg['x']+6, absolute=True, y=sg['y']+sg['height']*.35)
+        time.sleep(.4)
+        info = ipc.call('window-rules/list-views')
+        assert next(v['output-id'] for v in info if v['id'] == widget_id) == small['id']
+        assert next(v['output-id'] for v in info if v['id'] == window) == large['id']
+        widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == widget_id)
+        f = widget['frame']
+        ipc.call('stipc/move_cursor', {'x': round(sg['x']+f['x']+f['width']/2),
+                                     'y': round(sg['y']+f['y']+f['height']/2)})
+        ipc.call('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'full'})
+        time.sleep(.9)
+        restored = next(v for v in ipc.call('scottland/desktop-model')['windows'] if v['id'] == window)
+        info = next(v for v in ipc.call('window-rules/list-views') if v['id'] == window)
+        assert info['output-id'] == small['id'], info
+        assert restored['zone'] == 'center' and restored['scale'] == 1, restored
+        assert abs(restored['x']+restored['width']/2-memory['x']*sg['width']) <= 1, restored
+        assert abs(restored['y']+restored['height']/2-memory['y']*sg['height']) <= 1, restored
+        print('PASS  real card click restores normalized memory on its destination screen at full scale', flush=True)
 
     finally:
         for client in clients:

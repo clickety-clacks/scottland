@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+build_dir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-windowing-unit.XXXXXX")
+trap 'rm -rf "$build_dir"' EXIT
+export TMPDIR=$build_dir
+c++ -std=c++17 -Wall -Wextra -Werror -O2 -Icore/plugin/src tests/windowing-unit.cpp \
+  core/plugin/src/placement.cpp core/plugin/src/declutter.cpp core/plugin/src/alt-mode.cpp -o "$build_dir/test"
+"$build_dir/test"
