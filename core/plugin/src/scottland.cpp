@@ -2266,6 +2266,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             wf::json_t entry = entries[i];
             auto window = view_by_id((uint64_t)entry["window"].as_int64());
             auto widget = view_by_id((uint64_t)entry["widget"].as_int64());
+            auto process = std::make_shared<widget_process_t>();
+            // New handovers transfer an already-open handle inside this compositor process.
+            process->pidfd = entry.has_member("pidfd") ? (int)entry["pidfd"].as_int64() : -1;
             if (!window || !window->is_mapped())
             {
                 continue;
@@ -2293,12 +2296,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.icon = entry.has_member("icon") ? entry["icon"].as_string() : "";
             link.card = entry.has_member("card") && entry["card"].as_bool();
             link.launched_at = now_msec();
-            auto process  = std::make_shared<widget_process_t>();
             process->pid  = (pid_t)entry["pid"].as_int64();
             process->unit = entry["unit"].as_string();
-            if ((process->pid > 1) && (in_scope(process->pid, process->unit) || process->unit.empty()))
+            if ((process->pidfd < 0) && (process->pid > 1) &&
+                (in_scope(process->pid, process->unit) || descends_from(view_pid(widget), process->pid)))
             {
                 process->pidfd = pidfd_open(process->pid, 0);
+                // Legacy upgrade: validate the live relationship around opening the handle.
+                if (!in_scope(process->pid, process->unit) && !descends_from(view_pid(widget), process->pid))
+                {
+                    if (process->pidfd >= 0) ::close(process->pidfd);
+                    process->pidfd = -1;
+                }
+            }
+            if (process->pidfd < 0)
+            {
+                process->pid = 0;  // unobserved numeric identities must never survive a reload
             }
 
             watch_process(process);
@@ -5425,6 +5438,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["widget"] = (int64_t)widget->get_id();
                 entry["unit"]   = link.launcher ? link.launcher->unit : "";
                 entry["pid"]    = (int64_t)(link.launcher ? link.launcher->pid : 0);
+                entry["pidfd"]  = (int64_t)(link.launcher && link.launcher->pidfd >= 0 ? dup(link.launcher->pidfd) : -1);
                 entry["rail"]   = link.rail;
                 entry["x"] = link.drop.x;
                 entry["y"] = link.drop.y;

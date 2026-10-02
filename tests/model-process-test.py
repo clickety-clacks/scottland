@@ -4,6 +4,11 @@ import json
 import os
 import socket
 import struct
+import sys
+import shutil
+import tempfile
+import time
+from pathlib import Path
 
 sock = socket.socket(socket.AF_UNIX)
 sock.settimeout(8)
@@ -30,6 +35,28 @@ initial = receive()
 assert len(initial["widgets"]) == 1
 unit = initial["widgets"][0]["widget_unit"]
 assert initial["widgets"][0]["launcher_pid"] > 0, "fixture launcher exited before subscription"
+if "--reload" in sys.argv:
+    # Keep the subscription connected while replacing the plugin under a forked widget.
+    def call(method, data):
+        with socket.socket(socket.AF_UNIX) as request:
+            request.connect(os.environ["WAYFIRE_SOCKET"])
+            body = json.dumps({"method": method, "data": data}).encode()
+            request.sendall(struct.pack("<I", len(body)) + body)
+            size = struct.unpack("<I", request.recv(4))[0]
+            result = b""
+            while len(result) < size: result += request.recv(size-len(result))
+            return json.loads(result)
+    with tempfile.TemporaryDirectory() as directory:
+        fresh = Path(directory) / "libscottland-exit-reload.so"
+        shutil.copyfile("build/libscottland.so", fresh)
+        plugins = call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
+        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+        mark.touch()
+        try:
+            call("wayfire/set-config-options", {"core/plugins": plugins.replace("scottland", str(fresh))})
+        finally:
+            mark.unlink(missing_ok=True)
+        # Library is now mapped; unlinking its file cannot affect the loaded plugin.
 while True:
     snapshot = receive()
     entry = next(w for w in snapshot["widgets"] if w["widget_unit"] == unit)
