@@ -4756,6 +4756,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (view && output && !view->pending_fullscreen())
         {
             update_drag_morph(view, output, ev->current_position);
+            publish_model();  // morph direction/center changes even when widget scale stays 1
         }
 
         if (!view || !output || view->pending_fullscreen() || is_widget(view))

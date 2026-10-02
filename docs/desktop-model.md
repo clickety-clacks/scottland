@@ -63,7 +63,7 @@ build; new reloads don't create a separate collapsed-mode file.
 | ID | Invariant | Status |
 |---|---|---|
 | DM1 | Every mapped toplevel is represented in one plugin-owned desktop model. Wayfire facts enter through signals; scale, position, layer and lifecycle targets drive the renderer. Each field has one documented owner. | implemented (headless) |
-| DM2 | A subscription returns a full current versioned slice immediately, then full replacements on change. Late subscribers, queued older events, helper restarts, reconnects and plugin reloads cannot preserve an earlier value. | implemented (headless) |
+| DM2 | A subscription returns a full current versioned slice immediately, then full replacements on logical change (including held widget morph creation, direction and center). Late subscribers, queued older events, helper restarts, reconnects and plugin reloads cannot preserve an earlier value. | implemented (headless) |
 | DM3 | External slices exclude geometry and animation samples; an unchanged presentation never rewrites its card file. There is no model polling or drift-repair service. | implemented (headless) |
 | DM4 | The widget service atomically writes a complete presentation file before the widget process starts. The card renders exclusively from that snapshot. Resolved launch identity enters the plugin, without a launch side file. Full D-Bus property signals expose the same model version and already-written file revision. | implemented (headless) |
 | DM5 | A marked reload preserves collapsed mode, attention sources and widget identities in one atomic model handover; publication waits for every surviving link to be installed, preserving service-owned mailboxes, and its version increases afterward. | implemented (headless) |

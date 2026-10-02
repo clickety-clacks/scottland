@@ -104,6 +104,8 @@ def shown(app_id):
 
 def drag(app_id, x, y=None, cancel=False, finger=False, audit_held=False):
     view, _ = shown(app_id)
+    watch = Ipc() if audit_held else None
+    initial = watch.call("scottland/subscribe", {"slice": "desktop"}) if watch else None
     f = view["frame"]
     sx, sy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
     y = sy if y is None else y
@@ -126,6 +128,16 @@ def drag(app_id, x, y=None, cancel=False, finger=False, audit_held=False):
         check("drag origin and morph are in the desktop snapshot",
               state["drag"]["started"] and state["drag"]["window"] == view["id"]
               and state["drag"]["morph"]["window"] == view["id"])
+        delivered = initial
+        while select.select([watch.sock], [], [], 0.1)[0]:
+            delivered = watch.receive()
+        check("desktop subscription delivers the held morph's logical state",
+              delivered["version"] > initial["version"] and delivered["drag"]["morph"] == state["drag"]["morph"])
+        if view["widget"]:
+            check("widget morph direction follows the pointer independently of scene agreement",
+                  delivered["drag"]["morph"]["from_widget"]
+                  and delivered["drag"]["morph"]["toward"] == (x == width / 2))
+        watch.sock.close()
         audit("held drag morph")
     if cancel:
         key("KEY_ESC", True)
@@ -215,6 +227,8 @@ try:
     b = open_app()
     drag(b, 6)
     audit("new card starts collapsed")
+    drag(b, width / 2, cancel=True, audit_held=True)
+    drag(b, 6, audit_held=True)
     check("card started collapsed", shown(b)[1]["minimized"])
     combo("KEY_LEFTMETA", "KEY_M")
     time.sleep(0.6)
