@@ -19,10 +19,12 @@ Decisions follow the tenets:
 
 - Tenet 3 (position means priority): coasts continuously follow zones and scale. Shared screen
   edges permit passage in global layout coordinates. Explicit Alt pinning remains in force.
-- Tenet 2 (recognition): top/bottom edges stop with at least 100 logical points visible;
-  a deliberate flick through an exposed side edge throws the window onto that side's rail
-  (WK20). Adjoining outputs permit passage. An explicit pointer/finger rail drop keeps WG1
-  precedence.
+- Tenets 2 (recognition) and 3 (position means priority): WK20 keeps 100 logical pt of
+  the scaled footprint visible at exposed top/bottom edges, stopping that axis without bounce.
+  Outward side travel morphs into the matching rail widget as the scaled footprint touches
+  the rail boundary; WG1-ineligible windows stop there without changing form. Adjoining
+  outputs permit passage. Pointer/finger rail intent while held keeps WG1 precedence.
+  Restitution remains only for existing widgets moving vertically along their rails (WK23).
 - Tenet 4 (concede as little as possible): precise or paused drops do not drift; grabbing a
   coasting object catches it, and Esc after release stops released coasts in place.
   In entered Alt mode, Esc retains WK22's undo for arrow-touched windows. Esc during a held drag
@@ -33,12 +35,13 @@ Decisions follow the tenets:
 
 Tests use isolated headless sessions only; no live session is reloaded. The release estimator
 has standalone timing/threshold/wrap tests. `tests/drag-coast-test.sh` uses real timed stipc
-pointer/touch motion and records trajectories for analytic deceleration, bounce, output passage,
+pointer/touch motion and records trajectories for analytic deceleration, vertical stops, side widgetization, output passage,
 catch/Esc, pinning, zone scaling, rail release and declutter suspension/resumption.
 
-## Validation (2026-10-02)
+## Earlier drag-coast validation (2026-10-02, before the WK20 edge change)
 
-Only isolated headless sessions were used, each with `SCOTTLAND_HEADLESS_DIR` and a private
+Historical run setup (do not reuse: current AGENTS.md rule 7 forbids private runtimes):
+only isolated headless sessions were used, each with `SCOTTLAND_HEADLESS_DIR` and a private
 runtime below this checkout's `build/`. The private runtimes expose only the user manager's
 scope socket so the existing widget process-lifecycle checks can create their test scopes;
 they never import an environment or start live desktop services. No install or live reload
@@ -69,3 +72,36 @@ the baseline comparison does not establish the cause of every branch failure. No
 or widget implementation was changed to suppress them. The baseline evidence is in
 `build/coast-baseline-morph.log`; earlier branch evidence is in `build/coast-morph.log` and
 `build/coast-morph-final.log`.
+
+
+## WK20 edge replacement (2026-10-02)
+
+The `push-edges` change uses the same integrator and release estimator; only boundary handling
+changes. Artifacts live under this checkout's `build/push-edges-*`. Each session uses the normal
+`XDG_RUNTIME_DIR` and its own `SCOTTLAND_HEADLESS_DIR`, shipped config, and private widget D-Bus.
+No install, physical session, live widget service or main checkout is touched. Test runners stop
+and remove their own headless directories.
+
+Real stipc keyboard input passes 65 single-output and 8 two-output checks
+(`build/push-edges-inertia-verified.log`). This includes 100 pt stops at full and peripheral scale,
+independent diagonal axes, scaled-footprint contact at both rails, overlapping drops without an
+inward snap, intermediate morph frames,
+Esc during startup (including the return glide) and after docking, existing resize recovery, and passage in both directions.
+Real pointer/touch input passes 26 single-output and 3 two-output coast checks
+(`build/push-edges-final-drag-coast.log`), including flicks at all four exposed edges.
+
+The windowing suite passes all 84 checks (`build/push-edges-final-windowing.log`). The widgets
+suite completes with every check passing (`build/push-edges-final-widgets.log`), including its
+83-check input suite, lifecycle timeouts, private-service replacement, plugin reload and
+no-scope fallback. Inertia/windowing unit suites pass 43/83 checks.
+
+The expanded WG22 morph suite passes all 210 checks (`build/push-edges-morph-final.log`). Its
+four added entry paths use real left/right keyboard pushes and pointer flicks, sampling
+intermediate shapes, crossfade pixels, continuous visibility and goo alignment. Screenshots
+and JSON trajectories remain alongside the logs.
+
+Earlier runs are retained: concurrent runs missed some timing/animation observations; the
+first sequential morph run passed 209/210 with a goo-expansion alignment sample failure.
+The final full morph rerun passes without relaxing its assertions. One initial widgets command
+was interrupted before completion; its session was explicitly stopped, and the full persistent
+rerun passes. The new inertia tests wait through card startup before ending morph sampling.

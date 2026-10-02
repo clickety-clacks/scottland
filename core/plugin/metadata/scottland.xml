@@ -94,8 +94,8 @@
             <default>3</default><min>0</min><max>10</max>
         </option>
         <option name="key_restitution" type="double">
-            <_short>Keyboard edge bounce restitution</_short>
-            <_long>Fraction of outward velocity retained, reversed, when keyboard motion reaches an exposed screen boundary. Mouse and touch drops are unaffected.</_long>
+            <_short>Widget rail bounce restitution</_short>
+            <_long>Fraction of outward velocity retained, reversed, when a widget coasts to the top or bottom of its rail (WK23). Ordinary window pushes and drag coasts stop vertically or widgetize at exposed sides (WK20).</_long>
             <default>0.5</default><min>0</min><max>1</max>
         </option>
         <option name="key_impulse" type="double">

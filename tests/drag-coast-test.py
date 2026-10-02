@@ -72,6 +72,9 @@ def move(x,y,touch=False):
     else: cursor(x,y)
 
 def place(name,x,y):
+    v=view(name)
+    if v['widgetized'] or not 0 < center(name)[1] < h:
+        ipc('scottland/present', {'window':v['id']}); time.sleep(.7)
     sx,sy=begin(name)
     for i in range(1,11): cursor(sx+(x-sx)*i/10,sy+(y-sy)*i/10); time.sleep(.012)
     time.sleep(.12); finish(); time.sleep(.25)
@@ -136,10 +139,18 @@ try:
             place('CoastA',w/2,h/2); flick('CoastA',dx,pause=pause,interval=.08 if label=='slow' else .015)
             before=center('CoastA'); time.sleep(.8)
             check(math.dist(before,center('CoastA'))<.1,label+' release does not coast')
-        place('CoastA',w/2,h/2); flick('CoastA',100)
-        samples=sample('CoastA',2)
-        check(any(b[1]<a[1]-.2 for a,b in zip(samples,samples[1:])),'exposed edge reflects the coast')
-        check(not view('CoastA')['widgetized'],'bounce never widgetizes')
+        for dx,dy,label in [(-100,0,'left'),(100,0,'right'),(0,-100,'up'),(0,100,'down')]:
+            place('CoastA',w/2,h/2); flick('CoastA',dx,dy)
+            samples=sample('CoastA',2)
+            (out/(label+'-edge.json')).write_text(json.dumps(samples))
+            if dx:
+                links=ipc('scottland/widgets')['widgets']
+                check(len([v for v in links if int(v['id'])==a and v['rail']==label])==1,label+' flick coast widgetizes once onto matching rail')
+            else:
+                f=view('CoastA')['frame']; visible=min(h,f['y']+f['height'])-max(0,f['y'])
+                check(abs(visible-100)<1.1,label+' flick coast leaves 100 logical pt visible')
+                check(all((b[2]-a[2])*dy>=-.1 for a,b in zip(samples,samples[1:])),label+' flick coast stops without reversing')
+            subprocess.run(['grim',str(out/(label+'-edge.png'))],check=True)
         place('CoastA',w/2,h/2); flick('CoastA'); time.sleep(.08)
         begin('CoastA'); before=center('CoastA'); time.sleep(.5)
         check(math.dist(before,center('CoastA'))<1,'new grab catches coast immediately'); finish()

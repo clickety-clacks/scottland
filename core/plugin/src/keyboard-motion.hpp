@@ -89,7 +89,7 @@
         arrow_repeats.clear(); fullscreen_impulses.clear(); keyboard_motions.clear(); keyboard_tick.disconnect();
     }
     // A seam is open only where the center's orthogonal coordinate meets a touching
-    // output and the workarea reaches that physical edge. Gaps and reserved edges bounce.
+    // output and the workarea reaches that physical edge. Gaps and reserved edges remain closed.
     std::array<wf::output_t*, 4> keyboard_neighbors(wf::output_t *output, double x, double y)
     {
         std::array<wf::output_t*, 4> neighbors{}; // left, right, top, bottom
@@ -113,7 +113,7 @@
         }
         return neighbors;
     }
-    void keyboard_bounds(wayfire_toplevel_view view, keyboard_motion& m, bool bounce)
+    void keyboard_resize_bounds(wayfire_toplevel_view view, keyboard_motion& m)
     {
         auto screen = view->get_output()->get_relative_geometry();
         auto area = view->get_output()->workarea->get_workarea();
@@ -135,16 +135,62 @@
         if (fits(a, false)) { for (int n = 0; n < 40; ++n) { double x=(a+b)/2; if (fits(x,false)) a=x; else b=x; } hi=a; }
         if (neighbors[0]) lo = -std::numeric_limits<double>::infinity();
         if (neighbors[1]) hi = std::numeric_limits<double>::infinity();
-        if (bounce) m.x = m.vx.bounce(m.x, lo, hi, key_restitution);
-        else m.x = std::clamp(m.x, lo, std::max(lo, hi));
+        m.x = std::clamp(m.x, lo, std::max(lo, hi));
         double scale = m.drag_coast && model.windows[view->get_id()].pinned_scale ?
             *model.windows[view->get_id()].pinned_scale : place_at(m.x, screen.width).scale;
         auto pa = padded(area, g.width * scale, g.height * scale);
         double half = std::min(g.height * scale, double(pa.height)) / 2;
         lo = neighbors[2] ? -std::numeric_limits<double>::infinity() : pa.y + half;
         hi = neighbors[3] ? std::numeric_limits<double>::infinity() : pa.y + pa.height - half;
-        if (bounce) m.y = m.vy.bounce(m.y, lo, hi, key_restitution);
-        else m.y = std::clamp(m.y, lo, std::max(lo, hi));
+        m.y = std::clamp(m.y, lo, std::max(lo, hi));
+    }
+    // WK20: the scaled footprint touching the inner rail edge is the visible
+    // arrival (tenets 2/3). Only outward travel docks; an old drop may move away.
+    // Keep WK21's fully-contained resize recovery separate from movement bounds.
+    std::optional<std::string> inertial_edges(wayfire_toplevel_view view,
+        keyboard_motion& m, double dx, double dy)
+    {
+        if (dx == 0 && dy == 0) return {};
+        auto output = view->get_output();
+        auto screen = output->get_relative_geometry();
+        auto area = output->workarea->get_workarea();
+        auto g = view->get_geometry();
+        auto neighbors = keyboard_neighbors(output, m.x, m.y);
+        auto scale_at = [&] (double x) {
+            auto pin = model.windows[view->get_id()].pinned_scale;
+            return m.drag_coast && pin ? *pin : place_at(x, screen.width).scale;
+        };
+        double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        double left = std::max(double(area.x), rail);
+        double right = std::min(double(area.x + area.width), screen.width - rail);
+        bool hit_left = dx < 0 && !neighbors[0] && m.x - g.width * scale_at(m.x) / 2 <= left;
+        bool hit_right = dx > 0 && !neighbors[1] && m.x + g.width * scale_at(m.x) / 2 >= right;
+        if (hit_left || hit_right)
+        {
+            // Locate contact using the same live scale as the renderer; a late tick
+            // must not carry the source image through the rail before the morph starts.
+            double lo = left, hi = right;
+            for (int n = 0; n < 40; ++n)
+            {
+                double x = (lo + hi) / 2;
+                bool inside = hit_left ? x - g.width * scale_at(x) / 2 > left :
+                    x + g.width * scale_at(x) / 2 < right;
+                if (inside == hit_left) hi = x; else lo = x;
+            }
+            double contact = (lo + hi) / 2;
+            // A precise drop can already overlap the rail. Dock from that image,
+            // rather than snapping it back inward to a contact it has passed.
+            m.x = hit_left ? std::min(m.x - dx, contact) : std::max(m.x - dx, contact);
+            m.vx.velocity = 0;
+        }
+        double height = g.height * scale_at(m.x);
+        // Small windows stay wholly visible when their entire footprint is <100 pt.
+        double visible = std::min(100.0, height);
+        double lo = neighbors[2] ? -std::numeric_limits<double>::infinity() : area.y + visible - height / 2;
+        double hi = neighbors[3] ? std::numeric_limits<double>::infinity() : area.y + area.height - visible + height / 2;
+        m.y = m.vy.constrain(m.y, lo, hi);
+        if ((hit_left || hit_right) && can_widgetize(view)) return hit_left ? "left" : "right";
+        return {};
     }
     void recenter_keyboard_resize(wayfire_toplevel_view view)
     {
@@ -155,7 +201,7 @@
         // A late transaction starts its own quiet period; do not drop the anchor while
         // a client is still committing rejected/minimum or cell-snapped sizes.
         motion.settle_until = motion_clock::now() + std::chrono::milliseconds(300);
-        if (!motion.restoring) keyboard_bounds(view, motion, false);
+        if (!motion.restoring) keyboard_resize_bounds(view, motion);
         auto g = view->get_geometry();
         double x = std::round(motion.x - g.width / 2.0), y = std::round(motion.y - g.height / 2.0);
         if (std::abs(g.x - x) > 0.001 || std::abs(g.y - y) > 0.001)
@@ -184,6 +230,12 @@
                 continue;
             }
             auto from = view->get_geometry();
+            // During WG22 startup/morph represented_view is still the app, so
+            // the widget-form test below cannot see its already-docked lifecycle.
+            if (origin.rail.empty())
+                if (auto link = link_of_window(view); link && link->docked())
+                    restore_window(*link, wf::pointf_t{origin.geometry.x + origin.geometry.width / 2.0,
+                        origin.geometry.y + origin.geometry.height / 2.0});
             if (output_alive(origin.output) && view->get_output() != origin.output)
             {
                 auto source = view->get_output()->get_layout_geometry();
@@ -257,6 +309,13 @@
         }
         auto view = represented_view(id);
         if (!view || !view->is_mapped() || !view->get_output()) return;
+        if (link_of_window(view))
+        {
+            // A pending WG22 handoff still represents this app. Consume its
+            // impulse without moving the captured image, but keep WK22 undo.
+            if (keyboard_origins.count(id)) keyboard_origins[id].touched = true;
+            return;
+        }
         bool resize = requested_resize.value_or(held_keys.count(KEY_LEFTCTRL) || held_keys.count(KEY_RIGHTCTRL));
         if (view->pending_fullscreen() || view->toplevel()->current().fullscreen)
         {
@@ -321,7 +380,7 @@
         for (auto it = keyboard_motions.begin(); it != keyboard_motions.end();)
         {
             auto view = wf::toplevel_cast(it->second.view.lock());
-            if (!view || !view->is_mapped() || !view->get_output() || drag->view == view || view->pending_fullscreen())
+            if (!view || !view->is_mapped() || !view->get_output() || drag->view == view || view->pending_fullscreen() || link_of_window(view))
             { it = keyboard_motions.erase(it); continue; }
             auto& m = it->second; auto g = view->get_geometry();
             if (m.restoring)
@@ -334,7 +393,7 @@
             double dx = m.vx.step(dt, key_friction, movement_law, key_max_velocity), dy = m.vy.step(dt, key_friction, movement_law, key_max_velocity);
             m.x += dx; m.y += dy;
             // Transfer only when the center crosses the physical seam. Keep velocity and
-            // the global center; neither a crossing nor a bounce is a widget lifecycle action.
+            // the global center; crossing an adjoining output never changes form.
             if (!is_widget(view))
             {
                 auto source = view->get_output();
@@ -381,7 +440,7 @@
                     pending.geometry = {g.x, g.y, std::round(m.width), std::round(m.height)};
                     wf::get_core().tx_manager->schedule_object(view->toplevel());
                 }
-                keyboard_bounds(view, m, true);
+                auto rail = inertial_edges(view, m, dx, dy);
                 auto actual = view->get_geometry();
                 double x = m.x - actual.width / 2.0, y = m.y - actual.height / 2.0;
                 // Match L20's centering at the client's pixel grid, including odd dimensions.
@@ -390,6 +449,14 @@
                 if (std::abs(actual.x - x) > 0.001 || std::abs(actual.y - y) > 0.001)
                     move_window(view, x, y);
                 set_scale_now(view, scale_for(view));
+                if (rail)
+                {
+                    // End all axes before starting WG22, including pending resize
+                    // recovery. Launching cards must not receive more app impulses.
+                    it = keyboard_motions.erase(it);
+                    widgetize(view, false, *rail);
+                    continue;
+                }
             }
             bool moving = m.vx.velocity || m.vy.velocity || m.vw.velocity || m.vh.velocity;
             if (moving) m.settle_until = now + std::chrono::milliseconds(300);
