@@ -21,20 +21,10 @@ FloatingWindow {
     // Minimized (Super+M; SCOTTLAND_WIDGET_MINIMIZED, then the state file): just the icon.
     property bool minimized: Quickshell.env("SCOTTLAND_WIDGET_MINIMIZED") === "1"
     readonly property bool showsText: hasText && !minimized
-    // Expanding and collapsing animate: 0 is the square around the icon, 1 the card with its text.
-    // The width eases between them, the text fades, the icon stays against the screen edge.
-    property real expansion: showsText ? 1 : 0
-    Behavior on expansion { NumberAnimation { id: expanding; duration: 180; easing.type: Easing.OutCubic } }
-    // When it settles, ask once more for the final size (a pixel off, then exact): while it resizes
-    // every frame, the compositor can answer with a size from a few frames back, and the last answer
-    // would otherwise stick.
-    property int settle: 0
-    Connections {
-        target: expanding
-        function onRunningChanged() { if (!expanding.running) settleTimer.restart() }
-    }
-    Timer { id: settleTimer; interval: 120; onTriggered: { root.settle = 1; unsettleTimer.restart() } }
-    Timer { id: unsettleTimer; interval: 60; onTriggered: root.settle = 0 }
+    // 0 is the square around the icon, 1 the card with its text. (Expanding and collapsing will be
+    // animated by Scottland itself, from a snapshot, as the window/widget morph is; a card resizing
+    // its own window every frame is choppy and can stop short.)
+    readonly property real expansion: showsText ? 1 : 0
     // The icon's inset from the screen edge: centered in the square, the card's padding when open.
     readonly property real rowPad: (implicitHeight - iconSize) / 2 * (1 - expansion) + pad * expansion
     // Measured from the strings, not the Text items: a card that starts collapsed has never shown
@@ -43,7 +33,7 @@ FloatingWindow {
     readonly property int textWidth: Math.min(maxWidth - 2 * pad - iconSize - gap,
         Math.ceil(Math.max(appTitle !== "" ? titleMetrics.advanceWidth : 0, showsName ? nameMetrics.advanceWidth : 0)))
     readonly property int openWidth: hasText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
-    implicitWidth: Math.round(implicitHeight + (openWidth - implicitHeight) * expansion) + settle
+    implicitWidth: Math.round(implicitHeight + (openWidth - implicitHeight) * expansion)
     implicitHeight: 96
     // An open window keeps its size when the implicit size changes: pin it, so the card follows
     // its text, the title and Super+M (and so does the compositor, through the size limits).
@@ -186,7 +176,6 @@ FloatingWindow {
             Column {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.hasText && root.expansion > 0.01
-                opacity: root.expansion * root.expansion
                 width: root.textWidth
                 spacing: 2
 
