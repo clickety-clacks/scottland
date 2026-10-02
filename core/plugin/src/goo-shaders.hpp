@@ -152,11 +152,14 @@ void main(){
   // WK14's transient dye is immediate and its 2 logical px rim remains readable
   // even when a small window's resting goo is thinner. It colors the same field,
   // clipped by the window union; no per-window joining layer is drawn.
-  float hintDistance=1e9,hintBorder=0.;vec3 hintColor=vec3(0.);
+  float hintDistance=1e9,hintBorder=0.,hintAmount=0.;
+  vec3 hintColor=vec3(0.),hintDye=vec3(0.);
   if(uHints>.5)for(int i=0;i<1024;i++){
     if(i>=uCount)break;float border=source(i,5.).x;if(border<=0.)continue;
-    vec4 r=source(i,0.);float e=sdBox(p-r.xy,r.zw,source(i,1.).y);
-    if(e<hintDistance){hintDistance=e;hintBorder=border;hintColor=source(i,2.).rgb;}
+    vec4 r=source(i,0.),g=source(i,1.);float e=sdBox(p-r.xy,r.zw,g.y);
+    vec3 tint=source(i,2.).rgb;float contribution=g.x*fall(max(e,0.));
+    hintDye+=tint*contribution;hintAmount+=contribution;
+    if(e<hintDistance){hintDistance=e;hintBorder=border;hintColor=tint;}
   }
   float hintCover=hintBorder>0. ? clamp(.5-(hintDistance-hintBorder)/uPixel,0.,1.)
       *clamp(.5+d/uPixel,0.,1.)*uAlpha : 0.;
@@ -166,7 +169,7 @@ void main(){
   vec2 refr=p+n.xy*26.; if(unionSdf(refr)<1.)refr=p;
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
-  if(hintBorder>0.)dye=hintColor;
+  if(hintAmount>0.)dye=hintDye/hintAmount;
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);
   float spec=pow(max(dot(reflect(-L,n),vec3(0,0,1)),0.),48.)*uShine;
   float rim=1.-smoothstep(0.,.5,ht);
