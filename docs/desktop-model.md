@@ -3,7 +3,10 @@
 The plugin owns Scottland's desktop state. Wayfire map, geometry, title, app-ID, focus and urgency
 signals are input facts; plugin position commands, scale targets and widget transitions update
 the model before rendering. The renderer applies targets to Wayfire. Animations, scene disable
-leases, process handles and timers are resources, not independent logical state.
+leases, process handles and timers are resources, not independent logical state. WG16 presentation
+transitions are per-widget renderer resources; they capture before publication and expose their
+animated rectangle through the frame, without publishing animation samples in model slices.
+See [widgets.md](widgets.md#presentation-rendering-wg16-mechanism-for-wg19).
 
 ## Ownership
 
@@ -11,11 +14,11 @@ leases, process handles and timers are resources, not independent logical state.
 |---|---|---|
 | Windows, identity, title, size, position, zone, focus, layer | Plugin's desktop model | Wayfire signals supply facts; plugin position/layer commands supply targets. |
 | Target scale | Plugin's desktop model | Zone/drag rules set it; the scale transformer animates toward it. |
-| Widget lifecycle, rail, drop point, collapsed presentation, touch traits | Plugin's desktop model | One lifecycle transition applies visibility; the renderer positions the widget and holds balanced disables. |
+| Widget lifecycle, rail, drop point, collapsed intent, temporary peek, touch traits | Plugin's desktop model | One lifecycle transition applies visibility; the renderer positions the widget and holds balanced disables. |
 | Launcher PID, launch unit | Plugin's desktop model | A pidfd event records launcher exit and publishes it; snapshot serialization never probes process liveness. |
 | Resolved desktop identity, name, icon, built-in card trait | Plugin's desktop model | The launcher submits these once for a specific launch unit; there is no identity side file. |
 | Attention source set, per window | Plugin's desktop model | Each source adds/removes its name; `builtin:` names are reserved for plugin inputs, so a configured source cannot clear a bell/urgency. User focus answers all sources. Halos read this set. |
-| Desktop collapsed mode | Plugin's desktop model | Super+M updates the mode and widget presentation together. |
+| Desktop collapsed mode | Plugin's desktop model | Super+M updates the mode and collapsed intent together, ending peeks. Effective presentation is collapsed intent unless a temporary peek overrides it. |
 | Full-screen focus per screen (FS1) | Plugin's desktop model | Wayfire's fullscreen-promotion signal sets it; that screen's docked widgets are marked away (slid off and hidden) without leaving docked, and the focus.d hooks follow whether any screen is in focus. Published as `focus` (screen names). |
 | Selected window set | Plugin's desktop model | Reserved, empty until multi-select is implemented. |
 | Drag origin, re-grab chain, morph, scale/grab state and held-above window | Plugin's desktop model (`drag`) | One drag-session record; Wayfire's drag controller, timers and frame buffers are input/rendering resources. The full desktop snapshot includes origin, chain, morph target and held-above identity; external slices omit them. |

@@ -38,6 +38,7 @@ extern "C" {
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_buffer.h>
 #if WF_HAS_XWAYLAND
 #include <pthread.h>  // as Wayfire does: xwayland.h uses C++ keywords as names
 #define class class_t
@@ -1252,6 +1253,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
+            stop_widget_transition(toplevel);
             model.windows.erase(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
@@ -1340,7 +1342,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool card = false;                          // the built-in renderer can report in tests
         enum class lifecycle_t { previewing, docked, restoring, closing, handed_over };
         lifecycle_t lifecycle = lifecycle_t::previewing;
-        bool collapsed = false;                      // presentation, independent of lifecycle
+        bool collapsed = false;                      // intent, independent of lifecycle and peeks
+        bool peek = false;                           // temporary presentation; never changes mode
+        bool minimized() const { return collapsed && !peek; }
         bool away = false;                           // slid off its screen for full-screen focus (FS1)
 
         bool previewing() const { return lifecycle == lifecycle_t::previewing; }
@@ -1423,6 +1427,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
+
+    #include "widget-presentation.hpp"
 
     bool needs_attention(uint64_t window) const
     {
@@ -1630,7 +1636,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         for (auto& [id, link] : model.widgets)
         {
-            link.collapsed = !all_minimized;  // running previews follow the mode too (WG16)
+            set_widget_presentation(link, !all_minimized); // snapshot before publication, previews too
         }
 
         model.collapsed = !all_minimized;
@@ -1953,6 +1959,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         render_hidden(link.window.lock(), link.docked() || next == widget_link_t::lifecycle_t::handed_over);
         auto widget = wf::toplevel_cast(link.widget.lock());
         bool hidden = (!link.docked() && next != widget_link_t::lifecycle_t::handed_over) || link.away;
+        if (!link.docked() && !link.previewing()) stop_widget_transition(widget);
         render_hidden(widget, hidden);
         if (widget)
         {
@@ -2670,7 +2677,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void commit_preview(widget_link_t& link, wf::pointf_t at)
     {
         auto window = wf::toplevel_cast(link.window.lock());
-        link.collapsed = model.collapsed;  // reconcile a preview launched before the mode changed
+        set_widget_presentation(link, model.collapsed);
         transition_widget(link, widget_link_t::lifecycle_t::docked);
         link.drop    = at;
         if (window && window->get_output())
@@ -2887,7 +2894,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["launcher_pid"] = (int64_t)(link.launcher ? link.launcher->pid : 0);
             entry["rail"] = link.rail;
             entry["focused"] = shown != model.windows.end() && shown->second.focused;
-            entry["minimized"] = link.collapsed;
+            entry["minimized"] = link.minimized();
+            entry["collapsed"] = link.collapsed;
+            entry["peek"] = link.peek;
             entry["urgent"] = needs_attention(id);
             entry["lifecycle"] = lifecycle_name(link.lifecycle);
             entry["touch_drag"] = link.touch_drag;
@@ -3198,7 +3207,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
                 auto state = widgets[label];
                 if (state["Title"].as_string() != model.windows[id].title ||
-                    state["Rail"].as_string() != link.rail || state["Minimized"].as_bool() != link.collapsed ||
+                    state["Rail"].as_string() != link.rail || state["Minimized"].as_bool() != link.minimized() ||
                     state["Urgent"].as_bool() != needs_attention(id))
                 {
                     fail("widget service presentation differs: " + label);
@@ -3211,14 +3220,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                         continue;
                     }
                     auto report = rendered[link.launcher->unit];
-                    bool title_shown = !link.collapsed && !model.windows[id].title.empty();
+                    bool title_shown = !link.minimized() && !model.windows[id].title.empty();
                     if (report["revision"].as_int64() != state["_revision"].as_int64() ||
                         report["version"].as_int64() != state["_model_version"].as_int64() ||
                         report["title"].as_string() != model.windows[id].title ||
                         report["title_shown"].as_bool() != title_shown ||
-                        report["collapsed"].as_bool() != link.collapsed ||
+                        report["collapsed"].as_bool() != link.minimized() ||
                         report["rail"].as_string() != link.rail || std::abs(report["width"].as_double() - g.width) > 1 ||
-                        (link.collapsed && std::abs(g.width - 96) > 1) || (!link.collapsed && title_shown && g.width <= 96))
+                        (link.minimized() && std::abs(g.width - 96) > 1) || (!link.minimized() && title_shown && g.width <= 96))
                     {
                         fail("card rendered presentation differs: " + label);
                     }
@@ -3435,7 +3444,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         } else if (action == "minimize")
         {
-            found->second.collapsed = !found->second.collapsed;
+            set_widget_presentation(found->second, !found->second.collapsed);
+            announce_widgets();
+        } else if (action == "test-peek" && getenv("SCOTTLAND_TEST_MODEL"))
+        {
+            set_widget_presentation(found->second, found->second.collapsed, data["peek"].as_bool());
             announce_widgets();
         } else if (action == "restore")
         {
@@ -4503,9 +4516,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (other && other->is_mapped() && other->get_output() && (!model.drag.morph->snapshot_ready || (model.drag.morph->ticks % 2 == 0)))
         {
-            other->take_snapshot(*model.drag.morph->snapshot);
-            model.drag.morph->snapshot_box   = other->get_surface_root_node()->get_bounding_box();
-            model.drag.morph->other_geometry = other->get_geometry();
+            auto other_frame = frame_of(other, false);
+            if (other_frame && other_frame->presentation)
+            {
+                auto image = scottland::widget_morph_renderer().freeze(*other_frame->presentation,
+                    other->get_output()->handle->scale);
+                model.drag.morph->snapshot = image.buffer;
+                model.drag.morph->snapshot_box = image.box;
+                model.drag.morph->other_geometry = {0, 0, image.width, image.height};
+            } else
+            {
+                other->take_snapshot(*model.drag.morph->snapshot);
+                model.drag.morph->snapshot_box   = other->get_surface_root_node()->get_bounding_box();
+                model.drag.morph->other_geometry = other->get_geometry();
+            }
             model.drag.morph->snapshot_ready = model.drag.morph->snapshot->get_buffer() != nullptr;
         }
 
@@ -5267,6 +5291,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             observe_view(view);
             if (auto frame = frame_of(view, false))
             {
+                if (frame->presentation)
+                    frame->presentation->geometry_applied(ev->old_geometry, view->get_geometry());
                 frame->damage_previous(ev->old_geometry);
                 frame->damage();
             }
@@ -5287,6 +5313,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         wf::json_t reply = wf::ipc::json_ok();
         wf::json_t views = wf::json_t::array();
+        reply["widget_transition_count"] = (int64_t)widget_transitions.size();
+        reply["widget_transition_steps"] = (int64_t)widget_transition_steps;
+        if (getenv("SCOTTLAND_TEST_MODEL"))
+        {
+            auto cursor_view = wf::get_core().get_cursor_focus_view();
+            reply["cursor_view"] = cursor_view ? (int64_t)cursor_view->get_id() : (int64_t)-1;
+        }
         for (auto& any_view : wf::get_core().get_all_views())
         {
             auto view = wf::toplevel_cast(any_view);
@@ -5327,6 +5360,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["frame"]["hovered"] = scottland::handle_name(frame->hovered_handle());
                 entry["frame"]["dot"]     = frame->dot_glow;
                 entry["frame"]["attention"] = frame->needs_attention();
+                if (frame->presentation)
+                {
+                    auto& p = *frame->presentation;
+                    entry["frame"]["presentation"] = wf::json_t{};
+                    entry["frame"]["presentation"]["waiting"] = p.waiting;
+                    entry["frame"]["presentation"]["fade"] = p.fade;
+                    entry["frame"]["presentation"]["steps"] = (int64_t)p.steps;
+                    entry["frame"]["presentation"]["fallback"] = p.fallback;
+                    entry["frame"]["presentation"]["response_ms"] = (int64_t)p.response_ms;
+                }
                 entry["attention"] = needs_attention(view->get_id());
                 if (frame->morphing())
                 {
@@ -5336,6 +5379,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     entry["frame"]["morph"]["snapshot"] = (bool)frame->morph.snapshot;
                 }
                 entry["frame"]["neighbors"] = (int64_t)frame->get_neighbors().size();
+                if (getenv("SCOTTLAND_TEST_MODEL"))
+                {
+                    auto rects = wf::json_t::array();
+                    for (auto& n : frame->get_neighbors())
+                    {
+                        wf::json_t rect;
+                        rect["x"] = n.window.x1; rect["y"] = n.window.y1;
+                        rect["width"] = n.window.width(); rect["height"] = n.window.height();
+                        rects.append(rect);
+                    }
+                    entry["frame"]["neighbor_rects"] = rects;
+                }
                 wf::json_t clouds = wf::json_t::array();
                 for (double c : frame->cloud)
                 {
@@ -5641,6 +5696,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_cancel_key.disconnect();
         glide_tick.disconnect();
         glides.clear();
+        widget_transition_tick.disconnect();
+        for (auto& [id, transition] : widget_transitions)
+            if (auto view = wf::toplevel_cast(transition->view.lock()))
+                if (auto frame = frame_of(view, false)) frame->presentation.reset();
+        widget_transitions.clear();
         on_swipe_update.disconnect();
         on_swipe_end.disconnect();
         on_touchpad_button.disconnect();
