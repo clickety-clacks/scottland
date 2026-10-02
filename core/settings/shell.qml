@@ -5,8 +5,8 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 
-// Scottland layout settings. Changes apply to the running session immediately (windows rescale
-// live) while a click-through overlay shows the five zones on every screen. Save writes
+// Scottland layout and goo settings. Changes apply to the running session immediately while
+// a click-through overlay shows the five zones on every screen. Save writes
 // ~/.config/scottland/layout.ini; Cancel or Escape restores the values from when it opened.
 //
 // The scale curve sets how windows shrink across the side zones: t = 0 is the center zone's
@@ -21,6 +21,49 @@ ShellRoot {
 
   readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 3,
     curve: [{ x: 0, y: 1 }, { x: 1, y: 0.2 }] })
+  readonly property var gooControls: [
+    { name: "goo_thickness", title: "Border thickness", initial: 13, low: 4, high: 40, step: 1 },
+    { name: "goo_reach", title: "Reach", initial: 24, low: 6, high: 70, step: 1 },
+    { name: "goo_thinning", title: "Bridge draw", initial: 0.45, low: 0, high: 1, step: 0.01 },
+    { name: "goo_swell", title: "Swell", initial: 0.7, low: 0, high: 2, step: 0.01 },
+    { name: "goo_noise", title: "Mess", initial: 0.32, low: 0, high: 0.9, step: 0.01 },
+    { name: "goo_lump", title: "Lump size", initial: 190, low: 40, high: 500, step: 5 },
+    { name: "goo_drift", title: "Drift", initial: 0.12, low: 0, high: 0.6, step: 0.01 },
+    { name: "goo_wave_speed", title: "Wave speed", initial: 0.28, low: 0.05, high: 0.5, step: 0.01 },
+    { name: "goo_wave_damp", title: "Wave persistence", initial: 0.985, low: 0.9, high: 0.998, step: 0.001 },
+    { name: "goo_wave_height", title: "Wave height", initial: 0.55, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_spread", title: "Dye spread", initial: 0.45, low: 0, high: 0.9, step: 0.01 },
+    { name: "goo_swirl", title: "Dye swirl", initial: 0.9, low: 0, high: 3, step: 0.05 },
+    { name: "goo_release", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
+    { name: "goo_shine", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_relief", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 }]
+  function gooDefaults() {
+    const values = { goo: false, goo_falloff: "" }
+    for (const c of gooControls) values[c.name] = c.initial
+    return values
+  }
+  property var gooValues: gooDefaults()
+  property bool gooTab: false
+  readonly property var exponentialPoints: Array.from({ length: 17 }, (_, i) => ({ x: i / 16, y: Math.exp(-i / 4) }))
+  property var gooPoints: exponentialPoints
+  readonly property var editorPoints: gooTab ? gooPoints : curvePoints
+  function setEditorPoints(points) {
+    if (gooTab) {
+      gooPoints = points
+      gooValues = Object.assign({}, gooValues, { goo_falloff: curveText(points) })
+    } else curvePoints = points
+  }
+  function setGoo(name, value) { gooValues = Object.assign({}, gooValues, { [name]: value }) }
+  function sendGoo(values) {
+    sendBatch(values)
+  }
+  function sendBatch(values) {
+    const supported = {}
+    for (const key of Object.keys(values))
+      if (unsupported.indexOf(key) < 0) supported[key] = values[key]
+    live.write("batch " + JSON.stringify(supported) + "\n")
+  }
+  onGooValuesChanged: if (loaded) push.restart()
   property var original: null
   property real centerWidth: defaults.center_width
   property real railWidth: defaults.rail_width
@@ -47,10 +90,10 @@ ShellRoot {
     return points.map(p => p.x.toFixed(3) + ":" + p.y.toFixed(3)).join(" ")
   }
 
-  function parseCurve(text) {
+  function parseCurve(text, minimum = 0.05) {
     const points = String(text || "").trim().split(/\s+/).filter(w => w.includes(":")).map(w => {
       const [x, y] = w.split(":").map(parseFloat)
-      return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0.05, y)) }
+      return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(minimum, y)) }
     }).filter(p => !isNaN(p.x) && !isNaN(p.y)).sort((a, b) => a.x - b.x)
     if (points.length < 2 || points[0].x > 0 || points[points.length - 1].x < 1) return null
     return points
@@ -70,7 +113,7 @@ ShellRoot {
     return m
   }
 
-  function curveAt(points, t) {
+  function curveAt(points, t, minimum = 0.05) {
     t = Math.min(1, Math.max(0, t))
     const m = slopes(points)
     let i = 0
@@ -79,7 +122,7 @@ ShellRoot {
     const u = (t - a.x) / h, u2 = u * u, u3 = u2 * u
     const y = (2 * u3 - 3 * u2 + 1) * a.y + (u3 - 2 * u2 + u) * h * m[i]
       + (-2 * u3 + 3 * u2) * b.y + (u3 - u2) * h * m[i + 1]
-    return Math.min(1, Math.max(0.05, y))
+    return Math.min(1, Math.max(minimum, y))
   }
 
   // --- Live updates, load, save ---------------------------------------------------------------
@@ -90,22 +133,20 @@ ShellRoot {
     command: [root.ctl, "stdin"]
     stdinEnabled: true
     running: true
+    stdout: SplitParser { onRead: data => { if (data === "flushed") Qt.quit() } }
   }
 
   Timer {
     id: push
     interval: 30
-    onTriggered: root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth)
+    onTriggered: { root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth); root.sendGoo(root.gooValues) }
   }
 
   function send(center, rail, points, blend) {
-    live.write("center_width " + center.toFixed(3) + "\n"
-      + "rail_width " + rail.toFixed(3) + "\n"
-      + "blend_width " + blend.toFixed(1) + "\n"
-      + "scale_curve " + curveText(points) + "\n"
+    sendBatch({ center_width: Number(center.toFixed(3)), rail_width: Number(rail.toFixed(3)),
+      blend_width: Number(blend.toFixed(1)), scale_curve: curveText(points),
       // Endpoints double as min/max for anything reading those.
-      + "min_scale " + points[points.length - 1].y.toFixed(3) + "\n"
-      + "max_scale " + points[0].y.toFixed(3) + "\n")
+      min_scale: Number(points[points.length - 1].y.toFixed(3)), max_scale: Number(points[0].y.toFixed(3)) })
   }
 
   onCenterWidthChanged: if (loaded) push.restart()
@@ -134,6 +175,18 @@ ShellRoot {
         } catch (e) {
           root.original = root.defaults
         }
+        const goo = root.gooDefaults()
+        let values = {}
+        try { values = JSON.parse(text) } catch (e) {}
+        for (const key of Object.keys(goo)) {
+          if (values[key] !== undefined) goo[key] = values[key]
+          else if (key === "goo") goo[key] = root.savedText(key) === "true"
+          else if (key === "goo_falloff") goo[key] = root.savedText(key)
+          else goo[key] = root.savedValue(key, goo[key])
+        }
+        root.original.goo = goo
+        root.gooValues = Object.assign({}, goo)
+        root.gooPoints = root.parseCurve(goo.goo_falloff, 0) || root.exponentialPoints
         root.centerWidth = root.original.center_width
         root.railWidth = root.original.rail_width
         root.blendWidth = root.original.blend_width
@@ -148,6 +201,8 @@ ShellRoot {
     path: root.layoutFile
     printErrors: false
     blockLoading: true  // read before the running values arrive
+    blockWrites: true   // finish the small layout file before the IPC acknowledgement quits
+    atomicWrites: true
   }
 
   // Values last saved by this app; used for settings the running session can't report.
@@ -164,26 +219,22 @@ ShellRoot {
   function save() {
     push.stop()
     send(centerWidth, railWidth, curvePoints, blendWidth)
+    sendGoo(gooValues)
     saved.setText("# Written by Scottland settings.\n[scottland]\n"
       + "center_width = " + centerWidth.toFixed(3) + "\n"
       + "rail_width = " + railWidth.toFixed(3) + "\n"
       + "blend_width = " + blendWidth.toFixed(1) + "\n"
       + "scale_curve = " + curveText(curvePoints) + "\n"
       + "min_scale = " + minScale.toFixed(3) + "\n"
-      + "max_scale = " + maxScale.toFixed(3) + "\n")
-    quitSoon.start()
+      + "max_scale = " + maxScale.toFixed(3) + "\n"
+      + Object.keys(gooValues).map(k => k + " = " + gooValues[k] + "\n").join(""))
+    live.write("flush\n")
   }
 
   function cancel() {
     push.stop()
-    if (original) send(original.center_width, original.rail_width, original.curve, original.blend_width)
-    quitSoon.start()
-  }
-
-  Timer {
-    id: quitSoon
-    interval: 150  // let the last values reach the compositor
-    onTriggered: Qt.quit()
+    if (original) { send(original.center_width, original.rail_width, original.curve, original.blend_width); sendGoo(original.goo) }
+    live.write("flush\n")
   }
 
   // --- Zone overlay on every screen: click-through, drawn above windows -------------------------
@@ -294,7 +345,7 @@ ShellRoot {
         spacing: 14
 
         Text {
-          text: "Scottland layout"
+          text: "Scottland"
           color: root.textColor
           font.pixelSize: 18
           font.bold: true
@@ -306,9 +357,26 @@ ShellRoot {
           wrapMode: Text.WordWrap
           color: root.railColor
           font.pixelSize: 13
-          text: "Restart Scottland to use: " + root.unsupported.map(n => root.settingNames[n] || n).join(", ")
+          text: "Restart Scottland to use: " + root.unsupported.map(n => root.settingNames[n] || root.gooControls.find(c => c.name === n)?.title || n).join(", ")
             + ". This session's plugin is older; your values are still saved."
         }
+
+        TabBar {
+          Layout.fillWidth: true
+          currentIndex: root.gooTab ? 1 : 0
+          onCurrentIndexChanged: root.gooTab = currentIndex === 1
+          TabButton { text: "Layout" }
+          TabButton { text: "Goo" }
+        }
+
+        ScrollView {
+          Layout.fillWidth: true
+          Layout.preferredHeight: Math.min(500, (Quickshell.screens[0]?.height || 800) * 0.6)
+          contentWidth: availableWidth
+          clip: true
+          ColumnLayout {
+            width: parent.width
+            spacing: 14
 
         component SettingRow: ColumnLayout {
           id: row
@@ -336,6 +404,7 @@ ShellRoot {
         }
 
         SettingRow {
+          visible: !root.gooTab
           title: "Center zone width"
           valueText: root.centerWidth.toFixed(1) + "% of the screen"
           from: 10; to: 90; stepSize: 0.5
@@ -345,6 +414,7 @@ ShellRoot {
 
         SettingRow {
           readonly property real screenWidth: Quickshell.screens.length > 0 ? Quickshell.screens[0].width : 0
+          visible: !root.gooTab
           title: "Widget rail width"
           valueText: root.railWidth.toFixed(1) + "% · " + Math.round(screenWidth * root.railWidth / 100) + " pt"
           from: 0.5; to: 10; stepSize: 0.1
@@ -353,6 +423,7 @@ ShellRoot {
         }
 
         SettingRow {
+          visible: !root.gooTab
           title: "Center edge blend"
           valueText: Math.round(root.blendWidth) + " pt"
           from: 0; to: 100; stepSize: 1
@@ -360,19 +431,38 @@ ShellRoot {
           onMoved: v => root.blendWidth = v
         }
 
-        // Scale curve editor.
+        Switch {
+          visible: root.gooTab
+          text: "Use goo"
+          contentItem: Text { text: parent.text; color: root.textColor; leftPadding: 56; verticalAlignment: Text.AlignVCenter }
+          checked: root.gooValues.goo
+          onToggled: root.setGoo("goo", checked)
+        }
+        Repeater {
+          model: root.gooTab ? root.gooControls : []
+          delegate: SettingRow {
+            required property var modelData
+            title: modelData.title
+            valueText: Number(root.gooValues[modelData.name]).toFixed(modelData.step < 0.01 ? 3 : modelData.step < 1 ? 2 : 0)
+            from: modelData.low; to: modelData.high; stepSize: modelData.step
+            value: root.gooValues[modelData.name]
+            onMoved: v => root.setGoo(modelData.name, v)
+          }
+        }
+
+        // The same curve editor edits scale or goo falloff.
         ColumnLayout {
           Layout.fillWidth: true
           spacing: 4
 
           RowLayout {
             Layout.fillWidth: true
-            Text { text: "Scale across the side zones"; color: root.textColor; font.pixelSize: 14; Layout.fillWidth: true }
+            Text { text: root.gooTab ? "Density falloff (distance / four reaches)" : "Scale across the side zones"; color: root.textColor; font.pixelSize: 14; Layout.fillWidth: true }
             Text {
               color: root.accent; font.pixelSize: 14
               text: editor.hovered >= 0
-                ? Math.round(root.curvePoints[editor.hovered].y * 100) + "% at " + Math.round(root.curvePoints[editor.hovered].x * 100) + "% across"
-                : Math.round(root.maxScale * 100) + "% → " + Math.round(root.minScale * 100) + "%"
+                ? Math.round(root.editorPoints[editor.hovered].y * 100) + "% at " + Math.round(root.editorPoints[editor.hovered].x * 100) + "% across"
+                : Math.round(root.editorPoints[0].y * 100) + "% → " + Math.round(root.editorPoints[root.editorPoints.length - 1].y * 100) + "%"
             }
           }
 
@@ -382,30 +472,33 @@ ShellRoot {
             Layout.preferredHeight: 190
             property int dragging: -1
             property int hovered: -1
+            readonly property real minimum: root.gooTab ? 0 : 0.05
             readonly property real plotLeft: 40
             readonly property real plotTop: 8
             readonly property real plotWidth: width - plotLeft - 10
             readonly property real plotHeight: height - plotTop - 24
 
             function toX(t) { return plotLeft + t * plotWidth }
-            function toY(s) { return plotTop + (1 - (s - 0.05) / 0.95) * plotHeight }
+            function toY(s) { return plotTop + (1 - (s - minimum) / (1 - minimum)) * plotHeight }
             function fromX(px) { return Math.min(1, Math.max(0, (px - plotLeft) / plotWidth)) }
-            function fromY(py) { return Math.min(1, Math.max(0.05, 0.05 + (1 - (py - plotTop) / plotHeight) * 0.95)) }
+            function fromY(py) { return Math.min(1, Math.max(minimum, minimum + (1 - (py - plotTop) / plotHeight) * (1 - minimum))) }
 
             function pointAt(px, py) {
-              const points = root.curvePoints
+              const points = root.editorPoints
               for (let i = 0; i < points.length; i++)
                 if (Math.hypot(toX(points[i].x) - px, toY(points[i].y) - py) <= 10) return i
               return -1
             }
 
             function move(index, px, py) {
-              const points = root.curvePoints.map(p => ({ x: p.x, y: p.y }))
+              const points = root.editorPoints.map(p => ({ x: p.x, y: p.y }))
               const last = points.length - 1
               points[index].y = fromY(py)
+              if (root.gooTab) points[index].y = Math.min(index > 0 ? points[index - 1].y : 1,
+                Math.max(index < last ? points[index + 1].y : 0, points[index].y))
               if (index > 0 && index < last)  // endpoints stay at the zone edges
                 points[index].x = Math.min(points[index + 1].x - 0.02, Math.max(points[index - 1].x + 0.02, fromX(px)))
-              root.curvePoints = points
+              root.setEditorPoints(points)
             }
 
             Canvas {
@@ -422,20 +515,20 @@ ShellRoot {
                   ctx.beginPath(); ctx.moveTo(editor.plotLeft, y); ctx.lineTo(editor.plotLeft + editor.plotWidth, y); ctx.stroke()
                   ctx.fillText(Math.round(s * 100) + "%", 4, y + 4)
                 }
-                ctx.fillText("5%", 4, editor.toY(0.05) + 4)
+                ctx.fillText(root.gooTab ? "0%" : "5%", 4, editor.toY(editor.minimum) + 4)
                 ctx.strokeRect(editor.plotLeft, editor.plotTop, editor.plotWidth, editor.plotHeight)
-                ctx.fillText("center edge", editor.plotLeft, editor.height - 6)
-                ctx.fillText("rail", editor.plotLeft + editor.plotWidth - 20, editor.height - 6)
+                ctx.fillText(root.gooTab ? "window edge" : "center edge", editor.plotLeft, editor.height - 6)
+                ctx.fillText(root.gooTab ? "4× reach" : "rail", editor.plotLeft + editor.plotWidth - 20, editor.height - 6)
                 // The curve.
                 ctx.strokeStyle = root.accent; ctx.lineWidth = 2
                 ctx.beginPath()
                 for (let i = 0; i <= 120; i++) {
-                  const t = i / 120, x = editor.toX(t), y = editor.toY(root.curveAt(root.curvePoints, t))
+                  const t = i / 120, x = editor.toX(t), y = editor.toY(root.curveAt(root.editorPoints, t, editor.minimum))
                   if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
                 }
                 ctx.stroke()
                 // Points: endpoints square, interior round.
-                const points = root.curvePoints
+                const points = root.editorPoints
                 for (let i = 0; i < points.length; i++) {
                   const x = editor.toX(points[i].x), y = editor.toY(points[i].y)
                   ctx.fillStyle = (i === editor.hovered || i === editor.dragging) ? "#ffffff" : root.accent
@@ -448,7 +541,7 @@ ShellRoot {
               }
               Connections {
                 target: root
-                function onCurvePointsChanged() { canvas.requestPaint() }
+                function onEditorPointsChanged() { canvas.requestPaint() }
               }
               Connections {
                 target: editor
@@ -467,19 +560,32 @@ ShellRoot {
               onPressed: mouse => {
                 let index = editor.pointAt(mouse.x, mouse.y)
                 if (mouse.button === Qt.RightButton) {
-                  if (index > 0 && index < root.curvePoints.length - 1)
-                    root.curvePoints = root.curvePoints.filter((_, i) => i !== index)
+                  if (index > 0 && index < root.editorPoints.length - 1)
+                    root.setEditorPoints(root.editorPoints.filter((_, i) => i !== index))
                   return
                 }
                 if (index < 0) {
                   // Add a point where clicked, between the endpoints.
                   const t = editor.fromX(mouse.x)
                   if (t <= 0.02 || t >= 0.98) return
-                  const points = root.curvePoints.map(p => ({ x: p.x, y: p.y }))
-                  points.push({ x: t, y: editor.fromY(mouse.y) })
+                  const points = root.editorPoints.map(p => ({ x: p.x, y: p.y }))
+                  if (root.gooTab) {
+                    const near = points.findIndex(p => Math.abs(p.x - t) < 0.02)
+                    if (near >= 0) {
+                      editor.dragging = near
+                      editor.move(near, mouse.x, mouse.y)
+                      return
+                    }
+                  }
+                  let y = editor.fromY(mouse.y)
+                  if (root.gooTab) {
+                    const right = points.findIndex(p => p.x > t)
+                    y = Math.min(points[right - 1].y, Math.max(points[right].y, y))
+                  }
+                  points.push({ x: t, y: y })
                   points.sort((a, b) => a.x - b.x)
-                  root.curvePoints = points
-                  index = editor.pointAt(mouse.x, mouse.y)
+                  root.setEditorPoints(points)
+                  index = points.findIndex(p => p.x === t)
                 }
                 editor.dragging = index
               }
@@ -491,8 +597,8 @@ ShellRoot {
               onExited: editor.hovered = -1
               onDoubleClicked: mouse => {
                 const index = editor.pointAt(mouse.x, mouse.y)
-                if (index > 0 && index < root.curvePoints.length - 1)
-                  root.curvePoints = root.curvePoints.filter((_, i) => i !== index)
+                if (index > 0 && index < root.editorPoints.length - 1)
+                  root.setEditorPoints(root.editorPoints.filter((_, i) => i !== index))
               }
             }
           }
@@ -502,7 +608,11 @@ ShellRoot {
             wrapMode: Text.WordWrap
             color: root.dimText
             font.pixelSize: 12
-            text: "Drag the square ends for the largest and smallest scale. Click to add a point, drag to shape the curve, double-click or right-click a point to remove it."
+            text: root.gooTab ? "Drag points to shape how density falls away from a window. The right edge is four reaches away. Click to add a point; double-click or right-click to remove it."
+              : "Drag the square ends for the largest and smallest scale. Click to add a point, drag to shape the curve, double-click or right-click a point to remove it."
+          }
+        }
+
           }
         }
 
@@ -514,6 +624,11 @@ ShellRoot {
           Button {
             text: "Defaults"
             onClicked: {
+              if (root.gooTab) {
+                root.gooValues = root.gooDefaults()
+                root.gooPoints = root.exponentialPoints
+                return
+              }
               root.centerWidth = root.defaults.center_width
               root.railWidth = root.defaults.rail_width
               root.blendWidth = root.defaults.blend_width

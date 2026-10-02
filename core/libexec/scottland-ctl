@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read and change Scottland's live layout settings through Wayfire IPC.
+"""Read and change Scottland's live layout and goo settings through Wayfire IPC.
 
   scottland-ctl get                      print the layout settings as JSON
   scottland-ctl set scale_curve "0:1 0.4:0.6 1:0.2"
@@ -18,7 +18,11 @@ import struct
 import sys
 
 NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", "blend_width")
-TEXT = ("scale_curve",)
+GOO = ("goo", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
+       "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
+       "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief")
+NAMES += GOO
+TEXT = ("scale_curve", "goo_falloff")
 
 
 def connect():
@@ -52,7 +56,10 @@ def main():
         for name in NAMES:
             reply = call(sock, "wayfire/get-config-option", {"option": f"scottland/{name}"})
             if "value" in reply:
-                values[name] = reply["value"] if name in TEXT else float(reply["value"])
+                if name == "goo":
+                    values[name] = str(reply["value"]).lower() in ("true", "1")
+                else:
+                    values[name] = reply["value"] if name in TEXT else float(reply["value"])
             else:
                 unsupported.append(name)
         values["unsupported"] = unsupported
@@ -71,6 +78,16 @@ def main():
             print(f"{view['id']:>5}  {view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")
     elif command == "stdin":
         for line in sys.stdin:
+            if line.strip() == "flush":
+                print("flushed", flush=True)
+                continue
+            if line.startswith("batch "):
+                values = json.loads(line[6:])
+                reply = call(sock, "wayfire/set-config-options",
+                             {f"scottland/{k}": v for k, v in values.items() if k in NAMES})
+                if reply.get("error"):
+                    print(reply["error"], file=sys.stderr, flush=True)
+                continue
             parts = line.strip().split(None, 1)
             if parts and parts[0] in NAMES:
                 parts = parts + [""] if len(parts) == 1 else parts
