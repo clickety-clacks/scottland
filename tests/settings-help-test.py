@@ -82,12 +82,12 @@ def click(x, y):
     time.sleep(.15)
 
 
-def drag(x, y, dx, dy=0, live_name=None, fast=False):
+def drag(x, y, dx, dy=0, live_name=None, fast=False, steps=None):
     pointer(x, y)
     time.sleep(.12)
     before = option(live_name) if live_name else None
     button("press")
-    steps = 48 if fast else 12
+    steps = steps or (48 if fast else 12)
     for i in range(1, steps+1):
         pointer(x+dx*i/steps, y+dy*i/steps)
         time.sleep(.008 if fast else .04)
@@ -261,6 +261,13 @@ try:
     origin, width, center, rail, blend = geometry(outputs[1])
     drag(origin+center, 40, -40, live_name="center_width", fast=True)
     check("continuous fast pointer motion reaches its final preview", option("center_width") > initial["center_width"])
+    # A long, quick drag outruns the 12 px handle: the pointer must stay captured until release.
+    origin, width, center, rail, blend = geometry(outputs[1])
+    before = option("center_width")
+    drag(origin+center, 40, -220, steps=5)
+    got, want = option("center_width"), round((before+440/width*100)/.5)*.5
+    check(f"a long quick border drag follows the pointer all the way ({got} vs {want})", abs(got-want) < .011)
+    drag(origin+round(width*(.5-got/200)), 40, 220, steps=5)  # put it back for the checks below
     bands("07-border-drags")
     origin, width, center, rail, blend = geometry(outputs[1])
     pointer(origin+center, 40); time.sleep(.1)

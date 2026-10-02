@@ -249,6 +249,9 @@ ShellRoot {
       color: "transparent"
       exclusionMode: ExclusionMode.Ignore
       mask: Region {
+        // While a border is held the whole overlay takes input, so a pointer that outruns the
+        // 12 px handle stays with the drag instead of falling through to whatever is below.
+        Region { item: dragCapture }
         Region { item: centerLeftHandle }
         Region { item: centerRightHandle }
         Region { item: railLeftHandle }
@@ -304,6 +307,9 @@ ShellRoot {
         Rectangle { x: zones.centerRight; width: zones.blend; height: parent.height
           color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28) }
 
+        property bool borderHeld: false
+        Item { id: dragCapture; width: zones.borderHeld ? zones.width : 0; height: zones.borderHeld ? zones.height : 0 }
+
         component BorderHandle: Item {
           id: handle
           required property string setting
@@ -339,7 +345,10 @@ ShellRoot {
             cursorShape: Qt.SizeHorCursor
             property real startX
             property real startValue
+            onReleased: zones.borderHeld = false
+            onCanceled: zones.borderHeld = false
             onPressed: mouse => {
+              zones.borderHeld = true
               zones.forceActiveFocus()
               startX = mapToItem(zones, mouse.x, mouse.y).x
               startValue = handle.setting === "center_width" ? root.centerWidth
