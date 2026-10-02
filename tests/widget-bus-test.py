@@ -127,6 +127,16 @@ service.replace_snapshot(service.ipc.snapshot)
 check("a new compositor session accepts its version and never inherits old badges or data",
       service.model_version == 1 and service.widgets["42"]["Badge"] == 0 and service.widgets["42"]["Data"] == "")
 
+# A running preview needs Minimized updates without telling its app it has been widgetized.
+preview = dict(entry("42", "scottland-widget-newest.scope"), pid=os.getpid(), lifecycle="previewing", minimized=True)
+replace([preview])
+check("WG16 the service updates a preview's presentation",
+      service.widgets["42"]["Minimized"] is True)
+check("WG16 a preview does not announce its app as widgetized", not service.app_state(os.getpid())[0])
+preview["lifecycle"] = "docked"
+replace([preview])
+check("WG16 commitment announces its app as widgetized", service.app_state(os.getpid())[0])
+
 # WG11 without systemd: no systemctl on PATH; identity by process tree, and only live roots.
 child = subprocess.Popen(["sleep", "30"])
 os.environ["PATH"] = root  # nothing runnable: no systemctl

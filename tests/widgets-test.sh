@@ -36,8 +36,12 @@ super_drag() {  # super_drag x1 y1 x2 y2
 }
 
 # A test widget that never shows a window (for the launch timeout), found via SCOTTLAND_WIDGET_PATH.
+headless_dir=${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}
+artifacts=$headless_dir.results
+mkdir -p "$artifacts"
 test_widgets=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-widgets.XXXXXX")
 mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon" "$test_widgets/stubborn"
+cp -a tests/widgets/gravity "$test_widgets/gravity"
 # Shows a window that refuses to close when asked.
 cat >"$test_widgets/stubborn/widget.toml" <<'TOML'
 id = "stubborn"
@@ -88,23 +92,27 @@ tests/headless.sh start --widgets >/dev/null || { echo "couldn't start headless 
 monitor_pid=
 cleanup() {
   [ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null
-  cp "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/wayfire.log" \
-    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-widgets-test.log" 2>/dev/null  # kept for a look
+  cp "$headless_dir/wayfire.log" "$artifacts/wayfire-final.log" 2>/dev/null
   tests/headless.sh stop >/dev/null 2>&1
   rm -rf "$test_widgets" "${src:-/nonexistent}"
 }
 trap cleanup EXIT
 display=$(cat "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/display")
 state_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/widgets/$display
-signals=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/scottland-test-signals.XXXXXX")
+signals=$artifacts/widget-signals.log
 tests/headless.sh run gdbus monitor --session --dest org.scottland.Widgets >"$signals" 2>&1 &
 monitor_pid=$!
 h wayfire/set-config-options '{"scottland/sounds":false}'
 screen_w=$(ipc window-rules/list-outputs | python3 -c "import json,sys; print(int(json.load(sys.stdin)[0]['geometry']['width']))")
 
+# Input-edge regressions use this same private session and close only their own windows.
+tests/headless.sh run python3 tests/widget-input-test.py --log \
+  "${SCOTTLAND_HEADLESS_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland-headless}/wayfire.log" \
+  || fail "widget input regressions"
+
 # The app: a terminal that, once widgetized, publishes data for its widget (WG11) as itself.
-mailbox_script='sleep 6; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Publish s "{\"unread\": 4}"; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.Windows GetState > "$XDG_RUNTIME_DIR/scottland-widgets-test-state.txt"; exec sleep 3600'
-(tests/headless.sh run foot -T widget-app -W 50x12 sh -c "$mailbox_script" >/dev/null 2>&1 &)
+mailbox_script='sleep 6; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Publish s "{\"unread\": 4}"; busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.Windows GetState > "$1"; exec sleep 3600'
+(tests/headless.sh run foot -T widget-app -W 50x12 sh -c "$mailbox_script" sh "$artifacts/app-state.txt" >/dev/null 2>&1 &)
 sleep 2
 read -r ax ay aw ah <<<"$(view_field widget-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 [ -n "${ax:-}" ] || { echo "app window didn't appear"; exit 1; }
@@ -128,7 +136,7 @@ v=[v for v in json.loads(subprocess.run(['tests/headless.sh','ipc','scottland/la
 f=v['frame']; halo=21.3  # the halo at its widest (SWOLLEN)
 ok = f['x'] >= halo and f['x'] + f['width'] + halo <= $screen_w + 1 and abs((f['y'] + f['height']/2) - $drop_y) < 6 and f['x'] + f['width'] >= $screen_w - 40
 sys.exit(0 if ok else 1)"
-tests/headless.sh run grim /tmp/scottland-widgets-test.png 2>/dev/null
+tests/headless.sh run grim "$artifacts/widget-placement.png" 2>/dev/null
 
 id=$(widget_id)
 check "WG9 the widget's D-Bus object exists" \
@@ -159,7 +167,7 @@ sleep 4
 check "WG11 data the app published reaches its widget" \
   [ "$(bus get-property org.scottland.Widgets "/org/scottland/widget/$id" org.scottland.Widget Data)" = 's "{\"unread\": 4}"' ]
 check "WG12 the app learns it's widgetized (GetState from its own process tree)" \
-  grep -q "^bd true " "$XDG_RUNTIME_DIR/scottland-widgets-test-state.txt"
+  grep -q "^bd true " "$artifacts/app-state.txt"
 check "WG11 a process that isn't the app can't publish for it" \
   bash -c "! tests/headless.sh run busctl --user call org.scottland.Widgets /org/scottland/Widgets org.scottland.WidgetData Publish s '{}' 2>/dev/null"
 check "WG11 a process that isn't a widget can't send as one" \
@@ -921,6 +929,7 @@ check "WG5 the app's window closing closes its widget" \
 # WG5 without systemd scopes (fallback): a widget ignoring SIGTERM still has its first process
 # ended (SIGKILL after 2 s).
 [ -n "$monitor_pid" ] && kill "$monitor_pid" 2>/dev/null; monitor_pid=
+cp "$headless_dir/wayfire.log" "$artifacts/wayfire.log"
 tests/headless.sh stop >/dev/null 2>&1
 check "stopping the test session ends its color-scheme watcher" bash -c "[ -n '$watcher' ] && ! kill -0 '$watcher' 2>/dev/null"
 SCOTTLAND_WIDGET_SCOPE=0 tests/headless.sh start --widgets >/dev/null || { echo "couldn't restart headless Scottland"; exit 1; }

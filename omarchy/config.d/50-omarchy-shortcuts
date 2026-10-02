@@ -14,10 +14,12 @@ records binds instead of applying them. This one also honours hl.unbind.
 """
 
 import os
+from pathlib import Path
 import re
 import shlex
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
 
@@ -184,9 +186,37 @@ def combo(mods, key):
     return " ".join([MODIFIERS[m] for m in mods.split() if m in MODIFIERS] + [wayfire])
 
 
+def normalized_combo(value):
+    """Modifier order, spacing and case do not distinguish physical shortcuts."""
+    aliases = {"control": "ctrl"}
+    mods = {aliases.get(m.lower(), m.lower()) for m in re.findall(r"<([^>]+)>", value)}
+    key = re.sub(r"<[^>]+>", "", value).strip().upper()
+    return tuple(sorted(mods)), key
+
+
+def scottland_metadata():
+    """Use the session's metadata (dev/test hooks or packaged), as Wayfire does."""
+    search = os.environ.get("WAYFIRE_PLUGIN_XML_PATH")
+    directories = search.split(":") if search else [
+        os.path.join(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"), "metadata"),
+        "/usr/share/wayfire/metadata",
+    ]
+    return next((Path(d) / "scottland.xml" for d in directories
+                 if (Path(d) / "scottland.xml").is_file()), None)
+
+
 def parse_base(path):
-    """Map each activator combo in the base config to the (section, option, value) using it."""
-    used, section = {}, ""
+    """Index effective bindings: metadata defaults, replaced by explicit INI values.
+
+    Keep every owner of a combination: disabling just one still runs two handlers.
+    An explicit `none` (or a different key) must also replace the metadata default.
+    """
+    values, section = {}, ""
+    metadata = scottland_metadata()
+    if metadata:
+        for option in ET.parse(metadata).findall(".//plugin[@name='scottland']//option"):
+            if option.get("type") in ("key", "button", "activator"):
+                values[("scottland", option.get("name"))] = option.findtext("default", "")
     with open(path) as config:
         for line in config:
             stripped = line.strip()
@@ -196,16 +226,24 @@ def parse_base(path):
             if "=" not in stripped or stripped.startswith("#"):
                 continue
             option, value = (part.strip() for part in stripped.split("=", 1))
-            if "KEY_" not in value and "BTN_" not in value:
-                continue
-            for alternative in value.split("|"):
-                used[" ".join(alternative.split())] = (section, option, value)
+            values[(section, option)] = value
+    used = {}
+    for (section, option), value in values.items():
+        for alternative in value.split("|"):
+            normalized = normalized_combo(alternative)
+            owner = (section, option, value)
+            if re.fullmatch(r"(?:KEY|BTN)_\w+", normalized[1]):
+                owners = used.setdefault(normalized, [])
+                if owner not in owners:
+                    owners.append(owner)
     return used
 
 
 def main():
     if sys.argv[1:] == ["--watch-paths"]:
         print(os.path.dirname(HYPR_CONFIG))
+        if metadata := scottland_metadata():
+            print(metadata)
         return
     base = sys.argv[1] if len(sys.argv) > 1 else "/usr/share/scottland/scottland.ini"
     if not os.path.exists(HYPR_CONFIG):
@@ -263,16 +301,23 @@ def main():
             continue
 
         # The Omarchy shortcut wins over a Scottland/Wayfire default on the same keys.
-        clash = used.get(wanted)
-        if clash:
-            section, option, value = clash
-            if section == "command" and option.startswith(("binding_", "repeatable_binding_")) and target[0] == "command":
+        replaced_command = False
+        for section, option, value in used.get(normalized_combo(wanted), []):
+            if target == (section, option):
+                continue  # this option is replaced by the imported activator below
+            if (section == "command" and option.startswith(("binding_", "repeatable_binding_"))
+                    and target[0] == "command" and not replaced_command):
                 name = option.split("binding_", 1)[1]
                 command_overrides.append((f"command_{name}", target[1], description))
-                kept += 1
+                replaced_command = True
                 continue
-            remaining = [a.strip() for a in value.split("|") if " ".join(a.split()) != wanted]
+            value = disabled.get((section, option), value)
+            remaining = [a.strip() for a in value.split("|")
+                         if normalized_combo(a) != normalized_combo(wanted)]
             disabled[(section, option)] = " | ".join(remaining) or "none"
+        if replaced_command:
+            kept += 1
+            continue
 
         if target[0] == "command":
             prefix = "repeatable_binding" if repeat == "1" else "binding"
@@ -304,6 +349,8 @@ def main():
             print(f"# {description} (Omarchy shortcut replaces the Scottland default on the same keys)")
             print(f"{option} = {command}")
     for (section, option), value in disabled.items():
+        if (section, option) in activators:
+            continue  # already replaced in full; do not disable the new imported binding
         print(f"\n[{section}]\n# Omarchy uses this key; Scottland's default steps aside.\n{option} = {value}")
     if skipped:
         print("\n# Skipped:")
