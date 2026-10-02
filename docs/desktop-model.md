@@ -1,6 +1,6 @@
 # Desktop model
 
-The plugin owns Scottland's desktop state. Wayfire map, geometry, title, focus and urgency
+The plugin owns Scottland's desktop state. Wayfire map, geometry, title, app-ID, focus and urgency
 signals are input facts; plugin position commands, scale targets and widget transitions update
 the model before rendering. The renderer applies targets to Wayfire. Animations, scene disable
 leases, process handles and timers are resources, not independent logical state.
@@ -73,6 +73,9 @@ identity file, once, before publication. Card traits come from its actual launch
 | DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. They run only in an isolated headless session. | implemented (headless) |
 | DM7 | The drag session is a field of the desktop model: current origin, original form, re-grab chain, morph target, drag scale/grab state and temporarily held-above window have one owner. Existing Esc and re-grab behavior stays the same. | implemented (headless) |
 | DM8 | A marked reload transfers the live pidfd, including launches without systemd scopes. Legacy upgrades open a handle only for a verified live launcher; an unverifiable launcher is reported as PID zero. Launcher exit enters through a pidfd event, changes the tracked PID and publishes a newer full snapshot while a forked widget stays mapped. Serializing a snapshot never probes process liveness. | implemented (plumbus headless) |
+
+App-ID-only updates are exercised by a real GTK Wayland client in
+`tests/state-regressions-test.sh`; it changes no title or geometry.
 
 Tests: `tests/widgets-test.sh` retains the behavior regression checks;
 `tests/state-model-test.sh SEED STEPS` adds model/scene/replica/actual-render assertions after

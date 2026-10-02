@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import struct
+import select
 import subprocess
 import time
 import shutil
@@ -15,9 +16,7 @@ class Ipc:
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock.settimeout(10)
         self.sock.connect(os.environ['WAYFIRE_SOCKET'])
-    def call(self, method, data=None):
-        body = json.dumps({'method': method, 'data': data or {}}).encode()
-        self.sock.sendall(struct.pack('<I', len(body)) + body)
+    def receive(self):
         def exactly(n):
             result = b''
             while len(result) < n:
@@ -25,7 +24,11 @@ class Ipc:
                 if not chunk: raise ConnectionError('compositor disconnected')
                 result += chunk
             return result
-        result = json.loads(exactly(struct.unpack('<I', exactly(4))[0]))
+        return json.loads(exactly(struct.unpack('<I', exactly(4))[0]))
+    def call(self, method, data=None):
+        body = json.dumps({'method': method, 'data': data or {}}).encode()
+        self.sock.sendall(struct.pack('<I', len(body)) + body)
+        result = self.receive()
         assert not isinstance(result, dict) or not result.get('error'), result
         return result
 
@@ -110,6 +113,31 @@ def main():
         widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
         assert not widget['hidden']
         print('PASS  late widget reappears after leaving fullscreen', flush=True)
+        with tempfile.TemporaryDirectory() as directory:
+            trigger = Path(directory)/'change-app-id'
+            client = subprocess.Popen(['python3','tests/app-id-app.py',str(trigger)])
+            clients.append(client)
+            time.sleep(.8)
+            watch = Ipc()
+            before = watch.call('scottland/subscribe', {'slice': 'desktop'})
+            original = next(v for v in before['windows'] if v['app_id'] == 'org.scottland.IdentityBefore')
+            trigger.touch()
+            deadline = time.monotonic()+4
+            updated = None
+            while time.monotonic() < deadline and select.select([watch.sock], [], [], .3)[0]:
+                event = watch.receive()
+                candidate = next(v for v in event['windows'] if v['id'] == original['id'])
+                if candidate['app_id'] == 'org.scottland.IdentityAfter':
+                    updated = candidate
+                    assert event['version'] > before['version']
+                    break
+            assert updated, 'app-ID-only change must arrive through the subscription'
+            assert all(updated[k] == original[k] for k in ('title','x','y','width','height'))
+            late = ipc.call('scottland/desktop-model')
+            assert next(v for v in late['windows'] if v['id'] == original['id'])['app_id'] == 'org.scottland.IdentityAfter'
+            watch.sock.close()
+            print('PASS  app-ID-only client change advances subscription and late-read identity', flush=True)
+
 
     finally:
         for client in clients:

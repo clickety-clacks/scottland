@@ -3108,6 +3108,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         publish_model();
     };
 
+    wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id =
+        [=] (wf::view_app_id_changed_signal *ev)
+    {
+        observe_view(wf::toplevel_cast(ev->view));
+        publish_model();
+    };
+
     // What the widget's manifest says that Scottland acts on, told by the launcher once it has
     // chosen the widget: {window, unit, touch_drag}. The unit names the launch, so a late call
     // from an earlier launch for the same window changes nothing.
@@ -5383,6 +5390,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             ipc_repo->register_method("scottland/audit-model", audit_model);
         }
         wf::get_core().connect(&on_title);
+        wf::get_core().connect(&on_app_id);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
         ipc_repo->register_method("scottland/present", present_method);
@@ -5472,6 +5480,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/subscribe");
         ipc_repo->unregister_method("scottland/audit-model");
         on_title.disconnect();
+        on_app_id.disconnect();
         on_above.disconnect();
         on_hints.disconnect();
         ipc_repo->unregister_method("scottland/widget-action");
