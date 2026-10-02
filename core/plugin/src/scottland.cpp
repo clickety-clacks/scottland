@@ -1125,7 +1125,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     std::shared_ptr<scottland::frame_t> frame_near(wf::output_t *output, wf::pointf_t p)
     {
         std::shared_ptr<scottland::frame_t> best;
-        double best_distance = std::max(scottland::NEAR_RANGE, scottland::SWELL_VICINITY);
+        double best_distance = std::max({scottland::NEAR_RANGE, scottland::SWELL_VICINITY,
+            scottland::goo_enabled() ? scottland::goo_hover_distance() : 0.0});
         if (scottland::goo_enabled())
         {
             for (auto& [view, frame] : frames_on(output))
@@ -1531,6 +1532,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 s.hinted = true;
             }
             s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
+            s.sides = {frame->side_cloud[0], frame->side_cloud[1], frame->side_cloud[2], frame->side_cloud[3]};
+            s.control_extent = radius + scottland::CORNER_EXTRA;
             s.light = scottland::palette.light;
             s.scale = frame->halo_scale();
             s.swell = frame->swell;
@@ -1539,6 +1542,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             s.dot = {s.rect.x, r.y2 + frame->thickness() / 2, float(frame->dot_glow), scottland::DOT_RADIUS};
             result.push_back(s);
         }
+        std::map<wf::scene::node_t*, uint64_t> roots;
+        for (auto &s : result)
+            if (auto v = model.windows.at(s.id).view.lock()) roots[v->get_root_node().get()] = s.id;
+        std::map<uint64_t, size_t> order;
+        std::function<void(wf::scene::node_t*)> walk = [&](auto n)
+        {
+            if (!n->is_enabled()) return;
+            if (auto i = roots.find(n); i != roots.end()) order[i->second] = order.size();
+            for (auto &child : n->get_children()) walk(child.get());
+        };
+        walk(wf::get_core().scene().get());
+        std::stable_sort(result.begin(), result.end(), [&](auto &a, auto &b) { return order[a.id] < order[b.id]; });
         return result;
     }
     #include "widget-presentation.hpp"

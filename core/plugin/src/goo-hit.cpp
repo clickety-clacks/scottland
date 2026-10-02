@@ -11,6 +11,7 @@ std::map<wf::output_t *, screen_t *> screens;
 namespace scottland
 {
 bool goo_enabled() { return goo::enabled; }
+double goo_hover_distance() { return goo::current_settings.hover_distance; }
 double goo_thickness(double scale, double swell)
 {
     auto &s = goo::current_settings;
@@ -35,9 +36,11 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     if (round_box_distance(point, rect, radius) <= 0)
         return handle_t::none;
     glm::vec2 p{point.x, point.y};
-    // Input cannot see through any window, irrespective of stacking or ownership.
-    if (goo::union_distance(p, screen.sources) <= 0)
-        return handle_t::none;
+    // A film over a back window belongs to a source ahead of it. Foreground
+    // content still blocks input; the target never reaches through it.
+    size_t back = goo::content_index(p, screen.sources);
+    if (size_t(source - screen.sources.begin()) >= back) return handle_t::none;
+    if (back < screen.sources.size() && screen.settings.overlap_film <= 0) return handle_t::none;
     float f = goo::density(p, screen.sources, screen.settings, screen.time);
     float threshold = screen.settings.threshold();
     float wave = 0;
@@ -61,17 +64,20 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
                          d(point.x, point.y + .1) - d(point.x, point.y - .1)};
         if (glm::length(normal) < .001f)
             return handle_t::none;
-        probe -= glm::normalize(normal) * (edge + .1f);
+        probe -= glm::normalize(normal) * (edge - .1f);
         if (goo::density(probe, screen.sources, screen.settings, screen.time) < threshold)
             return handle_t::none;
     }
-    // A shared bridge belongs to its strongest contributing edge; stable source order breaks exact ties.
+    // A shared bridge belongs to its strongest contributing edge. Keep the original
+    // stable window-id tie break, independently of the renderer's stacking order.
     const goo::source_t *owner = nullptr;
     float contribution = -1;
-    for (auto &s : screen.sources)
+    for (size_t i = 0; i < back; i++)
     {
+        auto &s = screen.sources[i];
         float c = s.liquid.x * screen.settings.fall(std::max(goo::distance(probe, s), 0.f));
-        if (c > contribution)
+        if (c > contribution + .00001f ||
+            (std::abs(c - contribution) <= .00001f && owner && s.id < owner->id))
         {
             contribution = c;
             owner = &s;

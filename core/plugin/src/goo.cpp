@@ -26,6 +26,8 @@ bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> 
     for (size_t i = 0; i < a.size(); i++)
         if (a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
             glm::length(a[i].dye - b[i].dye) > .001f || glm::length(a[i].corners - b[i].corners) > .001f ||
+            glm::length(a[i].sides - b[i].sides) > .001f ||
+            std::abs(a[i].control_extent - b[i].control_extent) > .03f ||
             glm::length(a[i].dot - b[i].dot) > .001f || std::abs(a[i].swell - b[i].swell) > .001f ||
             a[i].hinted != b[i].hinted || a[i].grabbed != b[i].grabbed || std::abs(a[i].scale - b[i].scale) > .001f ||
             a[i].attention != b[i].attention || a[i].emitter != b[i].emitter || a[i].light != b[i].light)
@@ -47,7 +49,7 @@ class goo_node_t : public wf::scene::node_t
     wf::effect_hook_t pre;
     double last_change = now(), last_step = 0, last_pulse = 0;
     std::map<uint64_t, double> motion_pulse;
-    bool attached = true;
+    bool attached = true, above_windows = false;
     std::function<void()> failed;
     goo_t::source_provider_t snapshot;
     goo_node_t(wf::output_t *o, goo_t::source_provider_t provider) : node_t(false), snapshot(std::move(provider))
@@ -80,8 +82,8 @@ class goo_node_t : public wf::scene::node_t
     {
         out.push_back(std::make_unique<goo_instance_t>(this, damage, o));
     }
-    // Goo exists only in a band around each window (and in the gaps it bridges); window
-    // interiors mask it out. Damage, field evaluation and drawing use these bands;
+    // Goo exists only in a band around each window (and in the gaps it bridges),
+    // including film over windows behind. Damage, field evaluation and drawing use these bands;
     // wave history and dry dye retain their existing evolution (GO10).
     std::vector<wf::geometry_t> last_bands;
     bool whole = true;
@@ -96,6 +98,9 @@ class goo_node_t : public wf::scene::node_t
     std::vector<wf::geometry_t> compute_bands() const
     {
         auto reach = goo::support_radii(state.sources, state.settings);
+        std::vector<float> film_reach;
+        if (goo::overlaps(state.sources) && state.settings.overlap_film > 0)
+            film_reach = goo::support_radii(state.sources, state.settings, true);
         std::vector<wf::geometry_t> list;
         for (size_t i = 0; i < state.sources.size(); i++)
         {
@@ -103,6 +108,9 @@ class goo_node_t : public wf::scene::node_t
             // Two logical pixels cover bilinear half-resolution field reconstruction;
             // one more covers the normal's one-pixel forward difference.
             double out = reach[i] + 3, in = s.liquid.y + 3;
+            if (!film_reach.empty())
+                out = std::max(out, film_reach[i] * std::max(1.f,
+                    state.settings.overlap_film / state.settings.thickness) + 3.);
             double x1 = s.rect.x - s.rect.z, x2 = s.rect.x + s.rect.z;
             double y1 = s.rect.y - s.rect.w, y2 = s.rect.y + s.rect.w;
             auto box = [&](double a, double b, double c, double d)
@@ -184,6 +192,21 @@ class goo_node_t : public wf::scene::node_t
     void prepare()
     {
         auto next = snapshot(state.output);
+        bool overlap = goo::overlaps(next);
+        if (overlap != above_windows)
+        {
+            // With no overlap keep GO10's original placement: goo-only damage
+            // need not repaint window contents. Move the one shared surface above
+            // the windows only while it has film to composite there.
+            above_windows = overlap;
+            auto node = shared_from_this();
+            wf::scene::remove_child(node);
+            if (overlap)
+                wf::scene::add_back(state.output->node_for_layer(wf::scene::layer::OVERLAY), node);
+            else
+                wf::scene::add_front(state.output->node_for_layer(wf::scene::layer::BACKGROUND), node);
+            whole = true; // refresh the backdrop cache after changing its scene position
+        }
         if (!same(next, state.sources))
         {
             // Movement, state blooms, swells and drops excite the shared surface.
@@ -302,7 +325,11 @@ struct goo_t::impl
         {"wave_damp", &goo::settings_t::wave_damp}, {"wave_height", &goo::settings_t::wave_height},
         {"spread", &goo::settings_t::spread},       {"swirl", &goo::settings_t::swirl},
         {"release", &goo::settings_t::release},     {"shine", &goo::settings_t::shine},
-        {"relief", &goo::settings_t::relief}};
+        {"relief", &goo::settings_t::relief},
+        {"overlap_film", &goo::settings_t::overlap_film},
+        {"hover_cloudiness", &goo::settings_t::hover_cloudiness},
+        {"hover_emissivity", &goo::settings_t::hover_emissivity},
+        {"hover_distance", &goo::settings_t::hover_distance}};
     void config()
     {
         for (size_t i = 0; i < fields.size(); i++)
@@ -351,7 +378,7 @@ struct goo_t::impl
         };
         nodes[o] = n;
         goo::screens[o] = &n->state;
-        // Above wallpaper, below bottom panels and the entire workspace layer.
+        // prepare() moves this same surface above windows when overlap requires it.
         wf::scene::add_front(o->node_for_layer(wf::scene::layer::BACKGROUND), n);
         n->wake();
         screen_changed(o, true);
@@ -384,6 +411,8 @@ struct goo_t::impl
             s["gpu_ms"] = n->state.renderer.last_gpu_ms;
             s["energy"] = n->state.renderer.energy;
             s["packed"] = n->state.renderer.packed;
+            s["overlapping"] = n->state.renderer.overlapping();
+            s["highlighting"] = n->state.renderer.highlighting();
             s["sources"] = (int64_t)n->state.sources.size();
             if (data.has_member("x") && data.has_member("y") &&
                 (data["x"].is_int() || data["x"].is_double()) &&

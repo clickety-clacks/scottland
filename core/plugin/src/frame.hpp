@@ -603,6 +603,27 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             cloud_target[i] = nearness(box_distance(p, corners[i]), NEAR_RANGE);
         }
 
+        if (goo_enabled())
+        {
+            // Choose one of eight controls, then light its entire surface. The same
+            // radius + CORNER_EXTRA split is used by goo_handle; proximity is visual.
+            double extent = screen_radius() + CORNER_EXTRA;
+            bool left = p.x < r.x1 + extent, right = p.x > r.x2 - extent;
+            bool top = p.y < r.y1 + extent, bottom = p.y > r.y2 - extent;
+            cloud_target = {}; side_target = {};
+            double d = std::max(0.0, band_distance(p));
+            double range = goo_hover_distance();
+            double strength = range > 0 ? nearness(d, range) : (d <= 0 ? 1 : 0);
+            if (goo_handle(*this, p) != handle_t::none) strength = 1;
+            if ((top || bottom) && (left || right))
+                cloud_target[(bottom ? 2 : 0) + (right ? 1 : 0)] = strength;
+            else
+            {
+                std::array<double, 4> distances{std::abs(p.y-r.y1), std::abs(p.x-r.x2),
+                                               std::abs(p.y-r.y2), std::abs(p.x-r.x1)};
+                side_target[std::min_element(distances.begin(), distances.end()) - distances.begin()] = strength;
+            }
+        }
         auto dot = dot_center();
         dot_target = nearness(std::hypot(p.x - dot.x, p.y - dot.y) - DOT_RADIUS, NEAR_RANGE);
         if (!is_pressed())
@@ -617,6 +638,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     void leave()
     {
         cloud_target = {0, 0, 0, 0};
+        side_target = {};
         dot_target = 0;
         if (!is_pressed())
         {
@@ -941,6 +963,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double swell = 0.0;          // 0 at rest, 1 swollen (overshoots while moving)
     double swell_velocity = 0.0;
     std::array<double, 4> cloud{};
+    std::array<double, 4> side_cloud{};
     double dot_glow = 0.0;
     double bulge = 0.0;          // extra scale of a lifted window (springs, overshoots)
     double bulge_velocity = 0.0;
@@ -954,6 +977,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     wf::pointf_t last_pointer{0, 0};
     wf::pointf_t last_track{-1e6, -1e6};
     std::array<double, 4> cloud_target{};
+    std::array<double, 4> side_target{};
     double dot_target   = 0.0;
     double swell_target = 0.0;
     bool attention = false;
@@ -1048,7 +1072,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         // A cloudy corner keeps moving (its light shifts), so it keeps ticking.
         for (int i = 0; i < 4; i++)
         {
-            if ((std::abs(cloud[i] - cloud_target[i]) > 0.002) || (!goo_enabled() && cloud[i] > 0.002))
+            if ((std::abs(side_cloud[i] - side_target[i]) > 0.002) ||
+                (std::abs(cloud[i] - cloud_target[i]) > 0.002) || (!goo_enabled() && cloud[i] > 0.002))
             {
                 return false;
             }
@@ -1131,6 +1156,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         double ease = 1.0 - std::exp(-dt * 12.0);
         for (int i = 0; i < 4; i++)
         {
+            side_cloud[i] += (side_target[i] - side_cloud[i]) * ease;
+            if (side_cloud[i] < .002 && side_target[i] == 0) side_cloud[i] = 0;
             cloud[i] += (cloud_target[i] - cloud[i]) * ease;
             if (cloud[i] < 0.002 && cloud_target[i] == 0)
             {

@@ -82,12 +82,12 @@ def click(x, y):
     time.sleep(.15)
 
 
-def drag(x, y, dx, dy=0, live_name=None, fast=False):
+def drag(x, y, dx, dy=0, live_name=None, fast=False, steps=None):
     pointer(x, y)
     time.sleep(.12)
     before = option(live_name) if live_name else None
     button("press")
-    steps = 48 if fast else 12
+    steps = steps or (48 if fast else 12)
     for i in range(1, steps+1):
         pointer(x+dx*i/steps, y+dy*i/steps)
         time.sleep(.008 if fast else .04)
@@ -223,7 +223,8 @@ try:
     pointer(10, 690)
     goo_names = ["goo_thickness", "goo_reach", "goo_thinning", "goo_swell", "goo_noise", "goo_lump",
                  "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height", "goo_spread",
-                 "goo_swirl", "goo_release", "goo_shine", "goo_relief"]
+                 "goo_swirl", "goo_release", "goo_shine", "goo_relief",
+                 "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance"]
     for i, name in enumerate(goo_names):
         if i:
             key("KEY_DOWN")
@@ -236,9 +237,9 @@ try:
         check(name + " hover hint visible", p.text(panel_x+38, row_y+30, width=365, height=23) > 35)
         pointer(10, 690)
     key("KEY_RIGHT")
-    check("last Goo keyboard step preserved", abs(option("goo_relief")-5.1)<.01)
+    check("last Goo keyboard step preserved", abs(option("goo_hover_distance")-49)<.01)
     close_panel(panel)
-    check("Escape restores Layout and Goo, writes nothing", values() == initial and abs(option("goo_relief")-5)<.01 and not layout.exists())
+    check("Escape restores Layout and Goo, writes nothing", values() == initial and abs(option("goo_hover_distance")-48)<.01 and not layout.exists())
 
     # Both sides of all three borders, on both outputs. Pause midway to check live preview.
     panel = open_panel()
@@ -261,6 +262,13 @@ try:
     origin, width, center, rail, blend = geometry(outputs[1])
     drag(origin+center, 40, -40, live_name="center_width", fast=True)
     check("continuous fast pointer motion reaches its final preview", option("center_width") > initial["center_width"])
+    # A long, quick drag outruns the 12 px handle: the pointer must stay captured until release.
+    origin, width, center, rail, blend = geometry(outputs[1])
+    before = option("center_width")
+    drag(origin+center, 40, -220, steps=5)
+    got, want = option("center_width"), round((before+440/width*100)/.5)*.5
+    check(f"a long quick border drag follows the pointer all the way ({got} vs {want})", abs(got-want) < .011)
+    drag(origin+round(width*(.5-got/200)), 40, 220, steps=5)  # put it back for the checks below
     bands("07-border-drags")
     origin, width, center, rail, blend = geometry(outputs[1])
     pointer(origin+center, 40); time.sleep(.1)

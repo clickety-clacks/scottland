@@ -25,6 +25,7 @@ class goo_t
     std::unique_ptr<impl> p;
 };
 bool goo_enabled();
+double goo_hover_distance();
 handle_t goo_handle(const frame_t &frame, wf::pointf_t point);
 double goo_thickness(double scale, double swell);
 void goo_impulse(const frame_t &frame, float strength);

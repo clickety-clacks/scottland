@@ -57,6 +57,23 @@
             <_short>Goo relief</_short><default>5</default><min>0.5</min><max>12</max>
         </option>
 
+        <option name="goo_overlap_film" type="double">
+            <_short>Overlap film</_short><_long>Width of goo over windows behind. Higher covers a wider strip; zero hides the film.</_long>
+            <default>4</default><min>0</min><max>20</max>
+        </option>
+        <option name="goo_hover_cloudiness" type="double">
+            <_short>Control cloudiness</_short><_long>Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.</_long>
+            <default>0.65</default><min>0</min><max>1</max>
+        </option>
+        <option name="goo_hover_emissivity" type="double">
+            <_short>Control glow</_short><_long>Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.</_long>
+            <default>0.35</default><min>0</min><max>1.5</max>
+        </option>
+        <option name="goo_hover_distance" type="double">
+            <_short>Control proximity</_short><_long>How far away a control starts highlighting. Higher responds sooner; zero responds only over it.</_long>
+            <default>48</default><min>0</min><max>150</max>
+        </option>
+
         <option name="alt_hold_delay" type="int">
             <_short>Window mode Alt-alone hold (ms)</_short>
             <_long>Hold Alt alone for this long to show compositor window hints. A key or modifier pressed before the delay leaves the whole chord with the app and existing desktop shortcuts. Once entered, all keys control windows until Alt is released.</_long>

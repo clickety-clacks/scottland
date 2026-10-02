@@ -36,7 +36,11 @@ ShellRoot {
     { name: "goo_swirl", hint: "How strongly dye flows around in goo. Higher stirs more; zero stops the swirling.", title: "Dye swirl", initial: 0.9, low: 0, high: 3, step: 0.05 },
     { name: "goo_release", hint: "How quickly a window renews its dye. Higher shows state colors sooner; lower lets old colors linger.", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
     { name: "goo_shine", hint: "Brightness of reflected highlights. Higher looks glossier; zero removes the shine.", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
-    { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 }]
+    { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 },
+    { name: "goo_overlap_film", hint: "Width of goo over windows behind. Higher covers a wider strip; zero hides the film.", title: "Overlap film", initial: 4, low: 0, high: 20, step: 0.5 },
+    { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
+    { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },
+    { name: "goo_hover_distance", hint: "How far away a control starts highlighting. Higher responds sooner; zero responds only over it.", title: "Control proximity", initial: 48, low: 0, high: 150, step: 1 }]
   function gooDefaults() {
     const values = { goo: true, goo_falloff: "" }
     for (const c of gooControls) values[c.name] = c.initial
@@ -249,6 +253,9 @@ ShellRoot {
       color: "transparent"
       exclusionMode: ExclusionMode.Ignore
       mask: Region {
+        // While a border is held the whole overlay takes input, so a pointer that outruns the
+        // 12 px handle stays with the drag instead of falling through to whatever is below.
+        Region { item: dragCapture }
         Region { item: centerLeftHandle }
         Region { item: centerRightHandle }
         Region { item: railLeftHandle }
@@ -304,6 +311,9 @@ ShellRoot {
         Rectangle { x: zones.centerRight; width: zones.blend; height: parent.height
           color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28) }
 
+        property bool borderHeld: false
+        Item { id: dragCapture; width: zones.borderHeld ? zones.width : 0; height: zones.borderHeld ? zones.height : 0 }
+
         component BorderHandle: Item {
           id: handle
           required property string setting
@@ -339,7 +349,10 @@ ShellRoot {
             cursorShape: Qt.SizeHorCursor
             property real startX
             property real startValue
+            onReleased: zones.borderHeld = false
+            onCanceled: zones.borderHeld = false
             onPressed: mouse => {
+              zones.borderHeld = true
               zones.forceActiveFocus()
               startX = mapToItem(zones, mouse.x, mouse.y).x
               startValue = handle.setting === "center_width" ? root.centerWidth
