@@ -954,7 +954,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** The scale the halo and corners follow: this view's, blended toward the other form's. */
     double halo_scale() const
     {
-        double own = scale_x * (1.0 + bulge);
+        double own = presentation && presentation->cover ? presentation->scale : scale_x * (1.0 + bulge);
         return own + (morph.scale - own) * morph.shape;
     }
 

@@ -9,6 +9,8 @@ struct widget_transition_t
     bool buffer_applied = false;
     bool target_collapsed = false;
     bool card = false;
+    uint64_t entering_window = 0; // waiting launch or form morph; not a new lifecycle
+    scottland::rectf_t origin{};
 };
 std::map<uint64_t, std::unique_ptr<widget_transition_t>> widget_transitions;
 wf::wl_timer<true> widget_transition_tick;
@@ -28,10 +30,120 @@ void stop_widget_transition(wayfire_toplevel_view view)
     if (widget_transitions.empty()) widget_transition_tick.disconnect();
 }
 
+bool entering_widget(uint64_t id) const
+{
+    for (auto& [key, transition] : widget_transitions)
+        if (transition->entering_window == id) return true;
+    return false;
+}
+
+// Freeze the compositor's current window/drag composition, before hiding or moving it.
+void begin_window_widget_transition(wayfire_toplevel_view window)
+{
+    if (!window || !wf::get_core().is_gles2() || entering_widget(window->get_id())) return;
+    auto frame = frame_of(window); // recovery on load can precede apply_all()
+    if (!frame) return;
+    auto transition = std::make_unique<widget_transition_t>();
+    transition->view = window->weak_from_this();
+    transition->entering_window = window->get_id();
+    transition->origin = scene_rectangle(window, window->get_output());
+    auto pixels = std::make_shared<scottland::widget_morph_t>();
+    pixels->from = scottland::widget_image_t::capture(window, 0);
+    if (!pixels->from) return;
+    pixels->cover = true;
+    pixels->scale = pixels->from_scale = frame->halo_scale();
+    pixels->duration_ms = MORPH_MS;
+    if (frame->morphing())
+    {
+        // The same snapshot mixer freezes an unfinished drag, including its crossfade.
+        pixels->width = transition->origin.width();
+        pixels->height = transition->origin.height();
+        pixels->fade = frame->morph.fade;
+        pixels->to.buffer = frame->morph.snapshot;
+        pixels->to.box = frame->morph.snapshot_box;
+        auto g = frame->morph.other_geometry;
+        pixels->to.box.x -= g.x; pixels->to.box.y -= g.y;
+        pixels->to.width = g.width; pixels->to.height = g.height;
+        pixels->from = scottland::widget_morph_renderer().freeze(*pixels, window->get_output()->handle->scale);
+        pixels->to = {}; pixels->fade = 0;
+    }
+    pixels->width = pixels->from_width = transition->origin.width();
+    pixels->height = pixels->from_height = transition->origin.height();
+    transition->pixels = pixels;
+    window->get_transformed_node()->begin_transform_update();
+    stop_glide(window);
+    auto g = window->get_geometry();
+    pixels->dx = pixels->from_dx = transition->origin.x1 - g.x;
+    pixels->dy = pixels->from_dy = (transition->origin.y1 + transition->origin.y2 - 2 * g.y - g.height) / 2;
+    frame->damage();
+    frame->presentation = pixels;
+    frame->damage();
+    window->get_transformed_node()->end_transform_update();
+    widget_transitions[window->get_id()] = std::move(transition);
+    if (!widget_transition_tick.is_connected())
+        widget_transition_tick.set_timeout(8, [=] { return step_widget_transitions(); });
+}
+
+// The card's applied mapping/placement transaction supplies the destination rectangle.
+void adopt_window_widget_transition(widget_link_t& link)
+{
+    auto found = widget_transitions.find(link.window_id);
+    if (found == widget_transitions.end() || !found->second->entering_window) return;
+    auto widget = wf::toplevel_cast(link.widget.lock());
+    if (!widget) return;
+    auto target = scottland::widget_image_t::capture(widget, 0);
+    if (!target) return;
+    auto transition = std::move(found->second);
+    widget_transitions.erase(found);
+    transition->view = widget->weak_from_this();
+    // Hide the source while its displayed rectangle is still intact. Clearing its
+    // presentation first changes its damage footprint and leaves stale source pixels.
+    auto observer = transition.get();
+    widget_transitions[widget->get_id()] = std::move(transition);
+    auto active = wf::get_core().seat->get_active_view();
+    auto window = wf::toplevel_cast(link.window.lock());
+    bool focus_card = active == widget || active == window;
+    // Delay until the mapping transaction is applied, never animate toward pending geometry.
+    observer->pixels->requested = now_msec();
+    widget->get_transformed_node()->begin_transform_update();
+    stop_glide(widget);
+    auto& p = *observer->pixels;
+    auto g = widget->get_geometry();
+    p.right = link.rail == "right";
+    auto& r = observer->origin;
+    p.dx = p.from_dx = (p.right ? r.x2 - g.x - g.width : r.x1 - g.x);
+    p.dy = p.from_dy = (r.y1 + r.y2 - 2 * g.y - g.height) / 2;
+    p.to = std::move(target);
+    p.waiting = false; p.started = now_msec();
+    auto frame = frame_of(widget);
+    frame->damage();
+    frame->presentation = observer->pixels;
+    frame->damage();
+    widget->get_transformed_node()->end_transform_update();
+    // Install the complete presentation before enabling the card. Both bounds and
+    // cached parent transforms must change with the image, not a frame later.
+    transition_widget(link, link.lifecycle);
+    if (window)
+    {
+        window->get_transformed_node()->begin_transform_update();
+        if (auto source = frame_of(window, false)) source->presentation.reset();
+        window->get_transformed_node()->end_transform_update();
+        // Keep the hidden app on its rail for an unmarked unload/load (WG1/WG5).
+        auto real = window->get_geometry();
+        double rail_x = link.rail == "left" ? 0 : window->get_output()->get_relative_geometry().width - 1;
+        move_window(window, std::round(rail_x - real.width / 2.0),
+            std::round(link.drop.y - real.height / 2.0));
+    }
+    // A mapped card could have been selected while its root was still hidden.
+    if (focus_card) wf::get_core().default_wm->focus_raise_view(widget);
+    show_attention(link.window_id);
+}
+
 void begin_widget_transition(widget_link_t& link, bool target)
 {
     auto view = wf::toplevel_cast(link.widget.lock());
-    if (!view || !view->is_mapped() || !view->get_output() || !wf::get_core().is_gles2()) return;
+    if (!view || !view->is_mapped() || !view->get_output() || !wf::get_core().is_gles2() ||
+        widget_transitions.count(link.window_id)) return;
     auto frame = frame_of(view);
     if (!frame) return;
     auto transition = std::make_unique<widget_transition_t>();
@@ -39,6 +151,13 @@ void begin_widget_transition(widget_link_t& link, bool target)
     transition->target_collapsed = target;
     transition->card = link.card;
     auto pixels = std::make_shared<scottland::widget_morph_t>();
+    auto previous = widget_transitions.find(view->get_id());
+    if (previous != widget_transitions.end()) transition->entering_window = previous->second->entering_window;
+    if (transition->entering_window)
+    {
+        pixels->cover = true; pixels->duration_ms = MORPH_MS;
+        pixels->scale = pixels->from_scale = frame->halo_scale();
+    }
     pixels->from = frame->presentation ? scottland::widget_morph_renderer().freeze(
         *frame->presentation, view->get_output()->handle->scale) :
         scottland::widget_image_t::capture(view, link.card ? (view->get_geometry().width == 96 ? 20 : 16) : 0);
@@ -115,13 +234,31 @@ void set_widget_presentation(widget_link_t& link, bool collapsed, bool peek = fa
 
 bool step_widget_transitions()
 {
-    uint32_t now = now_msec();
     for (auto it = widget_transitions.begin(); it != widget_transitions.end();)
     {
+        // Adopting one app can insert its card later in this same traversal.
+        // A tick-wide timestamp can predate that card's start and underflow.
+        uint32_t now = now_msec();
         auto& transition = *it->second;
         auto view = wf::toplevel_cast(transition.view.lock());
         auto frame = view && view->is_mapped() ? frame_of(view, false) : nullptr;
         auto link = link_of_widget(view);
+        if (transition.entering_window && view && view->get_id() == transition.entering_window)
+        {
+            auto app_link = link_of_window(view);
+            if (frame && app_link && app_link->docked())
+            {
+                auto widget = wf::toplevel_cast(app_link->widget.lock());
+                // Wait for the atomic mapping/rail placement transaction to commit.
+                if (widget && widget->is_mapped() && widget->get_geometry() == widget->toplevel()->pending().geometry)
+                {
+                    auto next = std::next(it);
+                    adopt_window_widget_transition(*app_link);
+                    it = next;
+                } else ++it;
+                continue;
+            }
+        }
         if (!frame || !link || (!link->docked() && !link->previewing()))
         {
             if (frame) { frame->damage(); frame->presentation.reset(); frame->damage(); }
@@ -153,10 +290,11 @@ bool step_widget_transitions()
             transition.applied.clear();
             transition.surface_destroyed.disconnect();
         }
+        view->get_transformed_node()->begin_transform_update();
         frame->damage();
         p.step(now);
         ++widget_transition_steps;
-        if (p.fade >= 1)
+        if (now - p.started >= p.duration_ms)
         {
             frame->presentation.reset();
             it = widget_transitions.erase(it); // release snapshots and all observers
@@ -165,7 +303,7 @@ bool step_widget_transitions()
             ++it;
         }
         frame->damage();
-        wf::scene::update(frame, wf::scene::update_flag::GEOMETRY);
+        view->get_transformed_node()->end_transform_update();
     }
     return !widget_transitions.empty();
 }

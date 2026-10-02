@@ -23,8 +23,9 @@ exec), `scottland-widget-bus` (D-Bus, badges, mailbox, state files), the card
 | WG2 | A widget is any program: a Quickshell (QML) file, a GTK/Qt app, a web view, a TUI, anything (its window may come from a process it starts and leaves running). It runs with the user's privileges, like any app, and may use anything on the system to render itself (files, D-Bus, commands, the network). Scottland imposes no widget API. | implemented (headless) |
 | WG3 | Widgets are fully interactive: their windows get keyboard, pointer and touch input like any window. | implemented (widgets are ordinary windows; input inside one not yet tested) |
 | WG4 | Placement: a widget is free-floating on the rail, above all ordinary windows (always on top), centered where its window was dropped and kept wholly on screen with room for its halo at its widest; each drop on the rail places it again, gliding (~260 ms) from where it was let go to its place against the edge rather than jumping. Widgets are always at 100%: they never follow the zone scale, while dragged or when dropped. A widget's window is placed by Scottland as it maps (Wayfire's place plugin is told it's positioned), and keeps its screen-edge side when it changes size. Client identity is read from the toplevel’s Wayland surface resource before mapping, without unstable Wayfire headers, so rail gravity is present in the mapping transaction and changes atomically with rail placement. Resize placement uses pending geometry in that transaction, with no corrective move after a size notification. | implemented (plumbus headless 2026-10-01: 7 mapping/resize checks, including both rail changes; two extra-move checks failed before the fix; no real-screen run for this change) |
-| WG5 | Lifecycle: the real window stays alive (hidden) while widgetized, so restoring is instant. The window and its widget are tied: closing the widget closes the window (shown again first, so an app's "save changes?" question is visible), and closing the window closes the widget. Dragging the widget off the rail restores the window and dismisses the widget (not a close). A widget whose window doesn't appear within 8 s is abandoned: it's ended and the app's window restored. A widget asked to close that's still running 3 s later is ended. Ending a widget ends every process it started (each widget runs in its own systemd scope: SIGTERM, then SIGKILL after 2 s), never an unrelated process. Unloading the plugin restores every app window and ends every widget; a reload (scottland-reload) keeps them: the outgoing plugin hands its widgets to the new one. On load, any window whose center is on a rail becomes a widget again (WG1), whatever left it there; a reload also replaces Scottland's helper services when their installed code is newer. | verified for drag-off restore (plumbus); the rest implemented (headless) |
+| WG5 | Lifecycle: the real window stays alive while widgetized, so restoring is instant. Its image remains visible through startup until the card can take it over (WG22); the real window is hidden after that handoff. The window and its widget are tied: closing the widget closes the window (shown again first, so an app's "save changes?" question is visible), and closing the window closes the widget. Dragging the widget off the rail restores the window and dismisses the widget (not a close). A widget whose window doesn't appear within 8 s is abandoned: it's ended and the app's window restored. A widget asked to close that's still running 3 s later is ended. Ending a widget ends every process it started (each widget runs in its own systemd scope: SIGTERM, then SIGKILL after 2 s), never an unrelated process. Unloading the plugin restores every app window and ends every widget; a reload (scottland-reload) keeps them: the outgoing plugin hands its widgets to the new one. On load, any window whose center is on a rail becomes a widget again (WG1), whatever left it there; a reload also replaces Scottland's helper services when their installed code is newer. | verified for drag-off restore (plumbus); the rest implemented (headless) |
 | WG21 | A widget has one lifecycle: previewing, docked, restoring, closing or handed-over. One transition function applies visibility to Wayfire; renderer disable leases are resources, never independent logical flags, and are returned on unmap/unload (only handed-over app leases transfer). Collapsed intent and temporary peek presentation are independent of lifecycle. | implemented (headless) |
+| WG22 | Every window → widget transition is a continuous compositor morph, like widget → window: the visible app image moves/shrinks into the card’s place and cross-fades into it; no hide/show cut. This includes every starting-zone hint cycle, double-tap to rail, collapsed-mode arrivals, rail drops (including release before the preview is ready), Esc returning an undocked app to its original widget, and rail recovery on plugin load. The existing snapshot mixer owns the handoff; shape uses WG13’s 240 ms circle easing and contents its 180 ms fade. A card’s ordinary Wayfire map animation is suppressed so it cannot zoom/fade the composition a second time. Goo (or the fallback halo) follows the visible rectangle and interpolated scale. The app stays visible during startup; a card disappearing during the handoff restores the app and never closes it (WG5). | implemented (headless); validation below |
 | WG6 | Choosing a widget, in order: the user's assignment (`~/.config/scottland/widgets.ini`, app-id → widget), else the app's own widget (named by its `.desktop` entry, `X-Scottland-Widget=`, or installed for its app-id), else a Scottland built-in for that kind of app, else the default card (WG10). Any widget can be assigned to any app. | implemented (unit test) |
 | WG7 | A widget package is a directory with a `widget.toml` manifest (`id`, `name`, `apps` = app-id regexes it suits, `exec` = the command) and whatever the command needs. Packages are found in `$SCOTTLAND_WIDGET_PATH` (colon-separated, if set; relative entries are taken from the current directory), `~/.local/share/scottland/widgets/` (the user's), `/usr/share/scottland/widgets/` (installed with apps, removed with them) and Scottland's built-ins (`/usr/lib/scottland/widgets/`); the first package with an id wins. | implemented (unit test) |
 | WG8 | Launch context: the environment carries the window and launch identity (`SCOTTLAND_WIDGET_ID`, `_APP_ID`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID`, `_WINDOW`, `_STATE`) and the palette path (`SCOTTLAND_PALETTE`). Mutable title, rail, collapsed mode and badge come only from the complete state file, written before exec. `.desktop`-style placeholders still fill the manifest's command per argument (`%a` app-id, `%t` initial title, `%i` icon, `%p` pid, `%w` window id, `%r` initial rail, `%d` package directory, `%%`). The widget runs in its package directory. Resolved identity and traits are submitted to the plugin for that launch. See [desktop-model.md](desktop-model.md), DM4. | implemented (headless) |
@@ -40,6 +41,66 @@ exec), `scottland-widget-bus` (D-Bus, badges, mailbox, state files), the card
 | WG18 | A widget whose manifest sets `touch_drag = true` moves with a single-finger drag anywhere on it, at once (no long press), while a tap is still the widget's. For widgets that drag nothing themselves; the default card sets it. Off by default, so a widget's own finger drags (sliders, drawing) stay its own, and it's lifted with a long press as any window. The launcher tells Scottland over IPC (`scottland/widget-traits`). | implemented (headless) |
 | WG19 | Peeking at a collapsed widget: while the pointer is over a collapsed widget it shows expanded (its title and app), and collapses again when the pointer leaves; a collapsed widget that starts needing attention shows expanded for 5 seconds, then collapses. It stays collapsed throughout (Super+M's mode is unchanged): only how it's shown changes, owned by the desktop model with the rest of its presentation. | presentation mechanism implemented (plumbus headless): `collapsed` intent and `peek` are separate, and the same morph presents/ends a peek without changing the mode. Hover and five-second attention triggers are not built. |
 | WG20 | The collapse binding activates once per held key. Duplicate downs, including overlapping devices, do not toggle it again; only release of that key on all held devices rearms it (device removal clears that device). Releasing a modifier does not rearm it. No time debounce discards rapid intentional presses. Edges are tracked and logged only while the binding modifiers are held or a tracked press is in progress (including its release after the modifier); plain typing emits no collapse diagnostics. Those edges record device, input/receipt time, key and latch/mode state; activations and ignored duplicate callbacks are distinct. | verified (plumbus headless 2026-10-01: 10 input/diagnostic checks, including quiet plain-M/Shift+M typing and the tracked release after Super; duplicate down failed before the fix; device overlap/removal not exercised) |
+
+## Window-to-widget handoff (WG22)
+
+Tenet 2 (recognition) decides the unspecified startup edge: retain the window’s visible image
+until the card has a committed buffer and rail position. `widgetize` and `commit_preview`
+capture before hiding; a drop freezes the current drag composition before its renderer ends.
+If no card window appears, the app stays visible until WG5's launch timeout restores it.
+The timeout test therefore asserts visible-and-linked during startup, then visible-and-unlinked
+after eight seconds; it still checks termination of the launcher and every child. Hiding the app
+before any replacement can render would contradict WG22 and tenet 2, so the old startup-hidden
+assertion is intentionally replaced, not relaxed.
+The existing per-widget presentation resources transfer that image to the card, mixing scaled
+contents through `widget-morph.hpp` rather than adding an animation renderer. Snapshot ownership
+is independent of the linked lifecycle; the visibility projection keeps the app shown until the
+transfer. Restoration, disappearance, timeout and unload release these resources. Wayfire transform-update
+brackets propagate both old and new bounds through enclosing cached transforms; merely damaging
+the frame can leave strips of the old app image behind. The complete destination presentation is
+installed before enabling the card. Esc captures before any move back to the rail. After handoff,
+the hidden app is parked on its rail so unmarked unload/load can recover it too. Each transition
+reads its own tick time: adopting several cards can insert new transitions during iteration, whose
+start times must not be subtracted from an older unsigned tick timestamp.
+
+All non-drag rail requests funnel through `widgetize`: the window-mode cycles and double tap,
+Esc returning an undocked window to a widget, and recovery of rail windows on load. Dragging
+launches a preview and the drop funnels through `commit_preview`. Super+M and IPC/menu
+`widget-action minimize` change existing cards’ presentation only; neither widgetizes an ordinary
+window. Their collapse/expand tests remain part of the morph suite, along with collapsed arrivals.
+
+At `1e8e57f`, both starting-zone slow cycles, double taps and immediate rail drops cut; a held
+rail drag already morphed. Non-preview widgetization hid the app before card startup, while drops
+ended the live morph and showed the card without retaining its intermediate image. Wayfire’s
+ordinary card map zoom/fade further distorted the handoff. The new suite retains frame-by-frame
+PNG screenshots, sampled scene rectangles, crossfade pixels and goo-distance observations in
+its isolated session’s results directory; it also checks a disappearing card mid-morph.
+
+### WG22 validation (2026-10-02, osanwe headless)
+
+Merged `origin/main` at `1372aaf` (goo overlap/hover) into `widget-morph-in`. Every run used
+its own `SCOTTLAND_HEADLESS_DIR`; neither the main checkout nor `wayland-1` was touched.
+Geometry sampling uses a separate IPC connection so screenshot encoding cannot undersample
+the 240 ms transition. The existing shape, pixel, timing, goo and cleanup assertions remain;
+new checks cover concurrent arrivals, app survival on unload, rail recovery, and marked reload
+during entry, including the service/scene lifecycle audit.
+
+The earlier WIP logs contain `No space left on device` failures writing attention-source state
+and copying the reload plugin. Prior test artifacts were preserved outside the runtime tmpfs
+before rerunning. Those failures were not evidence of a valid lifecycle regression run.
+
+| Suite | Result |
+|---|---|
+| `tests/widget-morph-test.sh` (goo on) | **185 passed, 0 failed** |
+| `SCOTTLAND_TEST_GOO=0 tests/widget-morph-test.sh` | **162 passed, 0 failed** |
+| `tests/widgets-test.sh` | **146 passed, 0 failed**, including 43 widget-input checks |
+| `tests/windowing-test.sh` | **84 passed, 0 failed** |
+| `tests/hint-style-test.sh` | **51 passed, 0 failed** |
+
+The two final morph runs ran one at a time; an earlier concurrent run missed the existing
+reversal pixel timing bound. Assertions were not widened. Final logs, sampled geometry and
+PNG frames are retained locally in `build/wg22-validation.tar.gz`. This is headless validation,
+not physical-display verification or a live-session deployment.
 
 ## Presentation rendering (WG16; mechanism for WG19)
 
