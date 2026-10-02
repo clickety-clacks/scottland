@@ -83,11 +83,11 @@ check("WG8 placeholders fill per argument (a title with spaces stays one argumen
 env = captured.get("env", {})
 check("WG8 the launch environment carries the window's identity",
       env.get("SCOTTLAND_WIDGET_ID") == "42" and env.get("SCOTTLAND_WIDGET_PID") == "1234"
-      and env.get("SCOTTLAND_WIDGET_RAIL") == "left" and env.get("SCOTTLAND_WIDGET_STATE", "").endswith("/42.json"))
+      and "SCOTTLAND_WIDGET_RAIL" not in env and env.get("SCOTTLAND_WIDGET_STATE", "").endswith("/42.json"))
 
 check("WG8 the widget runs in its package directory", captured.get("cwd") == f"{root}/data/scottland/widgets/mine")
-check("the launcher leaves the .desktop id for the widget service in its own file, not the state file",
-      os.path.exists(f"{launch.RUNTIME}/42.launch.json") and not os.path.exists(f"{launch.RUNTIME}/42.json"))
+check("the launcher doesn't write desktop identity or state files",
+      not os.path.exists(f"{launch.RUNTIME}/42.launch.json") and not os.path.exists(f"{launch.RUNTIME}/42.json"))
 
 # WG8, for real: every placeholder, exec'd in a child process.
 import subprocess
@@ -109,18 +109,18 @@ check("WG8 (exec) every placeholder fills, unknown ones stay",
       argv == ["org.example.Mail2", "A b ${HOME} $$", "mail-two", "99", "7", "right", f"{root}/data/scottland/widgets/mine", "%", "%z"])
 check("WG8 (exec) runs in the package directory", cwd == f"{root}/data/scottland/widgets/mine")
 check("WG8 (exec) the whole launch environment",
-      wenv.get("SCOTTLAND_WIDGET_APP_ID") == "org.example.Mail2" and wenv.get("SCOTTLAND_WIDGET_TITLE") == "A b ${HOME} $$"
+      wenv.get("SCOTTLAND_WIDGET_APP_ID") == "org.example.Mail2" and "SCOTTLAND_WIDGET_TITLE" not in wenv
       and wenv.get("SCOTTLAND_WIDGET_ICON") == "mail-two" and wenv.get("SCOTTLAND_WIDGET_NAME") == "Mail Two"
       and wenv.get("SCOTTLAND_WIDGET_DESKTOP") == "org.example.Mail2" and wenv.get("SCOTTLAND_WIDGET_WINDOW") == "7"
-      and wenv.get("SCOTTLAND_WIDGET_BADGE") == "0"
+      and "SCOTTLAND_WIDGET_BADGE" not in wenv
       and wenv.get("SCOTTLAND_WIDGET_STATE") == f"{root}/runtime/scottland/widgets/wl-test/{unit}.json"
       and wenv.get("SCOTTLAND_PALETTE") == f"{root}/runtime/scottland/wl-test.palette.json")
 
 scoped = os.path.exists(f"{root}/runtime/systemd")
 check("WG5 (exec) the widget ran in its own systemd scope" if scoped else "WG5 (exec) no user manager: the fallback ran",
       cgroup.rstrip().endswith("/" + unit) if scoped else unit not in cgroup)
-check("WG8 (exec) the launch file is named by its launch",
-      os.path.exists(f"{root}/runtime/scottland/widgets/wl-test/{unit}.launch.json"))
+check("WG8 (exec) mutable values aren't captured in the launch environment",
+      all("SCOTTLAND_WIDGET_" + field not in wenv for field in ("TITLE", "RAIL", "MINIMIZED", "BADGE")))
 
 print("\nall launcher checks passed" if not fails else f"\n{fails} launcher check(s) failed")
 sys.exit(1 if fails else 0)

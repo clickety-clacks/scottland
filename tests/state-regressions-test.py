@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Deterministic behavior assertions, independent of the model/scene audit."""
+import json
+import os
+import socket
+import struct
+import select
+import shlex
+import subprocess
+import time
+import shutil
+import tempfile
+from pathlib import Path
+
+class Ipc:
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(10)
+        self.sock.connect(os.environ['WAYFIRE_SOCKET'])
+    def receive(self):
+        def exactly(n):
+            result = b''
+            while len(result) < n:
+                chunk = self.sock.recv(n-len(result))
+                if not chunk: raise ConnectionError('compositor disconnected')
+                result += chunk
+            return result
+        return json.loads(exactly(struct.unpack('<I', exactly(4))[0]))
+    def call(self, method, data=None):
+        body = json.dumps({'method': method, 'data': data or {}}).encode()
+        self.sock.sendall(struct.pack('<I', len(body)) + body)
+        result = self.receive()
+        assert not isinstance(result, dict) or not result.get('error'), result
+        return result
+
+ipc = Ipc()
+def key(code, state): ipc.call('stipc/feed_key', {'key': code, 'state': state})
+def drag(window, x, absolute=False):
+    view = next(v for v in ipc.call('scottland/layout-state')['views'] if v['id'] == window)
+    info = next(v for v in ipc.call('window-rules/list-views') if v['id'] == window)
+    output = next(o for o in ipc.call('window-rules/list-outputs') if o['id'] == info['output-id'])
+    origin = output['geometry']
+    f = view['frame']; sx = f['x'] + 20 + origin['x']; sy = f['y'] + f['height']/2 + origin['y']
+    if not absolute: x += origin['x']
+    ipc.call('stipc/move_cursor', {'x': round(sx), 'y': round(sy)})
+    time.sleep(.1)
+    key('KEY_LEFTMETA', True)
+    ipc.call('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    for i in range(1, 13):
+        ipc.call('stipc/move_cursor', {'x': round(sx+(x-sx)*i/12), 'y': round(sy)})
+        time.sleep(.025)
+    time.sleep(.4)
+    ipc.call('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    key('KEY_LEFTMETA', False)
+    time.sleep(.5)
+
+def reload_plugin():
+    with tempfile.TemporaryDirectory() as directory:
+        fresh = Path(directory) / 'libscottland-fs-reload.so'
+        shutil.copyfile('build/libscottland.so', fresh)
+        plugins = ipc.call('wayfire/get-config-option', {'option': 'core/plugins'})['value']
+        changed = ' '.join(str(fresh) if p == 'scottland' or '/libscottland-' in p else p for p in plugins.split())
+        mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.reloading')
+        mark.touch()
+        try:
+            ipc.call('wayfire/set-config-options', {'core/plugins': changed})
+            time.sleep(.8)
+        finally: mark.unlink(missing_ok=True)
+        time.sleep(.7)
+
+clients = []
+def open_app(app_id):
+    clients.append(subprocess.Popen(['foot', '--app-id', app_id, '-T', app_id, '-W', '35x8', 'sleep', '600'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    time.sleep(.7)
+    return next(v['id'] for v in ipc.call('window-rules/list-views') if v['app-id'] == app_id)
+
+def main():
+    try:
+        ipc.call('wayfire/set-config-options', {'scottland/sounds': False})
+        width = ipc.call('window-rules/list-outputs')[0]['geometry']['width']
+        window = open_app('scottland-regression-daemon')
+        drag(window, width-6)
+        time.sleep(.3)
+        assert len(ipc.call('scottland/widgets')['widgets']) == 1
+        subprocess.run(['python3', 'tests/model-process-test.py', '--reload'], check=True)
+        print('PASS  unscoped launcher exit after marked reload clears PID while forked widget survives', flush=True)
+        ipc.call('window-rules/close-view', {'id': window})
+        time.sleep(.7)
+        slow = open_app('scottland-regression-slow')
+        drag(slow, width-6)
+        full = open_app('scottland-regression-full')
+        ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': True})
+        time.sleep(.5)
+        assert not any(v['title'] == 'regression-late-widget' for v in ipc.call('scottland/layout-state')['views'])
+        assert ipc.call('scottland/desktop-model')['focus'], 'fixture must promote fullscreen before widget maps'
+        time.sleep(4)
+        widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
+        assert widget['widget'] and widget['hidden'], widget
+        assert ipc.call('window-rules/get-focused-view')['info']['id'] == full
+        artifacts = Path(os.environ['XDG_RUNTIME_DIR'])/'scottland-model-artifacts'
+        artifacts.mkdir(exist_ok=True)
+        subprocess.run(['grim',str(artifacts/'regression-late-fullscreen.png')],check=True)
+        print('PASS  widget mapping late during fullscreen stays hidden and cannot steal focus', flush=True)
+        outputs = ipc.call('window-rules/list-outputs')
+        assert len(outputs) == 2
+        # Move an ordinary window to the other screen with real pointer input.
+        other = next(o for o in outputs if o['name'] not in ipc.call('scottland/desktop-model')['focus'])
+        g = other['geometry']
+        foreground = open_app('scottland-regression-other-screen')
+        drag(foreground, g['x'] + g['width']//2, absolute=True)
+        time.sleep(.5)
+        assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
+        focus = ipc.call('scottland/desktop-model')['focus']
+        assert focus, 'fixture must retain fullscreen promotion on the first output'
+        reload_plugin()
+        assert ipc.call('scottland/desktop-model')['focus'] == focus
+        widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
+        assert widget['hidden']
+        assert ipc.call('window-rules/get-focused-view')['info']['id'] == foreground
+        subprocess.run(['grim',str(artifacts/'regression-other-output-reload.png')],check=True)
+        print('PASS  reload retains fullscreen focus on an output without keyboard focus', flush=True)
+        ipc.call('wm-actions/set-fullscreen', {'view_id': full, 'state': False})
+        time.sleep(.7)
+        widget = next(v for v in ipc.call('scottland/layout-state')['views'] if v['title'] == 'regression-late-widget')
+        assert not widget['hidden']
+        print('PASS  late widget reappears after leaving fullscreen', flush=True)
+        with tempfile.TemporaryDirectory() as directory:
+            trigger = Path(directory)/'change-app-id'
+            client = subprocess.Popen(['python3','tests/app-id-app.py',str(trigger)])
+            clients.append(client)
+            time.sleep(.8)
+            watch = Ipc()
+            before = watch.call('scottland/subscribe', {'slice': 'desktop'})
+            original = next(v for v in before['windows'] if v['app_id'] == 'org.scottland.IdentityBefore')
+            trigger.touch()
+            deadline = time.monotonic()+4
+            updated = None
+            while time.monotonic() < deadline:
+                if not select.select([watch.sock], [], [], .3)[0]: continue
+                event = watch.receive()
+                candidate = next(v for v in event['windows'] if v['id'] == original['id'])
+                if candidate['app_id'] == 'org.scottland.IdentityAfter':
+                    updated = candidate
+                    assert event['version'] > before['version']
+                    break
+            assert updated, 'app-ID-only change must arrive through the subscription'
+            assert all(updated[k] == original[k] for k in ('title','x','y','width','height'))
+            late = ipc.call('scottland/desktop-model')
+            assert next(v for v in late['windows'] if v['id'] == original['id'])['app_id'] == 'org.scottland.IdentityAfter'
+            watch.sock.close()
+            print('PASS  app-ID-only client change advances subscription and late-read identity', flush=True)
+        # The actual event-loop helper must stay running while its source keeps listing
+        # a closed window, then continue updating attention for another live window.
+        stale = open_app('scottland-attention-stale')
+        live = open_app('scottland-attention-live')
+        open_app('scottland-attention-foreground')
+        with tempfile.TemporaryDirectory() as directory:
+            listing = Path(directory)/'entries.json'
+            listing.write_text(json.dumps([{'window': stale}]))
+            lister = Path(directory)/'list.py'
+            lister.write_text('import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text())')
+            config = Path(directory)/'source.ini'
+            config.write_text('[source]\nlist = '+shlex.join(['python3',str(lister),str(listing)])+'\ninterval = 0.5\n')
+            runner = """import configparser,importlib.machinery,importlib.util,sys
+loader=importlib.machinery.SourceFileLoader('attention',sys.argv[1])
+module=importlib.util.module_from_spec(importlib.util.spec_from_loader('attention',loader)); loader.exec_module(module)
+config=configparser.ConfigParser(interpolation=None); config.read(sys.argv[2])
+sys.exit(module.Service([module.Source('closed-listing-test',config['source'])]).run())
+"""
+            helper = subprocess.Popen(['python3','-c',runner,str(Path('core/libexec/scottland-attention-sources').resolve()),str(config)])
+            try:
+                time.sleep(.8)
+                assert helper.poll() is None
+                assert 'closed-listing-test' in next(v for v in ipc.call('scottland/desktop-model')['windows'] if v['id'] == stale)['attention']
+                ipc.call('window-rules/close-view', {'id': stale})
+                time.sleep(1.2)  # at least two listings still contain the now-closed ID
+                assert helper.poll() is None, 'attention helper died after closing a listed window'
+                listing.write_text(json.dumps([{'window': stale}, {'window': live}]))
+                time.sleep(.8)
+                assert helper.poll() is None
+                assert 'closed-listing-test' in next(v for v in ipc.call('scottland/desktop-model')['windows'] if v['id'] == live)['attention']
+                print('PASS  running attention helper survives a stale closed-window listing and updates another window', flush=True)
+            finally:
+                if helper.poll() is None: helper.terminate()
+                helper.wait(timeout=5)
+
+
+
+    finally:
+        for client in clients:
+            if client.poll() is None: client.terminate()
+
+if __name__ == '__main__':
+    main()
