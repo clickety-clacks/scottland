@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 
 // A stack of numeric settings, one row each: the whole row is the slider (click or drag anywhere
 // sets it), the label on the left, the value large on the right, rows joined in one rounded block
@@ -19,15 +20,54 @@ FocusScope {
   property color foreground: "#e6e6e9"
   property color accent: "#7aa2f7"
   property color modified: accent
+  property color hintBackground: "#1c1d22"
+  property color hintForeground: foreground
+  property color hintAccent: accent
+  property string hintFontFamily: "sans-serif"
+  property real textScale: 1
+  readonly property string hintStyle: [hintBackground, hintForeground, hintAccent, hintFontFamily, textScale].join("|")
+  property bool refreshingHint: false
+  function finishHintRefresh() { refreshingHint = false }
+  onHintStyleChanged: {
+    // Wayfire can retain a popup's old buffer when its live font/size changes. Remapping
+    // just the passive hint refreshes its pixels and geometry without disturbing input.
+    if (hinted >= 0) {
+      refreshingHint = true
+      Qt.callLater(finishHintRefresh)
+    }
+  }
+  // The scroll viewport supplies its offset so popups follow rows and hide when clipped.
+  property Item viewport: null
+  property real scrollOffset: 0
   property int rowHeight: 58
   property int selected: 0
   property string typed: ""
   property int hovered: -1
-  readonly property int hinted: hovered >= 0 ? hovered : activeFocus ? selected : -1
+  property bool keyboardHints: false
+  readonly property int hinted: hovered >= 0 ? hovered : keyboardHints && activeFocus ? selected : -1
+  property point lastPointer: Qt.point(-1, -1)
   signal changed(string id, real value)
 
   implicitHeight: rows.length * rowHeight + Math.max(0, rows.length - 1)
   activeFocusOnTab: true
+
+  // Scrolling moves rows under a stationary pointer and generates hover events too.
+  // Only a change in screen coordinates should take precedence over keyboard selection.
+  HoverHandler {
+    id: stackHover
+    function updateHint() {
+      const position = stack.mapToGlobal(point.position.x, point.position.y)
+      if (position.x === stack.lastPointer.x && position.y === stack.lastPointer.y) return
+      stack.lastPointer = position
+      stack.hovered = stack.clamp(Math.floor(point.position.y / (stack.rowHeight + 1)), 0, stack.rows.length - 1)
+      stack.keyboardHints = false
+    }
+    onPointChanged: if (hovered) updateHint()
+    onHoveredChanged: {
+      if (hovered) updateHint()
+      else { stack.hovered = -1; stack.lastPointer = Qt.point(-1, -1) }
+    }
+  }
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
   function valueOf(row) { return Number(values[row.id]) }
@@ -78,6 +118,7 @@ FocusScope {
     } else return  // Escape, Return and the rest go to the panel
     // The most recent input decides which row explains itself. A stationary pointer
     // must not hide the hint for a newly keyboard-selected row.
+    keyboardHints = true
     hovered = -1
     event.accepted = true
   }
@@ -137,7 +178,7 @@ FocusScope {
           Text {
             id: valueText
             anchors.right: parent.right; anchors.rightMargin: 18
-            y: rowItem.index === stack.hinted ? 3 : (stack.rowHeight - height) / 2
+            y: (stack.rowHeight - height) / 2
             text: stack.shown(rowItem.modelData, rowItem.index)
             color: stack.isModified(rowItem.modelData) ? stack.modified : stack.foreground
             font.pixelSize: 21
@@ -145,22 +186,61 @@ FocusScope {
             font.features: { "tnum": 1 }
           }
 
-          Text {
-            anchors { left: parent.left; right: parent.right; bottom: track.bottom
-              leftMargin: 18; rightMargin: 18; bottomMargin: 4 }
-            visible: rowItem.index === stack.hinted
-            text: rowItem.modelData.hint || ""
-            color: stack.foreground
-            opacity: 0.85
-            font.pixelSize: 11
-            wrapMode: Text.WordWrap
-            maximumLineCount: 2
+          PopupWindow {
+            id: hint
+            // Position mapping isn't reactive; the viewport offset explicitly refreshes it.
+            readonly property real rowY: {
+              stack.scrollOffset
+              return stack.viewport ? rowItem.mapToItem(stack.viewport, 0, 0).y : 0
+            }
+            visible: stack.visible && !stack.refreshingHint && rowItem.index === stack.hinted && !!rowItem.modelData.hint
+              && (!stack.viewport || (rowY >= 0 && rowY + stack.rowHeight <= stack.viewport.height + 1))
+            onRowYChanged: if (visible) anchor.updateAnchor()
+            anchor.item: rowItem
+            anchor.rect: Qt.rect(-28, 0, rowItem.width + 56, stack.rowHeight)
+            anchor.edges: Edges.Right
+            anchor.gravity: Edges.Right
+            // Flip across the whole row at the screen edge. Never slide horizontally over it.
+            anchor.adjustment: PopupAdjustment.FlipX | PopupAdjustment.SlideY
+            implicitWidth: 320
+            implicitHeight: hintContent.implicitHeight + 28
+            color: "transparent"
+            grabFocus: false
+            mask: Region {} // empty input region: pointer and keyboard stay with the controls
+
+            Rectangle {
+              anchors.fill: parent
+              radius: 10
+              color: stack.hintBackground
+              border.color: stack.hintAccent
+              Column {
+                id: hintContent
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 14 }
+                spacing: 6
+                // Repeating the label keeps the association clear on either side of the row.
+                Text {
+                  width: parent.width
+                  text: rowItem.modelData.label
+                  color: stack.hintAccent
+                  font.family: stack.hintFontFamily
+                  font.pixelSize: 15 * stack.textScale
+                  font.weight: Font.DemiBold
+                  wrapMode: Text.WordWrap
+                }
+                Text {
+                  width: parent.width
+                  text: rowItem.modelData.hint || ""
+                  color: stack.hintForeground
+                  font.family: stack.hintFontFamily
+                  font.pixelSize: 15 * stack.textScale
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
           }
 
           MouseArea {
             hoverEnabled: true
-            onEntered: stack.hovered = rowItem.index
-            onExited: if (stack.hovered === rowItem.index) stack.hovered = -1
             width: parent.width; height: stack.rowHeight
             preventStealing: true
             cursorShape: Qt.SizeHorCursor
@@ -170,13 +250,13 @@ FocusScope {
             }
             onPressed: mouse => {
               stack.forceActiveFocus()
+              stack.keyboardHints = false
               stack.typed = ""
               stack.selected = rowItem.index
               apply(mouse.x)
             }
             onPositionChanged: mouse => {
               if (pressed) apply(mouse.x)
-              else stack.hovered = rowItem.index
             }
             onDoubleClicked: stack.reset(rowItem.index)
           }

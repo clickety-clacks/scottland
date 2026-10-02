@@ -82,6 +82,22 @@ ShellRoot {
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
     blend_width: "Center edge softness" })
 
+  // The session palette carries theme colors and the desktop's interface font/text scale.
+  property var palette: ({})
+  FileView {
+    path: Quickshell.env("XDG_RUNTIME_DIR") + "/scottland/" + Quickshell.env("WAYLAND_DISPLAY") + ".palette.json"
+    printErrors: false
+    watchChanges: true
+    onFileChanged: reload()
+    onLoaded: {
+      try { root.palette = JSON.parse(text()) } catch (error) { root.palette = ({}) }
+    }
+  }
+  readonly property color hintBackground: palette.background || "#1c1d22"
+  readonly property color hintForeground: palette.foreground || textColor
+  readonly property color hintAccent: palette.accent || accent
+  readonly property string hintFontFamily: palette.font_family || Qt.application.font.family
+  readonly property real textScale: Math.max(0.5, Math.min(3, Number(palette.text_scale) || 1))
   readonly property color panelColor: "#f21c1d22"
   readonly property color textColor: "#e6e6e9"
   readonly property color dimText: "#9a9ba3"
@@ -494,6 +510,13 @@ ShellRoot {
           Layout.fillWidth: true
           foreground: root.textColor
           accent: root.accent
+          hintBackground: root.hintBackground
+          hintForeground: root.hintForeground
+          hintAccent: root.hintAccent
+          hintFontFamily: root.hintFontFamily
+          textScale: root.textScale
+          viewport: gooScroll
+          scrollOffset: gooScroll.contentItem.contentY
           focus: true
           rows: [
             { id: "blend_width", label: "Center edge softness", min: 0, max: 300, step: 1, largeStep: 10,
@@ -530,6 +553,13 @@ ShellRoot {
           Layout.fillWidth: true
           foreground: root.textColor
           accent: root.accent
+          hintBackground: root.hintBackground
+          hintForeground: root.hintForeground
+          hintAccent: root.hintAccent
+          hintFontFamily: root.hintFontFamily
+          textScale: root.textScale
+          viewport: gooScroll
+          scrollOffset: gooScroll.contentItem.contentY
           rows: root.gooControls.map(c => ({ id: c.name, label: c.title, min: c.low, max: c.high,
             hint: c.hint, step: c.step, largeStep: c.step * 10, decimals: c.step < 0.01 ? 3 : c.step < 1 ? 2 : 0 }))
           values: root.gooValues

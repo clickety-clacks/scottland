@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """S11-S13, S1-S5 and S10 via real stipc input in a caller-owned headless session.
-Run with tests/headless.sh run. Requires two outputs; screenshots and logs are retained in
+Run with tests/headless.sh run. Requires two outputs and tesseract; screenshots and logs are retained in
 build/settings-help-evidence. No live config, session or services are used.
 """
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 import socket
 import struct
@@ -104,6 +106,15 @@ class Pixels:
     def pixel(self, x, y):
         pos = round(y)*self.img.get_rowstride()+round(x)*self.img.get_n_channels()
         return tuple(self.data[pos:pos+3])
+    def hint(self, row_y, label, x=None):
+        # Inspect the separate surface beside the panel, not white pixels in a slider.
+        x = panel_x + 568 if x is None else x
+        y = max(0, row_y - 130)
+        crop = self.img.new_subpixbuf(round(x), round(y), 320, min(320, self.img.get_height()-round(y)))
+        _, png = crop.save_to_bufferv("png", [], [])
+        result = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "6"], input=png,
+                                capture_output=True, check=True).stdout.decode()
+        return label.lower() in re.sub(r"\s+", " ", result).lower()
     def text(self, x, y, width=465, height=24):
         return sum(min(c) > 145 and max(c)-min(c) < 45
                    for yy in range(round(y), round(y+height))
@@ -185,13 +196,17 @@ try:
     bands("01-softness-bands")
     pointer(panel_x+200, 201); time.sleep(.12)
     p = shot("02-layout-hover")
-    check("hover shows first hint over slider", p.text(panel_x+38, 205) > 80)
+    check("hover shows first hint in a popout beside the slider", p.hint(176, "Center edge softness"))
+    check("row contains only its label and value", p.text(panel_x+38, 219, width=365, height=12) < 10)
+    pointer(10, 690); time.sleep(.15)
+    p = shot("02a-layout-leave")
+    check("leaving a hovered row hides its popout", not p.hint(176, "Center edge softness"))
     pointer(panel_x+200, 259); time.sleep(.12)
     p = shot("03-layout-hover-second")
-    check("hover switches hint to second row", p.text(panel_x+38, 274, width=365, height=14) > 40 and p.text(panel_x+38, 215, width=365, height=14) < 10)
+    check("hover switches popout to second row", p.hint(235, "Center zone width") and not p.hint(235, "Center edge softness"))
     pointer(panel_x+200, 318); time.sleep(.12)
     p = shot("04-layout-hover-rail")
-    check("rail row explains itself", p.text(panel_x+38, 323) > 80)
+    check("rail row explains itself in a popout", p.hint(294, "Widget rail width"))
     # Click focuses the stack; pointer elsewhere then keyboard selection supplies the hint.
     click(panel_x+250, 195)
     pointer(10, 690)
@@ -200,11 +215,10 @@ try:
     key("KEY_DOWN")
     p = shot("05-layout-keyboard-pointer-stationary")
     check("keyboard selection wins over a stationary pointer on another row",
-          p.text(panel_x+38, 274, width=365, height=14) > 40
-          and p.text(panel_x+38, 215, width=365, height=14) < 10)
+          p.hint(235, "Center zone width") and not p.hint(235, "Center edge softness"))
     pointer(10, 690)
     p = shot("05-layout-keyboard")
-    check("keyboard selection shows hint without pointer hover", p.text(panel_x+38, 264) > 80)
+    check("keyboard selection shows popout without pointer hover", p.hint(235, "Center zone width"))
     before = option("center_width")
     key("KEY_RIGHT")
     check("keyboard still adjusts center", abs(option("center_width")-round((before+.5)*2)/2) < .01)
@@ -215,6 +229,13 @@ try:
     bands("06-softness-live-slider")
     key("KEY_BACKSPACE"); key("KEY_BACKSPACE"); key("KEY_BACKSPACE"); key("KEY_BACKSPACE")
     check("reset restores opening softness", option("blend_width") == initial["blend_width"])
+    # The bubble never covers or steals a held slider drag.
+    pointer(panel_x+180, 195); time.sleep(.12); button("press")
+    pointer(panel_x+340, 195); time.sleep(.15)
+    p = shot("06a-held-slider-popout")
+    check("popout stays beside a slider during its drag", p.hint(176, "Center edge softness")
+          and option("blend_width") > 150)
+    button("release"); key("KEY_BACKSPACE")
 
     # Every Goo row: keyboard reaches and reveals it, then hover it without changing value.
     click(panel_x+400, 150)
@@ -225,21 +246,91 @@ try:
                  "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height", "goo_spread",
                  "goo_swirl", "goo_release", "goo_shine", "goo_relief",
                  "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance"]
+    goo_labels = ["Border thickness", "Reach", "Bridge draw", "Swell", "Mess", "Lump size",
+                  "Drift", "Wave speed", "Wave persistence", "Wave height", "Dye spread", "Dye swirl",
+                  "Dye release", "Shine", "Relief", "Overlap film", "Control cloudiness", "Control glow", "Control proximity"]
+    # Moving content under an unmoving pointer must not count as new pointer input.
+    pointer(panel_x+220, 250)
+    for _ in range(18):
+        key("KEY_DOWN")
+    p = shot("goo-keyboard-scroll-pointer-stationary")
+    check("keyboard scrolling keeps the selected hint under a stationary pointer",
+          p.hint(550, "Control proximity") and not p.hint(550, "Dye release"))
+    for _ in range(18):
+        key("KEY_UP")
+    # Restore the top of the viewport too (Up reveals the first row, leaving the switch
+    # above it scrolled away). The per-row checks below start with the switch visible.
+    click(panel_x+120, 150)
+    click(panel_x+400, 150)
+    pointer(10, 690)
     for i, name in enumerate(goo_names):
         if i:
             key("KEY_DOWN")
         # revealRow pins rows below the first seven to the bottom of the 432pt viewport.
         row_y = min(220+i*59, 176+432-58)
         p = shot("goo-keyboard-"+name)
-        check(name + " keyboard hint visible", p.text(panel_x+38, row_y+30, width=365, height=23) > 35)
+        check(name + " keyboard hint visible", p.hint(row_y, goo_labels[i]))
         pointer(panel_x+220, row_y+15); time.sleep(.1)
         p = shot("goo-hover-"+name)
-        check(name + " hover hint visible", p.text(panel_x+38, row_y+30, width=365, height=23) > 35)
+        check(name + " hover hint visible", p.hint(row_y, goo_labels[i]))
         pointer(10, 690)
     key("KEY_RIGHT")
     check("last Goo keyboard step preserved", abs(option("goo_hover_distance")-49)<.01)
+    drag(panel_x+535, 480, 0, 120)
+    p = shot("goo-scrolled-away")
+    check("scrolling the selected row out of view hides its popout", not p.hint(550, "Control proximity"))
     close_panel(panel)
     check("Escape restores Layout and Goo, writes nothing", values() == initial and abs(option("goo_hover_distance")-48)<.01 and not layout.exists())
+    p = shot("goo-closed")
+    check("closing settings leaves no hint surface", not p.hint(550, "Control proximity"))
+
+    # Real palette file for this isolated session only: exercise the settings palette reader,
+    # live theme changes, interface font and text scaling without changing desktop preferences.
+    palette_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
+    old_palette = palette_path.read_bytes() if palette_path.exists() else None
+    try:
+        panel = open_panel()
+        pointer(panel_x+200, 195); time.sleep(.15)
+        palette_path.write_text(json.dumps(dict(background="#eff1f8", foreground="#20212a",
+            accent="#3855aa", muted="#626473", font_family="DejaVu Serif", text_scale=1.5)))
+        time.sleep(.5)
+        p = shot("06b-themed-large-popout")
+        check("popout follows live theme colors", p.pixel(panel_x+870, 205) == (239, 241, 248))
+        check("scaled interface text remains readable outside the panel", p.hint(176, "Center edge softness"))
+        # Measure a line's glyph height, excluding the background outside the bubble.
+        run = tallest = 0
+        for y in range(400):
+            ink = p.pixel(panel_x+870, y) == (239, 241, 248) and any(
+                max(p.pixel(x, y)) < 100 for x in range(round(panel_x+582), round(panel_x+850)))
+            run = run + 1 if ink else 0
+            tallest = max(tallest, run)
+        check("interface text scale enlarges hint glyphs", tallest >= 15)
+        close_panel(panel)
+    finally:
+        if old_palette is None:
+            palette_path.unlink(missing_ok=True)
+        else:
+            palette_path.write_bytes(old_palette)
+
+    # Quickshell confines imports to the config directory: stage the actual component with
+    # the fixture, without editing or copying anything into the installed settings directory.
+    fixture_dir = art / "edge-fixture"
+    fixture_dir.mkdir(exist_ok=True)
+    shutil.copyfile(repo / "tests/HintPopoutFixture.qml", fixture_dir / "shell.qml")
+    shutil.copyfile(repo / "core/settings/ParameterStack.qml", fixture_dir / "ParameterStack.qml")
+    fixture = subprocess.Popen(["qs", "-n", "-p", str(fixture_dir)], stdout=log, stderr=log)
+    clients.append(fixture); time.sleep(.8)
+    check("edge fixture maps", fixture.poll() is None)
+    # The fixture uses the active output, as does the main panel.
+    edge_x = panel_x + 280 + 640 - 24 - 560
+    pointer(edge_x+180, 220); time.sleep(.2)
+    p = shot("06c-popout-flipped-left")
+    check("right-edge row flips its popout to the left on the same output",
+          p.hint(196, "Center zone width", x=edge_x-328))
+    pointer(10, 690); time.sleep(.15)
+    p = shot("06d-flipped-popout-leave")
+    check("flipped popout hides on pointer leave", not p.hint(196, "Center zone width", x=edge_x-328))
+    fixture.terminate(); fixture.wait(timeout=5)
 
     # Both sides of all three borders, on both outputs. Pause midway to check live preview.
     panel = open_panel()
@@ -330,13 +421,21 @@ try:
             break
         time.sleep(.1)
     assert view, "click-through fixture did not map"
-    ipc("window-rules/configure-view", dict(id=view["id"], geometry=dict(x=950,y=350,width=280,height=160)))
+    ipc("window-rules/configure-view", dict(id=view["id"], geometry=dict(x=950,y=150,width=280,height=160)))
     time.sleep(.4)
     view = next(v for v in ipc("scottland/layout-state")["views"] if v["id"] == view["id"])
     output_id = next(v for v in ipc("window-rules/list-views") if v["id"] == view["id"])["output-id"]
     origin = next(o["geometry"]["x"] for o in outputs if o["id"] == output_id)
     frame = view["frame"]
-    click(origin+frame["x"]+frame["width"]/2, frame["y"]+frame["height"]/2)
+    # Keep the keyboard hint visible while moving onto the app beneath it.
+    click(panel_x+250, 195)
+    key("KEY_RIGHT")
+    pointer(panel_x+670, 205); time.sleep(.15)
+    p = shot("09a-popout-over-app")
+    check("hint is visible above the click-through fixture", p.hint(176, "Center edge softness")
+          and origin+frame["x"] < panel_x+670 < origin+frame["x"]+frame["width"]
+          and frame["y"] < 205 < frame["y"]+frame["height"])
+    click(panel_x+670, 205)
     key("KEY_A"); key("KEY_ENTER")
     for _ in range(30):
         if received.exists():
@@ -344,6 +443,8 @@ try:
         time.sleep(.05)
     check("shaded overlay passes clicks and keyboard focus to apps outside handles",
           received.exists() and received.read_text() == "a" and panel.poll() is None)
+    check("hint popout passes clicks and does not retain keyboard focus",
+          received.exists() and received.read_text() == "a" and not shot("09b-popout-focus-lost").hint(176, "Center edge softness"))
     shot("09-click-through")
     click(panel_x+250, 195)  # focus settings again to exercise Escape
     close_panel(panel)
