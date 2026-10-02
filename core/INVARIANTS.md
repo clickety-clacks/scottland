@@ -81,7 +81,7 @@ The settings app (Scottland Layout: Layout, Goo and Window mode tabs, zone overl
 ## Desktop state
 
 The single desktop model and its reactive subscription/launch/audit contracts are in
-[../docs/desktop-model.md](../docs/desktop-model.md) (DM1-DM8).
+[../docs/desktop-model.md](../docs/desktop-model.md) (DM1-DM9).
 
 ## Key layers
 
@@ -103,7 +103,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK24 (window mode: Alt-alone hold, theme-derived Vimarchy hints,
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK25 (window mode: Alt-alone hold, theme-derived Vimarchy hints,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and visual declutter)
 and WP1–WP7 (zone memory, side choice and shared rectangle placement). Statuses and verification are recorded there.
 

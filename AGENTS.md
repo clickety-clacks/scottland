@@ -26,7 +26,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG22): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets.
-- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia and the declutter pause (WK1–WK26),
+- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia and the declutter pause (WK1–WK25; WK26+ in progress),
   remembered zones and contention-aware placement (WP1–WP7).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO13): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).
@@ -125,9 +125,13 @@ Before reporting anything as done:
    unrehearsed reload crashed Mike's session; the cause, statics shared across plugin copies,
    is now prevented by `-fno-gnu-unique` in core/plugin/meson.build.)
 5. Re-check every invariant the change could affect, and update its status.
-6. Keep test output out of `XDG_RUNTIME_DIR`: it is a small tmpfs (1.6 GB on osanwe) shared with the
+6. Test sessions never read personal config (`~/.config/scottland/layout.ini`, `overrides.ini`):
+   `tests/headless.sh` builds from the checkout's shipped config only.
+7. Keep test output out of `XDG_RUNTIME_DIR`: it is a small tmpfs (1.6 GB on osanwe) shared with the
    live session. Put screenshots and logs under the checkout's `build/`, stop and remove headless
-   dirs when done. (2026-10-02: test leftovers and dead Quickshell logs filled it, and the live
+   dirs when done. Don't point `XDG_RUNTIME_DIR` itself elsewhere either: a private runtime dir
+   restarts display names at wayland-1 and its widget units then share names with the live
+   session's. (2026-10-02: test leftovers and dead Quickshell logs filled it, and the live
    session's widget cards could not start, so widgetized windows vanished.)
 
 Useful tools: `tests/headless.sh`, `tests/deploy.sh`, `tests/shell-probe.sh` (stock shell
