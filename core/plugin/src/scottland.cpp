@@ -2,7 +2,6 @@
 #include <wayfire/plugin.hpp>
 #include <wayfire/core.hpp>
 #include <wayfire/output.hpp>
-#include <wayfire/render-manager.hpp>
 #include <wayfire/seat.hpp>
 #include <wayfire/input-device.hpp>
 #include <wayfire/bindings-repository.hpp>
@@ -5112,7 +5111,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 wf::move_view_to_output(view, home_output, false);
             }
 
-            move_window(view, std::round(home.x - g.width / 2.0), std::round(home.y - g.height / 2.0));
+            // Capture where the undocked app is shown; the entry morph returns it
+            // to the original rail. Moving first would cut to that rail on Esc.
             widgetize(view, false, origin.rail);
             if (auto link = link_of_window(view))
             {

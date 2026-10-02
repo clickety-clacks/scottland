@@ -70,6 +70,7 @@ void begin_window_widget_transition(wayfire_toplevel_view window)
     pixels->width = pixels->from_width = transition->origin.width();
     pixels->height = pixels->from_height = transition->origin.height();
     transition->pixels = pixels;
+    window->get_transformed_node()->begin_transform_update();
     stop_glide(window);
     auto g = window->get_geometry();
     pixels->dx = pixels->from_dx = transition->origin.x1 - g.x;
@@ -77,6 +78,7 @@ void begin_window_widget_transition(wayfire_toplevel_view window)
     frame->damage();
     frame->presentation = pixels;
     frame->damage();
+    window->get_transformed_node()->end_transform_update();
     widget_transitions[window->get_id()] = std::move(transition);
     if (!widget_transition_tick.is_connected())
         widget_transition_tick.set_timeout(8, [=] { return step_widget_transitions(); });
@@ -101,22 +103,9 @@ void adopt_window_widget_transition(widget_link_t& link)
     auto active = wf::get_core().seat->get_active_view();
     auto window = wf::toplevel_cast(link.window.lock());
     bool focus_card = active == widget || active == window;
-    transition_widget(link, link.lifecycle);
-    if (window)
-        if (auto frame = frame_of(window, false))
-        {
-            frame->presentation.reset();
-            wf::scene::update(frame, wf::scene::update_flag::GEOMETRY);
-        }
-    // A mapped card could have been selected while its root was still hidden. Reassert
-    // keyboard focus once the root is enabled, so the first key reaches its client.
-    if (focus_card) wf::get_core().default_wm->focus_raise_view(widget);
-    // The old frame may have moved through a drag transformer. Repaint its whole output
-    // after the disable lease changes hands so no old image survives in a partial buffer.
-    if (auto output = window ? window->get_output() : widget->get_output())
-        output->render->damage_whole_idle();
     // Delay until the mapping transaction is applied, never animate toward pending geometry.
     observer->pixels->requested = now_msec();
+    widget->get_transformed_node()->begin_transform_update();
     stop_glide(widget);
     auto& p = *observer->pixels;
     auto g = widget->get_geometry();
@@ -130,7 +119,23 @@ void adopt_window_widget_transition(widget_link_t& link)
     frame->damage();
     frame->presentation = observer->pixels;
     frame->damage();
-    wf::scene::update(frame, wf::scene::update_flag::GEOMETRY);
+    widget->get_transformed_node()->end_transform_update();
+    // Install the complete presentation before enabling the card. Both bounds and
+    // cached parent transforms must change with the image, not a frame later.
+    transition_widget(link, link.lifecycle);
+    if (window)
+    {
+        window->get_transformed_node()->begin_transform_update();
+        if (auto source = frame_of(window, false)) source->presentation.reset();
+        window->get_transformed_node()->end_transform_update();
+        // Keep the hidden app on its rail for an unmarked unload/load (WG1/WG5).
+        auto real = window->get_geometry();
+        double rail_x = link.rail == "left" ? 0 : window->get_output()->get_relative_geometry().width - 1;
+        move_window(window, std::round(rail_x - real.width / 2.0),
+            std::round(link.drop.y - real.height / 2.0));
+    }
+    // A mapped card could have been selected while its root was still hidden.
+    if (focus_card) wf::get_core().default_wm->focus_raise_view(widget);
     show_attention(link.window_id);
 }
 
@@ -229,9 +234,11 @@ void set_widget_presentation(widget_link_t& link, bool collapsed, bool peek = fa
 
 bool step_widget_transitions()
 {
-    uint32_t now = now_msec();
     for (auto it = widget_transitions.begin(); it != widget_transitions.end();)
     {
+        // Adopting one app can insert its card later in this same traversal.
+        // A tick-wide timestamp can predate that card's start and underflow.
+        uint32_t now = now_msec();
         auto& transition = *it->second;
         auto view = wf::toplevel_cast(transition.view.lock());
         auto frame = view && view->is_mapped() ? frame_of(view, false) : nullptr;
@@ -283,6 +290,7 @@ bool step_widget_transitions()
             transition.applied.clear();
             transition.surface_destroyed.disconnect();
         }
+        view->get_transformed_node()->begin_transform_update();
         frame->damage();
         p.step(now);
         ++widget_transition_steps;
@@ -295,7 +303,7 @@ bool step_widget_transitions()
             ++it;
         }
         frame->damage();
-        wf::scene::update(frame, wf::scene::update_flag::GEOMETRY);
+        view->get_transformed_node()->end_transform_update();
     }
     return !widget_transitions.empty();
 }

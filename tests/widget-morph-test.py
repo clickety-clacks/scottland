@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real stipc rail transitions and Super+M; compositor geometry and captured pixels."""
 import importlib.util
+import ast
 import math
 import json
 import os
@@ -10,6 +11,7 @@ import subprocess
 import shutil
 import sys
 import time
+import threading
 import struct
 import zlib
 
@@ -127,6 +129,8 @@ def entry_paths():
     for path in ("center-cycle", "periphery-cycle", "widget-cycle", "double-tap", "periphery-double-tap",
                  "collapsed-double-tap", "double-tap-mode-switch",
                  "held-drag", "early-drop", "collapsed-drop", "halo-drop", "esc-return", "load-recovery"):
+        if os.environ.get("SCOTTLAND_TEST_ENTRY") and path != os.environ["SCOTTLAND_TEST_ENTRY"]:
+            continue
         title = "Entry " + path
         if path.startswith("collapsed") or t.ipc.call("scottland/desktop-model")["collapsed"]:
             t.launch("Entry mode seed", "left", 160)
@@ -201,27 +205,48 @@ def entry_paths():
                 t.key("LEFTMETA", False)
         track = []; history = []; field_samples = []; blends = []
         start = time.monotonic()
-        for i in range(42):
-            stamp_before = time.monotonic() - start
-            before = state()
-            history.append((stamp_before, before))
-            image = screenshot(path + "-entry-" + str(i))
-            blends.append(image.red_blend())
-            after = state()
-            history.append((time.monotonic() - start, after))
-            for v in before["views"]:
-                if v["hidden"] or not (v["title"] == title or v["title"].endswith(": " + title)): continue
-                f = v.get("scene_frame", v["frame"])
-                # Probe the goo at the currently presented frame center.
-                x = round(f["x"] + f["width"] / 2); y = round(f["y"] + f["height"] / 2)
-                if 0 <= x < t.screen["width"] and 0 <= y < t.screen["height"]:
-                    if t.ipc.call("scottland/goo-state")["enabled"]:
-                        fresh = next(w for w in after["views"] if w["id"] == v["id"])
-                        ff = fresh.get("scene_frame", fresh["frame"])
-                        x = round(ff["x"] + ff["width"] / 2); y = round(ff["y"] + ff["height"] / 2)
-                        field = t.ipc.call("scottland/goo-state", {"x": x, "y": y})["screens"][0]
-                        field_samples.append((time.monotonic() - start, ff, x, y, field["window_distance"]))
-            track.append((stamp_before, before))
+        # PNG encoding and pixel inspection must not set the geometry sampling rate.
+        # Use an independent IPC connection so short circle-eased transitions are
+        # sampled throughout, even on a slower machine. Pixel assertions stay separate.
+        stop_sampling = threading.Event()
+        sampling_errors = []
+        def sample_geometry():
+            connection = t.Ipc()
+            try:
+                while not stop_sampling.is_set():
+                    track.append((time.monotonic() - start, connection.call("scottland/layout-state")))
+                    stop_sampling.wait(.006)
+            except Exception as error:
+                sampling_errors.append(error)
+            finally:
+                connection.sock.close()
+        sampler = threading.Thread(target=sample_geometry)
+        sampler.start()
+        try:
+            for i in range(42):
+                stamp_before = time.monotonic() - start
+                before = state()
+                history.append((stamp_before, before))
+                image = screenshot(path + "-entry-" + str(i))
+                blends.append(image.red_blend())
+                after = state()
+                history.append((time.monotonic() - start, after))
+                for v in before["views"]:
+                    if v["hidden"] or not (v["title"] == title or v["title"].endswith(": " + title)): continue
+                    f = v.get("scene_frame", v["frame"])
+                    # Probe the goo at the currently presented frame center.
+                    x = round(f["x"] + f["width"] / 2); y = round(f["y"] + f["height"] / 2)
+                    if 0 <= x < t.screen["width"] and 0 <= y < t.screen["height"]:
+                        if t.ipc.call("scottland/goo-state")["enabled"]:
+                            fresh = next(w for w in after["views"] if w["id"] == v["id"])
+                            ff = fresh.get("scene_frame", fresh["frame"])
+                            x = round(ff["x"] + ff["width"] / 2); y = round(ff["y"] + ff["height"] / 2)
+                            field = t.ipc.call("scottland/goo-state", {"x": x, "y": y})["screens"][0]
+                            field_samples.append((time.monotonic() - start, ff, x, y, field["window_distance"]))
+        finally:
+            stop_sampling.set()
+            sampler.join()
+        if sampling_errors: raise sampling_errors[0]
         samples[path] = track
         t.key("LEFTALT", False)
         if path == "held-drag": t.drag_end()
@@ -281,11 +306,76 @@ def entry_disappearance():
     t.cleanup()
 
 
+def entry_lifecycle():
+    """Multiple arrivals share a timer; reload hands off an entry still in flight."""
+    titles = ["Concurrent entry left", "Concurrent entry right"]
+    for title in titles: t.launch(title, rail=None)
+    t.key("LEFTALT", True)
+    t.wait_for(lambda: t.ipc.call("scottland/hints")["active"])
+    labels = {h["window"]: h["hint"] for h in t.ipc.call("scottland/hints")["hints"]}
+    for title in titles:
+        for _ in range(2):
+            for letter in labels[t.app(title)["id"]]:
+                t.key(letter.upper(), True); t.key(letter.upper(), False)
+    series = sample("concurrent-entry", 2)
+    t.key("LEFTALT", False)
+    for title in titles:
+        active = [(stamp, v["frame"]) for stamp, s in series for v in s["views"]
+            if v["widget"] and v["title"].endswith(": " + title) and
+            "presentation" in v["frame"] and not v["frame"]["presentation"]["waiting"]]
+        t.check(title + ": full animation even when another card arrives on the same tick",
+            len(active) >= 5 and active[-1][0] - active[0][0] >= .16, active)
+    plugins = t.ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
+    without = " ".join(p for p in plugins.split() if p != "scottland" and "/libscottland-" not in p)
+    ids = [t.app(title)["id"] for title in titles]
+    t.ipc.call("wayfire/set-config-options", {"core/plugins": without})
+    # Client exit and Wayfire's close animation are asynchronous; WG5 allows
+    # three seconds to close plus two seconds for process termination.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        plain = t.ipc.call("window-rules/list-views")
+        if not any(v["title"].startswith("Scottland widget") for v in plain): break
+        time.sleep(.05)
+    plain = t.ipc.call("window-rules/list-views")
+    t.check("entry unload: both apps survive", all(any(v["id"] == wid for v in plain) for wid in ids))
+    t.check("entry unload: both widget windows close", not any(v["title"].startswith("Scottland widget") for v in plain), plain)
+    t.ipc.call("wayfire/set-config-options", {"core/plugins": plugins})
+    card = t.wait_for(lambda: t.card(titles[0]) and t.card(titles[0])["frame"].get("presentation") and t.card(titles[0]))
+    # This reload is strictly inside the private test compositor.
+    fresh = out / "libscottland-entry-reload.so"
+    shutil.copyfile("build/libscottland.so", fresh)
+    changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
+    mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+    mark.touch()
+    try:
+        t.ipc.call("wayfire/set-config-options", {"core/plugins": changed})
+        time.sleep(1)
+    finally:
+        mark.unlink(missing_ok=True)
+    t.check("entry reload: mapped card keeps its identity and hidden live app",
+        t.card(titles[0]) and t.card(titles[0])["id"] == card["id"] and
+        t.app(titles[0]) and t.app(titles[0])["hidden"])
+    t.check("entry reload: no snapshots retained", state()["widget_transition_count"] == 0)
+    deadline = time.monotonic() + 5
+    while True:
+        diagnostic = subprocess.check_output(["gdbus", "call", "--session", "--dest", "org.scottland.Widgets",
+            "--object-path", "/org/scottland/Widgets", "--method", "org.scottland.Diagnostics.Snapshot"], text=True)
+        audit = t.ipc.call("scottland/audit-model", {"service": json.loads(ast.literal_eval(diagnostic)[0])})
+        if audit["ok"] or time.monotonic() >= deadline: break
+        time.sleep(.1)
+    t.check("entry reload: lifecycle and scene agree", audit["ok"], audit)
+    t.cleanup()
+
+
 try:
     t.ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
+    if "--lifecycle-only" in sys.argv:
+        entry_lifecycle()
+        sys.exit(bool(t.failures))
     entry_paths()
     if "--baseline" not in sys.argv: entry_disappearance()
     if "--entry-only" in sys.argv: sys.exit(bool(t.failures))
+    entry_lifecycle()
     t.launch("Morph left with a title long enough for maximum width", "left", 230)
     t.launch("Morph right with a title long enough for maximum width", "right", 500)
     t.launch("Morph neighbor with a title long enough for maximum width", "right", 625)
