@@ -429,7 +429,15 @@ try:
     right_rail = hint(a)['memories'][4]
     check(left_rail['set'] and right_rail['set'], 'real widget drag remembers both rails independently')
     hold(); choose(a); choose(a); choose(a); release()
-    check(hint(a)['memories'][3] == left_rail and hint(a)['memories'][4] == right_rail, 'rail cycle returns to exact most recent remembered rail')
+    rail_memories_after = hint(a)['memories']
+    rails_preserved = rail_memories_after[3] == left_rail and rail_memories_after[4] == right_rail
+    if not rails_preserved:
+        print('rail-memory diagnostic: ' + json.dumps({
+            'left_before': left_rail, 'right_before': right_rail,
+            'left_after': rail_memories_after[3], 'right_after': rail_memories_after[4],
+            'widgetized': view('Cycle')['widgetized'],
+        }, sort_keys=True), flush=True)
+    check(rails_preserved, 'rail cycle returns to exact most recent remembered rail')
     hold(); choose(a); release()
     # Occupy the remembered center. Memory wins over the obstacle.
     b = launch('Blocker')

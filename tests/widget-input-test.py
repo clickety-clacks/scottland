@@ -501,6 +501,106 @@ def shortcuts():
                     if shift:
                         key("LEFTSHIFT", False)
                     time.sleep(0.4)
+            remap_base = """[scottland]
+remap_apps_import_regression = ^org\\.scottland\\.NoMatchingBrowserApp$
+remap_from_import_ctrl_w = CTRL+W
+remap_to_import_ctrl_w = CTRL+BackSpace
+remap_apps_import_alt_ctrl_w = ^org\\.scottland\\.NoMatchingBrowserApp$
+remap_from_import_alt_ctrl_w = CTRL+ALT+W
+remap_to_import_alt_ctrl_w = CTRL+F4
+"""
+            imports = (
+                f'hl.bind("CTRL+W", hl.dsp.exec_cmd("printf ctrlw >> {marker}"))\n'
+                f'hl.bind("ALT+CTRL+W", hl.dsp.exec_cmd("printf altctrlw >> {marker}"))\n'
+            )
+            generated = generate(fixture_base + "\n" + remap_base, imports)
+            displaced = [line for line in generated.splitlines()
+                         if "displaced: Scottland uses these keys for key_remaps/" in line]
+            both_combos_listed = all(any(re.search(rf"^\s*#\s*{re.escape(combo)}\s+\(displaced:", line)
+                                         for line in displaced)
+                                        for combo in ("CTRL+W", "ALT+CTRL+W"))
+            check("O5 key_remaps displace Ctrl+W and Alt+Ctrl+W imports",
+                  len(displaced) == 2 and both_combos_listed and
+                  not re.search(r"(?m)^(?:repeatable_)?binding_omarchy_\w+\s*=", generated),
+                  generated)
+            config.write_text(fixture_base + "\n" + remap_base + "\n" + generated)
+            time.sleep(0.8)  # Wayfire's config watcher
+
+            recorder_name = "ctrlw-remap-" + str(time.monotonic_ns())
+            key_log = work / "ctrlw-keys.jsonl"
+            recorder = subprocess.Popen(["python3", str(Path(__file__).with_name("windowing-key-recorder.py")),
+                                         recorder_name, str(key_log)],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                view = wait_for(lambda: next((v for v in ipc.call("window-rules/list-views")
+                                               if v.get("title") == recorder_name), None))
+                ipc.call("window-rules/focus-view", {"id": view["id"]})
+                time.sleep(.2)
+                key("LEFTCTRL", True)
+                key("W", True); key("W", False)
+                key("LEFTCTRL", False)
+                key("LEFTCTRL", True); key("LEFTALT", True)
+                key("W", True); key("W", False)
+                key("LEFTALT", False); key("LEFTCTRL", False)
+                deadline = time.monotonic() + 2
+                records = []
+                while time.monotonic() < deadline:
+                    if key_log.exists():
+                        records = [json.loads(line) for line in key_log.read_text().splitlines()]
+                    plain_ctrl_w = any(event["key"].lower() == "w" and event["modifiers"] & 4
+                                       and not event["modifiers"] & 8 for event in records)
+                    alt_ctrl_w = any(event["key"].lower() == "w" and event["modifiers"] & 4
+                                     and event["modifiers"] & 8 for event in records)
+                    if plain_ctrl_w and alt_ctrl_w:
+                        break
+                    time.sleep(.03)
+                check("O5 Ctrl+W reaches an ordinary app unchanged",
+                      any(event["key"].lower() == "w" and event["modifiers"] & 4
+                          and not event["modifiers"] & 8 for event in records), records)
+                check("O5 Alt+Ctrl+W reaches an ordinary app unchanged",
+                      any(event["key"].lower() == "w" and event["modifiers"] & 4
+                          and event["modifiers"] & 8 for event in records), records)
+                check("O5 displaced imports did not run their commands", not marker.exists())
+            finally:
+                recorder.terminate()
+                recorder.wait(timeout=5)
+
+            # Overrides are appended after generated imports, so their effective remap
+            # from-combos must drive collision detection too.
+            old_xdg_config = os.environ.get("XDG_CONFIG_HOME")
+            override_home = work / "override-config"
+            override_file = override_home / "scottland/overrides.ini"
+            override_file.parent.mkdir(parents=True)
+            os.environ["XDG_CONFIG_HOME"] = str(override_home)
+            override_base = fixture_base + """
+[scottland]
+remap_apps_browser_word = ^org\\.scottland\\.NoMatchingBrowserApp$
+remap_from_browser_word = CTRL+W
+remap_to_browser_word = CTRL+BackSpace
+remap_from_browser_close =
+"""
+            try:
+                override_file.write_text("[scottland]\nremap_from_browser_word = ALT+CTRL+W\n")
+                generated = generate(override_base, imports)
+                binding_lines = [line for line in generated.splitlines()
+                                 if re.match(r"^(?:repeatable_)?binding_omarchy_\w+\s*=", line)]
+                check("O5 overrides reserve the effective remap combo",
+                      len(binding_lines) == 1 and "= <ctrl> KEY_W" in binding_lines[0]
+                      and "key_remaps/browser_word (ALT+CTRL+W)" in generated,
+                      generated)
+                override_file.write_text("[scottland]\nremap_from_browser_word =\n")
+                generated = generate(override_base, imports)
+                binding_lines = [line for line in generated.splitlines()
+                                 if re.match(r"^(?:repeatable_)?binding_omarchy_\w+\s*=", line)]
+                check("O5 an empty override releases its remap combo",
+                      len(binding_lines) == 2 and "key_remaps/" not in generated,
+                      generated)
+            finally:
+                if old_xdg_config is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg_config
+
             generated = generate("[scottland]\n", 'hl.bind("SUPER+M", function() end)\n')
             check("O5 a Lua-function import on a feature binding's keys is displaced too",
                   "minimize_widget = none" not in generated and "displaced" in generated, generated)

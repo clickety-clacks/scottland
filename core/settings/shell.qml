@@ -92,7 +92,7 @@ ShellRoot {
   readonly property var settingNames: ({ center_width: "Center zone width", rail_width: "Widget rail width",
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Deceleration scale",
-    key_max_velocity:"Speed limit", key_restitution:"Bounce", alt_hold_delay:"Alt hold timing",
+    key_max_velocity:"Speed limit", key_restitution:"Widget rail rebound", alt_hold_delay:"Alt hold timing",
     window_double_tap_delay:"Double-tap timing", move_friction_curve:"Movement braking curve",
     resize_friction_curve:"Resize braking curve" })
 
@@ -300,7 +300,8 @@ ShellRoot {
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
       goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint}),
       editor:root.curveProbe(editor), movement:root.curveProbe(movementEditor),resize:root.curveProbe(resizeEditor),
-      playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,bounces:playground.bounces.length}),
+      playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
+        widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
       motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),motion:root.motionValues,values:root.gooValues,palette:root.palette})
     }
   }
@@ -666,7 +667,7 @@ ShellRoot {
           }
           Text {
             Layout.fillWidth: true; wrapMode: Text.WordWrap
-            text: "Flick the sample or press arrows. Ctrl + arrows resizes. Drag the velocity arrow or bounce trace to change the feel."
+            text: "Flick the sample or press arrows. Ctrl + arrows resizes. The sample stops vertically and morphs into a rail widget at a side; the rail trace adjusts that widget's rebound."
             color: theme.muted; font.family: theme.family; font.pixelSize:12*theme.textScale
           }
           CurveEditor {

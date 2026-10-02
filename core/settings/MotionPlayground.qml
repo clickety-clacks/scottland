@@ -13,7 +13,7 @@ FocusScope {
   HoverHandler { id:helpHover }
   ControlHint {
     control:play;design:play.design;title:"Motion playground"
-    explanation:"Flick the sample or use arrows to see travel and edge bounces; Ctrl + arrows resizes. Drag the velocity arrow to change each push, or the bounce handle to change retained speed. The graph laws also drive real windows."
+    explanation:"Flick the sample or use arrows to see travel, 100 pt vertical stops and a side-rail widget morph; Ctrl + arrows resizes. The separate rail trace shows an existing widget bouncing. Drag the velocity arrow or rail handle to change their settings."
     showing:helpHover.hovered || play.activeFocus
     viewport:play.viewport;scrollOffset:play.scrollOffset
   }
@@ -29,7 +29,11 @@ FocusScope {
   property real vh: 0
   property real distance: 0
   property var trail: []
-  property var bounces: []
+  property var edgeStops: []
+  property bool widgetized: false
+  property int widgetSide: 0
+  property real widgetMorph: 0
+  Behavior on widgetMorph { NumberAnimation { duration:180;easing.type:Easing.OutCubic } }
   readonly property real stoppingDistance: (vx || vy) ? Math.hypot(stopDistance(vx),stopDistance(vy)) : stopDistance(values.key_impulse)
   function stopDistance(speed) {
     // Integrate v/a(v) in speed space: bounded work even at very low friction.
@@ -44,7 +48,7 @@ FocusScope {
   readonly property real impulseLength: 28 + Math.sqrt(values.key_impulse/10000)*130
   function push(x,y,resize) {
     forceActiveFocus()
-    if(!vx && !vy && !vw && !vh) { distance=0; trail=[{x:px,y:py}]; bounces=[] }
+    if(!vx && !vy && !vw && !vh) { distance=0; trail=[{x:px,y:py}]; edgeStops=[];widgetized=false;widgetSide=0 }
     const cap=values.key_max_velocity
     if(resize) { vw=Math.max(-cap,Math.min(cap,vw+x*values.key_impulse));vh=Math.max(-cap,Math.min(cap,vh+y*values.key_impulse)) }
     else { vx=Math.max(-cap,Math.min(cap,vx+x*values.key_impulse));vy=Math.max(-cap,Math.min(cap,vy+y*values.key_impulse)) }
@@ -79,8 +83,8 @@ FocusScope {
       c.strokeRect(18,56,width-36,153)
       c.strokeStyle=design.accent;c.lineWidth=2;c.beginPath()
       play.trail.forEach((p,i)=>{if(i)c.lineTo(p.x,p.y);else c.moveTo(p.x,p.y)});c.stroke()
-      for(const b of play.bounces) {c.beginPath();c.arc(b.x,b.y,9,0,2*Math.PI);c.stroke()}
-      if(play.trail.length && !play.vx && !play.vy) {
+      for(const stop of play.edgeStops) {c.beginPath();c.moveTo(stop.x-8,stop.y);c.lineTo(stop.x+8,stop.y);c.stroke()}
+      if(play.trail.length && !play.vx && !play.vy && !play.widgetized) {
         c.setLineDash([3,3]);c.strokeRect(play.px-play.sampleWidth/2-4,play.py-play.sampleHeight/2-4,play.sampleWidth+8,play.sampleHeight+8);c.setLineDash([])
       }
       // The direct impulse handle is a velocity arrow; it controls the next push.
@@ -89,8 +93,12 @@ FocusScope {
       }
       c.beginPath();c.moveTo(30,238);c.lineTo(30+play.impulseLength,238);c.lineTo(24+play.impulseLength,232);c.moveTo(30+play.impulseLength,238);c.lineTo(24+play.impulseLength,244);c.stroke()
       c.fillStyle=design.accent;c.beginPath();c.arc(30+play.impulseLength,238,6,0,2*Math.PI);c.fill()
-      // Bounce trace and retained-velocity handle.
+      // This separate trace represents an existing widget bouncing along its rail;
+      // ordinary window movement stops vertically and morphs at side contact.
       const bx=width-150, by=246-36*play.values.key_restitution
+      c.strokeStyle=design.muted;c.lineWidth=4;c.beginPath();c.moveTo(width-54,68);c.lineTo(width-54,202);c.stroke()
+      c.fillStyle=design.tint(.18);c.strokeStyle=design.accent;c.lineWidth=1
+      c.fillRect(width-84,132,26,34);c.strokeRect(width-84,132,26,34)
       c.beginPath();c.moveTo(bx-45,224);c.lineTo(bx,248);c.lineTo(bx+45,by);c.stroke()
       if(bounceGrip.containsMouse || bounceGrip.pressed) {
         c.fillStyle=design.tint(bounceGrip.pressed ? .42 : .25);c.beginPath();c.arc(bx+45,by,17,0,2*Math.PI);c.fill()
@@ -103,9 +111,20 @@ FocusScope {
   Connections { target:design;function onPaletteChanged(){trace.requestPaint()} }
   Rectangle {
     id:sample
-    x:play.px-width/2;y:play.py-height/2;width:play.sampleWidth;height:play.sampleHeight
-    radius:6;color:design.tint(sampleGrab.pressed ? .42 : sampleGrab.containsMouse ? .26 : .19);border.color:design.accent
-    Rectangle { x:8;y:8;width:parent.width-16;height:2;color:design.foreground;opacity:0.6 }
+    property real targetWidth: play.widgetized ? 42 : play.sampleWidth
+    property real targetHeight: play.widgetized ? 32 : play.sampleHeight
+    x:play.widgetized ? (play.widgetSide<0 ? 18 : play.width-18-width) : play.px-width/2
+    y:play.py-height/2
+    width:play.sampleWidth+(targetWidth-play.sampleWidth)*play.widgetMorph
+    height:play.sampleHeight+(targetHeight-play.sampleHeight)*play.widgetMorph
+    radius:6+8*play.widgetMorph
+    color:design.tint(sampleGrab.pressed ? .42 : sampleGrab.containsMouse ? .26 : .19);border.color:design.accent
+    Behavior on width { NumberAnimation { duration:180;easing.type:Easing.OutCubic } }
+    Behavior on height { NumberAnimation { duration:180;easing.type:Easing.OutCubic } }
+    Behavior on x { NumberAnimation { duration:180;easing.type:Easing.OutCubic } }
+    Behavior on radius { NumberAnimation { duration:180;easing.type:Easing.OutCubic } }
+    Rectangle { x:8;y:8;width:parent.width-16;height:2;color:design.foreground;opacity:.6*(1-play.widgetMorph) }
+    Text { anchors.centerIn:parent;text:"▦";opacity:play.widgetMorph;color:design.foreground;font.pixelSize:18 }
     MouseArea {
       id:sampleGrab
       anchors.fill:parent;hoverEnabled:true;preventStealing:true;cursorShape:pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
@@ -113,7 +132,7 @@ FocusScope {
       property double stamp
       property real releaseX:0
       property real releaseY:0
-      onPressed: mouse=> {play.forceActiveFocus();play.vx=play.vy=play.vw=play.vh=0;previous=mapToItem(play,mouse.x,mouse.y);stamp=Date.now();releaseX=releaseY=0;play.distance=0;play.trail=[];play.bounces=[]}
+      onPressed: mouse=> {play.forceActiveFocus();play.widgetized=false;play.widgetSide=0;play.widgetMorph=0;play.edgeStops=[];play.vx=play.vy=play.vw=play.vh=0;previous=mapToItem(play,mouse.x,mouse.y);stamp=Date.now();releaseX=releaseY=0;play.distance=0;play.trail=[]}
       onPositionChanged: mouse=> {
         if(!pressed)return
         const p=mapToItem(play,mouse.x,mouse.y),now=Date.now(),dt=Math.max(.001,(now-stamp)/1000)
@@ -148,7 +167,7 @@ FocusScope {
     onPositionChanged:mouse=>{if(pressed)apply(mouse.y)}
   }
   Text { x:18;y:260;text:"Push · "+Math.round(values.key_impulse)+" pt/s";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale }
-  Text { anchors.right:parent.right;anchors.rightMargin:18;y:260;text:"Bounce · "+Math.round(values.key_restitution*100)+"%";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale }
+  Text { anchors.right:parent.right;anchors.rightMargin:18;y:260;text:"Widget rail rebound · "+Math.round(values.key_restitution*100)+"%";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale }
   Timer {
     interval:16;repeat:true;running:play.vx!==0||play.vy!==0||play.vw!==0||play.vh!==0
     property double last:0
@@ -164,8 +183,15 @@ FocusScope {
       if(play.sampleHeight===24||play.sampleHeight===153)play.vh=0
       play.px+=x.d;play.py+=y.d;play.distance+=Math.hypot(x.d,y.d)
       const lx=18+play.sampleWidth/2,hx=play.width-18-play.sampleWidth/2,ly=56+play.sampleHeight/2,hy=209-play.sampleHeight/2
-      if((play.px<=lx&&play.vx<0)||(play.px>=hx&&play.vx>0)) {play.vx*=-play.values.key_restitution;play.bounces=play.bounces.concat([{x:Math.max(lx,Math.min(hx,play.px)),y:play.py}])}
-      if((play.py<=ly&&play.vy<0)||(play.py>=hy&&play.vy>0)) {play.vy*=-play.values.key_restitution;play.bounces=play.bounces.concat([{x:play.px,y:Math.max(ly,Math.min(hy,play.py))}])}
+      const side=(play.px<=lx&&play.vx<0)?-1:(play.px>=hx&&play.vx>0)?1:0
+      if(side) {
+        play.px=side<0?lx:hx;play.widgetSide=side;play.widgetized=true
+        play.widgetMorph=1;play.vx=play.vy=play.vw=play.vh=0
+      }
+      if((play.py<=ly&&play.vy<0)||(play.py>=hy&&play.vy>0)) {
+        play.py=Math.max(ly,Math.min(hy,play.py));play.vy=0
+        play.edgeStops=play.edgeStops.concat([{x:play.px,y:play.py}])
+      }
       play.px=Math.max(lx,Math.min(hx,play.px));play.py=Math.max(ly,Math.min(hy,play.py))
       play.trail=play.trail.concat([{x:play.px,y:play.py}]).slice(-1000)
     }

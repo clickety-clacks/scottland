@@ -33,6 +33,54 @@ passed = failed = 0
 clients = []
 
 
+def quickshell_pid(wrapper_pid):
+    """Resolve QuickShell below the test's qs/bwrap wrapper for targeted IPC."""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        pending = [wrapper_pid]
+        seen = set()
+        while pending:
+            pid = pending.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            process = Path(f"/proc/{pid}")
+            try:
+                comm = (process / "comm").read_text().strip()
+                argv = (process / "cmdline").read_bytes().decode(errors="replace").split("\0")
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+            if comm == "quickshell" and str(repo / "core/settings") in argv:
+                return pid
+            try:
+                children = (process / "task" / str(pid) / "children").read_text().split()
+                pending.extend(int(child) for child in children)
+            except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
+                pass
+        time.sleep(.03)
+    raise RuntimeError(f"could not find QuickShell below test wrapper PID {wrapper_pid}")
+
+
+def settings_snapshot(panel):
+    return json.loads(subprocess.check_output(
+        ["qs", "ipc", "--pid", str(quickshell_pid(panel.pid)), "call", "settings-test", "snapshot"],
+        text=True))
+
+
+def scroll_curve_into_view(panel):
+    q = settings_snapshot(panel)
+    viewport = q["viewport"]
+    content_height = q["contentHeight"]
+    max_scroll = max(0, content_height - viewport["height"])
+    thumb = viewport["height"] * viewport["height"] / content_height
+    y = 720 - 48 - q["panel"]["height"] + viewport["y"]
+    start = y + q["scroll"] / content_height * viewport["height"] + thumb / 2
+    end = y + max_scroll / content_height * viewport["height"] + thumb / 2
+    drag(360 + viewport["x"] + viewport["width"] - 5, start, 0, end - start)
+    time.sleep(.3)
+    return settings_snapshot(panel)
+
+
 def ipc(method, data=None):
     body = json.dumps({"method": method, "data": data or {}}).encode()
     sock.sendall(struct.pack("<I", len(body)) + body)
@@ -305,9 +353,9 @@ try:
         check(name + " is live from its panel row and available through scottland-ctl", result.returncode == 0
               and abs(float(ipc("wayfire/get-config-option", {"option":"scottland/"+name})["value"])-value)<.001)
     # The keyboard follows the selected row; use the now-lowered scrollbar thumb for the curve.
-    drag(895, 480, 0, 120)
+    q = scroll_curve_into_view(panel)
     shot("07b-panel-curve")
-    q=json.loads(subprocess.check_output(["qs","ipc","--pid",str(panel.pid),"call","settings-test","snapshot"],text=True)); k=q["editor"]["knots"][0]
+    k = q["editor"]["knots"][0]
     drag(360+k["x"],720-48-q["panel"]["height"]+k["y"],0,20)
     falloff = ipc("wayfire/get-config-option", {"option": "scottland/goo_falloff"})["value"]
     curve = [tuple(map(float, p.split(":"))) for p in falloff.split()]
@@ -327,8 +375,8 @@ try:
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1)
     click(640, 125); click(740, 250); time.sleep(.3)
-    drag(895, 250, 0, 350)
-    q=json.loads(subprocess.check_output(["qs","ipc","--pid",str(panel.pid),"call","settings-test","snapshot"],text=True)); k=q["editor"]["knots"][0]
+    q = scroll_curve_into_view(panel)
+    k = q["editor"]["knots"][0]
     drag(360+k["x"],720-48-q["panel"]["height"]+k["y"],0,20)
     key("KEY_ENTER", True); key("KEY_ENTER", False); time.sleep(.5)
     check("Save persists goo alongside layout", layout.exists() and "goo_thickness =" in layout.read_text() and "goo_falloff = 0.000:" in layout.read_text())

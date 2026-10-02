@@ -7,7 +7,8 @@ that start-scottland appends. Runs every session start, so Hyprland shortcut cha
   - Shortcuts that run commands (menus, apps, media keys, screenshots, toggles) are kept.
   - Shortcuts that only make sense in Hyprland (workspaces, tiling, hyprctl scripts) are skipped
     and listed in the fragment's comments.
-  - Where one of these clashes with a Scottland/Wayfire default, the Omarchy shortcut wins.
+  - Where one clashes with another default, the Omarchy shortcut usually wins; Scottland feature
+    keys and key_remaps combos are reserved for Scottland and listed as displaced.
 
 The Lua scan follows omarchy-menu-keybindings: the config runs against a stand-in `hl` that
 records binds instead of applying them. This one also honours hl.unbind.
@@ -194,6 +195,23 @@ def normalized_combo(value):
     return tuple(sorted(mods)), key
 
 
+def normalized_remap_combo(value):
+    """Normalize a key_remaps xkb combo to the key names used by Wayfire bindings."""
+    aliases = {"CTRL": "ctrl", "CONTROL": "ctrl", "SHIFT": "shift",
+               "ALT": "alt", "SUPER": "super"}
+    mods, key = set(), ""
+    for part in re.split(r"[+\s]+", value.strip()):
+        if not part:
+            continue
+        upper = part.upper()
+        if upper in aliases:
+            mods.add(aliases[upper])
+        else:
+            key = part
+    wayfire = wayfire_key(key)
+    return (tuple(sorted(mods)), wayfire) if wayfire else None
+
+
 def scottland_metadata():
     """Use the session's metadata (dev/test hooks or packaged), as Wayfire does."""
     search = os.environ.get("WAYFIRE_PLUGIN_XML_PATH")
@@ -217,16 +235,24 @@ def parse_base(path):
         for option in ET.parse(metadata).findall(".//plugin[@name='scottland']//option"):
             if option.get("type") in ("key", "button", "activator"):
                 values[("scottland", option.get("name"))] = option.findtext("default", "")
-    with open(path) as config:
-        for line in config:
-            stripped = line.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
-                section = stripped[1:-1]
-                continue
-            if "=" not in stripped or stripped.startswith("#"):
-                continue
-            option, value = (part.strip() for part in stripped.split("=", 1))
-            values[(section, option)] = value
+    config_paths = [Path(path)]
+    xdg_config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    overrides = xdg_config / "scottland" / "overrides.ini"
+    if overrides.is_file():
+        # The user override fragment is appended after this generated fragment at
+        # session start, so collision detection must use its effective remap values.
+        config_paths.append(overrides)
+    for config_path in config_paths:
+        with open(config_path) as config:
+            for line in config:
+                stripped = line.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    section = stripped[1:-1]
+                    continue
+                if "=" not in stripped or stripped.startswith("#"):
+                    continue
+                option, value = (part.strip() for part in stripped.split("=", 1))
+                values[(section, option)] = value
     used = {}
     for (section, option), value in values.items():
         for alternative in value.split("|"):
@@ -234,6 +260,13 @@ def parse_base(path):
             owner = (section, option, value)
             if re.fullmatch(r"(?:KEY|BTN)_\w+", normalized[1]):
                 owners = used.setdefault(normalized, [])
+                if owner not in owners:
+                    owners.append(owner)
+        if section == "scottland" and option.startswith("remap_from_"):
+            normalized = normalized_remap_combo(value)
+            if normalized:
+                owners = used.setdefault(normalized, [])
+                owner = ("scottland-key-remap", option[len("remap_from_"):], value)
                 if owner not in owners:
                     owners.append(owner)
     return used
@@ -302,12 +335,16 @@ def main():
 
         # Scottland keeps the Omarchy setup as far as it can, and overrides it only where Scottland's
         # own features need the keys (O5): a Scottland feature binding (the [scottland] section, or a
-        # scottland_* command) keeps its keys and the Omarchy shortcut steps aside. Any other default
-        # on the same keys (Wayfire's, or Scottland's generic ones like the terminal) yields to it.
+        # scottland_* command) and every key_remaps from-combo keep their keys; the Omarchy shortcut
+        # steps aside. Any other default on the same keys (Wayfire's, or Scottland's generic ones
+        # like the terminal) yields to it.
         owners = used.get(normalized_combo(wanted), [])
-        feature = next((f"{section}/{option}" for section, option, _ in owners
-                        if section == "scottland" or (section == "command" and
-                            option.split("binding_", 1)[-1].startswith("scottland_"))), None)
+        feature = next((f"key_remaps/{option} ({value})" for section, option, value in owners
+                        if section == "scottland-key-remap"), None)
+        if not feature:
+            feature = next((f"{section}/{option}" for section, option, _ in owners
+                            if section == "scottland" or (section == "command" and
+                                option.split("binding_", 1)[-1].startswith("scottland_"))), None)
         if feature:
             skipped.append(f"{label}  {description}  (displaced: Scottland uses these keys for {feature})")
             continue

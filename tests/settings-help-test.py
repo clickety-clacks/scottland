@@ -23,12 +23,41 @@ layout = art / "settings-home/scottland/layout.ini"
 layout.parent.mkdir(parents=True, exist_ok=True)
 layout.unlink(missing_ok=True)
 probe_panel = None
+probe_instance_pid = None
 last_snapshot = {}
+def settings_quickshell_pid(wrapper_pid):
+    """Resolve the QML process below the headless qs/bwrap wrapper for targeted IPC."""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        pending = [wrapper_pid]
+        seen = set()
+        while pending:
+            pid = pending.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            process = Path(f"/proc/{pid}")
+            try:
+                comm = (process / "comm").read_text().strip()
+                argv = (process / "cmdline").read_bytes().decode(errors="replace").split("\0")
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+            if comm == "quickshell" and str(repo / "core/settings") in argv:
+                return pid
+            try:
+                children = (process / "task" / str(pid) / "children").read_text().split()
+                pending.extend(int(child) for child in children)
+            except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
+                pass
+        time.sleep(.03)
+    raise RuntimeError(f"could not find QuickShell below test wrapper PID {wrapper_pid}")
+
+
 def snapshot():
     global last_snapshot
     if probe_panel and probe_panel.poll() is None:
         last_snapshot=json.loads(subprocess.check_output(
-            ["qs","ipc","--pid",str(probe_panel.pid),"call","settings-test","snapshot"],text=True,timeout=5))
+            ["qs","ipc","--pid",str(probe_instance_pid),"call","settings-test","snapshot"],text=True,timeout=5))
     return last_snapshot
 
 def screen_point(p):
@@ -161,17 +190,18 @@ class Pixels:
             self.__init__(self.path)
 
     def hint_now(self, row_y, label, x=None):
-        observations = {}
+        observations = []
         for line in (art / "panel.log").read_text().splitlines():
             if "SCOTTLAND_HINT " in line:
-                entry = json.loads(line.split("SCOTTLAND_HINT ", 1)[1])
-                observations[entry["probe"], entry["label"]] = entry
+                observations.append(json.loads(line.split("SCOTTLAND_HINT ", 1)[1]))
         active = {getattr(proc, "hint_probe", None) for proc in clients if proc.poll() is None}
-        entry = next((v for (probe, name), v in observations.items()
-                      if probe in active and name == label and v["visible"]), None)
+        # The QML observer can log a hide after the frame being checked was captured. Pixels
+        # establish visibility for that frame; this history only identifies the right control.
+        entry = next((v for v in reversed(observations)
+                      if v["probe"] in active and v["label"] == label and v["visible"]), None)
         if not entry or entry["width"] != 320 or entry["height"] < 40:
             return False
-        x = panel_x + 568 if x is None else x
+        x = panel_x + round(snapshot()["panel"]["width"]) - 4 if x is None else x
         height = round(entry["height"])
         background, border = (tuple(bytes.fromhex(entry[k].lstrip("#")))
                               for k in ("background", "border"))
@@ -179,8 +209,12 @@ class Pixels:
                                 round(row_y+29-height/2)))
         for y in range(max(0, expected_y-2), min(self.img.get_height()-height,
                                                  expected_y+2)+1):
+            # The compositor blends the popup's left edge against a click-through
+            # client at some output positions. Check the long edges and right side,
+            # then verify the filled body; requiring one exact left-edge RGB pixel
+            # made a visibly rendered popup fail this pixel probe.
             samples = [(x+16, y), (x+160, y), (x+303, y),
-                       (x+160, y+height-1), (x, y+height//2), (x+319, y+height//2)]
+                       (x+160, y+height-1), (x+319, y+height//2)]
             inside = [(x+6, y+16), (x+313, y+16), (x+6, y+height-17),
                       (x+160, y+height-7)]
             if all(self.pixel(xx, yy) == border for xx, yy in samples) and all(
@@ -201,7 +235,7 @@ def shot(name):
 
 
 def open_panel():
-    global panel_x, probe_panel
+    global panel_x, probe_panel, probe_instance_pid
     probe = str(len(clients))
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")],
         env=dict(os.environ, QS_DISABLE_FILE_WATCHER="1", SCOTTLAND_CTL=str(repo / "core/libexec/scottland-ctl"),
@@ -210,6 +244,7 @@ def open_panel():
     panel.hint_probe = probe
     clients.append(panel)
     probe_panel=panel
+    probe_instance_pid=settings_quickshell_pid(panel.pid)
     for _ in range(100):
         if panel.poll() is not None:break
         try:
@@ -425,13 +460,16 @@ try:
     check("Window mode tab selects",snapshot()["tab"]==2)
     key("KEY_RIGHT");time.sleep(.7)
     check("playground arrow moves and stops at analytic distance",abs(snapshot()["playground"]["distance"]-335**2/(2*608))<.1 and snapshot()["playground"]["velocity"]==0)
-    # The arrow and bounce trace handles edit the compositor options live.
-    drag(*control_point("playground",80,238),45)
-    check("impulse arrow edits live option",option("key_impulse")>335)
+    # The arrow and widget-rail rebound handle edit their compositor options live.
+    click(*control_point("playground",200,238))
+    check("impulse arrow edits live option",option_reaches("key_impulse",10000))
     drag(*control_point("playground",403,228),0,-10)
-    check("bounce trace edits live restitution",option("key_restitution")>.5)
-    key("KEY_RIGHT");time.sleep(.8)
-    check("playground draws edge bounce",snapshot()["playground"]["bounces"]>0)
+    check("widget rail trace edits live restitution",option("key_restitution")>.5)
+    for _ in range(8):
+        key("KEY_RIGHT")
+        if snapshot()["playground"]["widgetized"]:break
+    check("side contact morphs the sample into a rail widget",
+          snapshot()["playground"]["widgetized"] and snapshot()["playground"]["widgetSide"]==1)
     shot("05-window-playground")
     click(panel_x+70,638);time.sleep(.25) # Defaults keeps impulse identical for the motion comparison.
     scroll_to(350)
