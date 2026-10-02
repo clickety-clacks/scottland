@@ -314,7 +314,8 @@ def shortcuts():
             ):
                 marker.unlink(missing_ok=True)
                 command = "printf hit >> " + str(marker)
-                generated = generate(base_text, f'hl.bind("{keys}", hl.dsp.exec_cmd({json.dumps(command)}))\n')
+                generated = generate(original + "\n" + base_text,
+                                     f'hl.bind("{keys}", hl.dsp.exec_cmd({json.dumps(command)}))\n')
                 check(f"O5 importer disables the conflicting {name}", "minimize_widget = none" in generated, generated)
                 config.write_text(original + "\n" + base_text + "\n" + generated)
                 time.sleep(0.8)  # Wayfire's config file watcher

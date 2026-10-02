@@ -40,6 +40,14 @@ exec), `scottland-widget-bus` (D-Bus, badges, mailbox, state files), the card
 | WG19 | Peeking at a collapsed widget: while the pointer is over a collapsed widget it shows expanded (its title and app), and collapses again when the pointer leaves; a collapsed widget that starts needing attention shows expanded for 5 seconds, then collapses. It stays collapsed throughout (Super+M's mode is unchanged): only how it's shown changes, owned by the desktop model with the rest of its presentation. | not built (after the desktop model lands) |
 | WG20 | The collapse binding activates once per held key. Duplicate downs, including overlapping devices, do not toggle it again; only release of that key on all held devices rearms it (device removal clears that device). Releasing a modifier does not rearm it. No time debounce discards rapid intentional presses. Every bound-key press/release records its device, input/receipt time, key and latch/mode state; activations and ignored duplicate callbacks are distinct. | verified (plumbus headless 2026-10-01: 7 input/diagnostic checks; duplicate down failed before the fix; device overlap/removal not exercised) |
 
+Validation on plumbus, 2026-10-01: `tests/widgets-test.sh` passed all **142 checks**, including
+40 regressions in `tests/widget-input-test.py` (WG20: 7, WG4: 7, WG16 previews: 12, O5 import: 14).
+`widget-bus-test.py` passed 11 checks and `widget-launch-test.py` passed 17. Each fix reproduced a
+failure before its implementation. The isolated headless session started after the build; mapping,
+geometry events, running cards, D-Bus, drag/touch input, lifecycle and reload were exercised. Its
+placement screenshot was inspected. No real-screen session was used; the physical source of the
+reported duplicate key input remains unproven, and the snapshot morph is still deferred.
+
 Planned built-in widgets besides the card (not built): **live miniature** (Scottland draws the real window
 small on the rail itself; no screen capture involved) and **media** (MPRIS controls for players).
 
