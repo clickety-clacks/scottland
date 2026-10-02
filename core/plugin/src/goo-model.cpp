@@ -107,11 +107,14 @@ float settings_t::fall(float d) const
 {
     if (!std::isfinite(d))
         return 0;
+    // Compact support: the liquid tapers to nothing over its last half reach and is exactly zero
+    // beyond four reaches, so the goo's extent (and its damage) has a hard analytic bound.
     float t = std::max(d, 0.f) / (4 * reach) * (falloff.size() - 1);
     if (t >= falloff.size() - 1)
-        return falloff.back() * std::exp(-(d / reach - 4));
+        return 0;
     size_t i = size_t(t);
-    return glm::mix(falloff[i], falloff[i + 1], t - i);
+    float u = std::clamp((d / reach - 3.5f) / .5f, 0.f, 1.f);
+    return glm::mix(falloff[i], falloff[i + 1], t - i) * (1 - u * u * (3 - 2 * u));
 }
 float settings_t::threshold() const { return std::max(.0001f, fall(thickness)); }
 float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &s, float time)

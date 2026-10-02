@@ -1190,10 +1190,14 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             uint32_t now = now_ms();
             double dt = std::clamp((now - last_tick) / 1000.0, 0.001, 0.05);
             last_tick = now;
-            damage();  // where it was: a shrinking bulge must not leave its old outline behind
+            // With the goo, the halo's shape and color live in the goo, which repaints only its
+            // own bands; repainting the whole window every tick would cost a full-window redraw.
+            bool goo = goo_enabled();
+            if (!goo) damage();  // where it was: a shrinking bulge must not leave its old outline behind
             double reach = thickness();
             step(dt);
-            damage();
+            if (goo) goo_wake(*this);
+            else damage();
             if (on_reshape && (std::abs(thickness() - reach) > 0.05))
             {
                 on_reshape();

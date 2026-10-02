@@ -34,7 +34,7 @@ float fall(float e) {
   float t=max(e,0.)/(4.*uReach);
   float index=min(t,1.)*255.,lo=floor(index);
   float a=texture2D(uFalloff,vec2((lo+.5)/256.,.5)).r,b=texture2D(uFalloff,vec2((min(lo+1.,255.)+.5)/256.,.5)).r;
-  return mix(a,b,index-lo)*exp(-max(0.,e/uReach-4.));
+  return mix(a,b,index-lo)*(1.-smoothstep(3.5,4.,e/uReach)); // compact support (goo-model fall)
 }
 float deposit(vec2 p,vec4 r,vec4 corners,vec4 dot) {
   float a=0.;
@@ -127,14 +127,16 @@ void main(){
   vec3 acc=c;float ws=1.;
   for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=texture2D(uDyeTex,u2).rgb*w;ws+=w;}
   c=mix(c,acc/ws,uSpread);
-  float ksum=1e-4,maxK=0.;vec3 nearest=vec3(0);
+  // One walk over the windows finds the nearest-color blend and the dominant window, whose
+  // dye is released here.
+  float ksum=1e-4,maxK=-1.,bestE=0.;vec3 nearest=vec3(0);int best=0;
   for(int i=0;i<1024;i++){
     if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
-    float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearest+=k*source(i,2.).rgb;
+    float k=g.x*fall(e);ksum+=k;nearest+=k*source(i,2.).rgb;
+    if(k>maxK){maxK=k;best=i;bestE=e;}
   }
-  for(int i=0;i<1024;i++){
-    if(i>=uCount)break;vec4 r=source(i,0.),g=source(i,1.);float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
-    float k=g.x*fall(e); if(k<maxK-.00001)continue;
+  if(uCount>0){
+    int i=best;vec4 r=source(i,0.),g=source(i,1.);float e=bestE;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
     vec3 tint=source(i,2.).rgb;
     // State marks are released dye, Gaussian deposits, never overlay geometry.
@@ -162,7 +164,8 @@ void main(){
   if(a<=0.)discard;
   float ht=height(uv);
   vec3 n=normalize(vec3(-(height(uv+vec2(px.x,0))-ht)*uRelief,-(height(uv+vec2(0,px.y))-ht)*uRelief,1.));
-  vec2 refr=p+n.xy*26.; if(unionSdf(refr)<1.)refr=p;
+  // Refraction never borrows from under a window: the field pass's outside-windows mask (G).
+  vec2 refr=p+n.xy*26.; if(texture2D(uField,refr/uRes).g<.5)refr=p;
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);

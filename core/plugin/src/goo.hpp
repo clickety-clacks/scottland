@@ -28,4 +28,5 @@ bool goo_enabled();
 handle_t goo_handle(const frame_t &frame, wf::pointf_t point);
 double goo_thickness(double scale, double swell);
 void goo_impulse(const frame_t &frame, float strength);
+void goo_wake(const frame_t &frame);
 } // namespace scottland

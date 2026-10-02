@@ -2,6 +2,8 @@
 #include "frame.hpp"
 #include "goo-runtime.hpp"
 #include <chrono>
+#include <deque>
+#include <optional>
 #include <cmath>
 #include <wayfire/config/option-wrapper.hpp>
 #include <wayfire/output-layout.hpp>
@@ -80,20 +82,62 @@ class goo_node_t : public wf::scene::node_t
         out.push_back(std::make_unique<goo_instance_t>(this, damage, o));
     }
     // Goo exists only in a band around each window (and in the gaps it bridges); window
-    // interiors mask it out. Damaging just those bands keeps a breathing or settling goo from
-    // repainting the whole screen, and every window on it, every frame (GO10).
+    // interiors mask it out. It is damaged, simulated and drawn only there, so a breathing or
+    // settling goo does not shade the whole screen every frame (GO10).
     std::vector<wf::geometry_t> last_bands;
     bool whole = true;
-    std::vector<wf::geometry_t> bands() const
+    /** How far past a window's edge its goo can reach. The falloff is zero beyond four reaches
+     *  (compact support), so this is exact rather than padded by hand: the farthest distance at
+     *  which the windows that can overlap there, at their largest amount (noise lumps, corner
+     *  and dot deposits) and highest wave, still sum to the edge threshold. */
+    std::vector<double> reaches() const
     {
         auto &st = state.settings;
-        // The widest the liquid gets: a fully swollen band, or half the widest gap it bridges
-        // (goo-model's bridge reach), plus room for noise lumps, waves and the relief's edge.
-        double out = std::max(st.thickness * (1 + st.swell / .7), 1.1 * (st.thickness + st.reach * .7)) + 12;
-        std::vector<wf::geometry_t> list;
-        for (auto &s : state.sources)
+        auto sources = state.sources;
+        goo::amounts(sources, st);
+        double support = 4 * st.reach;
+        double wave = 1 + 3.9 * std::max(0.f, st.wave_height); // waves clamp at 3.9
+        double edge = st.threshold() * .97;                     // render's smoothstep start
+        std::vector<double> out;
+        for (size_t i = 0; i < sources.size(); i++)
         {
-            double in = s.liquid.y + 2;
+            auto &a = sources[i].rect;
+            int overlapping = 0;
+            double amount = 0;
+            for (auto &w : sources)
+            {
+                auto &b = w.rect;
+                if (std::abs(a.x - b.x) < a.z + b.z + 2 * support && std::abs(a.y - b.y) < a.w + b.w + 2 * support)
+                {
+                    overlapping++;
+                    float corner = std::max(std::max(w.corners.x, w.corners.y), std::max(w.corners.z, w.corners.w));
+                    amount = std::max<double>(amount, w.liquid.x * (1 + st.noise) + .22 * corner + .45 * w.dot.z);
+                }
+            }
+            double peak = overlapping * amount * wave;
+            double d = 0;
+            while (d < support && peak * st.fall(d) >= edge)
+                d += 1;
+            out.push_back(d + 2); // antialiased edge
+        }
+        return out;
+    }
+    // Recomputed only when the sources or settings change (every caller in a frame shares it).
+    std::optional<std::vector<wf::geometry_t>> band_cache;
+    const std::vector<wf::geometry_t> &bands()
+    {
+        if (!band_cache)
+            band_cache = compute_bands();
+        return *band_cache;
+    }
+    std::vector<wf::geometry_t> compute_bands() const
+    {
+        auto reach = reaches();
+        std::vector<wf::geometry_t> list;
+        for (size_t i = 0; i < state.sources.size(); i++)
+        {
+            auto &s = state.sources[i];
+            double out = reach[i], in = s.liquid.y + 2;
             double x1 = s.rect.x - s.rect.z, x2 = s.rect.x + s.rect.z;
             double y1 = s.rect.y - s.rect.w, y2 = s.rect.y + s.rect.w;
             auto box = [&](double a, double b, double c, double d)
@@ -114,6 +158,32 @@ class goo_node_t : public wf::scene::node_t
         }
         return list;
     }
+    /** Simulation tiles: the bands of the last `SIM_MEMORY` steps, dilated by one tile and snapped
+     *  to it. A texel stays simulated that long after the goo leaves it, so its waves damp out and
+     *  its dye settles (both ping-pong copies agree) before it is frozen; dye there then stays. */
+    static constexpr int SIM_TILE = 16, SIM_MEMORY = 32;
+    std::deque<wf::region_t> sim_history;
+    std::vector<wf::geometry_t> sim_tiles(const std::vector<wf::geometry_t> &bands)
+    {
+        wf::region_t now;
+        for (auto &b : bands)
+        {
+            int x1 = (int)std::floor(double(b.x) / SIM_TILE) - 1, y1 = (int)std::floor(double(b.y) / SIM_TILE) - 1;
+            int x2 = (int)std::ceil(double(b.x + b.width) / SIM_TILE) + 1;
+            int y2 = (int)std::ceil(double(b.y + b.height) / SIM_TILE) + 1;
+            now |= wf::geometry_t{x1 * SIM_TILE, y1 * SIM_TILE, (x2 - x1) * SIM_TILE, (y2 - y1) * SIM_TILE};
+        }
+        sim_history.push_back(now);
+        while (sim_history.size() > SIM_MEMORY)
+            sim_history.pop_front();
+        wf::region_t all;
+        for (auto &r : sim_history)
+            all |= r;
+        std::vector<wf::geometry_t> rects;
+        for (auto &b : all)
+            rects.push_back(wf::geometry_t{b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1});
+        return rects;
+    }
     void damage()
     {
         auto node = shared_from_this();
@@ -124,12 +194,12 @@ class goo_node_t : public wf::scene::node_t
             last_bands = bands();
             return;
         }
-        auto next = bands();
+        auto &next = bands();
         for (auto &b : last_bands)
             wf::scene::damage_node(node, b);
         for (auto &b : next)
             wf::scene::damage_node(node, b);
-        last_bands = std::move(next);
+        last_bands = next;
     }
     void wake()
     {
@@ -168,6 +238,7 @@ class goo_node_t : public wf::scene::node_t
                 }
             }
             state.sources = std::move(next);
+            band_cache.reset();
             last_change = now();
             wake();
         }
@@ -206,11 +277,12 @@ class goo_node_t : public wf::scene::node_t
             [&]
             {
                 auto g = get_bounding_box();
+                auto &band = bands();
                 if (!state.sleeping)
                 {
                     goo::amounts(state.sources, state.settings);
                     bool ok = state.renderer.update(state.sources, state.settings, g.width, g.height,
-                                                    state.time, state.impulses);
+                                                    state.time, state.impulses, sim_tiles(band));
                     state.impulses.clear();
 
                     if (!ok)
@@ -226,7 +298,10 @@ class goo_node_t : public wf::scene::node_t
                         tick.disconnect();
                     }
                 }
-                state.renderer.draw(data);
+                wf::regionf_t area;
+                for (auto &b : band)
+                    area |= b;
+                state.renderer.draw(data, area);
             });
     }
 };
@@ -285,6 +360,7 @@ struct goo_t::impl
         for (auto &[o, n] : nodes)
         {
             n->state.settings = goo::current_settings;
+            n->band_cache.reset();
             n->whole = true;
             n->last_change = now();
             n->wake();
