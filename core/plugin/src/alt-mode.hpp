@@ -1,5 +1,6 @@
 #pragma once
 #include "window-memory.hpp"
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -7,6 +8,8 @@ namespace scottland::windowing
 {
 struct hint_entry { uint64_t id; unsigned slot; zone location; bool widget; };
 enum class destination { center, periphery, widget };
+// The other two zones, toward the center first, then the original zone.
+std::array<destination, 3> cycle_order(destination start);
 class alt_mode
 {
   public:
@@ -19,7 +22,8 @@ class alt_mode
     void begin(std::vector<hint_entry> windows, uint64_t focused);
     void end();
     void refresh(std::vector<hint_entry> windows);
-    void letter(char key);
+    void letter(char key, uint32_t time_ms);
+    unsigned double_tap_delay = 300;
     void tab(bool backwards);
     void close_selected();
     std::string label(unsigned slot) const;
@@ -27,7 +31,10 @@ class alt_mode
   private:
     std::string prefix;
     uint64_t cycling = 0;
-    destination next = destination::periphery, after_center = destination::periphery;
-    void activate(uint64_t id);
+    std::array<destination, 3> order;
+    unsigned step = 0;
+    uint64_t last_hint = 0;
+    uint32_t last_press = 0;
+    void activate(uint64_t id, bool double_tap);
 };
 }
