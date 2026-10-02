@@ -18,6 +18,7 @@ struct source_t
     glm::vec4 corners{};
     glm::vec4 dot{}; // center, glow, radius
     float scale = 1, swell = 0;
+    bool hinted = false; // window mode: the goo shows the hint color (dye) at once
     bool attention = false, grabbed = false, light = false, emitter = true;
 };
 

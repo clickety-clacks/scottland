@@ -25,7 +25,7 @@ bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> 
         if (a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
             glm::length(a[i].dye - b[i].dye) > .001f || glm::length(a[i].corners - b[i].corners) > .001f ||
             glm::length(a[i].dot - b[i].dot) > .001f || std::abs(a[i].swell - b[i].swell) > .001f ||
-            a[i].grabbed != b[i].grabbed || std::abs(a[i].scale - b[i].scale) > .001f ||
+            a[i].hinted != b[i].hinted || a[i].grabbed != b[i].grabbed || std::abs(a[i].scale - b[i].scale) > .001f ||
             a[i].attention != b[i].attention || a[i].emitter != b[i].emitter || a[i].light != b[i].light)
             return false;
     return true;

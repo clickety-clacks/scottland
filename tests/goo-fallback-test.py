@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """An unsupported GL context retains the real, draggable halo instead of blank decoration.
-Run after a fresh start --widgets with SCOTTLAND_TEST_GOO=1 SCOTTLAND_TEST_GOO_GLES=unsupported.
+Run after a fresh start --widgets with SCOTTLAND_TEST_GOO_GLES=unsupported.
 """
 import json
 from pathlib import Path
@@ -24,8 +24,8 @@ try:
     for _ in range(50):
         if any(v['title']=='fallback-app' for v in ipc('scottland/layout-state')['views']):break
         time.sleep(.1)
-    # Explicitly request goo so the off default cannot make this fallback check vacuous.
-    ipc('wayfire/set-config-options', {'scottland/goo': True})
+    # Confirm the request remains on even though this GPU cannot run it.
+    check('goo is requested by default', str(ipc('wayfire/get-config-option', {'option':'scottland/goo'})['value']).lower() in ('true', '1'))
     time.sleep(.7)
     check('unsupported context falls back to the halo',not ipc('scottland/goo-state')['enabled'])
     check('unsupported goo leaves no available model screens', ipc('scottland/desktop-model')['goo'] == [])

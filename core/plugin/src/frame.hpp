@@ -2,8 +2,8 @@
 
 // Window frame: every window is drawn as a rounded rectangle (A2) inside a liquid halo (A3-A11).
 // The halo is always visible; it tints with focus, moves the window when dragged, resizes it
-// from its corners (which cloud up as the cursor nears), swells like goo after a hover, merges
-// with neighboring windows' halos under surface tension, and carries a close dot.
+// from its corners (which cloud up as the cursor nears), swells after a hover, and carries
+// a close dot. Each fallback halo is its own band; screen-wide goo handles pooling and bridges.
 //
 // The frame is the window's scale transformer too (it extends view_2d_transformer_t), so the
 // rounding, the scale and the halo are one node in the window's transformer chain: the halo
@@ -48,11 +48,9 @@ constexpr double CORNER_RADIUS = 10.0;  // double Omarchy's 5
 constexpr double HALO = 32.0 / 3.0;     // halo thickness at rest (10.7 pt)
 // On screen (constant size):
 constexpr double MIN_GRAB     = 12.0;   // the halo's grab area is never thinner than this
-constexpr double MERGE        = 10.0;   // surface-tension reach: halos ~5 pt apart bridge
 constexpr double CORNER_EXTRA = 16.0;   // a corner's resize part runs this far past its curve
 constexpr double NEAR_RANGE   = 64.0;   // corners cloud and the close dot shows within this
 constexpr double DOT_RADIUS   = 7.0;
-constexpr int MAX_NEIGHBORS   = 8;
 constexpr double SWOLLEN = 2 * HALO;    // swollen halo thickness, on screen (doesn't scale)
 constexpr double SWELL_VICINITY = 50.0; // the cursor pausing this near the halo swells it
 constexpr double FOCUS_NUDGE = 2.2;
@@ -125,13 +123,6 @@ inline double round_box_distance(wf::pointf_t p, const rectf_t& r, double radius
     return std::hypot(std::max(qx, 0.0), std::max(qy, 0.0)) + std::min(std::max(qx, qy), 0.0) - radius;
 }
 
-/** Polynomial smooth minimum: joins two shapes with a rounded fillet about k wide. */
-inline double smooth_min(double a, double b, double k)
-{
-    double h = std::max(k - std::abs(a - b), 0.0) / k;
-    return std::min(a, b) - h * h * k / 4.0;
-}
-
 /** Brightness for a cursor `d` from something: zero `range` away, rising quickly as the cursor
  *  closes in (squared), full on it. */
 inline double nearness(double d, double range)
@@ -139,27 +130,6 @@ inline double nearness(double d, double range)
     double t = std::clamp(1.0 - std::max(0.0, d) / range, 0.0, 1.0);
     return t * t;
 }
-
-/** Another window's liquid, as seen by this one. */
-struct neighbor_t
-{
-    rectf_t window;     // its rounded rectangle on screen
-    double radius;      // its corner radius on screen
-    double thickness;   // its halo thickness on screen
-    bool in_front;      // above this window (its liquid wins where they meet)
-
-    double liquid(wf::pointf_t p) const
-    {
-        return round_box_distance(p, window.grown(thickness), radius + thickness);
-    }
-
-    bool operator ==(const neighbor_t& other) const
-    {
-        return std::abs(window.x1 - other.window.x1) < 0.25 && std::abs(window.y1 - other.window.y1) < 0.25 &&
-               std::abs(window.x2 - other.window.x2) < 0.25 && std::abs(window.y2 - other.window.y2) < 0.25 &&
-               std::abs(thickness - other.thickness) < 0.1 && in_front == other.in_front;
-    }
-};
 
 // ---------------------------------------------------------------------------------------------
 // GL programs
@@ -205,8 +175,8 @@ void main()
     gl_FragColor = c * clamp(0.5 - d / aa, 0.0, 1.0);
 })";
 
-// The halo: liquid made of this window's rounded band, joined to the neighbors behind it with a
-// smooth minimum (meniscus and bridges), shaded as a rounded surface lit from the upper left.
+// The fallback halo: this window's own rounded band, shaded as a rounded surface lit
+// from the upper left. Overlapping bands stack with their windows without joining.
 static const char *halo_fragment_source =
     R"(#version 100
 varying highp vec2 pos;
@@ -216,16 +186,12 @@ uniform highp float thickness;   // halo thickness on screen (with the swell)
 uniform highp float ripple;      // goo ripple amplitude (px)
 uniform highp float phase;       // animation clock
 uniform highp float aa;          // px per fragment
-uniform highp float merge;       // smooth-min width
-uniform highp vec4 hint_dye;     // transient Alt dye: shared hook for a future screen-wide goo
+uniform highp vec4 hint_dye;     // transient Alt dye for the fallback halo
 uniform highp float hint_border; // logical px, independent of window/output scale
 uniform highp vec3 tone;         // base color
 uniform highp float density;     // base opacity
 uniform highp vec4 cloud;        // cloudiness per corner: tl, tr, bl, br
 uniform highp float corner_extra;
-uniform highp float count;
-uniform highp vec4 nb_window[8];
-uniform highp vec4 nb_param[8];  // radius, thickness, in front (0/1)
 
 highp float round_box(highp vec2 p, highp vec4 r, highp float rad)
 {
@@ -233,12 +199,6 @@ highp float round_box(highp vec2 p, highp vec4 r, highp float rad)
     rad = min(rad, min(hs.x, hs.y));
     highp vec2 q = abs(p - (r.xy + hs)) - hs + vec2(rad);
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
-}
-
-highp float smin(highp float a, highp float b, highp float k)
-{
-    highp float h = max(k - abs(a - b), 0.0) / k;
-    return min(a, b) - h * h * k * 0.25;
 }
 
 highp float hash(highp vec2 p)
@@ -264,21 +224,6 @@ highp float own_liquid(highp vec2 p)
         - ripple * wave;
 }
 
-// The liquid this window draws: its own band joined to the neighbors behind it.
-highp float liquid(highp vec2 p)
-{
-    highp float d = own_liquid(p);
-    for (int i = 0; i < 8; i++) {
-        if (float(i) >= count) break;
-        if (nb_param[i].z < 0.5) {
-            highp float t = nb_param[i].y;
-            highp float n = round_box(p, nb_window[i] + vec4(-t, -t, t, t), nb_param[i].x + t);
-            d = smin(d, n, merge);
-        }
-    }
-    return d;
-}
-
 highp float cover(highp float d)
 {
     return clamp(0.5 - d / aa, 0.0, 1.0);
@@ -286,23 +231,9 @@ highp float cover(highp float d)
 
 void main()
 {
-    highp float d = liquid(pos);
-    highp float mine = own_liquid(pos);
+    highp float d = own_liquid(pos);
     highp float a = cover(d);
     a *= 1.0 - cover(round_box(pos, window, radius));       // not under the window itself
-
-    // Pixels of a neighbor's own liquid belong to it (unless they're also mine: I'm in front);
-    // pixels of a neighbor in front belong to it outright.
-    for (int i = 0; i < 8; i++) {
-        if (float(i) >= count) break;
-        highp float t = nb_param[i].y;
-        highp float n = round_box(pos, nb_window[i] + vec4(-t, -t, t, t), nb_param[i].x + t);
-        if (nb_param[i].z > 0.5) {
-            a *= 1.0 - cover(n);
-        } else {
-            a *= 1.0 - cover(n) * (1.0 - cover(mine));
-        }
-    }
 
     if (a <= 0.0) {
         discard;
@@ -310,7 +241,7 @@ void main()
 
     // Shape the band like a rounded bead: flat on top, sloping at the outer edge.
     highp float e = max(aa, 0.5);
-    highp vec2 grad = vec2(liquid(pos + vec2(e, 0.0)) - d, liquid(pos + vec2(0.0, e)) - d) / e;
+    highp vec2 grad = vec2(own_liquid(pos + vec2(e, 0.0)) - d, own_liquid(pos + vec2(0.0, e)) - d) / e;
     highp float depth = clamp(-d / max(thickness * 0.8, 1.0), 0.0, 1.0);
     highp vec3 n = normalize(vec3(grad * (1.0 - depth) * 1.8, 1.0));
 
@@ -425,7 +356,6 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
      *  the plugin starts the move or resize. The close dot is handled here. */
     std::function<void(wayfire_toplevel_view, handle_t, int touch_id)> on_press;
     std::function<void(wayfire_toplevel_view)> on_close;  // the close dot (default: close the view)
-    std::function<void()> on_reshape;  // its halo's reach changed (swelling, breathing): neighbors re-merge
     std::shared_ptr<widget_morph_t> presentation;
 
     frame_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
@@ -655,20 +585,6 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
     }
 
-    void set_neighbors(std::vector<neighbor_t> list)
-    {
-        if (list != neighbors)
-        {
-            neighbors = std::move(list);
-            damage();
-        }
-    }
-
-    const std::vector<neighbor_t>& get_neighbors() const
-    {
-        return neighbors;
-    }
-
     /** The cursor moved to p. Only the frame nearest the cursor gets this; others get leave(). */
     void track(wf::pointf_t p)
     {
@@ -750,31 +666,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return handle_t::none;  // the window itself
         }
 
-        // The grab area: this window's band (at least MIN_GRAB thick) joined to the liquid it
-        // shares with the neighbors behind it, minus what belongs to neighbors.
+        // This window's own band, widened to the minimum grab target (A5).
+        // Ordinary scene stacking decides which window receives input.
         double grab = std::max(thickness(), MIN_GRAB);
-        double own  = round_box_distance(p, r.grown(grab), radius + grab);
-        double joined = own;
-        for (auto& n : neighbors)
-        {
-            double d = n.liquid(p);
-            if (n.in_front && (d <= 0))
-            {
-                return handle_t::none;
-            }
-
-            if (!n.in_front)
-            {
-                if ((d <= 0) && (own > 0))
-                {
-                    return handle_t::none;
-                }
-
-                joined = smooth_min(joined, d, MERGE);
-            }
-        }
-
-        if (joined > 0)
+        if (round_box_distance(p, r.grown(grab), radius + grab) > 0)
         {
             return handle_t::none;
         }
@@ -812,12 +707,12 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return {(r.x1 + r.x2) / 2, r.y2 + thickness() / 2};
     }
 
-    /** How far the drawn halo, its swell and its merging can reach outside the window. */
+    /** How far the drawn halo, its swell and close dot can reach outside the window. */
     double margin() const
     {
         // Goo is drawn/damaged by its output node. Keep the view's box stable: Wayfire's
         // move tool and the desktop's live window/widget morph use this box for placement.
-        return std::max(SWOLLEN * 1.35, MIN_GRAB) + MERGE + DOT_RADIUS + 4;
+        return std::max(SWOLLEN * 1.35, MIN_GRAB) + DOT_RADIUS + 4;
     }
 
     // --- scene node ---
@@ -1054,7 +949,6 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
   private:
     bool is_focused = false;
-    std::vector<neighbor_t> neighbors;
     handle_t hovered = handle_t::none;
     handle_t pressed = handle_t::none;
     wf::pointf_t last_pointer{0, 0};
@@ -1191,13 +1085,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             double dt = std::clamp((now - last_tick) / 1000.0, 0.001, 0.05);
             last_tick = now;
             damage();  // where it was: a shrinking bulge must not leave its old outline behind
-            double reach = thickness();
             step(dt);
             damage();
-            if (on_reshape && (std::abs(thickness() - reach) > 0.05))
-            {
-                on_reshape();
-            }
             if (settled())
             {
                 swell = swell_target;
@@ -1386,7 +1275,6 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("ripple", std::min(4.0, std::abs(self->swell_velocity) * travel * 0.3));
         program.uniform1f("phase", self->phase);
         program.uniform1f("aa", aa);
-        program.uniform1f("merge", MERGE);
         if (self->hint_dye) tone = *self->hint_dye;
         program.uniform4f("hint_dye", self->hint_dye ? glm::vec4{*self->hint_dye, alpha} : glm::vec4{0});
         program.uniform1f("hint_border", windowing::hint_border_width);
@@ -1394,20 +1282,6 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("density", density);
         program.uniform4f("cloud", glm::vec4{self->cloud[0], self->cloud[1], self->cloud[2], self->cloud[3]});
         program.uniform1f("corner_extra", CORNER_EXTRA);
-
-        std::array<glm::vec4, MAX_NEIGHBORS> nb_window{}, nb_param{};
-        auto& list = self->get_neighbors();
-        int count  = std::min<int>(list.size(), MAX_NEIGHBORS);
-        for (int i = 0; i < count; i++)
-        {
-            nb_window[i] = {list[i].window.x1, list[i].window.y1, list[i].window.x2, list[i].window.y2};
-            nb_param[i]  = {list[i].radius, list[i].thickness, list[i].in_front ? 1.0 : 0.0, 0.0};
-        }
-
-        program.uniform1f("count", count);
-        GLuint id = program.get_program_id(wf::TEXTURE_TYPE_RGBA);
-        glUniform4fv(glGetUniformLocation(id, "nb_window"), MAX_NEIGHBORS, glm::value_ptr(nb_window[0]));
-        glUniform4fv(glGetUniformLocation(id, "nb_param"), MAX_NEIGHBORS, glm::value_ptr(nb_param[0]));
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);

@@ -8,8 +8,9 @@ https://claude.ai/artifact/VHTqdn4TqvSN8kZ8CoRV64 (Scottland Goo Lab; its source
 [prototypes/goo-lab.html](prototypes/goo-lab.html)).
 
 This doc is the design and implementation record. `scottland/goo` selects it live; the shipped
-default is **false**, retaining the existing halo. A3, A4, A6, A9, A10 and A11's goo behavior is
-restated below; the original halo remains available.
+default is **true**. Switching it off, or a GPU unable to run it, retains separate per-window
+halo bands. A3, A4, A6, A9, A10 and A11's goo behavior is restated below; the original halo
+remains available.
 
 ## Model
 
@@ -79,13 +80,17 @@ settings do. Anyone can tune it. The initial defaults are the prototype’s Scot
 - **A5/A6:** the field owns move handles and exposed resize corners; resizing still keeps the center.
   Corners gain a Gaussian deposit of dye and density, with no separate corner patch. For A5's 12 pt
   minimum target, the same field is dilated only as far as needed. A shared bridge's strongest
-  contributing window owns its input; existing stable source order breaks exact ties. This resolves
-  the old front-window rule for one shared liquid without adding a second visible border.
+  contributing window owns its input; existing stable source order breaks exact ties.
+- **Window-mode hints (WK14):** the transient frame color feeds the same goo source dye.
+  The goo simply takes the hint color, at once while hints show (blended by contribution, so
+  connected goo stays smooth); there is no separate rim. It adds no per-window joining layer and
+  clears with the existing hint lifecycle, without changing focus or attention state.
 - **A7:** the existing dwell, proximity, drag and linger rules remain. Full reveal is twice the
   full-size goo thickness (26 pt at the preset), independent of window scale; the Swell control
   scales that response. Swells and grabs excite waves.
-- **A10 → GO2/GO3:** summed density naturally pools at concave joins and forms bridges. The old
-  separately drawn meniscus is replaced by pooling; no corner-specific pooling code is used.
+- **A10 → GO2/GO3:** summed density naturally pools at concave joins and forms bridges.
+  The fallback halo draws only its own band: it has no meniscus, bridge or shared-liquid grab rule.
+  No corner-specific pooling code is used.
 - **A11/A12:** the close target remains at the bottom midpoint and appears on proximity or touch.
   Its mark is a soft dye bloom and density deposit, not a separately drawn circle. Pointer and
   touch move/resize/close retain their existing behavior. Three-finger and Super drags use the
@@ -137,7 +142,7 @@ softness), with the same Left/Right and Shift steps, Up/Down/Tab navigation, typ
 Backspace and double-click opening-value reset, and modified-value color. Keyboard navigation
 scrolls the selected Goo row into view; the scrollbar reaches the falloff editor without dragging
 a parameter. The opening Goo object is published atomically for row reset bindings. Defaults resets the
-Scottland preset and the shipped off switch. Save writes the values with the zone settings to
+Scottland preset and the shipped on switch. Save writes the values with the zone settings to
 `layout.ini`; Cancel/Escape restores the opening values, including an empty/default curve, without
 writing. Live updates are batched; Save/Cancel wait for the control process to acknowledge
 them, and Save finishes an atomic file write before closing. The falloff curve is monotone cubic,
@@ -211,8 +216,8 @@ tests/headless.sh stop
 # Start with SCOTTLAND_TEST_GOO_GLES=2 for the packed path, or
 # SCOTTLAND_TEST_GOO_GLES=unsupported for goo-fallback-test.py.
 # goo-flow-test.py needs SCOTTLAND_TEST_OUTPUTS=2 at start.
-SCOTTLAND_TEST_GOO=1 tests/widgets-test.sh
-tests/widgets-test.sh
+tests/widgets-test.sh                     # shipped default: goo on
+SCOTTLAND_TEST_GOO=0 tests/widgets-test.sh  # explicit fallback halo
 ```
 
 Remaining coverage: physical screen/login, mixed DPI and rotated outputs, very large window counts,
@@ -228,7 +233,8 @@ widget lifecycle/away state, attention and drag; the existing frame supplies the
 geometry, focus/attention transitions and collapsed/morph shape. Goo screen availability is
 published in the versioned desktop snapshot. Live disable and unsupported-GPU fallback leave
 no goo screens there; widget/attention slices contain no goo field or simulation samples.
-The old halo is still the shipped default, with `scottland/goo = false`.
+At this validation the old halo was the shipped default, with `scottland/goo = false`;
+the goo-default change below supersedes that default.
 
 Main advanced during validation: after the first complete green matrix it merged Alt hints,
 focused-surface key layers and strict center placement. `a6cb985` brings that main into goo;
@@ -287,8 +293,8 @@ The branch includes main `50e563e` through merge `88595e6`: per-widget presentat
 rail anchoring, premultiplied content blending, WP7 screen padding and the WG21 lifecycle ID.
 The sole source conflict retained both `goo_sources()` and `widget-presentation.hpp`. The frame's
 animated rectangle supplies the goo island and its dye source, including interrupted transitions;
-the disabled goo path retains main's halo renderer. The shipped switch remains false and changes
-live. GO1, GO5, GO6 and WG16 were checked together.
+the disabled goo path retains main's halo renderer. At this validation the shipped switch was false and changed
+live; the goo-default change below supersedes that default. GO1, GO5, GO6 and WG16 were checked together.
 
 All tests ran on plumbus in `Projects/scottland-goo-merge`, deployed with
 `SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh plumbus --tests-only`.
@@ -333,3 +339,68 @@ screenshots are retained on plumbus and locally under `build/widget-goo-merge-ev
 initial fixture, timing and packed-propagation failures are retained alongside final results.
 Plugin/test source hashes matched across 71 files. Both osanwe and plumbus builds passed;
 all tests were on plumbus. The isolated sessions were stopped afterward.
+
+
+## Goo-default validation (2026-10-01)
+
+Mike's decisions now ship: `scottland/goo = true` in metadata, the config and Goo Panel
+Defaults. Switching it off, or a GPU unable to run it, retains a separate band for each window.
+The old halo's neighbor list, recomputation callbacks, neighbor diagnostics, smooth-minimum
+meniscus/bridges, shader ownership masks and shared joining-liquid grab rules are removed.
+A10 now describes independent bands and points to GO2/GO3 for goo pooling and bridging.
+The other appearance, input, attention, proximity and close controls remain.
+
+Default-on testing exposed WK14's previously unconnected goo hint dye. The frame's transient
+hint color now feeds the shared source, the visible bridge blends those source contributions,
+and palette recoloring is immediate. (A two-pixel goo rim was built here, then removed: Mike's
+direction is that window mode just tints the goo.) Focus/attention state and the hint lifecycle
+retain their existing owners.
+
+The test harness inherits shipped defaults unless `SCOTTLAND_TEST_GOO=0` explicitly requests
+the fallback. Internal neighbor assertions are replaced by rendered independent-band checks.
+Morph screenshots are bracketed with recent geometry because IPC and grim are asynchronous;
+the initial reversal sample includes its pre-input frame in the existing 50 ms history allowance.
+The first present invocation omitted its required caller-owned session; both modes were repeated
+inside fresh private sessions and passed. These sampling/harness corrections do not change product
+input behavior.
+
+All runs used `Projects/scottland-goodefault` on plumbus, with
+`SCOTTLAND_DEPLOY_DIR=Projects/scottland-goodefault tests/deploy.sh plumbus --tests-only`,
+`TMPDIR=$HOME/.cache/scottland-test-tmp` and
+`SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-goodefault`.
+Sessions started after their relevant builds. Halo removal was checked in both modes;
+the final hint integration and sampling corrections were additionally checked against
+`dde68af` (including the extended fallback test from `874d1dd`). No live session, other
+checkout or physical screen was changed or used. The task runtime was stopped afterward.
+Local work was limited to source edits/builds, reading results and inspecting screenshots.
+This remains isolated headless verification under AGENTS.md D2; physical display/login,
+mixed DPI, rotation and other GPU families remain outside the checked scope.
+
+| Check | Goo on (shipped default) | Explicit goo off |
+|---|---|---|
+| Widgets (including nested input/process checks) | 146 passed | 146 passed |
+| Widget morph | 86 passed | 76 passed |
+| Windowing | 84 passed | 84 passed |
+| Inertia, single / two outputs | 61 / 8 passed | 61 / 8 passed |
+| Hint style | 51 passed | 51 passed |
+| Key layers | 59 passed | 59 passed |
+| State model, seed 271828 / 50 steps | 95 passed | 95 passed |
+| State regressions | 7 passed | 7 passed |
+| Present | 6 passed | 6 passed |
+
+| Additional check | Result |
+|---|---|
+| Halo separation, empty-corner/gap input, centered corner resize, finger move/reveal/close and goo overlap pooling | 11 passed |
+| Goo interactions, palette, panel Defaults/Save/Cancel, live switch and sleep | 40 passed on RGBA16F; 40 passed on GLES 2/packed RGBA8 |
+| Goo connected/gapped waves, bridge input, fullscreen and two-output drag | 12 passed per GPU path |
+| Unsupported float textures, requested-on default, halo fallback and real halo drag | 4 passed |
+| Hint style with GLES 2/packed goo | 51 passed |
+| Windowing / inertia units | 75 / 39 passed |
+| Widget launcher / widget bus / attention-source units | 17 / 16 / 5 passed |
+| CPU goo model, including hinted 5% field reserve | 21 assertions passed |
+
+All final checks passed. Logs, including retained first-run failures, are in
+`build/goodefault-results`. Inspected screenshots in `build/halo-separation-evidence` show
+the same overlapping fixtures with goo off (independent bands, empty inside corner) and on
+(smooth pooling), plus a narrow unbridged halo gap. `build/hint-style-evidence/dark-hints.png`
+showed the since-removed goo rims and smoothly blended goo.

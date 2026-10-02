@@ -282,10 +282,11 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.dye, s.light ? s.scale : -s.scale});
             data.push_back(s.corners);
             data.push_back(s.dot);
+            data.push_back(glm::vec4{s.hinted ? 1.f : 0.f, 0, 0, 0});
         }
         if (data.empty())
-            data.resize(5);
-        const std::array uploads{std::make_pair(&source, std::make_pair(5, std::max(1, int(sources.size())))),
+            data.resize(6);
+        const std::array uploads{std::make_pair(&source, std::make_pair(6, std::max(1, int(sources.size())))),
                                 std::make_pair(&curve, std::make_pair(256, 1))};
         for (auto pair : uploads)
         {
@@ -456,6 +457,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data)
     p->render_p.uniform1f("uShine", p->settings.shine);
     p->render_p.uniform1f("uRelief", p->settings.relief);
     p->render_p.uniform1f("uAlpha", 1);
+    p->render_p.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
+        [](const source_t &s) { return s.hinted; }));
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     wf::gles::for_each_scissor_rect(

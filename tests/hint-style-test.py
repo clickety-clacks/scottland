@@ -84,7 +84,8 @@ def hold():
     wait(lambda: ipc('scottland/hints')['active'])
     time.sleep(1.5)
 
-GOO = os.environ.get('SCOTTLAND_TEST_GOO') == '1'
+# Goo is on by default; SCOTTLAND_TEST_GOO=0 runs the classic halo.
+GOO = os.environ.get('SCOTTLAND_TEST_GOO') != '0'
 
 def dyed(image, x, y, color):
     """Within a few px of (x, y), a pixel whose strongest channel is the dye's strongest."""

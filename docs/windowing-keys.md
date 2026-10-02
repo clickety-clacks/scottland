@@ -320,7 +320,7 @@ Statuses remain **implemented (headless)**; physical verification is intentional
 
 ## Combined window mode validation (2026-10-01)
 
-`window-mode` combines integrate's goo (off by default), hint styling and O5 shortcut rule
+At this validation `window-mode` combined integrate's goo (then off by default), hint styling and O5 shortcut rule
 with `hint-cycles` and `inertial-keys`. Code under test: `f9568ec`; the subsequent validation
 commit changes documentation only. Integrate's WK1–WK14 keep their IDs: WK6–WK9 now express
 the start-relative loops and skipped redundant select. WK15–WK16 cover double-tap recognition;
@@ -380,3 +380,10 @@ Logs, original exit records and a successful-run manifest are on plumbus in
 `build/window-mode-artifacts/`: `inertia/rail-boundary.png`,
 `two-output/two-output-crossing-restored.png`, `windowing/double-hints.png`,
 `appearance/dark-hints.png` and `appearance/minimum-window-scale-hints.png`.
+
+
+Goo-default follow-up (2026-10-01): WK14 uses the shared goo source dye and retains its
+2 logical px full-color rim, including 5% scale and immediate palette replacement.
+Hint styling passed 51 checks with the default goo, 51 with the fallback halo, and 51 with
+GLES 2/packed goo. Windowing passed 84 per mode; inertia passed 61 single-output plus
+8 two-output checks per mode. See [goo-default validation](goo.md#goo-default-validation-2026-10-01).
