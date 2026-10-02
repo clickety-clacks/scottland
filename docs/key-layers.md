@@ -113,3 +113,19 @@ a running one. `tests/key-layers-test.py` injects real stipc key and pointer eve
 surfaces, including multiple toplevel/layer-shell surfaces sharing one client, and a sandboxed
 imported Lua shortcut. Artifacts are kept under the test machine's runtime directory.
 Use the deployment's `TMPDIR` and `SCOTTLAND_HEADLESS_DIR` as required by the coordinating brief.
+
+Validation on plumbus, 2026-10-01:
+
+| Check | Result |
+|---|---|
+| `make plugin` / checkout-local test helpers | passed |
+| `tests/key-layers-test.sh` (real stipc input, GTK toplevels and layer-shell, sandboxed Lua host) | 52 passed, 0 failed |
+| `tests/widgets-test.sh` (private headless session, drag/close/attention/fullscreen/reload regressions) | 100 passed, 0 failed; no runner errors |
+| `grim` screenshot of the native toplevel and layer-shell popup | inspected |
+
+The widget suite ran before the final modifier-only matching adjustment; that function is not
+called without registered layers. The full key-layer suite was repeated on the final build.
+The widget runner now rounds geometry before shell arithmetic, so the two-cancel drag sequence
+runs when IPC coordinates are JSON floats. Real-screen verification, the Alt-hints raw-input
+integration, and a rehearsal from the live session's build before its reload belong to the
+coordinating session after merge. No live session was reloaded by this worktree.

@@ -49,4 +49,4 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O9 | A double-tap close shortcut (Super+W) is not turned into a single-press close. | implemented (left unmapped) |
 | O10 | Apps launched through Omarchy's launcher (uwsm-app) open in Scottland. | verified |
 | O11 | The shim reports the real session-lock state. | not built |
-| O12 | Keyboard layout switching, night light and Ask's runtime shortcuts work under the shim. | not built |
+| O12 | Keyboard layout switching and night light work under the shim. Runtime surface shortcuts use core key layers (K1; [../docs/key-layers.md](../docs/key-layers.md)), rather than adapter submaps. | layout/night light: not built; key layers: core K1 |
