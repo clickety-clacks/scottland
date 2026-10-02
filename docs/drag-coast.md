@@ -1,7 +1,7 @@
 # Drag release physics
 
 L32 in core/INVARIANTS.md defines the behavior. Drag release seeds the same independent
-velocity axes and tick integration as WK17, rather than starting a destination animation.
+velocity axes, movement friction curve and tick integration as WK17, rather than starting a destination animation. Scottland Settings exposes the shared law in its Window mode tab (S14); an empty curve retains constant deceleration.
 Samples use monotonic receipt timestamps because Wayfire's common move-drag signal provides
 layout coordinates but no device timestamp; this covers pointer, touch and three-finger input.
 A least-squares fit uses the last 100 ms, with at least 20 ms of samples. A stationary tail

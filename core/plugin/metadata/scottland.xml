@@ -99,6 +99,16 @@
             <min>1</min>
             <max>10000</max>
         </option>
+        <option name="move_friction_curve" type="string">
+            <_short>Movement and drag coast deceleration curve</_short>
+            <_long>Normalized speed (0..key_max_velocity) to key_friction multiplier (0.05..4), joined by monotone cubic interpolation. Empty uses constant friction.</_long>
+            <default></default>
+        </option>
+        <option name="resize_friction_curve" type="string">
+            <_short>Inertial resize deceleration curve</_short>
+            <_long>Normalized speed (0..key_max_velocity) to key_friction multiplier (0.05..4), joined by monotone cubic interpolation. Empty uses constant friction.</_long>
+            <default></default>
+        </option>
         <option name="key_friction" type="double">
             <_short>Window arrow deceleration (px/s²)</_short>
             <default>608</default>

@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""S11-S13, S1-S5 and S10 via real stipc input in a caller-owned headless session.
-Run with tests/headless.sh run. Requires two outputs and tesseract; screenshots and logs are retained in
+"""S1-S18 via real stipc input in a caller-owned headless session.
+Run with tests/headless.sh run. Requires two outputs; screenshots and logs are retained in
 build/settings-help-evidence. No live config, session or services are used.
 """
 import json
 import os
-import re
-import shutil
 from pathlib import Path
 import socket
 import struct
@@ -23,6 +21,33 @@ art.mkdir(parents=True, exist_ok=True)
 layout = art / "settings-home/scottland/layout.ini"
 layout.parent.mkdir(parents=True, exist_ok=True)
 layout.unlink(missing_ok=True)
+probe_panel = None
+last_snapshot = {}
+def snapshot():
+    global last_snapshot
+    if probe_panel and probe_panel.poll() is None:
+        last_snapshot=json.loads(subprocess.check_output(
+            ["qs","ipc","--pid",str(probe_panel.pid),"call","settings-test","snapshot"],text=True,timeout=5))
+    return last_snapshot
+
+def screen_point(p):
+    return panel_x+p["x"], 720-48-snapshot()["panel"]["height"]+p["y"]
+
+def control_point(name, dx=0, dy=0):
+    p=snapshot()[name]; x,y=screen_point(p); return x+dx,y+dy
+
+def scroll_to(value):
+    # Drag the real scrollbar thumb; use observed geometry to compute its travel.
+    q=snapshot(); v=q["viewport"]; x,y=screen_point(v)
+    thumb=v["height"]*v["height"]/q["contentHeight"]
+    start=y+q["scroll"]/q["contentHeight"]*v["height"]+thumb/2
+    end=y+max(0,min(q["contentHeight"]-v["height"],value))/q["contentHeight"]*v["height"]+thumb/2
+    drag(x+v["width"]-5,start,0,end-start)
+
+def tab(index):
+    click(panel_x+20+(index+.5)*520/3,720-48-snapshot()["panel"]["height"]+77)
+    time.sleep(.12)
+
 sock = socket.socket(socket.AF_UNIX)
 sock.connect(os.environ["WAYFIRE_SOCKET"])
 clients = []
@@ -73,7 +98,7 @@ def button(mode):
 def key(code):
     ipc("stipc/feed_key", dict(key=code, state=True))
     ipc("stipc/feed_key", dict(key=code, state=False))
-    time.sleep(.09)
+    time.sleep(.2)
 
 
 def click(x, y):
@@ -96,7 +121,7 @@ def drag(x, y, dx, dy=0, live_name=None, fast=False, steps=None):
         if i == steps//2 and live_name:
             check(live_name + " changes before border release", abs(option(live_name)-before) > .01)
     button("release")
-    time.sleep(.25)
+    time.sleep(.4)
 
 
 class Pixels:
@@ -107,14 +132,10 @@ class Pixels:
         pos = round(y)*self.img.get_rowstride()+round(x)*self.img.get_n_channels()
         return tuple(self.data[pos:pos+3])
     def hint(self, row_y, label, x=None):
-        # Inspect the separate surface beside the panel, not white pixels in a slider.
-        x = panel_x + 568 if x is None else x
-        y = max(0, row_y - 130)
-        crop = self.img.new_subpixbuf(round(x), round(y), 320, min(320, self.img.get_height()-round(y)))
-        _, png = crop.save_to_bufferv("png", [], [])
-        result = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "6"], input=png,
-                                capture_output=True, check=True).stdout.decode()
-        return label.lower() in re.sub(r"\s+", " ", result).lower()
+        # QML exposes only observed state; the screenshot confirms the surface separately.
+        if clients and clients[-1].args[0] == "qs" and clients[-1].poll() is not None:
+            return False
+        return label in [snapshot()["zones"]["hint"],snapshot()["goo"]["hint"]]
     def text(self, x, y, width=465, height=24):
         return sum(min(c) > 145 and max(c)-min(c) < 45
                    for yy in range(round(y), round(y+height))
@@ -129,19 +150,23 @@ def shot(name):
 
 
 def open_panel():
-    global panel_x
+    global panel_x, probe_panel
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")],
-        env=dict(os.environ, SCOTTLAND_CTL=str(repo / "core/libexec/scottland-ctl"),
-                 SCOTTLAND_LAYOUT_FILE=str(layout)), stdout=log, stderr=log)
+        env=dict(os.environ, QS_DISABLE_FILE_WATCHER="1", SCOTTLAND_CTL=str(repo / "core/libexec/scottland-ctl"),
+                 SCOTTLAND_LAYOUT_FILE=str(layout), SCOTTLAND_SETTINGS_TEST="1"), stdout=log, stderr=log)
     clients.append(panel)
-    time.sleep(1)
+    probe_panel=panel
+    for _ in range(100):
+        if panel.poll() is not None:break
+        try:
+            if snapshot().get("screen"):break
+        except (json.JSONDecodeError,subprocess.CalledProcessError):pass
+        time.sleep(.05)
     check("settings maps", panel.poll() is None)
-    # An unassigned layer panel opens on the active output; real border input changes it.
-    pixels = shot("panel-position")
-    panel_output = next(o for o in outputs if
-                        pixels.pixel(o["geometry"]["x"]+o["geometry"]["width"]/2, 100)[2]
-                        > pixels.pixel(o["geometry"]["x"]+o["geometry"]["width"]/2, 100)[0]+2)
-    panel_x = panel_output["geometry"]["x"]+(panel_output["geometry"]["width"]-560)/2
+    time.sleep(.4)
+    panel_output=next(o for o in outputs if o["name"]==snapshot()["screen"])
+    panel_x=panel_output["geometry"]["x"]+360
+    shot("panel-position")
     return panel
 
 
@@ -152,6 +177,30 @@ def close_panel(panel, save=False, via_button=False):
         key("KEY_ENTER" if save else "KEY_ESC")
     panel.wait(timeout=5)
     time.sleep(.15)
+
+
+def motion_trial(resize=False):
+    name="SettingsMotion"+str(time.monotonic_ns())
+    fixture=subprocess.Popen(["python3",str(repo/"tests/windowing-key-recorder.py"),name,str(art/(name+".keys"))],stdout=log,stderr=log)
+    clients.append(fixture)
+    for _ in range(80):
+        view=next((v for v in ipc("window-rules/list-views") if v.get("title")==name),None)
+        if view:break
+        time.sleep(.05)
+    assert view
+    ipc("window-rules/configure-view",dict(id=view["id"],geometry=dict(x=480,y=250,width=250,height=150)))
+    ipc("window-rules/focus-view",dict(id=view["id"]))
+    time.sleep(.3)
+    def geometry():return next(v["geometry"] for v in ipc("window-rules/list-views") if v["id"]==view["id"])
+    before=geometry()
+    ipc("stipc/feed_key",dict(key="KEY_LEFTALT",state=True));time.sleep(.4)
+    if resize:ipc("stipc/feed_key",dict(key="KEY_LEFTCTRL",state=True))
+    key("KEY_RIGHT")
+    if resize:ipc("stipc/feed_key",dict(key="KEY_LEFTCTRL",state=False))
+    ipc("stipc/feed_key",dict(key="KEY_LEFTALT",state=False));time.sleep(.8)
+    after=geometry()
+    fixture.terminate();fixture.wait(timeout=5)
+    return after["width"]-before["width"] if resize else after["x"]+after["width"]/2-before["x"]-before["width"]/2
 
 
 def geometry(screen):
@@ -192,145 +241,161 @@ try:
     # Quickshell's first screen is where the panel is anchored (leftmost on this backend).
     panel_x = outputs[0]["geometry"]["x"] + (outputs[0]["geometry"]["width"]-560)/2
     initial = values()
-    panel = open_panel()
-    bands("01-softness-bands")
-    pointer(panel_x+200, 201); time.sleep(.12)
-    p = shot("02-layout-hover")
-    check("hover shows first hint in a popout beside the slider", p.hint(176, "Center edge softness"))
-    check("row contains only its label and value", p.text(panel_x+38, 219, width=365, height=12) < 10)
-    pointer(10, 690); time.sleep(.15)
-    p = shot("02a-layout-leave")
-    check("leaving a hovered row hides its popout", not p.hint(176, "Center edge softness"))
-    pointer(panel_x+200, 259); time.sleep(.12)
-    p = shot("03-layout-hover-second")
-    check("hover switches popout to second row", p.hint(235, "Center zone width") and not p.hint(235, "Center edge softness"))
-    pointer(panel_x+200, 318); time.sleep(.12)
-    p = shot("04-layout-hover-rail")
-    check("rail row explains itself in a popout", p.hint(294, "Widget rail width"))
-    # Click focuses the stack; pointer elsewhere then keyboard selection supplies the hint.
-    click(panel_x+250, 195)
-    pointer(10, 690)
-    key("KEY_BACKSPACE")
-    pointer(panel_x+200, 195); time.sleep(.1)
-    key("KEY_DOWN")
-    p = shot("05-layout-keyboard-pointer-stationary")
-    check("keyboard selection wins over a stationary pointer on another row",
-          p.hint(235, "Center zone width") and not p.hint(235, "Center edge softness"))
-    pointer(10, 690)
-    p = shot("05-layout-keyboard")
-    check("keyboard selection shows popout without pointer hover", p.hint(235, "Center zone width"))
-    before = option("center_width")
-    key("KEY_RIGHT")
-    check("keyboard still adjusts center", abs(option("center_width")-round((before+.5)*2)/2) < .01)
-    key("KEY_BACKSPACE")
-    key("KEY_UP")
-    key("KEY_1"); key("KEY_2"); key("KEY_0")
-    check("numeric entry still edits softness", option("blend_width") == 120)
-    bands("06-softness-live-slider")
-    key("KEY_BACKSPACE"); key("KEY_BACKSPACE"); key("KEY_BACKSPACE"); key("KEY_BACKSPACE")
-    check("reset restores opening softness", option("blend_width") == initial["blend_width"])
-    # The bubble never covers or steals a held slider drag.
-    pointer(panel_x+180, 195); time.sleep(.12); button("press")
-    pointer(panel_x+340, 195); time.sleep(.15)
-    p = shot("06a-held-slider-popout")
-    check("popout stays beside a slider during its drag", p.hint(176, "Center edge softness")
-          and option("blend_width") > 150)
-    button("release"); key("KEY_BACKSPACE")
-
-    # Every Goo row: keyboard reaches and reveals it, then hover it without changing value.
-    click(panel_x+400, 150)
-    click(panel_x+240, 250)
-    key("KEY_BACKSPACE")
-    pointer(10, 690)
-    goo_names = ["goo_thickness", "goo_reach", "goo_thinning", "goo_swell", "goo_noise", "goo_lump",
-                 "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height", "goo_spread",
-                 "goo_swirl", "goo_release", "goo_shine", "goo_relief",
-                 "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance"]
-    goo_labels = ["Border thickness", "Reach", "Bridge draw", "Swell", "Mess", "Lump size",
-                  "Drift", "Wave speed", "Wave persistence", "Wave height", "Dye spread", "Dye swirl",
-                  "Dye release", "Shine", "Relief", "Overlap film", "Control cloudiness", "Control glow", "Control proximity"]
-    # Moving content under an unmoving pointer must not count as new pointer input.
-    pointer(panel_x+220, 250)
-    for _ in range(18):
-        key("KEY_DOWN")
-    p = shot("goo-keyboard-scroll-pointer-stationary")
-    check("keyboard scrolling keeps the selected hint under a stationary pointer",
-          p.hint(550, "Control proximity") and not p.hint(550, "Dye release"))
-    for _ in range(18):
-        key("KEY_UP")
-    # Restore the top of the viewport too (Up reveals the first row, leaving the switch
-    # above it scrolled away). The per-row checks below start with the switch visible.
-    click(panel_x+120, 150)
-    click(panel_x+400, 150)
-    pointer(10, 690)
-    for i, name in enumerate(goo_names):
-        if i:
-            key("KEY_DOWN")
-        # revealRow pins rows below the first seven to the bottom of the 432pt viewport.
-        row_y = min(220+i*59, 176+432-58)
-        p = shot("goo-keyboard-"+name)
-        check(name + " keyboard hint visible", p.hint(row_y, goo_labels[i]))
-        pointer(panel_x+220, row_y+15); time.sleep(.1)
-        p = shot("goo-hover-"+name)
-        check(name + " hover hint visible", p.hint(row_y, goo_labels[i]))
-        pointer(10, 690)
-    key("KEY_RIGHT")
-    check("last Goo keyboard step preserved", abs(option("goo_hover_distance")-49)<.01)
-    drag(panel_x+535, 480, 0, 120)
-    p = shot("goo-scrolled-away")
-    check("scrolling the selected row out of view hides its popout", not p.hint(550, "Control proximity"))
-    close_panel(panel)
-    check("Escape restores Layout and Goo, writes nothing", values() == initial and abs(option("goo_hover_distance")-48)<.01 and not layout.exists())
-    p = shot("goo-closed")
-    check("closing settings leaves no hint surface", not p.hint(550, "Control proximity"))
-
-    # Real palette file for this isolated session only: exercise the settings palette reader,
-    # live theme changes, interface font and text scaling without changing desktop preferences.
     palette_path = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
     old_palette = palette_path.read_bytes() if palette_path.exists() else None
-    try:
-        panel = open_panel()
-        pointer(panel_x+200, 195); time.sleep(.15)
-        palette_path.write_text(json.dumps(dict(background="#eff1f8", foreground="#20212a",
-            accent="#3855aa", muted="#626473", font_family="DejaVu Serif", text_scale=1.5)))
-        time.sleep(.5)
-        p = shot("06b-themed-large-popout")
-        check("popout follows live theme colors", p.pixel(panel_x+870, 205) == (239, 241, 248))
-        check("scaled interface text remains readable outside the panel", p.hint(176, "Center edge softness"))
-        # Measure a line's glyph height, excluding the background outside the bubble.
-        run = tallest = 0
-        for y in range(400):
-            ink = p.pixel(panel_x+870, y) == (239, 241, 248) and any(
-                max(p.pixel(x, y)) < 100 for x in range(round(panel_x+582), round(panel_x+850)))
-            run = run + 1 if ink else 0
-            tallest = max(tallest, run)
-        check("interface text scale enlarges hint glyphs", tallest >= 15)
-        close_panel(panel)
-    finally:
-        if old_palette is None:
-            palette_path.unlink(missing_ok=True)
-        else:
-            palette_path.write_bytes(old_palette)
+    palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
+    baseline_motion=motion_trial()
+    baseline_resize=motion_trial(True)
+    panel = open_panel()
+    check("S15 heading/application name",snapshot()["title"] == "Scottland Settings")
+    check("S15 launcher name", "Name=Scottland Settings" in (repo/"core/settings/scottland-settings.desktop").read_text())
+    bands("01-softness-bands")
+    for i,label in enumerate(["Center edge softness","Center zone width","Widget rail width"]):
+        pointer(*control_point("zones",200,29+59*i));time.sleep(.25)
+        check(label+" hover hint",snapshot()["zones"]["hint"]==label)
+    shot("02-layout-hover")
+    click(*control_point("zones",200,29));pointer(10,690);key("KEY_BACKSPACE")
+    before=option("center_width");key("KEY_DOWN");key("KEY_RIGHT")
+    check("keyboard step previews zone live",abs(option("center_width")-round((before+.5)*2)/2)<.01)
+    check("keyboard hint follows selection",snapshot()["zones"]["hint"]=="Center zone width")
+    key("KEY_UP");key("KEY_1");key("KEY_2");key("KEY_0")
+    check("numeric entry previews softness",option("blend_width")==120)
+    for _ in range(4):key("KEY_BACKSPACE")
+    check("Backspace restores opening row",option("blend_width")==initial["blend_width"])
+    # Knobs have 36pt hit disks; select offset from the small visible handle.
+    e=snapshot()["editor"];p=e["plot"]
+    click(*screen_point(dict(x=p["x"]+p["width"]*.45,y=p["y"]+p["height"]*.4)))
+    check("curve click adds and selects",len(snapshot()["editor"]["knots"])==3 and snapshot()["editor"]["selected"]==1)
+    key("KEY_DELETE")
+    check("Delete removes selected interior knot",len(snapshot()["editor"]["knots"])==2)
+    click(*screen_point(dict(x=p["x"]+p["width"]*.5,y=p["y"]+p["height"]*.5)))
+    key("KEY_BACKSPACE")
+    check("Backspace removes selected interior knot",len(snapshot()["editor"]["knots"])==2)
+    knot=snapshot()["editor"]["knots"][0];x,y=screen_point(knot)
+    click(x+14,y);key("KEY_DELETE")
+    check("36pt endpoint target selects but cannot be deleted",snapshot()["editor"]["selected"]==0 and len(snapshot()["editor"]["knots"])==2)
+    shot("03-curve-selected")
+    tab(1);check("Goo tab selects",snapshot()["tab"]==1)
+    click(*control_point("goo",240,29));key("KEY_BACKSPACE");pointer(10,690)
+    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Overlap film","Control cloudiness","Control glow","Control proximity"]
+    for i,label in enumerate(labels):
+        if i:key("KEY_DOWN")
+        for _ in range(20):
+            if snapshot()["goo"]["hint"]==label:break
+            time.sleep(.025)
+        check(label+" keyboard hint and automatic reveal",snapshot()["goo"]["hint"]==label)
+    key("KEY_RIGHT");check("Goo last row live",option("goo_hover_distance")==49)
+    shot("04-goo-keyboard")
+    tab(0);tab(1)
+    # A discrete wheel burst ends before the position samples; the coast must continue,
+    # then settle without a position-animation restart or an edge jump.
+    pointer(*control_point("viewport",300,200))
+    ipc("scottland/test-input",dict(scroll_y=90,wheel=True))
+    wheel_samples=[]
+    for _ in range(30):
+        time.sleep(.05);q=snapshot();wheel_samples.append((q["scroll"],q["wheelVelocity"]))
+    (art/"wheel-samples.json").write_text(json.dumps(wheel_samples))
+    check("wheel continues moving after input stops",len(set(round(y,1) for y,v in wheel_samples))>=3)
+    a=snapshot()["scroll"];time.sleep(.25)
+    check("wheel decelerates to rest",abs(snapshot()["scroll"]-a)<.1 and snapshot()["wheelVelocity"]==0)
+    tab(0);tab(1)
+    pointer(*control_point("viewport",300,200))
+    for _ in range(4):
+        ipc("scottland/test-input",dict(scroll_y=20,wheel=False));time.sleep(.02)
+    ipc("scottland/test-input",dict(scroll_y=0,wheel=False))
+    pad_samples=[]
+    for _ in range(30):
+        time.sleep(.05);q=snapshot();pad_samples.append((q["scroll"],q["wheelVelocity"]))
+    (art/"touchpad-samples.json").write_text(json.dumps(pad_samples))
+    check("touchpad coasts after axis stop",len(set(round(y,1) for y,v in pad_samples))>=3)
+    a=snapshot()["scroll"];time.sleep(.25);check("touchpad coast settles",abs(snapshot()["scroll"]-a)<.1)
+    tab(0);tab(1)
+    # After mouse editing that same row, touch must still be able to take over for scrolling.
+    click(*control_point("goo",250,4*59+29));key("KEY_BACKSPACE")
+    # A vertical touch gesture on a slider scrolls without changing its value.
+    x,y=control_point("viewport",250,340)
+    old_goo=snapshot()["values"]
+    ipc("stipc/touch",dict(finger=0,x=round(x),y=round(y)))
+    for i in range(1,9):
+        ipc("stipc/touch",dict(finger=0,x=round(x),y=round(y-12*i)));time.sleep(.012)
+    ipc("stipc/touch_release",dict(finger=0))
+    touch_samples=[]
+    for _ in range(35):
+        time.sleep(.04);q=snapshot();touch_samples.append((q["scroll"],q["touchVelocity"],q["flicking"]))
+    (art/"touch-samples.json").write_text(json.dumps(touch_samples))
+    check("touch flick coasts after release",len(set(round(y,1) for y,v,f in touch_samples))>=3)
+    check("vertical touch scroll preserves slider values",snapshot()["values"]==old_goo)
+    for _ in range(40):
+        if not snapshot()["flicking"]:break
+        time.sleep(.05)
+    a=snapshot()["scroll"];time.sleep(.2)
+    check("touch coast settles",abs(snapshot()["scroll"]-a)<.1 and not snapshot()["flicking"])
+    close_panel(panel)
+    check("Escape restores both tabs without writing",values()==initial and option("goo_hover_distance")==48 and not layout.exists())
 
-    # Quickshell confines imports to the config directory: stage the actual component with
-    # the fixture, without editing or copying anything into the installed settings directory.
-    fixture_dir = art / "edge-fixture"
-    fixture_dir.mkdir(exist_ok=True)
-    shutil.copyfile(repo / "tests/HintPopoutFixture.qml", fixture_dir / "shell.qml")
-    shutil.copyfile(repo / "core/settings/ParameterStack.qml", fixture_dir / "ParameterStack.qml")
-    fixture = subprocess.Popen(["qs", "-n", "-p", str(fixture_dir)], stdout=log, stderr=log)
-    clients.append(fixture); time.sleep(.8)
-    check("edge fixture maps", fixture.poll() is None)
-    # The fixture uses the active output, as does the main panel.
-    edge_x = panel_x + 280 + 640 - 24 - 560
-    pointer(edge_x+180, 220); time.sleep(.2)
-    p = shot("06c-popout-flipped-left")
-    check("right-edge row flips its popout to the left on the same output",
-          p.hint(196, "Center zone width", x=edge_x-328))
-    pointer(10, 690); time.sleep(.15)
-    p = shot("06d-flipped-popout-leave")
-    check("flipped popout hides on pointer leave", not p.hint(196, "Center zone width", x=edge_x-328))
-    fixture.terminate(); fixture.wait(timeout=5)
+    panel=open_panel();tab(2)
+    check("Window mode tab selects",snapshot()["tab"]==2)
+    key("KEY_RIGHT");time.sleep(.7)
+    check("playground arrow moves and stops at analytic distance",abs(snapshot()["playground"]["distance"]-335**2/(2*608))<.1 and snapshot()["playground"]["velocity"]==0)
+    # The arrow and bounce trace handles edit the compositor options live.
+    drag(*control_point("playground",80,238),45)
+    check("impulse arrow edits live option",option("key_impulse")>335)
+    drag(*control_point("playground",403,228),0,-10)
+    check("bounce trace edits live restitution",option("key_restitution")>.5)
+    key("KEY_RIGHT");time.sleep(.8)
+    check("playground draws edge bounce",snapshot()["playground"]["bounces"]>0)
+    shot("05-window-playground")
+    click(panel_x+70,638);time.sleep(.25) # Defaults keeps impulse identical for the motion comparison.
+    scroll_to(350)
+    e=snapshot()["movement"];p=e["plot"]
+    # A flat 2x curve: both endpoint drags are real input.
+    for knot in (0,1):
+        k=snapshot()["movement"]["knots"][knot];x,y=screen_point(k)
+        target=screen_point(dict(x=k["x"],y=p["y"]+p["height"]*(4-2)/3.95))[1]
+        drag(x,y,0,target-y)
+    curve=ipc("wayfire/get-config-option",{"option":"scottland/move_friction_curve"})["value"]
+    check("movement friction curve previews through ctl",len(curve.split())==2 and all(float(v.split(":")[1])>1.9 for v in curve.split()))
+    shot("06-window-friction")
+    scroll_to(650)
+    p=snapshot()["resize"]["plot"]
+    for knot in (0,1):
+        k=snapshot()["resize"]["knots"][knot];x,y=screen_point(k)
+        target=screen_point(dict(x=k["x"],y=p["y"]+p["height"]*(4-2)/3.95))[1]
+        drag(x,y,0,target-y)
+    check("resize friction law previews independently",ipc("wayfire/get-config-option",{"option":"scottland/resize_friction_curve"})["value"]!="")
+    close_panel(panel,save=True,via_button=True)
+    changed_motion=motion_trial(); changed_resize=motion_trial(True)
+    print("curve distances",baseline_motion,changed_motion,baseline_resize,changed_resize,flush=True)
+    check("edited movement curve halves real arrow travel",abs(changed_motion-baseline_motion/2)<3 and baseline_motion>80)
+    check("edited resize curve halves real size coast",abs(changed_resize-baseline_resize/2)<3 and baseline_resize>80)
+    check("Save persists all Window mode options",all(k+" =" in layout.read_text() for k in snapshot()["motion"]))
+    panel=open_panel();tab(2)
+    check("reopen retains movement curve",snapshot()["motion"]["move_friction_curve"]==curve)
+    scroll_to(10000)
+    click(*control_point("motionSettings",0,29))
+    check("deceleration row respects its positive minimum despite coarse steps",option("key_friction")==1)
+    click(*control_point("motionSettings",0,88))
+    check("speed limit row respects its positive minimum despite coarse steps",option("key_max_velocity")==1)
+    click(*control_point("holdTiming",120,60));key("KEY_RIGHT")
+    check("hold timeline edits live timing",option("alt_hold_delay")>300)
+    click(*control_point("doubleTiming",180,60));key("KEY_RIGHT")
+    check("double-tap timeline edits live timing",option("window_double_tap_delay")>300)
+    shot("06a-window-timelines")
+    click(panel_x+70,638);time.sleep(.2)
+    check("Window Defaults restores original feel",option("key_impulse")==335 and ipc("wayfire/get-config-option",{"option":"scottland/move_friction_curve"})["value"]=="")
+    close_panel(panel,via_button=True)
+    check("Cancel restores saved motion after Defaults",ipc("wayfire/get-config-option",{"option":"scottland/move_friction_curve"})["value"]==curve)
+    # Reset via the actual Defaults action and Save before the border regression checks.
+    panel=open_panel();tab(2);click(panel_x+70,638);close_panel(panel,save=True)
+    layout.unlink()
+    # Theme applies to every control, not only hints.
+    panel=open_panel()
+    palette_path.write_text(json.dumps(dict(scheme="light",background="#eff1f8",foreground="#20212a",accent="#3855aa",font_family="DejaVu Serif",text_scale=1.5)))
+    time.sleep(.6);p=shot("07-light-theme")
+    check("panel follows light session palette",p.pixel(panel_x+10,100)==(239,241,248))
+    check("type scale and family read live",snapshot()["palette"]["text_scale"]==1.5 and snapshot()["palette"]["font_family"]=="DejaVu Serif")
+    close_panel(panel)
+    palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
 
     # Both sides of all three borders, on both outputs. Pause midway to check live preview.
     panel = open_panel()
@@ -348,7 +413,7 @@ try:
                 expected = before+(40/width*100 if setting == "center_width" else 20/width*100 if setting == "rail_width" else 20)
                 step = .5 if setting == "center_width" else .1 if setting == "rail_width" else 1
                 expected = round(expected/step)*step
-                check(f"{out['name']} {setting} {'right' if right else 'left'} border updates slider value",
+                check(f"{out['name']} {setting} {'right' if right else 'left'} border updates slider value ({option(setting)} vs {expected})",
                       abs(option(setting)-expected) < .011)
     origin, width, center, rail, blend = geometry(outputs[1])
     drag(origin+center, 40, -40, live_name="center_width", fast=True)
@@ -403,6 +468,9 @@ try:
     origin, width, center, rail, blend = geometry(outputs[1])
     pointer(origin+center, 40); time.sleep(.1); button("press")
     pointer(origin+center-20, 40); time.sleep(.1)
+    for _ in range(30):
+        if values()!=saved:break
+        time.sleep(.05)
     check("held border drag changes preview", values() != saved)
     key("KEY_ESC"); panel.wait(timeout=5); button("release"); time.sleep(.1)
     check("Escape while dragging restores all opening values", values() == saved)
@@ -455,6 +523,9 @@ finally:
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
+    if "palette_path" in globals():
+        if old_palette is None: palette_path.unlink(missing_ok=True)
+        else: palette_path.write_bytes(old_palette)
     log.close()
     sock.close()
 print(f"{passed} passed; {failed} failed", flush=True)

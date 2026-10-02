@@ -1,5 +1,5 @@
 #!/bin/bash
-# S11-S13 in an isolated two-output session; never reuse or change a running session.
+# S1-S18 in an isolated two-output session; never reuse or change a running session.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${SCOTTLAND_HEADLESS_DIR:?set a fresh isolated headless test directory}"

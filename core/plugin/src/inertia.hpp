@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <deque>
 #include <utility>
+#include <string>
+#include <vector>
 namespace scottland::windowing
 {
 // Timestamped input positions in layout pixels. A recent linear fit rejects event jitter;
@@ -15,6 +17,15 @@ class release_velocity
     void add(uint32_t time, double x, double y);
     std::pair<double, double> estimate(uint32_t release) const;
 };
+// Monotone Hermite curve: normalized speed (0..maximum) -> friction multiplier
+// (0.05..4). Empty/invalid curves preserve the legacy constant deceleration.
+class friction_curve
+{
+    std::vector<double> xs, ys, slopes;
+  public:
+    void parse(const std::string& text);
+    double at(double speed_fraction) const;
+};
 // One independent axis, in logical px and seconds. Integrate only until the stop time,
 // including half the acceleration term: a single impulse travels v²/(2a), at any frame rate.
 struct inertial_axis
@@ -22,6 +33,7 @@ struct inertial_axis
     double velocity = 0;
     void impulse(double amount, double maximum);
     double step(double seconds, double deceleration);
+    double step(double seconds, double deceleration, const friction_curve& curve, double maximum);
     double bounce(double position, double minimum, double maximum, double restitution);
     double constrain(double position, double minimum, double maximum);
 };

@@ -64,5 +64,22 @@ int main()
     x.velocity=100; check(x.bounce(-1,0,100,.5)==0 && x.velocity==100,"inward velocity is not reflected twice");
     x.velocity=100; check(x.bounce(101,0,100,2)==100 && x.velocity==-100,"restitution is capped at one");
     x.velocity=100; check(x.bounce(101,0,100,-1)==100 && x.velocity==0,"negative restitution becomes a stop");
+    scottland::windowing::friction_curve law;
+    for (const auto& text : {"", "0:1 1:1", "nonsense", "0:nan 1:1", "0:2 0:3 1:1"})
+    {
+        law.parse(text); x.velocity=335;
+        check(near(x.step(2,608,law,6000),335*335/(2.0*608)), "empty, flat and invalid laws preserve default analytic motion");
+    }
+    law.parse("0:2 1:2");x.velocity=335;
+    check(near(x.step(2,608,law,6000),335*335/(4.0*608)), "double curve friction halves stopping distance");
+    law.parse("0:0.2 0.4:3 1:1");
+    double reference=0;
+    for (double dt : {1.0/240, 1.0/60, 1.0/30})
+    {
+        x.velocity=1800;double d=0;
+        while(x.velocity!=0)d+=x.step(dt,608,law,6000);
+        if(!reference)reference=d;
+        check(std::abs(d-reference)<0.02,"nonlinear law stable across frame rates");
+    }
     std::cout << passed << " inertia unit checks passed\n";
 }

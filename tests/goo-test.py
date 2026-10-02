@@ -267,11 +267,11 @@ try:
     settings_home = art / "settings-home"; (settings_home / "scottland").mkdir(parents=True, exist_ok=True)
     layout = settings_home / "scottland/layout.ini"
     layout.unlink(missing_ok=True)
-    env = dict(os.environ, SCOTTLAND_CTL=str(repo / "core/libexec/scottland-ctl"), SCOTTLAND_LAYOUT_FILE=str(layout))
+    env = dict(os.environ, QS_DISABLE_FILE_WATCHER="1", SCOTTLAND_SETTINGS_TEST="1", SCOTTLAND_CTL=str(repo / "core/libexec/scottland-ctl"), SCOTTLAND_LAYOUT_FILE=str(layout))
     log = open(art / "panel.log", "w")
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1.3)
-    click(760, 150); time.sleep(.3); shot("06-panel")
+    click(640, 125); time.sleep(.3); shot("06-panel")
     click(740, 250); time.sleep(.4)
     thick = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
     check("panel changes thickness live", thick > 24)
@@ -307,7 +307,8 @@ try:
     # The keyboard follows the selected row; use the now-lowered scrollbar thumb for the curve.
     drag(895, 480, 0, 120)
     shot("07b-panel-curve")
-    drag(449, 426, 0, 20)
+    q=json.loads(subprocess.check_output(["qs","ipc","--pid",str(panel.pid),"call","settings-test","snapshot"],text=True)); k=q["editor"]["knots"][0]
+    drag(360+k["x"],720-48-q["panel"]["height"]+k["y"],0,20)
     falloff = ipc("wayfire/get-config-option", {"option": "scottland/goo_falloff"})["value"]
     curve = [tuple(map(float, p.split(":"))) for p in falloff.split()]
     check("the shared curve editor changes goo falloff live", len(curve) >= 2 and
@@ -325,9 +326,10 @@ try:
         print("Cancel diagnostic", restored, layout.exists(), repr(cancelled_curve), panel.poll(), flush=True)
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1)
-    click(760, 150); click(740, 250); time.sleep(.3)
+    click(640, 125); click(740, 250); time.sleep(.3)
     drag(895, 250, 0, 350)
-    drag(449,426,0,20)
+    q=json.loads(subprocess.check_output(["qs","ipc","--pid",str(panel.pid),"call","settings-test","snapshot"],text=True)); k=q["editor"]["knots"][0]
+    drag(360+k["x"],720-48-q["panel"]["height"]+k["y"],0,20)
     key("KEY_ENTER", True); key("KEY_ENTER", False); time.sleep(.5)
     check("Save persists goo alongside layout", layout.exists() and "goo_thickness =" in layout.read_text() and "goo_falloff = 0.000:" in layout.read_text())
     if layout.exists():
@@ -339,7 +341,7 @@ try:
         check("saved goo is consumed by the session config builder", "goo_thickness =" in built.read_text())
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1)
-    click(760, 150)
+    click(640, 125)
     options(goo_overlap_film=9,goo_hover_cloudiness=.2,goo_hover_emissivity=1,goo_hover_distance=100)
     click(420, 638); time.sleep(.4)
     check("Defaults restores all four new settings", all(abs(float(ipc("wayfire/get-config-option",

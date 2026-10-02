@@ -46,6 +46,7 @@ FocusScope {
   property bool keyboardHints: false
   readonly property int hinted: hovered >= 0 ? hovered : keyboardHints && activeFocus ? selected : -1
   property point lastPointer: Qt.point(-1, -1)
+  readonly property string visibleHint: hinted >= 0 && rowRepeater.itemAt(hinted)?.hintVisible ? rows[hinted].label : ""
   signal changed(string id, real value)
 
   implicitHeight: rows.length * rowHeight + Math.max(0, rows.length - 1)
@@ -76,7 +77,7 @@ FocusScope {
     if (!row) return
     const step = Number(row.step || 0)
     let v = clamp(Number(value), Number(row.min), Number(row.max))
-    if (step > 0 && typed === "") v = Math.round(v / step) * step
+    if (step > 0 && typed === "") v = clamp(Math.round(v / step) * step, Number(row.min), Number(row.max))
     stack.changed(row.id, v)
   }
   function adjust(index, direction, large) {
@@ -128,18 +129,20 @@ FocusScope {
     id: block
     anchors.fill: parent
     radius: 12
-    color: "transparent"
+    color: Qt.rgba(stack.accent.r, stack.accent.g, stack.accent.b, 0.16)
     clip: true
 
     Column {
       anchors.fill: parent
 
       Repeater {
+        id:rowRepeater
         model: stack.rows
 
         Item {
           id: rowItem
           required property var modelData
+          readonly property bool hintVisible: hint.visible
           required property int index
           readonly property real fraction: stack.clamp((stack.valueOf(modelData) - modelData.min)
             / Math.max(1e-9, modelData.max - modelData.min), 0, 1)
@@ -149,12 +152,19 @@ FocusScope {
           Rectangle {
             id: track
             width: parent.width; height: stack.rowHeight
-            color: Qt.rgba(stack.accent.r, stack.accent.g, stack.accent.b, 0.16)
+            color: "transparent"
 
             Rectangle {
+              id: fill
               width: parent.width * rowItem.fraction; height: parent.height
-              color: Qt.rgba(stack.accent.r, stack.accent.g, stack.accent.b,
-                rowItem.index === stack.selected && stack.activeFocus ? 0.85 : 0.6)
+              radius: rowItem.index === 0 || rowItem.index === stack.rows.length-1 ? 12 : 0
+              Rectangle {
+                width:parent.width;height:12;color:parent.color
+                y:rowItem.index===0 ? parent.height-height : 0
+                visible:stack.rows.length>1 && (rowItem.index===0 || rowItem.index===stack.rows.length-1)
+              }
+              color: Qt.tint(stack.hintBackground, Qt.rgba(stack.accent.r, stack.accent.g, stack.accent.b,
+                rowMouse.pressed ? 0.51 : rowItem.index === stack.selected && stack.activeFocus ? 0.43 : rowMouse.containsMouse ? 0.38 : 0.32))
             }
           }
 
@@ -171,7 +181,8 @@ FocusScope {
             anchors.baseline: valueText.baseline
             text: rowItem.modelData.label
             color: stack.foreground
-            font.pixelSize: 15
+            font.family: stack.hintFontFamily
+            font.pixelSize: 15 * stack.textScale
             font.weight: Font.Medium
           }
 
@@ -181,7 +192,8 @@ FocusScope {
             y: (stack.rowHeight - height) / 2
             text: stack.shown(rowItem.modelData, rowItem.index)
             color: stack.isModified(rowItem.modelData) ? stack.modified : stack.foreground
-            font.pixelSize: 21
+            font.family: stack.hintFontFamily
+            font.pixelSize: 21 * stack.textScale
             font.weight: Font.DemiBold
             font.features: { "tnum": 1 }
           }
@@ -210,7 +222,7 @@ FocusScope {
 
             Rectangle {
               anchors.fill: parent
-              radius: 10
+              radius: 12
               color: stack.hintBackground
               border.color: stack.hintAccent
               Column {
@@ -240,9 +252,13 @@ FocusScope {
           }
 
           MouseArea {
+            id: rowMouse
             hoverEnabled: true
             width: parent.width; height: stack.rowHeight
-            preventStealing: true
+            property bool touchGesture: false
+            property bool horizontalGesture: false
+            property point start
+            preventStealing: horizontalGesture
             cursorShape: Qt.SizeHorCursor
             function apply(x) {
               stack.set(rowItem.index, rowItem.modelData.min
@@ -253,11 +269,23 @@ FocusScope {
               stack.keyboardHints = false
               stack.typed = ""
               stack.selected = rowItem.index
-              apply(mouse.x)
+              touchGesture = mouse.source !== Qt.MouseEventNotSynthesized
+              horizontalGesture = !touchGesture
+              start = Qt.point(mouse.x,mouse.y)
+              if(!touchGesture) apply(mouse.x)
             }
             onPositionChanged: mouse => {
-              if (pressed) apply(mouse.x)
+              if(!pressed)return
+              if(touchGesture && !horizontalGesture) {
+                const dx=Math.abs(mouse.x-start.x),dy=Math.abs(mouse.y-start.y)
+                if(dx<8 || dy>dx)return // a vertical finger drag belongs to the Flickable
+                horizontalGesture=true
+              }
+              apply(mouse.x)
             }
+            onReleased: horizontalGesture=false
+            onCanceled: horizontalGesture=false
+            onClicked: mouse => { if(touchGesture && !horizontalGesture)apply(mouse.x) }
             onDoubleClicked: stack.reset(rowItem.index)
           }
         }

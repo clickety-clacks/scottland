@@ -1,3 +1,7 @@
+    wf::option_wrapper_t<std::string> move_friction_curve{"scottland/move_friction_curve"};
+    wf::option_wrapper_t<std::string> resize_friction_curve{"scottland/resize_friction_curve"};
+    scottland::windowing::friction_curve movement_law, resize_law;
+    std::string movement_law_text, resize_law_text;
 // Shared Wayfire motion integration for keyboard impulses and drag releases. Axis math is in inertia.*.
     wf::option_wrapper_t<double> key_impulse{"scottland/key_impulse"};
     wf::option_wrapper_t<double> key_friction{"scottland/key_friction"};
@@ -308,6 +312,10 @@
 
     bool step_keyboard_motion()
     {
+        if (movement_law_text != std::string(move_friction_curve))
+        { movement_law_text = move_friction_curve; movement_law.parse(movement_law_text); }
+        if (resize_law_text != std::string(resize_friction_curve))
+        { resize_law_text = resize_friction_curve; resize_law.parse(resize_law_text); }
         auto now = motion_clock::now();
         double dt = std::chrono::duration<double>(now - keyboard_sample).count(); keyboard_sample = now;
         for (auto it = keyboard_motions.begin(); it != keyboard_motions.end();)
@@ -323,7 +331,7 @@
                 else ++it;
                 continue;
             }
-            double dx = m.vx.step(dt, key_friction), dy = m.vy.step(dt, key_friction);
+            double dx = m.vx.step(dt, key_friction, movement_law, key_max_velocity), dy = m.vy.step(dt, key_friction, movement_law, key_max_velocity);
             m.x += dx; m.y += dy;
             // Transfer only when the center crosses the physical seam. Keep velocity and
             // the global center; neither a crossing nor a bounce is a widget lifecycle action.
@@ -355,7 +363,7 @@
                 link->drop = {m.x, m.y}; place_widget(view, view->get_output(), *link);
             } else
             {
-                double dw = m.vw.step(dt, key_friction), dh = m.vh.step(dt, key_friction);
+                double dw = m.vw.step(dt, key_friction, resize_law, key_max_velocity), dh = m.vh.step(dt, key_friction, resize_law, key_max_velocity);
                 auto minimum = view->toplevel()->get_min_size(), maximum = view->toplevel()->get_max_size();
                 // Client sizes are integer pixels: round the cap down, never the requested
                 // size up past padding (which also changes parity and shifts a later anchor).

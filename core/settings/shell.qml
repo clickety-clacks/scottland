@@ -5,7 +5,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 
-// Scottland layout and goo settings. Changes apply to the running session immediately while
+// Scottland Settings: layout, goo and Window mode. Changes preview live while
 // an overlay with input only on border handles shows the five zones on every screen. Save writes
 // ~/.config/scottland/layout.ini; Cancel or Escape restores the values from when it opened.
 //
@@ -14,6 +14,7 @@ import Quickshell.Wayland
 // between shape it, joined by the same monotone cubic spline the plugin uses.
 ShellRoot {
   id: root
+  Component.onCompleted: Qt.application.name = "Scottland Settings"
 
   readonly property string ctl: Quickshell.env("SCOTTLAND_CTL") || "scottland-ctl"
   readonly property string layoutFile: Quickshell.env("SCOTTLAND_LAYOUT_FILE")
@@ -47,7 +48,17 @@ ShellRoot {
     return values
   }
   property var gooValues: gooDefaults()
-  property bool gooTab: false
+  property int tab: 0
+  readonly property bool gooTab: tab === 1
+  readonly property var motionDefaults: ({key_impulse:335, key_friction:608, key_max_velocity:6000,
+    key_restitution:0.5, alt_hold_delay:300, window_double_tap_delay:300,
+    move_friction_curve:"", resize_friction_curve:""})
+  property var motionValues: Object.assign({}, motionDefaults)
+  readonly property var movePoints: parseCurve(motionValues.move_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
+  readonly property var resizePoints: parseCurve(motionValues.resize_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
+  function setMotion(name,value) { motionValues=Object.assign({},motionValues,{[name]:value}) }
+  onMotionValuesChanged: if (loaded && !push.running) push.start()
+  Design { id: theme; palette: root.palette }
   readonly property var exponentialPoints: Array.from({ length: 17 }, (_, i) => ({ x: i / 16, y: Math.exp(-i / 4) }))
   property var gooPoints: exponentialPoints
   readonly property var editorPoints: gooTab ? gooPoints : curvePoints
@@ -80,7 +91,10 @@ ShellRoot {
   property var unsupported: []
   readonly property var settingNames: ({ center_width: "Center zone width", rail_width: "Widget rail width",
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
-    blend_width: "Center edge softness" })
+    blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Deceleration scale",
+    key_max_velocity:"Speed limit", key_restitution:"Bounce", alt_hold_delay:"Alt hold timing",
+    window_double_tap_delay:"Double-tap timing", move_friction_curve:"Movement braking curve",
+    resize_friction_curve:"Resize braking curve" })
 
   // The session palette carries theme colors and the desktop's interface font/text scale.
   property var palette: ({})
@@ -98,10 +112,10 @@ ShellRoot {
   readonly property color hintAccent: palette.accent || accent
   readonly property string hintFontFamily: palette.font_family || Qt.application.font.family
   readonly property real textScale: Math.max(0.5, Math.min(3, Number(palette.text_scale) || 1))
-  readonly property color panelColor: "#f21c1d22"
-  readonly property color textColor: "#e6e6e9"
-  readonly property color dimText: "#9a9ba3"
-  readonly property color accent: "#7aa2f7"
+  readonly property color panelColor: theme.background
+  readonly property color textColor: theme.foreground
+  readonly property color dimText: theme.muted
+  readonly property color accent: theme.accent
   readonly property color railColor: "#e0af68"
 
   // --- The curve (mirrors scale_curve_t in the plugin) --------------------------------------
@@ -110,10 +124,10 @@ ShellRoot {
     return points.map(p => p.x.toFixed(3) + ":" + p.y.toFixed(3)).join(" ")
   }
 
-  function parseCurve(text, minimum = 0.05) {
+  function parseCurve(text, minimum = 0.05, maximum = 1) {
     const points = String(text || "").trim().split(/\s+/).filter(w => w.includes(":")).map(w => {
       const [x, y] = w.split(":").map(parseFloat)
-      return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(minimum, y)) }
+      return { x: Math.min(1, Math.max(0, x)), y: Math.min(maximum, Math.max(minimum, y)) }
     }).filter(p => !isNaN(p.x) && !isNaN(p.y)).sort((a, b) => a.x - b.x)
     if (points.length < 2 || points[0].x > 0 || points[points.length - 1].x < 1) return null
     return points
@@ -133,7 +147,7 @@ ShellRoot {
     return m
   }
 
-  function curveAt(points, t, minimum = 0.05) {
+  function curveAt(points, t, minimum = 0.05, maximum = 1) {
     t = Math.min(1, Math.max(0, t))
     const m = slopes(points)
     let i = 0
@@ -142,7 +156,7 @@ ShellRoot {
     const u = (t - a.x) / h, u2 = u * u, u3 = u2 * u
     const y = (2 * u3 - 3 * u2 + 1) * a.y + (u3 - 2 * u2 + u) * h * m[i]
       + (-2 * u3 + 3 * u2) * b.y + (u3 - u2) * h * m[i + 1]
-    return Math.min(1, Math.max(minimum, y))
+    return Math.min(maximum, Math.max(minimum, y))
   }
 
   // --- Live updates, load, save ---------------------------------------------------------------
@@ -159,7 +173,7 @@ ShellRoot {
   Timer {
     id: push
     interval: 30
-    onTriggered: { root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth); root.sendGoo(root.gooValues) }
+    onTriggered: { root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth); root.sendGoo(root.gooValues); root.sendBatch(root.motionValues) }
   }
 
   function send(center, rail, points, blend) {
@@ -211,6 +225,11 @@ ShellRoot {
         root.railWidth = root.original.rail_width
         root.blendWidth = root.original.blend_width
         root.curvePoints = root.original.curve
+        const motion = Object.assign({},root.motionDefaults)
+        for (const k of Object.keys(motion))
+          motion[k] = values[k] !== undefined ? values[k] : typeof motion[k] === "string" ? root.savedText(k) : root.savedValue(k,motion[k])
+        root.motionValues = motion
+        root.original = Object.assign({},root.original,{motion:Object.assign({},motion)})
         root.loaded = true
       }
     }
@@ -240,6 +259,7 @@ ShellRoot {
     push.stop()
     send(centerWidth, railWidth, curvePoints, blendWidth)
     sendGoo(gooValues)
+    sendBatch(motionValues)
     saved.setText("# Written by Scottland settings.\n[scottland]\n"
       + "center_width = " + centerWidth.toFixed(3) + "\n"
       + "rail_width = " + railWidth.toFixed(3) + "\n"
@@ -247,14 +267,41 @@ ShellRoot {
       + "scale_curve = " + curveText(curvePoints) + "\n"
       + "min_scale = " + minScale.toFixed(3) + "\n"
       + "max_scale = " + maxScale.toFixed(3) + "\n"
-      + Object.keys(gooValues).map(k => k + " = " + gooValues[k] + "\n").join(""))
+      + Object.keys(gooValues).map(k => k + " = " + gooValues[k] + "\n").join("")
+      + Object.keys(motionValues).map(k => k + " = " + motionValues[k] + "\n").join(""))
     live.write("flush\n")
   }
 
   function cancel() {
     push.stop()
-    if (original) { send(original.center_width, original.rail_width, original.curve, original.blend_width); sendGoo(original.goo) }
+    if (original) { send(original.center_width, original.rail_width, original.curve, original.blend_width); sendGoo(original.goo); sendBatch(original.motion) }
     live.write("flush\n")
+  }
+
+  function testRect(item) {
+    const p=item.mapToGlobal(0,0)
+    return {x:p.x,y:p.y,width:item.width,height:item.height}
+  }
+  function curveProbe(item) {
+    const r=testRect(item)
+    return Object.assign(r,{selected:item.selected,hovered:item.hovered,
+      knots:item.points.map(p=>({x:r.x+item.toX(p.x),y:r.y+item.toY(p.y)})),
+      plot:{x:r.x+item.plotLeft,y:r.y+item.plotTop,width:item.plotWidth,height:item.plotHeight}})
+  }
+  IpcHandler {
+    target: "settings-test"
+    // Observations only, and only when explicitly enabled by an isolated test.
+    function snapshot(): string {
+      if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return "{}"
+      return JSON.stringify({title:Qt.application.name,heading:heading.text,screen:settingsWindow.screen.name,tab:root.tab,
+      panel:{x:settingsWindow.x,y:settingsWindow.y,width:settingsWindow.width,height:settingsWindow.height},
+      viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
+      zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
+      goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint}),
+      editor:root.curveProbe(editor), movement:root.curveProbe(movementEditor),resize:root.curveProbe(resizeEditor),
+      playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,bounces:playground.bounces.length}),
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),motion:root.motionValues,values:root.gooValues,palette:root.palette})
+    }
   }
 
   // --- Zone overlay on every screen: click-through, drawn above windows -------------------------
@@ -395,7 +442,7 @@ ShellRoot {
         component ZoneLabel: Rectangle {
           property alias text: label.text
           width: label.implicitWidth + 16; height: label.implicitHeight + 8
-          radius: 4; color: "#cc1c1d22"
+          radius: theme.radius; color: root.panelColor
           Text { id: label; anchors.centerIn: parent; color: root.textColor; font.pixelSize: 14 }
         }
 
@@ -427,6 +474,8 @@ ShellRoot {
   // --- The settings panel: an overlay surface, so the layout never scales it -------------------
 
   PanelWindow {
+    id: settingsWindow
+    // Layer-shell surfaces have no window title; the application name and heading identify it.
     anchors.bottom: true
     margins.bottom: 48
     implicitWidth: 560
@@ -439,9 +488,9 @@ ShellRoot {
 
     Rectangle {
       anchors.fill: parent
-      radius: 10
+      radius: theme.radius
       color: root.panelColor
-      border.color: "#3a3b44"
+      border.color: theme.separator
 
       focus: true
       Keys.onEscapePressed: root.cancel()
@@ -453,9 +502,11 @@ ShellRoot {
         spacing: 14
 
         Text {
-          text: "Scottland"
+          id:heading
+          text: "Scottland Settings"
           color: root.textColor
-          font.pixelSize: 18
+          font.family: theme.family
+          font.pixelSize: 18 * theme.textScale
           font.bold: true
         }
 
@@ -469,43 +520,53 @@ ShellRoot {
             + ". This session's plugin is older; your values are still saved."
         }
 
-        TabBar {
+        Rectangle {
           Layout.fillWidth: true
-          currentIndex: root.gooTab ? 1 : 0
-          onCurrentIndexChanged: {
-            root.gooTab = currentIndex === 1
-            Qt.callLater(() => {
-              gooScroll.contentItem.contentY = 0
-              if (root.gooTab) gooSettings.forceActiveFocus()
-              else zoneSettings.forceActiveFocus()
-            })
+          Layout.preferredHeight: 42
+          radius: theme.radius
+          color: theme.tint(0.07)
+          clip: true
+          Row {
+            anchors.fill: parent
+            Repeater {
+              model: ["Layout", "Goo", "Window mode"]
+              SettingAction {
+            onAcceptRequested: root.save()
+                required property int index
+                required property string modelData
+                design: theme
+                width: parent.width/3; height: parent.height
+                text: modelData; joined: true; joinPosition:index; checked: root.tab === index
+                onClicked: {
+                  root.tab=index
+                  gooScroll.halt(); gooScroll.contentY=0
+                  Qt.callLater(() => {
+                    if(root.tab===0)zoneSettings.forceActiveFocus()
+                    else if(root.tab===1)gooSettings.forceActiveFocus()
+                    else playground.forceActiveFocus()
+                  })
+                }
+                Rectangle { visible: index>0; width:1;height:parent.height-20;y:10;color:theme.separator }
+              }
+            }
           }
-          TabButton { text: "Layout" }
-          TabButton { text: "Goo" }
         }
 
-        ScrollView {
+        CoastView {
           id: gooScroll
-          function revealRow(stack, index) {
-            const y = stack.y + index * (stack.rowHeight + 1)
-            const bottom = y + stack.rowHeight
-            if (y < contentItem.contentY) contentItem.contentY = y
-            else if (bottom > contentItem.contentY + availableHeight)
-              contentItem.contentY = bottom - availableHeight
-          }
+          design:theme
           Layout.fillWidth: true
           Layout.preferredHeight: Math.min(500, (Quickshell.screens[0]?.height || 800) * 0.6)
-          ScrollBar.vertical.policy: ScrollBar.AlwaysOn
-          contentWidth: availableWidth
-          clip: true
+          contentHeight: contents.implicitHeight
           ColumnLayout {
-            width: parent.width
+            id: contents
+            width: gooScroll.availableWidth
             spacing: 14
 
         // The zone settings: one stack of rows, each row a slider (ParameterStack.qml).
         ParameterStack {
           id: zoneSettings
-          visible: !root.gooTab
+          visible: root.tab === 0
           readonly property real screenWidth: Quickshell.screens.length > 0 ? Quickshell.screens[0].width : 0
           Layout.fillWidth: true
           foreground: root.textColor
@@ -516,7 +577,7 @@ ShellRoot {
           hintFontFamily: root.hintFontFamily
           textScale: root.textScale
           viewport: gooScroll
-          scrollOffset: gooScroll.contentItem.contentY
+          scrollOffset: gooScroll.contentY
           focus: true
           rows: [
             { id: "blend_width", label: "Center edge softness", min: 0, max: 300, step: 1, largeStep: 10,
@@ -540,12 +601,14 @@ ShellRoot {
 
         }
 
-        Switch {
+        SettingAction {
+            onAcceptRequested: root.save()
           visible: root.gooTab
-          text: "Use goo"
-          contentItem: Text { text: parent.text; color: root.textColor; leftPadding: 56; verticalAlignment: Text.AlignVCenter }
+          Layout.fillWidth: true
+          design: theme
+          text: root.gooValues.goo ? "Goo is on" : "Goo is off"
           checked: root.gooValues.goo
-          onToggled: root.setGoo("goo", checked)
+          onClicked: root.setGoo("goo", !root.gooValues.goo)
         }
         ParameterStack {
           id: gooSettings
@@ -559,7 +622,7 @@ ShellRoot {
           hintFontFamily: root.hintFontFamily
           textScale: root.textScale
           viewport: gooScroll
-          scrollOffset: gooScroll.contentItem.contentY
+          scrollOffset: gooScroll.contentY
           rows: root.gooControls.map(c => ({ id: c.name, label: c.title, min: c.low, max: c.high,
             hint: c.hint, step: c.step, largeStep: c.step * 10, decimals: c.step < 0.01 ? 3 : c.step < 1 ? 2 : 0 }))
           values: root.gooValues
@@ -568,166 +631,95 @@ ShellRoot {
           onSelectedChanged: gooScroll.revealRow(gooSettings, selected)
         }
 
-        // The same curve editor edits scale or goo falloff.
-        ColumnLayout {
+        CurveEditor {
+          id: editor
+          viewport:gooScroll; scrollOffset:gooScroll.contentY
+          explanation:root.gooTab ? "How quickly density falls away from a window. Lower points thin the distant goo; higher points extend its reach." : "Window scale between the full-size center and widget rail. Higher points keep windows larger at that position."
+          visible: root.tab !== 2
           Layout.fillWidth: true
-          spacing: 4
-
-          RowLayout {
+          design: theme
+          title: root.gooTab ? "Density falloff" : "Scale across the side zones"
+          points: root.editorPoints
+          opening: root.gooTab ? root.parseCurve(root.original?.goo?.goo_falloff,0) || root.exponentialPoints : root.original?.curve || root.defaults.curve
+          minimum: root.gooTab ? 0 : 0.05
+          descending: root.gooTab
+          leftLabel: root.gooTab ? "window edge" : "center edge"
+          rightLabel: root.gooTab ? "4× reach" : "rail"
+          evaluate: root.curveAt
+          onEdited: points => root.setEditorPoints(points)
+        }
+        ColumnLayout {
+          visible: root.tab === 2
+          Layout.fillWidth: true
+          spacing: 14
+          MotionPlayground {
+            id: playground
+            viewport:gooScroll; scrollOffset:gooScroll.contentY
             Layout.fillWidth: true
-            Text { text: root.gooTab ? "Density falloff (distance / four reaches)" : "Scale across the side zones"; color: root.textColor; font.pixelSize: 14; Layout.fillWidth: true }
-            Text {
-              color: root.accent; font.pixelSize: 14
-              text: editor.hovered >= 0
-                ? Math.round(root.editorPoints[editor.hovered].y * 100) + "% at " + Math.round(root.editorPoints[editor.hovered].x * 100) + "% across"
-                : Math.round(root.editorPoints[0].y * 100) + "% → " + Math.round(root.editorPoints[root.editorPoints.length - 1].y * 100) + "%"
-            }
+            design: theme
+            values: root.motionValues
+            movement: root.movePoints
+            resizing: root.resizePoints
+            evaluate: root.curveAt
+            onChanged: (name,value)=>root.setMotion(name,value)
           }
-
-          Item {
-            id: editor
-            Layout.fillWidth: true
-            Layout.preferredHeight: 190
-            property int dragging: -1
-            property int hovered: -1
-            readonly property real minimum: root.gooTab ? 0 : 0.05
-            readonly property real plotLeft: 40
-            readonly property real plotTop: 8
-            readonly property real plotWidth: width - plotLeft - 10
-            readonly property real plotHeight: height - plotTop - 24
-
-            function toX(t) { return plotLeft + t * plotWidth }
-            function toY(s) { return plotTop + (1 - (s - minimum) / (1 - minimum)) * plotHeight }
-            function fromX(px) { return Math.min(1, Math.max(0, (px - plotLeft) / plotWidth)) }
-            function fromY(py) { return Math.min(1, Math.max(minimum, minimum + (1 - (py - plotTop) / plotHeight) * (1 - minimum))) }
-
-            function pointAt(px, py) {
-              const points = root.editorPoints
-              for (let i = 0; i < points.length; i++)
-                if (Math.hypot(toX(points[i].x) - px, toY(points[i].y) - py) <= 10) return i
-              return -1
-            }
-
-            function move(index, px, py) {
-              const points = root.editorPoints.map(p => ({ x: p.x, y: p.y }))
-              const last = points.length - 1
-              points[index].y = fromY(py)
-              if (root.gooTab) points[index].y = Math.min(index > 0 ? points[index - 1].y : 1,
-                Math.max(index < last ? points[index + 1].y : 0, points[index].y))
-              if (index > 0 && index < last)  // endpoints stay at the zone edges
-                points[index].x = Math.min(points[index + 1].x - 0.02, Math.max(points[index - 1].x + 0.02, fromX(px)))
-              root.setEditorPoints(points)
-            }
-
-            Canvas {
-              id: canvas
-              anchors.fill: parent
-              onPaint: {
-                const ctx = getContext("2d")
-                ctx.reset()
-                // Grid and labels.
-                ctx.strokeStyle = "#3a3b44"; ctx.lineWidth = 1
-                ctx.fillStyle = root.dimText; ctx.font = "11px sans-serif"
-                for (const s of [0.25, 0.5, 0.75, 1.0]) {
-                  const y = editor.toY(s)
-                  ctx.beginPath(); ctx.moveTo(editor.plotLeft, y); ctx.lineTo(editor.plotLeft + editor.plotWidth, y); ctx.stroke()
-                  ctx.fillText(Math.round(s * 100) + "%", 4, y + 4)
-                }
-                ctx.fillText(root.gooTab ? "0%" : "5%", 4, editor.toY(editor.minimum) + 4)
-                ctx.strokeRect(editor.plotLeft, editor.plotTop, editor.plotWidth, editor.plotHeight)
-                ctx.fillText(root.gooTab ? "window edge" : "center edge", editor.plotLeft, editor.height - 6)
-                ctx.fillText(root.gooTab ? "4× reach" : "rail", editor.plotLeft + editor.plotWidth - 20, editor.height - 6)
-                // The curve.
-                ctx.strokeStyle = root.accent; ctx.lineWidth = 2
-                ctx.beginPath()
-                for (let i = 0; i <= 120; i++) {
-                  const t = i / 120, x = editor.toX(t), y = editor.toY(root.curveAt(root.editorPoints, t, editor.minimum))
-                  if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
-                }
-                ctx.stroke()
-                // Points: endpoints square, interior round.
-                const points = root.editorPoints
-                for (let i = 0; i < points.length; i++) {
-                  const x = editor.toX(points[i].x), y = editor.toY(points[i].y)
-                  ctx.fillStyle = (i === editor.hovered || i === editor.dragging) ? "#ffffff" : root.accent
-                  ctx.strokeStyle = "#1c1d22"; ctx.lineWidth = 2
-                  ctx.beginPath()
-                  if (i === 0 || i === points.length - 1) ctx.rect(x - 6, y - 6, 12, 12)
-                  else ctx.arc(x, y, 6, 0, 2 * Math.PI)
-                  ctx.fill(); ctx.stroke()
-                }
-              }
-              Connections {
-                target: root
-                function onEditorPointsChanged() { canvas.requestPaint() }
-              }
-              Connections {
-                target: editor
-                function onHoveredChanged() { canvas.requestPaint() }
-                function onDraggingChanged() { canvas.requestPaint() }
-                function onWidthChanged() { canvas.requestPaint() }
-              }
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              hoverEnabled: true
-              acceptedButtons: Qt.LeftButton | Qt.RightButton
-              cursorShape: editor.hovered >= 0 ? Qt.PointingHandCursor : Qt.CrossCursor
-
-              onPressed: mouse => {
-                let index = editor.pointAt(mouse.x, mouse.y)
-                if (mouse.button === Qt.RightButton) {
-                  if (index > 0 && index < root.editorPoints.length - 1)
-                    root.setEditorPoints(root.editorPoints.filter((_, i) => i !== index))
-                  return
-                }
-                if (index < 0) {
-                  // Add a point where clicked, between the endpoints.
-                  const t = editor.fromX(mouse.x)
-                  if (t <= 0.02 || t >= 0.98) return
-                  const points = root.editorPoints.map(p => ({ x: p.x, y: p.y }))
-                  if (root.gooTab) {
-                    const near = points.findIndex(p => Math.abs(p.x - t) < 0.02)
-                    if (near >= 0) {
-                      editor.dragging = near
-                      editor.move(near, mouse.x, mouse.y)
-                      return
-                    }
-                  }
-                  let y = editor.fromY(mouse.y)
-                  if (root.gooTab) {
-                    const right = points.findIndex(p => p.x > t)
-                    y = Math.min(points[right - 1].y, Math.max(points[right].y, y))
-                  }
-                  points.push({ x: t, y: y })
-                  points.sort((a, b) => a.x - b.x)
-                  root.setEditorPoints(points)
-                  index = points.findIndex(p => p.x === t)
-                }
-                editor.dragging = index
-              }
-              onPositionChanged: mouse => {
-                if (editor.dragging >= 0) editor.move(editor.dragging, mouse.x, mouse.y)
-                else editor.hovered = editor.pointAt(mouse.x, mouse.y)
-              }
-              onReleased: editor.dragging = -1
-              onExited: editor.hovered = -1
-              onDoubleClicked: mouse => {
-                const index = editor.pointAt(mouse.x, mouse.y)
-                if (index > 0 && index < root.editorPoints.length - 1)
-                  root.setEditorPoints(root.editorPoints.filter((_, i) => i !== index))
-              }
-            }
-          }
-
           Text {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
+            text: "Flick the sample or press arrows. Ctrl + arrows resizes. Drag the velocity arrow or bounce trace to change the feel."
+            color: theme.muted; font.family: theme.family; font.pixelSize:12*theme.textScale
+          }
+          CurveEditor {
+            id: movementEditor
             Layout.fillWidth: true
-            wrapMode: Text.WordWrap
-            color: root.dimText
-            font.pixelSize: 12
-            text: root.gooTab ? "Drag points to shape how density falls away from a window. The right edge is four reaches away. Click to add a point; double-click or right-click to remove it."
-              : "Drag the square ends for the largest and smallest scale. Click to add a point, drag to shape the curve, double-click or right-click a point to remove it."
+            viewport:gooScroll; scrollOffset:gooScroll.contentY
+            explanation:"Braking force in pt/s² at each speed. Raise the curve to stop sooner; lower it to coast farther. Movement arrows and released drags share this law."
+            design: theme; title: "Movement · braking (pt/s²)"
+            points: root.movePoints
+            opening: root.parseCurve(root.original?.motion?.move_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
+            minimum:0.05; maximum:4; evaluate:root.curveAt
+            leftLabel:"0 pt/s"; rightLabel:Math.round(root.motionValues.key_max_velocity)+" pt/s"
+            formatValue:v=>Math.round(v*root.motionValues.key_friction)
+            onEdited:points=>root.setMotion("move_friction_curve",root.curveText(points))
+          }
+          CurveEditor {
+            id: resizeEditor
+            Layout.fillWidth: true
+            viewport:gooScroll; scrollOffset:gooScroll.contentY
+            explanation:"Braking force for Ctrl + arrow resizing. Higher stops size changes sooner; lower carries them farther. The window keeps its center."
+            design: theme; title: "Resize · braking (pt/s²)"
+            points: root.resizePoints
+            opening: root.parseCurve(root.original?.motion?.resize_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
+            minimum:0.05; maximum:4; evaluate:root.curveAt
+            leftLabel:"0 pt/s"; rightLabel:Math.round(root.motionValues.key_max_velocity)+" pt/s"
+            formatValue:v=>Math.round(v*root.motionValues.key_friction)
+            onEdited:points=>root.setMotion("resize_friction_curve",root.curveText(points))
+          }
+          ParameterStack {
+            id:motionSettings
+            Layout.fillWidth:true
+            foreground:root.textColor; accent:root.accent
+            hintBackground:root.hintBackground; hintForeground:root.hintForeground; hintAccent:root.hintAccent
+            hintFontFamily:root.hintFontFamily; textScale:root.textScale
+            viewport:gooScroll; scrollOffset:gooScroll.contentY
+            rows:[
+              {id:"key_friction",label:"Deceleration scale",min:1,max:20000,step:10,suffix:" pt/s²",hint:"Scales both friction curves vertically. Higher stops sooner; lower coasts farther. A flat curve at one times this value preserves constant deceleration."},
+              {id:"key_max_velocity",label:"Speed limit",min:1,max:20000,step:100,suffix:" pt/s",hint:"Caps each movement and resize axis, including a drag release. Higher permits faster motion and extends the speed axis of both curves."}
+            ]
+            values:root.motionValues; opening:root.original?.motion || ({})
+            onChanged:(name,value)=>root.setMotion(name,value)
+            onSelectedChanged:gooScroll.revealRow(motionSettings,selected)
+          }
+          TimingRow {
+            id:holdTiming
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Hold Alt for Window mode"
+            value:root.motionValues.alt_hold_delay;opening:root.original?.motion?.alt_hold_delay || 300
+            onEdited:value=>root.setMotion("alt_hold_delay",value)
+          }
+          TimingRow {
+            id:doubleTiming
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Double-tap a hint";doubleTap:true
+            value:root.motionValues.window_double_tap_delay;opening:root.original?.motion?.window_double_tap_delay || 300
+            onEdited:value=>root.setMotion("window_double_tap_delay",value)
           }
         }
 
@@ -739,9 +731,12 @@ ShellRoot {
           Layout.topMargin: 4
           spacing: 10
 
-          Button {
+          SettingAction {
+            onAcceptRequested: root.save()
+            design: theme
             text: "Defaults"
             onClicked: {
+              if (root.tab === 2) { root.motionValues=Object.assign({},root.motionDefaults); return }
               if (root.gooTab) {
                 root.gooValues = root.gooDefaults()
                 root.gooPoints = root.exponentialPoints
@@ -754,8 +749,10 @@ ShellRoot {
             }
           }
           Item { Layout.fillWidth: true }
-          Button { text: "Cancel"; onClicked: root.cancel() }
-          Button { text: "Save"; highlighted: true; onClicked: root.save() }
+          SettingAction {
+            onAcceptRequested: root.save(); design: theme; text: "Cancel"; onClicked: root.cancel() }
+          SettingAction {
+            onAcceptRequested: root.save(); design: theme; text: "Save"; emphasized: true; onClicked: root.save() }
         }
       }
     }

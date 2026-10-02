@@ -30,7 +30,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
   remembered zones and contention-aware placement (WP1–WP7).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO13): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).
-- [docs/settings.md](docs/settings.md): the settings app, Scottland Layout (S1-S14): zone sliders and
+- [docs/settings.md](docs/settings.md): the settings app, Scottland Settings (S1-S18): zone sliders and
   overlay with draggable borders, Goo tab, hint popouts, the planned Window mode tab with friction curves.
 - [docs/desktop-model.md](docs/desktop-model.md): the single reactive desktop state model and its snapshots.
 - [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
