@@ -63,6 +63,14 @@ def views():
 def hints():
     return ipc('scottland/hints')['hints']
 
+def expected_size(h, frame, scale=1):
+    if frame['widget']:
+        return round(48*scale)
+    f = frame['frame']
+    desired = max(72*scale, min(132*scale, min(f['width'], f['height'])*.34*scale))
+    fit = math.floor(max(0, 2*(h['clearance']-3)/1.06))
+    return round(32*scale if fit < 32*scale else min(desired, fit))
+
 def key(code, state):
     ipc('stipc/feed_key', {'key': 'KEY_' + code, 'state': state})
 
@@ -163,8 +171,8 @@ try:
         for h in state:
             v = represented[links.get(h['window'], h['window'])]
             f = v['frame']
-            all_sizes &= h['badge']['size'] == round((2/3 if v['widget'] else 1) * max(72, min(132, min(f['width'], f['height'])*.34)))
-        check(all_sizes, scheme+': sizing uses displayed dimensions including scaled windows and cards')
+            all_sizes &= h['badge']['size'] == expected_size(h, v)
+        check(all_sizes, scheme+': sizing uses displayed dimensions and visible clearance, preserving widget sizes')
         if scheme == 'dark':
             # WK5: badges follow the desktop's text size (text_scale in the palette file).
             key('LEFTALT', False); time.sleep(.3)
@@ -177,8 +185,8 @@ try:
             for h in hints():
                 v = represented[links.get(h['window'], h['window'])]
                 f = v['frame']
-                ok &= h['badge']['size'] == round((2/3 if v['widget'] else 1) * max(108, min(198, min(f['width'], f['height'])*.34*1.5)))
-            check(ok, 'badges scale with desktop text size, retaining the widget 2/3 factor')
+                ok &= h['badge']['size'] == expected_size(h, v, 1.5)
+            check(ok, 'badges follow desktop text size and visible clearance, retaining the widget 2/3 factor')
             key('LEFTALT', False); time.sleep(.3)
             theme('dark')
             time.sleep(.8)
@@ -327,15 +335,14 @@ try:
     v = next(v for v in views() if v['title'] == 'TinyScale')
     h = next(h for h in hints() if h['window'] == v['id'])
     (artifacts/'minimum-window-scale-state.json').write_text(json.dumps({'view': v, 'hint': h}, indent=2))
-    check(v['applied_scale'] < .051 and v['frame']['thickness'] < 1 and h['badge']['size'] == 72,
-          '5% displayed scale keeps the minimum 72px badge')
+    check(v['applied_scale'] < .051 and v['frame']['thickness'] < 1 and h['badge']['size'] == 32,
+          '5% displayed scale keeps WK31\'s readable 32px fragment badge')
     image = screenshot('minimum-window-scale-hints')
     f = v['frame']
     # Near the top-right straight edge, beyond both badge circles and the narrow resting halo.
     point = (round(f['x']+f['width']-6+h['dx']), math.floor(f['y']+h['dy'])-1)
     if GOO:
-        # WK28: the minimum circle can enclose the whole tiny window. Its foreground
-        # island hides the old top-edge probe; sample the outside of their shared silhouette.
+        # Sample outside the combined silhouette even when a fragment circle meets the rim.
         badge = h['badge']
         check(dyed(image, math.ceil(max(f['x']+f['width']+h['dx'], badge['x']+badge['size']))+2,
                     round(badge['y']+badge['size']/2), h['color']),

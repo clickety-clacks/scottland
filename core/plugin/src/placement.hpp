@@ -14,4 +14,10 @@ point place_rectangle(double width, double height, rectangle region,
 double overlap(rectangle a, rectangle b);
 // Largest contiguous vertical opening in a side region (union, not sum, of blocked intervals).
 double largest_opening(rectangle region, const std::vector<rectangle>& obstacles);
+
+struct label_spot { point center; double clearance = 0; };
+// Pole of the visible region (rectangle minus the union of foreground rectangles).
+// The priority search is accurate to precision logical pixels, including disconnected regions.
+label_spot visible_label(rectangle window, rectangle screen,
+    const std::vector<rectangle>& foreground, double precision = 0.5);
 }
