@@ -35,6 +35,12 @@ def check(name, ok):
     print(('PASS ' if ok else 'FAIL ') + name, flush=True)
     passed += bool(ok); failed += not ok
 
+# Screen map iteration order depends on output addresses, not layout order. Probe
+# the fixture's output explicitly; the other output is deliberately empty initially.
+fixture_output = None
+def screen_state(data=None):
+    return next(s for s in ipc('scottland/goo-state', data)['screens'] if s['output'] == fixture_output)
+
 def views(): return ipc('scottland/layout-state')['views']
 def view(title): return next(v for v in views() if v['title'] == title)
 def pointer(x,y): ipc('stipc/move_cursor', {'x':round(x), 'y':round(y)})
@@ -62,7 +68,7 @@ def pulse_and_measure():
     peak=0
     for _ in range(75):
         for x,y in samples:
-            s=ipc('scottland/goo-state', {'x':x,'y':y})['screens'][0]
+            s=screen_state({'x':x,'y':y})
             peak=max(peak,abs(s['wave']))
         time.sleep(.025)
     button(False); pointer(20,20)
@@ -81,7 +87,9 @@ try:
             time.sleep(.1)
     for title,x in [('flow-a',250),('flow-b',600)]:
         ipc('window-rules/configure-view',{'id':view(title)['id'],'geometry':{'x':x,'y':230,'width':320,'height':180}})
-    print('fixture outputs',ipc('window-rules/list-views'),flush=True)
+    fixture_views = ipc('window-rules/list-views')
+    fixture_output = next(v['output-name'] for v in fixture_views if v['title'] == 'flow-a')
+    print('fixture outputs', fixture_views, flush=True)
     check('waves settle before a new grab', quiet())
     connected=pulse_and_measure()
     print('connected wave peak',connected,flush=True)
@@ -101,18 +109,18 @@ try:
     button(False);pointer(20,20);time.sleep(.5)
     check('a wide bridge is draggable beyond the legacy drawing bounds',center('flow-a')[1]>before[1]+25)
     ipc('wm-actions/set-fullscreen',{'view_id':view('flow-b')['id'],'state':True}); time.sleep(.6)
-    sample=ipc('scottland/goo-state',{'x':100,'y':100})['screens'][0]
+    sample=screen_state({'x':100,'y':100})
     check('fullscreen clips the entire liquid layer',sample['window_distance']<0)
     check('goo fullscreen suspension follows model FS1 focus', bool(ipc('scottland/desktop-model')['focus']))
     ipc('scottland/attention',{'window':view('flow-a')['id'],'attention':True,'source':'goo-flow-test'})
-    time.sleep(.3); steps=ipc('scottland/goo-state')['screens'][0]['steps'];time.sleep(1)
-    state=ipc('scottland/goo-state')['screens'][0]
+    time.sleep(.3); steps=screen_state()['steps'];time.sleep(1)
+    state=screen_state()
     check('hidden attention does not run a fullscreen goo simulation',state['sleeping'] and state['steps']==steps)
     ipc('scottland/attention',{'window':view('flow-a')['id'],'attention':False,'source':'goo-flow-test'})
     subprocess.run(['grim',str(art/'fullscreen.png')],check=True)
     ipc('wm-actions/set-fullscreen',{'view_id':view('flow-b')['id'],'state':False}); time.sleep(.5)
     check('leaving FS1 resumes the existing window field', not ipc('scottland/desktop-model')['focus']
-          and ipc('scottland/goo-state')['screens'][0]['sources'] == 2)
+          and screen_state()['sources'] == 2)
     outputs=ipc('window-rules/list-outputs')
     if len(outputs)>1:
         origins=sorted(outputs,key=lambda o:o['geometry']['x'])

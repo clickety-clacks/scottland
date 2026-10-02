@@ -67,7 +67,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. | implemented; pointer/touch move, resize, close and hidden-corner checks |
 | GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks; all fifteen hover/keyboard hints and screenshots checked on isolated osanwe outputs |
-| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. | implemented; GPU energy sleep and unchanged step count checked |
+| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Active breathing damages only conservative goo bands; expensive field work uses occupied tiles, without changing the falloff or update rate. | implemented/headless checked; see the GPU cost validation below |
 | GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core) | planned, after the GO10 cost work |
 | GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | planned, after the GO10 cost work |
 
@@ -408,3 +408,155 @@ All final checks passed. Logs, including retained first-run failures, are in
 the same overlapping fixtures with goo off (independent bands, empty inside corner) and on
 (smooth pooling), plus a narrow unbridged halo gap. `build/hint-style-evidence/dark-hints.png`
 showed the since-removed goo rims and smoothly blended goo.
+
+
+## GPU cost validation (2026-10-02)
+
+This work starts from `ship-goo` (`6919af6`), merged into `goo-perf` before revising
+`944b24f` and the interrupted tile WIP `a59ceae`. The shipped on switch, independent
+fallback halos and window-mode dye are retained. Tenet 1 keeps attention breathing
+continuous; neither simulation frequency nor any appearance setting is reduced.
+
+The four-reach cutoff in the WIP was removed. It changes distant contributions to
+both the visible field and dye, even near another window, so it cannot silently
+become a performance-only change. The original LUT and exponential continuation
+remain identical in the CPU and shader. Bounds invert the render threshold with
+maximum noise, clinging reserve, all corner/dot deposits, maximum wave height and
+texture quantization included. Nearby source contributions are summed; distant
+sources still contribute bounded exponential tails. Three logical pixels account
+for field reconstruction and the normal's forward sample. Damage covers current
+and previous bands to erase old outlines. The output-sized scene bounding box only
+intersects incoming damage; it does not generate whole-output repaint each tick.
+
+The half-resolution field uses a batch of quads snapped to 32-logical-pixel tiles,
+with one tile of sampling halo. Clearing the field first prevents stale density
+when a window moves. A quarter-resolution Boolean union mask avoids repeating the
+window walk in both wave stencils. Dye keeps exact SDF evaluations, including its
+continuous advection positions: reusing an interpolated mask there changed corner
+colors in the pixel comparison. The wave tile map conservatively retains every
+tile that could hold a wave until resize, so no arbitrary age freezes a residual
+wave. Both ping-pong copies stay valid. Long drags can expand this map to the whole
+output; it is bounded by output coverage and never requires a damage readback.
+
+Dry dye still evolves across the whole grid. Its original recurrence approaches
+the current nearest-source color even where there is no visible goo; freezing it
+would change color on re-entry. Expensive swirl/diffusion executes only where the
+mask is nonzero, and all equal-strength dye emitters retain their original blend.
+Thus this is deliberately conservative field/wave tiling, not a claim that every
+simulation pass is sparse. Further dye tiling needs a way to preserve that history.
+The existing sleep-energy readback and input probes remain; neither drives damage.
+
+Breathing frames wake the goo without repainting window contents. Touch-lift scale
+animation still damages both old and new content bounds. Empty outputs sleep, and
+an occluded attention wake cannot undo fullscreen suspension. The wallpaper cache
+copies compositor damage, including pixels outside current goo bands that later
+refraction may sample. Fullscreen, option changes and node removal retain necessary
+whole-output invalidation.
+
+`tests/headless.sh` now copies this checkout's base config into its private config
+directory before assembly. Previously it silently fell back to the installed base,
+which on the test machines loaded old decorations and extra plugins. Initial runs
+against that config are retained as diagnostic evidence, not the final matrix or
+benchmark. Both baseline and optimized builds use the corrected harness, their own
+plugin, and their own shipped config. The bridge/snap probe now samples the actual
+gap after the drag: its old fixed point could be inside the stationary window's
+attention-breathing border. The field/threshold assertion is unchanged.
+The morph history check now compares elapsed time with its existing 50 ms allowance
+instead of comparing an absolute monotonic timestamp with 0.05. The two-output flow
+probe selects the fixture's named output rather than whichever screen happens to be
+first in a pointer-keyed map. These corrections preserve the original motion, lag,
+wave-propagation and fullscreen assertions.
+
+Reproduce paired measurements with `tests/goo-bench.sh REPO FRESH_HEADLESS_DIR 10`.
+It arranges six windows at 2560×1600, moves two to rails with real input, measures
+settled sleep, persistent attention on both widgets, and a real held-window drag.
+It also measures the fallback with both widgets breathing. Results include process
+GPU busy (Xe cycle counters or AMD gfx nanoseconds), CPU usage, median goo GPU query,
+and simulation step count. A sleeping GPU query is stale and is reported as null.
+Use separate sequential runs; other sessions on the same GPU affect timer latency.
+`tests/goo-visual-fixture.py` supplies repeatable bridge, overlap, held/drop and
+return-to-position screenshots with stochastic appearance disabled for comparison.
+
+
+### Intel Xe, osanwe: paired shipped-config measurements
+
+Two sequential before/after pairs at 2560×1600, ten seconds per case. The baseline
+is `6919af6`; the optimized renderer is `2c1eed9`. Both start fresh headless
+compositors. Mike's live compositor remains untouched and contends for the GPU.
+Ranges below are the two runs, not confidence intervals.
+
+| Case | Compositor GPU busy before → after | Median goo GPU query before → after |
+|---|---|---|
+| Settled | 0.0% → 0.0% | unavailable while asleep; zero simulation steps in each ten-second sample |
+| Two attention widgets | 48.2–48.4% → 18.6–19.5% | 9.84–11.33 ms → 7.28–7.55 ms |
+| One window dragged | 48.0–48.1% → 18.6–18.7% | 11.36–11.37 ms → 7.24–7.30 ms |
+| Goo off, two widgets breathing | 0.5% → 0.6% | no goo simulation |
+
+This is about **61% less compositor GPU busy** in the two active cases. Active
+simulation remained about 59 steps/second (587–598 steps per measured interval);
+no lower-rate mode was introduced. Compositor CPU rose from 3.8–4.2% to 5.2–5.4%
+while breathing and from 6.2–6.5% to 7.6% while dragging. The analytic CPU bounds
+trade a small amount of CPU work for less GPU work. Whole-GPU busy during active
+cases was 91–92% before and 72–76% after; GPU timer queries are affected by that
+contention and must not be interpreted as uncontended shader timings.
+
+With the shipped config and deterministic visual fixture, bridge, overlap and
+return screenshots match the baseline pixel-for-pixel. Held/drop comparisons have
+31 / 11 changed RGB channels respectively, each by just one 8-bit level, across
+1280×720 images. Inspected outlines and old drag locations show no clipping or
+stale goo. These checks establish the sampled scenes, not bitwise equivalence for
+all animation phases or arbitrary custom settings. The full exponential falloff
+is preserved; no compact-cutoff appearance change is being proposed for shipping.
+
+### RX 580, plumbus: uncontended paired measurements
+
+Two further before/after pairs use the same 2560×1600 fixture and shipped configs.
+All other task test sessions were stopped first; whole-GPU busy matches the measured
+compositor to within 0.2 percentage points.
+
+| Case | Compositor GPU busy before → after | Median goo GPU query before → after |
+|---|---|---|
+| Settled | 0.0% → 0.0% | zero simulation steps in each ten-second sample |
+| Two attention widgets | 21.4–22.2% → 15.0–15.2% | 2.892–2.898 ms → 1.707–1.714 ms |
+| One window dragged | 18.6–19.0% → 14.6% | 2.880–2.883 ms → 1.678–1.679 ms |
+| Goo off, two widgets breathing | 0.6% → 0.6% | no goo simulation |
+
+That is about **31% less compositor GPU busy while breathing**, **22% less while
+dragging**, and **41% less goo GPU time**. Breathing CPU is 5.9% → 7.3%; dragging
+is 8.1% → 9.3–9.5%. Active updates remain approximately 62/second in this headless
+backend (615–627 steps per measured interval). Results are in `build/bench-amd-*.log`.
+These idle/off numbers describe this isolated fixture, not the applications or
+background services in Mike's live desktop.
+
+### Final checks and isolation
+
+Final validation uses only private headless sessions on osanwe and plumbus, with
+`SCOTTLAND_HEADLESS_DIR` per run. Plumbus deployment is `--tests-only` into
+`Projects/scottland-goo-perf-final-tests`; scratch files are under
+`~/.cache/scottland-test-tmp`. Every tested compositor starts after its build;
+reload/unload exercises are confined to those tests. No live checkout, `wayland-1`,
+installed options, physical screen or user session is changed. These remain
+**implemented/headless checked**, not physical-display verification under D2.
+The ten renderer/frame source hashes match between osanwe and plumbus.
+
+| Final check | Result |
+|---|---|
+| Goo input, palette, settings and sleep on RX 580, normal / packed GLES 2 | 40 / 40 passed |
+| Unsupported-GPU halo fallback | 4 passed |
+| Two-output flow, wave connectivity/isolation, fullscreen and cross-output drag on RX 580 | 12 passed |
+| Additional Intel Xe packed GLES 2 two-output flow | 12 passed |
+| Widgets, including nested input/process checks | 146 passed |
+| Widget morph | 86 passed after correcting the history clock comparison |
+| Hint style, goo on / explicitly off | 51 / 51 passed |
+| Windowing | 84 passed |
+| CPU goo model, including conservative-bound sweeps with 12 sources and three curves | all assertions passed |
+
+The first morph run's failure and the successful correction/recheck are both
+retained. The additional Xe flow run first exposed the output-order assumption;
+the named-output rerun passed all assertions. Other initial installed-config runs
+are also retained. Final source/render artifacts are in `build/perf-results`,
+`build/visual-shipped-{before,after}`, `build/visual-shipped-comparison.json`,
+`build/bench-shipped-*.log`, and `build/xe-packed-flow-fixed.log`. Plumbus retains
+its test screenshots beside the isolated runtime result folders and in the private
+checkout's build directory. Coverage excludes physical login/display, mixed DPI,
+rotation and GPU families beyond Xe and RX 580.

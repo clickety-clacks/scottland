@@ -348,7 +348,7 @@ try:
             for v in active:
                 recent = [p["frame"]["x"] for p in track
                     if v["stamp"] - .05 <= p["stamp"] <= v["stamp"]]
-                if v["stamp"] <= .05:
+                if v["stamp"] - start <= .05:
                     recent.extend(f["x"] for f in previous_frames)
                 history_errors.append(max(min(recent) - v["field_edge"],
                     v["field_edge"] - max(recent), 0))

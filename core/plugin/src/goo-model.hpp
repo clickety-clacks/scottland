@@ -39,6 +39,8 @@ struct settings_t
 float distance(glm::vec2 p, const source_t &source);
 float noise(glm::vec2 p);
 float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &settings, float time);
+// Conservative outer radii for the rendered field, including quantization and wave headroom.
+std::vector<float> support_radii(std::vector<source_t> sources, const settings_t &settings);
 float union_distance(glm::vec2 p, const std::vector<source_t> &sources);
 void amounts(std::vector<source_t> &sources, const settings_t &settings);
 } // namespace scottland::goo

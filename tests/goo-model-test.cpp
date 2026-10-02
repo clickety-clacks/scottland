@@ -47,6 +47,41 @@ int main()
     s.swell = .7;
     amounts(windows, s);
     assert(windows[0].liquid.x > unswollen && windows[1].liquid.x == 0);
+    // The conservative radii must contain every potentially visible field sample,
+    // including distant tails, many overlapping islands, deposits and custom curves.
+    for (auto curve : {"", "0:1 .5:.8 1:.4", "0:1 .5:.25 1:0"})
+    {
+        assert(s.curve(curve));
+        s.noise = .9; s.wave_height = 2;
+        std::vector<source_t> crowd;
+        for (int k = 0; k < 12; k++)
+        {
+            auto w = a;
+            w.id = k; w.rect = {float(100 + k % 4 * 120), float(100 + k / 4 * 140), 45, 55};
+            w.corners = {.7, .5, .8, .9}; w.dot = {w.rect.x, w.rect.y + 55, 1, 5};
+            w.swell = 1; w.hinted = true;
+            crowd.push_back(w);
+        }
+        auto radii = support_radii(crowd, s);
+        amounts(crowd, s);
+        for (int y = -500; y < 1000; y += 7)
+            for (int x = -500; x < 1100; x += 7)
+            {
+                glm::vec2 p{float(x), float(y)};
+                float f = density(p, crowd, s, .6) * (1 + 3.9f * s.wave_height);
+                if (f < s.threshold() * .97f) continue;
+                bool covered = false;
+                for (size_t k = 0; k < crowd.size(); k++)
+                {
+                    auto q = glm::max(glm::abs(p - glm::vec2(crowd[k].rect)) -
+                        glm::vec2(crowd[k].rect.z, crowd[k].rect.w), glm::vec2{0});
+                    covered |= glm::length(q) <= radii[k] + .01f;
+                }
+                assert(covered);
+            }
+    }
+    assert(s.curve(""));
+    assert(s.fall(s.reach * 5) > 0); // performance work preserves the shipped tail
     std::cout << "PASS goo model: falloff, bridge/snap, volume draw, union clipping, finite input, curve "
                  "validation, swell control, fullscreen islands\n";
 }

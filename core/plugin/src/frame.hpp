@@ -1084,9 +1084,15 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             uint32_t now = now_ms();
             double dt = std::clamp((now - last_tick) / 1000.0, 0.001, 0.05);
             last_tick = now;
-            damage();  // where it was: a shrinking bulge must not leave its old outline behind
+            // The goo owns halo damage; breathing must not repaint window contents.
+            bool goo = goo_enabled();
+            // A touch lift also scales window content; preserve its full old/new
+            // damage until the spring settles. Only halo-only ticks use goo bands.
+            bool content = !goo || bulge != bulge_target || bulge_velocity != 0;
+            if (content) damage();
             step(dt);
-            damage();
+            if (content) damage();
+            if (goo) goo_wake(*this);
             if (settled())
             {
                 swell = swell_target;

@@ -64,12 +64,13 @@ struct target_t
 // Restore state also on allocation/compile failures; do not leave a simulation FB bound.
 struct state_t
 {
-    GLint fb, viewport[4], program, active, binding[8], blend_src, blend_dst;
+    GLint fb, viewport[4], scissor_box[4], program, active, binding[8], blend_src, blend_dst;
     GLboolean scissor, blend;
     state_t()
     {
         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
         glGetIntegerv(GL_VIEWPORT, viewport);
+        glGetIntegerv(GL_SCISSOR_BOX, scissor_box);
         glGetIntegerv(GL_CURRENT_PROGRAM, &program);
         glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
         glGetIntegerv(GL_BLEND_SRC_RGB, &blend_src);
@@ -87,6 +88,7 @@ struct state_t
     {
         glBindFramebuffer(GL_FRAMEBUFFER, fb);
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        glScissor(scissor_box[0], scissor_box[1], scissor_box[2], scissor_box[3]);
         glUseProgram(program);
         glBlendFunc(blend_src, blend_dst);
         if (scissor)
@@ -131,17 +133,17 @@ struct renderer_t::impl
     glm::vec4 sampled_value{};
     settings_t settings;
     std::vector<source_t> sources;
-    OpenGL::program_t field_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
-    target_t field, wave[2], dye[2], source, curve, background, query;
+    OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
+    target_t field, mask, wave[2], dye[2], source, curve, background, query;
     std::vector<target_t> reduction;
 
     void release()
     {
         if (timer)
             glDeleteQueries(1, &timer);
-        for (auto p : {&field_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p})
+        for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p})
             p->free_resources();
-        for (auto p : {&field, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query})
+        for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query})
             p->release();
         for (auto &t : reduction)
             t.release();
@@ -196,7 +198,7 @@ struct renderer_t::impl
         }
         field.release();
         LOGI("scottland goo: ", packed ? "packed RGBA8" : "RGBA16F", " simulation targets");
-        const std::array programs{std::make_pair(&field_p, &field_shader), std::make_pair(&wave_p, &wave_shader),
+        const std::array programs{std::make_pair(&field_p, &field_shader), std::make_pair(&mask_p, &mask_shader), std::make_pair(&wave_p, &wave_shader),
                           std::make_pair(&dye_p, &dye_shader), std::make_pair(&render_p, &render_shader),
                           std::make_pair(&energy_p, &energy_shader), std::make_pair(&query_p, &query_shader)};
         for (auto pair : programs)
@@ -236,6 +238,7 @@ struct renderer_t::impl
         bind(program, "uField", 2, field.texture);
         bind(program, "uWave", 3, wave[0].texture);
         bind(program, "uDyeTex", 4, dye[0].texture);
+        bind(program, "uMask", 7, mask.texture);
     }
     void draw_to(OpenGL::program_t &program, target_t &target)
     {
@@ -243,11 +246,47 @@ struct renderer_t::impl
         glViewport(0, 0, target.width, target.height);
         quad(program, target.width, target.height);
     }
+    // A simulation pass over only the given output-logical rects (texels elsewhere keep their
+    // values), drawn as one batch of quads. Rows run with y, as the passes map texels back to
+    // positions.
+    // A conservative occupancy map: every tile that could have received a wave.
+    // Keep it until resize, rather than freezing nonzero waves after a fixed age.
+    // Its size is bounded by the output, and needs no GPU-to-CPU readback.
+    wf::region_t wave_tiles;
+    std::vector<GLfloat> tiles;
+    void simulate(OpenGL::program_t &program, target_t &target, const std::vector<wf::geometry_t> &area)
+    {
+        if (area.empty())
+            return draw_to(program, target);
+        tiles.clear();
+        double sx = double(target.width) / width, sy = double(target.height) / height;
+        for (auto &r : area)
+        {
+            float x1 = std::max(0.0, std::floor(r.x * sx)), y1 = std::max(0.0, std::floor(r.y * sy));
+            float x2 = std::min<double>(target.width, std::ceil((r.x + r.width) * sx));
+            float y2 = std::min<double>(target.height, std::ceil((r.y + r.height) * sy));
+            if (x2 <= x1 || y2 <= y1)
+                continue;
+            tiles.insert(tiles.end(), {x1, y1, x2, y1, x2, y2, x1, y1, x2, y2, x1, y2});
+        }
+        if (tiles.empty())
+            return;
+        glBindFramebuffer(GL_FRAMEBUFFER, target.fb);
+        glViewport(0, 0, target.width, target.height);
+        program.attrib_pointer("position", 2, 0, tiles.data());
+        glDrawArrays(GL_TRIANGLES, 0, tiles.size() / 2);
+        program.deactivate();
+    }
     bool resize(int w, int h)
     {
         width = w;
         height = h;
+        wave_tiles.clear();
         bool ok = field.allocate((w + 1) / 2, (h + 1) / 2, packed, es3);
+        ok = mask.allocate((w + 3) / 4, (h + 3) / 4, true, es3) && ok;
+        glBindTexture(GL_TEXTURE_2D, mask.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         for (auto t : {&wave[0], &wave[1], &dye[0], &dye[1]})
         {
             ok = t->allocate((w + 3) / 4, (h + 3) / 4, packed, es3) && ok;
@@ -351,7 +390,7 @@ bool renderer_t::supported()
     return ok;
 }
 bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &s, int w, int h, float time,
-                        const std::vector<glm::vec4> &impulses)
+                        const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area)
 {
     state_t guard;
     if (!p->support())
@@ -388,8 +427,19 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     p->settings = s;
     p->time = time;
     p->upload();
+    glBindFramebuffer(GL_FRAMEBUFFER, p->field.fb);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
     p->common(p->field_p, p->field.width, p->field.height);
-    p->draw_to(p->field_p, p->field);
+    p->simulate(p->field_p, p->field, area);
+    p->common(p->mask_p, p->mask.width, p->mask.height);
+    p->draw_to(p->mask_p, p->mask);
+    for (auto &r : area)
+        p->wave_tiles |= r;
+    std::vector<wf::geometry_t> wave_area;
+    for (auto &r : p->wave_tiles)
+        wave_area.push_back(wf::geometry_t{double(r.x1), double(r.y1),
+            double(r.x2 - r.x1), double(r.y2 - r.y1)});
     for (int k = 0; k < 2; k++)
     {
         p->common(p->wave_p, p->wave[1].width, p->wave[1].height);
@@ -402,7 +452,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         auto id = p->wave_p.get_program_id(wf::TEXTURE_TYPE_RGBA);
         glUniform4fv(glGetUniformLocation(id, "uImp[0]"), 8, &imp[0].x);
         p->wave_p.uniform1i("uImpN", n);
-        p->draw_to(p->wave_p, p->wave[1]);
+        p->simulate(p->wave_p, p->wave[1], wave_area);
         std::swap(p->wave[0], p->wave[1]);
     }
     p->common(p->dye_p, p->dye[1].width, p->dye[1].height);
@@ -420,10 +470,13 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return true;
 }
-void renderer_t::draw(const wf::scene::render_instruction_t &data)
+void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area)
 {
     if (!p->ready)
         return;
+    // Damage can arrive as one bounding box (the output collapses many small rects), so clip
+    // the goo's work to its own bands rather than shading the whole box.
+    auto damage = data.damage & area;
     state_t guard;
     wf::gles::bind_render_buffer(data.target);
     GLint viewport[4];
@@ -462,7 +515,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data)
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     wf::gles::for_each_scissor_rect(
-        data.target, data.damage,
+        data.target, damage,
         [&]
         {
             GLfloat vertices[] = {

@@ -96,6 +96,14 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
         return handle_t::bottom_right;
     return handle_t::halo;
 }
+void goo_wake(const frame_t &frame)
+{
+    auto v = frame.toplevel();
+    auto it = v ? goo::screens.find(v->get_output()) : goo::screens.end();
+    // An awake goo already repaints every frame and picks the change up from the sources.
+    if (it != goo::screens.end() && it->second->sleeping && it->second->wake)
+        it->second->wake();
+}
 void goo_impulse(const frame_t &frame, float strength)
 {
     if (!goo_enabled())

@@ -2,6 +2,8 @@
 #include "frame.hpp"
 #include "goo-runtime.hpp"
 #include <chrono>
+#include <optional>
+#include <cmath>
 #include <wayfire/config/option-wrapper.hpp>
 #include <wayfire/output-layout.hpp>
 #include <wayfire/plugins/common/shared-core-data.hpp>
@@ -78,9 +80,93 @@ class goo_node_t : public wf::scene::node_t
     {
         out.push_back(std::make_unique<goo_instance_t>(this, damage, o));
     }
-    void damage() { wf::scene::damage_node(shared_from_this(), get_bounding_box()); }
+    // Goo exists only in a band around each window (and in the gaps it bridges); window
+    // interiors mask it out. Damage, field evaluation and drawing use these bands;
+    // wave history and dry dye retain their existing evolution (GO10).
+    std::vector<wf::geometry_t> last_bands;
+    bool whole = true;
+    // Recomputed only when the sources or settings change (every caller in a frame shares it).
+    std::optional<std::vector<wf::geometry_t>> band_cache;
+    const std::vector<wf::geometry_t> &bands()
+    {
+        if (!band_cache)
+            band_cache = compute_bands();
+        return *band_cache;
+    }
+    std::vector<wf::geometry_t> compute_bands() const
+    {
+        auto reach = goo::support_radii(state.sources, state.settings);
+        std::vector<wf::geometry_t> list;
+        for (size_t i = 0; i < state.sources.size(); i++)
+        {
+            auto &s = state.sources[i];
+            // Two logical pixels cover bilinear half-resolution field reconstruction;
+            // one more covers the normal's one-pixel forward difference.
+            double out = reach[i] + 3, in = s.liquid.y + 3;
+            double x1 = s.rect.x - s.rect.z, x2 = s.rect.x + s.rect.z;
+            double y1 = s.rect.y - s.rect.w, y2 = s.rect.y + s.rect.w;
+            auto box = [&](double a, double b, double c, double d)
+            {
+                if (c > a && d > b)
+                    list.push_back(wf::geometry_t{std::floor(a), std::floor(b),
+                                                  std::ceil(c - std::floor(a)), std::ceil(d - std::floor(b))});
+            };
+            if (x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
+            {
+                box(x1 - out, y1 - out, x2 + out, y2 + out);
+                continue;
+            }
+            box(x1 - out, y1 - out, x2 + out, y1 + in);    // top
+            box(x1 - out, y2 - in, x2 + out, y2 + out);    // bottom
+            box(x1 - out, y1 + in, x1 + in, y2 - in);      // left
+            box(x2 - in, y1 + in, x2 + out, y2 - in);      // right
+        }
+        return list;
+    }
+    // Field tiles cover current geometry with one 32px tile of sampling halo.
+    // The renderer clears the field first, so old tiles cannot leave stale density.
+    std::vector<wf::geometry_t> sim_tiles(const std::vector<wf::geometry_t> &bands)
+    {
+        constexpr double tile = 32;
+        wf::region_t current;
+        for (auto &b : bands)
+        {
+            double x1 = (std::floor(b.x / tile) - 1) * tile;
+            double y1 = (std::floor(b.y / tile) - 1) * tile;
+            double x2 = (std::ceil((b.x + b.width) / tile) + 1) * tile;
+            double y2 = (std::ceil((b.y + b.height) / tile) + 1) * tile;
+            current |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
+        }
+
+        std::vector<wf::geometry_t> rects;
+        for (auto &b : current)
+            rects.push_back(wf::geometry_t{double(b.x1), double(b.y1), double(b.x2 - b.x1), double(b.y2 - b.y1)});
+        return rects;
+    }
+    void damage()
+    {
+        auto node = shared_from_this();
+        if (whole)
+        {
+            whole = false;
+            wf::scene::damage_node(node, get_bounding_box());
+            last_bands = bands();
+            return;
+        }
+        auto &next = bands();
+        for (auto &b : last_bands)
+            wf::scene::damage_node(node, b);
+        for (auto &b : next)
+            wf::scene::damage_node(node, b);
+        last_bands = next;
+    }
     void wake()
     {
+        // A hidden window's attention timer can wake us after prepare() suspended
+        // fullscreen goo. No repaint may follow that occluded damage, so preserve
+        // the suspension here too. Leaving fullscreen replaces sources in prepare.
+        if (state.sources.size() == 1 && !state.sources[0].emitter)
+            return;
         state.sleeping = false;
         if (!attached)
             return;
@@ -116,10 +202,11 @@ class goo_node_t : public wf::scene::node_t
                 }
             }
             state.sources = std::move(next);
+            band_cache.reset();
             last_change = now();
             wake();
         }
-        if (state.sources.size() == 1 && !state.sources[0].emitter)
+        if (state.sources.empty() || (state.sources.size() == 1 && !state.sources[0].emitter))
         {
             state.sleeping = true;
             state.impulses.clear();
@@ -154,11 +241,12 @@ class goo_node_t : public wf::scene::node_t
             [&]
             {
                 auto g = get_bounding_box();
+                auto &band = bands();
                 if (!state.sleeping)
                 {
                     goo::amounts(state.sources, state.settings);
                     bool ok = state.renderer.update(state.sources, state.settings, g.width, g.height,
-                                                    state.time, state.impulses);
+                                                    state.time, state.impulses, sim_tiles(band));
                     state.impulses.clear();
 
                     if (!ok)
@@ -174,7 +262,10 @@ class goo_node_t : public wf::scene::node_t
                         tick.disconnect();
                     }
                 }
-                state.renderer.draw(data);
+                wf::regionf_t area;
+                for (auto &b : band)
+                    area |= b;
+                state.renderer.draw(data, area);
             });
     }
 };
@@ -233,6 +324,8 @@ struct goo_t::impl
         for (auto &[o, n] : nodes)
         {
             n->state.settings = goo::current_settings;
+            n->band_cache.reset();
+            n->whole = true;
             n->last_change = now();
             n->wake();
         }
@@ -268,6 +361,7 @@ struct goo_t::impl
         auto it = nodes.find(o);
         if (it == nodes.end())
             return;
+        it->second->whole = true;
         it->second->damage();
         it->second->detach();
         wf::scene::remove_child(it->second);
