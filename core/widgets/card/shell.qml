@@ -1,10 +1,5 @@
-// Scottland's default widget ("card"): the app's icon, its name and the window title, and an alert
-// badge. The icon is on the screen-edge side of the text (SCOTTLAND_WIDGET_RAIL, then live).
-// Shown for any app with no widget configured. Inputs come from the widget launch contract
-// (docs/widgets.md, WG8): SCOTTLAND_WIDGET_APP_ID, _TITLE, _ICON (from the app's .desktop entry),
-// _BADGE; live title and badge changes arrive in the JSON file named by SCOTTLAND_WIDGET_STATE,
-// which Scottland's widget service keeps current.
-// Colors follow the session's palette (SCOTTLAND_PALETTE), else a neutral dark palette.
+// Scottland's default card renders one complete presentation snapshot from its state file.
+// The launch environment carries identity and paths only (docs/widgets.md, WG8).
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -18,36 +13,42 @@ FloatingWindow {
     readonly property int gap: 14
     readonly property int maxWidth: 320
     readonly property bool hasText: appName !== "" || appTitle !== ""
-    // Minimized (Super+M; SCOTTLAND_WIDGET_MINIMIZED, then the state file): just the icon.
-    property bool minimized: Quickshell.env("SCOTTLAND_WIDGET_MINIMIZED") === "1"
+    property var state: ({})
+    readonly property bool minimized: state.minimized === true
     readonly property bool showsText: hasText && !minimized
-    // Without text the row is just the icon: centered in the square card.
-    readonly property int rowPad: showsText ? pad : (implicitHeight - iconSize) / 2
+    // 0 is the square around the icon, 1 the card with its text. (Expanding and collapsing will be
+    // animated by Scottland itself, from a snapshot, as the window/widget morph is; a card resizing
+    // its own window every frame is choppy and can stop short.)
+    readonly property real expansion: showsText ? 1 : 0
+    // The icon's inset from the screen edge: centered in the square, the card's padding when open.
+    readonly property real rowPad: (implicitHeight - iconSize) / 2 * (1 - expansion) + pad * expansion
     // Measured from the strings, not the Text items: a card that starts collapsed has never shown
     // its text, and a Text that has never been visible isn't laid out (its width reads 0).
     readonly property bool showsName: appName !== "" && appName !== appTitle
     readonly property int textWidth: Math.min(maxWidth - 2 * pad - iconSize - gap,
         Math.ceil(Math.max(appTitle !== "" ? titleMetrics.advanceWidth : 0, showsName ? nameMetrics.advanceWidth : 0)))
-    implicitWidth: showsText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
+    readonly property int openWidth: hasText ? 2 * pad + iconSize + gap + textWidth : implicitHeight
+    implicitWidth: Math.round(implicitHeight + (openWidth - implicitHeight) * expansion)
     implicitHeight: 96
     // An open window keeps its size when the implicit size changes: pin it, so the card follows
     // its text, the title and Super+M (and so does the compositor, through the size limits).
     minimumSize: Qt.size(implicitWidth, implicitHeight)
     maximumSize: Qt.size(implicitWidth, implicitHeight)
     color: "transparent"
+    visible: typeof state.revision === "number"
 
-    readonly property string appId: Quickshell.env("SCOTTLAND_WIDGET_APP_ID") || ""
-    property string appTitle: Quickshell.env("SCOTTLAND_WIDGET_TITLE") || ""
+    readonly property string appId: state.app_id || ""
+    readonly property string appTitle: state.title || ""
     // The app's name (its .desktop entry's), else its app-id.
-    readonly property string appName: Quickshell.env("SCOTTLAND_WIDGET_NAME") || appId
+    readonly property string appName: state.name || appId
     // Which screen edge the widget is on ("left" or "right"), live.
-    property string rail: Quickshell.env("SCOTTLAND_WIDGET_RAIL") || "right"
-    readonly property string iconName: Quickshell.env("SCOTTLAND_WIDGET_ICON") || appId
+    readonly property string rail: state.rail || "right"
+    readonly property string iconName: state.icon || appId
     // The app's icon from the theme, else a generic app icon, else none (a monogram is drawn).
     readonly property string iconSource: Quickshell.iconPath(iconName, true)
         || Quickshell.iconPath(appId.toLowerCase(), true)
         || Quickshell.iconPath("application-x-executable", true)
-    property int badge: parseInt(Quickshell.env("SCOTTLAND_WIDGET_BADGE") || "0") || 0
+    readonly property int badge: state.badge || 0
 
     TextMetrics { id: titleMetrics; text: root.appTitle; font: titleText.font }
     TextMetrics { id: nameMetrics; text: root.appName; font: nameText.font }
@@ -59,14 +60,29 @@ FloatingWindow {
         onFileChanged: reload()
         onLoaded: {
             try {
-                const state = JSON.parse(this.text())
-                if (typeof state.title === "string") root.appTitle = state.title
-                if (typeof state.badge === "number") root.badge = state.badge
-                if (state.rail === "left" || state.rail === "right") root.rail = state.rail
-                if (typeof state.minimized === "boolean") root.minimized = state.minimized
+                root.state = JSON.parse(this.text())
+                Qt.callLater(root.reportRendered)
             } catch (e) {}
         }
     }
+
+    property bool reportPending: false
+    function reportRendered() {
+        if (renderReport.running) { reportPending = true; return }
+        reportPending = false
+        if (Quickshell.env("SCOTTLAND_WIDGET_AUDIT") !== "1") return
+        renderReport.command = ["busctl", "--user", "call", "org.scottland.Widgets",
+            "/org/scottland/Widgets", "org.scottland.Diagnostics", "Rendered", "s",
+            JSON.stringify({id: state.id, revision: state.revision, version: state.version,
+                title: titleText.text, title_shown: titleText.visible && titleText.parent.visible,
+                collapsed: minimized, rail: rail, width: width})]
+        renderReport.running = true
+    }
+    Process {
+        id: renderReport
+        onExited: if (root.reportPending) Qt.callLater(root.reportRendered)
+    }
+    onWidthChanged: Qt.callLater(root.reportRendered)
 
     // Theme: the session's palette (SCOTTLAND_PALETTE, kept current by Scottland: light or dark,
     // the accent, and an integration's full palette such as Omarchy's theme). Followed live.
@@ -170,7 +186,7 @@ FloatingWindow {
             // Two lines: what's in the window (its title, bold), then the app (regular).
             Column {
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.showsText
+                visible: root.hasText && root.expansion > 0.01
                 width: root.textWidth
                 spacing: 2
 
@@ -201,3 +217,4 @@ FloatingWindow {
         }
     }
 }
+

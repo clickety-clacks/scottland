@@ -22,11 +22,13 @@ tenet decided it; when they conflict, ask Mike.
 a doc there and leave a one-line pointer in the invariants file. Current docs:
 
 - [docs/tenets.md](docs/tenets.md): what Scottland is for; how to decide unspecified edges.
-- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG18): what a widget is, how it's chosen,
+- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG19): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets.
 - [docs/windowing-keys.md](docs/windowing-keys.md): Alt window hints and cycles (WK1–WK13),
   remembered zones and contention-aware placement (WP1–WP6).
+- [docs/goo.md](docs/goo.md): the goo (GO1-GO10): the halo as one liquid for the whole screen,
+  dye for state colors, live tuning (designed and prototyped; not built yet).
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
 
@@ -69,7 +71,7 @@ a value (a slider position) is usually personal unless Mike says it should ship.
 ## Build and dev mode
 
     make plugin          # build core/plugin into ./build
-    make dev-install     # symlink plugin, hooks, helpers and settings from the repo
+    make dev-install     # install a snapshot of HEAD (committed work only) and point the session at it
     make package         # build and install the Arch packages (needs sudo)
 
 Dev mode covers everything except the root helper (`omarchy/helper/`), its polkit policy and

@@ -1,7 +1,5 @@
 // Private integration fragment for scottland_plugin_t. The pure controller, placement, solver,
-// renderer and lifetime record live separately; this bridge alone knows today's widget ownership.
-// When the desktop model lands, these adapters can become its subscriber without moving algorithms.
-    scottland::windowing::memories window_positions;
+// renderer live separately; this bridge reads and updates the plugin-owned desktop model.
     scottland::windowing::alt_mode window_keys;
     wf::option_wrapper_t<int> alt_hold_delay{"scottland/alt_hold_delay"};
     std::set<uint32_t> swallowed_keys, alt_keys, held_keys;
@@ -19,13 +17,12 @@
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
     std::string declutter_signature;
-    std::map<uint64_t, scottland::windowing::point> pending_rail_placement;
     wf::wl_idle_call hint_registration;
 
     scottland::windowing::zone window_zone(wayfire_toplevel_view view)
     {
         using Z = scottland::windowing::zone;
-        if (auto link = link_of_window(view); link && !link->preview)
+        if (auto link = link_of_window(view); link && link->docked())
             return link->rail == "left" ? Z::left_rail : Z::right_rail;
         if (auto link = link_of_widget(view)) return link->rail == "left" ? Z::left_rail : Z::right_rail;
         if (placement_of(view).zone == zone_t::center) return Z::center;
@@ -36,9 +33,44 @@
     wayfire_toplevel_view represented_view(uint64_t id)
     {
         auto window = wf::toplevel_cast(view_by_id(id));
-        if (auto link = link_of_window(window); link && !link->preview)
+        if (auto link = link_of_window(window); link && link->docked())
             return wf::toplevel_cast(link->widget.lock());
         return window;
+    }
+    scottland::windowing::window_memory& ensure_window_memory(uint64_t id)
+    {
+        auto& state = model.windows.at(id);
+        if (!state.placement)
+        {
+            std::set<unsigned> used;
+            for (auto& [other, record] : model.windows)
+                if (record.placement) used.insert(record.placement->hint_slot);
+            unsigned slot = 0; while (used.count(slot)) ++slot;
+            state.placement.emplace(); state.placement->hint_slot = slot;
+        }
+        return *state.placement;
+    }
+    static wf::json_t memory_snapshot(const scottland::windowing::window_memory& memory)
+    {
+        wf::json_t r; r["slot"] = int(memory.hint_slot); r["side"] = memory.last_side;
+        r["positions"] = wf::json_t::array();
+        for (auto p : memory.positions)
+        { wf::json_t spot; spot["set"] = bool(p); if (p) { spot["x"] = p->x; spot["y"] = p->y; } r["positions"].append(spot); }
+        return r;
+    }
+    static scottland::windowing::window_memory read_memory(wf::json_t r)
+    {
+        scottland::windowing::window_memory memory;
+        memory.hint_slot = r["slot"].as_int(); memory.last_side = r["side"].as_int();
+        for (size_t z = 0; z < memory.positions.size(); ++z) if (r["positions"][z]["set"].as_bool())
+            memory.positions[z] = scottland::windowing::point{
+                r["positions"][z]["x"].as_double(), r["positions"][z]["y"].as_double()};
+        return memory;
+    }
+    void bypass_window_keys()
+    {
+        alt_bypassed = true; alt_hold.disconnect();
+        if (capture_chord) { end_window_keys(); capture_chord = false; }
     }
     void remember_window(wayfire_toplevel_view view)
     {
@@ -48,42 +80,32 @@
         uint64_t id = link ? link->window_id : view->get_id();
         auto z = window_zone(view);
         auto g = view->get_geometry(); auto screen = view->get_output()->get_relative_geometry();
-        if (!window_positions.count(id))
-        {
-            std::set<unsigned> used;
-            for (auto& [other, record] : window_positions) used.insert(record.hint_slot);
-            unsigned slot = 0; while (used.count(slot)) ++slot;
-            window_positions[id].hint_slot = slot;
-        }
-        auto& memory = window_positions[id];
+        auto& memory = ensure_window_memory(id);
         memory.positions[size_t(z)] = scottland::windowing::point{
             (g.x + g.width / 2.0) / screen.width, (g.y + g.height / 2.0) / screen.height};
         if (z != Z::center) memory.last_side = (z == Z::left_periphery || z == Z::left_rail) ? -1 : 1;
+        publish_model();
     }
     std::vector<scottland::windowing::hint_entry> window_entries()
     {
         std::vector<scottland::windowing::hint_entry> entries;
-        std::set<unsigned> slots;
-        std::set<uint64_t> live;
-        for (auto& v : wf::get_core().get_all_views())
-            if (auto view = wf::toplevel_cast(v); view && view->is_mapped() && view->get_output() &&
-                view->role == wf::VIEW_ROLE_TOPLEVEL && !is_widget(view) && !runs_as_widget(view_pid(view)))
-                live.insert(view->get_id());
-        for (auto it = window_positions.begin(); it != window_positions.end();)
-            if (!live.count(it->first)) it = window_positions.erase(it);
-            else { slots.insert(it->second.hint_slot); ++it; }
-        for (auto id : live)
+        for (auto& [id, state] : model.windows)
         {
-            auto view = wf::toplevel_cast(view_by_id(id));
-            if (!window_positions.count(id))
+            auto view = wf::toplevel_cast(state.view.lock());
+            if (!view || !view->is_mapped() || !view->get_output() ||
+                view->role != wf::VIEW_ROLE_TOPLEVEL || is_widget(view) || runs_as_widget(state.pid))
             {
-                unsigned slot = 0; while (slots.count(slot)) ++slot;
-                auto& memory = window_positions[id]; memory.hint_slot = slot; slots.insert(slot);
-                remember_window(view);
+                state.placement.reset();
+                continue;
             }
+            if (!state.placement) { ensure_window_memory(id); remember_window(view); }
             auto link = link_of_window(view);
-            entries.push_back({id, window_positions[id].hint_slot, window_zone(view), link && !link->preview});
+            entries.push_back({id, state.placement->hint_slot, window_zone(view), link && link->docked()});
         }
+        window_keys.hint_width = model.hint_width;
+        window_keys.refresh(entries);
+        model.hint_width = window_keys.hint_width;
+        publish_model();
         return entries;
     }
     std::vector<scottland::windowing::rectangle> placement_obstacles(wf::output_t *output, uint64_t excluded)
@@ -111,7 +133,7 @@
     }
     bool placement_side(wayfire_toplevel_view window, scottland::windowing::point current, bool rail)
     {
-        auto& memory = window_positions[window->get_id()];
+        auto& memory = ensure_window_memory(window->get_id());
         if (memory.last_side) return memory.last_side < 0;
         auto output = window->get_output();
         auto obstacles = placement_obstacles(output, window->get_id());
@@ -129,7 +151,7 @@
         using Z = scottland::windowing::zone;
         auto output = window->get_output(); auto screen = output->get_relative_geometry();
         auto a = output->workarea->get_workarea(); auto g = window->get_geometry();
-        auto& memory = window_positions[window->get_id()];
+        auto& memory = ensure_window_memory(window->get_id());
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
         double w = g.width, h = g.height;
@@ -212,28 +234,31 @@
         Z z = destination == D::center ? Z::center : rail ?
             (left ? Z::left_rail : Z::right_rail) : (left ? Z::left_periphery : Z::right_periphery);
         auto at = zone_spot(window, z, current); auto real = window->get_geometry();
-        window->move(std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
+        pin_scale(window, std::nullopt); // explicit zone cycling follows the zone, including center at 100%
+        move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
         if (rail)
         {
-            pending_rail_placement[id] = current;
+            model.windows[id].pending_rail = current;
             widgetize(window, false, left ? "left" : "right");
-            auto& memory = window_positions[id];
+            auto& memory = ensure_window_memory(id);
             memory.last_side = left ? -1 : 1;
+            publish_model();
         } else { remember_window(window); start_glide(window, current.x - at.x, current.y - at.y); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)
     {
-        auto pending = pending_rail_placement.find(id);
-        if (pending == pending_rail_placement.end()) return false;
-        auto window = wf::toplevel_cast(view_by_id(id));
-        if (!window) { pending_rail_placement.erase(pending); return false; }
+        auto found = model.windows.find(id);
+        if (found == model.windows.end() || !found->second.pending_rail) return false;
+        auto current = *found->second.pending_rail;
+        auto window = wf::toplevel_cast(found->second.view.lock());
+        if (!window) { found->second.pending_rail.reset(); publish_model(); return false; }
         using Z = scottland::windowing::zone;
-        auto at = zone_spot(window, rail == "left" ? Z::left_rail : Z::right_rail, pending->second, widget);
-        pending_rail_placement.erase(pending);
+        auto at = zone_spot(window, rail == "left" ? Z::left_rail : Z::right_rail, current, widget);
+        found->second.pending_rail.reset();
         auto g = widget->get_geometry();
-        widget->move(std::round(at.x - g.width / 2.0), std::round(at.y - g.height / 2.0));
         if (auto link = link_of_widget(widget)) link->drop = at;
+        move_window(widget, std::round(at.x - g.width / 2.0), std::round(at.y - g.height / 2.0));
         return true;
     }
     wf::wl_timer<false> deferred_cycle;
@@ -324,7 +349,7 @@
                 }
                 auto g = view->get_geometry(); double x = g.x + g.width / 2.0, y = g.y + g.height / 2.0;
                 if (auto frame = frame_of(view, false)) { auto r = frame->screen_rect(); x = (r.x1 + r.x2) / 2; y = (r.y1 + r.y2) / 2; }
-                auto text = upper(window_keys.label(window_positions[it->first].hint_slot));
+                auto text = upper(window_keys.label(ensure_window_memory(it->first).hint_slot));
                 auto accent = scottland::palette.accent;
                 visual.hint->update(x + offset->translation_x, y + offset->translation_y, text,
                     window_keys.selected == it->first, scottland::palette.light, accent.r, accent.g, accent.b,
@@ -344,18 +369,18 @@
         window_keys.end(); declutter_signature.clear();
         for (auto& [id, visual] : hint_visuals)
             if (visual.hint) { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-        for (auto& [id, link] : widget_links)
-            if (!link.preview && in_focus_mode(link.output)) slide_widget(link, true);
+        for (auto& [id, link] : model.widgets)
+            if (link.docked() && in_focus_mode(link.output)) slide_widget(link, true);
     }
     void begin_window_keys()
     {
-        if (alt_bypassed || alt_keys.empty() || held_keys.size() != 1) return;
+        if (alt_bypassed || alt_keys.empty() || held_keys.size() != 1 || drag->view) return;
         capture_chord = true;
         auto active = wf::get_core().seat->get_active_view();
         auto link = link_of_widget(active);
         window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
-        for (auto& [id, widget] : widget_links)
-            if (!widget.preview && in_focus_mode(widget.output)) slide_widget(widget, false);
+        for (auto& [id, widget] : model.widgets)
+            if (widget.docked() && in_focus_mode(widget.output)) slide_widget(widget, false);
         declutter_signature.clear(); step_hints();
         hints_tick.set_timeout(8, [=] () { return step_hints(); });
     }
@@ -375,7 +400,7 @@
             if (down && alt_keys.empty())
             {
                 uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
-                alt_bypassed = held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
+                alt_bypassed = drag->view || held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
                 if (!alt_bypassed)
                     alt_hold.set_timeout(std::max(1, int(alt_hold_delay)), [=] () { begin_window_keys(); });
             }
@@ -426,7 +451,7 @@
             item["dx"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_x) : 0.0;
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
             item["memories"] = wf::json_t::array();
-            for (auto p : window_positions[e.id].positions)
+            for (auto p : ensure_window_memory(e.id).positions)
             { wf::json_t spot; spot["set"] = bool(p); if (p) { spot["x"] = p->x; spot["y"] = p->y; } item["memories"].append(spot); }
             reply["hints"].append(item);
         }
@@ -434,25 +459,6 @@
     };
     void init_window_keys()
     {
-        auto path = runtime_file(".window-positions.json"); std::ifstream in(path);
-        if (in)
-        {
-            wf::json_t records; std::string contents((std::istreambuf_iterator<char>(in)), {});
-            if (!wf::json_t::parse_string(contents, records) && records.is_array())
-                for (size_t i = 0; i < records.size(); ++i)
-                {
-                    auto r = records[i]; auto view = view_by_id(uint64_t(r["window"].as_int64()));
-                    if (!view || !view->is_mapped()) continue;
-                    auto& memory = window_positions[view->get_id()];
-                    window_keys.hint_width = std::max(window_keys.hint_width,
-                        unsigned(std::clamp(r["hint_width"].as_int(), 1, 7)));
-                    memory.hint_slot = r["slot"].as_int(); memory.last_side = r["side"].as_int();
-                    for (size_t z = 0; z < 5; ++z) if (r["positions"][z]["set"].as_bool())
-                        memory.positions[z] = scottland::windowing::point{
-                            r["positions"][z]["x"].as_double(), r["positions"][z]["y"].as_double()};
-                }
-            in.close(); std::remove(path.c_str());
-        }
         window_entries();
         window_keys.select = [=] (uint64_t id, bool restore) {
             auto view = wf::toplevel_cast(view_by_id(id));
@@ -477,17 +483,4 @@
             if (auto view = visual.view.lock()) view->get_transformed_node()->rem_transformer("scottland-hint-offset");
         }
         hint_visuals.clear();
-        if (access(runtime_file(".reloading").c_str(), F_OK) == 0)
-        {
-            auto records = wf::json_t::array();
-            for (auto& [id, memory] : window_positions)
-            {
-                wf::json_t r; r["window"] = int64_t(id); r["slot"] = int(memory.hint_slot);
-                r["side"] = memory.last_side; r["hint_width"] = int(window_keys.hint_width); r["positions"] = wf::json_t::array();
-                for (auto p : memory.positions)
-                { wf::json_t spot; spot["set"] = bool(p); if (p) { spot["x"] = p->x; spot["y"] = p->y; } r["positions"].append(spot); }
-                records.append(r);
-            }
-            std::ofstream(runtime_file(".window-positions.json")) << records.serialize();
-        }
     }

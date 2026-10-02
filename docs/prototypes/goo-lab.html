@@ -1,0 +1,695 @@
+<title>Scottland Goo Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: the desktop fills the screen; the lab bench (controls) floats at the right edge,
+   becoming a bottom drawer on narrow screens. One deliberate dark look: a compositor at night. */
+:root {
+  color-scheme: dark;
+  --desk: #0d1117;
+  --panel: #151b24;
+  --panel-edge: #263142;
+  --ink: #dbe4ee;
+  --ink-soft: #8b9bb0;
+  --accent: #5fb4ff;
+  --attention: #ffc94a;
+  --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+html, body { height: 100%; }
+body { background: var(--desk); color: var(--ink); font-family: var(--body); font-size: 14px; overflow: hidden; }
+#stage { position: fixed; inset: 0; touch-action: none; }
+#gl, #labels { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#labels { pointer-events: none; }
+#hint {
+  position: fixed; left: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); max-width: min(440px, calc(100% - 32px));
+  font-size: 12.5px; line-height: 1.45; color: var(--ink-soft); pointer-events: none;
+}
+#hint b { font-family: var(--display); font-weight: 700; font-size: 15px; color: var(--ink); letter-spacing: 0.01em; display: block; margin-bottom: 2px; }
+#bench {
+  position: fixed; right: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  width: 300px; display: flex; flex-direction: column; background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--panel-edge); border-radius: 14px; backdrop-filter: blur(10px); overflow: hidden;
+}
+#bench header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px 10px; border-bottom: 1px solid var(--panel-edge); }
+#bench h1 { margin: 0; font-family: var(--display); font-weight: 700; font-size: 17px; letter-spacing: 0.01em; }
+#bench .scroll { overflow-y: auto; padding: 10px 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.group { display: flex; flex-direction: column; gap: 8px; }
+.group h2 { margin: 0; font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft); }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: baseline; }
+.row label { font-size: 12.5px; }
+.row output { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.row input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0; }
+.row small { grid-column: 1 / -1; color: var(--ink-soft); font-size: 11px; line-height: 1.35; }
+.buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+button {
+  font: inherit; font-size: 12.5px; color: var(--ink); background: #1d2532; border: 1px solid var(--panel-edge);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer;
+}
+button:hover { background: #243042; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.on { border-color: var(--attention); color: var(--attention); }
+#windows { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 9px; border-radius: 999px; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-soft); display: inline-block; }
+.chip.focus i { background: var(--accent); }
+.chip.attn i { background: var(--attention); }
+.chip.sel { border-color: var(--ink); }
+#toggle { display: none; }
+#copied { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); min-height: 1em; }
+#fail[hidden] { display: none; }
+#fail { position: fixed; inset: 0; display: grid; place-items: center; padding-inline: 16px; text-align: center; color: var(--ink-soft); }
+@media (max-width: 720px) {
+  #bench { left: 12px; right: 12px; top: auto; width: auto; height: 46%; }
+  #bench.closed { height: auto; }
+  #bench.closed .scroll { display: none; }
+  #toggle { display: inline-block; }
+  #hint { max-width: calc(100% - 32px); }
+}
+</style>
+
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <canvas id="labels"></canvas>
+</div>
+<div id="hint"><b>Scottland Goo Lab</b>One goo for the whole screen. Drag windows (overlap them, bring them close, pull them apart). Click a window to focus it. Give one attention from the bench and watch the color bleed.</div>
+<div id="fail" hidden>This browser can't run the goo simulation (it needs WebGL2 with float render targets).</div>
+
+<aside id="bench" aria-label="Goo controls">
+  <header>
+    <h1>Bench</h1>
+    <div class="buttons">
+      <button id="toggle" type="button" aria-expanded="true">Hide</button>
+    </div>
+  </header>
+  <div class="scroll">
+    <section class="group">
+      <h2>Windows</h2>
+      <div id="windows"></div>
+      <div class="buttons">
+        <button id="attn" type="button">Needs attention</button>
+        <button id="ripple" type="button">Ripple</button>
+        <button id="add" type="button">Add window</button>
+        <button id="remove" type="button">Remove</button>
+      </div>
+    </section>
+    <section class="group" id="sliders"></section>
+    <section class="group">
+      <h2>Presets</h2>
+      <div class="buttons">
+        <button type="button" data-preset="scottland">Scottland</button>
+        <button type="button" data-preset="calm">Calm</button>
+        <button type="button" data-preset="lively">Lively</button>
+      </div>
+      <div class="buttons">
+        <button id="copy" type="button">Copy settings</button>
+      </div>
+      <div id="copied" aria-live="polite"></div>
+      <textarea id="copyfallback" hidden rows="5" style="width:100%;font-family:var(--mono);font-size:11px;background:#10151d;color:var(--ink);border:1px solid var(--panel-edge);border-radius:8px"></textarea>
+    </section>
+  </div>
+</aside>
+
+<script>
+(() => {
+const MAXW = 10;
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+const canvas = document.getElementById("gl");
+const labels = document.getElementById("labels");
+const lctx = labels.getContext("2d");
+const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: false });
+if (!gl || !gl.getExtension("EXT_color_buffer_float")) {
+  document.getElementById("fail").hidden = false;
+  return;
+}
+
+// ---- settings ------------------------------------------------------------------------------
+const SETTINGS = [
+  { id: "thickness", label: "Border thickness", min: 4, max: 40, step: 1, unit: "px", group: "Goo", note: "How far the goo stands off a lone window's edge." },
+  { id: "reach", label: "Reach", min: 6, max: 70, step: 1, unit: "px", group: "Goo", note: "How far it stretches toward neighbors: bridges form sooner as this grows." },
+  { id: "thinning", label: "Bridge draw", min: 0, max: 1, step: 0.01, group: "Goo", note: "How much a bridge thins the borders it draws from (fixed volume)." },
+  { id: "swell", label: "Swell on grab", min: 0, max: 2, step: 0.01, group: "Goo" },
+  { id: "noise", label: "Mess", min: 0, max: 0.9, step: 0.01, group: "Organic", note: "Uneven amounts of goo along each edge." },
+  { id: "lump", label: "Lump size", min: 40, max: 500, step: 5, unit: "px", group: "Organic" },
+  { id: "drift", label: "Drift speed", min: 0, max: 0.6, step: 0.01, group: "Organic" },
+  { id: "waveSpeed", label: "Wave speed", min: 0.05, max: 0.5, step: 0.01, group: "Waves" },
+  { id: "waveDamp", label: "Wave persistence", min: 0.9, max: 0.998, step: 0.001, group: "Waves" },
+  { id: "waveAmp", label: "Wave height", min: 0, max: 1.5, step: 0.01, group: "Waves" },
+  { id: "spread", label: "Dye spread", min: 0, max: 0.9, step: 0.01, group: "Color", note: "How readily color bleeds through connected goo." },
+  { id: "swirl", label: "Dye swirl", min: 0, max: 3, step: 0.05, group: "Color" },
+  { id: "release", label: "Dye release", min: 0.005, max: 0.3, step: 0.005, group: "Color", note: "How fast a window's color replaces what's in its goo." },
+  { id: "shine", label: "Shine", min: 0, max: 1.5, step: 0.01, group: "Look" },
+  { id: "relief", label: "Relief", min: 0.5, max: 12, step: 0.1, group: "Look" },
+];
+const PRESETS = {
+  scottland: { thickness: 13, reach: 24, thinning: 0.45, swell: 0.7, noise: 0.32, lump: 190, drift: 0.12, waveSpeed: 0.28, waveDamp: 0.985, waveAmp: 0.55, spread: 0.45, swirl: 0.9, release: 0.06, shine: 0.75, relief: 5 },
+  calm: { thickness: 11, reach: 18, thinning: 0.3, swell: 0.45, noise: 0.15, lump: 260, drift: 0.05, waveSpeed: 0.2, waveDamp: 0.97, waveAmp: 0.3, spread: 0.3, swirl: 0.4, release: 0.05, shine: 0.55, relief: 4 },
+  lively: { thickness: 15, reach: 34, thinning: 0.6, swell: 1.1, noise: 0.55, lump: 150, drift: 0.25, waveSpeed: 0.36, waveDamp: 0.992, waveAmp: 0.9, spread: 0.6, swirl: 1.8, release: 0.08, shine: 0.95, relief: 7 },
+};
+const S = { ...PRESETS.scottland };
+
+const sliderBox = document.getElementById("sliders");
+const inputs = {};
+let lastGroup = "";
+for (const s of SETTINGS) {
+  if (s.group !== lastGroup) {
+    const h = document.createElement("h2");
+    h.textContent = s.group;
+    if (lastGroup) h.style.marginTop = "6px";
+    sliderBox.appendChild(h);
+    lastGroup = s.group;
+  }
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<label for="s-${s.id}">${s.label}</label><output id="o-${s.id}"></output>
+    <input type="range" id="s-${s.id}" min="${s.min}" max="${s.max}" step="${s.step}">` + (s.note ? `<small>${s.note}</small>` : "");
+  sliderBox.appendChild(row);
+  const input = row.querySelector("input");
+  input.addEventListener("input", () => { S[s.id] = parseFloat(input.value); showValue(s); });
+  inputs[s.id] = input;
+}
+function showValue(s) {
+  const v = S[s.id];
+  document.getElementById("o-" + s.id).textContent = (s.step >= 1 ? v.toFixed(0) : s.step >= 0.01 ? v.toFixed(2) : v.toFixed(3)) + (s.unit ? " " + s.unit : "");
+}
+function applySettings(values) {
+  Object.assign(S, values);
+  for (const s of SETTINGS) { inputs[s.id].value = S[s.id]; showValue(s); }
+}
+applySettings(S);
+document.querySelectorAll("[data-preset]").forEach(b => b.addEventListener("click", () => applySettings(PRESETS[b.dataset.preset])));
+document.getElementById("copy").addEventListener("click", () => {
+  const text = JSON.stringify(S);
+  const note = document.getElementById("copied");
+  const fallback = document.getElementById("copyfallback");
+  Promise.resolve().then(() => navigator.clipboard.writeText(text)).then(
+    () => { note.textContent = "Copied. Paste it to Claude."; fallback.hidden = true; },
+    () => { fallback.hidden = false; fallback.value = text; fallback.select(); note.textContent = "Copy the selected text."; });
+});
+const bench = document.getElementById("bench");
+document.getElementById("toggle").addEventListener("click", e => {
+  bench.classList.toggle("closed");
+  const open = !bench.classList.contains("closed");
+  e.target.textContent = open ? "Hide" : "Show";
+  e.target.setAttribute("aria-expanded", String(open));
+});
+
+// ---- windows ------------------------------------------------------------------------------
+const NEUTRAL = [0.62, 0.70, 0.80], FOCUS = [0.37, 0.71, 1.0], ATTENTION = [1.0, 0.79, 0.29];
+let nextSeed = 1;
+function makeWindow(title, x, y, w, h) {
+  return { title, x, y, w, h, swell: 0, swellTarget: 0, attention: false, seed: nextSeed++ * 1.618, nextPulse: 0 };
+}
+let windows = [];
+let focused = null, selected = null;
+function layout() {
+  const W = innerWidth > 720 ? innerWidth - 330 : innerWidth, H = innerWidth > 720 ? innerHeight : innerHeight * 0.54;
+  const s = Math.min(1, W / 1150);
+  windows = [
+    makeWindow("Files — ~/Projects", W * 0.05, H * 0.58, 300 * s, 210 * s),
+    makeWindow("Signal", W * 0.07, H * 0.17, 250 * s, 230 * s),
+    makeWindow("Ghostty — mike@osanwe: ~/Projects/scottland", W * 0.07 + 270 * s, H * 0.20, 430 * s, 320 * s),
+    makeWindow("Firefox — Drift: scottland notes", W * 0.07 + 270 * s + 390 * s, H * 0.44, 320 * s, 260 * s),
+    makeWindow("PairDrop", W * 0.07 + 270 * s + 430 * s + 22 * s, H * 0.20 - 30 * s, 170 * s, 96 * s),
+  ];
+  focused = windows[2];
+  selected = windows[4];
+  windows[4].attention = true;
+}
+layout();
+
+function renderChips() {
+  const box = document.getElementById("windows");
+  box.innerHTML = "";
+  windows.forEach(w => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip" + (w === focused ? " focus" : "") + (w.attention ? " attn" : "") + (w === selected ? " sel" : "");
+    b.innerHTML = `<i></i>${w.title.split(" — ")[0]}`;
+    b.addEventListener("click", () => { selected = w; renderChips(); });
+    box.appendChild(b);
+  });
+  const attn = document.getElementById("attn");
+  attn.classList.toggle("on", !!(selected && selected.attention));
+  attn.textContent = selected && selected.attention ? "Answer attention" : "Needs attention";
+}
+renderChips();
+document.getElementById("attn").addEventListener("click", () => {
+  if (!selected) return;
+  selected.attention = !selected.attention;
+  if (selected.attention) pulse(selected, 1.4);
+  renderChips();
+});
+document.getElementById("ripple").addEventListener("click", () => { if (selected) pulse(selected, 2.2); });
+document.getElementById("add").addEventListener("click", () => {
+  if (windows.length >= MAXW) return;
+  const w = 180 + Math.random() * 260, h = 120 + Math.random() * 200;
+  const win = makeWindow(["Notes", "Spotify", "Obsidian", "Calendar", "btop"][windows.length % 5], Math.random() * (innerWidth - w - 340) + 20, Math.random() * (innerHeight - h - 40) + 20, w, h);
+  windows.push(win);
+  selected = win;
+  pulse(win, 1.2);
+  renderChips();
+});
+document.getElementById("remove").addEventListener("click", () => {
+  if (!selected) return;
+  windows = windows.filter(w => w !== selected);
+  if (focused === selected) focused = null;
+  selected = windows[windows.length - 1] || null;
+  renderChips();
+});
+
+// ---- impulses (waves) --------------------------------------------------------------------
+let impulses = [];
+function impulse(cssX, cssY, strength, radius) {
+  impulses.push([cssX * DPR, (innerHeight - cssY) * DPR, strength, radius * DPR]);
+  if (impulses.length > 8) impulses.shift();
+}
+function edgePoint(w) {
+  const t = Math.random() * 2 * (w.w + w.h);
+  if (t < w.w) return [w.x + t, w.y];
+  if (t < w.w + w.h) return [w.x + w.w, w.y + (t - w.w)];
+  if (t < 2 * w.w + w.h) return [w.x + (t - w.w - w.h), w.y + w.h];
+  return [w.x, w.y + (t - 2 * w.w - w.h)];
+}
+function pulse(w, strength) {
+  for (let k = 0; k < 3; k++) {
+    const [x, y] = edgePoint(w);
+    impulse(x, y, strength, 18 + 10 * Math.random());
+  }
+}
+
+// ---- pointer ------------------------------------------------------------------------------
+let drag = null;
+const stage = document.getElementById("stage");
+function hit(x, y) {
+  for (let i = windows.length - 1; i >= 0; i--) {
+    const w = windows[i];
+    if (x >= w.x && x <= w.x + w.w && y >= w.y && y <= w.y + w.h) return w;
+  }
+  return null;
+}
+stage.addEventListener("pointerdown", e => {
+  const w = hit(e.clientX, e.clientY);
+  if (!w) return;
+  stage.setPointerCapture(e.pointerId);
+  windows = windows.filter(v => v !== w).concat([w]);
+  drag = { w, dx: e.clientX - w.x, dy: e.clientY - w.y, sx: e.clientX, sy: e.clientY, moved: false, last: 0 };
+});
+stage.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const { w } = drag;
+  if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 5) {
+    drag.moved = true;
+    w.swellTarget = 1;
+    impulse(e.clientX, e.clientY, 1.6, 26);
+  }
+  if (drag.moved) {
+    w.x = e.clientX - drag.dx;
+    w.y = e.clientY - drag.dy;
+    const now = performance.now();
+    if (now - drag.last > 140) {  // a moving window stirs its goo
+      drag.last = now;
+      const [x, y] = edgePoint(w);
+      impulse(x, y, 0.5, 16);
+    }
+  }
+});
+function endDrag(e) {
+  if (!drag) return;
+  const { w } = drag;
+  if (drag.moved) {
+    w.swellTarget = 0;
+    impulse(e.clientX, e.clientY, 1.2, 30);
+  } else {
+    focused = w;
+    selected = w;
+    if (w.attention) { w.attention = false; pulse(w, 0.8); }  // going to it answers it
+  }
+  drag = null;
+  renderChips();
+}
+stage.addEventListener("pointerup", endDrag);
+stage.addEventListener("pointercancel", endDrag);
+
+// ---- GL plumbing --------------------------------------------------------------------------
+const COMMON = `#version 300 es
+precision highp float;
+#define MAXW ${MAXW}
+uniform vec4 uRect[MAXW];   // center x, y, half w, h (canvas px, y up)
+uniform vec4 uGoo[MAXW];    // amount, corner radius, seed, dye release multiplier
+uniform vec3 uDye[MAXW];
+uniform int uCount;
+uniform vec2 uRes;
+uniform float uTime, uReach, uNoise, uNoiseScale, uNoiseSpeed, uT;
+out vec4 o;
+float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int k = 0; k < 3; k++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; } return s / 0.875; }
+float sdBox(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+float unionSdf(vec2 p) {
+  float d = 1e9;
+  for (int i = 0; i < MAXW; i++) { if (i >= uCount) break; d = min(d, sdBox(p - uRect[i].xy, uRect[i].zw, uGoo[i].y)); }
+  return d;
+}
+// The one goo: every window adds a density that peaks at its edge and falls off within its reach.
+float gooField(vec2 p) {
+  float F = 0.0;
+  for (int i = 0; i < MAXW; i++) {
+    if (i >= uCount) break;
+    float e = max(sdBox(p - uRect[i].xy, uRect[i].zw, uGoo[i].y), 0.0);
+    float n = fbm(p * uNoiseScale + uGoo[i].z * vec2(7.13, 3.71) + vec2(uTime * uNoiseSpeed, -uTime * uNoiseSpeed * 0.73));
+    float a = uGoo[i].x * (1.0 + uNoise * (n - 0.5) * 2.0);
+    F += max(a, 0.0) * exp(-e / uReach);
+  }
+  return F;
+}
+`;
+const VS = `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0, 1); }`;
+
+const FIELD_FS = COMMON + `
+uniform vec2 uSize;
+void main() { vec2 p = gl_FragCoord.xy * (uRes / uSize); o = vec4(gooField(p), 0, 0, 1); }`;
+
+const MASK = `
+uniform sampler2D uField;
+float gooMask(vec2 uv) { vec2 p = uv * uRes; return smoothstep(uT * 0.6, uT * 0.95, texture(uField, uv).r) * step(0.0, unionSdf(p)); }
+`;
+
+const WAVE_FS = COMMON + MASK + `
+uniform sampler2D uWave;
+uniform vec2 uSize;
+uniform float uC2, uDamp;
+uniform vec4 uImp[8];
+uniform int uImpN;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uSize, px = 1.0 / uSize, p = uv * uRes;
+  vec2 hv = texture(uWave, uv).rg;
+  float m = gooMask(uv);
+  float hc = hv.x, sum = 0.0;
+  vec2 offs[4] = vec2[4](vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1));
+  for (int k = 0; k < 4; k++) {
+    vec2 u2 = uv + offs[k] * px;
+    sum += mix(hc, texture(uWave, u2).r, gooMask(u2));   // waves travel only through goo
+  }
+  float v = (hv.y + uC2 * (sum - 4.0 * hc)) * uDamp;
+  float h = hc + v;
+  h *= mix(0.8, 1.0, m); v *= mix(0.8, 1.0, m);
+  for (int k = 0; k < 8; k++) {
+    if (k >= uImpN) break;
+    float dd = distance(p, uImp[k].xy);
+    h += uImp[k].z * exp(-dd * dd / (uImp[k].w * uImp[k].w)) * m;
+  }
+  o = vec4(h, v, 0, 1);
+}`;
+
+const DYE_FS = COMMON + MASK + `
+uniform sampler2D uDyeTex;
+uniform vec2 uSize;
+uniform float uSpread, uSwirl, uRelease;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uSize, px = 1.0 / uSize, p = uv * uRes;
+  float m = gooMask(uv);
+  // slow swirl: the curl of a drifting noise, so dye spreads in tendrils rather than as a flat blur
+  vec2 q = p * 0.004 + vec2(0.0, uTime * 0.03);
+  float h = 0.01;
+  float gx = (fbm(q + vec2(h, 0)) - fbm(q - vec2(h, 0))) / (2.0 * h);
+  float gy = (fbm(q + vec2(0, h)) - fbm(q - vec2(0, h))) / (2.0 * h);
+  vec2 vel = vec2(gy, -gx) * uSwirl;
+  vec3 c = texture(uDyeTex, uv - vel / uRes).rgb;
+  // diffusion, only between cells that both hold goo: color bleeds only where goo connects
+  vec3 acc = c; float ws = 1.0;
+  vec2 offs[4] = vec2[4](vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1));
+  for (int k = 0; k < 4; k++) {
+    vec2 u2 = uv + offs[k] * px;
+    float w = gooMask(u2) * m;
+    acc += texture(uDyeTex, u2).rgb * w; ws += w;
+  }
+  c = mix(c, acc / ws, uSpread);
+  // each window keeps releasing its color into the goo it owns
+  float ksum = 1e-4; vec3 nearest = vec3(0);
+  for (int i = 0; i < MAXW; i++) {
+    if (i >= uCount) break;
+    float e = max(sdBox(p - uRect[i].xy, uRect[i].zw, uGoo[i].y), 0.0);
+    float k = uGoo[i].x * exp(-e / uReach);
+    ksum += k; nearest += k * uDye[i];
+  }
+  for (int i = 0; i < MAXW; i++) {
+    if (i >= uCount) break;
+    float e = max(sdBox(p - uRect[i].xy, uRect[i].zw, uGoo[i].y), 0.0);
+    float share = uGoo[i].x * exp(-e / uReach) / ksum;
+    float w = uRelease * uGoo[i].w * share * exp(-e / (uReach * 0.6));
+    c = mix(c, uDye[i], clamp(w, 0.0, 1.0));
+  }
+  c = mix(c, nearest / ksum, (1.0 - m) * 0.25);   // fresh goo forms with its owners' colors
+  o = vec4(c, 1);
+}`;
+
+const RENDER_FS = COMMON + `
+uniform sampler2D uField, uWave, uDyeTex;
+uniform float uWaveAmp, uShine, uRelief, uDpr, uTitleH;
+uniform int uFocus;
+uniform float uAttn[MAXW];
+vec3 wallpaper(vec2 p) {
+  vec2 uv = p / uRes;
+  vec3 a = vec3(0.050, 0.066, 0.092), b = vec3(0.075, 0.090, 0.125);
+  vec3 c = mix(a, b, smoothstep(0.0, 1.0, uv.y * 0.8 + 0.2 * uv.x));
+  c += 0.025 * vec3(0.3, 0.45, 0.7) * smoothstep(0.55, 0.0, distance(uv, vec2(0.75, 0.25)));
+  vec2 g = fract(p / (28.0 * uDpr)) - 0.5;
+  c += 0.012 * smoothstep(0.08, 0.0, length(g));      // a faint dot grid, so refraction reads
+  return c;
+}
+void main() {
+  vec2 p = gl_FragCoord.xy, uv = p / uRes;
+  float F = texture(uField, uv).r;
+  float h = texture(uWave, uv).r;
+  float Fe = F * (1.0 + uWaveAmp * h);
+  float d = unionSdf(p);
+  float edgeAA = 1.2 * uDpr;
+  float gooA = smoothstep(uT * 0.97, uT * 1.03, Fe) * smoothstep(0.0, 1.0, d);
+  float ht = clamp(log(max(Fe, 1e-4) / uT), 0.0, 3.0);
+  vec3 n = normalize(vec3(-dFdx(ht) * uRelief, -dFdy(ht) * uRelief, 1.0));
+  vec3 bg = wallpaper(p);
+  vec3 col = bg;
+  // windows cast a soft shadow onto the goo and the desk
+  float sd = unionSdf(p + vec2(-3.0, 9.0) * uDpr);
+  col *= 1.0 - 0.38 * (1.0 - smoothstep(0.0, 26.0 * uDpr, sd)) * step(0.0, d);
+  if (gooA > 0.0) {
+    vec3 dye = texture(uDyeTex, uv).rgb;
+    vec3 refr = wallpaper(p + n.xy * 26.0 * uDpr);
+    vec3 L = normalize(vec3(-0.45, 0.55, 0.7));
+    float diff = 0.6 + 0.4 * dot(n, L);
+    float spec = pow(max(dot(reflect(-L, n), vec3(0, 0, 1)), 0.0), 48.0) * uShine;
+    float rim = 1.0 - smoothstep(0.0, 0.5, ht);
+    vec3 goo = mix(refr * 1.4, dye * 0.85, 0.55) * diff + spec * vec3(1.0, 0.98, 0.95) + dye * rim * 0.22;
+    col = mix(col, goo, gooA * 0.96);
+  }
+  // the windows, back to front
+  for (int i = 0; i < MAXW; i++) {
+    if (i >= uCount) break;
+    vec2 c = uRect[i].xy, hs = uRect[i].zw;
+    float dd = sdBox(p - c, hs, uGoo[i].y);
+    if (dd > edgeAA) continue;
+    vec2 local = p - (c - hs);                       // from the bottom-left corner
+    float top = 2.0 * hs.y - local.y;                // distance from the top edge
+    vec3 body = vec3(0.105, 0.125, 0.160);
+    vec3 bar = i == uFocus ? vec3(0.150, 0.205, 0.290) : vec3(0.135, 0.155, 0.195);
+    vec3 w = top < uTitleH ? bar : body;
+    if (top >= uTitleH) {
+      float row = floor((top - uTitleH - 10.0 * uDpr) / (17.0 * uDpr));
+      float rowy = fract((top - uTitleH - 10.0 * uDpr) / (17.0 * uDpr));
+      float len = (0.25 + 0.65 * hash(vec2(row, float(i) * 7.0))) * (2.0 * hs.x - 28.0 * uDpr);
+      float line = step(0.35, rowy) * step(rowy, 0.62) * step(14.0 * uDpr, local.x) * step(local.x, 14.0 * uDpr + len) * step(0.0, row);
+      w = mix(w, vec3(0.42, 0.48, 0.56), line * 0.28);
+    }
+    w += vec3(0.30, 0.35, 0.42) * (1.0 - smoothstep(0.0, 1.2 * uDpr, abs(dd + 0.6 * uDpr))) * 0.35;  // hairline edge
+    col = mix(col, w, smoothstep(edgeAA * 0.5, -edgeAA * 0.5, dd));
+  }
+  o = vec4(col, 1);
+}`;
+
+function compile(fs) {
+  const prog = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, fs]]) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    gl.attachShader(prog, sh);
+  }
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  const loc = {};
+  return { prog, u(name) { return name in loc ? loc[name] : (loc[name] = gl.getUniformLocation(prog, name)); } };
+}
+let P;
+try {
+  P = { field: compile(FIELD_FS), wave: compile(WAVE_FS), dye: compile(DYE_FS), render: compile(RENDER_FS) };
+} catch (err) {
+  console.error(err);
+  document.getElementById("fail").hidden = false;
+  return;
+}
+gl.bindVertexArray(gl.createVertexArray());
+
+function target(w, h, data) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, data || null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fb, w, h };
+}
+let W = 0, H = 0, field, wave = [], dye = [];
+function resize() {
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  canvas.width = W; canvas.height = H;
+  labels.width = W; labels.height = H;
+  const fw = Math.ceil(W / 2), fh = Math.ceil(H / 2), sw = Math.ceil(W / 4), sh = Math.ceil(H / 4);
+  field = target(fw, fh);
+  wave = [target(sw, sh), target(sw, sh)];
+  const fill = new Float32Array(sw * sh * 4);
+  for (let i = 0; i < sw * sh; i++) fill.set([NEUTRAL[0], NEUTRAL[1], NEUTRAL[2], 1], i * 4);
+  dye = [target(sw, sh, fill), target(sw, sh, fill)];
+}
+resize();
+addEventListener("resize", resize);
+
+// ---- per-frame uniforms -------------------------------------------------------------------
+const rect = new Float32Array(MAXW * 4), goo = new Float32Array(MAXW * 4), dyeCol = new Float32Array(MAXW * 3), attnArr = new Float32Array(MAXW);
+const imp = new Float32Array(8 * 4);
+function gaps() {
+  // the nearest other window per window, for how much a bridge draws from its border
+  return windows.map(a => {
+    let g = Infinity;
+    for (const b of windows) {
+      if (a === b) continue;
+      const dx = Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w), 0);
+      const dy = Math.max(b.y - (a.y + a.h), a.y - (b.y + b.h), 0);
+      g = Math.min(g, Math.hypot(dx, dy));
+    }
+    return g;
+  });
+}
+function common(prog, t) {
+  gl.useProgram(prog.prog);
+  gl.uniform4fv(prog.u("uRect[0]"), rect);
+  gl.uniform4fv(prog.u("uGoo[0]"), goo);
+  gl.uniform3fv(prog.u("uDye[0]"), dyeCol);
+  gl.uniform1i(prog.u("uCount"), windows.length);
+  gl.uniform2f(prog.u("uRes"), W, H);
+  gl.uniform1f(prog.u("uTime"), t);
+  gl.uniform1f(prog.u("uReach"), S.reach * DPR);
+  gl.uniform1f(prog.u("uNoise"), S.noise);
+  gl.uniform1f(prog.u("uNoiseScale"), 1 / (S.lump * DPR));
+  gl.uniform1f(prog.u("uNoiseSpeed"), S.drift);
+  gl.uniform1f(prog.u("uT"), Math.exp(-S.thickness / S.reach));
+}
+function bindTex(prog, name, unit, tex) {
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform1i(prog.u(name), unit);
+}
+function draw(fb, w, h) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.viewport(0, 0, w, h);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  const t = now / 1000 * (reduced ? 0.3 : 1);
+  const g = gaps();
+  windows.forEach((w, i) => {
+    w.swell += (w.swellTarget - w.swell) * Math.min(1, dt * 7);
+    let amount = 1 + S.swell * w.swell;
+    if (w.attention) {
+      amount += 0.28 * (0.5 + 0.5 * Math.sin(t * 2.4 + w.seed));   // breathing
+      if (now > w.nextPulse) { pulse(w, 0.9); w.nextPulse = now + 1500; }
+    }
+    const bridge = Math.max(0, 1 - g[i] / (2.2 * (S.thickness + S.reach * 0.7)));
+    amount *= 1 - S.thinning * 0.35 * bridge;
+    rect.set([(w.x + w.w / 2) * DPR, H - (w.y + w.h / 2) * DPR, w.w / 2 * DPR, w.h / 2 * DPR], i * 4);
+    goo.set([amount, 10 * DPR, w.seed, w.attention ? 3 : 1], i * 4);
+    dyeCol.set(w.attention ? ATTENTION : w === focused ? FOCUS : NEUTRAL, i * 3);
+    attnArr[i] = w.attention ? 1 : 0;
+  });
+
+  // the field (half resolution)
+  common(P.field, t);
+  gl.uniform2f(P.field.u("uSize"), field.w, field.h);
+  draw(field.fb, field.w, field.h);
+
+  // waves: two steps a frame, then dye (quarter resolution)
+  const sw = wave[0].w, sh = wave[0].h;
+  for (let k = 0; k < 2; k++) {
+    common(P.wave, t);
+    bindTex(P.wave, "uField", 0, field.tex);
+    bindTex(P.wave, "uWave", 1, wave[0].tex);
+    gl.uniform2f(P.wave.u("uSize"), sw, sh);
+    gl.uniform1f(P.wave.u("uC2"), S.waveSpeed);
+    gl.uniform1f(P.wave.u("uDamp"), S.waveDamp);
+    const n = k === 0 ? impulses.length : 0;
+    imp.fill(0);
+    impulses.forEach((v, j) => imp.set(v, j * 4));
+    gl.uniform4fv(P.wave.u("uImp[0]"), imp);
+    gl.uniform1i(P.wave.u("uImpN"), n);
+    draw(wave[1].fb, sw, sh);
+    wave.reverse();
+  }
+  impulses = [];
+  common(P.dye, t);
+  bindTex(P.dye, "uField", 0, field.tex);
+  bindTex(P.dye, "uDyeTex", 1, dye[0].tex);
+  gl.uniform2f(P.dye.u("uSize"), sw, sh);
+  gl.uniform1f(P.dye.u("uSpread"), S.spread);
+  gl.uniform1f(P.dye.u("uSwirl"), S.swirl * DPR);
+  gl.uniform1f(P.dye.u("uRelease"), S.release);
+  draw(dye[1].fb, sw, sh);
+  dye.reverse();
+
+  // the screen
+  common(P.render, t);
+  bindTex(P.render, "uField", 0, field.tex);
+  bindTex(P.render, "uWave", 1, wave[0].tex);
+  bindTex(P.render, "uDyeTex", 2, dye[0].tex);
+  gl.uniform1f(P.render.u("uWaveAmp"), S.waveAmp);
+  gl.uniform1f(P.render.u("uShine"), S.shine);
+  gl.uniform1f(P.render.u("uRelief"), S.relief);
+  gl.uniform1f(P.render.u("uDpr"), DPR);
+  gl.uniform1f(P.render.u("uTitleH"), 30 * DPR);
+  gl.uniform1i(P.render.u("uFocus"), windows.indexOf(focused));
+  gl.uniform1fv(P.render.u("uAttn[0]"), attnArr);
+  draw(null, W, H);
+
+  // titles
+  lctx.clearRect(0, 0, W, H);
+  lctx.font = `500 ${12.5 * DPR}px "IBM Plex Sans", system-ui, sans-serif`;
+  lctx.textBaseline = "middle";
+  for (const w of windows) {
+    lctx.save();
+    lctx.beginPath();
+    lctx.rect((w.x + 12) * DPR, w.y * DPR, (w.w - 24) * DPR, 30 * DPR);
+    lctx.clip();
+    lctx.fillStyle = w === focused ? "#dbe9fb" : "#a9b6c6";
+    lctx.fillText(w.title, (w.x + 14) * DPR, (w.y + 15) * DPR);
+    lctx.restore();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
