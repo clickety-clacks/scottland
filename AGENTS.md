@@ -69,7 +69,7 @@ a value (a slider position) is usually personal unless Mike says it should ship.
 ## Build and dev mode
 
     make plugin          # build core/plugin into ./build
-    make dev-install     # symlink plugin, hooks, helpers and settings from the repo
+    make dev-install     # install a snapshot of HEAD (committed work only) and point the session at it
     make package         # build and install the Arch packages (needs sudo)
 
 Dev mode covers everything except the root helper (`omarchy/helper/`), its polkit policy and
