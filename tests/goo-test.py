@@ -146,8 +146,15 @@ try:
     place("goo-a", 250, 230); place("goo-b", 610, 230)
     pointer(20, 20)
     off = shot("00-halo")
+    before_model = ipc("scottland/desktop-model")
     options(goo=True)
     time.sleep(2)
+    after_model = ipc("scottland/desktop-model")
+    screen_names = [o["name"] for o in ipc("window-rules/list-outputs")]
+    check("available goo screens publish a newer desktop snapshot", sorted(after_model["goo"]) == sorted(screen_names)
+          and after_model["version"] > before_model["version"])
+    check("goo screen state stays out of external slices", "goo" not in ipc("scottland/desktop-model", {"slice": "widgets"})
+          and "goo" not in ipc("scottland/desktop-model", {"slice": "attention"}))
     check("switch enables a GPU screen field", ipc("scottland/goo-state")["enabled"] and sample(590, 320)["sources"] == 2)
     on = shot("01-bridge")
     check("goo never changes window contents", on.getpixel((400, 300)) == off.getpixel((400, 300)))
@@ -246,13 +253,29 @@ try:
     thick = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
     check("panel changes thickness live", thick > 24)
     shot("07-panel-live")
-    # Scroll the same panel to the falloff curve; all controls remain reachable.
-    pointer(760, 510)
-    for _ in range(4):
-        ipc("stipc/touch", {"finger": 1, "x": 730, "y": 560})
-        for i in range(1, 16):
-            ipc("stipc/touch", {"finger": 1, "x": 730, "y": 560-22*i}); time.sleep(.025)
-        ipc("stipc/touch_release", {"finger": 1}); time.sleep(.4)
+    # The whole row is a slider. Scroll with its scrollbar, keeping row drags unambiguous.
+    key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
+    keyboard_thick = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
+    check("Goo rows use the shared Left/Right keyboard step", abs(keyboard_thick-thick-1) < .01)
+    key("KEY_LEFTSHIFT", True); key("KEY_LEFT", True); key("KEY_LEFT", False); key("KEY_LEFTSHIFT", False); time.sleep(.15)
+    shifted_thick = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
+    check("Shift uses the shared larger keyboard step", abs(shifted_thick-keyboard_thick+10) < .01)
+    key("KEY_BACKSPACE", True); key("KEY_BACKSPACE", False); time.sleep(.15)
+    check("Backspace resets the Goo row to its opening value", abs(float(ipc("wayfire/get-config-option",
+          {"option": "scottland/goo_thickness"})["value"])-13) < .01)
+    for code in ["KEY_2", "KEY_7"]:
+        key(code, True); key(code, False)
+    time.sleep(.15)
+    check("digits enter a Goo row value", abs(float(ipc("wayfire/get-config-option",
+          {"option": "scottland/goo_thickness"})["value"])-27) < .01)
+    for _ in range(14):
+        key("KEY_DOWN", True); key("KEY_DOWN", False)
+    time.sleep(.3); shot("07a-panel-keyboard-last-row")
+    key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
+    check("keyboard navigation reaches the last Goo row", abs(float(ipc("wayfire/get-config-option",
+          {"option": "scottland/goo_relief"})["value"])-5.1) < .01)
+    # The keyboard follows the selected row; use the now-lowered scrollbar thumb for the curve.
+    drag(895, 480, 0, 120)
     shot("07b-panel-curve")
     drag(449, 426, 0, 20)
     falloff = ipc("wayfire/get-config-option", {"option": "scottland/goo_falloff"})["value"]
@@ -270,11 +293,7 @@ try:
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1)
     click(760, 150); click(740, 250); time.sleep(.3)
-    for _ in range(4):
-        ipc("stipc/touch", {"finger": 1, "x": 730, "y": 560})
-        for j in range(1, 16):
-            ipc("stipc/touch", {"finger": 1, "x": 730, "y": 560-22*j}); time.sleep(.025)
-        ipc("stipc/touch_release", {"finger": 1}); time.sleep(.4)
+    drag(895, 250, 0, 350)
     drag(449,426,0,20)
     key("KEY_ENTER", True); key("KEY_ENTER", False); time.sleep(.5)
     check("Save persists goo alongside layout", layout.exists() and "goo_thickness =" in layout.read_text() and "goo_falloff = 0.000:" in layout.read_text())
@@ -298,6 +317,7 @@ try:
     options(color_scheme="dark", accent_color="#81a1c1ff", attention_color="#ebcb8bff")
     options(goo_thickness=13, goo_falloff="", goo=False); time.sleep(.5)
     check("switch returns live to the existing halo", not ipc("scottland/goo-state")["enabled"])
+    check("live disable removes goo screens from the desktop model", ipc("scottland/desktop-model")["goo"] == [])
     shot("08-halo-restored")
     options(goo=True); pointer(20, 20)
     for _ in range(300):

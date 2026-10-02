@@ -77,7 +77,7 @@ is in [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). Input, proximity
 | S4 | Save persists the values (`~/.config/scottland/layout.ini`); reopening shows the saved values. | verified |
 | S5 | Cancel or Escape restores the values from when the panel opened and saves nothing. | verified |
 | S6 | If the running session's plugin predates a setting, the panel says "Restart Scottland to use: …" and keeps the saved value instead of resetting it. | implemented |
-| S10 | A Goo section beside Layout exposes the live goo switch, all fifteen sliders and the falloff curve in the same editor. Save, Cancel and Defaults include goo. See [GO9](../docs/goo.md). | implemented; plumbus headless input checked |
+| S10 | A Goo section beside Layout exposes the live goo switch and all fifteen settings in the same tall grab-anywhere ParameterStack rows as the zone settings (S1), including keyboard steps/navigation, typed values, opening-value reset and modified color. Keyboard navigation scrolls to the selected row; the scrollbar reaches the falloff curve in the shared editor. Save, Cancel and Defaults include goo. See [GO9](../docs/goo.md). | implemented; plumbus headless pointer/keyboard input and screenshots checked |
 
 ## Desktop state
 

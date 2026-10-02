@@ -126,7 +126,12 @@ reuses the settled image when other desktop damage needs painting. This interpre
 simulation work at rest; ordinary compositor repainting still costs a draw. Tenet 1 favors stillness
 after the liquid response over endless unattended motion.
 
-The Goo tab has a live switch, fifteen sliders and the shared curve editor. Defaults resets the
+The Goo tab has a live switch, fifteen tall grab-anywhere `ParameterStack` rows and the shared
+curve editor. These are the same component as the Layout rows (whose first row is Center edge
+softness), with the same Left/Right and Shift steps, Up/Down/Tab navigation, typed values,
+Backspace and double-click opening-value reset, and modified-value color. Keyboard navigation
+scrolls the selected Goo row into view; the scrollbar reaches the falloff editor without dragging
+a parameter. The opening Goo object is published atomically for row reset bindings. Defaults resets the
 Scottland preset and the shipped off switch. Save writes the values with the zone settings to
 `layout.ini`; Cancel/Escape restores the opening values, including an empty/default curve, without
 writing. Live updates are batched; Save/Cancel wait for the control process to acknowledge

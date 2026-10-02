@@ -184,7 +184,7 @@ ShellRoot {
           else if (key === "goo_falloff") goo[key] = root.savedText(key)
           else goo[key] = root.savedValue(key, goo[key])
         }
-        root.original.goo = goo
+        root.original = Object.assign({}, root.original, { goo: goo })
         root.gooValues = Object.assign({}, goo)
         root.gooPoints = root.parseCurve(goo.goo_falloff, 0) || root.exponentialPoints
         root.centerWidth = root.original.center_width
@@ -364,44 +364,35 @@ ShellRoot {
         TabBar {
           Layout.fillWidth: true
           currentIndex: root.gooTab ? 1 : 0
-          onCurrentIndexChanged: root.gooTab = currentIndex === 1
+          onCurrentIndexChanged: {
+            root.gooTab = currentIndex === 1
+            Qt.callLater(() => {
+              gooScroll.contentItem.contentY = 0
+              if (root.gooTab) gooSettings.forceActiveFocus()
+              else zoneSettings.forceActiveFocus()
+            })
+          }
           TabButton { text: "Layout" }
           TabButton { text: "Goo" }
         }
 
         ScrollView {
+          id: gooScroll
+          function revealRow(stack, index) {
+            const y = stack.y + index * (stack.rowHeight + 1)
+            const bottom = y + stack.rowHeight
+            if (y < contentItem.contentY) contentItem.contentY = y
+            else if (bottom > contentItem.contentY + availableHeight)
+              contentItem.contentY = bottom - availableHeight
+          }
           Layout.fillWidth: true
           Layout.preferredHeight: Math.min(500, (Quickshell.screens[0]?.height || 800) * 0.6)
+          ScrollBar.vertical.policy: ScrollBar.AlwaysOn
           contentWidth: availableWidth
           clip: true
           ColumnLayout {
             width: parent.width
             spacing: 14
-
-        component SettingRow: ColumnLayout {
-          id: row
-          property string title
-          property string valueText
-          property alias from: slider.from
-          property alias to: slider.to
-          property alias stepSize: slider.stepSize
-          property real value
-          signal moved(real value)
-          Layout.fillWidth: true
-          spacing: 2
-
-          RowLayout {
-            Layout.fillWidth: true
-            Text { text: row.title; color: root.textColor; font.pixelSize: 14; Layout.fillWidth: true }
-            Text { text: row.valueText; color: root.accent; font.pixelSize: 14 }
-          }
-          Slider {
-            id: slider
-            Layout.fillWidth: true
-            value: row.value
-            onMoved: row.moved(value)
-          }
-        }
 
         // The zone settings: one stack of rows, each row a slider (ParameterStack.qml).
         ParameterStack {
@@ -438,16 +429,18 @@ ShellRoot {
           checked: root.gooValues.goo
           onToggled: root.setGoo("goo", checked)
         }
-        Repeater {
-          model: root.gooTab ? root.gooControls : []
-          delegate: SettingRow {
-            required property var modelData
-            title: modelData.title
-            valueText: Number(root.gooValues[modelData.name]).toFixed(modelData.step < 0.01 ? 3 : modelData.step < 1 ? 2 : 0)
-            from: modelData.low; to: modelData.high; stepSize: modelData.step
-            value: root.gooValues[modelData.name]
-            onMoved: v => root.setGoo(modelData.name, v)
-          }
+        ParameterStack {
+          id: gooSettings
+          visible: root.gooTab
+          Layout.fillWidth: true
+          foreground: root.textColor
+          accent: root.accent
+          rows: root.gooControls.map(c => ({ id: c.name, label: c.title, min: c.low, max: c.high,
+            step: c.step, largeStep: c.step * 10, decimals: c.step < 0.01 ? 3 : c.step < 1 ? 2 : 0 }))
+          values: root.gooValues
+          opening: root.original && root.original.goo ? root.original.goo : ({})
+          onChanged: (id, value) => root.setGoo(id, value)
+          onSelectedChanged: gooScroll.revealRow(gooSettings, selected)
         }
 
         // The same curve editor edits scale or goo falloff.
