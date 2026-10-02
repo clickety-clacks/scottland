@@ -237,3 +237,9 @@ accessibility, or the app talking to its own widget (WG11, or its own service) c
   their code; a reload replaces one whose fingerprint differs from the installed code.
 - Supersedes the earlier core invariant L13 ("apps are told to render as widgets") and settles
   L16 (how widgets sit on a rail: free-floating, WG4).
+
+
+Goo-default follow-up (2026-10-01): widgets passed 146 checks in each mode. Morph passed
+86 checks with the default goo and 76 with the explicit fallback halo. Independent-band
+pixel checks replace removed halo neighbor diagnostics; goo field/attention sampling remains.
+See [goo-default validation](goo.md#goo-default-validation-2026-10-01).
