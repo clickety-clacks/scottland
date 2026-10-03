@@ -92,6 +92,23 @@
             <_long>Size overshoot when widgets expand or contract. 0 disables the bounce; 0.04 gives a small single bounce. Large contractions limit overshoot to keep the card recognizable.</_long>
             <default>0.04</default><min>0</min><max>0.1</max>
         </option>
+        <option name="widget_peek_enter_delay" type="int">
+            <_short>Widget hover intent delay (ms)</_short><default>150</default><min>0</min><max>3000</max>
+        </option>
+        <option name="widget_peek_leave_delay" type="int">
+            <_short>Widget hover leave delay (ms)</_short><default>100</default><min>0</min><max>3000</max>
+        </option>
+        <option name="widget_attention_peek_duration" type="int">
+            <_short>Widget attention peek duration (ms)</_short><default>5000</default><min>100</min><max>30000</max>
+        </option>
+        <option name="center_opacity_focused" type="double"><_short>Focused center opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="center_opacity_unfocused" type="double"><_short>Unfocused center opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="side_opacity_focused" type="double"><_short>Focused side opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="side_opacity_unfocused" type="double"><_short>Unfocused side opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="widget_opacity_focused" type="double"><_short>Focused widget opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="widget_opacity_unfocused" type="double"><_short>Unfocused widget opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="window_mode_opacity_focused" type="double"><_short>Focused Window mode opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="window_mode_opacity_unfocused" type="double"><_short>Unfocused Window mode opacity</_short><default>1</default><min>0</min><max>1</max></option>
 
         <option name="alt_hold_delay" type="int">
             <_short>Window mode Alt-alone hold (ms)</_short>
@@ -112,32 +129,25 @@
             <_long>Elastic settlement of position and scale when a keyboard hint moves a window. Higher gives a larger overshoot; zero keeps the original motion. Screen edges limit the overshoot. Drags, coasts and widget morphs are unaffected.</_long>
             <default>3</default><min>0</min><max>10</max>
         </option>
-        <option name="key_restitution" type="double">
-            <_short>Widget rail bounce restitution</_short>
-            <_long>Fraction of outward velocity retained, reversed, when a widget coasts to the top or bottom of its rail (WK23). Ordinary window pushes and drag coasts stop vertically or widgetize at exposed sides (WK20).</_long>
-            <default>0.5</default><min>0</min><max>1</max>
-        </option>
         <option name="key_impulse" type="double">
             <_short>Window arrow impulse (px/s)</_short>
             <default>335</default>
             <min>1</min>
             <max>10000</max>
         </option>
-        <option name="move_friction_curve" type="string">
-            <_short>Movement and drag coast deceleration curve</_short>
-            <_long>Normalized speed (0..key_max_velocity) to key_friction multiplier (0.05..4), joined by monotone cubic interpolation. Empty uses constant friction.</_long>
-            <default></default>
-        </option>
-        <option name="resize_friction_curve" type="string">
-            <_short>Inertial resize deceleration curve</_short>
-            <_long>Normalized speed (0..key_max_velocity) to key_friction multiplier (0.05..4), joined by monotone cubic interpolation. Empty uses constant friction.</_long>
-            <default></default>
-        </option>
         <option name="key_friction" type="double">
             <_short>Window arrow deceleration (px/s²)</_short>
             <default>608</default>
             <min>1</min>
             <max>20000</max>
+        </option>
+        <option name="resize_impulse" type="double">
+            <_short>Window resize arrow impulse (px/s)</_short>
+            <default>335</default><min>1</min><max>10000</max>
+        </option>
+        <option name="resize_friction" type="double">
+            <_short>Window resize deceleration (px/s²)</_short>
+            <default>608</default><min>1</min><max>20000</max>
         </option>
         <option name="key_max_velocity" type="double">
             <_short>Maximum window arrow velocity (px/s)</_short>

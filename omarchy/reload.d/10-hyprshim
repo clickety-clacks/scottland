@@ -1,0 +1,35 @@
+#!/bin/sh
+# Keep this session's Hyprland compatibility socket available after a reload, including when
+# an older shim exited because Wayfire closed its IPC connection.
+set -eu
+signature=${HYPRLAND_INSTANCE_SIGNATURE:-}
+case "$signature" in
+  scottland_[A-Za-z0-9_-]*) ;;
+  *) exit 0 ;;
+esac
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+display=${WAYLAND_DISPLAY:-wayland}
+directory=$runtime/hypr/$signature
+lock=$directory/hyprland.lock
+pid=$(sed -n 1p "$lock" 2>/dev/null || true)
+lock_display=$(sed -n 2p "$lock" 2>/dev/null || true)
+if [ "$lock_display" = "$display" ] && [ -n "$pid" ] &&
+   grep -q scottland-hyprshim "/proc/$pid/cmdline" 2>/dev/null; then
+  exit 0
+fi
+
+state=${XDG_STATE_HOME:-$HOME/.local/state}/scottland
+mkdir -p "$state"
+shim=${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-hyprshim
+echo "$(date +%T) reload: starting Hyprland shim for $display" >>"$state/hyprshim.log"
+setsid -f "$shim" </dev/null >/dev/null 2>>"$state/hyprshim.log"
+for _ in $(seq 50); do
+  new_pid=$(sed -n 1p "$lock" 2>/dev/null || true)
+  if [ -n "$new_pid" ] && [ "$new_pid" != "$pid" ] &&
+     grep -q scottland-hyprshim "/proc/$new_pid/cmdline" 2>/dev/null; then
+    exit 0
+  fi
+  sleep 0.1
+done
+echo "$(date +%T) reload: Hyprland shim did not start for $display" >>"$state/hyprshim.log"
+exit 1

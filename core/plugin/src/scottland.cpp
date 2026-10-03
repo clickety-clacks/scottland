@@ -824,6 +824,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> max_scale{"scottland/max_scale"};
     wf::option_wrapper_t<std::string> scale_curve_text{"scottland/scale_curve"};
     wf::option_wrapper_t<double> blend_width{"scottland/blend_width"};
+    wf::option_wrapper_t<double> center_opacity_focused{"scottland/center_opacity_focused"};
+    wf::option_wrapper_t<double> center_opacity_unfocused{"scottland/center_opacity_unfocused"};
+    wf::option_wrapper_t<double> side_opacity_focused{"scottland/side_opacity_focused"};
+    wf::option_wrapper_t<double> side_opacity_unfocused{"scottland/side_opacity_unfocused"};
+    wf::option_wrapper_t<double> widget_opacity_focused{"scottland/widget_opacity_focused"};
+    wf::option_wrapper_t<double> widget_opacity_unfocused{"scottland/widget_opacity_unfocused"};
+    wf::option_wrapper_t<double> window_mode_opacity_focused{"scottland/window_mode_opacity_focused"};
+    wf::option_wrapper_t<double> window_mode_opacity_unfocused{"scottland/window_mode_opacity_unfocused"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
@@ -913,6 +921,34 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return place_at(x, output->get_relative_geometry().width);
     }
 
+    void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_x = {})
+    {
+        if (!view || !view->is_mapped() || view->pending_fullscreen()) return;
+        auto frame = frame_of(view, false);
+        if (!frame) return;
+        bool focused = wf::get_core().seat->get_active_view() == view;
+        double target;
+        if (window_keys.active)
+            target = focused ? double(window_mode_opacity_focused) : double(window_mode_opacity_unfocused);
+        else if (is_widget(view))
+            target = focused ? double(widget_opacity_focused) : double(widget_opacity_unfocused);
+        else
+        {
+            auto output = view->get_output();
+            auto zone = center_x && output ? place_at(*center_x, output->get_relative_geometry().width).zone : placement_of(view).zone;
+            bool center = zone == zone_t::center;
+            target = center ? (focused ? double(center_opacity_focused) : double(center_opacity_unfocused)) :
+                (focused ? double(side_opacity_focused) : double(side_opacity_unfocused));
+        }
+        frame->set_configured_opacity(target);
+    }
+
+    void apply_all_opacity()
+    {
+        for (auto& any_view : wf::get_core().get_all_views())
+            if (auto view = wf::toplevel_cast(any_view)) apply_opacity(view);
+    }
+
     void apply(wayfire_view any_view)
     {
         auto view = wf::toplevel_cast(any_view);
@@ -925,6 +961,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (is_widget(view))
         {
             set_scale(view, 1.0);
+            apply_opacity(view);
             return;
         }
 
@@ -936,6 +973,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         set_scale(view, scale_for(view));
+        apply_opacity(view);
     }
 
     // Scale changes bigger than this animate; smaller ones (a drag moving through a continuous
@@ -1073,6 +1111,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             };
             frame->set_focused(wf::get_core().seat->get_active_view() == view);
             node->add_transformer(frame, wf::TRANSFORMER_2D, TRANSFORMER);
+            apply_opacity(view);
             view->damage();
         }
 
@@ -1201,6 +1240,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (auto frame = frame_of(toplevel, false))
                 {
                     frame->set_focused(view == active);
+                    apply_opacity(toplevel);
                 }
             }
         }
@@ -1659,7 +1699,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (raised && link->second.collapsed && link->second.docked())
             {
-                link->second.peek_attention_due = now_msec() + 5000;
+                link->second.peek_attention_due = now_msec() + uint32_t(widget_attention_peek_duration);
                 update_widget_peeks();
             }
             if (auto widget = wf::toplevel_cast(link->second.widget.lock()))
@@ -2136,6 +2176,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (auto frame = frame_of(widget))
             {
                 frame->alpha = hidden ? 0.0 : 1.0;
+                apply_opacity(widget);
                 frame->damage();
             }
         }
@@ -4386,7 +4427,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("scroll_y"))
         {
             if (!touch_pointer) touch_pointer = std::make_unique<virtual_pointer_t>();
-            touch_pointer->scroll(0, data["scroll_y"].as_double(),
+            // Virtual touchscreen scroll bypasses L17 by design. An explicit test
+            // touchpad follows the shipped compositor multiplier before Qt sees it.
+            double delta = data["scroll_y"].as_double();
+            if (data.has_member("touchpad") && data["touchpad"].as_bool())
+                delta *= double(touchpad_scroll_speed);
+            touch_pointer->scroll(0, delta,
                 data.has_member("wheel") && data["wheel"].as_bool());
         }
         if (data.has_member("touchpad_pointers"))
@@ -5396,6 +5442,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         auto zone_scale = [&] (double s) { return place_at(center_at(s), screen).scale; };
         model.drag.last_center = center_at(model.drag.target);
+        apply_opacity(view, model.drag.last_center);
 
         // Alt held while dragging: the window keeps the scale it has, wherever it goes, and keeps it
         // when dropped there (L31). Letting go of Alt mid-drag returns it to the zones.
@@ -5663,6 +5710,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto transformer = view->get_transformed_node()->get_transformer<
                 wf::scene::view_2d_transformer_t>(TRANSFORMER);
             entry["applied_scale"] = transformer ? transformer->scale_x : 1.0;
+            entry["opacity"] = transformer ? transformer->get_alpha() : 1.0;
             // Where it's going, as the desktop model publishes it, not a step of an animation.
             auto state = model.windows.find(view->get_id());
             entry["target_scale"] = state != model.windows.end() ? state->second.scale : 1.0;
@@ -5981,6 +6029,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         load_curve();
         scale_curve_text.set_callback([=] { load_curve(); apply_all(); });
         blend_width.set_callback([=] { apply_all(); });
+        center_opacity_focused.set_callback([=] { apply_all_opacity(); });
+        center_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
+        side_opacity_focused.set_callback([=] { apply_all_opacity(); });
+        side_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
+        widget_opacity_focused.set_callback([=] { apply_all_opacity(); });
+        widget_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
+        window_mode_opacity_focused.set_callback([=] { apply_all_opacity(); });
+        window_mode_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
         color_scheme.set_callback([=] { load_color_scheme(); });
         accent_color.set_callback([=] { load_color_scheme(); });
         attention_color.set_callback([=] { load_color_scheme(); });

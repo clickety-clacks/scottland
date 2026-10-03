@@ -114,8 +114,8 @@ SCOTTLAND_DEPLOY_DIR=Projects/scottland-key-layers tests/deploy.sh plumbus --tes
 `tests/key-layers-test.sh` starts and stops its own private headless session; it refuses to replace
 a running one. `tests/key-layers-test.py` injects real stipc key and pointer events into real GTK
 surfaces, including multiple toplevel/layer-shell surfaces sharing one client, and a sandboxed
-imported Lua shortcut. Artifacts are kept under the test machine's runtime directory.
-Use the deployment's `TMPDIR` and `SCOTTLAND_HEADLESS_DIR` as required by the coordinating brief.
+imported Lua shortcut. Current runs keep their artifacts under the checkout's `build/` and
+leave `XDG_RUNTIME_DIR` unchanged. Use a unique `SCOTTLAND_HEADLESS_DIR` under `build/`.
 
 Integrated validation on plumbus, 2026-10-01, code commit `756b8d7` (later merge `56b0cc1`
 adds only main's documentation):

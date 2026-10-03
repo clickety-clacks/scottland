@@ -97,7 +97,7 @@ def global_center(name):
 
 def two_outputs():
     ipc('wayfire/set-config-options',{'scottland/sounds':False,'scottland/key_impulse':1200.0,
-        'scottland/key_friction':608.0,'scottland/key_restitution':.5,'scottland/alt_hold_delay':100})
+        'scottland/key_friction':608.0,'scottland/alt_hold_delay':100})
     outputs=sorted(ipc('window-rules/list-outputs'),key=lambda o:o['geometry']['x'])
     check(len(outputs)==2,'crossing fixture has two isolated outputs')
     left,right=outputs; lg,rg=left['geometry'],right['geometry']
@@ -157,7 +157,7 @@ try:
         check(abs(original[0]-end[0]-distance)<1 and abs(original[1]-end[1]-distance)<1,'two arrow axes coast diagonally and independently')
 
         pad=32/3+5
-        ipc('wayfire/set-config-options',{'scottland/key_impulse':1000.0,'scottland/key_restitution':.5})
+        ipc('wayfire/set-config-options',{'scottland/key_impulse':1000.0})
         for code,sign in [('UP',-1),('DOWN',1)]:
             drag('InertiaA',w/2,h/2); hold(); tap(code); release()
             samples=[]; start=time.monotonic()
@@ -217,7 +217,7 @@ try:
         check(f['x']+f['width']/2>origin[0]+1,'Esc during widget startup retains the return glide')
         coast(.8); release()
         check(not state('InertiaA')['widgetized'] and near(center(state('InertiaA')),origin,2),'Esc during inertial widget startup restores window form and position')
-        ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0,'scottland/key_restitution':.5})
+        ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0})
 
         drag('InertiaA',w/2,h/2); hold(); key('LEFT',True)
         samples=[]
@@ -284,13 +284,13 @@ try:
         check(abs(center(state('InertiaA'))[0]-before[0]-100**2/(2*240))<1,'live impulse/friction/maximum settings control the coast')
         ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0,'scottland/key_friction':608.0,'scottland/key_max_velocity':6000.0})
         # L20 rounds pixel positions for odd client sizes; it must not drift after settling.
-        ipc('wayfire/set-config-options',{'scottland/key_impulse':(2*608*91)**.5})
+        ipc('wayfire/set-config-options',{'scottland/resize_impulse':(2*608*91)**.5})
         before=state('InertiaA'); hold(); key('LEFTCTRL',True); tap('RIGHT'); key('LEFTCTRL',False); release(); coast()
         after=state('InertiaA')
         print('odd resize centers:',center(before),center(after),before['geometry'],after['geometry'],flush=True)
         coast(.5); settled=state('InertiaA')
         check(near(center(before),center(after),1) and abs(after['geometry']['width']-before['geometry']['width']-91)<1 and after['geometry']==settled['geometry'],'odd-size resize keeps its center within L20 rounding and stays settled')
-        ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0})
+        ipc('wayfire/set-config-options',{'scottland/resize_impulse':335.0})
         # An arrow is an explicit movement request; wait for fullscreen exit geometry first.
         ipc('wm-actions/set-fullscreen',{'view_id':a,'state':True}); coast(.4)
         hold(); tap('RIGHT'); release(); coast(1.2)

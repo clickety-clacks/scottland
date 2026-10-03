@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Choose the configured Omarchy day/night theme for Scottland's solar preference.
+
+A current theme whose light/dark mode already matches is never replaced.
+"""
+import configparser
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))
+mode_file = Path(os.environ.get("SCOTTLAND_SOLAR_MODE_FILE", str(state/"scottland"/(os.environ.get("WAYLAND_DISPLAY", "wayland")+".solar-mode"))))
+current = Path(os.environ.get("SCOTTLAND_OMARCHY_CURRENT", str(state/"omarchy/current")))
+config_file = Path(os.environ.get("SCOTTLAND_OMARCHY_SOLAR_FILE",
+                                  str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/omarchy-solar.ini")))
+
+
+def themes():
+    cfg = configparser.ConfigParser()
+    cfg.read(config_file)
+    section = cfg["themes"] if cfg.has_section("themes") else {}
+    return {"light": section.get("day", "Nasa2043"), "dark": section.get("night", "Nord")}
+
+
+def run_once():
+    if not mode_file.is_file():
+        return "off"
+    desired = mode_file.read_text().strip()
+    if desired not in ("light", "dark"):
+        return "off"
+    colors = current/"theme/colors.toml"
+    result = subprocess.run(["omarchy-theme-color", "--file", str(colors), "mode"],
+                            capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.strip().lower() == desired:
+        return "kept"
+    target = themes()[desired]
+    subprocess.run(["omarchy", "theme", "set", target], check=True)
+    return target
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "once":
+        print(run_once())
+    else:
+        while True:
+            try:
+                run_once()
+            except (OSError, subprocess.CalledProcessError) as error:
+                print(f"scottland-omarchy-solar-theme: {error}", file=sys.stderr)
+            time.sleep(10)

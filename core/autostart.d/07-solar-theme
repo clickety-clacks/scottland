@@ -1,0 +1,3 @@
+#!/bin/sh
+# Follow sunrise and sunset if the user enabled it in Scottland Settings.
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-solar-theme" watch

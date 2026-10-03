@@ -58,7 +58,10 @@ def view_id_from_address(text):
 
 class Log:
     def __init__(self):
-        state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+        # The headless harness supplies an explicit state path so its shim can never append
+        # unsupported requests or reconnect diagnostics to the user's live shim log.
+        state = (os.environ.get("SCOTTLAND_TEST_STATE") or os.environ.get("XDG_STATE_HOME")
+                 or os.path.expanduser("~/.local/state"))
         os.makedirs(os.path.join(state, "scottland"), exist_ok=True)
         self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1)
         self.seen = set()
@@ -82,7 +85,9 @@ class Wayfire:
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
-        self.sock = self._connect()
+        self.sock = None
+        self.event_sock = None
+        self.event_lock = threading.Lock()
 
     def _connect(self):
         sock = socket.socket(socket.AF_UNIX)
@@ -113,15 +118,60 @@ class Wayfire:
 
     def call(self, method, data=None):
         with self.lock:
-            self.send(self.sock, method, data)
-            return self.receive(self.sock)
+            # A config/plugin reload may close existing Wayfire IPC clients without changing
+            # the socket path. Reopen the connection and retry this request while the Hyprland
+            # listener stays up. A later request can retry if Wayfire itself is still down.
+            for attempt in range(2):
+                try:
+                    if self.sock is None:
+                        self.sock = self._connect()
+                    self.send(self.sock, method, data)
+                    return self.receive(self.sock)
+                except (ConnectionError, OSError) as error:
+                    log(f"wayfire query IPC closed: {error!r}; reconnecting")
+                    if self.sock is not None:
+                        self.sock.close()
+                    self.sock = None
+                    if attempt:
+                        raise
 
     def events(self):
-        sock = self._connect()
-        self.send(sock, "window-rules/events/watch")
-        self.receive(sock)
         while True:
-            yield self.receive(sock)
+            sock = None
+            try:
+                sock = self._connect()
+                with self.event_lock:
+                    self.event_sock = sock
+                self.send(sock, "window-rules/events/watch")
+                self.receive(sock)
+                while True:
+                    yield self.receive(sock)
+            except (ConnectionError, OSError) as error:
+                log(f"wayfire event IPC closed: {error!r}; reconnecting")
+            finally:
+                with self.event_lock:
+                    if self.event_sock is sock:
+                        self.event_sock = None
+                if sock is not None:
+                    sock.close()
+            time.sleep(0.25)
+
+    def drop_connections_for_test(self):
+        """Simulate Wayfire closing both IPC clients, only in isolated test sessions."""
+        with self.lock:
+            if self.sock is not None:
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                self.sock.close()
+                self.sock = None
+        with self.event_lock:
+            if self.event_sock is not None:
+                try:
+                    self.event_sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
 
 class Translator:
@@ -345,6 +395,9 @@ class Translator:
         return json.dumps(reply, indent=4) if as_json else self.plain(command, reply)
 
     def query(self, command, args, as_json=False):
+        if command == "scottland-test-drop-ipc" and os.environ.get("SCOTTLAND_TEST_MODEL") == "1":
+            self.wf.drop_connections_for_test()
+            return "ok"
         if command == "monitors":
             return self.monitors()
         if command == "workspaces":
@@ -487,7 +540,7 @@ class Server:
             self.listeners = alive
 
     def pump_events(self):
-        state = {"output": self.translator.focused_output_id()}
+        state = {"output": None}
         for event in self.translator.wf.events():
             try:
                 self.broadcast(self.translator.event_lines(event, state))
@@ -506,16 +559,7 @@ def main():
     directory = os.path.join(runtime, "hypr", signature)
     os.makedirs(directory, mode=0o700, exist_ok=True)
 
-    wayfire = None
-    for _ in range(50):  # wayfire may still be setting up its IPC socket
-        try:
-            wayfire = Wayfire(wayfire_socket)
-            break
-        except OSError:
-            time.sleep(0.1)
-    if wayfire is None:
-        sys.exit(f"scottland-hyprshim: cannot connect to {wayfire_socket}")
-
+    wayfire = Wayfire(wayfire_socket)
     server = Server(Translator(wayfire), directory)
     requests, events = server.listen(".socket.sock"), server.listen(".socket2.sock")
     with open(os.path.join(directory, "hyprland.lock"), "w") as lock:
@@ -524,10 +568,7 @@ def main():
 
     threading.Thread(target=server.serve_requests, args=(requests,), daemon=True).start()
     threading.Thread(target=server.serve_events, args=(events,), daemon=True).start()
-    try:
-        server.pump_events()  # returns only when Wayfire goes away
-    except (ConnectionError, OSError) as error:
-        log(f"wayfire IPC closed: {error!r}")
+    server.pump_events()  # reconnects without dropping the two Hyprland listeners
 
 
 if __name__ == "__main__":

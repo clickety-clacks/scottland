@@ -17,9 +17,10 @@
 #     windows) must not restart the real desktop's services
 set -uo pipefail
 
-seconds=${1:-20}
-out=${2:-$(mktemp -d -t scottland-probe.XXXXXX)}
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+seconds=${1:-20}
+mkdir -p "$repo/build"
+out=${2:-$(mktemp -d "$repo/build/shell-probe.XXXXXX")}
 config_source=${SCOTTLAND_CONFIG:-$repo/core/config/scottland.ini}
 shim=${PROBE_SHIM:-}
 [[ -n $shim ]] && shim=$(realpath "$shim")
@@ -27,6 +28,13 @@ shim=${PROBE_SHIM:-}
 mkdir -p "$out"/{home/.config/omarchy,home/.local/state/omarchy,home/.local/share,bin}
 rmdir "$out/home/.local/bin" 2>/dev/null || true
 sandbox=$out/home
+mkdir -p "$sandbox/.local/quickshell"
+cat >"$out/bin/quickshell" <<'WRAPPER'
+#!/bin/sh
+# Quickshell logs are large; bind only its log subtree into this probe's build directory.
+exec bwrap --bind / / --bind "$XDG_STATE_HOME/../quickshell" "$XDG_RUNTIME_DIR/quickshell" -- /usr/bin/quickshell "$@"
+WRAPPER
+chmod +x "$out/bin/quickshell"
 
 # Plugins that manage the real desktop's services or single-instance windows stay out of the probe:
 # Tightbeam decisions reaches its live window host through Quickshell IPC and restarts its unit.
