@@ -48,6 +48,10 @@ class goo_node_t : public wf::scene::node_t
     goo::screen_t state;
     wf::wl_timer<true> tick, breath_tick;
     uint64_t breath_ticks = 0;
+    float breath_hold = -1; // tests hold the breath at a value; negative follows the clock
+    // GO18: the strips shrink to the liquid actually inside them once the goo sleeps.
+    bool breath_tight = true, breath_loose = false;
+    float current_breath() const { return breath_hold >= 0 ? breath_hold : goo::attention_breath(now()); }
     wf::regionf_t breath_area;
     wf::effect_hook_t pre;
     double last_change = now(), last_step = 0;
@@ -201,14 +205,17 @@ class goo_node_t : public wf::scene::node_t
         }
         for (auto &b : bands()) visible |= b;
         breath_area = support & visible & get_bounding_box();
+        breath_loose = true;
         breath_tick.disconnect();
         state.breath = 0;
         if (breath_area.empty()) return;
-        state.breath = goo::attention_breath(now());
+        state.breath = current_breath();
         // 125 samples per breath. The maximum light step is below 0.8% and the
         // preset's moving contour advances less than 0.09 logical pixels/tick.
         breath_tick.set_timeout(40, [this] {
-            state.breath = goo::attention_breath(now());
+            state.breath = current_breath();
+            if (state.sleeping && breath_loose && breath_tight)
+                tighten_breathing();
             if (state.sleeping)
                 for (auto &b : breath_area)
                     wf::scene::damage_node(shared_from_this(), wf::geometry_t{
@@ -216,6 +223,43 @@ class goo_node_t : public wf::scene::node_t
             ++breath_ticks;
             return true;
         });
+    }
+    // The support strips are sized for the farthest the liquid could reach; most of each is
+    // dry. Sample the settled field at the top of the breath (the widest shore) and keep
+    // only each strip's wet part, so a tick repaints and composites just that. The strips
+    // stay as few rectangles: outputs collapse long damage lists into one bounding box.
+    void tighten_breathing()
+    {
+        breath_loose = false;
+        constexpr double step = 4;
+        // Half the threshold is over 5 pt beyond the shore even on the thinnest film, more
+        // than the lattice spacing; the padding covers reconstruction and antialiasing.
+        const float wet = .5f * state.settings.threshold();
+        const double padding = step + 5 + 1. / state.output->handle->scale;
+        wf::regionf_t tight;
+        for (auto &b : breath_area)
+        {
+            double x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+            for (double y = b.y1; y < b.y2 + step; y += step)
+                for (double x = b.x1; x < b.x2 + step; x += step)
+                {
+                    glm::vec2 point{std::min<double>(x, b.x2), std::min<double>(y, b.y2)};
+                    if (goo::density(point, state.sources, state.settings, state.time, 1) < wet)
+                        continue;
+                    x1 = std::min<double>(x1, point.x);
+                    y1 = std::min<double>(y1, point.y);
+                    x2 = std::max<double>(x2, point.x);
+                    y2 = std::max<double>(y2, point.y);
+                }
+            if (x2 < x1)
+                continue;
+            x1 = std::max<double>(std::floor(x1 - padding), b.x1);
+            y1 = std::max<double>(std::floor(y1 - padding), b.y1);
+            x2 = std::min<double>(std::ceil(x2 + padding), b.x2);
+            y2 = std::min<double>(std::ceil(y2 + padding), b.y2);
+            tight |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
+        }
+        breath_area = tight;
     }
     void wake()
     {
@@ -531,6 +575,26 @@ struct goo_t::impl
                 damage.append(r);
             }
             s["breath_damage"] = damage;
+            s["breath_refreshes"] = (int64_t)n->state.renderer.breath_refreshes;
+            s["breath_keys"] = (int64_t)n->state.renderer.breath_key_values.size();
+            auto key_values = wf::json_t::array();
+            for (float value : n->state.renderer.breath_key_values)
+                key_values.append((double)value);
+            s["breath_key_values"] = key_values;
+            if (getenv("SCOTTLAND_TEST_MODEL"))
+            {
+                // Test sessions compare interpolated keys with the exact surface at a held breath.
+                if (data.has_member("breath_hold") && (data["breath_hold"].is_int() || data["breath_hold"].is_double()))
+                    n->breath_hold = data["breath_hold"].as_double();
+                if (data.has_member("breath_exact") && data["breath_exact"].is_bool())
+                    n->state.renderer.breath_exact = data["breath_exact"].as_bool();
+                if (data.has_member("breath_tight") && data["breath_tight"].is_bool() &&
+                    n->breath_tight != data["breath_tight"].as_bool())
+                {
+                    n->breath_tight = data["breath_tight"].as_bool();
+                    n->update_breathing();
+                }
+            }
             s["packed"] = n->state.renderer.packed;
             s["overlapping"] = n->state.renderer.overlapping();
             s["highlighting"] = n->state.renderer.highlighting();

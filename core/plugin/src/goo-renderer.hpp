@@ -28,6 +28,11 @@ class renderer_t
     float energy = 1, wave_energy = 1, dye_energy = 1;
     double last_step_ms = 0, last_gpu_ms = 0, last_draw_gpu_ms = 0;
     uint64_t steps = 0;
+    // GO18: full-shader refreshes of the breathing strips, and the breath keys in use
+    // (empty while every tick is refreshed exactly: nothing breathing, or breath_exact).
+    uint64_t breath_refreshes = 0;
+    std::vector<float> breath_key_values;
+    bool breath_exact = false;
     bool packed = false;
 
   private:

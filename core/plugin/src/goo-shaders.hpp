@@ -346,6 +346,29 @@ void main(){
   gl_FragColor=vec4(color*intrinsic.a,intrinsic.a);
 }
 )";
+// GO18: inside breathing strips two cached layers hold the surface at neighboring keys
+// of the breath. Composite each over the backdrop and cross-fade the premultiplied
+// results, so a shore present in only one layer fades in rather than darkening.
+inline const std::string cached_composite_mix_shader = R"(
+precision highp float;
+varying vec2 pos;
+uniform sampler2D uIntrinsic,uRefraction,uIntrinsicB,uRefractionB,uBackground;
+uniform mat4 uBackgroundMap;
+uniform float uMix;
+vec4 layer(vec4 intrinsic,vec4 refr){
+  if(intrinsic.a<=0.)return vec4(0.);
+  vec2 shifted=pos+(refr.rg-.5)*32.;
+  vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
+  vec3 color=clamp(intrinsic.rgb+refr.b*1.5*texture2D(uBackground,bgUV).rgb,0.,1.);
+  return vec4(color*intrinsic.a,intrinsic.a);
+}
+void main(){
+  vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
+  vec4 a=texture2D(uIntrinsic,uv),b=texture2D(uIntrinsicB,uv);
+  if(a.a<=0.&&b.a<=0.)discard;
+  gl_FragColor=mix(layer(a,texture2D(uRefraction,uv)),layer(b,texture2D(uRefractionB,uv)),uMix);
+}
+)";
 // Max-reduction of changes in dye and wave energy, read back as a single pixel every 30 steps.
 inline const std::string energy_shader = common + R"(
 uniform sampler2D uWave,uDyeTex,uPrevious,uReduce;
