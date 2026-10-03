@@ -55,7 +55,9 @@ extern "C" {
 #include <xkbcommon/xkbcommon.h>
 
 #include "frame.hpp"
+#include "drag-presentation.hpp"
 #include "live-drag.hpp"
+#include "rail-make-room.hpp"
 #include "placement.hpp"
 #include "cycle-spring.hpp"
 #include "declutter.hpp"
@@ -1289,6 +1291,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             auto disappearing_card = link_of_widget(toplevel);
             bool lost_entry = disappearing_card && entering_widget(disappearing_card->window_id);
+            if (model.drag.rail.presentation.is_active() &&
+                model.drag.rail.presentation.contains(toplevel->get_id()))
+                cancel_rail_drag();
+            if (pending_drag_layout && pending_drag_layout->contains(toplevel->get_id()))
+            {
+                set_drag_layout_offset(toplevel, 0, 0);
+                pending_drag_layout->forget(toplevel->get_id());
+                pending_drag_layout->finalize_targets();
+                if (pending_drag_layout->empty()) pending_drag_layout.reset();
+            }
             stop_widget_transition(toplevel);
             model.windows.erase(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
@@ -1441,6 +1453,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         int ticks = 0;
         double shown_w = 0, shown_h = 0;
     };
+    struct rail_drag_t
+    {
+        scottland::rail::solver_t solver;
+        scottland::drag_presentation_t presentation;
+        wf::output_t *output = nullptr;
+        uint64_t dragged = 0;
+        bool left = false;
+        double top = 0, bottom = 0;
+        bool active = false;
+    };
     // One drag session owns the Esc origin, re-grab chain, morph and temporarily raised view.
     // The live drag controller and animation timers remain renderer/input resources.
     struct drag_session_t
@@ -1459,6 +1481,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint32_t last_drop_at = 0;
         std::optional<wf::pointf_t> input_override;
         std::optional<drag_morph_t> morph;
+        rail_drag_t rail;
     };
 
     struct desktop_model_t
@@ -1474,6 +1497,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
+    // A committed audition keeps its visual offsets until each Wayfire geometry transaction
+    // applies. Only one small, capped commit can be outstanding; a later drag can still proceed.
+    std::optional<scottland::drag_presentation_t> pending_drag_layout;
 
     // Visible rectangle including input/hint presentation transforms, in output coordinates.
     scottland::rectf_t scene_rectangle(wayfire_toplevel_view view, wf::output_t *output)
@@ -2913,6 +2939,207 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             wf::get_core().tx_manager->schedule_object(view->toplevel());
             publish_model();
+        }
+    }
+
+    void set_drag_layout_offset(wayfire_toplevel_view view, double dx, double dy)
+    {
+        auto frame = view ? frame_of(view, false) : nullptr;
+        if (!frame || (std::abs(frame->drag_layout_x - dx) < 0.0001 &&
+            std::abs(frame->drag_layout_y - dy) < 0.0001)) return;
+        frame->damage();
+        frame->drag_layout_x = dx;
+        frame->drag_layout_y = dy;
+        frame->damage();
+        view->damage();
+    }
+
+    wayfire_toplevel_view model_view(uint64_t id)
+    {
+        auto found = model.windows.find(id);
+        return found == model.windows.end() ? nullptr : wf::toplevel_cast(found->second.view.lock());
+    }
+
+    void clear_rail_drag()
+    {
+        auto& rail = model.drag.rail;
+        for (size_t i = 0; i < rail.presentation.size(); ++i)
+        {
+            set_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, 0);
+        }
+        rail.presentation.clear();
+        rail.solver = {};
+        rail.output = nullptr;
+        rail.dragged = 0;
+        rail.left = false;
+        rail.top = rail.bottom = 0;
+        rail.active = false;
+    }
+
+    bool begin_rail_drag(wf::output_t *output, bool left, uint64_t dragged)
+    {
+        clear_rail_drag();
+        auto& rail = model.drag.rail;
+        // Use the session count as a constant-time upper bound before collecting/sorting any
+        // actors. The solver and presentation layer each enforce the same cap defensively.
+        if (!output || model.widgets.size() > scottland::rail::MAX_ACTORS ||
+            (pending_drag_layout && pending_drag_layout->is_committing())) return false;
+
+        std::vector<scottland::rail::interval_t> intervals;
+        std::vector<scottland::drag_actor_position_t> origins;
+        intervals.reserve(model.widgets.size());
+        origins.reserve(model.widgets.size());
+        for (auto& [window_id, link] : model.widgets)
+        {
+            if (window_id == dragged || !link.docked() || link.output != output ||
+                link.rail != (left ? "left" : "right") || link.away) continue;
+            auto widget = wf::toplevel_cast(link.widget.lock());
+            if (!widget || !widget->is_mapped() || widget->get_output() != output) continue;
+            auto rect = scene_rectangle(widget, output);
+            if (rect.height() <= 0) continue;
+            auto geometry = widget->get_geometry();
+            intervals.push_back({widget->get_id(), rect.y1, rect.y2});
+            origins.push_back({widget->get_id(), (double)geometry.x, (double)geometry.y});
+        }
+
+        // WG4's widget placement inset defines the usable rail span for both the solver and drop.
+        auto area = output->workarea->get_workarea();
+        double top = area.y + WIDGET_INSET;
+        double bottom = area.y + area.height - WIDGET_INSET;
+        if (bottom < top || !rail.solver.begin(intervals) ||
+            !rail.presentation.begin(origins, scottland::rail::MAX_ACTORS)) return false;
+
+        rail.output = output;
+        rail.dragged = dragged;
+        rail.left = left;
+        rail.top = top;
+        rail.bottom = bottom;
+        rail.active = true;
+        return true;
+    }
+
+    void update_rail_drag(wayfire_toplevel_view dragged, wf::output_t *output)
+    {
+        if (!dragged || !output || !model.drag.morph || !morph_widget_shaped() ||
+            !dragged->is_mapped() || (pending_drag_layout && pending_drag_layout->is_committing()))
+        {
+            clear_rail_drag();
+            return;
+        }
+
+        double screen_width = output->get_relative_geometry().width;
+        bool left = model.drag.morph->center_x < screen_width / 2.0;
+        auto link = is_widget(dragged) ? link_of_widget(dragged) : link_of_window(dragged);
+        uint64_t dragged_window = link ? link->window_id : dragged->get_id();
+        auto& rail = model.drag.rail;
+        if (!rail.active || rail.output != output || rail.left != left || rail.dragged != dragged_window)
+        {
+            if (!begin_rail_drag(output, left, dragged_window)) return;
+        }
+
+        auto item = scene_rectangle(dragged, output);
+        if (item.height() <= 0) return;
+        rail.solver.solve(item.y1, item.y2, rail.top, rail.bottom);
+        auto& shifts = rail.solver.shifts();
+        for (size_t i = 0; i < rail.presentation.size(); ++i)
+        {
+            double dy = i < shifts.size() ? shifts[i] : 0;
+            rail.presentation.set_offset(i, 0, dy);
+            set_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, dy);
+        }
+    }
+
+    void cancel_rail_drag()
+    {
+        clear_rail_drag();
+    }
+
+    void commit_rail_drag()
+    {
+        auto& rail = model.drag.rail;
+        if (!rail.active || !rail.presentation.is_active())
+        {
+            clear_rail_drag();
+            return;
+        }
+
+        rail.presentation.commit();
+        std::vector<scottland::drag_actor_position_t> moves;
+        moves.reserve(rail.presentation.size());
+        for (size_t i = 0; i < rail.presentation.size(); ++i)
+        {
+            auto actor = rail.presentation.actor(i);
+            int x = std::lround(actor.target_x);
+            int y = std::lround(actor.target_y);
+            rail.presentation.set_target(i, x, y);
+            actor = rail.presentation.actor(i);
+            auto view = model_view(actor.id);
+            if (!view || !view->is_mapped())
+            {
+                rail.presentation.forget(actor.id);
+                set_drag_layout_offset(view, 0, 0);
+                continue;
+            }
+
+            set_drag_layout_offset(view, actor.dx, actor.dy);
+            if (actor.applied) continue;
+            if (auto link = link_of_widget(view)) link->drop.y += actor.dy;
+            moves.push_back({actor.id, (double)x, (double)y});
+        }
+        rail.presentation.finalize_targets();
+
+        if (!moves.empty() && rail.presentation.is_committing())
+        {
+            pending_drag_layout.emplace(std::move(rail.presentation));
+        }
+        bool any_target = !moves.empty();
+        rail.presentation.clear();
+        rail.solver = {};
+        rail.output = nullptr;
+        rail.dragged = 0;
+        rail.active = false;
+        for (const auto& move : moves)
+        {
+            auto view = model_view(move.id);
+            if (!view || !view->is_mapped())
+            {
+                if (pending_drag_layout) pending_drag_layout->forget(move.id);
+                continue;
+            }
+            auto state = model.windows.find(move.id);
+            if (state != model.windows.end())
+            {
+                state->second.geometry.x = move.x;
+                state->second.geometry.y = move.y;
+            }
+            if (auto link = link_of_widget(view))
+            {
+                if (auto window = wf::toplevel_cast(link->window.lock()); window && window->is_mapped())
+                {
+                    auto hidden = window->get_geometry();
+                    int hidden_y = std::lround(link->drop.y - hidden.height / 2.0);
+                    if (auto window_state = model.windows.find(window->get_id()); window_state != model.windows.end())
+                        window_state->second.geometry.y = hidden_y;
+                    window->move(hidden.x, hidden_y);
+                }
+            }
+            view->move(move.x, move.y);
+        }
+        if (pending_drag_layout && pending_drag_layout->is_committing())
+            pending_drag_layout->finalize_targets();
+        if (pending_drag_layout && pending_drag_layout->is_committing() && any_target)
+            publish_model();
+        else if (pending_drag_layout && !pending_drag_layout->is_committing()) pending_drag_layout.reset();
+    }
+
+    void finish_drag_layout(wayfire_toplevel_view view)
+    {
+        if (!pending_drag_layout || !view) return;
+        auto geometry = view->get_geometry();
+        if (pending_drag_layout->acknowledge(view->get_id(), geometry.x, geometry.y))
+        {
+            set_drag_layout_offset(view, 0, 0);
+            if (pending_drag_layout->empty()) pending_drag_layout.reset();
         }
     }
 
@@ -4911,6 +5138,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         frame->morph.snapshot_box   = model.drag.morph->snapshot_box;
         frame->morph.other_geometry = model.drag.morph->other_geometry;
         frame->damage();
+        if (drag->view == dragged && drag->current_output)
+            update_rail_drag(dragged, drag->current_output);
         dragged->damage();  // through the drag's own transform, so it repaints with the pointer still
         return true;
     }
@@ -5410,7 +5639,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (view && output && !view->pending_fullscreen())
         {
             update_drag_morph(view, output, ev->current_position);
+            update_rail_drag(view, output);
             publish_model();  // morph direction/center changes even when widget scale stays 1
+        } else
+        {
+            cancel_rail_drag();
         }
 
         if (!view || !output || view->pending_fullscreen() || is_widget(view))
@@ -5537,6 +5770,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             model.drag.cancelled = false;
             model.drag.input_override.reset();
+            cancel_rail_drag();
             if (main && main->is_mapped())
             {
                 cancel_drop(main);
@@ -5548,6 +5782,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.started = false;
             publish_model();
             return;
+        }
+
+        if (main && model.drag.started)
+        {
+            update_rail_drag(main, main->get_output());  // validate the final landing footprint
+            commit_rail_drag();
         }
 
         if (main)
@@ -5689,6 +5929,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (frame->presentation)
                     frame->presentation->geometry_applied(ev->old_geometry, view->get_geometry());
                 frame->damage_previous(ev->old_geometry);
+                finish_drag_layout(view);
                 frame->damage();
             }
 
