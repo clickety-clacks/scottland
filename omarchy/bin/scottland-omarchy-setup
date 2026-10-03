@@ -3,9 +3,9 @@
 # Omarchy only reads menu additions from the user's extension file, so a package can't ship this.
 set -euo pipefail
 
+script_dir=$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")
 theme_source=${SCOTTLAND_OMARCHY_THEMES_DIR:-}
 if [[ -z $theme_source ]]; then
-  script_dir=$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")
   if [[ $script_dir == */omarchy/bin &&
         -d $script_dir/../themes/watercolor-dream-light &&
         -d $script_dir/../themes/watercolor-dream-dark ]]; then
@@ -70,3 +70,24 @@ for theme in "${themes[@]}"; do
     echo "Installed $theme at $destination."
   fi
 done
+
+# Generate and show the current report at setup. The adapter records the report digest so session
+# startup will not open the same content again. Prefer the active dev snapshot when present.
+hooks=${SCOTTLAND_HOOKS:-}
+if [[ -z $hooks || ! -x $hooks/config.d/50-omarchy-shortcuts ]]; then
+  dev_hooks=${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev
+  if [[ -x $dev_hooks/config.d/50-omarchy-shortcuts ]]; then
+    hooks=$dev_hooks
+  elif [[ -x $script_dir/../config.d/50-omarchy-shortcuts ]]; then
+    hooks=$(dirname "$script_dir")
+    export WAYFIRE_PLUGIN_XML_PATH="$hooks/../core/plugin/metadata${WAYFIRE_PLUGIN_XML_PATH:+:$WAYFIRE_PLUGIN_XML_PATH}"
+  else
+    hooks=/usr/lib/scottland
+  fi
+fi
+export SCOTTLAND_HOOKS=$hooks
+if [[ -x $hooks/config.d/50-omarchy-shortcuts ]]; then
+  "$hooks/config.d/50-omarchy-shortcuts" --report-only --show-pending
+else
+  echo "scottland-omarchy-setup: shortcut report generator not found under $hooks" >&2
+fi

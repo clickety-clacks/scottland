@@ -40,6 +40,10 @@ Omarchy menu > System > Switch Desktop (Super+Escape inside Scottland). The dial
 sessions keep running on separate VTs, and some apps may not work correctly. The machine
 boots into whichever session was used last.
 
+The adapter opens a plain-text report when it changes or cannot import shortcuts. By default it
+stays at `~/.local/state/scottland/omarchy-overrides.txt` (under `$XDG_STATE_HOME` when set); see
+[the report format and flavoring hook](docs/omarchy-overrides.md).
+
 By hand, from a text console (for example Ctrl+Alt+F3): `start-scottland`.
 
 Quit with Ctrl+Alt+Backspace or Super+Shift+Escape. Super+Enter opens a terminal.
