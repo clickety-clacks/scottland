@@ -80,6 +80,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 | GO20 | Only a change wakes the goo, and only liquid is worked on. (1) Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
+| GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
 
 ## Halo jobs with goo enabled
 
@@ -1830,3 +1831,87 @@ seven round-widget checks that fail on main.
 
 Not covered: fractional scale, two outputs, rotated outputs, a video wallpaper (it
 would be read back and wake on every frame, as it woke before), physical display.
+
+## GO21: exact under scale, rotation and two outputs (2026-10-03)
+
+Core. Astra built the same breath-damage idea independently (`goo-breath-damage-astra`)
+with two things this path lacked: the reuse decision made in device pixels, and pixel
+comparisons on frames the compositor renders by itself. Both are ported here; its branch
+is not merged.
+
+### What was wrong
+
+- **GO19's reuse did not hear other damage.** It listened for damage on the scene root,
+  but Wayfire's damage signal is emitted on the damaged node only and travels through
+  render instances, not up the tree. So the only guard was "all of this frame's damage
+  lies in the strips". A change wholly inside a strip (one terminal cell under a
+  breathing window's film) was painted over with the cached backdrop until the
+  once-a-second normal frame. This is in the build installed on osanwe (`30514ff`) and in
+  GO20: a stale patch for up to a second, only for changes that small.
+- **The comparison was in logical pixels with a one-pixel allowance**, and the claimed
+  region was the logical strips, not the device pixels the output had damaged.
+- **More than twenty damage rectangles collapse to their bounding box** in the output's
+  damage ring. GO20's dry-content exclusion fragmented the strips past that in some
+  scenes, which made every breath repaint the whole box and never reuse the backdrop.
+- GO19's and GO20's own equality checks used screenshots, which can force a full
+  repaint and so may not have looked at a reused frame.
+
+### What changed
+
+- A render-instance manager over this output's background, bottom, workspace, top and
+  unmanaged layers reports damage beneath the goo (Astra's approach); the scene root's
+  update signal counts as damage too. The goo's own breathing tick is excluded.
+- The reuse test maps the frame's damage and the strips to framebuffer pixels through the
+  render target, requires the first inside the second, and claims exactly the damaged
+  pixels (mapped back through the target). The restore already ran over those pixels.
+- Reuse is refused unless the target is 8-bit XRGB/ARGB/XBGR/ABGR with an sRGB transfer
+  function and has the geometry, scale and transform the backdrop was copied under.
+- The strips are merged, least added area first, until the banded region has at most 16
+  rectangles. Where that covers dry content, the backdrop is kept current there.
+- `goo-state` adds `reuse_blocked`: why the last frame took the normal path.
+- Test sessions can ask for the next frame an output renders on its own
+  (`layout-state {"capture_next_frame": "OUTPUT"}`, written to
+  `$SCOTTLAND_TEST_STATE/render-frame.ppm`), after Astra's hook, per output.
+
+The settled region (GO20) and the dry-content exclusion needed no change: they shrink
+logical regions that are rounded outward to device pixels where used, and the shader
+decides each pixel analytically. The matrix below checks them anyway.
+
+### `tests/goo-exact-test.sh`
+
+A back terminal with text, a breathing window over it, a focused window over that, a
+static wallpaper. For keyframe and exact modes, at breath 0, 0.37 and 1, natural frames
+are compared with one optimization off and on: backdrop reuse (the reused capture is
+accepted only if every goo draw in its interval reused), dry content, settled region.
+Then, with reuse on: one terminal cell under the breathing window's film toggles (damage
+wholly inside the strips), and a line of text changes under the film; each is captured
+within a quarter second and compared with a repainted frame. `--outputs 2` puts the
+scene's output at layout x=800 beside a second output whose terminal prints twenty times
+a second, and also requires reuse to stay active. `--negative-control` makes the goo deaf
+to other damage: the cell checks then fail (37-44 pixels differ), which is what GO19 did.
+
+| Configuration | Result |
+|---|---|
+| Scale 1, 1.25, 1.5, 2 | 27 / 27 each |
+| Rotation 90, 180, 270 | 27 / 27 each |
+| Rotation 90 at scale 1.5; 270 at 1.25 | 27 / 27 each |
+| Packed GLES 2: scale 1; 1.5; rotation 90 at 1.25 | 27 / 27 each |
+| Two outputs: scale 1; 1.5; rotation 270 at 1.25 | 28 / 28 each |
+| Negative control | the four cell checks fail, as intended |
+
+That is 408 comparisons and checks across 15 configurations, on plumbus's RX 580,
+headless outputs.
+
+Cost is unchanged from GO20 on the same fixtures: window breathing 0.7% in keyframe and
+exact modes with 127 of 132 frames reusing the backdrop; a front window redrawing at
+120 Hz copies 99,000 px and composites 89,000 px per frame; identical wallpaper
+recommits wake nothing.
+
+Regression on plumbus, normal and packed GLES 2 paths: goo-test 50/50, overlap/hover
+28/28, breathing 12/12, depth/soak 26/26 on both; flow on two outputs 12/12; widget morph
+270/270; widgets 194/194; the idle fixture's `--verify --visual` run passes. goo-shape is
+123 pass, 7 fail on both paths, the same round-widget checks as on main.
+
+Not covered: a physical display, 10-bit or HDR outputs (reuse is refused there by the
+format check, which no test exercises), widgets' alpha-shaped sources in the exactness
+scene, mixed scales across two outputs.

@@ -7,6 +7,11 @@
 #include <cstring>
 #include <wayfire/scene-render.hpp>
 #include <wayfire/util/log.hpp>
+#include <drm_fourcc.h>
+extern "C" {
+#include <wlr/types/wlr_buffer.h>
+#include <wlr/render/dmabuf.h>
+}
 
 namespace scottland::goo
 {
@@ -58,6 +63,9 @@ struct renderer_t::impl
     settings_t settings;
     bool overlap = false, controls = false, fast = true, has_wallpaper = false;
     bool cache_valid = false, cache_dirty = true, cache_available = true;
+    wf::geometry_t backdrop_geometry{};
+    float backdrop_scale = 0;
+    wl_output_transform backdrop_transform = WL_OUTPUT_TRANSFORM_NORMAL;
     static constexpr int exact_key = -2;
     int layer_key[2] = {-1, -1};
     bool layer_b_available = true, requested_keyframes = false, use_keyframes = false;
@@ -607,6 +615,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     auto &bg = p->background;
     if (!bg.texture || bg.width != viewport[2] || bg.height != viewport[3])
         bg.allocate(viewport[2], viewport[3], true, p->es3, false);
+    p->backdrop_geometry = data.target.geometry;
+    p->backdrop_scale = data.target.scale;
+    p->backdrop_transform = data.target.wl_transform;
     glBindTexture(GL_TEXTURE_2D, bg.texture);
     // Keep a backdrop cache: outside this pass's damage the framebuffer still contains
     // last frame's goo/windows. Copying all of it would feed those colors back into refraction.
@@ -922,9 +933,21 @@ glm::vec4 renderer_t::sample_at(glm::vec2 point)
     return result;
 }
 bool renderer_t::overlapping() const { return p->overlap; }
-bool renderer_t::backdrop_ready() const
+bool renderer_t::backdrop_ready(const wf::render_target_t &target) const
 {
-    return p->ready && p->background.texture && p->cache_valid && !p->cache_dirty;
+    // The backdrop cache is RGBA8: it stands in for scene pixels losslessly only on an
+    // ordinary 8-bit SDR target, and only one with the mapping it was copied under.
+    wlr_dmabuf_attributes attrs{};
+    if (target.get_output_transfer_function() != WLR_COLOR_TRANSFER_FUNCTION_SRGB ||
+        !wlr_buffer_get_dmabuf(target.get_buffer(), &attrs) ||
+        (attrs.format != DRM_FORMAT_XRGB8888 && attrs.format != DRM_FORMAT_ARGB8888 &&
+         attrs.format != DRM_FORMAT_XBGR8888 && attrs.format != DRM_FORMAT_ABGR8888))
+        return false;
+    auto size = target.get_size();
+    return p->ready && p->background.texture && p->cache_valid && !p->cache_dirty &&
+        p->background.width == size.width && p->background.height == size.height &&
+        p->backdrop_geometry == target.geometry && p->backdrop_scale == target.scale &&
+        p->backdrop_transform == target.wl_transform;
 }
 bool renderer_t::highlighting() const { return p->controls; }
 float renderer_t::wave_at(glm::vec2 point) { return sample_at(point).w; }
