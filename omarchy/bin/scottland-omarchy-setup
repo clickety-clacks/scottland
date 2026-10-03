@@ -3,7 +3,27 @@
 # Omarchy only reads menu additions from the user's extension file, so a package can't ship this.
 set -euo pipefail
 
+theme_source=${SCOTTLAND_OMARCHY_THEMES_DIR:-}
+if [[ -z $theme_source ]]; then
+  script_dir=$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")
+  if [[ $script_dir == */omarchy/bin &&
+        -d $script_dir/../themes/watercolor-dream-light &&
+        -d $script_dir/../themes/watercolor-dream-dark ]]; then
+    theme_source=$script_dir/../themes
+  else
+    theme_source=/usr/share/scottland-omarchy/themes
+  fi
+fi
+themes=(watercolor-dream-light watercolor-dream-dark)
+for theme in "${themes[@]}"; do
+  [[ -d $theme_source/$theme ]] || {
+    echo "scottland-omarchy-setup: missing shipped theme $theme in $theme_source" >&2
+    exit 1
+  }
+done
+
 menu=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc
+theme_dir=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/themes
 entries=(
   'system.scottland|  "system.scottland": {"icon":"󰍹","label":"Switch Desktop","description":"Scottland or Hyprland","action":"scottland-switch"},'
   'system.scottland-reload|  "system.scottland-reload": {"icon":"󰑓","label":"Reload Scottland","description":"Load updates in place","when":"printenv WAYFIRE_SOCKET >/dev/null","action":"scottland-reload"},'
@@ -39,3 +59,14 @@ then
   exit 1
 fi
 $backed_up && echo "Backup: $menu.bak.scottland" || echo "Omarchy menu already has the Scottland entries."
+
+mkdir -p "$theme_dir"
+for theme in "${themes[@]}"; do
+  destination=$theme_dir/$theme
+  if [[ -e $destination || -L $destination ]]; then
+    echo "Kept existing theme $theme at $destination."
+  else
+    cp -a -- "$theme_source/$theme" "$destination"
+    echo "Installed $theme at $destination."
+  fi
+done

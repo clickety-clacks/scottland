@@ -27,6 +27,7 @@ link-dev:
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
 	ln -sf $(CURDIR)/core/config/scottland.ini $(CONF)/scottland.ini
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
+	ln -sf $(CURDIR)/omarchy/bin/scottland-omarchy-setup $(HOME)/.local/bin/scottland-omarchy-setup
 	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
@@ -86,7 +87,7 @@ test-hooks: plugin
 
 dev-uninstall:
 	rm -rf $(DEV)
-	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland
+	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup
 
 package:
 	cd packaging/arch && makepkg -sif

@@ -23,7 +23,8 @@ with his blessing. Scottland is an independent project, not his.
 | `core/session/` | `scottland` | `start-scottland` launcher and login-session entry |
 | `omarchy/shim/` | `scottland-omarchy` | `scottland-hyprshim`: serves Hyprland's IPC sockets from Wayfire's IPC so the stock Omarchy shell, `hyprctl` and Quickshell run unmodified. Unsupported requests are logged to `~/.local/state/scottland/hyprshim.log` |
 | `omarchy/shell-plugins/` | `scottland-omarchy` | Replacements for Hyprland-only shell plugins (workspaces, displays) |
-| `omarchy/bin/` | `scottland-omarchy` | `scottland-switch` and per-user menu setup |
+| `omarchy/bin/` | `scottland-omarchy` | `scottland-switch` and setup for per-user menu entries and default themes |
+| `omarchy/themes/` | `scottland-omarchy` | Watercolor Dream Light and Dark Omarchy themes, installed per user when their names are available |
 | `omarchy/switch-dialog/` | `scottland-omarchy` | The Switch Desktop dialog (Quickshell, Omarchy theme) |
 | `omarchy/helper/` | `scottland-omarchy` | Root helper + polkit rule: sets the autologin session, starts sessions on their own VT |
 | `omarchy/hooks/` | `scottland-omarchy` | Crash guard: a Scottland session that dies in seconds boots Hyprland next time |

@@ -44,8 +44,9 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O8 | Injected shortcuts reach the focused window with only their own modifiers; a physically held Super does not leak in (universal copy sends plain Ctrl+C / Ctrl+Insert). | implemented (headless) |
 | O13 | Shortcuts a Hyprland config switches on and off (`:set_enabled()`, e.g. Ctrl+W remapped only while Chromium is focused) follow the focused window; while off, their keys pass through to the app unchanged (terminals keep Ctrl+W = delete word). | implemented |
 | O14 | Apps in Scottland get the environment Omarchy's Hyprland config sets with `hl.env` (e.g. `QT_QPA_PLATFORMTHEME=gtk3` for native file dialogs in Qt apps, Electron/Chromium Wayland hints, cursor size, compose file, theme colors, the user's own variables), read from the same config by the Lua host, and handed to user services as uwsm does; the variables naming the desktop stay Scottland's. | implemented |
-| O15 | Scottland's palette (widgets such as the default card) follows the Omarchy theme: background, foreground, muted, accent and alert colors from the current theme, switching live with `omarchy theme set` (the `accent.d` provider's `--palette`). | implemented |
-| O18 | When core Sunlight (S21) requests a day/night mode, the adapter checks the current Omarchy theme with `omarchy-theme-color --file <current>/theme/colors.toml mode` and runs `omarchy theme set` only if that mode is wrong. Adapter defaults are Nasa2043 by day and Nord by night; `~/.config/scottland/omarchy-solar.ini` can override them. A matching user-picked theme stays selected. | implemented (headless) |
+| O15 | Scottland's palette (widgets such as the default card) follows the Omarchy theme: background, foreground, muted, accent, alert and attention colors from the current theme, switching live with `omarchy theme set` (the `accent.d` provider's `--palette`). Attention reads the optional `attention = "#rrggbb"` key from `colors.toml` and falls back to `yellow`; the shipped Watercolor themes omit this key. | implemented (Plumbus isolated palette checks, 2026-10-03) |
+| O18 | When core Sunlight (S21) requests a day/night mode, the adapter checks the current Omarchy theme with `omarchy-theme-color --file <current>/theme/colors.toml mode` and runs `omarchy theme set` only if that mode is wrong. Adapter defaults are Watercolor Dream Light by day and Watercolor Dream Dark by night; `~/.config/scottland/omarchy-solar.ini` can override either choice, and an omitted value uses that shipped default. A matching user-picked theme stays selected. | implemented (Plumbus isolated test, 2026-10-03) |
+| O19 | `scottland-omarchy-setup` installs Watercolor Dream Light and Dark into the user's Omarchy theme directory only when each destination name is absent; an existing same-named theme is kept intact. The adapter package and dev-install snapshot ship the themes, including their `.aether-managed` markers; dev-install links the matching setup command from its snapshot. | implemented (Plumbus isolated config check, 2026-10-03) |
 | O17 | Full screen holds Omarchy's notifications (FS1): the `focus.d` hook turns the shell's do-not-disturb on while a fullscreen window is in front, and back off after; a do-not-disturb the user already had on stays on. | implemented (tests/omarchy-focus-test.sh, with a stand-in shell) |
 | O9 | A double-tap close shortcut (Super+W) is not turned into a single-press close. | implemented (left unmapped) |
 | O10 | Apps launched through Omarchy's launcher (uwsm-app) open in Scottland. | verified |
@@ -62,5 +63,22 @@ make tags appear to change without updating those readers.
 Mike's `~/.local/bin/omarchy-solar-theme` and its user timer stay in place until he chooses to
 switch. To switch, disable that user timer, enable Sunlight in Scottland Settings, enter fallback
 coordinates if Geoclue is unavailable, and optionally create
-`~/.config/scottland/omarchy-solar.ini` with `[themes]`, `day = Nasa2043`,
-`night = Nord`. The adapter reads these values on each check. Do not run both schedulers.
+`~/.config/scottland/omarchy-solar.ini` with `[themes]`, `day = watercolor-dream-light`,
+`night = watercolor-dream-dark` (or another theme pair). The adapter reads these values on each
+check. Do not run both schedulers.
+
+## Watercolor theme assets and verification
+
+Each original 2752×1728 sRGB PNG was identical between `preview.png` and its background file.
+The adapter stores one quality-95 WebP per theme and makes `preview.webp` a relative link to that
+background; Omarchy's theme picker and background selection enumerate WebP files. The light
+painting is 1,712,560 bytes (42.6 dB PSNR from the 8,769,559-byte PNG); the dark painting is
+1,722,764 bytes (41.2 dB from the 8,385,881-byte PNG). This avoids a second copy of each preview
+and reduces the pair from 34.3 MB of duplicated PNGs to 3.4 MB of image data. Side-by-side
+comparisons are under `build/part6-theme-candidates/`.
+
+On Plumbus, `tests/solar-test.py` passed **24 checks** for solar defaults and overrides, the optional
+attention-color fallback, theme setup, marker preservation and collision safety in a temporary
+config. `makepkg --nodeps` built both Arch packages; the 3,484,027-byte `scottland-omarchy` package
+contains both themes, `.aether-managed` markers and WebP previews. Package and test evidence is
+under `build/part6-plumbus/`.
