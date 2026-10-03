@@ -1,11 +1,18 @@
 # Notes for a Scottland distro
 
 Scottland is a desktop (a window manager on Wayfire) that installs on top of a distro (Omarchy, Ubuntu).
-A Scottland distro, if there is one, is a separate project: installer, package choices, default
+A Scottland distro is a separate project: installer, package choices, default
 configuration, update channel. It would depend on Scottland the way Omarchy depends on Hyprland.
 
 These are defaults that belong to such a distro rather than to Scottland's core, collected as they
 come up, so the decision isn't lost while there is nowhere better to put them.
+
+## Name
+
+**Gooarchy**, pronounced "goo-ah-shee" (Mike, 2026-10-03): goo, Arch and anarchy, after Omarchy, which
+DHH pronounces "om-ah-shee". The name was checked for collisions on 2026-10-03: no project or product
+by that name, GitHub name and the .com/.org domains unregistered. Public repository:
+[clickety-clacks/gooarchy](https://github.com/clickety-clacks/gooarchy).
 
 ## Defaults to ship
 
