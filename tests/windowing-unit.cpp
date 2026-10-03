@@ -73,7 +73,7 @@ int main()
         "a fully hidden rectangle has no visible interior before window movement");
     auto tiny_deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(1);
     bool deadline_hit = false, repeat_deadline_hit = false;
-    std::vector<exposure_window> easy_deadline_case{{{150,100,220,160},72,32}};
+    std::vector<exposure_window> easy_deadline_case{{{150,100,220,160},72,48}};
     auto deadline_result = expose_window_hints(easy_deadline_case, region, {}, tiny_deadline, &deadline_hit);
     auto repeated_deadline_result = expose_window_hints(easy_deadline_case, region, {}, tiny_deadline,
         &repeat_deadline_hit);
@@ -82,6 +82,16 @@ int main()
         near(deadline_result[0].offset, repeated_deadline_result[0].offset) &&
         near(deadline_result[0].spot.center, repeated_deadline_result[0].spot.center),
         "a forced tiny solve budget keeps a valid, deterministic no-move badge position");
+    std::vector<exposure_window> no_room_deadline_case{{{150,100,220,160},72,48,
+        {{140,90,240,180}},true}};
+    auto no_room_deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(1);
+    bool no_room_deadline_hit = false;
+    auto no_room_result = expose_window_hints(no_room_deadline_case, region, {},
+        no_room_deadline, &no_room_deadline_hit);
+    auto no_room_center = point{260,130};
+    check(no_room_deadline_hit && no_room_result.size() == 1 &&
+        no_room_result[0].diameter == 48 && near(no_room_result[0].spot.center, no_room_center),
+        "an expired search with no checked opening still returns a centered minimum-size hint");
     bool circle_optimum = true;
     for (int trial = 0; trial < 30; ++trial)
     {
@@ -102,45 +112,45 @@ int main()
     }
     check(circle_optimum,"visible label beats a dense independent circle-clearance reference grid");
     rectangle desktop{0,0,1280,720};
-    auto enough = expose_window_hints({{{320,160,700,440},132,32},{{100,160,700,440},132,32}},desktop);
+    auto enough = expose_window_hints({{{320,160,700,440},132,48},{{100,160,700,440},132,48}},desktop);
     check(near(enough[0].offset,{}) && near(enough[1].offset,{}) && enough[1].diameter == 132,
         "a rear window with an already wide enough left strip stays exactly put");
-    auto narrow = expose_window_hints({{{280,160,700,440},132,32},{{200,160,700,440},132,32}},desktop);
+    auto narrow = expose_window_hints({{{280,160,700,440},132,48},{{200,160,700,440},132,48}},desktop);
     check(near(narrow[0].offset,{}) && narrow[1].offset.x < -60 && narrow[1].offset.x > -65 &&
         std::abs(narrow[1].offset.y) < 1 && narrow[1].diameter == 132,
         "narrow left strip moves the rear window only far enough for its proportional circle");
     check(visible_clearance(narrow[1].spot.center,
         {200+narrow[1].offset.x,160,700,440},desktop,{{280,160,700,440}}) >= 132*1.06/2,
         "rear label circle stays inside the exposed strip and outside the front window");
-    auto same = expose_window_hints({{{280,160,700,440},132,32},{{200,160,700,440},132,32}},desktop);
+    auto same = expose_window_hints({{{280,160,700,440},132,48},{{200,160,700,440},132,48}},desktop);
     check(near(narrow[0].offset,same[0].offset) && near(narrow[1].offset,same[1].offset),
         "least-exposure displacement is deterministic");
-    auto hidden = expose_window_hints({{{220,180,360,270},72,32},{{250,200,300,220},72,32}},desktop);
+    auto hidden = expose_window_hints({{{220,180,360,270},72,48},{{250,200,300,220},72,48}},desktop);
     check(hidden[1].diameter == 72 && hidden[1].spot.clearance >= 72*1.06/2 &&
         (std::hypot(hidden[0].offset.x,hidden[0].offset.y)>1 ||
          std::hypot(hidden[1].offset.x,hidden[1].offset.y)>1),
         "fully covered ordinary window is revealed by visual movement");
-    auto full = expose_window_hints({{{0,0,1280,720},132,32},{{0,0,1280,720},132,32}},desktop);
+    auto full = expose_window_hints({{{0,0,1280,720},132,48},{{0,0,1280,720},132,48}},desktop);
     check(full[0].diameter == 132 && full[1].diameter == 132 &&
         std::hypot(full[0].offset.x,full[0].offset.y) > 140 && near(full[1].offset,{}),
         "an output-sized front window moves to reveal the wholly covered rear window");
-    auto anchored = expose_window_hints({{{0,0,1280,720},132,32,{},true},
-        {{0,0,1280,720},132,32}},desktop);
+    auto anchored = expose_window_hints({{{0,0,1280,720},132,48,{},true},
+        {{0,0,1280,720},132,48}},desktop);
     check(near(anchored[0].offset,{}) && anchored[0].diameter == 132 &&
-        anchored[1].diameter == 0,
-        "focused output-covering window never shifts; impossible rear hint waits");
-    auto movable_rear = expose_window_hints({{{280,160,700,440},132,32,{},true},
-        {{200,160,700,440},132,32}},desktop);
+        anchored[1].diameter == 48 && near(anchored[1].spot.center,{640,360}),
+        "focused output-covering window stays put; impossible rear hint remains at minimum center");
+    auto movable_rear = expose_window_hints({{{280,160,700,440},132,48,{},true},
+        {{200,160,700,440},132,48}},desktop);
     check(near(movable_rear[0].offset,{}) && movable_rear[1].offset.x < -60,
         "focused front anchors a covered rear window's exposure movement");
-    auto three = expose_window_hints({{{0,0,1280,720},132,32},{{0,0,1280,720},132,32},
-        {{0,0,1280,720},132,32}},desktop);
+    auto three = expose_window_hints({{{0,0,1280,720},132,48},{{0,0,1280,720},132,48},
+        {{0,0,1280,720},132,48}},desktop);
     check(three.size() == 3 && three[0].diameter == 132 && three[1].diameter == 132 &&
         three[2].diameter == 132,
         "three output-sized windows each expose enough interior for a circle");
-    auto tiny = expose_window_hints({{{140,100,64,36},72,32}},desktop);
-    check(near(tiny[0].offset,{}) && tiny[0].diameter == 32,
-        "tiny displayed window keeps a 32px interior badge without moving");
+    auto tiny = expose_window_hints({{{140,100,64,36},72,48}},desktop);
+    check(near(tiny[0].offset,{}) && tiny[0].diameter == 48,
+        "tiny displayed window retains the 48px minimum hint even when it cannot fit");
     auto unchanged = declutter({{100,100},{300,200}},region);
     auto widget_anchor = declutter({{250,200},{250,200}},region,6,{72,72},
         {{true,48,true},{true,48,false}});

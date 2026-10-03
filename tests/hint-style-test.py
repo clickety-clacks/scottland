@@ -340,8 +340,8 @@ try:
     v = next(v for v in views() if v['title'] == 'TinyScale')
     h = next(h for h in hints() if h['window'] == v['id'])
     (artifacts/'minimum-window-scale-state.json').write_text(json.dumps({'view': v, 'hint': h}, indent=2))
-    check(v['applied_scale'] < .051 and v['frame']['thickness'] < 1 and h['badge']['size'] == 32,
-          '5% displayed scale keeps WK31\'s readable 32px fragment badge')
+    check(v['applied_scale'] < .051 and v['frame']['thickness'] < 1 and h['badge']['size'] == 48,
+          '5% displayed scale keeps WK31\'s 48px minimum hint visible even when it cannot fit')
     image = screenshot('minimum-window-scale-hints')
     f = v['frame']
     # Near the top-right straight edge, beyond both badge circles and the narrow resting halo.

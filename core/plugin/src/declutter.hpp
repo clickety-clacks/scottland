@@ -23,11 +23,11 @@ std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds
 struct exposure_window
 {
     rectangle frame;
-    double wanted = 72, minimum = 32;
+    double wanted = 72, minimum = 48;
     std::vector<rectangle> fixed_foreground = {}; // widgets above this window, after rail declutter
     bool anchored = false; // focused/selected surface stays at its real geometry
 };
-struct exposure_result { point offset; label_spot spot; double diameter = 32; };
+struct exposure_result { point offset; label_spot spot; double diameter = 48; };
 // In front-to-back order, expose room for each badge with the least visual travel.
 // Fixed rectangles are widget frames already placed in their rail. A foreground
 // window moves only when that is the least bounded way to reveal a covered one.

@@ -102,7 +102,8 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
         if (expired(deadline)) return best;
         if (has_spot[k] && known_spots[k].clearance + .25 >= needed_radius(windows[k].minimum))
             protected_labels.push_back({k, known_spots[k].center,
-                std::min(known_spots[k].clearance - .25, needed_radius(windows[k].wanted))});
+                std::min(known_spots[k].clearance - .25,
+                    needed_radius(std::max(windows[k].wanted, windows[k].minimum)))});
     }
     std::vector<rectangle> one_obstacle;
     one_obstacle.reserve(1);
@@ -303,6 +304,7 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
         bool changed = false;
         for (size_t i = 0; i < nodes.size(); ++i)
         {
+            const double wanted = std::max(windows[i].wanted, windows[i].minimum);
             if (expired(deadline)) break;
             // Share remaining time with the windows still waiting in this pass. A single
             // difficult mid-stack window must not consume the whole refresh before a
@@ -320,10 +322,10 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             auto spot = has_spot[i] && best_spots[i].clearance <
                 needed_radius(windows[i].minimum) ? best_spots[i] :
                 visible_label(nodes[i], screen, foreground, .5, label_deadline(window_deadline),
-                    needed_radius(windows[i].wanted));
+                    needed_radius(wanted));
             if (!has_spot[i] || spot.clearance > best_spots[i].clearance)
             { best_spots[i] = spot; has_spot[i] = true; }
-            if (spot.clearance + .25 >= needed_radius(windows[i].wanted)) continue;
+            if (spot.clearance + .25 >= needed_radius(wanted)) continue;
             std::optional<candidate> choice;
             if (spot.clearance < needed_radius(windows[i].minimum))
             {
@@ -334,19 +336,19 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                     label_deadline(window_deadline));
                 double available = std::floor(std::max(0.0,
                     2 * (open.clearance - 1) / pop_scale));
-                available = std::min(available, windows[i].wanted);
+                available = std::min(available, wanted);
                 if (available >= windows[i].minimum && !expired(window_deadline))
                     choice = least_exposure_move(i, available, nodes, windows, screen, fixed,
                         window_deadline, best_spots, has_spot);
             }
             if (!choice && !expired(window_deadline))
-                choice = least_exposure_move(i, windows[i].wanted,
+                choice = least_exposure_move(i, wanted,
                     nodes, windows, screen, fixed, window_deadline, best_spots, has_spot);
             if (!choice)
             {
                 // If the wanted circle cannot fit, refine upward from the least-travel
                 // readable placement while budget remains.
-                double lo = windows[i].minimum, hi = windows[i].wanted;
+                double lo = windows[i].minimum, hi = wanted;
                 if (!expired(window_deadline))
                     choice = least_exposure_move(i, lo, nodes, windows, screen, fixed, window_deadline,
                         best_spots, has_spot);
@@ -381,6 +383,7 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
     std::vector<exposure_result> result;
     for (size_t i = 0; i < nodes.size(); ++i)
     {
+        const double wanted = std::max(windows[i].wanted, windows[i].minimum);
         label_spot spot;
         if (!expired(deadline))
         {
@@ -389,7 +392,7 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                 windows[i].fixed_foreground.end());
             for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
             auto refined = visible_label(nodes[i], screen, foreground, .5, label_deadline(deadline),
-                needed_radius(windows[i].wanted));
+                needed_radius(wanted));
             if (!has_spot[i] || refined.clearance > best_spots[i].clearance)
             { best_spots[i] = refined; has_spot[i] = true; }
             spot = best_spots[i];
@@ -403,8 +406,9 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
         else spot = {{nodes[i].x + nodes[i].width / 2, nodes[i].y + nodes[i].height / 2}, 0};
         best_spots[i] = spot;
         double available = std::floor(std::max(0.0, 2 * (spot.clearance - 1) / pop_scale));
-        double diameter = std::min(windows[i].wanted, available);
-        if (diameter < windows[i].minimum) diameter = 0; // no external window hint
+        // Attention remains present even when no unobscured circle can fit. Use the
+        // best checked label center (or the window center if the deadline found none).
+        double diameter = std::max(windows[i].minimum, std::min(wanted, available));
         result.push_back({{nodes[i].x - windows[i].frame.x,
             nodes[i].y - windows[i].frame.y}, spot, diameter});
     }

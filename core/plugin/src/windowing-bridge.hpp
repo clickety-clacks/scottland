@@ -781,7 +781,7 @@
                         } else
                         {
                             windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
-                                32 * hints_palette.text_scale, fixed_above,
+                                48 * hints_palette.text_scale, fixed_above,
                                 view == focused});
                             window_ids.push_back(id);
                         }
@@ -855,11 +855,14 @@
                 if (visual.hint && visual.hint_output != view->get_output())
                 { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
                 bool widget = bool(link_of_widget(view));
-                bool badge_ready = widget || visual.label_size > 0;
+                // Exposure always supplies the readable minimum at its best available spot.
+                // Lack of clear space is never a reason to suppress an ordinary window hint.
+                bool badge_ready = true;
                 if (!widget)
                 {
-                    // A rear window can start fully covered. Show its badge only when its
-                    // own and foreground visual movement has opened the required region.
+                    // A rear window can start fully covered. Wait for its and foreground
+                    // offsets to settle; the minimum-size fallback appears even if the
+                    // settled region still cannot contain the circle.
                     for (auto other_id : by_output[view->get_output()])
                     {
                         auto& other = hint_visuals[other_id];
