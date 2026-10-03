@@ -7,4 +7,5 @@ app=/usr/share/scottland/settings
 [ -d "$hooks/settings" ] && app="$hooks/settings"
 SCOTTLAND_CTL="$hooks/libexec/scottland-ctl" \
 SCOTTLAND_LAYOUT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/scottland/layout.ini" \
+SCOTTLAND_SOLAR_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/scottland/solar.ini" \
   exec qs -n -p "$app"

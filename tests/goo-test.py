@@ -208,10 +208,13 @@ try:
     check("goo never changes window contents", on.getpixel((400, 300)) == off.getpixel((400, 300)))
     check("bridge is present in the field", sample(590, 320)["density"] > sample(590, 320)["threshold"])
     check("bridge is drawn outside the window union", on.getpixel((590, 320)) != on.getpixel((590, 80)))
-    baseline = color(sample(600, 320))
+    # Sample the far half of the resting bridge (570..610). GO17 no longer
+    # inflates the source each breath, which used to move its nearest-dye region
+    # over x=600. This checks actual diffusion across the unswollen bridge.
+    baseline = color(sample(594, 320))
     ipc("scottland/attention", {"window": view("goo-a")["id"], "attention": True, "source": "goo-test"})
     time.sleep(3)
-    dyed = color(sample(600, 320))
+    dyed = color(sample(594, 320))
     check("attention dye reaches the other half of a bridge", change(baseline, dyed) > .025)
     shot("02-dye-bridge")
     drag(*center(view("goo-b")), 180, 0, True)

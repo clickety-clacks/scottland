@@ -65,6 +65,7 @@ case ${1:-} in
       # Isolate every child's settings and logs, not just config generation. Keep the real
       # runtime so Wayland display names (and systemd widget scopes) remain unique.
       export XDG_CONFIG_HOME=$dir/config XDG_STATE_HOME=$dir/state XDG_CACHE_HOME=$dir/cache
+      export SCOTTLAND_TEST_STATE=$dir/state
       # Quickshell hardcodes logs under $XDG_RUNTIME_DIR/quickshell. Bind only that
       # subtree for test clients, leaving Wayland/systemd sockets and display names alone.
       mkdir -p "$dir/bin" "$dir/quickshell" "$dir/state" "$dir/cache"

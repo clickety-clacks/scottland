@@ -49,7 +49,7 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     size_t back = goo::content_index(p, sources);
     if (size_t(source - sources.begin()) >= back) return handle_t::none;
     if (back < sources.size() && screen.settings.overlap_film <= 0) return handle_t::none;
-    float f = goo::density(p, sources, screen.settings, screen.time);
+    float f = goo::density(p, sources, screen.settings, screen.time, screen.breath);
     float threshold = screen.settings.threshold();
     float wave = 0;
     // Read the retained surface too: sleeping preserves its tiny residual height. Derive
@@ -72,7 +72,7 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
         if (glm::length(normal) < .001f)
             return handle_t::none;
         probe -= glm::normalize(normal) * (edge - .1f);
-        if (goo::density(probe, sources, screen.settings, screen.time) < threshold)
+        if (goo::density(probe, sources, screen.settings, screen.time, screen.breath) < threshold)
             return handle_t::none;
     }
     // A shared bridge belongs to its strongest contributing edge. Keep the original

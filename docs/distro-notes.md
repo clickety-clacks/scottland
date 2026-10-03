@@ -29,6 +29,11 @@ come up, so the decision isn't lost while there is nowhere better to put them.
   autostart.d/02-link-agent-skills picks Claude Code, Codex, pi, Hermes).
 - **The opinionated keybindings** in core's shipped config that follow Omarchy's choices.
 
+- **Cross-app theming engine and day/night themes**: a Scottland distro chooses and runs a
+  cross-app theme engine (Omarchy’s, an equivalent, or Aether) and its default named day/night
+  themes. Scottland core follows the active light/dark preference and palette; its optional solar
+  schedule requests only a mode. The Omarchy adapter applies Omarchy themes when their mode is wrong.
+
 ## Not distro material
 
 App-compatibility knowledge that every Scottland install needs stays in Scottland's shipped config

@@ -64,7 +64,7 @@ bool overlaps(const std::vector<source_t> &sources);
 size_t content_index(glm::vec2 p, const std::vector<source_t> &sources);
 float control_cloud(glm::vec2 p, const source_t &source);
 float overlap_film_width(const source_t &source, const settings_t &settings);
-float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &settings, float time);
+float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &settings, float time, float breath = 0);
 // Conservative outer radii for the rendered field, including quantization and wave headroom.
 std::vector<float> support_radii(std::vector<source_t> sources, const settings_t &settings, bool film = false);
 float union_distance(glm::vec2 p, const std::vector<source_t> &sources);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """GO16, real rail/collapse input and badge commits, plus a round custom widget.
 Run inside an isolated --widgets session with SCOTTLAND_WIDGET_PATH=tests/widgets.
+--inset-breath-only checks GO17 attention on a deeply inset GO16 alpha body.
 --baseline captures the same scenes without the new shape assertions.
 """
 import argparse, importlib.util, json, math, subprocess, time
@@ -16,6 +17,7 @@ parser.add_argument('artifacts', type=Path)
 parser.add_argument('--baseline', action='store_true')
 parser.add_argument('--fallback-only', action='store_true')
 parser.add_argument('--offset-only', action='store_true', help='check controls on a body outside the surface center')
+parser.add_argument('--inset-breath-only', action='store_true', help='GO16+GO17: settled attention on a body deeply inset from its surface')
 args=parser.parse_args();args.artifacts.mkdir(parents=True,exist_ok=True)
 records=[]
 def options(**values):
@@ -64,6 +66,62 @@ def shape_assert(label,f,im,rail,count,goo):
 try:
     options(sounds=False,goo_noise=0.,goo_drift=0.,goo_wave_height=0.,goo_swell=0.,
             goo_hover_cloudiness=0.,goo_hover_emissivity=0.)
+    if args.inset_breath_only:
+        options(goo=True)
+        title='inset-breath'
+        t.launch(title,'left',240,app_id='scottland-alpha-shape')
+        f=t.card(title)['frame'];cx=f['x']+f['width']/2;cy=f['y']+f['height']/2
+        focus=t.launch('inset-breath-focus',rail=None)
+        t.ipc.call('window-rules/configure-view',{'id':focus['id'],
+            'geometry':{'x':0,'y':0,'width':100,'height':60}})
+        time.sleep(.4)
+        focus_frame=t.app('inset-breath-focus')['frame']
+        t.move(focus_frame['x']+focus_frame['width']/2,focus_frame['y']+focus_frame['height']/2)
+        t.ipc.call('stipc/feed_button',{'combo':'BTN_LEFT','mode':'full'})
+        t.move(t.screen['width']/2,t.screen['height']-40)
+        requested=t.ipc.call('scottland/attention',{'window':int(t.widgets()[0]['id']),
+            'attention':True,'source':'shape-breath-test'})
+        t.check('inset attention belongs to unfocused widget',not requested.get('in_front',False),requested)
+        for _ in range(450):
+            if sample(cx,cy)['sleeping']:break
+            time.sleep(.1)
+        before=sample(cx,cy)
+        t.check('inset widget settles with attention',before['sleeping'] and before['breath_ticks']>0,before)
+        t.check('inset body has an alpha shape',bool(f.get('alpha_shape')),f)
+        # With the old rectangle-strip damage, the center of this 400px surface
+        # is outside every breathing strip despite being the 96px body's shore.
+        shore=(round(cx+50),round(cy))
+        damaged=any(r['x']<=shore[0]<r['x']+r['width'] and r['y']<=shore[1]<r['y']+r['height']
+                    for r in before['breath_damage'])
+        t.check('deeply inset alpha shore receives breath damage',damaged,before['breath_damage'])
+        shots={};deadline=time.monotonic()+12
+        while time.monotonic()<deadline and len(shots)<2:
+            s=sample(*shore)
+            label='trough' if s['breath']<.003 else 'peak' if s['breath']>.997 else None
+            if label and label not in shots:
+                path=args.artifacts/('inset-'+label+'.png')
+                subprocess.run(['grim',str(path)],check=True)
+                shots[label]=GdkPixbuf.Pixbuf.new_from_file(str(path))
+            time.sleep(.04)
+        after=sample(cx,cy)
+        t.check('inset attention breath runs while simulation sleeps',
+                after['sleeping'] and after['steps']==before['steps'] and after['breath_ticks']>before['breath_ticks'],
+                (before['steps'],after['steps'],before['breath_ticks'],after['breath_ticks']))
+        t.check('inset breath reaches both extrema',len(shots)==2,sorted(shots))
+        if len(shots)==2:
+            a,b=shots['trough'],shots['peak'];da,db=a.get_pixels(),b.get_pixels()
+            stride=a.get_rowstride();channels=a.get_n_channels();changed=0
+            for y in range(max(0,round(cy-75)),min(a.get_height(),round(cy+76))):
+                for x in range(max(0,round(cx-75)),min(a.get_width(),round(cx+76))):
+                    radius=math.hypot(x-cx,y-cy)
+                    if not 46<=radius<=75:continue
+                    k=y*stride+x*channels
+                    changed+=da[k:k+3]!=db[k:k+3]
+            t.check('inset widget contour visibly breathes',changed>100,changed)
+        t.ipc.call('scottland/attention',{'window':int(t.widgets()[0]['id']),
+            'attention':False,'source':'shape-breath-test'})
+        t.cleanup()
+        raise SystemExit(bool(t.failures))
     if args.offset_only:
         for goo in ((False,) if args.fallback_only else (True,False)):
             options(goo=goo)

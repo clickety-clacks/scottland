@@ -6,21 +6,18 @@ FocusScope {
   property real scrollOffset:0
   required property var design
   required property var values
-  required property var movement
-  required property var resizing
-  required property var evaluate
   signal changed(string name, real value)
   HoverHandler { id:helpHover }
   ControlHint {
     control:play;design:play.design;title:"Motion playground"
-    explanation:"Flick the sample or use arrows to see travel, 100 pt vertical stops and a side-rail widget morph; Ctrl + arrows resizes. The separate rail trace shows an existing widget bouncing. Drag the velocity arrow or rail handle to change their settings."
+    explanation:"Flick the sample or use arrows to see travel, 100 pt vertical stops and a side-rail widget morph; Ctrl + arrows resizes. Drag the velocity arrow to change the push strength."
     showing:helpHover.hovered || play.activeFocus
     viewport:play.viewport;scrollOffset:play.scrollOffset
   }
-  implicitHeight: 290
+  implicitHeight: 380
   activeFocusOnTab: true
   property real px: width/2
-  property real py: 155
+  property real py: 192
   property real sampleWidth: 70
   property real sampleHeight: 44
   property real vx: 0
@@ -35,33 +32,20 @@ FocusScope {
   property real widgetMorph: 0
   Behavior on widgetMorph { NumberAnimation { duration:180;easing.type:Easing.OutCubic } }
   readonly property real stoppingDistance: (vx || vy) ? Math.hypot(stopDistance(vx),stopDistance(vy)) : stopDistance(values.key_impulse)
-  function stopDistance(speed) {
-    // Integrate v/a(v) in speed space: bounded work even at very low friction.
-    speed=Math.abs(speed)
-    let distance=0
-    for(let i=0;i<128;i++) {
-      const v=speed*(i+.5)/128
-      distance+=v/(values.key_friction*evaluate(movement,Math.min(1,v/values.key_max_velocity),.05,4))*speed/128
-    }
-    return distance
-  }
+  function stopDistance(speed) { return speed*speed/(2*Math.max(1,values.key_friction)) }
   readonly property real impulseLength: 28 + Math.sqrt(values.key_impulse/10000)*130
   function push(x,y,resize) {
     forceActiveFocus()
     if(!vx && !vy && !vw && !vh) { distance=0; trail=[{x:px,y:py}]; edgeStops=[];widgetized=false;widgetSide=0 }
     const cap=values.key_max_velocity
-    if(resize) { vw=Math.max(-cap,Math.min(cap,vw+x*values.key_impulse));vh=Math.max(-cap,Math.min(cap,vh+y*values.key_impulse)) }
+    if(resize) { vw=Math.max(-cap,Math.min(cap,vw+x*values.resize_impulse));vh=Math.max(-cap,Math.min(cap,vh+y*values.resize_impulse)) }
     else { vx=Math.max(-cap,Math.min(cap,vx+x*values.key_impulse));vy=Math.max(-cap,Math.min(cap,vy+y*values.key_impulse)) }
   }
-  function axis(v,dt,points) {
-    let d=0
-    while(dt>0 && v!==0) {
-      const a=values.key_friction*evaluate(points,Math.min(1,Math.abs(v)/values.key_max_velocity),0.05,4)
-      const t=Math.min(dt,1/240,Math.abs(v)/a)
-      d+=Math.sign(v)*(Math.abs(v)*t-a*t*t/2)
-      v=Math.sign(v)*Math.max(0,Math.abs(v)-a*t);dt-=t
-    }
-    return {v:v,d:d}
+  function axis(v,dt,deceleration) {
+    if(v===0)return {v:0,d:0}
+    const a=Math.max(1,deceleration),t=Math.min(dt,Math.abs(v)/a)
+    return {v:Math.sign(v)*Math.max(0,Math.abs(v)-a*t),
+      d:Math.sign(v)*(Math.abs(v)*t-a*t*t/2)}
   }
   Keys.onPressed: event => {
     const resize=(event.modifiers & Qt.ControlModifier)!==0
@@ -80,7 +64,7 @@ FocusScope {
     id:trace;anchors.fill:parent
     onPaint: {
       const c=getContext("2d");c.reset();c.strokeStyle=design.separator;c.lineWidth=1
-      c.strokeRect(18,56,width-36,153)
+      c.strokeRect(18,56,width-36,height-126)
       c.strokeStyle=design.accent;c.lineWidth=2;c.beginPath()
       play.trail.forEach((p,i)=>{if(i)c.lineTo(p.x,p.y);else c.moveTo(p.x,p.y)});c.stroke()
       for(const stop of play.edgeStops) {c.beginPath();c.moveTo(stop.x-8,stop.y);c.lineTo(stop.x+8,stop.y);c.stroke()}
@@ -89,21 +73,11 @@ FocusScope {
       }
       // The direct impulse handle is a velocity arrow; it controls the next push.
       if(impulseGrip.containsMouse || impulseGrip.pressed) {
-        c.fillStyle=design.tint(impulseGrip.pressed ? .42 : .25);c.beginPath();c.arc(30+play.impulseLength,238,17,0,2*Math.PI);c.fill()
+        c.fillStyle=design.tint(impulseGrip.pressed ? .42 : .25);c.beginPath();c.arc(30+play.impulseLength,height-55,17,0,2*Math.PI);c.fill()
       }
-      c.beginPath();c.moveTo(30,238);c.lineTo(30+play.impulseLength,238);c.lineTo(24+play.impulseLength,232);c.moveTo(30+play.impulseLength,238);c.lineTo(24+play.impulseLength,244);c.stroke()
-      c.fillStyle=design.accent;c.beginPath();c.arc(30+play.impulseLength,238,6,0,2*Math.PI);c.fill()
-      // This separate trace represents an existing widget bouncing along its rail;
-      // ordinary window movement stops vertically and morphs at side contact.
-      const bx=width-150, by=246-36*play.values.key_restitution
-      c.strokeStyle=design.muted;c.lineWidth=4;c.beginPath();c.moveTo(width-54,68);c.lineTo(width-54,202);c.stroke()
-      c.fillStyle=design.tint(.18);c.strokeStyle=design.accent;c.lineWidth=1
-      c.fillRect(width-84,132,26,34);c.strokeRect(width-84,132,26,34)
-      c.beginPath();c.moveTo(bx-45,224);c.lineTo(bx,248);c.lineTo(bx+45,by);c.stroke()
-      if(bounceGrip.containsMouse || bounceGrip.pressed) {
-        c.fillStyle=design.tint(bounceGrip.pressed ? .42 : .25);c.beginPath();c.arc(bx+45,by,17,0,2*Math.PI);c.fill()
-      }
-      c.fillStyle=design.accent;c.beginPath();c.arc(bx+45,by,7,0,2*Math.PI);c.fill()
+      c.beginPath();c.moveTo(30,height-55);c.lineTo(30+play.impulseLength,height-55);c.lineTo(24+play.impulseLength,height-61);c.moveTo(30+play.impulseLength,height-55);c.lineTo(24+play.impulseLength,height-49);c.stroke()
+      c.fillStyle=design.accent;c.beginPath();c.arc(30+play.impulseLength,height-55,6,0,2*Math.PI);c.fill()
+
     }
   }
   onValuesChanged:trace.requestPaint()
@@ -138,7 +112,7 @@ FocusScope {
         const p=mapToItem(play,mouse.x,mouse.y),now=Date.now(),dt=Math.max(.001,(now-stamp)/1000)
         releaseX=(p.x-previous.x)/dt;releaseY=(p.y-previous.y)/dt
         play.px=Math.max(18+width/2,Math.min(play.width-18-width/2,play.px+p.x-previous.x))
-        play.py=Math.max(56+height/2,Math.min(209-height/2,play.py+p.y-previous.y))
+        play.py=Math.max(56+height/2,Math.min(play.height-70-height/2,play.py+p.y-previous.y))
         previous=p;stamp=now
       }
       onReleased: {
@@ -151,38 +125,27 @@ FocusScope {
     cursorShape:Qt.SizeHorCursor
     onContainsMouseChanged:trace.requestPaint()
     onPressedChanged:trace.requestPaint()
-    x:18;y:215;width:200;height:38;preventStealing:true;hoverEnabled:true
+    x:18;y:parent.height-78;width:200;height:38;preventStealing:true;hoverEnabled:true
     function apply(x){play.changed("key_impulse",Math.round(Math.max(1,Math.min(10000,Math.pow(Math.max(0,x-40)/130,2)*10000))))}
     onPressed:mouse=>apply(mouse.x)
     onPositionChanged:mouse=>{if(pressed)apply(mouse.x)}
   }
-  MouseArea {
-    id:bounceGrip
-    cursorShape:Qt.SizeVerCursor
-    onContainsMouseChanged:trace.requestPaint()
-    onPressedChanged:trace.requestPaint()
-    x:parent.width-205;y:214;width:170;height:40;preventStealing:true;hoverEnabled:true
-    function apply(y){play.changed("key_restitution",Math.max(0,Math.min(1,(34-y)/36)))}
-    onPressed:mouse=>apply(mouse.y)
-    onPositionChanged:mouse=>{if(pressed)apply(mouse.y)}
-  }
-  Text { x:18;y:260;text:"Push · "+Math.round(values.key_impulse)+" pt/s";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale }
-  Text { anchors.right:parent.right;anchors.rightMargin:18;y:260;text:"Widget rail rebound · "+Math.round(values.key_restitution*100)+"%";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale }
+  Text { x:18;y:parent.height-29;text:"Push · "+Math.round(values.key_impulse)+" pt/s";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale }
   Timer {
     interval:16;repeat:true;running:play.vx!==0||play.vy!==0||play.vw!==0||play.vh!==0
     property double last:0
     onRunningChanged:last=Date.now()
     onTriggered: {
       const now=Date.now(),dt=Math.min(.05,(now-last)/1000);last=now
-      const x=play.axis(play.vx,dt,play.movement),y=play.axis(play.vy,dt,play.movement)
-      const w=play.axis(play.vw,dt,play.resizing),h=play.axis(play.vh,dt,play.resizing)
+      const x=play.axis(play.vx,dt,play.values.key_friction),y=play.axis(play.vy,dt,play.values.key_friction)
+      const w=play.axis(play.vw,dt,play.values.resize_friction),h=play.axis(play.vh,dt,play.values.resize_friction)
       play.vx=x.v;play.vy=y.v;play.vw=w.v;play.vh=h.v
       play.sampleWidth=Math.max(30,Math.min(play.width-36,play.sampleWidth+w.d))
-      play.sampleHeight=Math.max(24,Math.min(153,play.sampleHeight+h.d))
+      play.sampleHeight=Math.max(24,Math.min(play.height-126,play.sampleHeight+h.d))
       if(play.sampleWidth===30||play.sampleWidth===play.width-36)play.vw=0
-      if(play.sampleHeight===24||play.sampleHeight===153)play.vh=0
+      if(play.sampleHeight===24||play.sampleHeight===play.height-126)play.vh=0
       play.px+=x.d;play.py+=y.d;play.distance+=Math.hypot(x.d,y.d)
-      const lx=18+play.sampleWidth/2,hx=play.width-18-play.sampleWidth/2,ly=56+play.sampleHeight/2,hy=209-play.sampleHeight/2
+      const lx=18+play.sampleWidth/2,hx=play.width-18-play.sampleWidth/2,ly=56+play.sampleHeight/2,hy=play.height-70-play.sampleHeight/2
       const side=(play.px<=lx&&play.vx<0)?-1:(play.px>=hx&&play.vx>0)?1:0
       if(side) {
         play.px=side<0?lx:hx;play.widgetSide=side;play.widgetized=true

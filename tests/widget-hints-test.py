@@ -127,8 +127,8 @@ def capture(name, scale=1):
         check(0 <= b['x'] and b['x']+b['size'] <= 1280 and 0 <= b['y'] and b['y']+b['size'] <= 720,
               label + ' is wholly on screen')
         check(abs(h['dx']) < .01, label + ' stays attached horizontally during declutter')
-        check(b['size'] == round(2/3 * max(72*scale, min(132*scale, min(f['width'], f['height'])*.34*scale))),
-              label + ' uses 2/3 of WK25 window badge sizing')
+        check(b['size'] == round(48*scale),
+              label + ' retains the consistent WK30 circle size and desktop text scaling')
         # The independent badges-fixedsize change puts a 22px-high rounded count at
         # (0, 0) on the inward side. Its nearest end-circle is centered 11px in/down;
         # wider counts extend away from the hint and retain this same end-circle.

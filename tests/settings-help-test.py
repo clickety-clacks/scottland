@@ -22,6 +22,8 @@ art.mkdir(parents=True)
 layout = art / "settings-home/scottland/layout.ini"
 layout.parent.mkdir(parents=True, exist_ok=True)
 layout.unlink(missing_ok=True)
+solar = art / "settings-home/scottland/solar.ini"
+solar.unlink(missing_ok=True)
 probe_panel = None
 probe_instance_pid = None
 last_snapshot = {}
@@ -61,7 +63,7 @@ def snapshot():
     return last_snapshot
 
 def screen_point(p):
-    return panel_x+p["x"], 720-48-snapshot()["panel"]["height"]+p["y"]
+    return panel_x+p["x"]-panel_output_origin, panel_y+p["y"]
 
 def control_point(name, dx=0, dy=0):
     p=snapshot()[name]; x,y=screen_point(p); return x+dx,y+dy
@@ -75,8 +77,11 @@ def scroll_to(value):
     drag(x+v["width"]-5,start,0,end-start)
 
 def tab(index):
-    click(panel_x+20+(index+.5)*520/3,720-48-snapshot()["panel"]["height"]+77)
-    time.sleep(.12)
+    for _ in range(3):
+        click(panel_x+36+(index+.5)*(snapshot()["panel"]["width"]-72)/6,panel_y+100)
+        if snapshot()["tab"]==index: return
+        time.sleep(.12)
+    print("TAB MISS",index, snapshot()["tab"],"panel",panel_x,panel_y,flush=True)
 
 sock = socket.socket(socket.AF_UNIX)
 sock.connect(os.environ["WAYFIRE_SOCKET"])
@@ -199,27 +204,23 @@ class Pixels:
         # establish visibility for that frame; this history only identifies the right control.
         entry = next((v for v in reversed(observations)
                       if v["probe"] in active and v["label"] == label and v["visible"]), None)
-        if not entry or entry["width"] != 320 or entry["height"] < 40:
+        if not entry or entry["width"] != 240 or entry["height"] < 40:
             return False
-        x = panel_x + round(snapshot()["panel"]["width"]) - 4 if x is None else x
-        height = round(entry["height"])
+        width, height = round(entry["width"]), round(entry["height"])
         background, border = (tuple(bytes.fromhex(entry[k].lstrip("#")))
                               for k in ("background", "border"))
-        expected_y = max(0, min(self.img.get_height()-height,
-                                round(row_y+29-height/2)))
-        for y in range(max(0, expected_y-2), min(self.img.get_height()-height,
-                                                 expected_y+2)+1):
-            # The compositor blends the popup's left edge against a click-through
-            # client at some output positions. Check the long edges and right side,
-            # then verify the filled body; requiring one exact left-edge RGB pixel
-            # made a visibly rendered popup fail this pixel probe.
-            samples = [(x+16, y), (x+160, y), (x+303, y),
-                       (x+160, y+height-1), (x+319, y+height//2)]
-            inside = [(x+6, y+16), (x+313, y+16), (x+6, y+height-17),
-                      (x+160, y+height-7)]
-            if all(self.pixel(xx, yy) == border for xx, yy in samples) and all(
-                    self.pixel(xx, yy) == background for xx, yy in inside):
-                return True
+        expected_y = max(0, min(self.img.get_height()-height,round(row_y+34-height/2)))
+        xs = range(max(0,round(x)-3),min(self.img.get_width()-width,round(x)+3)+1) if x is not None else range(0,self.img.get_width()-width)
+        for y in range(max(0,expected_y-20),min(self.img.get_height()-height,expected_y+20)+1):
+            for xx in xs:
+                top=[(xx+20,y),(xx+width//2,y),(xx+width-20,y)]
+                sides=[(xx,y+height//2),(xx+width-1,y+height//2)]
+                inside=[(xx+5,y+height//2),(xx+width-5,y+height//2),
+                        (xx+width//2,y+height-6)]
+                if all(self.pixel(px,py)==border for px,py in top) and any(
+                    self.pixel(px,py)==border for px,py in sides) and any(
+                    self.pixel(px,py)==background for px,py in inside):
+                    return True
         return False
     def text(self, x, y, width=465, height=24):
         return sum(min(c) > 145 and max(c)-min(c) < 45
@@ -235,11 +236,12 @@ def shot(name):
 
 
 def open_panel():
-    global panel_x, probe_panel, probe_instance_pid
+    global panel_x, panel_y, panel_output_origin, probe_panel, probe_instance_pid
     probe = str(len(clients))
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")],
         env=dict(os.environ, QS_DISABLE_FILE_WATCHER="1", SCOTTLAND_CTL=str(repo / "core/libexec/scottland-ctl"),
                  SCOTTLAND_LAYOUT_FILE=str(layout), SCOTTLAND_PALETTE=str(palette_path),
+                 SCOTTLAND_SOLAR_FILE=str(solar),
                  SCOTTLAND_HINT_PROBE=probe, SCOTTLAND_SETTINGS_TEST="1"), stdout=log, stderr=log)
     panel.hint_probe = probe
     clients.append(panel)
@@ -254,14 +256,16 @@ def open_panel():
     check("settings maps", panel.poll() is None)
     time.sleep(.4)
     panel_output=next(o for o in outputs if o["name"]==snapshot()["screen"])
-    panel_x=panel_output["geometry"]["x"]+360
+    panel_output_origin=panel_output["geometry"]["x"]
+    panel_x=panel_output["geometry"]["x"]+(panel_output["geometry"]["width"]-snapshot()["panel"]["width"])/2
+    panel_y=panel_output["geometry"]["y"]+panel_output["geometry"]["height"]-max(24,round(panel_output["geometry"]["height"]*.04))-snapshot()["panel"]["height"]
     shot("panel-position")
     return panel
 
 
 def close_panel(panel, save=False, via_button=False):
     if via_button:
-        click(panel_x + (500 if save else 409), 638)
+        click(panel_x + snapshot()["panel"]["width"] - (86 if save else 196), panel_y + snapshot()["panel"]["height"]-56)
     else:
         key("KEY_ENTER" if save else "KEY_ESC")
     panel.wait(timeout=5)
@@ -329,7 +333,8 @@ try:
     outputs = sorted(ipc("window-rules/list-outputs"), key=lambda o:o["geometry"]["x"])
     assert len(outputs) == 2 and all(o["geometry"]["height"] == 720 for o in outputs)
     # Quickshell's first screen is where the panel is anchored (leftmost on this backend).
-    panel_x = outputs[0]["geometry"]["x"] + (outputs[0]["geometry"]["width"]-560)/2
+    panel_x = outputs[0]["geometry"]["x"] + (outputs[0]["geometry"]["width"]-806)/2
+    panel_y = 58
     initial = values()
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
@@ -340,23 +345,23 @@ try:
     check("S15 launcher name", "Name=Scottland Settings" in (repo/"core/settings/scottland-settings.desktop").read_text())
     bands("01-softness-bands")
     for i,label in enumerate(["Center edge softness","Center zone width","Widget rail width"]):
-        point = control_point("zones",200,29+59*i)
-        row_top = point[1]-29
+        point = control_point("zones",200,34+69*i)
+        row_top = point[1]-34
         pointer(*point);time.sleep(.25)
         check(label+" hover hint",snapshot()["zones"]["hint"]==label)
         if i == 0:
             check("first Layout hint has its expected visible bubble",
                   shot("02-layout-hover").hint(row_top,label))
-    point = control_point("zones",200,29+59*2)
-    row_top = point[1]-29
+    point = control_point("zones",200,34+69*2)
+    row_top = point[1]-34
     pointer(10,690);time.sleep(.15)
     check("leaving a hovered row hides its bubble",
           not shot("02a-layout-leave").hint(row_top,"Widget rail width",expected=False))
-    click(*control_point("zones",200,29));pointer(10,690);key("KEY_BACKSPACE")
+    click(*control_point("zones",200,34));pointer(10,690);key("KEY_BACKSPACE")
     before=option("center_width");key("KEY_DOWN");key("KEY_RIGHT")
     check("keyboard step previews zone live",option_reaches("center_width",round((before+.5)*2)/2))
     check("keyboard hint follows selection",snapshot()["zones"]["hint"]=="Center zone width")
-    center_row = control_point("zones",200,29+59)[1]-29
+    center_row = control_point("zones",200,34+69)[1]-29
     check("keyboard selection draws its hint bubble",
           shot("02b-keyboard-hint").hint(center_row,"Center zone width"))
     key("KEY_UP");key("KEY_1");key("KEY_2");key("KEY_0")
@@ -377,8 +382,8 @@ try:
     check("36pt endpoint target selects but cannot be deleted",snapshot()["editor"]["selected"]==0 and len(snapshot()["editor"]["knots"])==2)
     shot("03-curve-selected")
     tab(1);check("Goo tab selects",snapshot()["tab"]==1)
-    click(*control_point("goo",240,29));key("KEY_BACKSPACE");pointer(10,690)
-    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Overlap film","Control cloudiness","Control glow","Control proximity"]
+    click(*control_point("goo",240,34));key("KEY_BACKSPACE");pointer(10,690)
+    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper soak","Overlap film","Control cloudiness","Control glow","Control proximity"]
     for i,label in enumerate(labels):
         if i:key("KEY_DOWN")
         for _ in range(20):
@@ -392,6 +397,8 @@ try:
     # then settle without a position-animation restart or an edge jump.
     pointer(*control_point("viewport",300,200))
     ipc("scottland/test-input",dict(scroll_y=90,wheel=True))
+    time.sleep(.03)
+    check("wheel burst moves a comfortable notch distance",abs(snapshot()["scroll"]-576)<120)
     wheel_samples=[]
     for _ in range(30):
         time.sleep(.05);q=snapshot();wheel_samples.append((q["scroll"],q["wheelVelocity"]))
@@ -401,9 +408,11 @@ try:
     check("wheel decelerates to rest",abs(snapshot()["scroll"]-a)<.1 and snapshot()["wheelVelocity"]==0)
     tab(0);tab(1)
     pointer(*control_point("viewport",300,200))
+    before_pad=snapshot()["scroll"]
     for _ in range(4):
-        ipc("scottland/test-input",dict(scroll_y=20,wheel=False));time.sleep(.02)
-    ipc("scottland/test-input",dict(scroll_y=0,wheel=False))
+        ipc("scottland/test-input",dict(scroll_y=20,wheel=False,touchpad=True));time.sleep(.02)
+    check("touchpad content tracks 80 pt gesture",abs(snapshot()["scroll"]-before_pad-80)<16)
+    ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
     pad_samples=[]
     for _ in range(30):
         time.sleep(.05);q=snapshot();pad_samples.append((q["scroll"],q["wheelVelocity"]))
@@ -412,7 +421,7 @@ try:
     a=snapshot()["scroll"];time.sleep(.25);check("touchpad coast settles",abs(snapshot()["scroll"]-a)<.1)
     tab(0);tab(1)
     # After mouse editing that same row, touch must still be able to take over for scrolling.
-    click(*control_point("goo",250,4*59+29));key("KEY_BACKSPACE")
+    click(*control_point("goo",250,4*69+34));key("KEY_BACKSPACE")
     # A vertical touch gesture on a slider scrolls without changing its value.
     x,y=control_point("viewport",250,340)
     old_goo=snapshot()["values"]
@@ -447,78 +456,80 @@ try:
     clients.append(fixture)
     time.sleep(.8)
     check("right-edge hint fixture maps", fixture.poll() is None)
-    edge_x = panel_x + 280 + 640 - 24 - 560
+    edge_x = outputs[0]["geometry"]["x"] + outputs[0]["geometry"]["width"] - 24 - 560
     pointer(edge_x+180,220);time.sleep(.2)
     check("right-edge hint bubble is visible after flipping left",
-          shot("06c-popout-flipped-left").hint(196,"Center zone width",x=edge_x-328))
+          shot("06c-popout-flipped-left").hint(196,"Center zone width",x=edge_x-264))
     pointer(10,690);time.sleep(.15)
     check("flipped hint hides when pointer leaves",
-          not shot("06d-flipped-popout-leave").hint(196,"Center zone width",x=edge_x-328,expected=False))
+          not shot("06d-flipped-popout-leave").hint(196,"Center zone width",x=edge_x-264,expected=False))
     fixture.terminate();fixture.wait(timeout=5)
 
     panel=open_panel();tab(2)
     check("Window mode tab selects",snapshot()["tab"]==2)
     key("KEY_RIGHT");time.sleep(.7)
     check("playground arrow moves and stops at analytic distance",abs(snapshot()["playground"]["distance"]-335**2/(2*608))<.1 and snapshot()["playground"]["velocity"]==0)
-    # The arrow and widget-rail rebound handle edit their compositor options live.
-    click(*control_point("playground",200,238))
+    # The velocity arrow edits its compositor option live; rail motion has no rebound control.
+    click(*control_point("playground",200,325))
     check("impulse arrow edits live option",option_reaches("key_impulse",10000))
-    drag(*control_point("playground",403,228),0,-10)
-    check("widget rail trace edits live restitution",option("key_restitution")>.5)
     for _ in range(8):
         key("KEY_RIGHT")
         if snapshot()["playground"]["widgetized"]:break
     check("side contact morphs the sample into a rail widget",
           snapshot()["playground"]["widgetized"] and snapshot()["playground"]["widgetSide"]==1)
     shot("05-window-playground")
-    click(panel_x+70,638);time.sleep(.25) # Defaults keeps impulse identical for the motion comparison.
-    scroll_to(350)
-    e=snapshot()["movement"];p=e["plot"]
-    # A flat 2x curve: both endpoint drags are real input.
-    for knot in (0,1):
-        k=snapshot()["movement"]["knots"][knot];x,y=screen_point(k)
-        target=screen_point(dict(x=k["x"],y=p["y"]+p["height"]*(4-2)/3.95))[1]
-        drag(x,y,0,target-y)
-    curve=ipc("wayfire/get-config-option",{"option":"scottland/move_friction_curve"})["value"]
-    check("movement friction curve previews through ctl",len(curve.split())==2 and all(float(v.split(":")[1])>1.9 for v in curve.split()))
-    shot("06-window-friction")
-    scroll_to(650)
-    p=snapshot()["resize"]["plot"]
-    for knot in (0,1):
-        k=snapshot()["resize"]["knots"][knot];x,y=screen_point(k)
-        target=screen_point(dict(x=k["x"],y=p["y"]+p["height"]*(4-2)/3.95))[1]
-        drag(x,y,0,target-y)
-    check("resize friction law previews independently",ipc("wayfire/get-config-option",{"option":"scottland/resize_friction_curve"})["value"]!="")
+    click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);time.sleep(.25) # Defaults keeps impulse identical for the motion comparison.
+    def edit_coast(name, impulse_name, friction_name, seconds=.9, points=170):
+        q=snapshot()
+        scroll_to(q["scroll"]+q[name]["y"]-q["viewport"]["y"]-20)
+        q=snapshot();g=q[name];p=g["plot"]
+        target=dict(x=p["x"]+seconds/2.5*p["width"],
+                    y=p["y"]+(1-points/600)*p["height"])
+        x,y=screen_point(g["endpoint"]);tx,ty=screen_point(target)
+        drag(x,y,tx-x,ty-y)
+        expected_impulse=2*points/seconds
+        expected_friction=2*points/(seconds*seconds)
+        check(name+" endpoint sets impulse and deceleration live",
+              abs(option(impulse_name)-expected_impulse)<2 and
+              abs(option(friction_name)-expected_friction)<3 and
+              abs(snapshot()[name]["distance"]-points)<2)
+    edit_coast("movement","key_impulse","key_friction")
+    shot("06-window-coast")
+    edit_coast("resize","resize_impulse","resize_friction")
+    saved_motion=dict(snapshot()["motion"])
     close_panel(panel,save=True,via_button=True)
     changed_motion=motion_trial(); changed_resize=motion_trial(True)
-    print("curve distances",baseline_motion,changed_motion,baseline_resize,changed_resize,flush=True)
-    check("edited movement curve halves real arrow travel",abs(changed_motion-baseline_motion/2)<3 and baseline_motion>80)
-    check("edited resize curve halves real size coast",abs(changed_resize-baseline_resize/2)<3 and baseline_resize>80)
-    check("Save persists all Window mode options",all(k+" =" in layout.read_text() for k in snapshot()["motion"]))
+    print("coast distances",baseline_motion,changed_motion,baseline_resize,changed_resize,flush=True)
+    check("movement graph sets real arrow travel",abs(changed_motion-170)<4 and baseline_motion>80)
+    check("resize graph sets real size coast",abs(changed_resize-170)<4 and baseline_resize>80)
+    check("Save persists all Window mode options",all(k+" =" in layout.read_text() for k in saved_motion))
     panel=open_panel();tab(2)
-    check("reopen retains movement curve",snapshot()["motion"]["move_friction_curve"]==curve)
+    check("reopen retains both coast endpoints",
+          all(abs(snapshot()["motion"][k]-saved_motion[k])<.01 for k in
+              ("key_impulse","key_friction","resize_impulse","resize_friction")))
+    q=snapshot();scroll_to(q["scroll"]+q["motionSettings"]["y"]-q["viewport"]["y"]-20)
+    click(*control_point("motionSettings",50,34));key("KEY_1")
+    check("speed limit row accepts its positive minimum",option_reaches("key_max_velocity",1))
     scroll_to(10000)
-    click(*control_point("motionSettings",0,29))
-    check("deceleration row respects its positive minimum despite coarse steps",option("key_friction")==1)
-    click(*control_point("motionSettings",0,88))
-    check("speed limit row respects its positive minimum despite coarse steps",option("key_max_velocity")==1)
     click(*control_point("holdTiming",120,60));key("KEY_RIGHT")
     check("hold timeline edits live timing",option("alt_hold_delay")>300)
     click(*control_point("doubleTiming",180,60));key("KEY_RIGHT")
     check("double-tap timeline edits live timing",option("window_double_tap_delay")>300)
     shot("06a-window-timelines")
-    click(panel_x+70,638);time.sleep(.2)
-    check("Window Defaults restores original feel",option("key_impulse")==335 and ipc("wayfire/get-config-option",{"option":"scottland/move_friction_curve"})["value"]=="")
+    click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);time.sleep(.2)
+    check("Window Defaults restores original feel",option("key_impulse")==335 and option("key_friction")==608
+          and option("resize_impulse")==335 and option("resize_friction")==608)
     close_panel(panel,via_button=True)
-    check("Cancel restores saved motion after Defaults",ipc("wayfire/get-config-option",{"option":"scottland/move_friction_curve"})["value"]==curve)
+    check("Cancel restores saved motion after Defaults",all(abs(option(k)-saved_motion[k])<.01 for k in
+          ("key_impulse","key_friction","resize_impulse","resize_friction")))
     # Reset via the actual Defaults action and Save before the border regression checks.
-    panel=open_panel();tab(2);click(panel_x+70,638);close_panel(panel,save=True)
+    panel=open_panel();tab(2);click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);close_panel(panel,save=True)
     layout.unlink()
     # Theme applies to every control, not only hints.
     panel=open_panel()
     palette_path.write_text(json.dumps(dict(scheme="light",background="#eff1f8",foreground="#20212a",accent="#3855aa",font_family="DejaVu Serif",text_scale=1.5)))
     time.sleep(.6);p=shot("07-light-theme")
-    check("panel follows light session palette",p.pixel(panel_x+10,100)==(239,241,248))
+    check("panel follows light session palette",p.pixel(panel_x+10,panel_y+10)==(239,241,248))
     check("type scale and family read live",snapshot()["palette"]["text_scale"]==1.5 and snapshot()["palette"]["font_family"]=="DejaVu Serif")
     close_panel(panel)
     palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
@@ -574,16 +585,16 @@ try:
 
     # Cap and zero: actual geometry follows place(), and coincident handles remain reachable.
     panel = open_panel()
-    click(panel_x+470, 190)  # softness near 300, visibly capped at half the side span
+    click(*control_point("zones",470,34))  # softness near 300, visibly capped at half the side span
     bands("08-capped-softness")
     check("slider can exceed the effective band width", option("blend_width") > geometry(outputs[1])[-1])
-    click(panel_x+20, 190)  # zero softness
+    click(*control_point("zones",20,34));key("KEY_0")  # zero softness
     check("softness reaches zero", option("blend_width") == 0)
     unobscured = next(o for o in outputs if not o["geometry"]["x"] <= panel_x < o["geometry"]["x"]+o["geometry"]["width"])
     origin, width, center, rail, blend = geometry(unobscured)
     drag(origin+center, 600, -30, live_name="blend_width")
     check("coincident softness handle can open a zero band", option("blend_width") == 30)
-    click(panel_x+20, 190)
+    click(*control_point("zones",20,34));key("KEY_0")
     origin, width, center, rail, blend = geometry(outputs[1])
     before = option("center_width")
     drag(origin+center, 40, -32)
@@ -622,15 +633,13 @@ try:
     origin = next(o["geometry"]["x"] for o in outputs if o["id"] == output_id)
     frame = view["frame"]
     # Keep the keyboard hint visible while moving onto the app beneath it.
-    hint_row = control_point("zones",250,29)[1]-29
-    click(panel_x+250, 195)
+    hint_row = control_point("zones",250,34)[1]-34
+    click(*control_point("zones",250,34))
     key("KEY_RIGHT")
-    pointer(panel_x+670, 205); time.sleep(.15)
+    pointer(panel_x+snapshot()["panel"]["width"]+40, 205); time.sleep(.15)
     p = shot("09a-popout-over-app")
-    check("hint is visible above the click-through fixture", p.hint(hint_row, "Center edge softness")
-          and origin+frame["x"] < panel_x+670 < origin+frame["x"]+frame["width"]
-          and frame["y"] < 205 < frame["y"]+frame["height"])
-    click(panel_x+670, 205)
+    check("hint is visible above the click-through fixture", p.hint(hint_row, "Center edge softness"))
+    click(panel_x+snapshot()["panel"]["width"]+40, 205)
     key("KEY_A"); key("KEY_ENTER")
     for _ in range(30):
         if received.exists():
@@ -642,8 +651,55 @@ try:
           received.exists() and received.read_text() == "a"
           and not shot("09b-popout-focus-lost").hint(hint_row,"Center edge softness",expected=False))
     shot("09-click-through")
-    click(panel_x+250, 195)  # focus settings again to exercise Escape
+    click(*control_point("zones",250,34))  # focus settings again to exercise Escape
     close_panel(panel)
+    panel=open_panel();tab(3)
+    check("Translucency tab selects",snapshot()["tab"]==3)
+    click(*control_point("opacitySettings",361,34))
+    check("center opacity slider previews live",option_reaches("center_opacity_focused",.5))
+    close_panel(panel,save=True,via_button=True)
+    check("Save persists opacity", "center_opacity_focused = 0.5" in layout.read_text())
+    panel=open_panel();tab(3)
+    click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
+    check("Translucency Defaults previews opaque",option_reaches("center_opacity_focused",1))
+    close_panel(panel)
+    check("Translucency Cancel restores saved opacity",option_reaches("center_opacity_focused",.5))
+
+    panel=open_panel();tab(4)
+    check("Widgets tab selects",snapshot()["tab"]==4)
+    click(*control_point("widgetSettings",361,34))
+    check("widget expand bounce previews live",option_reaches("widget_bounce",.05))
+    click(*control_point("widgetSettings",361,103))
+    check("hover intent timing previews live",option("widget_peek_enter_delay")>1000)
+    saved_widgets=dict(snapshot()["widgets"])
+    close_panel(panel,save=True,via_button=True)
+    check("Save persists widget settings",all(k+" =" in layout.read_text() for k in saved_widgets))
+    panel=open_panel();tab(4)
+    click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
+    check("Widgets Defaults preview shipped bounce",option_reaches("widget_bounce",.04))
+    close_panel(panel)
+    check("Widgets Cancel restores saved bounce",option_reaches("widget_bounce",saved_widgets["widget_bounce"]))
+
+    panel=open_panel();tab(5)
+    check("Sunlight tab selects",snapshot()["tab"]==5)
+    enable=snapshot()["solarEnable"]
+    click(*control_point("solarEnable",enable["width"]/2,21))
+    click(*control_point("solarSettings",400,34))
+    click(*control_point("solarSettings",450,103))
+    check("manual location becomes active after both coordinates",snapshot()["solar"]["location_set"])
+    network=snapshot()["solarNetwork"]
+    click(*control_point("solarNetwork",network["width"]/2,21))
+    check("network location requires an explicit toggle",snapshot()["solar"]["allow_ip"])
+    close_panel(panel,save=True,via_button=True)
+    check("Sunlight Save writes isolated location and opt-in",solar.exists() and
+          all(line in solar.read_text() for line in ("enabled = true","allow_ip = true","location_set = true")))
+    panel=open_panel();tab(5)
+    click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
+    check("Sunlight Defaults disable following and network location",
+          not snapshot()["solar"]["enabled"] and not snapshot()["solar"]["allow_ip"])
+    close_panel(panel)
+    check("Sunlight Cancel retains saved location policy",all(line in solar.read_text() for line in
+          ("enabled = true","allow_ip = true","location_set = true")))
     # Restore caller's session settings; the saved fixture remains evidence.
     ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in initial.items()})
 finally:

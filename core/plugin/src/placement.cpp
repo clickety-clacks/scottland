@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <queue>
 
 namespace scottland::windowing
 {
@@ -57,5 +58,66 @@ double largest_opening(rectangle r, const std::vector<rectangle>& obstacles)
     double end = r.y, best = 0;
     for (auto [a, b] : blocked) { best = std::max(best, a - end); end = std::max(end, b); }
     return std::max(best, r.y + r.height - end);
+}
+
+double visible_clearance(point p, rectangle r, rectangle screen,
+    const std::vector<rectangle>& foreground)
+{
+    double right = std::min(r.x + r.width, screen.x + screen.width);
+    double bottom = std::min(r.y + r.height, screen.y + screen.height);
+    r.x = std::max(r.x, screen.x); r.y = std::max(r.y, screen.y);
+    double d = std::min({p.x - r.x, right - p.x, p.y - r.y, bottom - p.y});
+    for (auto o : foreground)
+    {
+        // Signed distance to the exterior of an occluder. Taking the minimum implements
+        // subtraction of their union without constructing polygon rings or raster masks.
+        double dx = std::max({o.x - p.x, 0.0, p.x - o.x - o.width});
+        double dy = std::max({o.y - p.y, 0.0, p.y - o.y - o.height});
+        double outside = std::hypot(dx, dy);
+        if (outside == 0) outside = -std::min({p.x - o.x, o.x + o.width - p.x,
+            p.y - o.y, o.y + o.height - p.y});
+        d = std::min(d, outside);
+    }
+    return d;
+}
+
+label_spot visible_label(rectangle r, rectangle screen, const std::vector<rectangle>& foreground,
+    double precision)
+{
+    double right = std::min(r.x + r.width, screen.x + screen.width);
+    double bottom = std::min(r.y + r.height, screen.y + screen.height);
+    r.x = std::max(r.x, screen.x); r.y = std::max(r.y, screen.y);
+    r.width = right - r.x; r.height = bottom - r.y;
+    if (r.width <= 0 || r.height <= 0) return {{r.x, r.y}, 0};
+    auto distance = [&] (point p) { return visible_clearance(p, r, screen, foreground); };
+    struct cell { point p; double half, d, upper; size_t order; };
+    auto less = [] (const cell& a, const cell& b) {
+        return a.upper == b.upper ? a.order > b.order : a.upper < b.upper;
+    };
+    std::priority_queue<cell, std::vector<cell>, decltype(less)> queue(less);
+    point preferred{r.x + r.width / 2, r.y + r.height / 2};
+    label_spot best{preferred, distance(preferred)};
+    size_t order = 0;
+    precision = std::max(0.1, precision);
+    auto add = [&] (double x, double y, double half) {
+        point p{x, y}; double d = distance(p);
+        if (d > best.clearance + 1e-9 || (std::abs(d - best.clearance) < 1e-9 &&
+            std::hypot(x - preferred.x, y - preferred.y) <
+            std::hypot(best.center.x - preferred.x, best.center.y - preferred.y))) best = {p, d};
+        double upper = d + half * std::sqrt(2.0); // distance is 1-Lipschitz
+        if (upper > best.clearance + precision) queue.push({p, half, d, upper, order++});
+    };
+    double size = std::max(precision, std::min(r.width, r.height));
+    for (double x = r.x; x < right; x += size) for (double y = r.y; y < bottom; y += size)
+        add(x + size / 2, y + size / 2, size / 2);
+    while (!queue.empty())
+    {
+        auto c = queue.top(); queue.pop();
+        if (c.upper <= best.clearance + precision) break;
+        double h = c.half / 2;
+        for (double dx : {-h, h}) for (double dy : {-h, h}) add(c.p.x + dx, c.p.y + dy, h);
+    }
+    best.clearance = std::max(0.0, best.clearance);
+    return best;
 }
 }

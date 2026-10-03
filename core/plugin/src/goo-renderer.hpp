@@ -19,13 +19,13 @@ class renderer_t
                 const std::vector<wf::geometry_t> &area = {},
                 wf::auxilliary_buffer_t *wallpaper = nullptr, const glm::mat4 &wallpaper_map = glm::mat4{1});
     // Draws only where `area` (output-logical) meets the damage: the goo never leaves its bands.
-    void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area);
+    void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area, float breath = 0);
     bool overlapping() const;
     bool highlighting() const;
     float wave_at(glm::vec2 point);
     glm::vec4 sample_at(glm::vec2 point);
-    float energy = 1;
-    double last_step_ms = 0, last_gpu_ms = 0;
+    float energy = 1, wave_energy = 1, dye_energy = 1;
+    double last_step_ms = 0, last_gpu_ms = 0, last_draw_gpu_ms = 0;
     uint64_t steps = 0;
     bool packed = false;
 

@@ -1,6 +1,7 @@
 #include "goo-renderer.hpp"
 #include "goo-shaders.hpp"
 #include "goo-gl.hpp"
+#include "attention-breath.hpp"
 #include <chrono>
 #include <cstring>
 #include <wayfire/scene-render.hpp>
@@ -31,7 +32,7 @@ struct renderer_t::impl
     bool checked = false, available = false, es3 = false, packed = false, ready = false;
     int width = 0, height = 0;
     GLuint timer = 0;
-    bool timing = false, timer_pending = false, timer_open = false;
+    bool timing = false, timer_pending = false, timer_open = false, timer_draw = false;
     float time = 0;
     uint64_t sampled_step = UINT64_MAX;
     glm::vec2 sampled_point{};
@@ -82,6 +83,24 @@ struct renderer_t::impl
     }
     std::vector<target_t> reduction;
 
+    void poll_timer(double &step_ms, double &draw_ms)
+    {
+        if (timer_pending)
+        {
+            GLuint available = 0;
+            glGetQueryObjectuiv(timer, GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available)
+            {
+                GLuint ns = 0;
+                glGetQueryObjectuiv(timer, GL_QUERY_RESULT, &ns);
+                GLint disjoint = 0;
+                glGetIntegerv(0x8FBB /* GPU_DISJOINT_EXT */, &disjoint);
+                if (!disjoint)
+                    (timer_draw ? draw_ms : step_ms) = ns / 1e6;
+                timer_pending = false;
+            }
+        }
+    }
     void release()
     {
         if (timer)
@@ -314,13 +333,14 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.hinted ? (s.hint_circle ? std::min(s.scale, 1.f) : 1.f) : 0.f, s.control_extent,
                 overlap_film_width(s, settings), s.hint_circle ? 1.f : 0.f});
             data.push_back(s.sides);
+            data.emplace_back(s.attention && s.emitter ? 1.f : 0.f, 0, 0, 0);
             data.push_back(shape_tiles[i]);
             data.push_back(s.shape ? s.shape->bounds : glm::vec4{});
             data.push_back(s.shape_body);
         }
         if (data.empty())
-            data.resize(10);
-        const std::array uploads{std::make_pair(&source, std::make_pair(10, std::max(1, int(sources.size())))),
+            data.resize(11);
+        const std::array uploads{std::make_pair(&source, std::make_pair(11, std::max(1, int(sources.size())))),
                                 std::make_pair(&curve, std::make_pair(256, 1))};
         for (auto pair : uploads)
         {
@@ -341,7 +361,7 @@ struct renderer_t::impl
         }
         return true;
     }
-    float measure()
+    float measure(float &wave_energy, float &dye_energy)
     {
         GLuint input = 0;
         int iw = wave[0].width, ih = wave[0].height;
@@ -371,6 +391,8 @@ struct renderer_t::impl
         draw_to(copy_p, query);
         unsigned char value[4];
         glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, value);
+        wave_energy = value[1] / 255.f;
+        dye_energy = value[2] / 255.f;
         return value[0] / 255.f;
     }
 };
@@ -398,21 +420,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     state_t guard;
     if (!p->support())
         return false;
-    if (p->timer_pending)
-    {
-        GLuint available = 0;
-        glGetQueryObjectuiv(p->timer, GL_QUERY_RESULT_AVAILABLE, &available);
-        if (available)
-        {
-            GLuint ns = 0;
-            glGetQueryObjectuiv(p->timer, GL_QUERY_RESULT, &ns);
-            GLint disjoint = 0;
-            glGetIntegerv(0x8FBB /* GPU_DISJOINT_EXT */, &disjoint);
-            if (!disjoint)
-                last_gpu_ms = ns / 1e6;
-            p->timer_pending = false;
-        }
-    }
+    p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
     if (!p->es3 && sources.size() > 1024)
     {
         LOGE("scottland goo: too many sources for GLES 2; retaining halo");
@@ -425,7 +433,10 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     if ((!p->ready || w != p->width || h != p->height) && !p->resize(w, h))
         return false;
     if (measure_gpu)
+    {
+        p->timer_draw = false;
         glBeginQuery(0x88BF /* TIME_ELAPSED_EXT */, p->timer);
+    }
     p->sources = sources;
     p->controls = std::any_of(sources.begin(), sources.end(), [](auto &s) {
         return glm::length(s.corners) + glm::length(s.sides) > .001f;
@@ -445,7 +456,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         return false;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, p->field.fb);
-    glClearColor(0, 0, 0, 1);
+    glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
     p->common(field_program, p->field.width, p->field.height);
     p->simulate(field_program, p->field, area);
@@ -462,8 +473,6 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         p->common(wave_program, p->wave[1].width, p->wave[1].height);
         wave_program.uniform1f("uC2", s.wave_speed);
         wave_program.uniform1f("uDamp", s.wave_damp);
-        wave_program.uniform1f("uHintCircles", std::any_of(sources.begin(), sources.end(),
-            [](const source_t &source) { return source.hint_circle; }) ? 1.f : 0.f);
         std::array<glm::vec4, 8> imp{};
         int n = k == 0 ? std::min<size_t>(impulses.size(), 8) : 0;
         for (int i = 0; i < n; i++)
@@ -486,13 +495,13 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     packed = p->packed;
     steps++;
     if (steps % 30 == 0)
-        energy = p->measure();
+        energy = p->measure(wave_energy, dye_energy);
     p->timer_open = measure_gpu;
     last_step_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return true;
 }
-void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area)
+void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area, float breath)
 {
     if (!p->ready)
         return;
@@ -500,6 +509,13 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     // the goo's work to its own bands rather than shading the whole box.
     auto damage = data.damage & area;
     state_t guard;
+    p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
+    if (!p->timer_open && p->timing && !p->timer_pending)
+    {
+        p->timer_draw = true;
+        p->timer_open = true;
+        glBeginQuery(0x88BF, p->timer);
+    }
     wf::gles::bind_render_buffer(data.target);
     // Wayfire binds the draw target only on GLES 3. Backdrop copies read it too.
     glBindFramebuffer(GL_FRAMEBUFFER, wf::gles::ensure_render_buffer_fb_id(data.target));
@@ -528,6 +544,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     auto &program = p->fast ? p->render_fast : p->render_p;
     p->common(program, p->width, p->height);
     program.uniform2f("uFieldSize", p->field.width, p->field.height);
+    program.uniform1f("uBreath", breath);
+    program.uniform1f("uBreathSwell", breath_swell * p->settings.swell / .7f);
     auto ortho = wf::gles::render_target_orthographic_projection(data.target);
     program.uniformMatrix4f("MVP", ortho);
     program.uniformMatrix4f("uBackgroundMap", ortho);

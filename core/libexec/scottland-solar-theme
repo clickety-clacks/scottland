@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Follow local sunrise/sunset while preserving a user-picked matching theme.
+
+Configuration: ~/.config/scottland/solar.ini, written by Scottland Settings.
+The current desired mode is published per Wayland session for distro adapters.
+"""
+import configparser
+from datetime import datetime, timezone
+import json
+import math
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+from urllib.request import urlopen
+
+CONFIG = Path(os.environ.get("SCOTTLAND_SOLAR_FILE", str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
+STATE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/"scottland"
+MODE = STATE/(os.environ.get("WAYLAND_DISPLAY", "wayland") + ".solar-mode")
+
+
+def coordinates(lat, lon):
+    try:
+        lat, lon = float(lat), float(lon)
+        if math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180:
+            return lat, lon
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def read_config():
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG)
+    section = cfg["solar"] if cfg.has_section("solar") else {}
+    def yes(name, default="false"):
+        return str(section.get(name, default)).lower() in ("true", "yes", "1", "on")
+    # On by default, finding the location by itself (Mike, 2026-10-02); either can be turned off.
+    return dict(enabled=yes("enabled", "true"), allow_ip=yes("allow_ip", "true"),
+                location=coordinates(section.get("latitude"), section.get("longitude")) if yes("location_set") else None)
+
+
+def geoclue_location():
+    """Ask the system location service for city-level position, then release its client."""
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        manager = dbus.Interface(bus.get_object("org.freedesktop.GeoClue2", "/org/freedesktop/GeoClue2/Manager"),
+                                 "org.freedesktop.GeoClue2.Manager")
+        path = manager.GetClient()
+        client = bus.get_object("org.freedesktop.GeoClue2", path)
+        props = dbus.Interface(client, "org.freedesktop.DBus.Properties")
+        props.Set("org.freedesktop.GeoClue2.Client", "DesktopId", dbus.String("scottland-settings"))
+        props.Set("org.freedesktop.GeoClue2.Client", "RequestedAccuracyLevel", dbus.UInt32(4))
+        control = dbus.Interface(client, "org.freedesktop.GeoClue2.Client")
+        control.Start()
+        try:
+            for _ in range(25):
+                location_path = str(props.Get("org.freedesktop.GeoClue2.Client", "Location"))
+                if location_path != "/":
+                    loc = dbus.Interface(bus.get_object("org.freedesktop.GeoClue2", location_path),
+                                         "org.freedesktop.DBus.Properties")
+                    return coordinates(loc.Get("org.freedesktop.GeoClue2.Location", "Latitude"),
+                                       loc.Get("org.freedesktop.GeoClue2.Location", "Longitude"))
+                time.sleep(.2)
+        finally:
+            control.Stop()
+    except Exception as error:
+        print(f"scottland-solar-theme: Geoclue unavailable: {error}", file=sys.stderr)
+    return None
+
+
+def ip_location():
+    # Called only after the user explicitly enables network lookup in Settings.
+    try:
+        with urlopen("https://ipapi.co/json/", timeout=5) as response:
+            data = json.load(response)
+        return coordinates(data.get("latitude"), data.get("longitude"))
+    except Exception as error:
+        print(f"scottland-solar-theme: network location unavailable: {error}", file=sys.stderr)
+        return None
+
+
+def solar_mode(now, latitude, longitude):
+    """NOAA solar position: day begins/ends with the sun's upper limb at the horizon."""
+    now = now.astimezone(timezone.utc)
+    day = now.timetuple().tm_yday
+    minutes = now.hour * 60 + now.minute + now.second / 60
+    gamma = 2 * math.pi / 365 * (day - 1 + (minutes / 60 - 12) / 24)
+    eq = 229.18 * (0.000075 + 0.001868*math.cos(gamma) - 0.032077*math.sin(gamma)
+                   - 0.014615*math.cos(2*gamma) - 0.040849*math.sin(2*gamma))
+    decl = (0.006918 - 0.399912*math.cos(gamma) + 0.070257*math.sin(gamma)
+            - 0.006758*math.cos(2*gamma) + 0.000907*math.sin(2*gamma)
+            - 0.002697*math.cos(3*gamma) + 0.00148*math.sin(3*gamma))
+    hour_angle = math.radians(((minutes + eq + 4*longitude) % 1440) / 4 - 180)
+    lat = math.radians(latitude)
+    altitude_sine = math.sin(lat)*math.sin(decl) + math.cos(lat)*math.cos(decl)*math.cos(hour_angle)
+    return "light" if altitude_sine > math.sin(math.radians(-0.833)) else "dark"
+
+
+def current_mode():
+    try:
+        result = subprocess.run(["busctl", "--user", "call", "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "ReadOne", "ss",
+            "org.freedesktop.appearance", "color-scheme"], capture_output=True, text=True, timeout=4)
+        match = re.search(r"u (\d)", result.stdout)
+        if match and match.group(1) in ("1", "2"):
+            return "dark" if match.group(1) == "1" else "light"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    result = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                            capture_output=True, text=True)
+    # GSettings' "default" is no dark preference, so it is the light state.
+    return "dark" if "prefer-dark" in result.stdout else "light"
+
+
+def publish(mode):
+    STATE.mkdir(parents=True, exist_ok=True)
+    if MODE.exists() and MODE.read_text().strip() == mode:
+        return
+    temporary = MODE.with_name(MODE.name + "." + str(os.getpid()))
+    temporary.write_text(mode + "\n")
+    temporary.replace(MODE)
+
+
+def apply(mode):
+    publish(mode)
+    if current_mode() != mode:
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
+                        "prefer-" + mode], check=True)
+
+
+def run_once():
+    config = read_config()
+    if not config["enabled"]:
+        MODE.unlink(missing_ok=True)
+        return None
+    location = geoclue_location() or config["location"]
+    if location is None and config["allow_ip"]:
+        location = ip_location()
+    if location is None:
+        print("scottland-solar-theme: set fallback coordinates in Settings", file=sys.stderr)
+        return None
+    desired = solar_mode(datetime.now(timezone.utc), *location)
+    apply(desired)
+    return desired
+
+
+def watch():
+    # A saved preference is observed promptly; location is refreshed between days.
+    last_config = None
+    location = None
+    location_at = 0
+    while True:
+        config = read_config()
+        if not config["enabled"]:
+            MODE.unlink(missing_ok=True)
+            location = None
+        else:
+            now = time.monotonic()
+            if config != last_config or now-location_at > 12*3600:
+                location = geoclue_location() or config["location"]
+                if location is None and config["allow_ip"]:
+                    location = ip_location()
+                location_at = now
+            if location is not None:
+                try:
+                    apply(solar_mode(datetime.now(timezone.utc), *location))
+                except (OSError, subprocess.CalledProcessError) as error:
+                    print(f"scottland-solar-theme: apply failed: {error}", file=sys.stderr)
+        last_config = config
+        time.sleep(10)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1 or sys.argv[1] == "watch":
+        watch()
+    elif sys.argv[1] == "once":
+        print(run_once() or "off")
+    elif sys.argv[1] == "mode" and len(sys.argv) == 5:
+        print(solar_mode(datetime.fromisoformat(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])))
+    else:
+        sys.exit("usage: scottland-solar-theme [watch|once|mode ISO_DATETIME LAT LON]")

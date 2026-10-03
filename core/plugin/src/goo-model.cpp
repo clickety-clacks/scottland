@@ -1,4 +1,5 @@
 #include "goo-model.hpp"
+#include "attention-breath.hpp"
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -188,7 +189,7 @@ float overlap_film_width(const source_t &w, const settings_t &s)
         rest + (2 * s.thickness - rest) * w.swell * (s.swell / .7f));
     return s.overlap_film * swollen / rest;
 }
-float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &s, float time)
+float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_t &s, float time, float breath)
 {
     if (!std::isfinite(p.x) || !std::isfinite(p.y))
         return 0;
@@ -215,7 +216,9 @@ float density(glm::vec2 p, const std::vector<source_t> &sources, const settings_
             e *= s.thickness / std::max(width, .01f);
             a /= std::max(w.liquid.x, .0001f);
         }
-        f += std::max(a, 0.f) * s.fall(e);
+        float local = w.attention ? 1.f - glm::smoothstep(3*s.reach, 4*s.reach,
+            std::max(distance(p, w), 0.f)) : 0.f;
+        f += std::max(a, 0.f) * s.fall(e) * (1 + breath_swell * s.swell/.7f * breath * local);
     }
     return f;
 }
@@ -238,7 +241,8 @@ std::vector<float> support_radii(std::vector<source_t> sources, const settings_t
     // Bound the threshold contour with the simulation mask's existing 3% margin.
     // Draw reconstruction and device-pixel AA get spatial padding in compute_bands.
     // Allow a full packed-field quantum (also bounds half-float rounding).
-    float edge = s.threshold() * .97f / (1 + 3.9f * std::max(0.f, s.wave_height));
+    float edge = s.threshold() * .97f / ((1 + 3.9f * std::max(0.f, s.wave_height)) *
+        (1 + breath_swell * s.swell/.7f));
     edge = std::expm1(std::max(0.f, std::log1p(edge) - 2.83321334f / 255));
     // Extremely low custom thresholds cannot be bounded after packed quantization.
     if (edge <= 0)

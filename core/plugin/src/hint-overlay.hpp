@@ -9,7 +9,7 @@
 #include <chrono>
 namespace scottland::windowing
 {
-// Click-through compositor overlay; its caller follows the actual transformed window center.
+// Click-through compositor overlay; its caller supplies the stable visible-region attachment.
 class hint_node : public wf::scene::node_t
 {
   public:

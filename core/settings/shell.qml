@@ -38,6 +38,9 @@ ShellRoot {
     { name: "goo_release", hint: "How quickly a window renews its dye. Higher shows state colors sooner; lower lets old colors linger.", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
     { name: "goo_shine", hint: "Brightness of reflected highlights. Higher looks glossier; zero removes the shine.", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 },
+    { name: "goo_depth", hint: "Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it.", title: "Liquid depth", initial: 6, low: 0, high: 20, step: 0.1 },
+    { name: "goo_profile", hint: "How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead.", title: "Wall wetting", initial: 0.65, low: 0, high: 1, step: 0.01 },
+    { name: "goo_soak", hint: "Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.", title: "Wallpaper soak", initial: 0.12, low: 0, high: 1, step: 0.01 },
     { name: "goo_overlap_film", hint: "Width of goo over windows behind. Higher covers a wider strip; zero hides the film.", title: "Overlap film", initial: 4, low: 0, high: 20, step: 0.5 },
     { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
     { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },
@@ -50,13 +53,33 @@ ShellRoot {
   property var gooValues: gooDefaults()
   property int tab: 0
   readonly property bool gooTab: tab === 1
-  readonly property var motionDefaults: ({key_impulse:335, key_friction:608, key_max_velocity:6000,
-    key_restitution:0.5, alt_hold_delay:300, window_double_tap_delay:300,
-    move_friction_curve:"", resize_friction_curve:""})
+  readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
+    resize_impulse:335, resize_friction:608, key_max_velocity:6000,
+    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300})
   property var motionValues: Object.assign({}, motionDefaults)
-  readonly property var movePoints: parseCurve(motionValues.move_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
-  readonly property var resizePoints: parseCurve(motionValues.resize_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
+  readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
+    side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
+    window_mode_opacity_focused:1,window_mode_opacity_unfocused:1})
+  property var opacityValues: Object.assign({},opacityDefaults)
+  readonly property var widgetDefaults: ({widget_bounce:0.04,widget_peek_enter_delay:150,
+    widget_peek_leave_delay:100,widget_attention_peek_duration:5000})
+  property var widgetValues: Object.assign({},widgetDefaults)
+  readonly property var solarDefaults: ({enabled:true,allow_ip:true,location_set:false,latitude:0,longitude:0})
+  property var solarValues: Object.assign({},solarDefaults)
+  property var originalSolar: Object.assign({},solarDefaults)
+  property bool solarLatitudeEdited:false
+  property bool solarLongitudeEdited:false
+  readonly property string solarPath: Quickshell.env("SCOTTLAND_SOLAR_FILE") ||
+    (Quickshell.env("HOME") + "/.config/scottland/solar.ini")
+  function setOpacity(name,value) { opacityValues=Object.assign({},opacityValues,{[name]:value}) }
+  function setWidget(name,value) { widgetValues=Object.assign({},widgetValues,{[name]:value}) }
+  function setSolar(name,value) { solarValues=Object.assign({},solarValues,{[name]:value}) }
+  onOpacityValuesChanged: if (loaded && !push.running) push.start()
+  onWidgetValuesChanged: if (loaded && !push.running) push.start()
   function setMotion(name,value) { motionValues=Object.assign({},motionValues,{[name]:value}) }
+  function setMotionPair(impulseName,frictionName,impulse,friction) {
+    motionValues=Object.assign({},motionValues,{[impulseName]:impulse,[frictionName]:friction})
+  }
   onMotionValuesChanged: if (loaded && !push.running) push.start()
   Design { id: theme; palette: root.palette }
   readonly property var exponentialPoints: Array.from({ length: 17 }, (_, i) => ({ x: i / 16, y: Math.exp(-i / 4) }))
@@ -91,10 +114,10 @@ ShellRoot {
   property var unsupported: []
   readonly property var settingNames: ({ center_width: "Center zone width", rail_width: "Widget rail width",
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
-    blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Deceleration scale",
-    key_max_velocity:"Speed limit", key_restitution:"Widget rail rebound", alt_hold_delay:"Alt hold timing",
-    window_double_tap_delay:"Double-tap timing", move_friction_curve:"Movement braking curve",
-    resize_friction_curve:"Resize braking curve" })
+    blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
+    resize_impulse:"Resize strength",resize_friction:"Resize deceleration",
+    key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", alt_hold_delay:"Alt hold timing",
+    window_double_tap_delay:"Double-tap timing" })
 
   // The session palette carries theme colors and the desktop's interface font/text scale.
   property var palette: ({})
@@ -113,6 +136,7 @@ ShellRoot {
   readonly property color hintAccent: palette.accent || accent
   readonly property string hintFontFamily: palette.font_family || Qt.application.font.family
   readonly property real textScale: Math.max(0.5, Math.min(3, Number(palette.text_scale) || 1))
+  readonly property bool tabsWrapped: textScale > 1.35 || (settingsWindow.screen?.width || 1280) < 1100
   readonly property color panelColor: theme.background
   readonly property color textColor: theme.foreground
   readonly property color dimText: theme.muted
@@ -174,7 +198,7 @@ ShellRoot {
   Timer {
     id: push
     interval: 30
-    onTriggered: { root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth); root.sendGoo(root.gooValues); root.sendBatch(root.motionValues) }
+    onTriggered: { root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth); root.sendGoo(root.gooValues); root.sendBatch(root.motionValues); root.sendBatch(root.opacityValues); root.sendBatch(root.widgetValues) }
   }
 
   function send(center, rail, points, blend) {
@@ -230,7 +254,18 @@ ShellRoot {
         for (const k of Object.keys(motion))
           motion[k] = values[k] !== undefined ? values[k] : typeof motion[k] === "string" ? root.savedText(k) : root.savedValue(k,motion[k])
         root.motionValues = motion
-        root.original = Object.assign({},root.original,{motion:Object.assign({},motion)})
+        const opacity=Object.assign({},root.opacityDefaults),widgets=Object.assign({},root.widgetDefaults)
+        for (const group of [opacity,widgets]) for (const k of Object.keys(group))
+          group[k] = values[k] !== undefined ? values[k] : root.savedValue(k,group[k])
+        root.opacityValues=opacity;root.widgetValues=widgets
+        root.original = Object.assign({},root.original,{motion:Object.assign({},motion),
+          opacity:Object.assign({},opacity),widgets:Object.assign({},widgets)})
+        const solar=Object.assign({},root.solarDefaults)
+        for(const k of ["enabled","allow_ip","location_set"])
+          solar[k]=root.solarText(k)==="true"
+        for(const k of ["latitude","longitude"]){const n=parseFloat(root.solarText(k));if(!isNaN(n))solar[k]=n}
+        root.solarValues=solar;root.originalSolar=Object.assign({},solar)
+        root.solarLatitudeEdited=solar.location_set;root.solarLongitudeEdited=solar.location_set
         root.loaded = true
       }
     }
@@ -243,6 +278,19 @@ ShellRoot {
     blockLoading: true  // read before the running values arrive
     blockWrites: true   // finish the small layout file before the IPC acknowledgement quits
     atomicWrites: true
+  }
+
+  FileView {
+    id: solarFile
+    path: root.solarPath
+    printErrors: false
+    blockLoading: true
+    blockWrites: true
+    atomicWrites: true
+  }
+  function solarText(name) {
+    const match=solarFile.text().match(new RegExp("^"+name+"\\s*=\\s*(.*)$","m"))
+    return match?match[1].trim():""
   }
 
   // Values last saved by this app; used for settings the running session can't report.
@@ -261,6 +309,9 @@ ShellRoot {
     send(centerWidth, railWidth, curvePoints, blendWidth)
     sendGoo(gooValues)
     sendBatch(motionValues)
+    sendBatch(opacityValues)
+    sendBatch(widgetValues)
+    solarFile.setText("# Written by Scottland Settings.\n[solar]\n"+Object.keys(solarValues).map(k=>k+" = "+solarValues[k]+"\n").join(""))
     saved.setText("# Written by Scottland settings.\n[scottland]\n"
       + "center_width = " + centerWidth.toFixed(3) + "\n"
       + "rail_width = " + railWidth.toFixed(3) + "\n"
@@ -269,13 +320,17 @@ ShellRoot {
       + "min_scale = " + minScale.toFixed(3) + "\n"
       + "max_scale = " + maxScale.toFixed(3) + "\n"
       + Object.keys(gooValues).map(k => k + " = " + gooValues[k] + "\n").join("")
-      + Object.keys(motionValues).map(k => k + " = " + motionValues[k] + "\n").join(""))
+      + Object.keys(motionValues).map(k => k + " = " + motionValues[k] + "\n").join("")
+      + Object.keys(opacityValues).map(k => k + " = " + opacityValues[k] + "\n").join("")
+      + Object.keys(widgetValues).map(k => k + " = " + widgetValues[k] + "\n").join(""))
     live.write("flush\n")
   }
 
   function cancel() {
     push.stop()
-    if (original) { send(original.center_width, original.rail_width, original.curve, original.blend_width); sendGoo(original.goo); sendBatch(original.motion) }
+    if (original) { send(original.center_width, original.rail_width, original.curve, original.blend_width); sendGoo(original.goo); sendBatch(original.motion); sendBatch(original.opacity); sendBatch(original.widgets) }
+    solarValues=Object.assign({},originalSolar)
+    solarLatitudeEdited=originalSolar.location_set;solarLongitudeEdited=originalSolar.location_set
     live.write("flush\n")
   }
 
@@ -289,6 +344,12 @@ ShellRoot {
       knots:item.points.map(p=>({x:r.x+item.toX(p.x),y:r.y+item.toY(p.y)})),
       plot:{x:r.x+item.plotLeft,y:r.y+item.plotTop,width:item.plotWidth,height:item.plotHeight}})
   }
+  function coastProbe(item) {
+    const r=testRect(item)
+    return Object.assign(r,{endpoint:{x:r.x+item.endpointX,y:r.y+item.endpointY},
+      duration:item.duration,distance:item.distance,
+      plot:{x:r.x+item.plotLeft,y:r.y+item.plotTop,width:item.plotWidth,height:item.plotHeight}})
+  }
   IpcHandler {
     target: "settings-test"
     // Observations only, and only when explicitly enabled by an isolated test.
@@ -299,10 +360,14 @@ ShellRoot {
       viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
       goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint}),
-      editor:root.curveProbe(editor), movement:root.curveProbe(movementEditor),resize:root.curveProbe(resizeEditor),
+      editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
-      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),motion:root.motionValues,values:root.gooValues,palette:root.palette})
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),
+      opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
+      widgetSettings:root.testRect(widgetSettings),solarSettings:root.testRect(solarSettings),
+      solarEnable:root.testRect(solarEnable),solarNetwork:root.testRect(solarNetwork),
+      motion:root.motionValues,opacity:root.opacityValues,widgets:root.widgetValues,solar:root.solarValues,values:root.gooValues,palette:root.palette})
     }
   }
 
@@ -479,9 +544,13 @@ ShellRoot {
     id: settingsWindow
     // Layer-shell surfaces have no window title; the application name and heading identify it.
     anchors.bottom: true
-    margins.bottom: 48
-    implicitWidth: 560
-    implicitHeight: panel.implicitHeight + 40
+    margins.bottom: Math.max(24, Math.round((screen?.height || 800)*0.04))
+    implicitWidth: Math.min(Math.max(320,(screen?.width || 1280)-24),1040,
+      Math.max(780,Math.round((screen?.width || 1280)*0.63)))
+    // About half the screen's height (Mike, 2026-10-02: the near-full-height panel was too large),
+    // never so short that a tab's rows get cramped on small screens.
+    implicitHeight: Math.min((screen?.height || 800)-24,
+      Math.max(520, Math.round((screen?.height || 800)*0.5)))
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.layer: WlrLayer.Overlay
@@ -500,8 +569,9 @@ ShellRoot {
 
       ColumnLayout {
         id: panel
-        anchors { left: parent.left; right: parent.right; top: parent.top; margins: 20 }
-        spacing: 14
+        anchors.fill: parent
+        anchors.margins: 36
+        spacing: 20
 
         Text {
           id:heading
@@ -524,31 +594,36 @@ ShellRoot {
 
         Rectangle {
           Layout.fillWidth: true
-          Layout.preferredHeight: 42
+          Layout.preferredHeight: root.tabsWrapped ? 96 : 48
           radius: theme.radius
           color: theme.tint(0.07)
           clip: true
-          Row {
+          Grid {
             anchors.fill: parent
+            columns: root.tabsWrapped ? 3 : 6
             Repeater {
-              model: ["Layout", "Goo", "Window mode"]
+              model: ["Layout", "Goo", "Window mode", "Translucency", "Widgets", "Sunlight"]
               SettingAction {
-            onAcceptRequested: root.save()
+                onAcceptRequested: root.save()
                 required property int index
                 required property string modelData
                 design: theme
-                width: parent.width/3; height: parent.height
-                text: modelData; joined: true; joinPosition:index; checked: root.tab === index
+                width: parent.width/(root.tabsWrapped ? 3 : 6); height:48
+                text: modelData; joined: true; joinPosition:index%(root.tabsWrapped ? 3 : 6); checked: root.tab === index
                 onClicked: {
                   root.tab=index
                   gooScroll.halt(); gooScroll.contentY=0
                   Qt.callLater(() => {
                     if(root.tab===0)zoneSettings.forceActiveFocus()
                     else if(root.tab===1)gooSettings.forceActiveFocus()
-                    else playground.forceActiveFocus()
+                    else if(root.tab===2)playground.forceActiveFocus()
+                    else if(root.tab===3)opacitySettings.forceActiveFocus()
+                    else if(root.tab===4)widgetSettings.forceActiveFocus()
+                    else solarSettings.forceActiveFocus()
                   })
                 }
-                Rectangle { visible: index>0; width:1;height:parent.height-20;y:10;color:theme.separator }
+                Rectangle { visible: index%(root.tabsWrapped ? 3 : 6)>0; width:1;height:parent.height-20;y:10;color:theme.separator }
+                Rectangle { visible: root.tabsWrapped && index>=3; width:parent.width-20;height:1;x:10;color:theme.separator }
               }
             }
           }
@@ -558,12 +633,13 @@ ShellRoot {
           id: gooScroll
           design:theme
           Layout.fillWidth: true
-          Layout.preferredHeight: Math.min(500, (Quickshell.screens[0]?.height || 800) * 0.6)
+          Layout.fillHeight: true
+          Layout.minimumHeight: 200
           contentHeight: contents.implicitHeight
           ColumnLayout {
             id: contents
             width: gooScroll.availableWidth
-            spacing: 14
+            spacing: 22
 
         // The zone settings: one stack of rows, each row a slider (ParameterStack.qml).
         ParameterStack {
@@ -637,7 +713,7 @@ ShellRoot {
           id: editor
           viewport:gooScroll; scrollOffset:gooScroll.contentY
           explanation:root.gooTab ? "How quickly density falls away from a window. Lower points thin the distant goo; higher points extend its reach." : "Window scale between the full-size center and widget rail. Higher points keep windows larger at that position."
-          visible: root.tab !== 2
+          visible: root.tab === 0 || root.tab === 1
           Layout.fillWidth: true
           design: theme
           title: root.gooTab ? "Density falloff" : "Scale across the side zones"
@@ -653,48 +729,36 @@ ShellRoot {
         ColumnLayout {
           visible: root.tab === 2
           Layout.fillWidth: true
-          spacing: 14
+          spacing: 22
           MotionPlayground {
             id: playground
             viewport:gooScroll; scrollOffset:gooScroll.contentY
             Layout.fillWidth: true
             design: theme
             values: root.motionValues
-            movement: root.movePoints
-            resizing: root.resizePoints
-            evaluate: root.curveAt
             onChanged: (name,value)=>root.setMotion(name,value)
           }
-          Text {
-            Layout.fillWidth: true; wrapMode: Text.WordWrap
-            text: "Flick the sample or press arrows. Ctrl + arrows resizes. The sample stops vertically and morphs into a rail widget at a side; the rail trace adjusts that widget's rebound."
-            color: theme.muted; font.family: theme.family; font.pixelSize:12*theme.textScale
-          }
-          CurveEditor {
+          CoastGraph {
             id: movementEditor
             Layout.fillWidth: true
             viewport:gooScroll; scrollOffset:gooScroll.contentY
-            explanation:"Braking force in pt/s² at each speed. Raise the curve to stop sooner; lower it to coast farther. Movement arrows and released drags share this law."
-            design: theme; title: "Movement · braking (pt/s²)"
-            points: root.movePoints
-            opening: root.parseCurve(root.original?.motion?.move_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
-            minimum:0.05; maximum:4; evaluate:root.curveAt
-            leftLabel:"0 pt/s"; rightLabel:Math.round(root.motionValues.key_max_velocity)+" pt/s"
-            formatValue:v=>Math.round(v*root.motionValues.key_friction)
-            onEdited:points=>root.setMotion("move_friction_curve",root.curveText(points))
+            explanation:"Drag the endpoint. Right means a longer coast; up means farther travel. The graph shows window position after one arrow push; released drags use the same deceleration."
+            design: theme; title: "Movement · position over time"
+            impulse:root.motionValues.key_impulse;friction:root.motionValues.key_friction
+            openingImpulse:root.original?.motion?.key_impulse ?? 335
+            openingFriction:root.original?.motion?.key_friction ?? 608
+            onEdited:(impulse,friction)=>root.setMotionPair("key_impulse","key_friction",impulse,friction)
           }
-          CurveEditor {
+          CoastGraph {
             id: resizeEditor
             Layout.fillWidth: true
             viewport:gooScroll; scrollOffset:gooScroll.contentY
-            explanation:"Braking force for Ctrl + arrow resizing. Higher stops size changes sooner; lower carries them farther. The window keeps its center."
-            design: theme; title: "Resize · braking (pt/s²)"
-            points: root.resizePoints
-            opening: root.parseCurve(root.original?.motion?.resize_friction_curve,0.05,4) || [{x:0,y:1},{x:1,y:1}]
-            minimum:0.05; maximum:4; evaluate:root.curveAt
-            leftLabel:"0 pt/s"; rightLabel:Math.round(root.motionValues.key_max_velocity)+" pt/s"
-            formatValue:v=>Math.round(v*root.motionValues.key_friction)
-            onEdited:points=>root.setMotion("resize_friction_curve",root.curveText(points))
+            explanation:"Drag the endpoint. Right means resizing continues longer; up means the window grows or shrinks farther after one Ctrl + arrow push."
+            design: theme; title: "Resize · position over time"
+            impulse:root.motionValues.resize_impulse;friction:root.motionValues.resize_friction
+            openingImpulse:root.original?.motion?.resize_impulse ?? 335
+            openingFriction:root.original?.motion?.resize_friction ?? 608
+            onEdited:(impulse,friction)=>root.setMotionPair("resize_impulse","resize_friction",impulse,friction)
           }
           ParameterStack {
             id:motionSettings
@@ -704,12 +768,26 @@ ShellRoot {
             hintFontFamily:root.hintFontFamily; textScale:root.textScale
             viewport:gooScroll; scrollOffset:gooScroll.contentY
             rows:[
-              {id:"key_friction",label:"Deceleration scale",min:1,max:20000,step:10,suffix:" pt/s²",hint:"Scales both friction curves vertically. Higher stops sooner; lower coasts farther. A flat curve at one times this value preserves constant deceleration."},
-              {id:"key_max_velocity",label:"Speed limit",min:1,max:20000,step:100,suffix:" pt/s",hint:"Caps each movement and resize axis, including a drag release. Higher permits faster motion and extends the speed axis of both curves."}
+              {id:"key_max_velocity",label:"Speed limit",min:1,max:20000,step:100,suffix:" pt/s",hint:"Caps each movement and resize axis, including a drag release. Higher permits faster motion when impulses build up."},
+              {id:"cycle_overshoot",label:"Hint cycle overshoot",min:0,max:10,step:0.1,largeStep:1,decimals:1,suffix:"%",hint:"Elastic settlement after a Window mode hint moves a window. Higher passes the destination farther before resting; zero removes overshoot. Pushes and coasts are unaffected."}
             ]
             values:root.motionValues; opening:root.original?.motion || ({})
             onChanged:(name,value)=>root.setMotion(name,value)
             onSelectedChanged:gooScroll.revealRow(motionSettings,selected)
+          }
+          ParameterStack {
+            id:windowOpacitySettings
+            Layout.fillWidth:true
+            foreground:root.textColor;accent:root.accent
+            hintBackground:root.hintBackground;hintForeground:root.hintForeground;hintAccent:root.hintAccent
+            hintFontFamily:root.hintFontFamily;textScale:root.textScale
+            viewport:gooScroll;scrollOffset:gooScroll.contentY
+            rows:[
+              {id:"window_mode_opacity_focused",label:"Focused opacity",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of the selected window while Window mode is active. Higher is more solid; lower reveals what is behind it."},
+              {id:"window_mode_opacity_unfocused",label:"Other windows' opacity",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of other windows while Window mode is active. Higher is more solid; lower reveals what is behind them."}
+            ]
+            values:root.opacityValues;opening:root.original?.opacity || ({})
+            onChanged:(name,value)=>root.setOpacity(name,value)
           }
           TimingRow {
             id:holdTiming
@@ -723,6 +801,72 @@ ShellRoot {
             value:root.motionValues.window_double_tap_delay;opening:root.original?.motion?.window_double_tap_delay || 300
             onEdited:value=>root.setMotion("window_double_tap_delay",value)
           }
+        }
+        ParameterStack {
+          id:opacitySettings
+          visible:root.tab===3
+          Layout.fillWidth:true
+          foreground:root.textColor;accent:root.accent
+          hintBackground:root.hintBackground;hintForeground:root.hintForeground;hintAccent:root.hintAccent
+          hintFontFamily:root.hintFontFamily;textScale:root.textScale
+          viewport:gooScroll;scrollOffset:gooScroll.contentY
+          rows:[
+            {id:"center_opacity_focused",label:"Center · focused",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of the focused center window. Higher is more solid; lower reveals what is behind it."},
+            {id:"center_opacity_unfocused",label:"Center · unfocused",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of other center windows. Higher is more solid; lower reveals what is behind them."},
+            {id:"side_opacity_focused",label:"Side zones · focused",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of the focused window in a side zone. Higher is more solid; lower reveals what is behind it."},
+            {id:"side_opacity_unfocused",label:"Side zones · unfocused",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of other windows in side zones. Higher is more solid; lower reveals what is behind them."},
+            {id:"widget_opacity_focused",label:"Widgets · focused",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of a focused widget. Higher is more solid; lower reveals what is behind it."},
+            {id:"widget_opacity_unfocused",label:"Widgets · unfocused",min:0,max:1,step:0.01,largeStep:0.1,decimals:2,hint:"Opacity of other widgets. Higher is more solid; lower reveals what is behind them."}
+          ]
+          values:root.opacityValues;opening:root.original?.opacity || ({})
+          onChanged:(name,value)=>root.setOpacity(name,value)
+          onSelectedChanged:gooScroll.revealRow(opacitySettings,selected)
+        }
+        ParameterStack {
+          id:widgetSettings
+          visible:root.tab===4
+          Layout.fillWidth:true
+          foreground:root.textColor;accent:root.accent
+          hintBackground:root.hintBackground;hintForeground:root.hintForeground;hintAccent:root.hintAccent
+          hintFontFamily:root.hintFontFamily;textScale:root.textScale
+          viewport:gooScroll;scrollOffset:gooScroll.contentY
+          rows:[
+            {id:"widget_bounce",label:"Expand / contract bounce",min:0,max:0.1,step:0.005,largeStep:0.02,decimals:3,hint:"Elastic size overshoot when a widget expands or contracts. Higher adds a larger pop; zero removes it."},
+            {id:"widget_peek_enter_delay",label:"Hover intent",min:0,max:3000,step:10,largeStep:100,suffix:" ms",hint:"How long the pointer rests on a collapsed widget before it peeks. Higher asks for more intent; lower peeks sooner."},
+            {id:"widget_peek_leave_delay",label:"Hover leave",min:0,max:3000,step:10,largeStep:100,suffix:" ms",hint:"How long an expanded hover peek waits before closing after the pointer leaves. Higher gives more time to return."},
+            {id:"widget_attention_peek_duration",label:"Attention peek",min:100,max:30000,step:100,largeStep:1000,suffix:" ms",hint:"How long a collapsed widget stays expanded when it asks for attention. Higher keeps it open longer."}
+          ]
+          values:root.widgetValues;opening:root.original?.widgets || ({})
+          onChanged:(name,value)=>root.setWidget(name,value)
+          onSelectedChanged:gooScroll.revealRow(widgetSettings,selected)
+        }
+        ColumnLayout {
+          visible:root.tab===5
+          Layout.fillWidth:true
+          spacing:22
+          SettingAction { id:solarEnable;design:theme;text:root.solarValues.enabled?"Follow sunrise and sunset":"Sun following is off";checked:root.solarValues.enabled
+            onClicked:root.setSolar("enabled",!root.solarValues.enabled);onAcceptRequested:root.save() }
+          ParameterStack {
+            id:solarSettings
+            Layout.fillWidth:true
+            foreground:root.textColor;accent:root.accent
+            hintBackground:root.hintBackground;hintForeground:root.hintForeground;hintAccent:root.hintAccent
+            hintFontFamily:root.hintFontFamily;textScale:root.textScale
+            viewport:gooScroll;scrollOffset:gooScroll.contentY
+            rows:[
+              {id:"latitude",label:"Fallback latitude",min:-90,max:90,step:0.1,largeStep:1,decimals:1,hint:"Latitude used if the system location service is unavailable. Set this once for your location; north is positive."},
+              {id:"longitude",label:"Fallback longitude",min:-180,max:180,step:0.1,largeStep:1,decimals:1,hint:"Longitude used if the system location service is unavailable. Set this once for your location; east is positive."}
+            ]
+            values:root.solarValues;opening:root.originalSolar
+            onChanged:(name,value)=>{
+              root.setSolar(name,value)
+              if(name==="latitude")root.solarLatitudeEdited=true
+              if(name==="longitude")root.solarLongitudeEdited=true
+              root.setSolar("location_set",root.solarLatitudeEdited && root.solarLongitudeEdited)
+            }
+          }
+          SettingAction { id:solarNetwork;design:theme;text:root.solarValues.allow_ip?"Network location allowed":"Network location off";checked:root.solarValues.allow_ip
+            onClicked:root.setSolar("allow_ip",!root.solarValues.allow_ip);onAcceptRequested:root.save() }
         }
 
           }
@@ -738,7 +882,12 @@ ShellRoot {
             design: theme
             text: "Defaults"
             onClicked: {
-              if (root.tab === 2) { root.motionValues=Object.assign({},root.motionDefaults); return }
+              if (root.tab === 2) { root.motionValues=Object.assign({},root.motionDefaults);
+                root.opacityValues=Object.assign({},root.opacityValues,{window_mode_opacity_focused:1,window_mode_opacity_unfocused:1});return }
+              if (root.tab === 3) {root.opacityValues=Object.assign({},root.opacityDefaults);return}
+              if (root.tab === 4) {root.widgetValues=Object.assign({},root.widgetDefaults);return}
+              if (root.tab === 5) {root.solarValues=Object.assign({},root.solarDefaults);
+                root.solarLatitudeEdited=false;root.solarLongitudeEdited=false;return}
               if (root.gooTab) {
                 root.gooValues = root.gooDefaults()
                 root.gooPoints = root.exponentialPoints

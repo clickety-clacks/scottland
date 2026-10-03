@@ -11,9 +11,11 @@ Flickable {
   maximumFlickVelocity: 2400
   property var design
   property real wheelVelocity: 0
+  property double lastWheelAt: 0
+  property double pendingVelocity: 0
   readonly property real availableHeight: height
   readonly property real availableWidth: width - 12
-  function halt() { wheelVelocity = 0; cancelFlick() }
+  function halt() { wheelVelocity = 0; pendingVelocity = 0; coastDelay.stop(); cancelFlick() }
   function revealRow(stack, index) {
     halt()
     const y = stack.y + index * (stack.rowHeight + 1)
@@ -21,18 +23,35 @@ Flickable {
     if (y < contentY) contentY = y
     else if (bottom > contentY + height) contentY = bottom - height
   }
-  onDraggingChanged: if (dragging) wheelVelocity = 0
-  // Pixel deltas from touchpads and angle deltas from wheels feed one physical coast.
+  onDraggingChanged: if (dragging) halt()
+  // Wayfire applies its shipped touchpad_scroll_speed (0.2) before Qt receives pixel
+  // deltas. Restore finger travel here. Move with each delta; coast only after release.
   WheelHandler {
     target: null
     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
     onWheel: event => {
+      const pixel = event.pixelDelta.y !== 0
+      const delta = pixel ? event.pixelDelta.y * 5 : event.angleDelta.y / 120 * 96
+      if (delta === 0) {
+        coastDelay.stop()
+        view.wheelVelocity = view.pendingVelocity
+        event.accepted = true
+        return
+      }
       view.cancelFlick()
-      const delta = event.pixelDelta.y || event.angleDelta.y / 3
-      view.wheelVelocity = Math.max(-2400, Math.min(2400, view.wheelVelocity - delta * 7))
+      view.wheelVelocity = 0
+      const before = view.contentY
+      view.contentY = Math.max(0, Math.min(Math.max(0, view.contentHeight-view.height), before-delta))
+      const now = Date.now(), dt = Math.max(0.008,Math.min(0.08,(now-view.lastWheelAt)/1000))
+      const speed = pixel ? -delta/dt : -delta*6
+      view.pendingVelocity = before===view.contentY ? 0 : Math.max(-2400,Math.min(2400,
+        view.lastWheelAt && now-view.lastWheelAt<100 ? .6*view.pendingVelocity+.4*speed : speed))
+      view.lastWheelAt = now
+      coastDelay.restart()
       event.accepted = true
     }
   }
+  Timer { id:coastDelay;interval:85;onTriggered:view.wheelVelocity=view.pendingVelocity }
   Timer {
     interval: 16; repeat: true; running: Math.abs(view.wheelVelocity) > 0
     property double last: 0

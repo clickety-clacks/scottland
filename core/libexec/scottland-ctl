@@ -22,10 +22,12 @@ GOO = ("goo", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak",
        "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
-WIDGETS = ("widget_bounce",)
-NAMES += GOO + ("cycle_overshoot", "key_impulse", "key_friction", "key_max_velocity", "key_restitution",
-                "alt_hold_delay", "window_double_tap_delay", "move_friction_curve", "resize_friction_curve") + WIDGETS
-TEXT = ("scale_curve", "goo_falloff", "move_friction_curve", "resize_friction_curve")
+WIDGETS = ("widget_bounce", "widget_peek_enter_delay", "widget_peek_leave_delay", "widget_attention_peek_duration")
+OPACITY = ("center_opacity_focused", "center_opacity_unfocused", "side_opacity_focused", "side_opacity_unfocused",
+           "widget_opacity_focused", "widget_opacity_unfocused", "window_mode_opacity_focused", "window_mode_opacity_unfocused")
+NAMES += GOO + ("cycle_overshoot", "key_impulse", "key_friction", "resize_impulse", "resize_friction",
+                "key_max_velocity", "alt_hold_delay", "window_double_tap_delay") + WIDGETS + OPACITY
+TEXT = ("scale_curve", "goo_falloff")
 
 
 def connect():

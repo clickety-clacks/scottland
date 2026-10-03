@@ -12,7 +12,7 @@ struct screen_t
     std::vector<source_t> sources;
     settings_t settings;
     renderer_t renderer;
-    float time = 0;
+    float time = 0, breath = 0;
     bool sleeping = false;
     std::vector<glm::vec4> impulses;
     std::function<void()> wake;
