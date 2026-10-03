@@ -215,9 +215,12 @@ int main()
     check(cycle_order(D::periphery) == std::array<D,3>{D::center,D::widget,D::periphery}, "pure periphery cycle order");
     check(cycle_order(D::widget) == std::array<D,3>{D::center,D::periphery,D::widget}, "pure widget cycle order");
     alt_mode mode; std::vector<destination> moves; uint64_t selected=0,closed=0; bool restore=false;
-    unsigned selections = 0; uint32_t clock = 0;
+    unsigned selections = 0, widget_hint_selections = 0; uint64_t peeked_widget = 0;
+    bool peek_active = false; uint32_t clock = 0;
     auto press = [&](char letter) { clock += 500; mode.letter(letter, clock); };
     mode.select=[&](uint64_t id,bool r){selected=id;restore=r;++selections;};
+    mode.hint_select=[&](uint64_t id){peeked_widget=id;peek_active=true;++widget_hint_selections;};
+    mode.hint_peek_active=[&](uint64_t id){return peek_active && id==peeked_widget;};
     mode.move=[&](uint64_t,destination d){moves.push_back(d);}; mode.close=[&](uint64_t id){closed=id;};
     const std::vector<hint_entry> entries{{1,0,zone::center,false},{2,1,zone::right_periphery,false},{3,2,zone::left_rail,true}};
     mode.begin(entries,0);
@@ -227,9 +230,15 @@ int main()
     moves.clear();press('s');check(selected==2 && !restore,"unselected periphery first press only selects");
     for(int i=0;i<6;++i)press('s');
     check(moves==std::vector<D>{D::center,D::widget,D::periphery,D::center,D::widget,D::periphery},"periphery repeats its full loop");
-    moves.clear(); press('d');check(selected==3 && !restore && moves.empty(),"unselected widget first press selects without opening");
+    moves.clear(); press('d');check(selected==3 && !restore && moves.empty() &&
+        widget_hint_selections==1 && peeked_widget==3,"unselected widget hint selects and requests a temporary peek without opening");
     for(int i=0;i<5;++i) press('d');
-    check(moves==std::vector<D>{D::center,D::periphery,D::widget,D::center,D::periphery},"widget next press starts its full center-first loop");
+    check(moves==std::vector<D>{D::center,D::periphery,D::widget,D::center,D::periphery} &&
+        widget_hint_selections==1,"widget next press starts its full center-first loop without starting another peek");
+    mode.end(); moves.clear(); mode.double_tap_delay=3000; mode.begin(entries,0); press('d');
+    mode.letter('d', clock + 3000);
+    check(moves==std::vector<D>{D::center},"a repeated hint during a collapsed-widget peek takes the center step even inside double-tap timing");
+    peek_active=false; mode.double_tap_delay=300;
     for (unsigned slot=0; slot<3; ++slot)
     {
         mode.end(); moves.clear(); unsigned before = selections;

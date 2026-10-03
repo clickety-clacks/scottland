@@ -1121,6 +1121,12 @@
             else if (auto visible = represented_view(id)) wf::get_core().default_wm->focus_raise_view(visible);
         };
         window_keys.move = [=] (uint64_t id, auto to) { keyboard_selection = true; cycle_window(id, to); };
+        window_keys.hint_select = [=] (uint64_t id) { peek_widget_for_hint(id); };
+        window_keys.hint_peek_active = [=] (uint64_t id) {
+            auto found = model.widgets.find(id);
+            return found != model.widgets.end() && found->second.collapsed &&
+                found->second.peek_hint_due && int32_t(now_msec() - *found->second.peek_hint_due) < 0;
+        };
         window_keys.hint_action = [=] (uint64_t id) { flash_hint(id); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };

@@ -1385,7 +1385,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool collapsed = false;                      // intent, independent of lifecycle and peeks
         bool peek = false;                           // temporary presentation; never changes mode
         bool peek_pointer = false, peek_hover = false;
-        std::optional<uint32_t> peek_hover_due, peek_attention_due;
+        std::optional<uint32_t> peek_hover_due, peek_attention_due, peek_hint_due;
         bool minimized() const { return collapsed && !peek; }
         bool away = false;                           // slid off its screen for full-screen focus (FS1)
 

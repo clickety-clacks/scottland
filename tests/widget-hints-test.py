@@ -207,12 +207,15 @@ try:
     before = capture('stacked-collapsed')
     check(any(abs(h['dy']) > 5 for h in before if h['window'] in (left,right)),
           'stacked widgets declutter vertically')
-    geometry = {v['id']: v['frame'] for v in views() if v['widget']}
+    geometry = {v['id']: tuple(v['frame'][k] for k in ('x', 'y', 'width', 'height'))
+        for v in views() if v['widget']}
     memories = {h['window']: h['memories'] for h in before}
     release()
-    check(geometry == {v['id']: v['frame'] for v in views() if v['widget']} and
-          memories == {h['window']: h['memories'] for h in hints()},
-          'declutter/release never changes widget geometry or remembered placement')
+    after_geometry = {v['id']: tuple(v['frame'][k] for k in ('x', 'y', 'width', 'height'))
+        for v in views() if v['widget']}
+    after_memories = {h['window']: h['memories'] for h in hints()}
+    check(geometry == after_geometry, 'declutter/release never changes widget geometry')
+    check(memories == after_memories, 'declutter/release never changes remembered placement')
     check(not any(h['visible'] or abs(h['dx']) > .01 or abs(h['dy']) > .01 for h in hints()),
           'Alt release removes hints and visual displacement')
     key('LEFTMETA', True); tap('M'); key('LEFTMETA', False)
@@ -243,6 +246,42 @@ try:
     tap('ESC')
     time.sleep(.7)
     check(not any(h['visible'] for h in hints()), 'Esc clears all exterior hints')
+    release()
+
+    # WK34: isolate the timed hint selection after the existing placement invariants.
+    key('LEFTMETA', True); tap('M'); key('LEFTMETA', False)
+    wait(lambda: all(next(v for v in views() if v['id'] == widget(i))['frame']['width'] <= 97
+        for i in (left, right)))
+    hold()
+    left_label = next(h['hint'] for h in hints() if h['window'] == left)
+    peek_started = time.monotonic()
+    for letter in left_label: tap(letter.upper())
+    wait(lambda: ipc('scottland/hints')['selected'] == left and
+        next(v for v in views() if v['id'] == widget(left))['frame']['width'] > 100)
+    capture('wk34-hint-peek-expanded', 3)
+    time.sleep(max(0, peek_started + 4.5 - time.monotonic()))
+    check(next(v for v in views() if v['id'] == widget(left))['frame']['width'] > 100 and
+        next(w for w in links() if int(w['id']) == left)['peek'],
+        'WK34 selected collapsed widget stays expanded during its five-second hint peek')
+    wait(lambda: next(v for v in views() if v['id'] == widget(left))['frame']['width'] <= 97 and
+        not next(w for w in links() if int(w['id']) == left)['peek'])
+    capture('wk34-hint-peek-collapsed', 3)
+    elapsed = time.monotonic() - peek_started
+    check(4.8 <= elapsed <= 6.2,
+        f'WK34 timed hint peek collapses on its own after about five seconds ({elapsed:.2f}s)')
+
+    ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 3000})
+    right_label = next(h['hint'] for h in hints() if h['window'] == right)
+    for letter in right_label: tap(letter.upper())
+    wait(lambda: ipc('scottland/hints')['selected'] == right and
+        next(v for v in views() if v['id'] == widget(right))['frame']['width'] > 100)
+    capture('wk34-before-center-cycle', 3)
+    time.sleep(.45)  # inside both the double-tap interval and the five-second peek
+    for letter in right_label: tap(letter.upper())
+    wait(lambda: not any(int(w['id']) == right for w in links()))
+    check(not any(int(w['id']) == right for w in links()) and
+        not next(v for v in views() if v['id'] == right)['widgetized'],
+        'WK34 second hint press within five seconds cycles the widget to center')
     release()
 finally:
     try:
