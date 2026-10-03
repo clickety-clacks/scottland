@@ -1660,7 +1660,11 @@ Each pair of values is two rounds, not an uncertainty interval. Another
 agent's headless session appeared during measurements; regular browser and
 desktop clients also remained running. The changing shared-GPU load affects
 clocking and makes these percentages directional rather than an isolated
-GPU throughput comparison. Earlier low-load keyframe samples were 1.9%
+GPU throughput comparison. A final timing check of pushed renderer commit
+`de797b1`, after the device-pixel partition correction, measured idle 0.2%,
+keyframes 1.1%, exact 1.2%, and fallback 0.9%; corresponding whole-GPU load
+was 0.9%, 1.9%, 2.3%, and 1.9% (`pushed-timing` artifacts, 5 s samples,
+5 s warmup). Earlier low-load keyframe samples were 1.9%
 before (whole GPU 2.0%) and 1.3% after (whole GPU 1.2–1.3%, separately sampled
 and rounded). No other session was stopped or modified.
 
