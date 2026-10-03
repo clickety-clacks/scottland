@@ -29,6 +29,11 @@ come up, so the decision isn't lost while there is nowhere better to put them.
   autostart.d/02-link-agent-skills picks Claude Code, Codex, pi, Hermes).
 - **The opinionated keybindings** in core's shipped config that follow Omarchy's choices.
 
+- **Chromium uses the system title bar and borders** (Mike, 2026-10-03): ship Chromium with
+  "Use system title bar and borders" on (profile preference `browser.custom_chrome_frame = false`),
+  so it doesn't draw its own frame with transparent margins inside its window geometry; goo and the
+  halo then sit against its edge. Scottland itself should still handle client-drawn frames
+  generically for users who change it.
 - **Cross-app theming engine and day/night themes**: a Scottland distro chooses and runs a
   cross-app theme engine (Omarchy’s, an equivalent, or Aether) and its default named day/night
   themes. Scottland core follows the active light/dark preference and palette; its optional solar
