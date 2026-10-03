@@ -9,7 +9,7 @@ void reset_widget_peek(widget_link_t& link)
 {
     link.peek_pointer = link.peek_hover = false;
     link.peek_hover_due.reset();
-    link.peek_attention_due.reset();
+    link.peek_attention_due.reset(); link.peek_hint_due.reset();
 }
 
 bool step_widget_peeks()
@@ -72,8 +72,11 @@ bool step_widget_peeks()
                 if (inside) link.peek_hover = true;
                 link.peek_attention_due.reset();
             }
+            if (link.peek_hint_due && int32_t(now - *link.peek_hint_due) >= 0)
+                link.peek_hint_due.reset();
         }
-        bool peek = eligible && (link.peek_hover || link.peek_attention_due.has_value());
+        bool peek = eligible && (link.peek_hover || link.peek_attention_due.has_value() ||
+            link.peek_hint_due.has_value());
         if (peek != link.peek)
         {
             set_widget_presentation(link, link.collapsed, peek);
@@ -82,7 +85,7 @@ bool step_widget_peeks()
         // Track moving/morphing frames as well as pointer events while a peek is in play.
         // No timer runs when no widget is hovered, pending, grabbed or attention-peeking.
         active |= link.peek_pointer || link.peek_hover || link.peek_hover_due.has_value() ||
-            link.peek_attention_due.has_value();
+            link.peek_attention_due.has_value() || link.peek_hint_due.has_value();
     }
     if (changed) publish_model();
     return active;
@@ -92,4 +95,12 @@ void update_widget_peeks()
 {
     if (step_widget_peeks() && !widget_peek_tick.is_connected())
         widget_peek_tick.set_timeout(16, [=] { return step_widget_peeks(); });
+}
+
+void peek_widget_for_hint(uint64_t id)
+{
+    auto found = model.widgets.find(id);
+    if (found == model.widgets.end() || !found->second.collapsed || !found->second.docked()) return;
+    found->second.peek_hint_due = now_msec() + 5000;
+    update_widget_peeks();
 }

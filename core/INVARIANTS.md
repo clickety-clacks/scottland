@@ -65,22 +65,25 @@ GO13 adds cubic reconstruction and a device-pixel antialiased outline to goo, fi
 highlight edges; see [its headless visual and cost checks](../docs/goo.md#go13-inexpensive-antialiased-contours-2026-10-02).
 GO14/GO15 add a rounded depth profile and wallpaper dye; see [their design, controls and
 headless evidence](../docs/goo.md#go14go15-depth-and-wallpaper-dye-2026-10-02).
+GO16 makes widget goo, fallback halos and their controls follow the visible alpha contour,
+including badges; see [its headless shape and cost checks](../docs/goo.md#go16-widget-alpha-contours-2026-10-02).
 GO17 makes attention breathing a local draw-only modulation while simulation sleeps;
 see [its curve, damage and cost evidence](../docs/goo.md#go17-draw-only-attention-breathing-2026-10-02).
 GO10 also caches the settled goo surface for inexpensive composition over redrawing apps;
 see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-windows-2026-10-02).
 
+
 | ID | Invariant | Status |
 |---|---|---|
 | A1 | No window chrome: Scottland asks every app that allows it for server-side decorations and draws none (no title bars, no borders). GTK4/libadwaita apps keep the header bars they draw themselves; Chromium is switched to server-side decorations through additive app tuning (C7). | implemented (Chromium tuning not built) |
 | A2 | Every window is a rounded rectangle; the corner radius is double Omarchy's (10 pt), scaling with the window. | verified |
-| A3 | Every window has a halo, always visible: a translucent rounded band around it, as if a larger rounded rectangle hung behind it, with corners concentric to the window's. It visually separates overlapping windows. Its thickness scales with the window (about 10.7 pt at 100%).  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
+| A3 | Every window has a halo, always visible: a translucent rounded band around it, as if a larger rounded rectangle hung behind it, with corners concentric to the window's. Widgets use their visible alpha contour, including badges (GO16). It visually separates overlapping windows. Its thickness scales with the window (about 10.7 pt at 100%).  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A4 | The focused window's halo is less translucent, in the theme's highlight color; other windows' halos are more translucent, in a neutral tone that follows light/dark (A8). Focus changes cross-fade, and the newly focused window's halo is disturbed: it bulges briefly and settles in slow waves.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A5 | The halo is the move handle: dragging it anywhere outside the corners moves the window, with the same live scaling as Super+drag. Its grab area is never thinner than 12 pt on screen, even when the drawn halo is. | implemented |
 | A6 | The halo's corners are resize handles only when the window can resize: dragging one resizes around the window's center, outward growing. Widgets and non-resizable windows (resize permission denied, or both dimensions fixed by min/max hints) have no resize-corner handle or corner cloud/glow, with goo on or off; the band still moves them and sides still highlight normally. A window with only one fixed dimension can still resize in the other. When the cursor comes near a corner, that part of the halo turns cloudy (the goo thickens, more opaque) and its glints strengthen, as if the light source brightened.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented; isolated headless fixed/free-size input and pixels checked with goo on/off (2026-10-02) |
 | A7 | When the cursor pauses for 0.5 s within 50 pt of the halo (inside or outside the window, including over another window's content; windows behind the one the cursor is over don't respond), the halo swells to a fixed on-screen thickness of twice the full-size halo (~21 pt), however small the window (only the resting halo scales; the 50 pt doesn't scale either); any motion restarts the wait. The swell moves like goo: it bulges, overshoots and settles with slow, irregular, low-frequency waves along the edge. It stays while the cursor is within the 50 pt, and sinks back the same way about 0.5 s after the cursor leaves (never while dragging). Dragging doesn't count as pausing: the wait starts when the window is let go, so the swell always animates. | implemented |
 | A9 | The halo looks like liquid: shaded as a rounded surface with a bright rim and glints, with soft organic variation, not a flat tint.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
-| A10 | Each fallback halo is its own band: halos do not merge, fill concave corners or bridge gaps, and input belongs only to the window's own band (with A5's minimum grab target). Screen-wide goo is on by default and owns pooling and bridges instead: [GO2/GO3](../docs/goo.md). Switching goo off or an unsupported GPU retains the independent halo and A3–A9/A11–A12. | implemented; plumbus headless separate-band pixels and real pointer/touch input checked |
+| A10 | Each fallback halo is its own band: halos do not merge, fill concave corners or bridge gaps, and input belongs only to the window's own band (with A5's minimum grab target). Screen-wide goo is on by default and owns pooling and bridges instead: [GO2/GO3](../docs/goo.md). Switching goo off or an unsupported GPU retains the independent halo and A3–A9/A11–A12, including the live attention breath. | implemented; plumbus headless separate-band pixels, real pointer/touch input, and goo-off attention pixels checked |
 | A11 | A close dot sits at the middle of the halo's bottom edge, appearing as the cursor comes near; clicking it closes the window. There is no minimize.  Goo mode: see [docs/goo.md](../docs/goo.md#halo-jobs-with-goo-enabled). | implemented |
 | A12 | The halo works by finger with no wait: dragging it moves the window (grabbed exactly at the finger), dragging a corner resizes around the center, and touching the halo shows the close dot for a few seconds so it can be tapped. | implemented |
 | A13 | Interface sounds are synthesized at runtime (no sample files), follow the system volume and mute, and can be turned off (`scottland/sounds`). | implemented |
@@ -117,8 +120,8 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK31 (window mode: Alt-alone hold, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
-start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and live, focused-window-anchored visual exposure for interior window hints)
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK34 (window mode: Alt-alone hold, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
+start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints)
 and WP1–WP7 (zone memory, side choice and shared rectangle placement). Statuses and verification are recorded there.
 
 L29 regression: `state-model-test.py` re-grabs an ordinary dropped window during the hold

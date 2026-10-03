@@ -60,7 +60,7 @@ The initial defaults are the prototype’s Scottland preset.
 
 | ID | Invariant | Status |
 |---|---|---|
-| GO1 | One goo per screen: one field from all windows, outlining the window and widget shapes; GO11 adds stacking-aware film over content behind a window, while foreground content clips it. Widget expand/collapse follows the animated frame rectangle, including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph: plumbus headless geometry and screenshots checked |
+| GO1 | One goo per screen: one field from all windows, outlining the window and widget shapes; GO11 adds stacking-aware film over content behind a window, while foreground content clips it. Widget expand/collapse follows the animated frame and its visible alpha contour (GO16), including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph: plumbus headless geometry and screenshots checked |
 | GO2 | The goo clings: each window's goo stays within a reach of its edge; between windows close enough, it bridges, drawing from both borders, and a stretched bridge thins and snaps. | implemented; prototype volume approximation, bridge/snap input checks |
 | GO3 | Where windows meet or overlap, the summed field pools and bridges naturally; there is no separate concave-corner infill or corner-specific code (the old halo's infill was removed 2026-10-01). GO14 adds a general surface meniscus. | implemented; overlap pooling screenshot inspected |
 | GO4 | The goo isn't uniform: its amount along each edge wanders slowly, configurable (mess, lump size, drift). | implemented; prototype noise port, inspected; drift freezes to settle |
@@ -68,15 +68,16 @@ The initial defaults are the prototype’s Scottland preset.
 | GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks; widget presentation morph retains attention dye |
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. Widgets and non-resizable windows (resize permission denied, or both dimensions fixed by min/max hints) have no resize handles; their band remains a move handle. A single fixed dimension still permits resizing the other. | implemented; pointer/touch move, resize, close and hidden-corner checks |
-| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. The Goo tab includes depth, wall wetting and wallpaper soak with metadata hints verbatim, live preview and Save/Cancel/Defaults. | implemented; Goo coverage test matches all 24 metadata options and GO14/GO15 hints/ranges; isolated headless input checks |
-| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Attention breathing refreshes only its local strip at 25 Hz (GO17); interaction-driven field work uses occupied tiles. When apps redraw beneath settled overlap film, cached surface properties are composited with the current backdrop instead of re-evaluating depth, SDF and antialiasing for every app frame. Backdrop capture is limited to drawable bands plus refraction margin. | implemented; isolated Xe redraw-cost validation below |
+| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. The Goo tab includes depth, wall wetting and wallpaper soak with metadata hints verbatim, live preview and Save/Cancel/Defaults. | implemented; Goo coverage test matches all 24 numeric Goo controls and GO14/GO15 hints/ranges; isolated headless input checks |
+| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Attention breathing refreshes only its local strip at 25 Hz (GO17); interaction-driven field work uses occupied tiles. When apps redraw beneath settled overlap film, cached surface properties are composited with the current backdrop instead of re-evaluating depth, SDF and antialiasing for every app frame. Backdrop capture is limited to drawable bands plus refraction margin. | implemented; Xe/RX 580 redraw-cost validation, including GO16 merge, below |
 | GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). At rest the film has the set width; when that window's outer goo expands for proximity/hover, lift while dragging, or attention breathing, its film swells in the same proportion, governed by `goo_swell`, and eases back with it. It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core; swell clarification 2026-10-02) | implemented; isolated headless validation recorded below |
 | GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Only resizable windows have corner cloud/glow: widgets and non-resizable windows (including equal min/max size hints) never show it, in goo or the fallback halo. Their sides still highlight and move normally. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | implemented; isolated headless validation recorded below |
 | GO13 | Goo outlines fade over approximately one device pixel using screen-space field derivatives, at every output/window scale. The full-resolution draw reconstructs the coarse field with smooth cubic filtering, restricted to goo bands; GO11 film and GO12 control outlines use the same coverage. Keep the existing window-edge SDF antialiasing and otherwise preserve the look, simulation and input. Added active cost stays well below one millisecond per frame, checked with the paired GO10 benchmark on Xe and RX 580. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
-
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
 | GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
+| GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary windows retain analytic rounded boxes and never sample the widget atlas. (Mike, 2026-10-02; core) | implemented/headless checked; current normal/packed and merged-cache validation below; physical-display verification remains open |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
+| GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 
 ## Halo jobs with goo enabled
 
@@ -1069,12 +1070,144 @@ threshold was relaxed. These observations do not establish the cause of the init
 Xe pixel/timing failures. Coverage excludes physical scanout, output rotation,
 simultaneous mixed-DPI outputs and GPU families beyond Xe/RX 580.
 
+## GO16: widget alpha contours (2026-10-02)
+
+Core behavior: any widget's visible body defines its liquid shore. Tenet 2
+(recognition, not recall) keeps badges part of that recognizable body. WG10's
+six-point top/outer-side reservation stays in the client surface for placement,
+but empty reservation space no longer leaves a gap between card and goo.
+
+### Shape and lifetime
+
+`goo-shape.cpp` captures the frame's actual content composition into a transparent
+RGBA8 target at half logical resolution, capped at 512 texels per body axis, with
+two transparent padding texels. Widget and presentation/morph damage marks it dirty;
+a trailing timer coalesces checks to at most five per second, including the last
+commit after a burst. Only alpha enters the comparison, quantized to 16 levels.
+RGB-only animation does not rebuild the SDF. Shared shaders compile at plugin
+startup, rather than blocking the first widget/morph frame.
+
+An alpha=0.5 contour defines the body, with interpolated crossings for antialiased
+edges. GPU jump flooding plus a final stride-one correction produces signed
+16-bit distances at 1/16-texel precision in RGBA8. This works on both goo GPU paths
+and when the simulation is unsupported. The small distance image is read once
+after rebuilding: CPU input uses precisely that image, the fallback halo retains
+its texture, and goo packs changed images into a shelf atlas sampled by its field,
+content/film clipping, dye and render passes. Atlas overflow retains masked
+fallback halos. GLES 3 capture/backdrop reads explicitly bind the read framebuffer;
+the shared GL guard restores both framebuffer bindings.
+
+Every ordinary steady window still uses the analytic rounded box; it has no alpha
+cache or atlas fetch. An app temporarily participating in a widget morph can use
+the composited alpha shape, then releases that cache on handoff/settlement. Parent
+transforms carry the body bounds. Elastic presentation resizing preserves the
+measured transparent insets and stretches the contour's departure from its opaque
+bounds; damage, rendering and input therefore share the animated body. Masked
+sources use conservative whole-body damage tiles to cover arbitrary shapes/holes.
+
+Fallback bands, minimum move targets and content exclusion use the same SDF.
+The close dot follows the visible bottom shore at the frame's horizontal center;
+when that column is empty, a cached body point near the opaque bounds' center
+provides its attachment instead. Both coordinates carry through parent transforms.
+Window-mode tint preserves widget alpha and does not become a shape source.
+No badge, card or app-specific compositor code is involved.
+
+### Validation
+
+`tests/goo-shape-test.py` uses real rail drags and Super+M, actual Unity badge
+commits, screenshots and field/input samples. It exercises expanded/collapsed
+cards on both rails with counts 0, 7, 123 and removal; a badge waking settled goo;
+an independently packaged round widget; color-only commits; throttling; fallback
+bands; halo dragging; and close controls which close both app and widget. Before
+crops come from archived main `82f2b28`; after crops and the labeled comparison
+are under `build/go16-evidence/`. The round widget's 40 Hz color animation leaves
+its SDF rebuild count unchanged.
+`--offset-only` separately checks a round body entirely to one side of the client
+surface's center, including goo and fallback close input. These focused checks
+pass 5/5 on Xe and RX 580 normal and packed paths and 2/2 with forced fallback
+on each host. Their crops/logs are in `build/go16-evidence/offset-*` and the
+corresponding `rx580/offset-*` copies.
+
+| Check | Xe | RX 580 |
+|---|---|---|
+| Shape/badge/control checks, normal / packed | 133 / 133 passed | 133 / 133 passed |
+| Forced unsupported-goo shape/fallback checks | — | 43 passed |
+| Goo regression, normal / packed | 46 / 46 passed | 46 / 46 passed |
+| Widget morph, goo / forced fallback | 270 passed / — | — / 242 passed |
+| CPU goo model | all assertions passed | — |
+
+The widget lifecycle/input suite also passes all checks on Xe and RX 580. Its Xe log is
+`build/go16-regressions/widgets-verified.log`; final shape logs/screenshots are in
+`build/go16-evidence/{complete,packed-complete}/`. RX 580 results are in the
+`rx580/shapes-{normal,packed,fallback}/` copies, and the fallback morph log is
+`build/go16-regressions/morph-fallback-rx580.log`; RX 580 widget results are in
+`build/go16-regressions/widgets-complete-rx580.log`.
+
+The morph suite now compares the liquid shore against measured alpha body bounds
+rather than the transparent client rectangle. Its scheduling, pixel, duration and
+reversal thresholds are unchanged. It still exercises expand/collapse, rail
+anchoring, peeks, reversals, live window/widget morphs, input, zero/max bounce,
+unload/reload and resource cleanup. Early Xe Goo editor/Save failures also occurred
+in the archived baseline; fresh final runs pass 46/46 on both paths. An isolated
+development run exposed shared shaders being freed during per-widget teardown;
+they are now freed only at plugin teardown, and final lifecycle/reload runs pass.
+
+### Historical paired GO10 cost, before settled surface caching
+
+This ten-second six-window/two-widget comparison is the GO16 change against
+the pre-cache baseline archived at `82f2b28`; it predates the settled surface
+cache described in GO10 below. The current combined GO10+GO16 result is
+recorded beside the RX 580 GO10 rows below. Raw Xe logs are
+`build/go16-evidence/bench-{before,after}.log`; RX 580 logs and shape screenshots
+are copied into `build/go16-evidence/rx580/` from the isolated plumbus checkout.
+Query times include the goo update; mask timings below separately include
+content capture, jump flooding and synchronous readbacks.
+
+| GPU / workload | Median goo GPU query before → after | Change | Compositor GPU before → after |
+|---|---:|---:|---:|
+| RX 580 / attention | 1.656 → 1.977 ms | +0.321 ms | 14.8% → 16.2% |
+| RX 580 / drag | 1.654 → 1.949 ms | +0.294 ms | 14.3% → 15.5% |
+| Xe / attention | 8.232 → 6.855 ms | −1.376 ms | 25.3% → 30.1% |
+| Xe / drag | 8.165 → 9.488 ms | +1.323 ms | 26.2% → 31.3% |
+
+RX 580 whole-GPU use stayed within 0.7 percentage points of compositor use.
+Xe whole-GPU use was 60.8–88.5%, substantially above compositor use; the opposing
+query changes do not isolate GO16 cost. Both pairs settled to **0.0% compositor
+GPU, zero simulation steps and sleeping=true**. Goo-disabled breathing also took
+zero simulation steps. Static masks do no rebuild work while settled.
+
+`layout-state` exposes checks/builds and the last check/rebuild wall time per
+frame. The following samples deduplicate unchanged last-rebuild readings after
+each fixture scene (33 distinct samples for normal/packed, 17 for forced
+fallback); they are observed update costs, not an exhaustive animation trace.
+Aggregates are in `build/go16-evidence/mask-costs.json`; raw values are in each
+shape run's `results.json`.
+
+| Mask rebuild path | Median | 95th percentile | Maximum |
+|---|---:|---:|---:|
+| RX 580 / normal goo | 1.150 ms | 1.930 ms | 5.942 ms |
+| RX 580 / packed goo | 1.081 ms | 1.778 ms | 2.238 ms |
+| RX 580 / forced fallback | 0.999 ms | 1.685 ms | 1.685 ms |
+| Xe / normal goo | 4.308 ms | 8.932 ms | 9.512 ms |
+| Xe / packed goo | 4.707 ms | 8.408 ms | 8.660 ms |
+
+These timings include GPU synchronization and, on Xe, the same external
+contention as the paired benchmark. Rebuilds occur at most five times a second
+and only after the quantized alpha changes; RGB-only commits still require a
+throttled alpha check but skip jump flooding and atlas replacement.
+
+The earlier sessions used inherited `XDG_RUNTIME_DIR`, shipped config only and
+artifacts under the checkout's `build/`; they did not reload or dev-install the
+live session. After osanwe froze during later headless activity, all subsequent
+test sessions moved to plumbus (see integration validation below). This is
+headless verification; physical scanout, mixed DPI/rotation and GPUs beyond
+Xe/RX 580 remain unverified.
+
 ## GO17: draw-only attention breathing (2026-10-02)
 
 Core, guided by tenets 1 and 5: a quiet request for attention, without moving a
-window or maintaining an expensive screen-wide animation. This branch starts at
-`511d9f1`. GO16's widget alpha-mask work is concurrent and absent from that base;
-this change does not alter source geometry or introduce widget-specific shapes.
+window or maintaining an expensive screen-wide animation. For widgets,
+GO16 supplies the visible alpha contour as the source boundary.
 
 ### Curve and cadence
 
@@ -1117,9 +1250,9 @@ neither transition implies ongoing simulation after it settles.
 ### Cached influence, local drawing and input
 
 The field pass stores the contribution-weighted attention influence in its unused
-alpha channel. Source metadata gains one attention column; the renderer’s source
-texture is eight columns wide. No extra render target, per-breath upload, field
-pass, wave impulse, or dye update is needed. The draw multiplies density by
+alpha channel. The shared source texture has eleven columns: seven existing
+values, GO17 attention at column 7, and GO16 mask data at columns 8–10. GO17
+adds no render target, per-breath upload, field pass, wave impulse, or dye update. The draw multiplies density by
 `1 + 0.12 × (goo_swell/0.7) × b(t) × influence` and adds a small dye-colored emission.
 Depth, overlap film and antialiasing use that same modulated density. CPU field
 input uses the same source weighting and curve; the existing grab dilation remains.
@@ -1133,6 +1266,11 @@ output. Cubic-filter/AA padding and maximum breath swell are included. It does n
 invalidate every other source, window interior or the whole output. Geometry/state
 changes still damage old/new simulation bands and refresh the influence cache.
 Fullscreen, removal and an empty attention set disconnect the breathing timer.
+
+For a masked widget, the draw's local influence uses GO16's sampled alpha SDF,
+and breathing damage covers its opaque-body bounds plus that finite support.
+This includes a badge, a hole, or a body deeply inset from a transparent client
+rectangle; ordinary windows keep the narrower analytic perimeter strips.
 
 `goo-state` now reports `breath`, `breath_ticks`, `breath_damage`, `wave_energy`,
 `dye_energy` and `draw_gpu_ms`. Existing `gpu_ms` measures active simulation plus
@@ -1287,6 +1425,22 @@ process GPU-busy counters, not whole-GPU usage or physical-display acceptance.
 | RX 580, `c99f116` | 10.4% | 8.1% | 9.6% | 1.5–2.3 points |
 | RX 580, cached pre-final build | 9.7% | 7.7% | 9.9% | 2.0–2.2 points |
 | RX 580, final build | 10.7% | 8.1% | 10.4% | 2.3–2.6 points |
+| RX 580, GO10 + GO16 merged build | 8.7% | 7.0% | 9.6% | 1.7–2.6 points |
+| RX 580, GO10 + GO16 + GO18 default keys | 9.4% | 8.4% | 9.5% | 1.0–1.1 points |
+
+The merged build's five-second goo-on samples stayed asleep with zero simulation
+steps. Their median draw queries were **0.300 ms** and **0.520 ms**. One other
+headless goo x-check was active on the shared RX 580 during the run; whole-GPU
+busy ranged from **17.8%** to **14.3%** across the three samples, so that total
+includes the other workload. The per-compositor result remains within the prior
+RX 580 increment range.
+
+The GO18 row uses the same 18-window redraw fixture, with five-second samples.
+All three GO18 samples had zero simulation steps; the goo-on draw-query medians
+were **0.367 ms** and **0.321 ms**. Whole-GPU busy was 9.4–9.5% in those samples,
+and a concurrent plumbus Chromium renderer plus the shared attention and agent
+services were active. As with the other RX 580 rows, these are short shared-GPU
+observations, not isolated speedup measurements.
 
 All goo-on measurement windows report `sleeping=true` and **zero simulation
 steps** despite streaming terminals and roughly 25 breathing ticks per second.
@@ -1315,3 +1469,113 @@ and uses a visible curve knot. This changes only the test fixture. On plumbus,
 the final build passed goo-test on normal and packed GLES paths (46/46 each)
 and overlap/hover (28/28); widgets (192/192) and widget morph (270/270) passed
 before the final GL-state adjustment. All headless sessions were stopped.
+## GO10 + GO16 merged render path (2026-10-02)
+
+The source texture keeps eleven columns: the common seven, GO17 attention at
+column 7, then GO16's atlas tile, mask bounds and body bounds at columns 8–10.
+Ordinary windows keep their analytic rounded-box SDF and do not sample the atlas.
+Widget sources use the same alpha SDF in field, direct render, and GO10's cached
+intrinsic/refraction passes; those cached shaders are derived from the same render
+shader as the direct path. When the ordered widget-shape set changes, the renderer
+rebuilds the RGBA8 shelf atlas and marks the settled surface cache dirty. Active
+simulation keeps the GO10 direct path, and the cache is regenerated from the new
+atlas once the field settles. The atlas is allocated without a framebuffer and is
+released with the other render targets. `goo-gl.hpp` owns the shared GL helpers;
+its state guard preserves separate read framebuffer and read-buffer state.
+
+The GO16 shape/contour suite passed **133/133** on normal goo and **133/133** on
+packed goo. The inset widget breathing case passed **7/7**, including visible
+contour movement while the simulation slept. The GO17 breathing verifier passed
+**12/12**; overlap/hover passed **28/28**. The widgets lifecycle suite passed all
+checks, including **91/91** embedded real-input regressions; widget morph passed
+**270/270**; windowing passed **102/102**. The base goo regression passed
+**46/46** on both normal and packed paths.
+
+Plumbus headless screenshots and logs are under
+`build/part2-plumbus/{shape-normal,shape-packed,shape-inset-breath,breathing,overlap-hover,widgets,widget-morph,windowing,goo-normal,goo-packed,goo-draw-bench}/`.
+The GO10 draw-benchmark result for this merged build is recorded in the RX 580
+comparison table above. Validation used isolated plumbus headless sessions;
+physical-display scanout remains unverified.
+
+## GO18: keyframed settled breathing (2026-10-03)
+
+GO18 combines Fable's breathing keyframes with Astra's exact direct-strip
+fallback and the tight breathing bounds in both paths. In settled goo, two
+adjacent intrinsic/refraction surfaces hold nearby breathing values. The
+renderer cross-fades their composite over the live backdrop, keeping GO10's
+cached static surface and current-app redraw path. Keyframe spacing follows the
+estimated screen-space shore travel and stays within the half-device-pixel
+bound; a request needing more than sixteen intervals selects the exact path.
+With keyframes disabled or their extra target pair unavailable, only the wet
+breathing strips run the full surface shader. The static settled area remains
+cached. The extra pair is released when no breathing strips need it or the
+option is switched off.
+
+The shipped live option is **scottland/goo_breath_keys**, enabled by default.
+To switch immediately to exact strip rendering, run
+**scottland-ctl set goo_breath_keys false**; restore keyframes with
+**scottland-ctl set goo_breath_keys true**. No reload is required. `goo-state`
+reports the option, active interpolation, key values, layer refreshes, and
+submitted surface/capture/composite pixels.
+
+Tight strips are recalculated when settled using the CPU density model and
+reconstruction padding. GO16 alpha-shaped sources use a denser sample lattice.
+Packed GLES 2 energy readback also gets a packed-only sleep bound of 16/255 plus
+a small epsilon: the reducer multiplies deltas by sixteen before RGBA8
+quantization, so one remaining source-color level otherwise kept the field
+awake. Larger changes still wake simulation; normal precision keeps its
+existing threshold.
+
+`tests/goo-idle-bench.py` now folds both investigations' fixture options into
+one isolated run. It sampled the wide 2560×1600, 120 Hz scene for five seconds
+per case on plumbus's RX 580, with keyframes enabled and disabled live, then
+compared keyframes at intermediate breaths against the exact path. The idle
+desktop, a large overlapping attention window, and an attention widget each
+recorded zero simulation steps in both GPU formats. At rest with no attention,
+the measured compositor/whole-GPU samples were 0.0/0.1% or below.
+
+| RX 580 path | Window, keyframes on | Widget, keyframes on | Window, exact strips | Widget, exact strips | No attention, on/off |
+|---|---:|---:|---:|---:|---:|
+| Normal | 1.0 / 1.0% | 0.4 / 0.4% | 0.8 / 1.2% | 0.5 / 0.5% | 0.0 / 0.1%; 0.0 / 0.0% |
+| Packed GLES 2 | 0.8 / 0.8% | 0.4 / 0.4% | 0.8 / 0.9% | 0.4 / 0.5% | 0.0 / 0.1%; 0.0 / 0.1% |
+
+Each percentage is compositor / whole-GPU busy during a five-second sample. On
+normal precision, median draw queries for the window were **0.123 ms** with
+keys and **0.190 ms** exact; for the widget they were **0.040 ms** and
+**0.070 ms**. Packed GLES 2 does not expose the timer query. Surface work over
+five seconds fell from **24.58 M to 6.43 M pixels** for the window and from
+**10.47 M to 2.35 M** for the widget. The 25 Hz refresh cadence stayed around
+24.9 Hz with no simulation work. Keyframe runs visited nine breath values and
+refreshed cached layers 14 times for the window and 15 for the widget. GPU busy
+percentages are close and noisy; the pixel counters and query medians show the
+measured work reduction more clearly.
+
+Across the keyframe midpoint comparisons, normal precision differed from exact
+rendering by at most 20 pixels at 16 or more channel levels, and 1,600 pixels
+at 8 or more levels. Packed peaked at 243 and 1,861 pixels at those thresholds
+(under 0.006% and 0.046% of the 4.1 M-pixel output). Tightening changed the
+breathing support from **575,395 to 233,780 pixels** (59.4% smaller) while the
+captured peak image remained pixel-identical to the conservative strip draw.
+Peak/trough screenshots changed 63,896/63,265 pixels for normal/packed output,
+all inside the breathing bands. With goo disabled, the independent fallback
+halo changed 80,811/79,570 color channels at 24.9 Hz on the same paths, so the
+off comparison now shows live attention rather than a stale halo.
+
+The paired samples recorded compositor and whole-GPU counters plus load and
+process snapshots. One-minute load during the idle runs was approximately
+0.42–0.59; a Chromium renderer and the shared attention/agent services were
+also visible. During the separate GO10 redraw fixture, the whole GPU stayed at
+8.4–9.5% and another Chromium renderer was active. These loads make the busy
+percentages noisy; the results do not claim an isolated GPU speedup.
+
+The plumbus regression run passed goo-test **50/50** on both normal and packed
+paths, GO16 shapes/contours **133/133** on both, GO17 breathing **12/12** on both,
+overlap/hover **28/28**, depth/soak **26/26**, widgets **91/91** embedded input
+checks, widget morph **270/270**, and windowing **102/102** on each path. The
+combined idle fixture passed its sleep, exact-path, interpolation, tightening,
+damage-bound and goo-off screenshot checks on both paths. Artifacts and
+screenshots are under `build/part4-plumbus/`; the GO18 design and limitations
+are in [goo-gpu-research.md](goo-gpu-research.md).
+
+This is isolated headless validation on one RX 580. Xe, forced keyframe-target
+allocation failure, physical scanout and Mike's visual acceptance remain open.

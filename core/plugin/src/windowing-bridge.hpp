@@ -659,10 +659,9 @@
                 visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
                 visual.offset_attached = false;
             }
-            // A parked widget is a fixed obstacle for window avoidance, but has no
-            // visual displacement outside Alt. Its scene transformer is only needed
-            // while its exterior hint participates in decluttering.
-            if (!visual.offset_attached && (window_keys.active || !link_of_widget(view)))
+            // Hint avoidance is a window-mode presentation effect. Keep its scene
+            // transformer only while hints are active or while an exit is easing home.
+            if (window_keys.active && !visual.offset_attached)
             {
                 view->get_transformed_node()->add_transformer(visual.offset, wf::TRANSFORMER_HIGHLEVEL - 1,
                     "scottland-hint-offset");
@@ -687,13 +686,18 @@
                 for (auto id : ids) if (represented_view(id) == view)
                 { stacking[id] = stacking.size(); signature << "z:" << id << ';'; }
             }
-        signature << "anchor:" << (focused ? focused->get_id() : 0);
+        signature << "active:" << window_keys.active << ";anchor:" << (focused ? focused->get_id() : 0);
         if (signature.str() != declutter_signature)
         {
             declutter_signature = signature.str();
             std::map<uint64_t, scottland::windowing::point> previous_labels;
             for (auto& [id, visual] : hint_visuals) previous_labels[id] = visual.label_offset;
-            for (auto& [output, ids] : by_output)
+            if (!window_keys.active)
+            {
+                // End of the hint request: the true geometry is the only target.
+                // Offsets remain attached until the animation reaches this target.
+                for (auto& [id, visual] : hint_visuals) visual.target = {};
+            } else for (auto& [output, ids] : by_output)
             {
                 std::vector<scottland::windowing::point> anchors;
                 std::vector<double> diameters;
@@ -892,7 +896,7 @@
                 bool popping = visual.hint && visual.hint->animate();
                 moving |= popping;
                 if (!popping && visual.hint) { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-                if (link_of_widget(view) && visual.offset_attached && !unsettled && !popping)
+                if (visual.offset_attached && !unsettled && !popping)
                 {
                     view->get_transformed_node()->rem_transformer("scottland-hint-offset");
                     visual.offset_attached = false;
@@ -966,7 +970,6 @@
         {
             if (down && alt_keys.empty())
             {
-                capture_keyboard_origins();
                 uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
                 alt_bypassed = claimed || drag->view || held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
                 if (!alt_bypassed)
@@ -1005,9 +1008,7 @@
         }
         if (down && code == KEY_ESC && !drag->view && !capture_chord && inertia_active())
         {
-            for (auto& [id, motion] : keyboard_motions)
-                if (auto view = wf::toplevel_cast(motion.view.lock())) remember_window(view);
-            stop_keyboard_motion(); swallowed_keys.insert(code);
+            cancel_keyboard_motion(); swallowed_keys.insert(code);
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return;
         }
@@ -1120,6 +1121,12 @@
             else if (auto visible = represented_view(id)) wf::get_core().default_wm->focus_raise_view(visible);
         };
         window_keys.move = [=] (uint64_t id, auto to) { keyboard_selection = true; cycle_window(id, to); };
+        window_keys.hint_select = [=] (uint64_t id) { peek_widget_for_hint(id); };
+        window_keys.hint_peek_active = [=] (uint64_t id) {
+            auto found = model.widgets.find(id);
+            return found != model.widgets.end() && found->second.collapsed &&
+                found->second.peek_hint_due && int32_t(now_msec() - *found->second.peek_hint_due) < 0;
+        };
         window_keys.hint_action = [=] (uint64_t id) { flash_hint(id); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
@@ -1132,7 +1139,7 @@
     {
         on_window_key.disconnect(); alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
-        stop_keyboard_motion(); keyboard_origins.clear();
+        stop_keyboard_motion();
         end_center_switcher(false); hint_flash_tick.disconnect();
         for (auto& [id, flash] : hint_flashes) if (flash.node) wf::scene::remove_child(flash.node);
         hint_flashes.clear();

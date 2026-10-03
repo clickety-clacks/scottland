@@ -54,16 +54,26 @@ void alt_mode::activate(uint64_t id, bool double_tap)
         {
             if (hint_action) hint_action(id);
             select(id, false);
+            if (widget && hint_select) hint_select(id);
             return;
         }
     }
     if (double_tap)
     {
-        step = (std::find(order.begin(), order.end(), destination::widget) - order.begin() + 1) % order.size();
-        if (!widget)
+        if (widget && hint_peek_active && hint_peek_active(id))
         {
             if (hint_action) hint_action(id);
-            move(id, destination::widget);
+            auto to = order[step];
+            step = (step + 1) % order.size();
+            move(id, to);
+        } else
+        {
+            step = (std::find(order.begin(), order.end(), destination::widget) - order.begin() + 1) % order.size();
+            if (!widget)
+            {
+                if (hint_action) hint_action(id);
+                move(id, destination::widget);
+            }
         }
         return;
     }

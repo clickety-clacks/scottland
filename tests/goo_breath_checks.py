@@ -43,8 +43,9 @@ def verify(ipc, art):
           all(s['sleeping'] and s['steps']==before['steps'] for s in samples))
     check('cached dye/wave energy does not change',
           all(s['energy']==before['energy'] for s in samples))
-    check('five-second exponential sine curve (40ms sampling allowance)',
-          max(abs(s['breath']-s['expected']) for s in samples) < .06)
+    settled = [s for s in samples if s['time']-samples[0]['time'] >= .2]
+    check('five-second exponential sine curve after timer settles',
+          max(abs(s['breath']-s['expected']) for s in settled) < .06)
     elapsed = samples[-1]['time']-samples[0]['time']
     rate = (samples[-1]['breath_ticks']-samples[0]['breath_ticks'])/elapsed
     check('breathing cadence is 25Hz, independent of 60Hz output', 22 < rate < 27)

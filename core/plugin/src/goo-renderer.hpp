@@ -20,7 +20,7 @@ class renderer_t
                 wf::auxilliary_buffer_t *wallpaper = nullptr, const glm::mat4 &wallpaper_map = glm::mat4{1});
     // Draws only where `area` (output-logical) meets the damage: the goo never leaves its bands.
     void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
-              const wf::regionf_t &breath_area, float breath, bool settled);
+              const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys = true);
     bool overlapping() const;
     bool highlighting() const;
     float wave_at(glm::vec2 point);
@@ -28,6 +28,12 @@ class renderer_t
     float energy = 1, wave_energy = 1, dye_energy = 1;
     double last_step_ms = 0, last_gpu_ms = 0, last_draw_gpu_ms = 0;
     uint64_t steps = 0;
+    // Submitted device-pixel work and GO18 breathing cache diagnostics.
+    uint64_t draws = 0, surface_pixels = 0, capture_pixels = 0, composite_pixels = 0;
+    uint64_t breath_refreshes = 0;
+    std::vector<float> breath_key_values;
+    bool breath_keyframes_active = false;
+    bool breath_exact = false; // test-only exact-path override, gated by SCOTTLAND_TEST_MODEL
     bool packed = false;
 
   private:

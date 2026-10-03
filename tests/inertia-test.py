@@ -69,6 +69,18 @@ def dock(id):
     wait_for(lambda: next(v for v in ipc('scottland/layout-state')['views'] if v['id']==id)['widgetized'])
     time.sleep(.6)
 
+def redock(id):
+    if state('InertiaB')['widgetized']:
+        hold()
+        if ipc('scottland/hints')['selected'] == id:
+            choose(id)
+        else:
+            choose(id); choose(id)
+        release()
+        wait_for(lambda: not state('InertiaB')['widgetized'])
+    hold(); dock(id); release()
+    wait_for(lambda:state('InertiaB')['widgetized']); coast(.4)
+
 def choose(id):
     h=next(h for h in ipc('scottland/hints')['hints'] if h['window']==id)
     for c in h['hint']: tap(c.upper())
@@ -119,11 +131,12 @@ def two_outputs():
     hold(); tap('LEFT'); release(); coast(2.5)
     print('crossing return:',original,global_center(name),output_info(a)['output-id'],home,flush=True)
     check(output_info(a)['output-id']==left['id'] and near(global_center(name),original,4),'left arrow crosses back without bounce or lost distance')
-    # Esc must restore both geometry and output from Alt-down, not just local coordinates.
+    # An explicit keyboard crossing remains committed when Esc stops any remaining coast.
     hold(); tap('RIGHT'); wait_for(lambda:output_info(a)['output-id']==right['id']); tap('ESC'); coast(.8); release()
     print('crossing cancel:',original,global_center(name),output_info(a)['output-id'],home,flush=True)
-    check(output_info(a)['output-id']==home and near(global_center(name),original,2),'Esc restores the starting output after a keyboard crossing')
-    screenshot('two-output-crossing-restored')
+    check(output_info(a)['output-id']==right['id'] and math.dist(global_center(name),original)>20,
+          'Esc keeps an explicit cross-output move at its current position')
+    screenshot('two-output-crossing-kept')
 
 try:
     if '--two-outputs' in sys.argv:
@@ -208,15 +221,17 @@ try:
         contact=state('InertiaA'); f=contact.get('scene_frame',contact['frame'])
         check(abs(f['x']+f['width']/2-origin[0])<2,'outward push from an overlapping drop morphs without snapping inward')
         tap('ESC'); coast(.8); release()
-        # WK22 still undoes the automatic form change within the same Alt hold.
+        # Esc stops the coast, while the explicit push's widget landing remains.
         drag('InertiaA',w/2,h/2); origin=center(state('InertiaA')); hold(); tap('LEFT'); coast(1.5); tap('ESC'); coast(.8); release()
-        check(not state('InertiaA')['widgetized'] and near(center(state('InertiaA')),origin,2),'Esc undoes inertial widgetization and restores Alt-down position')
+        check(state('InertiaA')['widgetized'] and not near(center(state('InertiaA')),origin,2),
+              'Esc keeps an explicit push that widgetized the window')
         drag('InertiaA',w/2,h/2); origin=center(state('InertiaA')); hold(); tap('RIGHT')
         wait_for(lambda:state('InertiaA')['widgetized']); tap('ESC'); coast(.04)
         returning=state('InertiaA'); f=returning.get('scene_frame',returning['frame'])
-        check(f['x']+f['width']/2>origin[0]+1,'Esc during widget startup retains the return glide')
+        check(returning['widgetized'],'Esc during widget startup keeps the explicit rail arrival')
         coast(.8); release()
-        check(not state('InertiaA')['widgetized'] and near(center(state('InertiaA')),origin,2),'Esc during inertial widget startup restores window form and position')
+        check(state('InertiaA')['widgetized'] and not near(center(state('InertiaA')),origin,2),
+              'Esc does not undo an explicit widget landing')
         ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0})
 
         drag('InertiaA',w/2,h/2); hold(); key('LEFT',True)
@@ -276,11 +291,14 @@ try:
         check(center(after)[1]>origin[1] and abs(center(after)[0]-origin[0])<=1,'resize boundary recovery changes only the overflowing center axis')
 
         drag('InertiaA',w/2,h/2); before=state('InertiaA'); hold(); tap('RIGHT'); time.sleep(.1); tap('ESC'); coast(.6)
-        check(near(center(state('InertiaA')),center(before)),'Esc restores the position captured at Alt-down')
-        tap('LEFT'); coast(.6); check(near(center(state('InertiaA')),center(before)),'cancelled hold consumes arrows without another action'); release()
+        stopped=center(state('InertiaA'))
+        check(math.dist(stopped,center(before))>5,'Esc keeps the arrow movement and stops its remaining coast')
+        tap('LEFT'); coast(.6); check(near(center(state('InertiaA')),stopped),'cancelled hold consumes arrows without another action'); release()
         before=state('InertiaA'); hold(); key('LEFTCTRL',True); tap('RIGHT'); tap('UP'); time.sleep(.1); tap('ESC'); key('LEFTCTRL',False); coast(.7); release()
         after=state('InertiaA')
-        check(after['geometry']['width']==before['geometry']['width'] and after['geometry']['height']==before['geometry']['height'] and near(center(after),center(before)),'Esc restores size and center as well as position')
+        print('Esc resize:',before['geometry'],after['geometry'],flush=True)
+        check(after['geometry']['width']>before['geometry']['width'] and after['geometry']['height']>before['geometry']['height'] and near(center(after),center(before),3),
+              'Esc keeps explicit keyboard resize results at the same center')
 
         before=len(delivered('InertiaA')); key('LEFTALT',True); tap('RIGHT'); time.sleep(.4)
         check(not ipc('scottland/hints')['active'],'quick Alt+arrow bypasses window mode'); release(); coast(.1)
@@ -311,7 +329,8 @@ try:
         check(not next(v for v in ipc('window-rules/list-views') if v['id']==a)['fullscreen'],'arrow explicitly leaves fullscreen before moving')
         ipc('wm-actions/set-fullscreen',{'view_id':a,'state':True}); coast(.4)
         hold(); tap('LEFT'); coast(.2); tap('ESC'); coast(.5); release()
-        check(next(v for v in ipc('window-rules/list-views') if v['id']==a)['fullscreen'],'Esc restores a fullscreen Alt-down origin')
+        check(not next(v for v in ipc('window-rules/list-views') if v['id']==a)['fullscreen'],
+              'Esc keeps the explicit move after its fullscreen exit')
         ipc('wm-actions/set-fullscreen',{'view_id':a,'state':False}); coast(.4)
 
         b=launch('InertiaB'); focus(a); hold(); choose(b); before=center(state('InertiaB')); tap('RIGHT'); release(); coast()
@@ -325,22 +344,25 @@ try:
             'a hint that skips redundant select still owns the arrow target after focus changes')
         drag('InertiaB',w/2,h/2)
 
-        # Cancellation uses Alt-down, even if the first arrow follows a hint cycle.
+        # Hint cycle placement and arrow movement both remain explicit user moves.
         focus(b); before=center(state('InertiaB')); hold(); choose(b); choose(b); tap('DOWN'); coast(.2); tap('ESC'); coast(.6); release()
         print('cycle cancel:',before,center(state('InertiaB')),flush=True)
-        check(near(center(state('InertiaB')),before,2),'Esc after a cycle and an arrow restores Alt-down rather than arrow-down')
+        check(not near(center(state('InertiaB')),before,2),'Esc keeps the zone cycle and arrow movement')
         focus(b); before=state('InertiaB'); hold(); choose(b); key('LEFTCTRL',True); tap('RIGHT'); key('LEFTCTRL',False); coast(.65)
         dock(b); wait_for(lambda:state('InertiaB')['widgetized']); coast(.3); tap('DOWN'); coast(.2); tap('ESC'); coast(.8); release()
         after=state('InertiaB')
         print('resize dock cancel:',before['geometry'],after['geometry'],after['widgetized'],flush=True)
-        check(not after['widgetized'] and near(center(after),center(before),2) and after['geometry']['width']==before['geometry']['width'],'Esc restores original window size after resize, dock cycle and widget motion')
-        focus(b); hold(); dock(b); release(); wait_for(lambda:state('InertiaB')['widgetized']); coast(.8)
+        check(after['widgetized'] and after['geometry']['width']>before['geometry']['width'],
+              'Esc keeps the explicit resize, rail cycle and widget movement')
+        focus(b); redock(b); coast(.8)
         def card():
             link=next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==b)
             return next(v for v in ipc('window-rules/list-views') if v['id']==link['widget_view'])
         def cc(): return center({'geometry':card()['geometry']})
-        widget=card(); focus(widget['id']); before=cc(); hold(); tap('DOWN'); release(); coast()
-        check(abs(cc()[1]-before[1]-distance)<2,'widget arrows coast along the rail')
+        widget=card(); focus(widget['id']); before=cc()
+        vertical='DOWN' if before[1] < h/2 else 'UP'; direction=1 if vertical=='DOWN' else -1
+        hold(); tap(vertical); release(); coast()
+        check(abs(cc()[1]-before[1]-direction*distance)<2,'widget arrows coast along the rail away from its nearest end')
         origin=cc(); hold(); key('LEFTCTRL',True); tap('RIGHT'); tap('UP'); key('LEFTCTRL',False); release(); coast()
         check(near(cc(),origin,.1) and state('InertiaB')['widgetized'],'Ctrl+arrows do nothing for widgets')
         rail=next(w['rail'] for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==b)
@@ -350,16 +372,22 @@ try:
               (center(undocked)[0]<w/2 if rail=='left' else center(undocked)[0]>w/2),
               'away arrow undocks and coasts into the same-side periphery')
         tap('ESC'); coast(.6); release()
-        check(next(w['rail'] for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==b)==rail and near(cc(),origin,2),'Esc restores widget rail and position')
+        stopped=state('InertiaB')
+        check(not stopped['widgetized'] and stopped['zone']=='continuous' and
+              (center(stopped)[0]<w/2 if rail=='left' else center(stopped)[0]>w/2),
+              'Esc keeps the explicit widget undock in its same-side periphery')
         ipc('wayfire/set-config-options',{'scottland/key_impulse':1500.0})
+        redock(b)
         hold(); tap('RIGHT' if rail=='left' else 'LEFT'); coast(1.2)
         fast=state('InertiaB')
         check(not fast['widgetized'] and fast['zone']=='continuous' and
               (center(fast)[0]<w/2 if rail=='left' else center(fast)[0]>w/2),
               'strong away impulse stops within its starting periphery, never on opposite rail')
         tap('ESC'); coast(.8); release()
-        wait_for(lambda:state('InertiaB')['widgetized'])
+        check(not state('InertiaB')['widgetized'] and state('InertiaB')['zone']=='continuous',
+              'Esc keeps a strong explicit push in the periphery')
         ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0})
+        redock(b)
         drag('InertiaB',6,h*.56)
         wait_for(lambda:state('InertiaB')['widgetized'] and any(v['widget'] for v in ipc('scottland/layout-state')['views']))
         coast(.3); left_origin=cc()
@@ -370,12 +398,15 @@ try:
         check(not from_left['widgetized'] and from_left['zone']=='continuous' and center(from_left)[0]<w/2,
               'right arrow undocks a left-rail widget into the left periphery')
         tap('ESC'); coast(.8); release()
-        check(state('InertiaB')['widgetized'] and near(cc(),left_origin,2),
-              'Esc restores the left-rail widget after its away impulse')
-        origin=cc(); hold(); choose(b); tap('RIGHT'); coast(.15); tap('ESC'); coast(.8); release()
-        wait_for(lambda:state('InertiaB')['widgetized']); coast(.5)
-        check(state('InertiaB')['widgetized'] and near(cc(),origin,2),'Esc restores original widget form after hint-open and arrow movement')
-        screenshot('widget-restored')
+        after_left=state('InertiaB')
+        check(not after_left['widgetized'] and after_left['zone']=='continuous' and center(after_left)[0]<w/2,
+              'Esc keeps a left-rail widget arrow move in the left periphery')
+        redock(b)
+        focus(a); hold(); choose(b); tap('RIGHT'); coast(.15); tap('ESC'); coast(.8); release()
+        after_hint_move=state('InertiaB')
+        check(not after_hint_move['widgetized'] and after_hint_move['zone']=='continuous' and center(after_hint_move)[0]<w/2,
+              'Esc keeps a widget hint selection followed by an explicit arrow move')
+        screenshot('widget-move-kept')
 except Exception as e:
     check(False,'suite exception: '+repr(e))
 finally:

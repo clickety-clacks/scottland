@@ -41,7 +41,7 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     rectf_t rect{source->rect.x - source->rect.z, source->rect.y - source->rect.w,
                  source->rect.x + source->rect.z, source->rect.y + source->rect.w};
     double radius = source->liquid.y;
-    if (round_box_distance(point, rect, radius) <= 0)
+    if (goo::distance({point.x, point.y}, *source) <= 0)
         return handle_t::none;
     glm::vec2 p{point.x, point.y};
     // A film over a back window belongs to a source ahead of it. Foreground
@@ -61,13 +61,12 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     if (f * (1 + screen.settings.wave_height * wave) < threshold)
     {
         // A5's 12 pt target is a dilation of the same field, not a second handle shape.
-        auto r = rect;
-        float edge = round_box_distance(point, r, radius);
+        float edge = goo::distance({point.x, point.y}, *source);
         if (edge > MIN_GRAB)
             return handle_t::none;
         // Follow the rounded edge's normal rather than the center ray: that keeps the
         // target 12 pt wide on long edges and works for custom, non-exponential falloffs.
-        auto d = [&](double x, double y) { return round_box_distance({x, y}, r, radius); };
+        auto d = [&](double x, double y) { return goo::distance({x, y}, *source); };
         glm::vec2 normal{d(point.x + .1, point.y) - d(point.x - .1, point.y),
                          d(point.x, point.y + .1) - d(point.x, point.y - .1)};
         if (glm::length(normal) < .001f)

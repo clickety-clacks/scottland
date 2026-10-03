@@ -14,12 +14,13 @@ void main() { pos = position; gl_Position = MVP * vec4(position, 0, 1); }
 inline const std::string common = R"(
 precision highp float;
 varying vec2 pos;
-uniform sampler2D uSources, uFalloff;
+uniform sampler2D uSources, uFalloff, uShapes;
+uniform vec2 uAtlasSize;
 uniform int uCount;
 uniform vec2 uRes, uSize;
 uniform float uTime, uReach, uNoise, uNoiseScale, uNoiseSpeed, uT, uPacked, uThickness;
 uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;
-vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/8., (float(i)+.5)/float(max(uCount,1)))); }
+vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/float(max(uCount,1)))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p) {
   vec2 i=floor(p), f=fract(p), u=f*f*(3.-2.*f);
@@ -27,9 +28,23 @@ float vnoise(vec2 p) {
 }
 float fbm(vec2 p) { float s=0.,a=.5; for(int k=0;k<3;k++){s+=a*vnoise(p);p=p*2.03+17.1;a*=.5;} return s/.875; }
 float sdBox(vec2 p,vec2 b,float r){r=min(r,min(b.x,b.y));vec2 q=abs(p)-b+r;return length(max(q,0.))+min(max(q.x,q.y),0.)-r;}
+float sourceSdf(vec2 p,int i) {
+  vec4 r=source(i,0.);float radius=source(i,1.).y;
+  // Ordinary windows never fetch the widget atlas or its tile coordinates.
+  if(radius>=0.)return sdBox(p-r.xy,r.zw,radius);
+  vec4 tile=source(i,8.);
+  vec4 bounds=source(i,9.),body=source(i,10.);
+  vec2 center=(bounds.xy+bounds.zw)*.5,halfSize=max((bounds.zw-bounds.xy)*.5,vec2(.01));
+  vec2 stepSize=body.zw/halfSize;
+  vec2 at=(p-body.xy)/stepSize+center;
+  vec2 q=clamp(at,vec2(.5),tile.zw-.5);
+  vec4 c=texture2D(uShapes,(tile.xy+q)/uAtlasSize);
+  float d=(dot(c.rg,vec2(255.,65280.))-32768.)/16.+length(at-q);
+  return sdBox(p-body.xy,body.zw,0.)+(d-sdBox(at-center,halfSize,0.))*min(stepSize.x,stepSize.y);
+}
 float unionSdf(vec2 p) {
   float d=1e9;
-  for(int i=0;i<1024;i++){if(i>=uCount)break;vec4 r=source(i,0.);d=min(d,sdBox(p-r.xy,r.zw,source(i,1.).y));} return d;
+  for(int i=0;i<1024;i++){if(i>=uCount)break;vec4 r=source(i,0.);d=min(d,sourceSdf(p,i));} return d;
 }
 float fall(float e) {
   float t=max(e,0.)/(4.*uReach);
@@ -43,20 +58,20 @@ vec2 backdrop(vec2 p) {
   if(uOverlap<.5)return vec2(float(uCount),0.);
   for(int i=0;i<1024;i++){
     if(i>=uCount)break;vec4 r=source(i,0.);
-    float d=sdBox(p-r.xy,r.zw,source(i,1.).y);
+    float d=sourceSdf(p,i);
     if(d<=0.)return vec2(float(i),d);
   }return vec2(float(uCount),0.);
 }
 float surfaceSdf(vec2 p){
   float d=1e9;
   for(int i=0;i<1024;i++){
-    if(i>=uCount)break;vec4 r=source(i,0.);float e=sdBox(p-r.xy,r.zw,source(i,1.).y);
+    if(i>=uCount)break;vec4 r=source(i,0.);float e=sourceSdf(p,i);
     if(e<=0.)return i==0 ? e : d;
     d=min(d,e);
   }return d;
 }
 float edgeDistance(vec2 p,vec4 r,vec4 g,vec2 back,int i){
-  float e=max(sdBox(p-r.xy,r.zw,g.y),0.);
+  float e=max(sourceSdf(p,i),0.);
   if(back.x<float(uCount)){
     // Film starts at uFilm and swells by the same ratio as this source's outer goo.
     // It still opens into the full liquid at the back window's shore.
@@ -103,7 +118,8 @@ vec3 gooField(vec2 p) {
     float contribution=max(a,0.)*fe;
     F+=contribution;
     // Finite support applies only to the decorative modulation, never field/dye tails.
-    float local=1.-smoothstep(3.*uReach,4.*uReach,max(sdBox(p-r.xy,r.zw,g.y),0.));
+    float shore=g.y<0.?sourceSdf(p,i):sdBox(p-r.xy,r.zw,g.y);
+    float local=1.-smoothstep(3.*uReach,4.*uReach,max(shore,0.));
     breathing+=contribution*source(i,7.).x*local;
   } return vec3(F,cloud/max(weight,.0001),breathing/max(F,.0001));
 }
@@ -298,7 +314,7 @@ void main(){
   vec2 hintBack=backdrop(p);
   if(uHints>.5)for(int i=0;i<1024;i++){
     if(i>=int(hintBack.x))break;if(source(i,5.).x<=0.)continue;
-    vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sdBox(p-r.xy,r.zw,g.y),0.));
+    vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
   float cloud=uControls>.5?value.b:0.;
@@ -344,6 +360,29 @@ void main(){
   vec3 bg=texture2D(uBackground,bgUV).rgb;
   vec3 color=clamp(intrinsic.rgb+refr.b*1.5*bg,0.,1.);
   gl_FragColor=vec4(color*intrinsic.a,intrinsic.a);
+}
+)";
+// GO18: cross-fade two nearby breathing surfaces after compositing each over
+// the current backdrop. Premultiplied results keep a shore from darkening as it
+// appears in only one cached key.
+inline const std::string cached_composite_mix_shader = R"(
+precision highp float;
+varying vec2 pos;
+uniform sampler2D uIntrinsic,uRefraction,uIntrinsicB,uRefractionB,uBackground;
+uniform mat4 uBackgroundMap;
+uniform float uMix;
+vec4 layer(vec4 intrinsic,vec4 refr){
+  if(intrinsic.a<=0.)return vec4(0.);
+  vec2 shifted=pos+(refr.rg-.5)*32.;
+  vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
+  vec3 color=clamp(intrinsic.rgb+refr.b*1.5*texture2D(uBackground,bgUV).rgb,0.,1.);
+  return vec4(color*intrinsic.a,intrinsic.a);
+}
+void main(){
+  vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
+  vec4 a=texture2D(uIntrinsic,uv),b=texture2D(uIntrinsicB,uv);
+  if(a.a<=0.&&b.a<=0.)discard;
+  gl_FragColor=mix(layer(a,texture2D(uRefraction,uv)),layer(b,texture2D(uRefractionB,uv)),uMix);
 }
 )";
 // Max-reduction of changes in dye and wave energy, read back as a single pixel every 30 steps.

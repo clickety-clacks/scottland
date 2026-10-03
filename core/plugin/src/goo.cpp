@@ -3,6 +3,7 @@
 #include "frame.hpp"
 #include "goo-runtime.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <optional>
 #include <cmath>
 #include <wayfire/config/option-wrapper.hpp>
@@ -25,7 +26,8 @@ bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> 
     if (a.size() != b.size())
         return false;
     for (size_t i = 0; i < a.size(); i++)
-        if (a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
+        if (a[i].shape != b[i].shape || glm::length(a[i].shape_body - b[i].shape_body) > .03f ||
+            a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
             glm::length(a[i].dye - b[i].dye) > .001f || glm::length(a[i].corners - b[i].corners) > .001f ||
             glm::length(a[i].sides - b[i].sides) > .001f ||
             std::abs(a[i].control_extent - b[i].control_extent) > .03f ||
@@ -48,6 +50,8 @@ class goo_node_t : public wf::scene::node_t
     goo::screen_t state;
     wf::wl_timer<true> tick, breath_tick;
     uint64_t breath_ticks = 0;
+    float breath_hold = -1;
+    bool breath_tight = true, breath_loose = false, breath_keys = true;
     wf::regionf_t breath_area;
     wf::effect_hook_t pre;
     double last_change = now(), last_step = 0;
@@ -127,7 +131,7 @@ class goo_node_t : public wf::scene::node_t
                     list.push_back(wf::geometry_t{std::floor(a), std::floor(b),
                                                   std::ceil(c - std::floor(a)), std::ceil(d - std::floor(b))});
             };
-            if (x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
+            if (s.shape || x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
             {
                 box(x1 - out, y1 - out, x2 + out, y2 + out);
                 continue;
@@ -179,6 +183,7 @@ class goo_node_t : public wf::scene::node_t
     void update_breathing()
     {
         breath_area.clear();
+        breath_loose = true;
         // The cached influence is exactly zero past four reaches. Include cubic
         // reconstruction/AA padding and intersect the actual drawable goo bands:
         // joined goo inside this support breathes too; distant strips never do.
@@ -188,6 +193,17 @@ class goo_node_t : public wf::scene::node_t
         {
             if (!s.attention || !s.emitter) continue;
             double out = 4 * state.settings.reach + padding;
+            // A mask may have a hollow or deeply inset contour. Every part of
+            // that body can breathe; rectangle edge strips would omit it.
+            if (s.shape)
+            {
+                // body bounds already contain badge overhang; the full box also
+                // covers internal holes whose shores are away from its edges.
+                auto body = s.shape_body.z > 0 && s.shape_body.w > 0 ? s.shape_body : s.rect;
+                double x = body.x-body.z, y = body.y-body.w;
+                support |= wf::geometry_t{x-out, y-out, 2*body.z+2*out, 2*body.w+2*out};
+                continue;
+            }
             double in = s.liquid.y + padding;
             double x = s.rect.x-s.rect.z, y = s.rect.y-s.rect.w;
             double w = 2*s.rect.z, h = 2*s.rect.w;
@@ -208,7 +224,9 @@ class goo_node_t : public wf::scene::node_t
         // 125 samples per breath. The maximum light step is below 0.8% and the
         // preset's moving contour advances less than 0.09 logical pixels/tick.
         breath_tick.set_timeout(40, [this] {
-            state.breath = goo::attention_breath(now());
+            state.breath = breath_hold >= 0 ? breath_hold : goo::attention_breath(now());
+            if (state.sleeping && breath_tight && breath_loose)
+                tighten_breathing();
             if (state.sleeping)
                 for (auto &b : breath_area)
                     wf::scene::damage_node(shared_from_this(), wf::geometry_t{
@@ -216,6 +234,59 @@ class goo_node_t : public wf::scene::node_t
             ++breath_ticks;
             return true;
         });
+    }
+    // The conservative GO17 support includes dry liquid reach. Once the field
+    // is asleep, shrink each rectangle to its widest-breath wet density plus a
+    // reconstruction margin. Masked alpha contours use a denser lattice so a
+    // thin lobe is covered by the same margin rather than disabling tightening.
+    void tighten_breathing()
+    {
+        breath_loose = false;
+        const float wet = .5f * state.settings.threshold();
+        const double support_padding = 5 + 1. / state.output->handle->scale;
+        const double reach = 4 * state.settings.reach + support_padding;
+        wf::regionf_t tight;
+        for (auto &b : breath_area)
+        {
+            bool masked = false;
+            for (auto &source : state.sources)
+            {
+                if (!source.shape) continue;
+                auto body = source.shape_body.z > 0 && source.shape_body.w > 0 ? source.shape_body : source.rect;
+                wf::regionf_t support;
+                support |= wf::geometry_t{body.x - body.z - reach, body.y - body.w - reach,
+                    2 * body.z + 2 * reach, 2 * body.w + 2 * reach};
+                if (!(support & wf::geometry_t{double(b.x1), double(b.y1),
+                                                double(b.x2-b.x1), double(b.y2-b.y1)}).empty())
+                {
+                    masked = true;
+                    break;
+                }
+            }
+            const double step = masked ? 2 : 4;
+            const double padding = step + 5 + 1. / state.output->handle->scale;
+            double x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+            for (double y = b.y1; y < b.y2 + step; y += step)
+                for (double x = b.x1; x < b.x2 + step; x += step)
+                {
+                    glm::vec2 point{std::min<double>(x, b.x2), std::min<double>(y, b.y2)};
+                    if (goo::density(point, state.sources, state.settings, state.time, 1) < wet)
+                        continue;
+                    x1 = std::min<double>(x1, point.x);
+                    y1 = std::min<double>(y1, point.y);
+                    x2 = std::max<double>(x2, point.x);
+                    y2 = std::max<double>(y2, point.y);
+                }
+            if (x2 < x1)
+                continue;
+            x1 = std::max<double>(std::floor(x1 - padding), b.x1);
+            y1 = std::max<double>(std::floor(y1 - padding), b.y1);
+            x2 = std::min<double>(std::ceil(x2 + padding), b.x2);
+            y2 = std::min<double>(std::ceil(y2 + padding), b.y2);
+            tight |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
+        }
+        if (!tight.empty())
+            breath_area = tight;
     }
     void wake()
     {
@@ -383,16 +454,26 @@ class goo_node_t : public wf::scene::node_t
                         if (failed)
                             failed();
                     }
-                    else if (now() - last_change > 3 && state.renderer.energy < .012f)
+                    else
                     {
-                        state.sleeping = true;
-                        tick.disconnect();
+                        // The packed RGBA8 energy readback scales dye deltas by
+                        // sixteen before reducing them into an 8-bit pixel. One
+                        // source-level color step is therefore 16/255 even when
+                        // every remaining change is only one RGBA8 LSB. Treat
+                        // that quantization floor as settled; larger wave/dye
+                        // deltas still exceed this bound and keep simulating.
+                        const float sleep_energy = state.renderer.packed ? 16.f / 255.f + .0001f : .012f;
+                        if (now() - last_change > 3 && state.renderer.energy <= sleep_energy)
+                        {
+                            state.sleeping = true;
+                            tick.disconnect();
+                        }
                     }
                 }
                 wf::regionf_t area;
                 for (auto &b : band)
                     area |= b;
-                state.renderer.draw(data, area, breath_area, state.breath, state.sleeping);
+                state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys);
             });
     }
 };
@@ -408,6 +489,7 @@ struct goo_t::impl
     goo_t::source_provider_t snapshot;
     std::function<void(wf::output_t *, bool)> screen_changed;
     wf::option_wrapper_t<bool> enabled{"scottland/goo"};
+    wf::option_wrapper_t<bool> breath_keys{"scottland/goo_breath_keys"};
     wf::option_wrapper_t<std::string> curve{"scottland/goo_falloff"};
     std::vector<std::unique_ptr<wf::option_wrapper_t<double>>> options;
     std::map<wf::output_t *, std::shared_ptr<goo_node_t>> nodes;
@@ -456,6 +538,7 @@ struct goo_t::impl
                 remove(o);
         for (auto &[o, n] : nodes)
         {
+            n->breath_keys = breath_keys;
             n->state.settings = goo::current_settings;
             n->band_cache.reset();
             n->update_breathing();
@@ -471,6 +554,7 @@ struct goo_t::impl
         if (!goo::enabled || nodes.count(o))
             return;
         auto n = std::make_shared<goo_node_t>(o, snapshot);
+        n->breath_keys = breath_keys;
         n->failed = [this]
         {
             fallback.run_once(
@@ -507,16 +591,54 @@ struct goo_t::impl
     {
         wf::json_t out;
         out["enabled"] = goo::enabled;
+        out["breath_keys_enabled"] = bool(breath_keys);
         auto list = wf::json_t::array();
         for (auto &[o, n] : nodes)
         {
             wf::json_t s;
+            bool test_changed = false;
+            if (getenv("SCOTTLAND_TEST_MODEL"))
+            {
+                if (data.has_member("breath_hold") &&
+                    (data["breath_hold"].is_int() || data["breath_hold"].is_double()))
+                {
+                    n->breath_hold = data["breath_hold"].as_double();
+                    n->state.breath = n->breath_hold >= 0 ? n->breath_hold : goo::attention_breath(now());
+                    test_changed = true;
+                }
+                if (data.has_member("breath_exact") && data["breath_exact"].is_bool())
+                {
+                    n->state.renderer.breath_exact = data["breath_exact"].as_bool();
+                    test_changed = true;
+                }
+                if (data.has_member("breath_tight") && data["breath_tight"].is_bool() &&
+                    n->breath_tight != data["breath_tight"].as_bool())
+                {
+                    n->breath_tight = data["breath_tight"].as_bool();
+                    n->update_breathing();
+                    test_changed = true;
+                }
+            }
+            if (test_changed)
+                n->damage();
             s["output"] = o->handle->name;
             s["sleeping"] = n->state.sleeping;
+            s["breath_keys_enabled"] = n->breath_keys;
             s["steps"] = (int64_t)n->state.renderer.steps;
             s["step_ms"] = n->state.renderer.last_step_ms;
             s["gpu_ms"] = n->state.renderer.last_gpu_ms;
             s["draw_gpu_ms"] = n->state.renderer.last_draw_gpu_ms;
+            s["draws"] = (int64_t)n->state.renderer.draws;
+            s["surface_pixels"] = (int64_t)n->state.renderer.surface_pixels;
+            s["capture_pixels"] = (int64_t)n->state.renderer.capture_pixels;
+            s["composite_pixels"] = (int64_t)n->state.renderer.composite_pixels;
+            s["breath_refreshes"] = (int64_t)n->state.renderer.breath_refreshes;
+            s["breath_keys"] = (int64_t)n->state.renderer.breath_key_values.size();
+            s["breath_keyframes_active"] = n->state.renderer.breath_keyframes_active;
+            auto key_values = wf::json_t::array();
+            for (float value : n->state.renderer.breath_key_values)
+                key_values.append((double)value);
+            s["breath_key_values"] = key_values;
             s["energy"] = n->state.renderer.energy;
             s["wave_energy"] = n->state.renderer.wave_energy;
             s["dye_energy"] = n->state.renderer.dye_energy;
@@ -559,6 +681,7 @@ goo_t::goo_t() : p(std::make_unique<impl>()) {}
 goo_t::~goo_t() = default;
 void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed)
 {
+    goo::shape_cache_t::prepare();
     p->snapshot = std::move(snapshot);
     p->screen_changed = std::move(screen_changed);
     for (auto &field : p->fields)
@@ -568,6 +691,13 @@ void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *,
         p->options.push_back(std::move(o));
     }
     p->enabled.set_callback([this] { p->config(); });
+    p->breath_keys.set_callback([this] {
+        for (auto &[o, n] : p->nodes)
+        {
+            n->breath_keys = p->breath_keys;
+            n->damage();
+        }
+    });
     p->curve.set_callback([this] { p->config(); });
     wf::get_core().output_layout->connect(&p->added);
     wf::get_core().output_layout->connect(&p->removed);
