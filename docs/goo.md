@@ -85,6 +85,8 @@ The initial defaults are the prototype’s Scottland preset.
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 | GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
+| GO20 | Only a change wakes the goo, and only liquid is worked on. (1) Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
+| GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
 
 ## Halo jobs with goo enabled
 
@@ -1796,3 +1798,191 @@ fixtures: goo regression **50/50** on normal and packed paths; GO16 shape/contou
 both; depth/soak **26/26** on both; and the combined five-second keyframe/exact
 idle fixture passed on both paths. Screenshots and logs are under
 `build/ship-merged5-evidence/`.
+## GO20: wallpaper wakes and app frames over a sleeping goo (2026-10-03)
+
+Core. On `30514ff` (GO19, optimized dev build) Mike's Xe session, plugged in, with one
+widget breathing and the goo asleep, read 23-24% compositor GPU, and `wakes` counted
+`wallpaper` 119 times in an hour.
+
+### What the background client commits
+
+Read-only on the live session: wallpaper wakes arrive at :01 and :31 of every minute,
+plus once a minute about six seconds earlier. No layer-shell surface appears or
+disappears at those moments, and the only background-layer surface is the Omarchy
+shell's `omarchy-background`. The shell's battery service checks every 30 seconds and
+its agents plugin has a 30-second timer; its background plugin has no timer of its
+own, shows a static image, and deliberately keeps its render loop enabled
+(`updatesEnabled: true`, with a comment that parking it lost the buffer). So the
+background surface commits again, with damage, when other parts of the same shell
+process update, without its picture changing. That last step is inferred from the
+timing and the source: the commit itself was not traced (no debugger or protocol dump
+on osanwe), and the sandboxed shell on plumbus did not map its background, so it was
+not reproduced with the real shell. `wallpaper_damages` against `wallpaper_changes`
+on the next live build will confirm it, and `wallpaper_last_damage` shows the damaged
+box.
+
+Each such commit woke the simulation for at least three seconds at 27-54% GPU on that
+machine: about three wakes a minute.
+
+### Why a sleeping goo still read 23%
+
+Read-only live samples on `30514ff` (four-second windows):
+
+| Live state (Xe) | Frames/s touching goo | Per frame: copied / composited | Compositor GPU |
+|---|---:|---:|---:|
+| Asleep, nothing breathing, quiet | 2-4 | 0.2 / 0.1 Mpx | 0.2-0.4% |
+| Asleep, nothing breathing, a terminal streaming | 30 | | 2.8% |
+| Asleep, one widget breathing, terminals streaming | 58 | 0.30 / 0.26 Mpx | 5-7.5% |
+| Asleep, two windows breathing, terminals streaming | **118** | **0.55 / 0.48 Mpx** | **27.8%** |
+| Simulation awake | 40-70 | 1.7-2.1 Mpx copied, 1.4-1.9 Mpx full shader | 56-80% |
+
+The breath is not the cost: it ticks 25 times a second and most of its frames reuse the
+backdrop. The cost is every other frame. Terminals with agent output redraw at up to
+the panel's 120 Hz, their damage is their whole surface, and for each such frame the
+goo copied the backdrop and composited over every band inside that box: half a
+megapixel each, mostly dry reach and window interior where no goo is. That frame
+count times about 2.4 ms is the 23-28%. plumbus did not show it before because its
+fixture's redrawing terminal ran at 2 Hz.
+
+### What changed
+
+- **Wallpaper**: damage only marks the capture stale; it is re-rendered at quarter
+  resolution on the next frame, read back (one megabyte at 2560×1600) and compared with
+  the capture that last woke the dye. A new or removed background surface still wakes.
+- **Settled region**: the GO18 strip-shrinking now covers every band and starts when the
+  goo falls asleep (its own 20 ms timer, 2 ms per slice). A band with no wet sample is
+  kept whole. Breathing strips are the breath support inside that region. Waking drops
+  it, which also fixes strips staying shrunk across a wake that let the liquid drift.
+- **Dry content**: each rectangular source's interior, inset by its corner radius plus
+  2 pt, minus the outer band box of every source in front of it. It is removed from
+  the drawn region, from the backdrop copy and from breathing damage.
+
+### Measurements (RX 580, plumbus)
+
+Private headless sessions under the checkout's `build/`, 2560×1600 at 120 Hz, Mike's goo
+settings preset, before is `11628c1` (main). One other agent's compositor was running in
+some samples.
+
+| Case (window breathing, keyframes) | Before | After |
+|---|---:|---:|
+| Wallpaper commits an identical frame every 7 s (20 s sample) | 9.4% GPU, 3 wakes, 553 steps | **0.7%**, 0 wakes, 0 steps |
+| Same, nothing breathing | 9.6% | 0.1% |
+| Front window redraws its whole surface at 120 Hz: backdrop copied per frame | 617,000 px | **100,000 px** |
+| Same: composited per frame | 481,000 px | **88,000 px** |
+| Same: goo draw time per frame | 0.180 ms | 0.052 ms |
+| Same: compositor GPU, goo on / goo off | 19.3% / 17.6% | **18.0% / 17.7%** |
+| The breathing window itself redraws at 120 Hz (behind the front window): copied / composited per frame | 411,000 / 309,000 px | 265,000 / 252,000 px |
+| Idle desktop, window breathing | 0.7-0.8% | 0.7-0.8% |
+
+Bands total 2.2 Mpx in the fixture; the settled region is 1.14 Mpx and dry content
+1.74 Mpx. On the RX 580 the goo's share of a redraw frame was already small (1.7 points
+of 19), so the GPU figure moves little there; the per-frame pixel counts are what carry
+to Xe, where the same counts were costing most of a 2.4 ms frame.
+
+**Expected on Xe (not measured).** Wallpaper wakes: gone unless the picture changes,
+which removes about three 3-second wakes a minute. Redraw frames: the goo's part falls
+by the pixel ratios above when the redrawing window is in front, less when it is under
+another window's film. What remains is the compositor repainting the redrawing window
+itself, which goo off also pays; a goo-off reading in the same scene is the floor.
+
+### Fidelity and checks
+
+No pixel is meant to change. The fixture's `--visual` run compares screenshots with the
+dry-content exclusion on and off (identical), the settled region on and off across a
+trough-to-peak breath (identical), and breath frames over the reused backdrop against
+repainted ones (identical); GO17's checks and the fallback halo check pass. The
+`--wallpaper-recommit` case reports damage callbacks against changed captures. The depth
+suite's wallpaper checks (a replaced wallpaper wakes the simulation, its color enters
+the dye, removal returns it) cover real changes.
+
+Regression on plumbus, normal and packed GLES 2 paths: goo-test 50/50, overlap/hover
+28/28, breathing 12/12, depth/soak 26/26 on both; flow on two outputs 12/12; widget
+morph 270/270; widgets 194/194. goo-shape is 123 pass, 7 fail on both paths, the same
+seven round-widget checks that fail on main.
+
+Not covered: fractional scale, two outputs, rotated outputs, a video wallpaper (it
+would be read back and wake on every frame, as it woke before), physical display.
+
+## GO21: exact under scale, rotation and two outputs (2026-10-03)
+
+Core. Astra built the same breath-damage idea independently (`goo-breath-damage-astra`)
+with two things this path lacked: the reuse decision made in device pixels, and pixel
+comparisons on frames the compositor renders by itself. Both are ported here; its branch
+is not merged.
+
+### What was wrong
+
+- **GO19's reuse did not hear other damage.** It listened for damage on the scene root,
+  but Wayfire's damage signal is emitted on the damaged node only and travels through
+  render instances, not up the tree. So the only guard was "all of this frame's damage
+  lies in the strips". A change wholly inside a strip (one terminal cell under a
+  breathing window's film) was painted over with the cached backdrop until the
+  once-a-second normal frame. This is in the build installed on osanwe (`30514ff`) and in
+  GO20: a stale patch for up to a second, only for changes that small.
+- **The comparison was in logical pixels with a one-pixel allowance**, and the claimed
+  region was the logical strips, not the device pixels the output had damaged.
+- **More than twenty damage rectangles collapse to their bounding box** in the output's
+  damage ring. GO20's dry-content exclusion fragmented the strips past that in some
+  scenes, which made every breath repaint the whole box and never reuse the backdrop.
+- GO19's and GO20's own equality checks used screenshots, which can force a full
+  repaint and so may not have looked at a reused frame.
+
+### What changed
+
+- A render-instance manager over this output's background, bottom, workspace, top and
+  unmanaged layers reports damage beneath the goo (Astra's approach); the scene root's
+  update signal counts as damage too. The goo's own breathing tick is excluded.
+- The reuse test maps the frame's damage and the strips to framebuffer pixels through the
+  render target, requires the first inside the second, and claims exactly the damaged
+  pixels (mapped back through the target). The restore already ran over those pixels.
+- Reuse is refused unless the target is 8-bit XRGB/ARGB/XBGR/ABGR with an sRGB transfer
+  function and has the geometry, scale and transform the backdrop was copied under.
+- The strips are merged, least added area first, until the banded region has at most 16
+  rectangles. Where that covers dry content, the backdrop is kept current there.
+- `goo-state` adds `reuse_blocked`: why the last frame took the normal path.
+- Test sessions can ask for the next frame an output renders on its own
+  (`layout-state {"capture_next_frame": "OUTPUT"}`, written to
+  `$SCOTTLAND_TEST_STATE/render-frame.ppm`), after Astra's hook, per output.
+
+The settled region (GO20) and the dry-content exclusion needed no change: they shrink
+logical regions that are rounded outward to device pixels where used, and the shader
+decides each pixel analytically. The matrix below checks them anyway.
+
+### `tests/goo-exact-test.sh`
+
+A back terminal with text, a breathing window over it, a focused window over that, a
+static wallpaper. For keyframe and exact modes, at breath 0, 0.37 and 1, natural frames
+are compared with one optimization off and on: backdrop reuse (the reused capture is
+accepted only if every goo draw in its interval reused), dry content, settled region.
+Then, with reuse on: one terminal cell under the breathing window's film toggles (damage
+wholly inside the strips), and a line of text changes under the film; each is captured
+within a quarter second and compared with a repainted frame. `--outputs 2` puts the
+scene's output at layout x=800 beside a second output whose terminal prints twenty times
+a second, and also requires reuse to stay active. `--negative-control` makes the goo deaf
+to other damage: the cell checks then fail (37-44 pixels differ), which is what GO19 did.
+
+| Configuration | Result |
+|---|---|
+| Scale 1, 1.25, 1.5, 2 | 27 / 27 each |
+| Rotation 90, 180, 270 | 27 / 27 each |
+| Rotation 90 at scale 1.5; 270 at 1.25 | 27 / 27 each |
+| Packed GLES 2: scale 1; 1.5; rotation 90 at 1.25 | 27 / 27 each |
+| Two outputs: scale 1; 1.5; rotation 270 at 1.25 | 28 / 28 each |
+| Negative control | the four cell checks fail, as intended |
+
+That is 408 comparisons and checks across 15 configurations, on plumbus's RX 580,
+headless outputs.
+
+Cost is unchanged from GO20 on the same fixtures: window breathing 0.7% in keyframe and
+exact modes with 127 of 132 frames reusing the backdrop; a front window redrawing at
+120 Hz copies 99,000 px and composites 89,000 px per frame; identical wallpaper
+recommits wake nothing.
+
+Regression on plumbus, normal and packed GLES 2 paths: goo-test 50/50, overlap/hover
+28/28, breathing 12/12, depth/soak 26/26 on both; flow on two outputs 12/12; widget morph
+270/270; widgets 194/194; the idle fixture's `--verify --visual` run passes. goo-shape is
+123 pass, 7 fail on both paths, the same round-widget checks as on main.
+
+Not covered: a physical display, 10-bit or HDR outputs (reuse is refused there by the
+format check, which no test exercises), widgets' alpha-shaped sources in the exactness
+scene, mixed scales across two outputs.

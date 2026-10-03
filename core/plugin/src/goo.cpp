@@ -61,7 +61,7 @@ class goo_instance_t : public wf::scene::simple_render_instance_t<goo_node_t>
     void render(const wf::scene::render_instruction_t &data) override;
     void schedule_instructions(std::vector<wf::scene::render_instruction_t> &instructions,
                                const wf::render_target_t &target, wf::regionf_t &damage) override;
-    bool reuse_backdrop = false;
+    wf::regionf_t reuse;
 };
 class goo_node_t : public wf::scene::node_t
 {
@@ -73,21 +73,65 @@ class goo_node_t : public wf::scene::node_t
     // A breath-only frame: nothing but this node's breathing tick damaged the output since
     // the last frame. The scene under the strips is then exactly the cached backdrop, so
     // the goo repaints the strips itself and the windows and wallpaper beneath are left
-    // alone. Any other scene damage, or damage outside the strips, takes the normal path;
-    // one frame a second does too, so a change that arrived without scene damage cannot
-    // leave a stale backdrop for longer than that.
-    bool foreign_damage = true, own_damage = false, reuse_enabled = true;
+    // alone. Any other damage on this output, or damage outside the strips, takes the
+    // normal path; one frame a second does too, so a change that arrived without scene
+    // damage cannot leave a stale backdrop for longer than that.
+    //
+    // GO21: other damage is heard through render instances of this output's own layers
+    // (damage signals do not travel to the scene root, so listening there heard nothing),
+    // and a restructured scene counts as damage. The test is made in device pixels: the
+    // output rounds damage out to whole pixels, which at a fractional scale or under
+    // rotation reach past the logical strips. The pixels the goo claims are exactly the
+    // pixels it restores, so none is repainted beneath and reused as well, and none is
+    // left unpainted.
+    bool foreign_damage = true, own_damage = false, reuse_enabled = true, dry_enabled = true;
     int reuse_streak = 0;
-    wf::regionf_t breath_guard;
-    wf::signal::connection_t<wf::scene::node_damage_signal> on_scene_damage =
-        [this] (wf::scene::node_damage_signal *) { if (!own_damage) foreign_damage = true; };
-    bool breath_only_frame(const wf::regionf_t &damage)
+    bool deaf = false;  // tests only: ignore other damage, to prove the exactness test can fail
+    std::string reuse_blocked;
+    std::unique_ptr<wf::scene::render_instance_manager_t> scene_observer;
+    wf::signal::connection_t<wf::scene::root_node_update_signal> on_scene_update =
+        [this] (wf::scene::root_node_update_signal *) { foreign_damage = true; };
+    void observe_scene(bool on)
+    {
+        if (on == bool(scene_observer))
+            return;
+        foreign_damage = true;
+        if (!on)
+        {
+            scene_observer.reset();
+            on_scene_update.disconnect();
+            return;
+        }
+        std::vector<wf::scene::node_ptr> layers;
+        for (auto layer : {wf::scene::layer::BACKGROUND, wf::scene::layer::BOTTOM, wf::scene::layer::WORKSPACE,
+                 wf::scene::layer::TOP, wf::scene::layer::UNMANAGED})
+            layers.push_back(state.output->node_for_layer(layer));
+        scene_observer = std::make_unique<wf::scene::render_instance_manager_t>(layers,
+            [this] (const wf::regionf_t &) { if (!own_damage && !deaf) foreign_damage = true; }, state.output);
+        wf::get_core().scene()->connect(&on_scene_update);
+    }
+    // The region (logical, covering whole device pixels) this frame restores from the
+    // cached backdrop; empty for a normal frame.
+    wf::regionf_t breath_only_frame(const wf::render_target_t &target, const wf::regionf_t &damage)
     {
         bool foreign = std::exchange(foreign_damage, false);
-        bool reuse = !foreign && reuse_enabled && attached && goo_enabled() && wf::get_core().is_gles2() && state.sleeping &&
-            !whole && !breath_area.empty() && reuse_streak < 25 && state.renderer.backdrop_ready() &&
-            !(state.sources.size() == 1 && !state.sources[0].emitter) && (damage ^ breath_guard).empty();
-        reuse_streak = reuse ? reuse_streak + 1 : 0;
+        wf::regionf_t reuse;
+        // Why the last frame took the normal path (goo-state, for tests and live reading).
+        reuse_blocked = foreign ? "other damage" : !scene_observer || !reuse_enabled ? "off" :
+            !state.sleeping || whole || breath_area.empty() ? "not a sleeping breath" :
+            reuse_streak >= 25 ? "periodic refresh" :
+            !state.renderer.backdrop_ready(target) ? "backdrop not ready for this target" : "";
+        if (reuse_blocked.empty() && attached && goo_enabled() && wf::get_core().is_gles2() &&
+            !(state.sources.size() == 1 && !state.sources[0].emitter))
+        {
+            auto pixels = target.framebuffer_region_from_geometry_region(damage);
+            auto strips = target.framebuffer_region_from_geometry_region(breath_area);
+            if ((pixels ^ strips).empty())
+                reuse = target.geometry_region_from_framebuffer_region(pixels);
+            else
+                reuse_blocked = "damage outside the strips";
+        }
+        reuse_streak = reuse.empty() ? 0 : reuse_streak + 1;
         return reuse;
     }
     bool breath_tight = true, breath_loose = false, breath_keys = true;
@@ -105,7 +149,6 @@ class goo_node_t : public wf::scene::node_t
         state.wake = [this] { wake("frame"); };
         pre = [this] { prepare(); };
         o->render->add_effect(&pre, wf::OUTPUT_EFFECT_PRE);
-        wf::get_core().scene()->connect(&on_scene_damage);
     }
     ~goo_node_t() { detach(); }
     void detach()
@@ -117,6 +160,8 @@ class goo_node_t : public wf::scene::node_t
         attached = false;
         tick.disconnect();
         breath_tick.disconnect();
+        settle_tick.disconnect();
+        observe_scene(false);
         auto it = goo::screens.find(state.output);
         if (it != goo::screens.end() && it->second == &state)
             goo::screens.erase(it);
@@ -142,11 +187,46 @@ class goo_node_t : public wf::scene::node_t
     const std::vector<wf::geometry_t> &bands()
     {
         if (!band_cache)
+        {
             band_cache = compute_bands();
+            compute_dry();
+        }
         return *band_cache;
     }
-    std::vector<wf::geometry_t> compute_bands() const
+    // GO20: window content no goo can lie on. A window's interior (inside its rounded
+    // corners) is dry unless a source in front of it can lay film there, which is bounded
+    // by that source's outer band. Damage that stays in dry content (a front terminal
+    // redrawing itself) then costs the goo nothing: no backdrop copy, no composite.
+    std::vector<double> band_outs;
+    wf::regionf_t dry;
+    void compute_dry()
     {
+        dry.clear();
+        for (size_t i = 0; i < state.sources.size() && i < band_outs.size(); i++)
+        {
+            auto &s = state.sources[i];
+            if (s.shape || s.hint_circle)
+                continue;  // content follows an alpha contour, or there is none
+            double inset = s.liquid.y + 2;
+            double x1 = std::ceil(s.rect.x - s.rect.z + inset), x2 = std::floor(s.rect.x + s.rect.z - inset);
+            double y1 = std::ceil(s.rect.y - s.rect.w + inset), y2 = std::floor(s.rect.y + s.rect.w - inset);
+            if (x2 <= x1 || y2 <= y1)
+                continue;
+            wf::regionf_t core;
+            core |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
+            for (size_t j = 0; j < i; j++)  // sources are front to back
+            {
+                auto &f = state.sources[j];
+                double out = band_outs[j];
+                core ^= wf::geometry_t{std::floor(f.rect.x - f.rect.z - out), std::floor(f.rect.y - f.rect.w - out),
+                    std::ceil(2 * f.rect.z + 2 * out) + 1, std::ceil(2 * f.rect.w + 2 * out) + 1};
+            }
+            dry |= core;
+        }
+    }
+    std::vector<wf::geometry_t> compute_bands()
+    {
+        band_outs.clear();
         auto reach = goo::support_radii(state.sources, state.settings);
         std::vector<float> film_reach;
         if (goo::overlaps(state.sources) && state.settings.overlap_film > 0)
@@ -163,6 +243,7 @@ class goo_node_t : public wf::scene::node_t
             if (!film_reach.empty())
                 out = std::max(out, film_reach[i] * std::max(1.f,
                     goo::overlap_film_width(s, state.settings) / state.settings.thickness) + padding);
+            band_outs.push_back(out);
             double x1 = s.rect.x - s.rect.z, x2 = s.rect.x + s.rect.z;
             double y1 = s.rect.y - s.rect.w, y2 = s.rect.y + s.rect.w;
             auto box = [&](double a, double b, double c, double d)
@@ -230,17 +311,56 @@ class goo_node_t : public wf::scene::node_t
                 std::ceil(b.x2) - std::floor(b.x1), std::ceil(b.y2) - std::floor(b.y1)};
         return out;
     }
-    void guard_breathing()
+    // GO21: the output's damage ring collapses more than twenty rectangles into their
+    // bounding box, which would repaint whole windows on every breath and rule out
+    // backdrop reuse. Keep the strips to a dozen rectangles: merge the pair whose joint box
+    // adds the least area until they fit. The strips may then cover a little dry content,
+    // so the backdrop is kept current there too (dry_capture).
+    static constexpr size_t max_breath_rects = 16;
+    wf::regionf_t dry_capture;
+    void set_breath_area(const wf::regionf_t &exact)
     {
-        breath_guard.clear();
-        for (auto &b : breath_area)
-            breath_guard |= wf::geometry_t{b.x1 - 1., b.y1 - 1., b.x2 - b.x1 + 2., b.y2 - b.y1 + 2.};
+        std::vector<wf::geometry_t> rects;
+        for (auto &b : exact)
+            rects.push_back(wf::geometry_t{double(b.x1), double(b.y1), double(b.x2 - b.x1), double(b.y2 - b.y1)});
+        auto joined = [] (const wf::geometry_t &a, const wf::geometry_t &b)
+        {
+            double x1 = std::min<double>(a.x, b.x), y1 = std::min<double>(a.y, b.y);
+            double x2 = std::max<double>(a.x + a.width, b.x + b.width);
+            double y2 = std::max<double>(a.y + a.height, b.y + b.height);
+            return wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
+        };
+        auto count = [] (const wf::regionf_t &region) { size_t n = 0; for (auto &b : region) { (void)b; n++; } return n; };
+        breath_area = exact;
+        // Joining boxes can make the union band into more rectangles than were joined,
+        // so aim lower until the banded result fits. One box always does.
+        for (size_t target = max_breath_rects; count(breath_area) > max_breath_rects && target >= 1; target--)
+        {
+            while (rects.size() > target)
+            {
+                size_t first = 0, second = 1;
+                double least = 1e30;
+                for (size_t i = 0; i < rects.size(); i++)
+                    for (size_t j = i + 1; j < rects.size(); j++)
+                    {
+                        auto box = joined(rects[i], rects[j]);
+                        double added = double(box.width) * box.height - double(rects[i].width) * rects[i].height -
+                            double(rects[j].width) * rects[j].height;
+                        if (added < least) { least = added; first = i; second = j; }
+                    }
+                rects[first] = joined(rects[first], rects[second]);
+                rects.erase(rects.begin() + second);  // one fewer each round: always ends
+            }
+            breath_area.clear();
+            for (auto &r : rects) breath_area |= r;
+        }
+        breath_area &= get_bounding_box();
+        dry_capture = dry ^ breath_area;
     }
     void update_breathing()
     {
         breath_area.clear();
-        breath_loose = true;
-        tightening.reset();
+        breath_loose = !settled_ready;
         // The cached influence is exactly zero past four reaches. Include cubic
         // reconstruction/AA padding and intersect the actual drawable goo bands:
         // joined goo inside this support breathes too; distant strips never do.
@@ -273,8 +393,9 @@ class goo_node_t : public wf::scene::node_t
             }
         }
         for (auto &b : bands()) visible |= b;
-        breath_area = whole_pixels(support & visible & get_bounding_box());
-        guard_breathing();
+        // Dry content is neither damaged nor repainted by a breath (its backdrop is not kept).
+        breath_support = whole_pixels(support & visible & get_bounding_box()) ^ dry;
+        set_breath_area(settled_ready ? whole_pixels(breath_support & settled_area) : breath_support);
         breath_tick.disconnect();
         state.breath = 0;
         if (breath_area.empty()) return;
@@ -284,8 +405,6 @@ class goo_node_t : public wf::scene::node_t
         breath_tick.set_timeout(40, [this] {
             double tick_start = now();
             state.breath = breath_hold >= 0 ? breath_hold : goo::attention_breath(now());
-            if (state.sleeping && breath_tight && breath_loose)
-                tighten_breathing();
             if (state.sleeping)
             {
                 own_damage = true;
@@ -317,15 +436,35 @@ class goo_node_t : public wf::scene::node_t
         wf::regionf_t tight;
     };
     std::optional<tighten_t> tightening;
+    // GO20: the same shrinking for every band, not only the breathing strips. While the
+    // goo sleeps, drawing, the backdrop copy and the composite use this region, so an app
+    // frame that touches the goo works on the liquid, not on the dry reach around it.
+    // Any wake returns to the conservative bands (waves can push the shore out).
+    wf::regionf_t settled_area, breath_support;
+    bool settled_ready = false;
+    wf::wl_timer<true> settle_tick;
+    void start_settling()
+    {
+        settled_ready = false;
+        tightening.reset();
+        settle_tick.disconnect();
+        if (!breath_tight || !attached)
+            return;
+        settle_tick.set_timeout(20, [this]
+        {
+            if (!state.sleeping || !breath_tight)
+                return false;
+            tighten_breathing();
+            return !settled_ready;
+        });
+    }
     void tighten_breathing(double budget_ms = 2)
     {
         double tighten_start = now();
         if (!tightening)
         {
             tightening.emplace();
-            for (auto &b : breath_area)
-                tightening->rects.push_back(wf::geometry_t{double(b.x1), double(b.y1),
-                    double(b.x2 - b.x1), double(b.y2 - b.y1)});
+            tightening->rects = bands();
             tighten_ms = 0;
         }
         auto &job = *tightening;
@@ -384,15 +523,16 @@ class goo_node_t : public wf::scene::node_t
                 double x2 = std::min<double>(std::ceil(job.x2 + step_x + pad), bx2);
                 double y2 = std::min<double>(std::ceil(job.y2 + step_y + pad), by2);
                 job.tight |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
-            }
+            } else
+                job.tight |= b;  // nothing sampled wet: keep the whole band, never drop goo
             job.index++;
             job.row_started = false;
         }
         breath_loose = false;
         ++breath_tightens;
-        if (!job.tight.empty())
-            breath_area = whole_pixels(job.tight);
-        guard_breathing();
+        settled_area = whole_pixels(job.tight);
+        settled_ready = true;
+        set_breath_area(whole_pixels(breath_support & settled_area));
         tighten_ms += (now() - tighten_start) * 1000;
         tightening.reset();
     }
@@ -409,7 +549,12 @@ class goo_node_t : public wf::scene::node_t
             wake_counts[reason]++;
             last_wake = reason;
             wake_step = state.renderer.steps;
-        }
+            settled_ready = false;
+            tightening.reset();
+            settle_tick.disconnect();
+            set_breath_area(breath_support);
+            breath_loose = true;
+            }
         // A hidden window's attention timer can wake us after prepare() suspended
         // fullscreen goo. No repaint may follow that occluded damage, so preserve
         // the suspension here too. Leaving fullscreen replaces sources in prepare.
@@ -438,6 +583,12 @@ class goo_node_t : public wf::scene::node_t
     std::vector<wf::scene::node_ptr> wallpaper_nodes;
     std::vector<wf::scene::render_instance_uptr> wallpaper_instances;
     bool wallpaper_dirty = true;
+    // The last capture that woke the dye, and counters for goo-state: background damage
+    // callbacks, captures taken, captures that differed.
+    std::vector<uint8_t> wallpaper_pixels;
+    static constexpr size_t wallpaper_tolerated = 16;
+    uint64_t wallpaper_damages = 0, wallpaper_captures = 0, wallpaper_changes = 0, wallpaper_node_changes = 0;
+    wf::geometry_t wallpaper_damage_box{};
     glm::mat4 wallpaper_map{1};
     void prepare_wallpaper()
     {
@@ -450,15 +601,23 @@ class goo_node_t : public wf::scene::node_t
             wallpaper_instances.clear();
             wallpaper_nodes = next;
             for (auto &child : wallpaper_nodes)
-                child->gen_render_instances(wallpaper_instances, [this](const wf::regionf_t &) {
+                child->gen_render_instances(wallpaper_instances, [this](const wf::regionf_t &region) {
+                    // Only a recapture: prepare_wallpaper() wakes the simulation if the
+                    // captured pixels changed. The damage repaints the output, so it runs.
                     wallpaper_dirty = true;
-                    if (state.settings.soak > 0)
+                    ++wallpaper_damages;
+                    double x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+                    for (auto &b : region)
                     {
-                        last_change = now();
-                        wake("wallpaper");
+                        x1 = std::min<double>(x1, b.x1); y1 = std::min<double>(y1, b.y1);
+                        x2 = std::max<double>(x2, b.x2); y2 = std::max<double>(y2, b.y2);
                     }
+                    if (x2 > x1)
+                        wallpaper_damage_box = wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
                 }, state.output);
             wallpaper_dirty = true;
+            wallpaper_pixels.clear();
+            ++wallpaper_node_changes;
             if (!above_windows)
             {
                 // A new background-layer surface may have been inserted in front
@@ -489,6 +648,33 @@ class goo_node_t : public wf::scene::node_t
         wf::render_pass_t::run(params);
         wallpaper_map = wf::gles::render_target_orthographic_projection(target);
         wallpaper_dirty = false;
+        // GO20: a background client can commit again without changing a pixel (a shell
+        // that keeps its render loop running, a re-attached buffer). Only a capture that
+        // differs wakes the dye: more than a few pixels, by more than rounding or dither.
+        ++wallpaper_captures;
+        std::vector<uint8_t> pixels;
+        auto size = wallpaper.get_size();
+        wf::gles::run_in_context_if_gles([&]
+        {
+            GLint previous = 0;
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
+            glBindFramebuffer(GL_FRAMEBUFFER, wf::gles::ensure_render_buffer_fb_id(target));
+            pixels.resize(size_t(size.width) * size.height * 4);
+            glReadPixels(0, 0, size.width, size.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            glBindFramebuffer(GL_FRAMEBUFFER, previous);
+        });
+        size_t changed = 0;
+        if (pixels.empty() || pixels.size() != wallpaper_pixels.size())
+            changed = SIZE_MAX;
+        else
+            for (size_t i = 0; i < pixels.size() && changed <= wallpaper_tolerated; i += 4)
+                changed += std::abs(pixels[i] - wallpaper_pixels[i]) > 4 ||
+                    std::abs(pixels[i + 1] - wallpaper_pixels[i + 1]) > 4 ||
+                    std::abs(pixels[i + 2] - wallpaper_pixels[i + 2]) > 4;
+        if (changed <= wallpaper_tolerated)
+            return;
+        wallpaper_pixels = std::move(pixels);
+        ++wallpaper_changes;
         last_change = now();
         wake("wallpaper");
     }
@@ -541,6 +727,7 @@ class goo_node_t : public wf::scene::node_t
                 last_change = now();
             wake(changed);
         }
+        observe_scene(reuse_enabled && !breath_area.empty());
         if (state.sources.empty() || (state.sources.size() == 1 && !state.sources[0].emitter))
         {
             state.sleeping = true;
@@ -598,14 +785,22 @@ class goo_node_t : public wf::scene::node_t
                         {
                             state.sleeping = true;
                             tick.disconnect();
+                            start_settling();
                         }
                     }
                 }
                 wf::regionf_t area;
-                for (auto &b : band)
-                    area |= b;
+                if (state.sleeping && settled_ready)
+                    area = settled_area;
+                else
+                    for (auto &b : band)
+                        area |= b;
+                if (dry_enabled)
+                    area ^= dry;
+                // The backdrop is never copied in dry content, whether or not the test
+                // switch keeps it in the drawn area.
                 state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
-                                    reuse_backdrop);
+                                    reuse_backdrop, &dry_capture);
             });
     }
 };
@@ -613,17 +808,16 @@ goo_instance_t::goo_instance_t(goo_node_t *s, wf::scene::damage_callback d, wf::
     : simple_render_instance_t(s, d, o)
 {
 }
-void goo_instance_t::render(const wf::scene::render_instruction_t &data) { self->render(data, reuse_backdrop); }
+void goo_instance_t::render(const wf::scene::render_instruction_t &data) { self->render(data, !reuse.empty()); }
 void goo_instance_t::schedule_instructions(std::vector<wf::scene::render_instruction_t> &instructions,
                                            const wf::render_target_t &target, wf::regionf_t &damage)
 {
     // Scheduled even with no damage of its own, as before: render() also steps the simulation.
     auto ours = damage & self->get_bounding_box();
-    reuse_backdrop = !ours.empty() && self->breath_only_frame(damage);
+    reuse = ours.empty() ? wf::regionf_t{} : self->breath_only_frame(target, damage);
     instructions.push_back(wf::scene::render_instruction_t{.instance = this, .target = target, .damage = ours});
-    // The strips are fully painted by the goo this frame: nothing behind needs to draw there.
-    if (reuse_backdrop)
-        damage ^= self->breath_area;
+    // Those pixels are fully painted by the goo this frame: nothing behind draws there.
+    damage ^= reuse;
 }
 } // namespace
 struct goo_t::impl
@@ -754,13 +948,23 @@ struct goo_t::impl
                     n->state.renderer.breath_exact = data["breath_exact"].as_bool();
                     test_changed = true;
                 }
+                if (data.has_member("dry_content") && data["dry_content"].is_bool())
+                {
+                    n->dry_enabled = data["dry_content"].as_bool();
+                    test_changed = true;
+                }
+                if (data.has_member("reuse_deaf") && data["reuse_deaf"].is_bool())
+                    n->deaf = data["reuse_deaf"].as_bool();
                 if (data.has_member("breath_reuse") && data["breath_reuse"].is_bool())
                     n->reuse_enabled = data["breath_reuse"].as_bool();
                 if (data.has_member("breath_tight") && data["breath_tight"].is_bool() &&
                     n->breath_tight != data["breath_tight"].as_bool())
                 {
                     n->breath_tight = data["breath_tight"].as_bool();
+                    n->settled_ready = false;
                     n->update_breathing();
+                    if (n->state.sleeping)
+                        n->start_settling();
                     test_changed = true;
                 }
             }
@@ -773,6 +977,14 @@ struct goo_t::impl
                 wakes[reason] = (int64_t)count;
             s["wakes"] = wakes;
             s["last_wake"] = n->last_wake;
+            s["wallpaper_damages"] = (int64_t)n->wallpaper_damages;
+            s["wallpaper_captures"] = (int64_t)n->wallpaper_captures;
+            s["wallpaper_changes"] = (int64_t)n->wallpaper_changes;
+            s["wallpaper_node_changes"] = (int64_t)n->wallpaper_node_changes;
+            wf::json_t box;
+            box["x"] = n->wallpaper_damage_box.x; box["y"] = n->wallpaper_damage_box.y;
+            box["width"] = n->wallpaper_damage_box.width; box["height"] = n->wallpaper_damage_box.height;
+            s["wallpaper_last_damage"] = box;
             s["breath_keys_enabled"] = n->breath_keys;
             s["steps"] = (int64_t)n->state.renderer.steps;
             s["step_ms"] = n->state.renderer.last_step_ms;
@@ -782,7 +994,20 @@ struct goo_t::impl
             s["breath_tightens"] = (int64_t)n->breath_tightens;
             s["tick_ms"] = n->tick_ms;
             s["tighten_ms"] = n->tighten_ms;
-            s["breath_loose"] = n->breath_loose && n->breath_tight && !n->breath_area.empty();
+            // The settled (tight) region is still being worked out; conservative bands in use.
+            s["breath_loose"] = n->state.sleeping && n->breath_tight && !n->settled_ready &&
+                n->settle_tick.is_connected();
+            double settled = 0, loose = 0;
+            for (auto &b : n->settled_area) settled += double(b.x2 - b.x1) * (b.y2 - b.y1);
+            wf::regionf_t all;
+            for (auto &b : n->bands()) all |= b;
+            for (auto &b : all) loose += double(b.x2 - b.x1) * (b.y2 - b.y1);
+            double dry_pixels = 0;
+            for (auto &b : n->dry) dry_pixels += double(b.x2 - b.x1) * (b.y2 - b.y1);
+            s["dry_pixels"] = dry_pixels;
+            s["band_pixels"] = loose;
+            s["settled_pixels"] = n->settled_ready ? settled : 0.;
+            s["reuse_blocked"] = n->reuse_blocked;
             s["backdrop_reuses"] = (int64_t)n->state.renderer.backdrop_reuses;
             s["surface_pixels"] = (int64_t)n->state.renderer.surface_pixels;
             s["capture_pixels"] = (int64_t)n->state.renderer.capture_pixels;

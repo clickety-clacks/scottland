@@ -5728,7 +5728,44 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         refresh_layout_avoidance();
     };
 
-    wf::ipc::method_callback layout_state = [=] (wf::json_t) -> wf::json_t
+    // Test sessions: write the next frame an output renders on its own to
+    // $SCOTTLAND_TEST_STATE/render-frame.ppm. A screenshot request can force a repaint of
+    // the whole output, which would hide a mistake in a partially damaged frame (GO21;
+    // after Astra's goo-breath-damage test).
+    uint64_t captured_frames = 0;
+    std::string capture_output;
+    bool capture_next_frame = false;
+    wf::signal::connection_t<wf::render_pass_end_signal> on_test_render_end =
+        [this] (wf::render_pass_end_signal *ev)
+    {
+        if (!capture_next_frame)
+            return;
+        auto target = ev->pass.get_target();
+        bool ours = false;
+        for (auto o : wf::get_core().output_layout->get_outputs())
+            ours |= (capture_output.empty() || capture_output == o->handle->name) &&
+                target.geometry == wf::geometry_t(o->get_layout_geometry());
+        if (!ours)
+            return;
+        capture_next_frame = false;
+        auto size = target.get_size();
+        std::vector<unsigned char> pixels(size_t(size.width) * size.height * 4);
+        wf::gles::run_in_context_if_gles([&]
+        {
+            GLint previous = 0;
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
+            glBindFramebuffer(GL_FRAMEBUFFER, wf::gles::ensure_render_buffer_fb_id(target));
+            glReadPixels(0, 0, size.width, size.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            glBindFramebuffer(GL_FRAMEBUFFER, previous);
+        });
+        std::ofstream image(std::string(getenv("SCOTTLAND_TEST_STATE")) + "/render-frame.ppm", std::ios::binary);
+        image << "P6\n" << size.width << " " << size.height << "\n255\n";
+        for (size_t i = 0; i < pixels.size(); i += 4)
+            image.write((char *)&pixels[i], 3);
+        ++captured_frames;
+    };
+
+    wf::ipc::method_callback layout_state = [=] (wf::json_t data) -> wf::json_t
     {
         wf::json_t reply = wf::ipc::json_ok();
         wf::json_t views = wf::json_t::array();
@@ -5736,6 +5773,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["widget_transition_steps"] = (int64_t)widget_transition_steps;
         if (getenv("SCOTTLAND_TEST_MODEL"))
         {
+            reply["captured_frames"] = (int64_t)captured_frames;
+            if (data.has_member("capture_next_frame") && getenv("SCOTTLAND_TEST_STATE"))
+            {
+                capture_output = data["capture_next_frame"].is_string() ? data["capture_next_frame"].as_string() : "";
+                capture_next_frame = true;
+            }
             auto cursor_view = wf::get_core().get_cursor_focus_view();
             reply["cursor_view"] = cursor_view ? (int64_t)cursor_view->get_id() : (int64_t)-1;
         }
@@ -6023,6 +6066,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Compile the shared blend shader during plugin startup, before any input-driven morph.
         wf::gles::run_in_context_if_gles([] { scottland::widget_morph_renderer().prepare(); });
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
+        if (getenv("SCOTTLAND_TEST_MODEL"))
+            wf::get_core().connect(&on_test_render_end);
         init_output_tracking();
         init_widget_spawn();
         if (!getenv("SCOTTLAND_INTERNAL_MODEL_SESSION"))
