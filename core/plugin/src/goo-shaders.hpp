@@ -326,6 +326,26 @@ void main(){
   gl_FragColor=vec4(clamp(color,0.,1.)*a,a);
 }
 )";
+// The settled surface is independent of the scene beneath it. Cache its own
+// color/coverage and the background's refraction/lighting coefficient; changing
+// windows then need only this short composite rather than all SDF/depth work.
+inline const std::string cached_composite_shader = R"(
+precision highp float;
+varying vec2 pos;
+uniform sampler2D uIntrinsic,uRefraction,uBackground;
+uniform mat4 uBackgroundMap;
+void main(){
+  vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
+  vec4 intrinsic=texture2D(uIntrinsic,uv);
+  if(intrinsic.a<=0.)discard;
+  vec4 refr=texture2D(uRefraction,uv);
+  vec2 shifted=pos+(refr.rg-.5)*32.;
+  vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
+  vec3 bg=texture2D(uBackground,bgUV).rgb;
+  vec3 color=clamp(intrinsic.rgb+refr.b*1.5*bg,0.,1.);
+  gl_FragColor=vec4(color*intrinsic.a,intrinsic.a);
+}
+)";
 // Max-reduction of changes in dye and wave energy, read back as a single pixel every 30 steps.
 inline const std::string energy_shader = common + R"(
 uniform sampler2D uWave,uDyeTex,uPrevious,uReduce;

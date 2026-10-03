@@ -66,6 +66,8 @@ GO14/GO15 add a rounded depth profile and wallpaper dye; see [their design, cont
 headless evidence](../docs/goo.md#go14go15-depth-and-wallpaper-dye-2026-10-02).
 GO17 makes attention breathing a local draw-only modulation while simulation sleeps;
 see [its curve, damage and cost evidence](../docs/goo.md#go17-draw-only-attention-breathing-2026-10-02).
+GO10 also caches the settled goo surface for inexpensive composition over redrawing apps;
+see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-windows-2026-10-02).
 
 | ID | Invariant | Status |
 |---|---|---|

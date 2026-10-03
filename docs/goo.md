@@ -69,15 +69,13 @@ The initial defaults are the prototype’s Scottland preset.
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. Widgets and non-resizable windows (resize permission denied, or both dimensions fixed by min/max hints) have no resize handles; their band remains a move handle. A single fixed dimension still permits resizing the other. | implemented; pointer/touch move, resize, close and hidden-corner checks |
 | GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. The Goo tab includes depth, wall wetting and wallpaper soak with metadata hints verbatim, live preview and Save/Cancel/Defaults. | implemented; Goo coverage test matches all 24 metadata options and GO14/GO15 hints/ranges; isolated headless input checks |
-| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Active breathing damages only conservative goo bands; expensive field work uses occupied tiles, without changing the falloff or update rate. | implemented/headless checked; see the GPU cost validation below |
+| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Attention breathing refreshes only its local strip at 25 Hz (GO17); interaction-driven field work uses occupied tiles. When apps redraw beneath settled overlap film, cached surface properties are composited with the current backdrop instead of re-evaluating depth, SDF and antialiasing for every app frame. Backdrop capture is limited to drawable bands plus refraction margin. | implemented; isolated Xe redraw-cost validation below |
 | GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). At rest the film has the set width; when that window's outer goo expands for proximity/hover, lift while dragging, or attention breathing, its film swells in the same proportion, governed by `goo_swell`, and eases back with it. It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core; swell clarification 2026-10-02) | implemented; isolated headless validation recorded below |
 | GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Only resizable windows have corner cloud/glow: widgets and non-resizable windows (including equal min/max size hints) never show it, in goo or the fallback halo. Their sides still highlight and move normally. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | implemented; isolated headless validation recorded below |
 | GO13 | Goo outlines fade over approximately one device pixel using screen-space field derivatives, at every output/window scale. The full-resolution draw reconstructs the coarse field with smooth cubic filtering, restricted to goo bands; GO11 film and GO12 control outlines use the same coverage. Keep the existing window-edge SDF antialiasing and otherwise preserve the look, simulation and input. Added active cost stays well below one millisecond per frame, checked with the paired GO10 benchmark on Xe and RX 580. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
 
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
 | GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
-| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks; all nineteen existing hover/keyboard hints and screenshots checked on isolated headless outputs; GO14/GO15 options and hints ready for the concurrent Goo tab redesign |
-| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Attention breathing uses cached local influence and a 25 Hz draw-only timer (GO17); interaction-driven field work uses occupied tiles, without changing the falloff. | implemented/headless checked; see the GPU cost validation below |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 
 ## Halo jobs with goo enabled
@@ -1230,3 +1228,90 @@ The final Xe build also passes **270/270 widget morph checks**
 and their runtime directories have been stopped/removed; evidence stays on disk
 under each isolated checkout’s `build/`. This remains headless validation, not a
 physical-display acceptance or deployment.
+
+## GO10: settled goo over redrawing windows (2026-10-02)
+
+This is a **core** cost correction under the quiet-attention and proportional-work
+tenets. Mike measured his live 2560×1600 Xe session at 33% compositor GPU busy
+with goo and 4.2% without it while terminals streamed and one widget breathed.
+`goo-state` showed `sleeping=true`, energy zero and about 0.7 ms for a draw query.
+Those are read-only live observations from the prior build, not measurements of
+this change on his session. The old GO17 ten-window fixture did not exercise
+continuous app damage beneath GO11 film.
+
+The settled simulation was already asleep. Each app redraw nevertheless passed
+through the full GO11/GO13/GO14 surface shader wherever its output damage met a
+goo band. Wayfire can collapse many damage rectangles to a bounding box; the
+renderer then made one full-output quad for each scissor rectangle. Scissoring
+limited fragments, so quad geometry was not the main cost, but the surviving
+fragments repeatedly reconstructed the cubic field, evaluated the stacked
+window SDF, normal, depth, dye and AA. Merely clipping the background copy to
+the bands plus a 17-logical-pixel refraction margin changed the Xe fixture from
+12.8–13.2% to 12.6–13.4% GPU busy: it did **not** cure the shader cost.
+
+The copy path had a separate correctness bug. Wayfire can bind the output FBO
+for drawing while a different framebuffer remains bound for reading. The old
+`glCopyTexSubImage2D` then raised `GL_INVALID_OPERATION (missing readbuffer)`
+on thousands of redraws and left refracted background pixels stale. The draw
+now reads explicitly from the output FBO's color attachment, restores the
+previous read framebuffer/buffer, and captures only damage inside the padded
+goo bands. The final headless Wayfire log has no such copy errors.
+
+Once simulation settles, the expensive shader stores two output-sized,
+band-limited surface caches:
+intrinsic color with coverage, and background refraction offset with lighting
+coefficient. Active simulation retains the original direct draw; after it
+settles, the current bands are cached once. GO17 breathing refreshes only its
+local strip at 25 Hz. Ordinary app redraws combine those cached
+properties with the current backdrop in a small shader. This retains GO11 film
+over live window content and the GO14 refraction; input, wave and dye simulation
+are unchanged. Both caches use RGBA8 (about 31 MiB together at 2560×1600),
+including on the packed GLES 2 path. Intrinsic light can be clamped before
+storage because the backdrop contribution is nonnegative and the final color
+is clamped after addition. If cache allocation fails, the renderer uses its
+prior direct draw.
+
+`tests/goo-draw-bench.py` arranges 18 foot windows at 2560×1600, including six
+terminals printing continuously, overlapping windows, two widgets made by real
+Super drags, and one attention widget. A static background-layer client supplies
+wallpaper color; shipped overlap film, soak and depth remain on. Each isolated
+headless session waits for simulation sleep and samples goo on/off/on in the same
+scene. The off case uses the existing halo. Xe samples are ten seconds per case;
+RX 580 samples are five seconds to limit shared test-machine load. These are
+process GPU-busy counters, not whole-GPU usage or physical-display acceptance.
+
+| GPU / build | Goo on first | Goo off | Goo on again | Increment over off |
+|---|---:|---:|---:|---:|
+| Xe, `c99f116` | 13.2% | 5.4% | 12.8% | 7.4–7.8 points |
+| Xe, cached pre-final build | 6.9% | 5.1% | 7.1% | 1.8–2.0 points |
+| RX 580, `c99f116` | 10.4% | 8.1% | 9.6% | 1.5–2.3 points |
+| RX 580, cached pre-final build | 9.7% | 7.7% | 9.9% | 2.0–2.2 points |
+| RX 580, final build | 10.7% | 8.1% | 10.4% | 2.3–2.6 points |
+
+All goo-on measurement windows report `sleeping=true` and **zero simulation
+steps** despite streaming terminals and roughly 25 breathing ticks per second.
+On Xe the measured incremental GPU cost fell by about three quarters to within
+two points of goo off. This cached Xe sample preceded the final framebuffer
+state-restoration and active-simulation direct-draw adjustments; Mike's new
+no-testing-on-osanwe rule prevents an exact-final-build Xe rerun. The RX 580
+fixture already had a small increment, and the final cached path remained
+within three points rather than showing a material busy reduction.
+RX 580 median draw queries span 0.399–0.471 ms before and 0.397–0.453 ms in
+the final build.
+Xe draw-query elapsed times vary with other sessions' GPU contention, so the
+process busy counters are the useful paired result there. Evidence from the
+pre-reset Xe run is under `build/go10-redraw-baseline/` and
+`build/go10-readfix/`; the plumbus runs, including the final screenshot and
+Wayfire log, are copied to `build/go10-rx/`. Other agents had isolated
+headless sessions open during the final RX 580 run, so shared-GPU contention
+remains a measurement limitation. The headless Xe baseline also showed a much
+smaller increment than Mike's physical-display session (7.4–7.8 versus about
+29 points). The live target therefore remains unverified until this build is
+measured on his physical session; the live session was not changed here.
+
+The earlier broad goo test had stale coordinates for Scottland Settings' newer
+six-tab, half-height panel. Its test now derives input from the panel snapshot
+and uses a visible curve knot. This changes only the test fixture. On plumbus,
+the final build passed goo-test on normal and packed GLES paths (46/46 each)
+and overlap/hover (28/28); widgets (192/192) and widget morph (270/270) passed
+before the final GL-state adjustment. All headless sessions were stopped.

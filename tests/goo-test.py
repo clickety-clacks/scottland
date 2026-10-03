@@ -66,19 +66,50 @@ def settings_snapshot(panel):
         ["qs", "ipc", "--pid", str(quickshell_pid(panel.pid)), "call", "settings-test", "snapshot"],
         text=True))
 
+def panel_origin(q):
+    # Test geometry is relative to the centered, bottom-anchored layer surface.
+    return ((1280-q["panel"]["width"])/2,
+            720-max(24, round(720*.04))-q["panel"]["height"])
+
+def select_goo_tab(panel):
+    q = settings_snapshot(panel)
+    x, y = panel_origin(q)
+    # A large text scale wraps six tabs into two rows on plumbus.
+    wrapped = q["viewport"]["y"] > 190
+    columns = 3 if wrapped else 6
+    click(x+q["viewport"]["x"]+q["viewport"]["width"]*1.5/columns,
+          y+q["viewport"]["y"]-(92 if wrapped else 44))
+    time.sleep(.3)
+
+def set_first_goo_row(panel):
+    q = settings_snapshot(panel)
+    x, y = panel_origin(q)
+    click(x+q["goo"]["x"]+q["goo"]["width"]*.64, y+q["goo"]["y"]+35)
+    time.sleep(.4)
+
 
 def scroll_curve_into_view(panel):
     q = settings_snapshot(panel)
+    x, top = panel_origin(q)
     viewport = q["viewport"]
     content_height = q["contentHeight"]
     max_scroll = max(0, content_height - viewport["height"])
     thumb = viewport["height"] * viewport["height"] / content_height
-    y = 720 - 48 - q["panel"]["height"] + viewport["y"]
+    y = top + viewport["y"]
     start = y + q["scroll"] / content_height * viewport["height"] + thumb / 2
     end = y + max_scroll / content_height * viewport["height"] + thumb / 2
-    drag(360 + viewport["x"] + viewport["width"] - 5, start, 0, end - start)
+    drag(x + viewport["x"] + viewport["width"] - 5, start, 0, end - start)
     time.sleep(.3)
     return settings_snapshot(panel)
+
+def visible_curve_knot(q):
+    viewport = q["viewport"]
+    # The top knot can be clipped by the half-height panel. Use an interior
+    # point with room for the downward drag on both text-scale variants.
+    for knot in q["editor"]["knots"][1:-1]:
+        if viewport["y"]+25 < knot["y"] < viewport["y"]+viewport["height"]-35:
+            return knot
+    raise AssertionError("curve editor has no visible interior knot")
 
 
 def ipc(method, data=None):
@@ -322,8 +353,8 @@ try:
     log = open(art / "panel.log", "w")
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1.3)
-    click(640, 125); time.sleep(.3); shot("06-panel")
-    click(740, 250); time.sleep(.4)
+    select_goo_tab(panel); shot("06-panel")
+    set_first_goo_row(panel)
     thick = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_thickness"})["value"])
     check("panel changes thickness live", thick > 24)
     shot("07-panel-live")
@@ -342,9 +373,9 @@ try:
     time.sleep(.15)
     check("digits enter a Goo row value", abs(float(ipc("wayfire/get-config-option",
           {"option": "scottland/goo_thickness"})["value"])-27) < .01)
-    for row in range(18):
+    for row in range(22):
         key("KEY_DOWN", True); key("KEY_DOWN", False)
-        if 14 <= row < 17:
+        if 17 <= row < 20:
             key("KEY_RIGHT", True); key("KEY_RIGHT", False)
     time.sleep(.3); shot("07a-panel-keyboard-last-row")
     key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
@@ -358,8 +389,9 @@ try:
     # The keyboard follows the selected row; use the now-lowered scrollbar thumb for the curve.
     q = scroll_curve_into_view(panel)
     shot("07b-panel-curve")
-    k = q["editor"]["knots"][0]
-    drag(360+k["x"],720-48-q["panel"]["height"]+k["y"],0,20)
+    k = visible_curve_knot(q)
+    x, y = panel_origin(q)
+    drag(x+k["x"],y+k["y"],0,20)
     falloff = ipc("wayfire/get-config-option", {"option": "scottland/goo_falloff"})["value"]
     curve = [tuple(map(float, p.split(":"))) for p in falloff.split()]
     check("the shared curve editor changes goo falloff live", len(curve) >= 2 and
@@ -377,10 +409,11 @@ try:
         print("Cancel diagnostic", restored, layout.exists(), repr(cancelled_curve), panel.poll(), flush=True)
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1)
-    click(640, 125); click(740, 250); time.sleep(.3)
+    select_goo_tab(panel); set_first_goo_row(panel)
     q = scroll_curve_into_view(panel)
-    k = q["editor"]["knots"][0]
-    drag(360+k["x"],720-48-q["panel"]["height"]+k["y"],0,20)
+    k = visible_curve_knot(q)
+    x, y = panel_origin(q)
+    drag(x+k["x"],y+k["y"],0,20)
     key("KEY_ENTER", True); key("KEY_ENTER", False); time.sleep(.5)
     check("Save persists goo alongside layout", layout.exists() and "goo_thickness =" in layout.read_text() and "goo_falloff = 0.000:" in layout.read_text())
     if layout.exists():
@@ -392,9 +425,11 @@ try:
         check("saved goo is consumed by the session config builder", "goo_thickness =" in built.read_text())
     panel = subprocess.Popen(["qs", "-n", "-p", str(repo / "core/settings")], env=env, stdout=log, stderr=log)
     clients.append(panel); time.sleep(1)
-    click(640, 125)
+    select_goo_tab(panel)
     options(goo_overlap_film=9,goo_hover_cloudiness=.2,goo_hover_emissivity=1,goo_hover_distance=100)
-    click(420, 638); time.sleep(.4)
+    q = settings_snapshot(panel)
+    x, y = panel_origin(q)
+    click(x+86, y+q["panel"]["height"]-56); time.sleep(.4)
     check("Defaults restores all four new settings", all(abs(float(ipc("wayfire/get-config-option",
         {"option":"scottland/"+name})["value"])-value)<.001 for name,value in
         {"goo_overlap_film":4,"goo_hover_cloudiness":.65,"goo_hover_emissivity":.35,"goo_hover_distance":48}.items()))

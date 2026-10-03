@@ -65,17 +65,26 @@ struct target_t
 // Restore state also on allocation/compile failures; do not leave a simulation FB bound.
 struct state_t
 {
-    GLint fb, viewport[4], scissor_box[4], program, active, binding[8], blend_src, blend_dst;
+    GLint fb, read_fb = 0, read_buffer = GL_COLOR_ATTACHMENT0;
+    GLint viewport[4], scissor_box[4], program, active, binding[8], blend_src, blend_dst;
+    GLfloat clear_color[4];
     GLboolean scissor, blend;
-    state_t()
+    bool separate_read;
+    explicit state_t(bool separate_read = false) : separate_read(separate_read)
     {
         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+        if (separate_read)
+        {
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fb);
+            glGetIntegerv(GL_READ_BUFFER, &read_buffer);
+        }
         glGetIntegerv(GL_VIEWPORT, viewport);
         glGetIntegerv(GL_SCISSOR_BOX, scissor_box);
         glGetIntegerv(GL_CURRENT_PROGRAM, &program);
         glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
         glGetIntegerv(GL_BLEND_SRC_RGB, &blend_src);
         glGetIntegerv(GL_BLEND_DST_RGB, &blend_dst);
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, clear_color);
         scissor = glIsEnabled(GL_SCISSOR_TEST);
         blend = glIsEnabled(GL_BLEND);
         for (int i = 0; i < 8; i++)
@@ -88,10 +97,16 @@ struct state_t
     ~state_t()
     {
         glBindFramebuffer(GL_FRAMEBUFFER, fb);
+        if (separate_read)
+        {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fb);
+            glReadBuffer(read_buffer);
+        }
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         glScissor(scissor_box[0], scissor_box[1], scissor_box[2], scissor_box[3]);
         glUseProgram(program);
         glBlendFunc(blend_src, blend_dst);
+        glClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
         if (scissor)
             glEnable(GL_SCISSOR_TEST);
         else
@@ -134,10 +149,14 @@ struct renderer_t::impl
     glm::vec4 sampled_value{};
     settings_t settings;
     bool overlap = false, controls = false, fast = true, has_wallpaper = false;
+    bool cache_valid = false, cache_dirty = true, cache_available = true;
+    float cache_breath = -1;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
+    OpenGL::program_t intrinsic_p, refraction_p, composite_p;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query;
+    target_t intrinsic, refraction;
     std::vector<target_t> reduction;
 
     void poll_timer(double &step_ms, double &draw_ms)
@@ -163,9 +182,11 @@ struct renderer_t::impl
         if (timer)
             glDeleteQueries(1, &timer);
         for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p,
+                       &intrinsic_p, &refraction_p, &composite_p,
                        &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
-        for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query})
+        for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query,
+                       &intrinsic, &refraction})
             p->release();
         for (auto &t : reduction)
             t.release();
@@ -261,6 +282,29 @@ struct renderer_t::impl
             compile(*pair.first, vertex, shader, pair.second == &render_shader);
             GLint linked = 0;
             glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
+            if (!linked) available = false;
+        }
+        auto cached_shader = [&](bool params)
+        {
+            std::string shader = render_shader;
+            const std::string background = "vec3 bg=texture2D(uBackground,bgUV).rgb,dye=";
+            shader.replace(shader.find(background), background.size(), "vec3 bg=vec3(0.),dye=");
+            const std::string result = "gl_FragColor=vec4(clamp(color,0.,1.)*a,a);";
+            shader.replace(shader.find(result), result.size(), params ?
+                "gl_FragColor=vec4(clamp((refr-p)/32.+.5,0.,1.),"
+                "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),1.);" :
+                // The background term is nonnegative, so clamping intrinsic
+                // light before compositing gives the same final clamp.
+                "gl_FragColor=vec4(clamp(color,0.,1.),a);");
+            return shader;
+        };
+        compile(intrinsic_p, vertex, cached_shader(false), true);
+        compile(refraction_p, vertex, cached_shader(true), true);
+        compile(composite_p, vertex, cached_composite_shader);
+        for (auto p : {&intrinsic_p, &refraction_p, &composite_p})
+        {
+            GLint linked = 0;
+            glGetProgramiv(p->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
             if (!linked) available = false;
         }
         compile(copy_p, vertex,
@@ -484,6 +528,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         glBeginQuery(0x88BF /* TIME_ELAPSED_EXT */, p->timer);
     }
     p->sources = sources;
+    p->cache_dirty = true;
     p->controls = std::any_of(sources.begin(), sources.end(), [](auto &s) {
         return glm::length(s.corners) + glm::length(s.sides) > .001f;
     });
@@ -543,14 +588,28 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return true;
 }
-void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area, float breath)
+void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
+                      const wf::regionf_t &breath_area, float breath, bool settled)
 {
     if (!p->ready)
         return;
     // Damage can arrive as one bounding box (the output collapses many small rects), so clip
     // the goo's work to its own bands rather than shading the whole box.
     auto damage = data.damage & area;
-    state_t guard;
+    // The background texture is only sampled by visible liquid. Refraction may
+    // look up to 16 logical pixels outside a band (2px slope * 8), so keep that
+    // margin current; copying every app-damaged window interior at its frame
+    // rate is unnecessary when the settled goo itself does not change.
+    wf::regionf_t capture_area;
+    constexpr double refract_margin = 17;
+    for (auto &r : area)
+        capture_area |= wf::geometry_t{double(r.x1) - refract_margin, double(r.y1) - refract_margin,
+            double(r.x2 - r.x1) + 2 * refract_margin,
+            double(r.y2 - r.y1) + 2 * refract_margin};
+    auto capture = data.damage & capture_area;
+    if (capture.empty())
+        return;
+    state_t guard(p->es3);
     p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
     if (!p->timer_open && p->timing && !p->timer_pending)
     {
@@ -561,6 +620,15 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     wf::gles::bind_render_buffer(data.target);
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
+    GLint draw_fbo = 0;
+    if (p->es3)
+    {
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo);
+        // Wayfire binds the output for drawing but can leave a different FBO
+        // bound for reading. The state guard restores both bindings.
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, draw_fbo);
+        glReadBuffer(draw_fbo ? GL_COLOR_ATTACHMENT0 : GL_BACK);
+    }
     // Real scene beneath the shared visible liquid, including overlapped window content.
     auto &bg = p->background;
     if (!bg.texture || bg.width != viewport[2] || bg.height != viewport[3])
@@ -568,7 +636,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     glBindTexture(GL_TEXTURE_2D, bg.texture);
     // Keep a backdrop cache: outside this pass's damage the framebuffer still contains
     // last frame's goo/windows. Copying all of it would feed those colors back into refraction.
-    wf::gles::for_each_scissor_rect(data.target, data.damage,
+    wf::gles::for_each_scissor_rect(data.target, capture,
                                     [&]
                                     {
                                         GLint box[4];
@@ -581,36 +649,120 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, x - viewport[0],
                                                                 y - viewport[1], x, y, right - x, top - y);
                                     });
-    auto &program = p->fast ? p->render_fast : p->render_p;
-    p->common(program, p->width, p->height);
-    program.uniform2f("uFieldSize", p->field.width, p->field.height);
-    program.uniform1f("uBreath", breath);
-    program.uniform1f("uBreathSwell", breath_swell * p->settings.swell / .7f);
-    auto ortho = wf::gles::render_target_orthographic_projection(data.target);
-    program.uniformMatrix4f("MVP", ortho);
-    program.uniformMatrix4f("uBackgroundMap", ortho);
-    bind(program, "uBackground", 5, bg.texture);
-    program.uniform1f("uWaveAmp", p->settings.wave_height);
-    program.uniform1f("uShine", p->settings.shine);
-    program.uniform1f("uRelief", p->settings.relief);
-    program.uniform1f("uDepth", p->settings.depth);
-    program.uniform1f("uProfile", p->settings.profile);
-    program.uniform1f("uSoak", p->has_wallpaper ? p->settings.soak : 0);
-    program.uniform1f("uAlpha", 1);
-    program.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
-        [](const source_t &s) { return s.hinted; }));
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    wf::gles::for_each_scissor_rect(
-        data.target, damage,
-        [&]
+    if (damage.empty())
+    {
+        if (p->timer_open)
         {
-            GLfloat vertices[] = {
-                0, 0, float(p->width), 0, float(p->width), float(p->height), 0, float(p->height)};
+            glEndQuery(0x88BF);
+            p->timer_open = false;
+            p->timer_pending = true;
+        }
+        return;
+    }
+    auto ortho = wf::gles::render_target_orthographic_projection(data.target);
+    const GLfloat vertices[] = {0, 0, float(p->width), 0, float(p->width),
+                                float(p->height), 0, float(p->height)};
+    auto setup_surface = [&](OpenGL::program_t &program)
+    {
+        p->common(program, p->width, p->height);
+        program.uniform2f("uFieldSize", p->field.width, p->field.height);
+        program.uniform1f("uBreath", breath);
+        program.uniform1f("uBreathSwell", breath_swell * p->settings.swell / .7f);
+        program.uniformMatrix4f("MVP", ortho);
+        program.uniformMatrix4f("uBackgroundMap", ortho);
+        bind(program, "uBackground", 5, bg.texture);
+        program.uniform1f("uWaveAmp", p->settings.wave_height);
+        program.uniform1f("uShine", p->settings.shine);
+        program.uniform1f("uRelief", p->settings.relief);
+        program.uniform1f("uDepth", p->settings.depth);
+        program.uniform1f("uProfile", p->settings.profile);
+        program.uniform1f("uSoak", p->has_wallpaper ? p->settings.soak : 0);
+        program.uniform1f("uAlpha", 1);
+        program.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
+            [](const source_t &s) { return s.hinted; }));
+    };
+    // An active simulation already redraws the surface for a new field every
+    // step. Keep that path direct; populate the cache once it settles.
+    if (settled && p->cache_available &&
+        (p->intrinsic.width != viewport[2] || p->intrinsic.height != viewport[3]))
+    {
+        p->cache_valid = false;
+        bool ok = p->intrinsic.allocate(viewport[2], viewport[3], true, p->es3);
+        ok = p->refraction.allocate(viewport[2], viewport[3], true, p->es3) && ok;
+        if (!ok)
+        {
+            p->cache_available = false;
+            LOGE("scottland goo: surface cache unavailable; using direct draw");
+        }
+    }
+    if (settled && p->cache_available)
+    {
+        wf::regionf_t refresh;
+        if (!p->cache_valid || p->cache_dirty)
+            refresh = area;
+        else if (breath != p->cache_breath)
+            refresh = breath_area & area;
+        if (!refresh.empty())
+        {
+            glDisable(GL_BLEND);
+            const std::array cache_passes{std::make_pair(&p->intrinsic, &p->intrinsic_p),
+                                          std::make_pair(&p->refraction, &p->refraction_p)};
+            for (const auto &entry : cache_passes)
+            {
+                auto &target = *entry.first;
+                auto &program = *entry.second;
+                glBindFramebuffer(GL_FRAMEBUFFER, target.fb);
+                glViewport(0, 0, target.width, target.height);
+                setup_surface(program);
+                wf::gles::for_each_scissor_rect(data.target, refresh, [&]
+                {
+                    GLint box[4];
+                    glGetIntegerv(GL_SCISSOR_BOX, box);
+                    glScissor(box[0] - viewport[0], box[1] - viewport[1], box[2], box[3]);
+                    if (&target == &p->refraction)
+                        glClearColor(.5f, .5f, 0, 0);
+                    else
+                        glClearColor(0, 0, 0, 0);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    program.attrib_pointer("position", 2, 0, vertices);
+                    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+                });
+                program.deactivate();
+            }
+        }
+        p->cache_valid = true;
+        p->cache_dirty = false;
+        p->cache_breath = breath;
+        wf::gles::bind_render_buffer(data.target);
+        auto &program = p->composite_p;
+        program.use(wf::TEXTURE_TYPE_RGBA);
+        program.uniformMatrix4f("MVP", ortho);
+        program.uniformMatrix4f("uBackgroundMap", ortho);
+        bind(program, "uIntrinsic", 0, p->intrinsic.texture);
+        bind(program, "uRefraction", 1, p->refraction.texture);
+        bind(program, "uBackground", 5, bg.texture);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        wf::gles::for_each_scissor_rect(data.target, damage, [&]
+        {
             program.attrib_pointer("position", 2, 0, vertices);
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         });
-    program.deactivate();
+        program.deactivate();
+    }
+    else
+    {
+        auto &program = p->fast ? p->render_fast : p->render_p;
+        setup_surface(program);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        wf::gles::for_each_scissor_rect(data.target, damage, [&]
+        {
+            program.attrib_pointer("position", 2, 0, vertices);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        });
+        program.deactivate();
+    }
     if (p->timer_open)
     {
         glEndQuery(0x88BF);

@@ -392,7 +392,7 @@ class goo_node_t : public wf::scene::node_t
                 wf::regionf_t area;
                 for (auto &b : band)
                     area |= b;
-                state.renderer.draw(data, area, state.breath);
+                state.renderer.draw(data, area, breath_area, state.breath, state.sleeping);
             });
     }
 };
