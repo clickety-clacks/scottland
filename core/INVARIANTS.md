@@ -69,6 +69,9 @@ GO17 makes attention breathing a local draw-only modulation while simulation sle
 see [its curve, damage and cost evidence](../docs/goo.md#go17-draw-only-attention-breathing-2026-10-02).
 GO10 also caches the settled goo surface for inexpensive composition over redrawing apps;
 see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-windows-2026-10-02).
+GO18 caches the breath at a few keys and repaints only wet strips, so an idle desktop with one
+breathing window stays near goo-off GPU cost; see [its measurements](../docs/goo.md#go18-breathing-keyframes-2026-10-02)
+(Xe unmeasured) and [the technique survey](../docs/goo-gpu-research.md).
 
 | ID | Invariant | Status |
 |---|---|---|

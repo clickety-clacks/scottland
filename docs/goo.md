@@ -77,6 +77,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
 | GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
+| GO18 | On an idle desktop, one breathing window or widget costs within 2-3 points of compositor GPU of goo off, on Intel Xe and AMD, and looks the same. While the goo sleeps, the full surface shader runs only when the breath crosses a key (keys are at most half a device pixel of shore travel apart); every other 25 Hz tick cross-fades two cached layers. Breathing repaints only the part of each strip that holds liquid. The second layer exists only while something breathes. (Mike, 2026-10-02; core) | implemented; RX 580 headless: 2.0-2.3 → 0.8-0.9 points, below. **Xe not measured** (no tests on osanwe); needs Mike's live counters |
 
 ## Halo jobs with goo enabled
 
@@ -1315,3 +1316,120 @@ and uses a visible curve knot. This changes only the test fixture. On plumbus,
 the final build passed goo-test on normal and packed GLES paths (46/46 each)
 and overlap/hover (28/28); widgets (192/192) and widget morph (270/270) passed
 before the final GL-state adjustment. All headless sessions were stopped.
+
+## GO18: breathing keyframes (2026-10-02)
+
+Core. Mike's live Xe session at `343419c` still spent 9-10 points of compositor GPU on one
+breathing center window with the simulation asleep (1.0% with goo off). The survey of
+techniques, what the live desktop does that the old fixture did not, and the sources are in
+[goo-gpu-research.md](goo-gpu-research.md). In short: each 25 Hz tick re-ran the full surface
+shader twice over strips sized for the farthest the liquid could reach, about 60% of them
+dry, on a GPU idling at its lowest frequency. Tenet 1 decides the open edge: the breath is how
+a window asks for attention, so it keeps its swell and light and its 25 Hz cadence; only the
+work behind it changes.
+
+### What changed
+
+- **Keys of the breath.** A breath is one parameter. Light is linear in it; the shore moves
+  with `log(1 + swell × breath)`, 2.7 pt in total at shipped settings. The settled surface is
+  cached at keys evenly spaced in that log, at most half a device pixel of shore travel apart
+  (`reach × log(1 + 0.12 × goo_swell/0.7) × output scale / 0.5`, clamped to 1-16 segments:
+  7 keys shipped, 9 with Mike's settings). Two layers hold the keys on either side of the
+  current breath. When the breath crosses a key, the layer holding the far key is re-rendered
+  at the next one, inside the breathing strips only.
+- **Cross-fade.** Inside the strips each layer is composited over the current backdrop (GO10's
+  intrinsic color and refraction) and the two premultiplied results are mixed. Outside the
+  strips the single-layer composite is unchanged. The split is made in whole framebuffer
+  pixels, so no pixel is composited twice or skipped at a fractional output scale.
+- **Tight strips.** GO17's strips are the conservative support (four reaches). Once the goo
+  sleeps, each strip rectangle shrinks to the bounding box of the liquid in it, found by
+  sampling the CPU field (the one input uses) on a 4 pt lattice at the top of the breath, at
+  half the threshold, plus reconstruction and antialiasing padding. The rectangle count
+  cannot grow, so the output does not collapse the damage to one bounding box. Any source or
+  setting change restores the conservative strips until the goo sleeps again.
+- **Memory.** The second layer is two more RGBA8 output-sized textures (31 MiB at 2560×1600),
+  allocated when something breathes on a sleeping goo and freed when nothing does. If it cannot
+  be allocated, breathing refreshes every tick as before.
+- Active simulation, the direct draw, input, the fallback halo and GO17's curve and cadence
+  are unchanged. The packed GLES 2 path uses the same layers.
+
+`goo-state` adds `breath_refreshes` (full-shader passes over the strips), `breath_keys` and
+`breath_key_values`. In test sessions only (`SCOTTLAND_TEST_MODEL`), its request can hold the
+breath at a value (`breath_hold`), force the exact per-tick surface (`breath_exact`) and
+restore the conservative strips (`breath_tight: false`), so the fixture can compare them.
+
+### Fixture
+
+`tests/goo-idle-bench.sh ARTIFACTS [SECONDS] [--visual] [--options FILE]` builds Mike's live
+scene from its layout-state: 2560×1600 at scale 1, nothing redrawing, a 941×940 center window
+breathing partly under a focused 992×1146 one (so overlap film and the ordered shader path),
+two scaled periphery windows, two rail widgets, a static wallpaper client. It samples goo on
+and off in one session with nothing breathing, the window breathing, and a widget breathing.
+`--options` applies a JSON object of option values in the test session; the "live-like" rows
+use the goo values read from Mike's session (reach 33, thickness 22, film 10 and the rest),
+kept under `build/`, not in the repo.
+
+### Measurements (RX 580, plumbus)
+
+Paired, sequential, fresh headless sessions, 5 s per case; before is `343419c`. Another
+agent's headless compositor was running throughout (whole-GPU busy 2-6%). Compositor GPU is
+the process's fdinfo busy time.
+
+| Center window breathing | Goo on, before → after | Goo off | Strip area | Full-shader refreshes / 5 s | GPU time per tick |
+|---|---:|---:|---:|---:|---:|
+| Shipped settings | 2.0% → **0.8%** | 0.0% | 379,620 → 148,028 px | 129 → 10 | 0.410 → 0.099 ms |
+| Mike's goo settings | 2.3% → **0.9%** | 0.0% | 571,100 → 228,560 px | 130 → 17 | 0.540 → 0.137 ms |
+
+| Rail widget breathing | Goo on, before → after | Goo off | Strip area | GPU time per tick |
+|---|---:|---:|---:|---:|
+| Shipped settings | 0.7% → 0.4% | 0.5-0.6% | 72,651 → 40,292 px | 0.117 → 0.051 ms |
+| Mike's goo settings | 0.8% → 0.4% | 0.5-0.6% | 121,592 → 71,856 px | 0.165 → 0.058 ms |
+
+With nothing breathing every case is 0.0% with zero ticks. All goo-on cases report
+`sleeping=true` and zero simulation steps. Compositor CPU is 2.0-2.6% in every breathing
+case, before and after.
+
+**Intel Xe is not measured.** Tests may not run on osanwe and plumbus has no Intel GPU. The
+live read on 2026-10-02 was 3.17 ms per tick (with a window and a widget breathing, 675,000 px
+of strips). If Xe's per-tick time falls by the same factor as the RX 580's with Mike's
+settings (3.9×), that is about 0.8 ms per tick, 2 points at 25 Hz, against the 2-3 point
+target. That is a projection from another GPU, not a result; it needs Mike's live counters on
+this build.
+
+### Does it look the same
+
+`--visual` holds the breath at each key midpoint, where interpolation is furthest from a key,
+and screenshots the interpolated surface and the exact per-tick one. At the trough and the
+crest the two are pixel-identical. Between keys, of 4,096,000 pixels:
+
+| Settings | Differ at all | By 8 levels or more | By 16 or more |
+|---|---:|---:|---:|
+| Shipped (7 keys) | 16,674-20,148 | 700-1,437 | 3-26 |
+| Mike's (9 keys) | 30,579-35,965 | 725-1,504 | 5-22 |
+
+Most differ by one level. The 8-level pixels are the shore, cross-fading across less than
+half a pixel where the exact surface slides; the handful over 16 are single highlight pixels
+at window corners. At 4× zoom the two are indistinguishable (`build/go18/breath-crops.png`:
+trough, exact mid-breath, crest, interpolated mid-breath). A trough-to-peak step repainted
+through the tight strips is pixel-identical to the same step through the conservative ones.
+These are still frames on a headless output; nobody has watched it breathe on a real screen.
+
+### Regression
+
+Same suites on this build and on `343419c` in its own plumbus checkout, both GPU paths:
+
+| Suite | Normal | Packed GLES 2 | Baseline |
+|---|---|---|---|
+| goo-test | 45 pass, 1 fail | 45 pass, 1 fail | same 45 / 1 |
+| goo-overlap-hover | 28 / 28 | 28 / 28 | same |
+| goo-breath-bench `--verify` (GO17: curve, cadence, zero steps, pixels outside the strips unchanged, fallback switch) | 12 / 12 | 12 / 12 | same |
+| goo-depth-soak | 26 / 26 | 26 / 26 | same |
+
+The one failure, "goo follows the return from Alt declutter", fails identically on the
+baseline on both paths; it tests CPU field geometry after Alt is released and is not touched
+here. The baseline's compositor logs also already carry the GL errors seen in these runs
+(`glCopyTexSubImage2D(missing readbuffer)` on the packed path, a repeated
+`glBeginQuery(GL_TIME_ELAPSED is active)` in the depth test): same counts before and after,
+not fixed here. The widget, morph and windowing suites were not rerun: nothing they cover
+changed. Artifacts are under `build/go18/` (`pair-*`, `regress/`, `base/`). Every session
+used its own `SCOTTLAND_HEADLESS_DIR` and was stopped; no live session was touched.

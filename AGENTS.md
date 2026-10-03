@@ -37,7 +37,8 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
   attention on widgets, and elastic expansion/contraction.
 - [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints and live focused-window-anchored avoidance (WK1–WK31),
   remembered zones and contention-aware placement (WP1–WP7).
-- [docs/goo.md](docs/goo.md): the goo (GO1-GO13): the halo as one liquid for the whole screen,
+- [docs/goo-gpu-research.md](docs/goo-gpu-research.md): why breathing goo cost GPU on an idle desktop, the techniques surveyed, sources.
+- [docs/goo.md](docs/goo.md): the goo (GO1-GO18): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).
 - [docs/settings.md](docs/settings.md): Scottland Settings (S1–S19): zone sliders and overlay with draggable borders, Goo and Window mode tabs, hint popouts, and the planned Widgets tab.
 - [docs/desktop-model.md](docs/desktop-model.md): the single reactive desktop state model and its snapshots.
