@@ -5,8 +5,12 @@ RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 
 .PHONY: plugin dev-install link-dev test-hooks hooks dev-uninstall package clean
 
+# Optimized with debug info, asserts and frame pointers: unoptimized builds ran the plugin's CPU
+# paths 7-9x slower and froze the pointer (docs/compositor-hangs.md); cores and stacks stay readable.
+PLUGIN_OPTS := -Dbuildtype=debugoptimized -Db_ndebug=false -Dcpp_args=-fno-omit-frame-pointer
+
 plugin:
-	meson setup build core/plugin --reconfigure 2>/dev/null || meson setup build core/plugin
+	meson setup build core/plugin --reconfigure $(PLUGIN_OPTS) 2>/dev/null || meson setup build core/plugin $(PLUGIN_OPTS)
 	meson compile -C build
 
 # The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
