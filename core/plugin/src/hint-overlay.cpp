@@ -159,4 +159,137 @@ void fullscreen_hint_node::gen_render_instances(std::vector<wf::scene::render_in
     instances.push_back(std::make_unique<fullscreen_hint_render>(this, damage, output));
 }
 
+void center_switcher_node::update(double output_width, const std::string& title, unsigned position,
+    unsigned count, const hint_palette& palette, double scale)
+{
+    wf::scene::damage_node(this, box);
+    texture.reset();
+    std::string caption = count ? std::to_string(position) + " / " + std::to_string(count) + "   " +
+        (title.empty() ? "Window" : title) : "No center windows";
+    double font_size = std::clamp(15.0 * palette.text_scale, 12.0, 27.0);
+    double height = std::ceil(font_size + 22);
+    double max_text_width = std::max(80.0, output_width - 76.0);
+    auto measure = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    auto cr = cairo_create(measure);
+    cairo_select_font_face(cr, palette.font_family.c_str(), CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, font_size);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, caption.c_str(), &ext);
+    bool shortened = false;
+    while (ext.width > max_text_width && !caption.empty())
+    {
+        // Drop one UTF-8 codepoint before adding an ellipsis; titles may be localized.
+        size_t start = caption.size() - 1;
+        while (start && (static_cast<unsigned char>(caption[start]) & 0xc0) == 0x80) --start;
+        caption.erase(start);
+        shortened = true;
+        std::string shown = caption + "…";
+        cairo_text_extents(cr, shown.c_str(), &ext);
+    }
+    if (shortened) caption += "…";
+    double width = std::min(output_width - 24.0, std::ceil(ext.width + 34));
+    width = std::max(40.0, width);
+    box = {std::round((output_width - width) / 2.0), 18, std::round(width), std::round(height)};
+    double raster_scale = std::max(1.0, scale);
+    pixel_width = std::max(1, int(std::ceil(box.width * raster_scale)));
+    pixel_height = std::max(1, int(std::ceil(box.height * raster_scale)));
+    pixels.assign(pixel_width * pixel_height * 4, 0);
+    auto surface = cairo_image_surface_create_for_data(pixels.data(), CAIRO_FORMAT_ARGB32,
+        pixel_width, pixel_height, pixel_width * 4);
+    auto draw = cairo_create(surface);
+    cairo_scale(draw, double(pixel_width) / box.width, double(pixel_height) / box.height);
+    double w = box.width, h = box.height, r = std::min(12.0, h / 2.0);
+    cairo_new_sub_path(draw);
+    cairo_arc(draw, w - r, r, r, -M_PI / 2, 0);
+    cairo_arc(draw, w - r, h - r, r, 0, M_PI / 2);
+    cairo_arc(draw, r, h - r, r, M_PI / 2, M_PI);
+    cairo_arc(draw, r, r, r, M_PI, 3 * M_PI / 2);
+    cairo_close_path(draw);
+    cairo_set_source_rgba(draw, palette.background.r, palette.background.g, palette.background.b, .94);
+    cairo_fill_preserve(draw);
+    cairo_set_source_rgba(draw, palette.accent.r, palette.accent.g, palette.accent.b, .80);
+    cairo_set_line_width(draw, 1.5);
+    cairo_stroke(draw);
+    cairo_select_font_face(draw, palette.font_family.c_str(), CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(draw, font_size);
+    cairo_text_extents(draw, caption.c_str(), &ext);
+    cairo_move_to(draw, (w - ext.width) / 2 - ext.x_bearing, (h - ext.height) / 2 - ext.y_bearing);
+    cairo_set_source_rgb(draw, palette.foreground.r, palette.foreground.g, palette.foreground.b);
+    cairo_show_text(draw, caption.c_str());
+    cairo_destroy(draw);
+    cairo_surface_flush(surface);
+    cairo_surface_destroy(surface);
+    cairo_destroy(cr);
+    cairo_surface_destroy(measure);
+    wf::scene::damage_node(this, box);
+    wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
+}
+
+class center_switcher_render : public wf::scene::simple_render_instance_t<center_switcher_node>
+{
+  public:
+    using simple_render_instance_t::simple_render_instance_t;
+    void render(const wf::scene::render_instruction_t& data) override
+    {
+        if (!self->texture && !self->pixels.empty())
+        {
+            auto tex = wlr_texture_from_pixels(data.pass->get_wlr_renderer(), DRM_FORMAT_ARGB8888,
+                self->pixel_width * 4, self->pixel_width, self->pixel_height, self->pixels.data());
+            if (tex) self->texture = wf::texture_t::from_texture(tex);
+        }
+        if (self->texture) data.pass->add_texture(self->texture, data.target, self->box, data.damage, 1);
+    }
+};
+
+void center_switcher_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+    wf::scene::damage_callback damage, wf::output_t *output)
+{
+    instances.push_back(std::make_unique<center_switcher_render>(this, damage, output));
+}
+
+void hint_flash_node::update(wf::geometry_t geometry, double corner_radius, hint_rgb dye, double strength)
+{
+    wf::scene::damage_node(this, box);
+    box = geometry;
+    radius = std::max(0.0, corner_radius);
+    color = dye;
+    alpha = std::clamp(strength, 0.0, 1.0);
+    wf::scene::damage_node(this, box);
+    wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
+}
+
+class hint_flash_render : public wf::scene::simple_render_instance_t<hint_flash_node>
+{
+  public:
+    using simple_render_instance_t::simple_render_instance_t;
+    void render(const wf::scene::render_instruction_t& data) override
+    {
+        auto b = self->box;
+        if (self->alpha <= 0 || b.width <= 0 || b.height <= 0) return;
+        double r = std::min({self->radius, b.width / 2.0, b.height / 2.0});
+        double a = self->alpha;
+        wf::color_t tint{self->color.r * a, self->color.g * a, self->color.b * a, a};
+        auto strip = [&] (double x, double y, double w, double h)
+        {
+            if (w > 0 && h > 0)
+                data.pass->add_rect(tint, data.target, {x, y, w, h}, data.damage);
+        };
+        int rows = int(std::ceil(r));
+        strip(b.x, b.y + rows, b.width, std::max(0.0, b.height - 2 * rows));
+        for (int row = 0; row < rows; ++row)
+        {
+            double distance = std::max(0.0, r - row - .5);
+            double inset = r - std::sqrt(std::max(0.0, r * r - distance * distance));
+            strip(b.x + inset, b.y + row, b.width - 2 * inset, 1);
+            strip(b.x + inset, b.y + b.height - row - 1, b.width - 2 * inset, 1);
+        }
+    }
+};
+
+void hint_flash_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+    wf::scene::damage_callback damage, wf::output_t *output)
+{
+    instances.push_back(std::make_unique<hint_flash_render>(this, damage, output));
+}
+
 }

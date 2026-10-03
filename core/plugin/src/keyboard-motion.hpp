@@ -14,6 +14,7 @@
         bool drag_coast = false;
         bool resizing = false;
         bool restoring = false;
+        std::string released_rail; // confine the first widget-undock coast to its side
     };
     struct keyboard_origin
     {
@@ -118,7 +119,7 @@
         auto neighbors = keyboard_neighbors(view->get_output(), m.x, m.y);
         double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
         auto fits = [&] (double x, bool left) {
-            double scale = m.drag_coast && model.windows[view->get_id()].pinned_scale ?
+            double scale = model.windows[view->get_id()].pinned_scale ?
                 *model.windows[view->get_id()].pinned_scale : place_at(x, screen.width).scale;
             double w = g.width * scale;
             auto pa = padded(area, w, g.height * scale);
@@ -133,7 +134,7 @@
         if (neighbors[0]) lo = -std::numeric_limits<double>::infinity();
         if (neighbors[1]) hi = std::numeric_limits<double>::infinity();
         m.x = std::clamp(m.x, lo, std::max(lo, hi));
-        double scale = m.drag_coast && model.windows[view->get_id()].pinned_scale ?
+        double scale = model.windows[view->get_id()].pinned_scale ?
             *model.windows[view->get_id()].pinned_scale : place_at(m.x, screen.width).scale;
         auto pa = padded(area, g.width * scale, g.height * scale);
         double half = std::min(g.height * scale, double(pa.height)) / 2;
@@ -155,7 +156,7 @@
         auto neighbors = keyboard_neighbors(output, m.x, m.y);
         auto scale_at = [&] (double x) {
             auto pin = model.windows[view->get_id()].pinned_scale;
-            return m.drag_coast && pin ? *pin : place_at(x, screen.width).scale;
+            return pin ? *pin : place_at(x, screen.width).scale;
         };
         double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
         double left = std::max(double(area.x), rail);
@@ -324,6 +325,34 @@
         }
         if (resize && (is_widget(view) || !(view->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))) return;
         if (!resize && !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE)) return;
+        bool opened_widget = false;
+        std::optional<wf::pointf_t> restored_destination;
+        std::string released_rail;
+        if (!resize && is_widget(view) && (code == KEY_LEFT || code == KEY_RIGHT))
+        {
+            auto link = link_of_widget(view);
+            bool away = link && ((link->rail == "right" && code == KEY_LEFT) ||
+                (link->rail == "left" && code == KEY_RIGHT));
+            if (!away) return; // a push into the attached rail has no travel
+            auto widget = view;
+            released_rail = link->rail;
+            auto from = widget->get_geometry();
+            wf::pointf_t start{from.x + from.width / 2.0, from.y + from.height / 2.0};
+            auto window = wf::toplevel_cast(link->window.lock());
+            if (!window) return;
+            auto destination = zone_spot(window, link->rail == "right" ?
+                scottland::windowing::zone::right_periphery :
+                scottland::windowing::zone::left_periphery,
+                {start.x, start.y}, nullptr, widget->get_output());
+            keyboard_motions.erase(widget->get_id());
+            remember_window(widget);
+            restore_window(*link, destination, true);
+            view = window;
+            if (!view->is_mapped() || !view->get_output()) return;
+            start_glide(view, start.x - destination.x, start.y - destination.y);
+            opened_widget = true;
+            restored_destination = destination;
+        }
         auto& motion = keyboard_motions[view->get_id()];
         if (motion.view.lock().get() != view.get())
         {
@@ -331,6 +360,15 @@
             auto g = view->get_geometry(); motion.x = g.x + g.width / 2.0; motion.y = g.y + g.height / 2.0;
             motion.width = g.width; motion.height = g.height;
         }
+        // Restoring the app schedules a Wayfire geometry transaction. Its current geometry can
+        // still be the old hidden-window position on this tick; coast from the chosen same-side
+        // destination instead of letting that stale center hit the opposite rail.
+        if (restored_destination)
+        {
+            motion.x = restored_destination->x;
+            motion.y = restored_destination->y;
+        }
+        if (opened_widget) motion.released_rail = released_rail;
         if (keyboard_origins.count(id)) keyboard_origins[id].touched = true;
         motion.restoring = false; motion.drag_coast = false;
         if (resize)
@@ -339,25 +377,18 @@
             if (motion.vw.velocity == 0) motion.width = g.width;
             if (motion.vh.velocity == 0) motion.height = g.height;
         }
-        stop_glide(view);
+        if (!opened_widget) stop_glide(view);
         if (auto resizer = output_instance[view->get_output()].get()) resizer->stop_settling();
-        if (!is_widget(view)) pin_scale(view, std::nullopt); // L31 is for drags, not keyboard motion
-        double sign = (code == KEY_RIGHT || code == KEY_DOWN) ? 1 : -1;
-        if (is_widget(view) && (code == KEY_LEFT || code == KEY_RIGHT))
+        if (!is_widget(view) && !resize)
         {
-            auto link = link_of_widget(view); auto from = view->get_geometry();
-            std::string rail = code == KEY_LEFT ? "left" : "right";
-            if (link->rail != rail)
+            if (shift_held())
             {
-                link->rail = rail; link->drop = {motion.x, motion.y};
-                place_widget(view, view->get_output(), *link);
-                auto to = view->toplevel()->pending().geometry;
-                motion.x = to.x + to.width / 2.0;
-                start_glide(view, from.x - to.x, 0);
-                remember_window(view); publish_model();
-            }
-            return;
+                if (!model.windows[view->get_id()].pinned_scale)
+                    pin_scale(view, displayed_scale(view));
+            } else pin_scale(view, std::nullopt);
         }
+        if (resize && !is_widget(view)) pin_scale(view, std::nullopt);
+        double sign = (code == KEY_RIGHT || code == KEY_DOWN) ? 1 : -1;
         auto& axis = resize ? ((code == KEY_LEFT || code == KEY_RIGHT) ? motion.vw : motion.vh) :
             ((code == KEY_LEFT || code == KEY_RIGHT) ? motion.vx : motion.vy);
         if (resize && (code == KEY_UP || code == KEY_DOWN)) sign = -sign;
@@ -385,6 +416,15 @@
             }
             double dx = m.vx.step(dt, key_friction), dy = m.vy.step(dt, key_friction);
             m.x += dx; m.y += dy;
+            if (!m.released_rail.empty() && !is_widget(view))
+            {
+                auto screen = view->get_output()->get_relative_geometry();
+                double edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
+                if (m.released_rail == "left" && m.x >= edge - 1)
+                { m.x = edge - 1; m.vx.velocity = 0; }
+                if (m.released_rail == "right" && m.x <= screen.width - edge + 1)
+                { m.x = screen.width - edge + 1; m.vx.velocity = 0; }
+            }
             // Transfer only when the center crosses the physical seam. Keep velocity and
             // the global center; crossing an adjoining output never changes form.
             if (!is_widget(view))

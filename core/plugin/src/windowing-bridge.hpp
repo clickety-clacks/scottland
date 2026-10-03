@@ -3,11 +3,31 @@
     scottland::windowing::alt_mode window_keys;
     wf::option_wrapper_t<int> alt_hold_delay{"scottland/alt_hold_delay"};
     wf::option_wrapper_t<int> window_double_tap_delay{"scottland/window_double_tap_delay"};
+    wf::option_wrapper_t<wf::keybinding_t> center_switcher_next{"scottland/center_switcher_next"};
+    wf::option_wrapper_t<wf::keybinding_t> center_switcher_previous{"scottland/center_switcher_previous"};
     std::set<uint32_t> swallowed_keys, alt_keys, held_keys;
     wf::wl_timer<false> alt_hold;
     bool capture_chord = false;
     bool alt_bypassed = false;
     wf::wl_timer<true> hints_tick;
+    std::vector<uint64_t> focus_recency; // all app windows; center eligibility is checked at use
+    struct center_switcher_t
+    {
+        bool active = false;
+        std::vector<uint64_t> candidates;
+        size_t selected = 0;
+        std::shared_ptr<scottland::windowing::center_switcher_node> preview;
+        wf::output_t *output = nullptr;
+    } center_switcher;
+    struct hint_flash_t
+    {
+        std::shared_ptr<scottland::windowing::hint_flash_node> node;
+        wf::output_t *output = nullptr;
+        std::chrono::steady_clock::time_point started;
+        scottland::windowing::hint_rgb color{};
+    };
+    std::map<uint64_t, hint_flash_t> hint_flashes;
+    wf::wl_timer<true> hint_flash_tick;
     struct hint_visual
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -165,6 +185,7 @@
         alt_bypassed = true; alt_hold.disconnect();
         arrow_repeats.clear(); fullscreen_impulses.clear();
         if (capture_chord) { end_window_keys(); capture_chord = false; }
+        if (center_switcher.active) end_center_switcher(false);
     }
     void remember_window(wayfire_toplevel_view view)
     {
@@ -202,6 +223,163 @@
         model.hint_width = window_keys.hint_width;
         publish_model();
         return entries;
+    }
+    void record_focus_recency(wayfire_view active)
+    {
+        focus_recency.erase(std::remove_if(focus_recency.begin(), focus_recency.end(), [=] (auto known) {
+            return !model.windows.count(known); }), focus_recency.end());
+        auto link = link_of_widget(active);
+        uint64_t id = link ? link->window_id : active ? active->get_id() : 0;
+        if (!id || !model.windows.count(id)) return;
+        focus_recency.erase(std::remove(focus_recency.begin(), focus_recency.end(), id), focus_recency.end());
+        focus_recency.insert(focus_recency.begin(), id);
+    }
+    bool center_switcher_eligible(uint64_t id)
+    {
+        auto found = model.windows.find(id);
+        if (found == model.windows.end()) return false;
+        auto view = wf::toplevel_cast(found->second.view.lock());
+        return view && view->is_mapped() && view->get_output() && view->role == wf::VIEW_ROLE_TOPLEVEL &&
+            !is_widget(view) && !runs_as_widget(found->second.pid) &&
+            window_zone(view) == scottland::windowing::zone::center;
+    }
+    std::vector<uint64_t> center_switcher_candidates()
+    {
+        std::vector<uint64_t> result;
+        std::set<uint64_t> seen;
+        for (auto id : focus_recency)
+            if (center_switcher_eligible(id) && seen.insert(id).second) result.push_back(id);
+        // A window adopted after a reload may never have sent this plugin a focus event.
+        // Fill those gaps in newest-opening order after the known recency history.
+        for (auto it = model.windows.rbegin(); it != model.windows.rend(); ++it)
+            if (center_switcher_eligible(it->first) && seen.insert(it->first).second)
+                result.push_back(it->first);
+        return result;
+    }
+    void show_center_switcher_preview()
+    {
+        wf::output_t *output = wf::get_core().seat->get_active_output();
+        std::string title;
+        unsigned position = 0, count = center_switcher.candidates.size();
+        if (count && center_switcher.selected < count)
+        {
+            auto id = center_switcher.candidates[center_switcher.selected];
+            if (auto view = wf::toplevel_cast(view_by_id(id)))
+            {
+                output = view->get_output();
+                title = view->get_title().empty() ? view->get_app_id() : view->get_title();
+                position = center_switcher.selected + 1;
+            }
+        }
+        if (!output) return;
+        if (center_switcher.preview && center_switcher.output != output)
+        {
+            wf::scene::remove_child(center_switcher.preview);
+            center_switcher.preview.reset();
+        }
+        if (!center_switcher.preview)
+        {
+            center_switcher.preview = std::make_shared<scottland::windowing::center_switcher_node>();
+            wf::scene::add_front(output->node_for_layer(wf::scene::layer::OVERLAY), center_switcher.preview);
+        }
+        center_switcher.output = output;
+        palette_read = {};
+        refresh_hint_palette();
+        center_switcher.preview->update(output->get_relative_geometry().width, title, position, count,
+            hints_palette, output->get_scale());
+    }
+    void step_center_switcher(bool backwards)
+    {
+        if (!center_switcher.active)
+        {
+            center_switcher.active = true;
+            center_switcher.candidates = center_switcher_candidates();
+            auto active = wf::get_core().seat->get_active_view();
+            auto link = link_of_widget(active);
+            uint64_t current = link ? link->window_id : active ? active->get_id() : 0;
+            auto& candidates = center_switcher.candidates;
+            if (!candidates.empty())
+            {
+                auto it = std::find(candidates.begin(), candidates.end(), current);
+                center_switcher.selected = it == candidates.end() ?
+                    (backwards ? candidates.size() - 1 : 0) :
+                    (size_t(it - candidates.begin()) + (backwards ? candidates.size() - 1 : 1)) %
+                        candidates.size();
+            }
+        } else
+        {
+            auto& candidates = center_switcher.candidates;
+            candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [=] (auto id) {
+                return !center_switcher_eligible(id); }), candidates.end());
+            if (!candidates.empty())
+                center_switcher.selected = (center_switcher.selected +
+                    (backwards ? candidates.size() - 1 : 1)) % candidates.size();
+        }
+        show_center_switcher_preview();
+    }
+    void end_center_switcher(bool commit)
+    {
+        uint64_t selected = center_switcher.active && !center_switcher.candidates.empty() &&
+            center_switcher.selected < center_switcher.candidates.size() ?
+            center_switcher.candidates[center_switcher.selected] : 0;
+        if (center_switcher.preview) wf::scene::remove_child(center_switcher.preview);
+        center_switcher = {};
+        if (commit && center_switcher_eligible(selected))
+            if (auto view = wf::toplevel_cast(view_by_id(selected)))
+                wf::get_core().default_wm->focus_raise_view(view);
+    }
+    std::optional<bool> center_switcher_direction(uint32_t code, wlr_keyboard *keyboard)
+    {
+        uint32_t relevant = modifier_mask(keyboard->keymap, "CTRL SHIFT ALT SUPER");
+        uint32_t held = keyboard->modifiers.depressed & relevant;
+        auto previous = center_switcher_previous.value(), next = center_switcher_next.value();
+        if (code == previous.get_key() && held == (previous.get_modifiers() & relevant)) return true;
+        if (code == next.get_key() && held == (next.get_modifiers() & relevant)) return false;
+        return {};
+    }
+    bool step_hint_flashes()
+    {
+        auto now = std::chrono::steady_clock::now();
+        for (auto it = hint_flashes.begin(); it != hint_flashes.end();)
+        {
+            auto& flash = it->second;
+            auto view = represented_view(it->first);
+            double age = std::chrono::duration<double>(now - flash.started).count();
+            if (age >= .22 || !view || !view->is_mapped() || !view->get_output())
+            {
+                if (flash.node) wf::scene::remove_child(flash.node);
+                it = hint_flashes.erase(it);
+                continue;
+            }
+            auto output = view->get_output();
+            if (flash.node && flash.output != output)
+            { wf::scene::remove_child(flash.node); flash.node.reset(); }
+            if (!flash.node)
+            {
+                flash.node = std::make_shared<scottland::windowing::hint_flash_node>();
+                wf::scene::add_front(output->node_for_layer(wf::scene::layer::OVERLAY), flash.node);
+            }
+            flash.output = output;
+            auto r = scene_rectangle(view, output);
+            double radius = 0;
+            if (auto frame = frame_of(view, false)) radius = frame->screen_radius();
+            double strength = age < .035 ? .16 + .18 * age / .035 : .34 * (1 - (age - .035) / .185);
+            flash.node->update({std::floor(r.x1), std::floor(r.y1), std::ceil(r.width()),
+                std::ceil(r.height())}, radius, flash.color, strength);
+            ++it;
+        }
+        return !hint_flashes.empty();
+    }
+    void flash_hint(uint64_t id)
+    {
+        auto found = model.windows.find(id);
+        if (found == model.windows.end()) return;
+        auto slot = ensure_window_memory(id).hint_slot;
+        hint_flashes[id].started = std::chrono::steady_clock::now();
+        hint_flashes[id].color = color_for_hint(slot);
+        step_hint_flashes();
+        if (!hint_flash_tick.is_connected())
+            hint_flash_tick.set_timeout(16, [=] () { return step_hint_flashes(); });
     }
     std::vector<scottland::windowing::rectangle> placement_obstacles(wf::output_t *output, uint64_t excluded)
     {
@@ -800,6 +978,7 @@
             {
                 alt_hold.disconnect();
                 if (capture_chord) end_window_keys();
+                if (center_switcher.active) end_center_switcher(true);
                 capture_chord = false;
             }
             // Alt-down was delivered immediately, so its matching release also belongs to the
@@ -807,6 +986,23 @@
             return;
         }
         if (claimed) return; // exact focused-surface claims also bleed through active hints (KL7)
+        if (!capture_chord && down && !alt_keys.empty())
+        {
+            if (auto backwards = center_switcher_direction(code, keyboard))
+            {
+                alt_bypassed = true; alt_hold.disconnect();
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+                if (swallowed_keys.insert(code).second) step_center_switcher(*backwards);
+                return;
+            }
+            if (code == KEY_ESC && center_switcher.active)
+            {
+                end_center_switcher(false);
+                swallowed_keys.insert(code);
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+                return;
+            }
+        }
         if (down && code == KEY_ESC && !drag->view && !capture_chord && inertia_active())
         {
             for (auto& [id, motion] : keyboard_motions)
@@ -879,11 +1075,23 @@
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
             item["clearance"] = hint_visuals.count(e.id) ? hint_visuals[e.id].clearance : 0.0;
             item["edge_label"] = hint_visuals.count(e.id) && hint_visuals[e.id].edge_label;
+            item["flash"] = hint_flashes.count(e.id) && hint_flashes[e.id].node ?
+                hint_flashes[e.id].node->alpha : 0.0;
             item["memories"] = wf::json_t::array();
             for (auto p : ensure_window_memory(e.id).positions)
             { wf::json_t spot; spot["set"] = bool(p); if (p) { spot["x"] = p->x; spot["y"] = p->y; } item["memories"].append(spot); }
             reply["hints"].append(item);
         }
+        return reply;
+    };
+    wf::ipc::method_callback center_switcher_state = [=] (wf::json_t) -> wf::json_t
+    {
+        auto reply = wf::ipc::json_ok();
+        reply["active"] = center_switcher.active;
+        reply["count"] = int(center_switcher.candidates.size());
+        reply["selected"] = center_switcher.active && !center_switcher.candidates.empty() ?
+            int64_t(center_switcher.candidates[center_switcher.selected]) : int64_t(0);
+        reply["preview"] = bool(center_switcher.preview);
         return reply;
     };
     void init_window_keys()
@@ -912,18 +1120,25 @@
             else if (auto visible = represented_view(id)) wf::get_core().default_wm->focus_raise_view(visible);
         };
         window_keys.move = [=] (uint64_t id, auto to) { keyboard_selection = true; cycle_window(id, to); };
+        window_keys.hint_action = [=] (uint64_t id) { flash_hint(id); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
         wf::get_core().connect(&on_window_key);
         ipc_repo->register_method("scottland/hints", hints_state);
+        ipc_repo->register_method("scottland/center-switcher", center_switcher_state);
+        record_focus_recency(wf::get_core().seat->get_active_view());
     }
     void fini_window_keys()
     {
         on_window_key.disconnect(); alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
         stop_keyboard_motion(); keyboard_origins.clear();
+        end_center_switcher(false); hint_flash_tick.disconnect();
+        for (auto& [id, flash] : hint_flashes) if (flash.node) wf::scene::remove_child(flash.node);
+        hint_flashes.clear();
         window_keys.end();
         ipc_repo->unregister_method("scottland/hints");
+        ipc_repo->unregister_method("scottland/center-switcher");
         for (auto& [id, visual] : hint_visuals)
         {
             if (visual.hint) wf::scene::remove_child(visual.hint);

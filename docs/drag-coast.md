@@ -18,7 +18,7 @@ finish their existing form transition without adding a coast.
 Decisions follow the tenets:
 
 - Tenet 3 (position means priority): coasts continuously follow zones and scale. Shared screen
-  edges permit passage in global layout coordinates. Explicit Alt pinning remains in force.
+  edges permit passage in global layout coordinates. Explicit Shift pinning remains in force.
 - Tenets 2 (recognition) and 3 (position means priority): WK20 keeps 100 logical pt of
   the scaled footprint visible at exposed top/bottom edges, stopping that axis without bounce.
   Outward side travel morphs into the matching rail widget as the scaled footprint touches

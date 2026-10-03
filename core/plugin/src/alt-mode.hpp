@@ -19,6 +19,7 @@ class alt_mode
     std::function<void(uint64_t, bool)> select; // bool: restore a widget as a card click
     std::function<void(uint64_t, destination)> move;
     std::function<void(uint64_t)> close;
+    std::function<void(uint64_t)> hint_action; // a complete hint acted, never Tab or a prefix
     void begin(std::vector<hint_entry> windows, uint64_t focused);
     void end();
     void refresh(std::vector<hint_entry> windows);

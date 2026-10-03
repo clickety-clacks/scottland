@@ -230,6 +230,15 @@ try:
         check(all(abs(v['applied_scale']-v['scale'])<.015 for v in samples),'coasting scale follows the actual center, including while Alt is held')
         (out/'zone-samples.json').write_text(json.dumps(samples))
 
+        drag('InertiaA',w*.37,h/2); initial=state('InertiaA')['applied_scale']
+        hold(); key('LEFTSHIFT',True); tap('LEFT'); key('LEFTSHIFT',False); release(); coast(.8)
+        shifted=state('InertiaA')
+        check(shifted['zone']=='continuous' and abs(shifted['applied_scale']-initial)<.015,
+              'Shift+arrow keeps scale through periphery coast')
+        hold(); tap('LEFT'); release(); coast(.8)
+        check(abs(state('InertiaA')['applied_scale']-state('InertiaA')['scale'])<.015,
+              'plain arrow clears Shift scale pin and follows zone')
+
         drag('InertiaA',w/2,h/2); before=state('InertiaA'); origin=center(before)
         hold(); key('LEFTCTRL',True); tap('RIGHT'); tap('UP'); key('LEFTCTRL',False); release(); coast()
         after=state('InertiaA')
@@ -240,6 +249,11 @@ try:
         after=state('InertiaA')
         check(abs(after['geometry']['width']-before['geometry']['width'])<2 and abs(after['geometry']['height']-before['geometry']['height'])<2,'Ctrl+Left and Ctrl+Down shrink the window')
         check(near(center(after),origin),'shrinking also preserves center')
+        shift_before=state('InertiaA')
+        hold(); key('LEFTSHIFT',True); key('LEFTCTRL',True); tap('RIGHT')
+        key('LEFTCTRL',False); key('LEFTSHIFT',False); release(); coast()
+        check(state('InertiaA')['geometry']['width']>shift_before['geometry']['width']+50,
+              'Ctrl+Shift+Right still resizes instead of scale-locking movement')
 
         hold(); key('LEFTCTRL',True); key('RIGHT',True); key('UP',True); time.sleep(2); key('RIGHT',False); key('UP',False); key('LEFTCTRL',False); release(); coast(2)
         after=state('InertiaA')
@@ -330,11 +344,34 @@ try:
         origin=cc(); hold(); key('LEFTCTRL',True); tap('RIGHT'); tap('UP'); key('LEFTCTRL',False); release(); coast()
         check(near(cc(),origin,.1) and state('InertiaB')['widgetized'],'Ctrl+arrows do nothing for widgets')
         rail=next(w['rail'] for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==b)
-        hold(); tap('RIGHT' if rail=='left' else 'LEFT'); coast(.4)
-        newrail=next(w['rail'] for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==b)
-        check(newrail!=rail and abs(cc()[1]-origin[1])<2 and state('InertiaB')['widgetized'],'horizontal widget arrow changes rails and keeps height and form')
+        hold(); tap('RIGHT' if rail=='left' else 'LEFT'); coast(.6)
+        undocked=state('InertiaB')
+        check(not undocked['widgetized'] and undocked['zone']=='continuous' and
+              (center(undocked)[0]<w/2 if rail=='left' else center(undocked)[0]>w/2),
+              'away arrow undocks and coasts into the same-side periphery')
         tap('ESC'); coast(.6); release()
         check(next(w['rail'] for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==b)==rail and near(cc(),origin,2),'Esc restores widget rail and position')
+        ipc('wayfire/set-config-options',{'scottland/key_impulse':1500.0})
+        hold(); tap('RIGHT' if rail=='left' else 'LEFT'); coast(1.2)
+        fast=state('InertiaB')
+        check(not fast['widgetized'] and fast['zone']=='continuous' and
+              (center(fast)[0]<w/2 if rail=='left' else center(fast)[0]>w/2),
+              'strong away impulse stops within its starting periphery, never on opposite rail')
+        tap('ESC'); coast(.8); release()
+        wait_for(lambda:state('InertiaB')['widgetized'])
+        ipc('wayfire/set-config-options',{'scottland/key_impulse':335.0})
+        drag('InertiaB',6,h*.56)
+        wait_for(lambda:state('InertiaB')['widgetized'] and any(v['widget'] for v in ipc('scottland/layout-state')['views']))
+        coast(.3); left_origin=cc()
+        check(next(w['rail'] for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==b)=='left',
+              'real drag establishes the left-rail widget fixture')
+        hold(); tap('RIGHT'); coast(.6)
+        from_left=state('InertiaB')
+        check(not from_left['widgetized'] and from_left['zone']=='continuous' and center(from_left)[0]<w/2,
+              'right arrow undocks a left-rail widget into the left periphery')
+        tap('ESC'); coast(.8); release()
+        check(state('InertiaB')['widgetized'] and near(cc(),left_origin,2),
+              'Esc restores the left-rail widget after its away impulse')
         origin=cc(); hold(); choose(b); tap('RIGHT'); coast(.15); tap('ESC'); coast(.8); release()
         wait_for(lambda:state('InertiaB')['widgetized']); coast(.5)
         check(state('InertiaB')['widgetized'] and near(cc(),origin,2),'Esc restores original widget form after hint-open and arrow movement')

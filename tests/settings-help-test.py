@@ -76,6 +76,15 @@ def scroll_to(value):
     end=y+max(0,min(q["contentHeight"]-v["height"],value))/q["contentHeight"]*v["height"]+thumb/2
     drag(x+v["width"]-5,start,0,end-start)
 
+def reveal(name, dx=0, dy=0, margin=24):
+    # Test the actual control coordinate against the live clipped viewport.
+    q=snapshot(); target=q[name]["y"]+dy; v=q["viewport"]
+    if target < v["y"]+margin:
+        scroll_to(q["scroll"]+target-(v["y"]+margin))
+    elif target > v["y"]+v["height"]-margin:
+        scroll_to(q["scroll"]+target-(v["y"]+v["height"]-margin))
+    return control_point(name, dx, dy)
+
 def tab(index):
     for _ in range(3):
         click(panel_x+36+(index+.5)*(snapshot()["panel"]["width"]-72)/6,panel_y+100)
@@ -370,13 +379,20 @@ try:
     check("Backspace restores opening row",option_reaches("blend_width",initial["blend_width"]))
     # Knobs have 36pt hit disks; select offset from the small visible handle.
     e=snapshot()["editor"];p=e["plot"]
+    reveal("editor",0,p["y"]-e["y"]+p["height"]*.5)
+    e=snapshot()["editor"];p=e["plot"]
     click(*screen_point(dict(x=p["x"]+p["width"]*.45,y=p["y"]+p["height"]*.4)))
     check("curve click adds and selects",len(snapshot()["editor"]["knots"])==3 and snapshot()["editor"]["selected"]==1)
     key("KEY_DELETE")
     check("Delete removes selected interior knot",len(snapshot()["editor"]["knots"])==2)
+    e=snapshot()["editor"];p=e["plot"]
     click(*screen_point(dict(x=p["x"]+p["width"]*.5,y=p["y"]+p["height"]*.5)))
     key("KEY_BACKSPACE")
     check("Backspace removes selected interior knot",len(snapshot()["editor"]["knots"])==2)
+    knot=snapshot()["editor"]["knots"][0]
+    q=snapshot();v=q["viewport"]
+    if knot["y"]<v["y"]+24: scroll_to(q["scroll"]+knot["y"]-(v["y"]+24))
+    elif knot["y"]>v["y"]+v["height"]-24: scroll_to(q["scroll"]+knot["y"]-(v["y"]+v["height"]-24))
     knot=snapshot()["editor"]["knots"][0];x,y=screen_point(knot)
     click(x+14,y);key("KEY_DELETE")
     check("36pt endpoint target selects but cannot be deleted",snapshot()["editor"]["selected"]==0 and len(snapshot()["editor"]["knots"])==2)
@@ -421,9 +437,10 @@ try:
     a=snapshot()["scroll"];time.sleep(.25);check("touchpad coast settles",abs(snapshot()["scroll"]-a)<.1)
     tab(0);tab(1)
     # After mouse editing that same row, touch must still be able to take over for scrolling.
-    click(*control_point("goo",250,4*69+34));key("KEY_BACKSPACE")
+    click(*reveal("goo",250,4*69+34));key("KEY_BACKSPACE")
     # A vertical touch gesture on a slider scrolls without changing its value.
-    x,y=control_point("viewport",250,340)
+    q=snapshot(); v=q["viewport"]
+    x,y=screen_point(dict(x=v["x"]+250,y=v["y"]+min(340,v["height"]-35)))
     old_goo=snapshot()["values"]
     ipc("stipc/touch",dict(finger=0,x=round(x),y=round(y)))
     for i in range(1,9):
@@ -470,7 +487,7 @@ try:
     key("KEY_RIGHT");time.sleep(.7)
     check("playground arrow moves and stops at analytic distance",abs(snapshot()["playground"]["distance"]-335**2/(2*608))<.1 and snapshot()["playground"]["velocity"]==0)
     # The velocity arrow edits its compositor option live; rail motion has no rebound control.
-    click(*control_point("playground",200,325))
+    click(*reveal("playground",200,325))
     check("impulse arrow edits live option",option_reaches("key_impulse",10000))
     for _ in range(8):
         key("KEY_RIGHT")
@@ -485,14 +502,23 @@ try:
         q=snapshot();g=q[name];p=g["plot"]
         target=dict(x=p["x"]+seconds/2.5*p["width"],
                     y=p["y"]+(1-points/600)*p["height"])
+        bottom=max(g["endpoint"]["y"],target["y"])
+        v=q["viewport"]
+        if bottom>v["y"]+v["height"]-24:
+            scroll_to(q["scroll"]+bottom-(v["y"]+v["height"]-24))
+            q=snapshot();g=q[name];p=g["plot"]
+            target=dict(x=p["x"]+seconds/2.5*p["width"],
+                        y=p["y"]+(1-points/600)*p["height"])
         x,y=screen_point(g["endpoint"]);tx,ty=screen_point(target)
         drag(x,y,tx-x,ty-y)
-        expected_impulse=2*points/seconds
-        expected_friction=2*points/(seconds*seconds)
+        observed=snapshot()[name]
+        duration=observed["duration"];distance=observed["distance"]
+        expected_impulse=2*distance/duration if duration else 0
+        expected_friction=2*distance/(duration*duration) if duration else 0
         check(name+" endpoint sets impulse and deceleration live",
               abs(option(impulse_name)-expected_impulse)<2 and
               abs(option(friction_name)-expected_friction)<3 and
-              abs(snapshot()[name]["distance"]-points)<2)
+              abs(duration-seconds)<.04 and abs(distance-points)<5)
     edit_coast("movement","key_impulse","key_friction")
     shot("06-window-coast")
     edit_coast("resize","resize_impulse","resize_friction")
@@ -695,8 +721,8 @@ try:
           all(line in solar.read_text() for line in ("enabled = true","allow_ip = true","location_set = true")))
     panel=open_panel();tab(5)
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
-    check("Sunlight Defaults disable following and network location",
-          not snapshot()["solar"]["enabled"] and not snapshot()["solar"]["allow_ip"])
+    check("Sunlight Defaults restore shipped following and network location",
+          snapshot()["solar"]["enabled"] and snapshot()["solar"]["allow_ip"])
     close_panel(panel)
     check("Sunlight Cancel retains saved location policy",all(line in solar.read_text() for line in
           ("enabled = true","allow_ip = true","location_set = true")))

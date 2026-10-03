@@ -34,7 +34,7 @@ The drag transformer rejects hit tests; a compositor input grab consumes the ges
 Pointer motion, touch motion and swipe deltas feed the same scale/morph handlers.
 Output crossings transfer the input grab without ending the move. The final shown
 position is committed in destination-output coordinates before the existing drop path
-runs. Esc, Alt pinning, widget entry/restore, click/raise holds and release inertia keep
+runs. Esc, Shift pinning, widget entry/restore, click/raise holds and release inertia keep
 one owner. Reentrant touch-up delivery while releasing/transferring a grab is guarded.
 Unmap and plugin unload return the subtree and release the input resources.
 
