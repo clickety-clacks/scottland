@@ -14,9 +14,9 @@ DHH pronounces "om-ah-shee". The name was checked for collisions on 2026-10-03: 
 by that name, GitHub name and the .com/.org domains unregistered. Public repository:
 [clickety-clacks/gooarchy](https://github.com/clickety-clacks/gooarchy).
 
-## Where taste lives: gooarchy-flavorings (Mike, 2026-10-03)
+## Gooarchy flavorings (Mike, 2026-10-03)
 
-Gooarchy's taste (which app widgets ship and whose, e.g. Mike's Ghostty widget rather than someone
+Gooarchy flavorings (which app widgets ship and whose, e.g. Mike's Ghostty widget rather than someone
 else's, and the app defaults listed below) lives in its own package,
 [clickety-clacks/gooarchy-flavorings](https://github.com/clickety-clacks/gooarchy-flavorings), not in
 Scottland's core (which defines what a widget is, never which ones ship) and not in the distro alone.

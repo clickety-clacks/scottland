@@ -56,7 +56,7 @@ why**, and ask only if it's genuinely unclear:
 2. **Adapter** (`omarchy/`, package `scottland-omarchy`): exists only because Scottland runs on
    Omarchy beside Hyprland and uwsm. The Hyprland shim, Lua host, shortcut import, switching
    between desktops, service handover, Omarchy menu entries.
-3. **Gooarchy taste** (repo `clickety-clacks/gooarchy-flavorings`, installed by the Gooarchy distro
+3. **Gooarchy flavorings** (repo `clickety-clacks/gooarchy-flavorings`, installed by the Gooarchy distro
    and by the adapter): curated choices for Gooarchy users, not desktop mechanisms. Which app
    widgets ship (and whose, e.g. Mike's Ghostty widget), app defaults such as Chromium's system
    title bar. Core defines what a widget/theme/default *is*; it never ships an app-specific widget
@@ -70,7 +70,7 @@ Hints: "turn X off in both installed and shipped" is core. Anything mentioning H
 Omarchy's menu, uwsm or Hyprland-config behavior is the adapter. "I like", "for me", or a tweak to
 feel/appearance with no reason others would want it is personal. A shipped default that's just
 a value (a slider position) is usually personal unless Mike says it should ship. "Gooarchy should
-ship X", a particular app's widget, or "for the distro" is Gooarchy taste.
+ship X", a particular app's widget, or "for the distro" belongs in Gooarchy flavorings.
 
 **Principles.** When Mike states a general rule while deciding a specific feature (it reads like a
 tenet: "if I put it on the left I should find it on the left"), record it in the same change as a
