@@ -11,7 +11,8 @@ come up, so the decision isn't lost while there is nowhere better to put them.
 
 **Gooarchy**, pronounced "goo-ah-shee" (Mike, 2026-10-03): goo, Arch and anarchy, after Omarchy, which
 DHH pronounces "om-ah-shee". The name was checked for collisions on 2026-10-03: no project or product
-by that name, GitHub name and the .com/.org domains unregistered. Public repository:
+by that name, GitHub name and the .com/.org domains unregistered. gooarchy.com registered on Porkbun
+2026-10-03 (Mike's account, WHOIS privacy on). Public repository:
 [clickety-clacks/gooarchy](https://github.com/clickety-clacks/gooarchy).
 
 ## Gooarchy flavorings (Mike, 2026-10-03)
