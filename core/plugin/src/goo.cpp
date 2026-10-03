@@ -517,6 +517,10 @@ struct goo_t::impl
             s["step_ms"] = n->state.renderer.last_step_ms;
             s["gpu_ms"] = n->state.renderer.last_gpu_ms;
             s["draw_gpu_ms"] = n->state.renderer.last_draw_gpu_ms;
+            s["draws"] = n->state.renderer.draws;
+            s["surface_pixels"] = n->state.renderer.surface_pixels;
+            s["capture_pixels"] = n->state.renderer.capture_pixels;
+            s["composite_pixels"] = n->state.renderer.composite_pixels;
             s["energy"] = n->state.renderer.energy;
             s["wave_energy"] = n->state.renderer.wave_energy;
             s["dye_energy"] = n->state.renderer.dye_energy;

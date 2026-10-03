@@ -28,6 +28,9 @@ class renderer_t
     float energy = 1, wave_energy = 1, dye_energy = 1;
     double last_step_ms = 0, last_gpu_ms = 0, last_draw_gpu_ms = 0;
     uint64_t steps = 0;
+    // Monotonic work counters, including device pixels before fragment discard.
+    // Unlike the last GPU query, deltas distinguish idle from ongoing work.
+    uint64_t draws = 0, surface_pixels = 0, capture_pixels = 0, composite_pixels = 0;
     bool packed = false;
 
   private:

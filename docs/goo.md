@@ -69,7 +69,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. Widgets and non-resizable windows (resize permission denied, or both dimensions fixed by min/max hints) have no resize handles; their band remains a move handle. A single fixed dimension still permits resizing the other. | implemented; pointer/touch move, resize, close and hidden-corner checks |
 | GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. The Goo tab includes depth, wall wetting and wallpaper soak with metadata hints verbatim, live preview and Save/Cancel/Defaults. | implemented; Goo coverage test matches all 24 metadata options and GO14/GO15 hints/ranges; isolated headless input checks |
-| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Attention breathing refreshes only its local strip at 25 Hz (GO17); interaction-driven field work uses occupied tiles. When apps redraw beneath settled overlap film, cached surface properties are composited with the current backdrop instead of re-evaluating depth, SDF and antialiasing for every app frame. Backdrop capture is limited to drawable bands plus refraction margin. | implemented; isolated Xe redraw-cost validation below |
+| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Attention breathing draws its local strip once at 25 Hz (GO17), without rebuilding surface caches; interaction-driven field work uses occupied tiles. When apps redraw beneath settled overlap film, cached surface properties are composited with the current backdrop instead of re-evaluating depth, SDF and antialiasing for every app frame. Backdrop capture is limited to drawable bands plus refraction margin. | implemented; RX 580 large-window validation in [GPU research](goo-gpu-research.md); exact-final Xe/live target unverified |
 | GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). At rest the film has the set width; when that window's outer goo expands for proximity/hover, lift while dragging, or attention breathing, its film swells in the same proportion, governed by `goo_swell`, and eases back with it. It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core; swell clarification 2026-10-02) | implemented; isolated headless validation recorded below |
 | GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Only resizable windows have corner cloud/glow: widgets and non-resizable windows (including equal min/max size hints) never show it, in goo or the fallback halo. Their sides still highlight and move normally. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | implemented; isolated headless validation recorded below |
 | GO13 | Goo outlines fade over approximately one device pixel using screen-space field derivatives, at every output/window scale. The full-resolution draw reconstructs the coarse field with smooth cubic filtering, restricted to goo bands; GO11 film and GO12 control outlines use the same coverage. Keep the existing window-edge SDF antialiasing and otherwise preserve the look, simulation and input. Added active cost stays well below one millisecond per frame, checked with the paired GO10 benchmark on Xe and RX 580. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
@@ -1315,3 +1315,34 @@ and uses a visible curve knot. This changes only the test fixture. On plumbus,
 the final build passed goo-test on normal and packed GLES paths (46/46 each)
 and overlap/hover (28/28); widgets (192/192) and widget morph (270/270) passed
 before the final GL-state adjustment. All headless sessions were stopped.
+
+
+## GO10: draw the animated band once (2026-10-02)
+
+The large-window follow-up separates settled animated strips from cached static
+strips. At a breath tick the renderer evaluates the original full-resolution
+surface shader once in the damaged attention band. It no longer writes both
+surface caches and composites them there. Static strips still cache surface
+properties and composite the current backdrop, preserving GO10's benefit for
+redrawing clients elsewhere. Active simulation and allocation-failure fallback
+retain their original direct path. No shader, simulation, input, quality setting,
+source geometry, cadence or breath curve changes.
+
+The split occurs in device pixels before subtraction, so rounding at fractional
+DPI cannot composite a shared boundary pixel twice. Source/field changes invalidate
+the static cache, including attention starting or being answered. The animated
+surface also avoids the RGBA8 intermediate quantization of intrinsic light and
+refraction. Cache memory does not increase. This is independent of GO16's source
+shape work: the change consumes the same bands and the same surface shader.
+
+GO10's performance target for a sleeping desktop with one breathing source is
+within **2–3 compositor GPU-busy points of goo off**, on both Intel Xe and AMD.
+The sampled RX 580 large-window cases meet that bound; the exact-final Xe and
+physical-display result remain unverified. Do not treat the prior Xe GO10 result
+or these headless AMD samples as verification of Mike's live gap.
+
+[Research, alternative prototypes, fixtures, measurements and limitations](goo-gpu-research.md)
+record the evidence. `goo-state` adds monotonic `draws`, `surface_pixels`,
+`capture_pixels` and `composite_pixels`; deltas distinguish real work from a stale
+GPU timer query. Submitted surface pixels count each pass before fragment discard.
+The ordinary still desktop must retain zero work deltas after attention clears.

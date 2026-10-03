@@ -150,7 +150,6 @@ struct renderer_t::impl
     settings_t settings;
     bool overlap = false, controls = false, fast = true, has_wallpaper = false;
     bool cache_valid = false, cache_dirty = true, cache_available = true;
-    float cache_breath = -1;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
     OpenGL::program_t intrinsic_p, refraction_p, composite_p;
@@ -609,6 +608,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     auto capture = data.damage & capture_area;
     if (capture.empty())
         return;
+    ++draws;
     state_t guard(p->es3);
     p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
     if (!p->timer_open && p->timing && !p->timer_pending)
@@ -646,8 +646,11 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                         int right = std::min(box[0] + box[2], viewport[0] + viewport[2]);
                                         int top = std::min(box[1] + box[3], viewport[1] + viewport[3]);
                                         if (right > x && top > y)
+                                        {
+                                            capture_pixels += uint64_t(right - x) * (top - y);
                                             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, x - viewport[0],
                                                                 y - viewport[1], x, y, right - x, top - y);
+                                        }
                                     });
     if (damage.empty())
     {
@@ -697,11 +700,28 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     }
     if (settled && p->cache_available)
     {
-        wf::regionf_t refresh;
+        // Partition in device pixels. Rounding two complementary logical
+        // regions separately can blend a boundary pixel twice at fractional DPI.
+        const auto breathing = data.target.framebuffer_region_from_geometry_region(breath_area);
+        const auto pixels = data.target.framebuffer_region_from_geometry_region(damage);
+        auto each_pixel_rect = [&](const wf::region_t &region, auto draw)
+        {
+            for (auto &r : region)
+            {
+                wf::gles::scissor_render_buffer(data.target,
+                    {r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1});
+                draw();
+            }
+        };
+        wf::region_t refresh;
         if (!p->cache_valid || p->cache_dirty)
-            refresh = area;
-        else if (breath != p->cache_breath)
-            refresh = breath_area & area;
+        {
+            // Settled attention changes on every breath tick. Drawing that band
+            // once is cheaper than rebuilding both cache layers and compositing
+            // them. Only static strips need a reusable surface cache; a source or
+            // field change invalidates it, including a changed attention set.
+            refresh = data.target.framebuffer_region_from_geometry_region(area) ^ breathing;
+        }
         if (!refresh.empty())
         {
             glDisable(GL_BLEND);
@@ -714,10 +734,11 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                 glBindFramebuffer(GL_FRAMEBUFFER, target.fb);
                 glViewport(0, 0, target.width, target.height);
                 setup_surface(program);
-                wf::gles::for_each_scissor_rect(data.target, refresh, [&]
+                each_pixel_rect(refresh, [&]
                 {
                     GLint box[4];
                     glGetIntegerv(GL_SCISSOR_BOX, box);
+                    surface_pixels += uint64_t(box[2]) * box[3];
                     glScissor(box[0] - viewport[0], box[1] - viewport[1], box[2], box[3]);
                     if (&target == &p->refraction)
                         glClearColor(.5f, .5f, 0, 0);
@@ -732,7 +753,6 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         }
         p->cache_valid = true;
         p->cache_dirty = false;
-        p->cache_breath = breath;
         wf::gles::bind_render_buffer(data.target);
         auto &program = p->composite_p;
         program.use(wf::TEXTURE_TYPE_RGBA);
@@ -743,12 +763,30 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         bind(program, "uBackground", 5, bg.texture);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        wf::gles::for_each_scissor_rect(data.target, damage, [&]
+        each_pixel_rect(pixels ^ breathing, [&]
         {
+            GLint box[4];
+            glGetIntegerv(GL_SCISSOR_BOX, box);
+            composite_pixels += uint64_t(box[2]) * box[3];
             program.attrib_pointer("position", 2, 0, vertices);
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         });
         program.deactivate();
+        auto animated = pixels & breathing;
+        if (!animated.empty())
+        {
+            auto &surface = p->fast ? p->render_fast : p->render_p;
+            setup_surface(surface);
+            each_pixel_rect(animated, [&]
+            {
+                GLint box[4];
+                glGetIntegerv(GL_SCISSOR_BOX, box);
+                surface_pixels += uint64_t(box[2]) * box[3];
+                surface.attrib_pointer("position", 2, 0, vertices);
+                glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            });
+            surface.deactivate();
+        }
     }
     else
     {
@@ -758,6 +796,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         wf::gles::for_each_scissor_rect(data.target, damage, [&]
         {
+            GLint box[4];
+            glGetIntegerv(GL_SCISSOR_BOX, box);
+            surface_pixels += uint64_t(box[2]) * box[3];
             program.attrib_pointer("position", 2, 0, vertices);
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         });
