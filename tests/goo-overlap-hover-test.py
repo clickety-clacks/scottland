@@ -205,15 +205,15 @@ try:
     ipc("scottland/attention", {"window":view("goo-front")["id"], "attention":True, "source":"film-swell"})
     attention_swells = []
     attention_fields = []
-    for _ in range(30):
-        attention_swells.append(view("goo-front")["frame"]["swell"])
+    for _ in range(60):
+        attention_swells.append(sample(*swell_probe)["breath"])
         attention_fields.append(sample(*swell_probe)["density"])
         time.sleep(.09)
     shot("01f-film-attention-breathing")
     print("attention swell range",min(attention_swells),max(attention_swells),
           "film density range",min(attention_fields),max(attention_fields),flush=True)
-    check("attention breathing expands the inner film", max(attention_swells) > .65
-          and max(attention_fields) > rest_field["threshold"])
+    check("attention breathing gently swells the inner film", max(attention_fields) > min(attention_fields)*1.05)
+    check("attention no longer drives the simulation spring", abs(view("goo-front")["frame"]["swell"]) < .001)
     check("attention film breathes rather than freezing", max(attention_swells)-min(attention_swells) > .08)
     ipc("scottland/attention", {"window":view("goo-front")["id"], "attention":False, "source":"film-swell"})
     ipc("window-rules/close-view", {"id":view("goo-attention-sink")["id"]})
@@ -245,23 +245,27 @@ try:
     reversed=shot("04-reversed-stacking")
     check("raising a window hides the now-obscured film", change(reversed.getpixel(film), reversed.getpixel(clear)) < 8)
     click(820,360); pointer(30,30); time.sleep(2)
-    # Put the rear attention pulse beside the join, on exposed goo. In the
-    # previous layout it was hundreds of pixels away around the far perimeter.
-    place("goo-back",260,380,480,180)
+    # Put the rear hover impulse beside the join, on exposed goo.
+    # Attention itself must no longer inject waves (GO17).
+    place("goo-back",260,320,480,180)
     options(goo_wave_height=.55, goo_hover_cloudiness=0, goo_hover_emissivity=0)
     for _ in range(450):
         if sample(20,20)["sleeping"]: break
         time.sleep(.1)
     front=view("goo-front")["frame"]; back=view("goo-back")["frame"]
-    probe=(front["x"]-2,back["y"]+9)
+    probe=(front["x"]-2,back["y"]+back["height"]-9)
     before_dye=color(sample(*probe))
     ipc("scottland/attention", {"window":view("goo-back")["id"], "attention":True, "source":"film-join"})
+    time.sleep(3)
+    check("rear dye crosses the join into the front film", change(before_dye,color(sample(*probe)))>.015)
+    # Hover excites the rear edge without raising it over the film under test.
+    pointer(back["x"]+back["width"]/2-50, back["y"]+back["height"]+3)
     peak=0
     for _ in range(120):
         peak=max(peak,abs(sample(*probe)["wave"])); time.sleep(.025)
     print("join wave peak",peak,flush=True)
     check("rear goo waves cross into the front film", peak>.032)
-    check("rear dye crosses the join into the front film", change(before_dye,color(sample(*probe)))>.015)
+    pointer(30,30)
     shot("04a-shared-join")
     ipc("scottland/attention", {"window":view("goo-back")["id"], "attention":False, "source":"film-join"})
     place("goo-back",260,160,480,360)

@@ -1,4 +1,5 @@
 #pragma once
+#include "attention-breath.hpp"
 
 // Window frame: every window is drawn as a rounded rectangle (A2) inside a liquid halo (A3-A11).
 // The halo is always visible; it tints with focus, moves the window when dragged, resizes it
@@ -564,7 +565,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     }
 
     /** A widget whose app needs attention (WG15): its halo takes the attention color and keeps
-     *  breathing (the goo swells and wobbles as when hovered), until it's cleared. */
+     *  breathing (a render-only light and gentle swell with goo enabled), until it's cleared. */
     void set_attention(bool on)
     {
         if (on == attention)
@@ -580,6 +581,20 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
 
         start_ticking();
+    }
+
+    // Live goo/fallback switching must start the fallback's attention timer,
+    // or release its old breathing spring when returning to shared goo.
+    void sync_goo_animation()
+    {
+        bool shared = goo_enabled();
+        if (shared == shared_goo) return;
+        shared_goo = shared;
+        if (attention)
+        {
+            swell_target = hovering || lifted ? 1.0 : 0.0;
+            start_ticking();
+        }
     }
 
     bool needs_attention() const
@@ -1005,6 +1020,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double dot_target   = 0.0;
     double swell_target = 0.0;
     bool attention = false;
+    bool shared_goo = goo_enabled();
     bool hovering = false;
     bool lifted = false;
     double bulge_target = 0.0;
@@ -1103,7 +1119,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             }
         }
 
-        if (attention || attention_mix.running())
+        if ((!goo_enabled() && attention) || attention_mix.running())
         {
             return false;  // breathing
         }
@@ -1159,11 +1175,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     void step(double dt)
     {
         phase += dt;
-        if (attention && !is_pressed())
+        if (!goo_enabled() && attention && !is_pressed())
         {
-            // Breathing: the swell's target rises and falls (period ~1.8 s), so the goo keeps
-            // swelling and rippling the way it does when hovered.
-            swell_target = 0.55 + 0.45 * (0.5 + 0.5 * std::sin(phase * 2.0 * M_PI / 1.8));
+            // The fallback keeps its local spring; shared goo owns a separate draw timer.
+            swell_target = .12 * goo::attention_breath(now_ms() / 1000.);
         }
 
         // Goo: an underdamped spring, so the swell overshoots and wobbles before settling.
@@ -1219,6 +1234,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
     void render(const wf::scene::render_instruction_t& data) override
     {
+        self->sync_goo_animation();
         if (!wf::get_core().is_gles2())
         {
             // Other renderers: plain scaled texture, no rounding or halo.

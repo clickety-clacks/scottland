@@ -64,6 +64,8 @@ GO13 adds cubic reconstruction and a device-pixel antialiased outline to goo, fi
 highlight edges; see [its headless visual and cost checks](../docs/goo.md#go13-inexpensive-antialiased-contours-2026-10-02).
 GO14/GO15 add a rounded depth profile and wallpaper dye; see [their design, controls and
 headless evidence](../docs/goo.md#go14go15-depth-and-wallpaper-dye-2026-10-02).
+GO17 makes attention breathing a local draw-only modulation while simulation sleeps;
+see [its curve, damage and cost evidence](../docs/goo.md#go17-draw-only-attention-breathing-2026-10-02).
 
 | ID | Invariant | Status |
 |---|---|---|

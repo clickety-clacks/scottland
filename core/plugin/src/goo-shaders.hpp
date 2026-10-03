@@ -19,7 +19,7 @@ uniform int uCount;
 uniform vec2 uRes, uSize;
 uniform float uTime, uReach, uNoise, uNoiseScale, uNoiseSpeed, uT, uPacked, uThickness;
 uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;
-vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/7., (float(i)+.5)/float(max(uCount,1)))); }
+vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/8., (float(i)+.5)/float(max(uCount,1)))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p) {
   vec2 i=floor(p), f=fract(p), u=f*f*(3.-2.*f);
@@ -82,8 +82,8 @@ float deposit(vec2 p,vec4 r,vec4 corners,vec4 dot) {
   }
   float d=length(p-dot.xy)/12.; return a+dot.z*.45*exp(-d*d);
 }
-vec2 gooField(vec2 p) {
-  float F=0.,cloud=0.,weight=0.;vec2 back=backdrop(p);
+vec3 gooField(vec2 p) {
+  float F=0.,cloud=0.,weight=0.,breathing=0.;vec2 back=backdrop(p);
   // Extend the front source under its own content for bilinear reconstruction.
   // Rendering and the flow mask still clip that content analytically.
   if(back.x==0.)back=vec2(1.,0.);
@@ -100,8 +100,12 @@ vec2 gooField(vec2 p) {
     float a=max(g.x*(1.+uNoise*scale*(n-.5)*2.),uT/max(fall(max(uThickness*.1*scale,source(i,5.).x)),.0001))
       +.22*uCloudiness*control+deposit(p,r,vec4(0.),source(i,4.));
     if(back.x<float(uCount)&&back.y<0.)a/=max(g.x,.0001);
-    F+=max(a,0.)*fe;
-  } return vec2(F,cloud/max(weight,.0001));
+    float contribution=max(a,0.)*fe;
+    F+=contribution;
+    // Finite support applies only to the decorative modulation, never field/dye tails.
+    float local=1.-smoothstep(3.*uReach,4.*uReach,max(sdBox(p-r.xy,r.zw,g.y),0.));
+    breathing+=contribution*source(i,7.).x*local;
+  } return vec3(F,cloud/max(weight,.0001),breathing/max(F,.0001));
 }
 vec2 off(int k){return k==0?vec2(1,0):k==1?vec2(-1,0):k==2?vec2(0,1):vec2(0,-1);}
 vec2 decode(vec4 hv){
@@ -130,11 +134,11 @@ void main(){
   vec2 p=gl_FragCoord.xy*uRes/uSize;
   float d=uOverlap>.5?surfaceSdf(p):unionSdf(p);
   // Deep inside a window the goo is hidden and never read: any value over the threshold will do.
-  vec2 value=d<-8.?vec2(uT*4.,0.):gooField(p);
+  vec3 value=d<-8.?vec3(uT*4.,0.,0.):gooField(p);
   float f=value.x,cloud=value.y;
   // Log packing spends RGBA8 precision at the boundary, avoiding staircase edges.
   if(uPacked>.5)f=log(1.+f)/2.83321334;
-  gl_FragColor=vec4(f,step(0.,d),cloud,1);
+  gl_FragColor=vec4(f,step(0.,d),cloud,value.z);
 }
 )";
 // Mask at quarter-resolution texel centers for the two wave stencils. Dye
@@ -155,7 +159,7 @@ float gridMask(vec2 uv){
 )";
 inline const std::string wave_shader = common + mask + cached_mask + R"(
 uniform sampler2D uWave;
-uniform float uC2,uDamp,uHintCircles;
+uniform float uC2,uDamp;
 uniform vec4 uImp[8];
 uniform int uImpN;
 void main(){
@@ -165,9 +169,9 @@ void main(){
   for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;sum+=mix(hc,decode(texture2D(uWave,u2)).x,gridMask(u2));}
   float v=(hv.y+uC2*(sum-4.*hc))*uDamp,h=hc+v;
   h*=mix(.8,1.,m);v*=mix(.8,1.,m);
-  // Small closed hint rings can retain a constant-height wave mode forever.
-  // Damp that displacement as well as velocity, as the packed path already does.
-  h*=mix(1.,uDamp,max(uPacked,uHintCircles));
+  // Every closed goo band has a constant-height mode: velocity damping alone
+  // cannot remove displacement left by a positive impulse. Damp both on every path.
+  h*=uDamp;
   for(int k=0;k<8;k++){if(k>=uImpN)break;float dd=distance(p,uImp[k].xy);h+=uImp[k].z*exp(-dd*dd/(uImp[k].w*uImp[k].w))*m;}
   gl_FragColor=encode(clamp(vec2(h,v),-3.9,3.9));
 }
@@ -238,6 +242,7 @@ inline const std::string render_shader = common + mask + R"(
 uniform sampler2D uWave,uDyeTex,uBackground;
 uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints,uDepth,uProfile,uSoak;
 uniform vec2 uFieldSize;
+uniform float uBreath,uBreathSwell;
 uniform mat4 uBackgroundMap;
 // Positive cubic B-spline weights: four bilinear fetches reconstruct a smooth
 // contour without overshoot/ringing. Only the full-resolution draw uses this;
@@ -268,7 +273,8 @@ float surfaceHeight(float F,float wall,float filmScale){
 void main(){
   vec2 p=pos,uv=p/uRes;
   vec4 value=drawField(uv);
-  float F=drawDensity(value),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h);
+  float pulse=value.a*uBreath;
+  float F=drawDensity(value)*(1.+uBreathSwell*pulse),h=decode(texture2D(uWave,uv)).x,Fe=F*(1.+uWaveAmp*h);
   // Evaluate derivatives before any nonuniform discard. fwidth is in device
   // pixels, independent of output/window scale; film and control outlines share
   // this same iso-surface. Keep the existing analytic window-edge exclusion.
@@ -315,6 +321,7 @@ void main(){
   vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95)+dye*rim*.22;
   // Emission is independent of normal, light and dye release. Zero really is off.
   color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);
+  color+=.25*pulse*mix(dye,vec3(1.),.25);
   a*=film?mix(.48,.78,milk):mix(.96,1.,milk);
   gl_FragColor=vec4(clamp(color,0.,1.)*a,a);
 }
@@ -326,15 +333,15 @@ uniform int uFirst;
 uniform float uDyeVisible;
 uniform vec2 uInputSize;
 void main(){
-  float e=0.;vec2 start=(gl_FragCoord.xy-.5)*2.;
+  vec3 e=vec3(0.);vec2 start=(gl_FragCoord.xy-.5)*2.;
   for(int y=0;y<2;y++)for(int x=0;x<2;x++){
     vec2 uv=(start+vec2(float(x),float(y))+.5)/uInputSize;
-    float v;
-    if(uFirst==1){vec2 hv=decode(texture2D(uWave,uv));vec3 dc=abs(texture2D(uDyeTex,uv).rgb-texture2D(uPrevious,uv).rgb);v=max(max(abs(hv.x),abs(hv.y)),max(max(dc.r,dc.g),dc.b)*16.*uDyeVisible);}
-    else v=texture2D(uReduce,uv).r;
+    vec3 v;
+    if(uFirst==1){vec2 hv=decode(texture2D(uWave,uv));vec3 dc=abs(texture2D(uDyeTex,uv).rgb-texture2D(uPrevious,uv).rgb);float wave=max(abs(hv.x),abs(hv.y)),dye=max(max(dc.r,dc.g),dc.b)*16.*uDyeVisible;v=vec3(max(wave,dye),wave,dye);}
+    else v=texture2D(uReduce,uv).rgb;
     e=max(e,v);
   }
-  gl_FragColor=vec4(e,e,e,1);
+  gl_FragColor=vec4(e,1);
 }
 )";
 inline const std::string query_shader = common + R"(
