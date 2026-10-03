@@ -16,6 +16,7 @@
 
 #include "goo.hpp"
 #include "goo-shape.hpp"
+#include "edge-style.hpp"
 #include <wayfire/view-transform.hpp>
 #include <wayfire/opengl.hpp>
 #include <wayfire/core.hpp>
@@ -67,6 +68,15 @@ struct palette_t
     bool light = false;                 // light desktop: dark neutral tone; dark desktop: light
     glm::vec3 accent{0.506, 0.631, 0.757};
     glm::vec3 attention{0.922, 0.796, 0.545};  // secondary highlight: a widget whose app needs you
+    float unfocused_edge_tone_light = .08f;
+    float unfocused_edge_tone_dark = .92f;
+    float unfocused_edge_strength = 1.f;
+
+    glm::vec3 unfocused_edge_tone() const
+    {
+        return edge_style::neutral_color(light,
+            light ? unfocused_edge_tone_light : unfocused_edge_tone_dark);
+    }
 };
 
 inline palette_t palette;  // per loaded plugin copy (see meson.build)
@@ -1469,9 +1479,10 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         double t = std::max(self->thickness(), self->hint_dye ? windowing::hint_border_width : 0.0);
         double radius = self->screen_radius();
         float focus   = self->focus_mix;
-        glm::vec3 neutral = palette.light ? glm::vec3{0.08, 0.08, 0.1} : glm::vec3{0.9, 0.92, 0.95};
+        glm::vec3 neutral = palette.unfocused_edge_tone();
         glm::vec3 tone    = glm::mix(neutral, palette.accent, focus);
-        float density     = (0.16f + (0.44f - 0.16f) * focus) * alpha;
+        float edge_strength = self->hint_dye ? 1.f : palette.unfocused_edge_strength;
+        float density     = edge_style::halo_neutral_density(edge_strength, focus) * alpha;
         float attention   = self->attention_mix;
         tone    = glm::mix(tone, palette.attention, attention);
         density = density + (0.5f * alpha - density) * attention;

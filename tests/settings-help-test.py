@@ -356,6 +356,8 @@ try:
     panel_x = outputs[0]["geometry"]["x"] + (outputs[0]["geometry"]["width"]-806)/2
     panel_y = 58
     initial = values()
+    initial_edge = {name: option(name) for name in (
+        "unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfocused_edge_strength")}
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
     baseline_motion=motion_trial()
@@ -409,7 +411,18 @@ try:
     check("36pt endpoint target selects but cannot be deleted",snapshot()["editor"]["selected"]==0 and len(snapshot()["editor"]["knots"])==2)
     shot("03-curve-selected")
     tab(1);check("Goo tab selects",snapshot()["tab"]==1)
-    click(*control_point("goo",240,34));key("KEY_BACKSPACE");pointer(10,690)
+    edge_rows = snapshot()["goo"]["edgeControls"]
+    check("edge tone slider follows active dark scheme",
+          edge_rows[0]["name"] == "unfocused_edge_tone_dark")
+    drag(*control_point("goo",350,34),-180,live_name="unfocused_edge_tone_dark")
+    check("tone slider applies while held",abs(option("unfocused_edge_tone_dark")-initial_edge["unfocused_edge_tone_dark"])>.01)
+    key("KEY_BACKSPACE")
+    check("tone Backspace restores opening value",option_reaches("unfocused_edge_tone_dark",initial_edge["unfocused_edge_tone_dark"]))
+    drag(*control_point("goo",350,103),-180,live_name="unfocused_edge_strength")
+    check("edge strength slider applies while held",abs(option("unfocused_edge_strength")-initial_edge["unfocused_edge_strength"])>.01)
+    key("KEY_BACKSPACE")
+    check("edge strength Backspace restores opening value",option_reaches("unfocused_edge_strength",initial_edge["unfocused_edge_strength"]))
+    click(*control_point("goo",240,2*69+34));key("KEY_BACKSPACE");pointer(10,690)
     labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper soak","Overlap film","Control cloudiness","Control glow","Control proximity"]
     for i,label in enumerate(labels):
         if i:key("KEY_DOWN")
@@ -757,7 +770,7 @@ try:
     check("Sunlight Cancel retains saved location policy",all(line in solar.read_text() for line in
           ("enabled = true","allow_ip = true","location_set = true")))
     # Restore caller's session settings; the saved fixture remains evidence.
-    ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in initial.items()})
+    ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in {**initial,**initial_edge}.items()})
 finally:
     for proc in clients:
         if proc.poll() is None:

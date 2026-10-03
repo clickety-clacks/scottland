@@ -28,7 +28,8 @@ bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> 
     for (size_t i = 0; i < a.size(); i++)
         if (a[i].shape != b[i].shape || glm::length(a[i].shape_body - b[i].shape_body) > .03f ||
             a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
-            glm::length(a[i].dye - b[i].dye) > .001f || glm::length(a[i].corners - b[i].corners) > .001f ||
+            glm::length(a[i].dye - b[i].dye) > .001f || std::abs(a[i].dye_strength - b[i].dye_strength) > .001f ||
+            glm::length(a[i].corners - b[i].corners) > .001f ||
             glm::length(a[i].sides - b[i].sides) > .001f ||
             std::abs(a[i].control_extent - b[i].control_extent) > .03f ||
             glm::length(a[i].dot - b[i].dot) > .001f || std::abs(a[i].swell - b[i].swell) > .001f ||

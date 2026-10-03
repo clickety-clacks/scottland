@@ -45,8 +45,16 @@ ShellRoot {
     { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
     { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_hover_distance", hint: "How far away a control starts highlighting. Higher responds sooner; zero responds only over it.", title: "Control proximity", initial: 48, low: 0, high: 150, step: 1 }]
+  readonly property var edgeControls: [
+    { name: root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark",
+      hint: "Gray of an unfocused edge in the active color scheme. Lower is black; higher is white.",
+      title: "Unfocused edge tone", initial: root.lightScheme ? 0.08 : 0.92, low: 0, high: 1, step: 0.01 },
+    { name: "unfocused_edge_strength",
+      hint: "How strongly an unfocused gray tint shows on the edge. Zero leaves clear glass; one uses the full tint.",
+      title: "Unfocused edge strength", initial: 1, low: 0, high: 1, step: 0.01 }]
   function gooDefaults() {
-    const values = { goo: true, goo_falloff: "" }
+    const values = { goo: true, goo_falloff: "", unfocused_edge_tone_light: 0.08,
+      unfocused_edge_tone_dark: 0.92, unfocused_edge_strength: 1 }
     for (const c of gooControls) values[c.name] = c.initial
     return values
   }
@@ -118,10 +126,12 @@ ShellRoot {
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
     resize_impulse:"Resize strength",resize_friction:"Resize deceleration",
     key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", alt_hold_delay:"Alt hold timing",
-    window_double_tap_delay:"Double-tap timing" })
+    window_double_tap_delay:"Double-tap timing", unfocused_edge_tone_light:"Unfocused edge tone (light)",
+    unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength" })
 
   // The session palette carries theme colors and the desktop's interface font/text scale.
   property var palette: ({})
+  readonly property bool lightScheme: palette.scheme === "light"
   FileView {
     path: Quickshell.env("SCOTTLAND_PALETTE") ||
       (Quickshell.env("XDG_RUNTIME_DIR") + "/scottland/" + Quickshell.env("WAYLAND_DISPLAY") + ".palette.json")
@@ -360,7 +370,8 @@ ShellRoot {
       panel:{x:settingsWindow.x,y:settingsWindow.y,width:settingsWindow.width,height:settingsWindow.height},
       viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
-      goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint}),
+      goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint,
+        edgeControls:root.edgeControls}),
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
@@ -703,7 +714,7 @@ ShellRoot {
           textScale: root.textScale
           viewport: gooScroll
           scrollOffset: gooScroll.contentY
-          rows: root.gooControls.map(c => ({ id: c.name, label: c.title, min: c.low, max: c.high,
+          rows: root.edgeControls.concat(root.gooControls).map(c => ({ id: c.name, label: c.title, min: c.low, max: c.high,
             hint: c.hint, step: c.step, largeStep: c.step * 10, decimals: c.step < 0.01 ? 3 : c.step < 1 ? 2 : 0 }))
           values: root.gooValues
           opening: root.original && root.original.goo ? root.original.goo : ({})

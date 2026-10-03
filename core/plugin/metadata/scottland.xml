@@ -8,6 +8,21 @@
         <option name="goo" type="bool">
             <_short>Use the screen-wide goo</_short><default>true</default>
         </option>
+        <option name="unfocused_edge_tone_light" type="double">
+            <_short>Unfocused edge tone for light scheme</_short>
+            <_long>Gray level of an unfocused edge on a light desktop. Zero is black and one is white.</_long>
+            <default>0.08</default><min>0</min><max>1</max>
+        </option>
+        <option name="unfocused_edge_tone_dark" type="double">
+            <_short>Unfocused edge tone for dark scheme</_short>
+            <_long>Gray level of an unfocused edge on a dark desktop. Zero is black and one is white.</_long>
+            <default>0.92</default><min>0</min><max>1</max>
+        </option>
+        <option name="unfocused_edge_strength" type="double">
+            <_short>Unfocused edge strength</_short>
+            <_long>How strongly an unfocused neutral tint shows in goo or its fallback halo. Zero is clear glass; one is the full tint.</_long>
+            <default>1</default><min>0</min><max>1</max>
+        </option>
         <option name="goo_breath_keys" type="bool">
             <_short>Cache goo breath keyframes</_short>
             <_long>Keep the lower-cost interpolated breath cache on. Turn off live to draw every breathing strip exactly; no reload is needed.</_long>

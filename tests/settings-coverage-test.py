@@ -15,10 +15,32 @@ goo_rows = set(re.findall(r'name:\s*"(goo_[^"]+)"', goo_section))
 goo_special = {"goo", "goo_falloff"}
 assert 'setGoo("goo"' in qml
 assert 'goo_falloff: curveText(points)' in qml and 'onEdited: points => root.setEditorPoints(points)' in qml
-expected_goo = {name for name in options if name == "goo" or name.startswith("goo_")}
+expected_goo = {name for name in options if name == "goo" or
+                (name.startswith("goo_") and name != "goo_breath_keys")}
 assert goo_rows | goo_special == expected_goo, (
     f"Goo Settings mismatch: missing {expected_goo - goo_rows - goo_special}; "
     f"unknown {goo_rows - expected_goo}")
+
+edge_section = qml.split("readonly property var edgeControls:", 1)[1].split(
+    "function gooDefaults", 1)[0]
+edge_options = {name for name in options if name.startswith("unfocused_edge_")}
+edge_rows = set(re.findall(r'"(unfocused_edge_[a-z_]+)"', edge_section))
+assert edge_rows == edge_options, (
+    f"Unfocused edge Settings mismatch: missing {edge_options - edge_rows}; "
+    f"unknown {edge_rows - edge_options}")
+assert "root.edgeControls.concat(root.gooControls)" in qml
+assert 'unfocused_edge_tone_light: 0.08' in qml
+assert 'unfocused_edge_tone_dark: 0.92' in qml
+assert 'unfocused_edge_strength: 1' in qml
+assert 'root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark"' in edge_section
+ctl = (root / "core/libexec/scottland-ctl").read_text()
+assert "UNFOCUSED_EDGE = (" in ctl
+assert all(f'"{name}"' in ctl for name in edge_options)
+assert "NAMES += GOO + UNFOCUSED_EDGE" in ctl
+for name in edge_options:
+    metadata = options[name]
+    assert metadata.findtext("min") == "0" and metadata.findtext("max") == "1"
+assert 'Zero leaves clear glass; one uses the full tint.' in edge_section
 
 inertia = {name for name in options if name in {
     "key_impulse", "key_friction", "resize_impulse", "resize_friction", "key_max_velocity", "cycle_overshoot",
@@ -49,4 +71,5 @@ for name, label, step in (("goo_depth", "Liquid depth", 0.1),
 
 assert 'id:"cycle_overshoot"' in motion_section
 assert 'id:"widget_bounce"' in qml
-print(f"PASS Settings covers {len(expected_goo)} Goo and {len(inertia)} inertial options; GO14/GO15 hints and ranges match metadata")
+print(f"PASS Settings covers {len(expected_goo)} Goo, {len(edge_options)} unfocused-edge and "
+      f"{len(inertia)} inertial options; GO14/GO15 hints and ranges match metadata")

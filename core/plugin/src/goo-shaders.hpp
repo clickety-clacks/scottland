@@ -256,7 +256,7 @@ void main(){
 )";
 inline const std::string render_shader = common + mask + R"(
 uniform sampler2D uWave,uDyeTex,uBackground;
-uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints,uDepth,uProfile,uSoak;
+uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints,uNeutralTint,uDepth,uProfile,uSoak;
 uniform vec2 uFieldSize;
 uniform float uBreath,uBreathSwell;
 uniform mat4 uBackgroundMap;
@@ -317,6 +317,16 @@ void main(){
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
+  float dyeTint=1.;
+  if(uNeutralTint>.5){
+    float tintAmount=0.,tintWeight=0.;vec2 tintBack=backdrop(p);
+    for(int i=0;i<1024;i++){
+      if(i>=int(tintBack.x))break;vec4 r=source(i,0.),g=source(i,1.);
+      float contribution=g.x*fall(max(sourceSdf(p,i),0.));
+      tintAmount+=contribution*source(i,7.).y;tintWeight+=contribution;
+    }
+    if(tintWeight>0.)dyeTint=tintAmount/tintWeight;
+  }
   float cloud=uControls>.5?value.b:0.;
   vec3 n=normalize(vec3(-slope,1.));
   // Keep the shipped one-pixel exclusion around window content.
@@ -334,7 +344,10 @@ void main(){
   // supplies the color so saturated wallpaper cannot repaint a focused edge.
   float dyeBlend=.55+milk*.25;
   if(uSoak>0.)dyeBlend=mix(dyeBlend,1.,1.-smoothstep(0.,uThickness*.9,d));
-  vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95)+dye*rim*.22;
+  if(uNeutralTint>.5&&dyeTint<.999999)dyeBlend*=dyeTint;
+  vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95);
+  if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;
+  else color+=dye*rim*.22;
   // Emission is independent of normal, light and dye release. Zero really is off.
   color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);
   color+=.25*pulse*mix(dye,vec3(1.),.25);

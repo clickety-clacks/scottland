@@ -384,7 +384,7 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.hinted ? (s.hint_circle ? std::min(s.scale, 1.f) : 1.f) : 0.f, s.control_extent,
                 overlap_film_width(s, settings), s.hint_circle ? 1.f : 0.f});
             data.push_back(s.sides);
-            data.emplace_back(s.attention && s.emitter ? 1.f : 0.f, 0, 0, 0);
+            data.emplace_back(s.attention && s.emitter ? 1.f : 0.f, s.dye_strength, 0, 0);
             data.push_back(shape_tiles[i]);
             data.push_back(s.shape ? s.shape->bounds : glm::vec4{});
             data.push_back(s.shape_body);
@@ -652,6 +652,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         program.uniform1f("uAlpha", 1);
         program.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
             [](const source_t &s) { return s.hinted; }));
+        program.uniform1f("uNeutralTint", std::any_of(p->sources.begin(), p->sources.end(),
+            [](const source_t &s) { return s.dye_strength < .999999f; }));
     };
     // An active simulation already redraws the surface for a new field every
     // step. Keep that path direct; populate the cache once it settles.
