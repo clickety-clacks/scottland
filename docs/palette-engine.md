@@ -68,6 +68,19 @@ that schema's desktop. With no config, the schema's own algorithms decide everyt
 - **Packaging:** the engine is its own repository, which the distro installs. The distro contains
   the default themes. Scottland knows how to read configs made with the Scottland schema.
 
+## To do in Scottland when this is built (Mike, 2026-10-03)
+
+Today Scottland's palette comes through the Omarchy bridge: the adapter's provider
+(`omarchy/accent.d/10-omarchy-theme`) reads the current Omarchy theme's `colors.toml` and writes
+Scottland's palette file (`$XDG_RUNTIME_DIR/scottland/<display>.palette.json`), which the plugin and
+widgets draw with. When the engine exists:
+
+- **Core:** refactor Scottland to read its own format, configs made with the Scottland schema, as
+  the source of its palette, instead of the palette file written by the Omarchy provider.
+- **Omarchy adapter:** adapt Omarchy to that format, translating the current Omarchy theme into a
+  Scottland-schema config (by mapping Omarchy's colors, or by running the engine with the Omarchy
+  schema and mapping its output), so Omarchy users keep following their Omarchy theme.
+
 ## Open questions
 
 - The exact algorithm vocabulary and expression syntax (chaining such as `accent.complementary`,
