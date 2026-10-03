@@ -34,7 +34,8 @@ content/damage cost, so subtracting it can conceal unnecessary work in both mode
 Read-only inspection of Mike's live `wayland-1` on osanwe found:
 
 - A 941×940 attention window overlapping a 992×1146 focused window, peripheral
-  windows and real widget cards; 2560×1600 logical output.
+  windows and real widget cards; 2560×1600 logical output. The compositor log
+  records physical **2560×1600 at 120.002 Hz**, whereas the older fixture uses 60 Hz.
 - Sleeping simulation, zero energy; a large padded breathing region. One five-second
   read-only fdinfo sample: **9.9% compositor / 10.6% whole GPU**, 1.9 Mcycles/s
   at a 19.3 MHz Xe reference-counter rate. This is not a new on/off comparison.
@@ -98,6 +99,11 @@ cost and suitability judgments above are deductions from Scottland's implementat
   samples a prepared blurred background when compositing. Shadow/blur optimization
   choices must preserve what is beneath the effect. For Scottland, source geometry
   and temporal validity matter more than adopting another compositor's blur kernel.
+  Its [shadow decoration](https://github.com/hyprwm/Hyprland/blob/main/src/render/decorations/CHyprDropShadowDecoration.cpp)
+  bounds damage to the decoration; the [shadow shader](https://github.com/hyprwm/Hyprland/blob/main/src/render/shaders/glsl/shadow.glsl)
+  evaluates rounded-edge distance and a power falloff, excludes the window interior,
+  and discards zero alpha. That is a cheap analytic primitive, but replacing our
+  joined, refracting liquid with independent shadows would change the product.
 - **Android:** [RenderNode](https://developer.android.com/reference/android/graphics/RenderNode)
   separates display lists from transform properties and lets small pieces update
   independently. [Hardware layers](https://developer.android.com/topic/performance/hardware-accel)
@@ -128,5 +134,199 @@ elimination has a clear first claim on the budget.
 
 ## Measurements and validation
 
-Pending experiments. No claim yet that the live Intel Xe target is achieved;
-plumbus has an RX 580, and osanwe permits read-only live observation only.
+The selected implementation is `8a46e4f`: draw only the animated portion directly,
+retain the original two-pass cache for static strips. MRT was prototyped and
+measured, but adds ES-3-specific resource/shader handling for a smaller benefit.
+Its code is not shipped. The direct prototype initially included MRT for the
+one-time static fill; the final version removes that unnecessary machinery.
+Fractional-DPI partitioning is done in framebuffer pixels, preventing overlapping
+scissors at the boundary between direct and cached rendering.
+
+All new tests run on plumbus's RX 580, in this checkout's own disk-backed
+`build/headless-gpu-astra` directory, with no private `XDG_RUNTIME_DIR`, dev-install,
+reload of a real session, GPU-clock change, or personal-config import. Baseline
+is `343419c` plus work-counter instrumentation; its saved plugin is reused for
+matched comparisons. Each session starts after the selected build is in place.
+Performance cases use five-second on/off/on samples; visual runs use three-second
+cost samples plus two full breathing periods. Timers are observed, never paced
+by benchmark polling. Each sample's full process list and artifacts accompany it.
+
+### Exact footprint, incomplete hardware reproduction
+
+After fixing the fixture's initial window-placement sequencing and disabling
+foot's resize-to-cell snapping, the attention window is **941×940** and the
+focused window **992×1146**. Actual Super drags establish their final presentation
+and create both cards. The wide preset's breathing rectangles exactly match the
+read-only live snapshot: `(1055,0,1217,89)`, `(1055,89,154,908)`,
+`(2118,89,154,908)`, `(1055,997,1217,154)`. Their area is **575,395 pixels**, or
+**14.05%** of the output, compared with GO17's old widget fixture's <2%.
+
+This reproduces the live **work footprint**, not its 9–10-point Xe busy increment.
+AMD is the only GPU on the authorized test host. The fixture uses foot in place
+of Ghostty, controlled output rates in place of Mike's terminal content, a test
+wallpaper and smaller default cards. It matches the logical/output dimensions,
+center-window sizes and breathing damage, but not physical scanout or the live
+client's actual frame cadence. `--refresh-hz 120` additionally matches the nominal
+refresh discovered in the live modeset log; initial pairs use the old 60 Hz rate.
+The live read-only interfaces expose no draw-count
+counter in `343419c`; the new counters make future comparisons more specific.
+
+Initial diagnostic runs are retained as `baseline-wide-r2` and
+`baseline-wide-stream`, but are not the matched comparisons: terminal cell
+rounding and an incompletely settled placement affected their geometry. The
+fixture re-arms its own attention request after switching off goo and asserts a
+changing fallback swell. A later screenshot check revealed that **model swell
+alone is insufficient**: with idle clients, the fallback image remains frozen.
+The `--verify` path now checks off peak/trough pixels and fails on this case;
+the limitation is retained rather than weakening that assertion. The earlier
+streaming fixture can hide this by supplying client damage continuously.
+
+### RX 580 measurements
+
+These are ranges of the two on samples, **not confidence intervals**. Whole-GPU
+load varied with other agents and the shared desktop; no agent was coordinated
+with and no other checkout was read. Lower process busy under higher external
+load can reflect GPU clock changes. It is not a negative cost for goo.
+
+| Exact fixture | Baseline goo on | Final goo on | Goo off | Final increment over off |
+|---|---:|---:|---:|---:|
+| Shipped settings, idle large window, 60 Hz output | 1.9–2.0% | **1.3%** | 0.0% | **1.3 points** |
+| Wide live numeric preset, idle large window, 60 Hz | 1.6–2.5% | **1.6–1.7%** | 0.0% | **1.6–1.7 points** |
+| Wide preset, attention terminal prints at 30 Hz, 60 Hz output | 6.2–8.4% | **4.4–7.6%** | 5.4% | **at most 2.2 points** in these samples |
+| Wide preset, idle large window, 120 Hz output | 2.3–2.4% | **1.7%** | 0.0% | **1.7 points** |
+| Wide preset, full-window redraw requested at 120 Hz, 120 Hz output | 18.2–22.9% | **22.0–22.1%** | 20.1% baseline / 20.4% final | **1.6–1.7 points** |
+
+**Idle off-comparator caveat:** all 0.0% off rows above have changing fallback
+model swell but no visible fallback animation. Their goo-on before/after costs
+and work counters remain useful; they are **not** validation of equal visible
+breathing in the on/off comparison. Final idle goo-on itself costs only 1.3–1.7%
+on this AMD host, a conservative total-cost bound, but the matched visual
+off-comparator defect must be resolved before claiming full fixture parity.
+
+The stream pair is especially contended: baseline whole GPU is 12.6–17.9%,
+final 11.0–18.1%, and off 6.3%/9.2%. The low 4.4% final sample is retained, not
+interpreted as faster than having no goo. A separate direct-prototype pair gave
+**7.5–7.6%** against the same **5.4%** off, whole GPU 11.0–11.6%.
+
+The 120 Hz stress case changes the entire terminal background using OSC 11, so
+it damages the full attention client rather than only newly printed lines. It
+actually yields about **110 affected compositor draws/s**. The final process
+busy lies inside the baseline range; this is **not a proven speedup** for this
+case. Baseline whole GPU is 21.5–22.9%, final 22.6–23.2%; CPU is 14.5–15.6%
+before and 14.7–14.9% after. It exposes the client-redraw cost hidden by a quiet
+terminal, while the final goo increment stays within the requested budget in
+these samples. The idle 120 Hz case retains 25 breath ticks/s, with whole GPU
+2.3–5.8% before and 1.7–3.9% after.
+
+The stable structural measurements are more informative:
+
+| Workload | Surface pixels per draw or per second, before → final | Extra cache composite | Median idle draw query, before → final |
+|---|---|---|---|
+| Wide idle | **1,150,790 → 575,395 per draw (−50%)** | 575,395 → **0** pixels/draw | 0.357–0.557 → **0.281–0.283 ms** |
+| Shipped idle | **740,314 → 370,157 per draw (−50%)** | 370,157 → **0** pixels/draw | 0.405–0.409 → **0.217–0.218 ms** |
+| Wide 30 Hz terminal | approximately **28.7 → 15.7 million surface pixels/s** | approximately 21.8 → **6.2 million pixels/s** | mixed app/breath queries are not an isolated pass comparison |
+| Wide idle, 120 Hz output | **1,150,790 → 575,395 per draw (−50%)** | 575,395 → **0** pixels/draw | 0.539–0.552 → **0.277–0.280 ms** |
+| Wide full-window 120 Hz redraw | approximately **28.5 → 19.3 million surface pixels/s** | approximately 42 → **22.7 million pixels/s** | direct app-frame surface work replaces cache-only composition, so mixed queries are not comparable |
+
+All on samples have **zero simulation steps**, sleeping=true, approximately 25
+breath ticks/s. Wide idle submits one draw per breath; the 30 Hz client produces
+about 55 affected draws/s. Direct drawing therefore does more surface work than
+MRT on some app frames, but avoids the two render-target writes and composite.
+CPU stayed about 2.2% in final wide idle versus 2.0–2.3% baseline, and 6.1–6.3%
+streaming versus 6.3–6.5% baseline (including IPC sampling). No cache memory added.
+
+For the MRT prototype, wide idle was **2.0–2.2%**, 0.425–0.443 ms/draw, and wide
+streaming **7.9%** versus 5.4% off. It halves surface evaluations at each breath
+but still writes both cache textures and composites the band. Direct drawing won
+both tested workloads, and works on the existing GLES 2 path as well.
+
+### Visual and regression evidence
+
+The nine goo-on large-source checks pass at **1× and 1.5×**, and on **packed GLES 2**:
+unchanged five-second curve, approximately 25 Hz, no simulation/energy changes
+across two cycles, visible peak/trough, and zero changed pixels outside the
+reported breathing strips. The packed answered case returns **0.0% GPU** with
+zero draws, simulation steps, breath ticks, surface/copy/composite pixels.
+The zero GLES-2 timer-query value is unavailable timing, not a free draw.
+The subsequently added goo-off screenshot assertion fails with **zero changed
+channels** at peak/trough in the idle scene on **both final and `343419c`**.
+These retained failures are in `final-fallback-comparator` and
+`baseline-fallback-comparator-r2`; they are additional
+to the nine passing goo-on checks. This does not justify changing the production
+frame/input code within a contained goo-renderer optimization.
+The initial three-second baseline attempt stopped at the model amplitude check
+before screenshots; short cost samples now require changing swell, reserving
+the full amplitude bound for samples spanning at least one five-second period.
+
+**Packed-path caveat:** log auditing found repeated `glCopyTexSubImage2D(missing
+readbuffer)` / `GL_INVALID_OPERATION` errors in forced GLES 2 despite those
+assertions passing. A fresh instrumented `343419c` packed run reproduces the
+same errors. This is not introduced by the animated-band change, but means the
+packed screenshots do not certify correct live backdrop/refraction. Keep this
+baseline defect open; normal GLES 3 logs are clean, and all GPU cost comparisons
+above use that normal path. The packed implementation was exercised, but is not
+an unqualified compatibility pass.
+
+Peak/trough and packed overlap screenshots were inspected. The full direct
+shader keeps the same coverage, depth, dye, lighting and live refraction, while
+avoiding intermediate RGBA8 quantization in the animated band. Initial paired
+screenshots exposed stale widget palette files from reused display names; the
+fixture now initializes its private session palette before opening cards.
+
+The final `baseline-visual-matched` / `final-visual-matched` pair has a mean
+absolute channel difference of **0.052 / 255 inside the breathing band**, maximum
+4, with only four of 975,300 channels differing by more than 2. Subtracting each
+scene's trough from its peak gives a maximum baseline/final animation-delta
+difference of **3 / 255** (five channels exceed 2). These are close visual matches,
+not bitwise identity. Full-image differences are larger because the peripheral
+windows settle at slightly different fractional positions (about 0.2 pixels),
+changing resampled text and static goo. Raw whole-image and band comparisons are
+retained. Within each final scene, pixels outside the animated support are
+identical over two periods. Physical-display visual acceptance remains outstanding.
+
+| Final regression on plumbus | Result |
+|---|---|
+| Goo input, palette, settings, live toggle and sleep, normal / packed | **45/46 each**; same Alt-declutter return assertion fails on instrumented `343419c` baseline (45/46); packed GL caveat above |
+| Film, swell, joined waves/dye, whole-control highlights, drag and stale-damage cleanup, normal / packed | **28/28 each** |
+| Connected/gapped flow, fullscreen exclusion, two-output dragging | **12/12** |
+| GLES without derivatives, halo fallback and real drag | **4/4** |
+| Widget morph, collapse/expand, reversal, attention dye and live goo toggle | **270/270** |
+
+The normal goo failure repeats in two final runs and in the baseline comparison.
+It checks `window_distance` after Alt release, not rendered cache pixels. The
+packed run fails the same assertion. No assertion was removed or relaxed; this
+existing return-from-declutter failure remains unresolved. All other suite checks
+above pass. The baseline, initial final failure and final logs/screenshots are
+retained under `build/gpu-astra/regressions/`.
+
+### Reproduction and remaining work
+
+Deploy only with `SCOTTLAND_DEPLOY_DIR=Projects/scottland-gpu-astra
+ tests/deploy.sh plumbus --tests-only`. On plumbus, set
+`TMPDIR=$HOME/.cache/scottland-test-tmp` and a unique
+`SCOTTLAND_HEADLESS_DIR=$PWD/build/headless-gpu-astra`, then run
+`tests/goo-idle-bench.sh build/gpu-astra/run --seconds 5`.
+Add `--settings shipped`, `--stream-hz 30`, or `--deterministic --verify --scale 1.5`
+for the corresponding cases; `SCOTTLAND_TEST_GOO_GLES=2` selects the packed path.
+Use `--refresh-hz 120` for the panel's nominal rate; adding
+`--stream-hz 120 --full-redraw` selects the full-client damage stress case.
+The wrapper preserves Wayfire logs and stops its private session.
+`--verify` currently exits nonzero on the idle fallback-animation assertion;
+this deliberately records the unresolved comparator defect.
+
+Artifacts are copied back under `build/gpu-astra/`, including `fixture.json`,
+`measurements.jsonl`, `peak.png`, `trough.png`, checks and Wayfire logs. Baseline
+and prototypes are named explicitly; failed initial fixtures are retained.
+No candidate build has been installed in or measured on Mike's live session;
+only the already-running baseline was inspected read-only. All task sessions
+were stopped and their private headless directories removed. The shared runtime
+remained at 1% usage. No GL/shader errors were found in the normal GLES benchmark
+logs; the forced GLES 2 logs require the caveat recorded above.
+
+The **Intel Xe 2–3-point target remains unverified**. The measured shader-work
+reduction cannot be converted into an assured live GPU-busy reduction. Next:
+resolve the frozen idle fallback comparator, run the matched fixture on an
+authorized Xe test machine, collect the new draw counters alongside client frame
+pacing, then consider cached geometry parameters
+or tighter settled tile coverage if direct draw still exceeds budget. Neither a
+lower breath cadence nor a changed liquid model is justified by these samples.
