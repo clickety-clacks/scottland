@@ -1585,6 +1585,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;
             scottland::goo::source_t s;
             s.id = v->get_id();
+            s.shape = frame->body_shape();
+            if (s.shape)
+            {
+                auto own = frame->screen_rect();
+                auto body = s.shape->presented_bounds({(own.x1 + own.x2)/2, (own.y1 + own.y2)/2,
+                    own.width()/2, own.height()/2});
+                s.shape_body = {r.x1 + (body.x - own.x1) * r.width()/own.width(),
+                    r.y1 + (body.y - own.y1) * r.height()/own.height(),
+                    body.z * r.width()/own.width(), body.w * r.height()/own.height()};
+            }
+
             s.rect = {(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2, r.width() / 2, r.height() / 2};
             bool attention = needs_attention(widget_link ? widget_link->window_id : id);
             s.liquid = {1, radius, float(s.id) * 1.618f, attention ? 3.f : 1.f};
@@ -1606,7 +1617,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             s.swell = frame->swell;
             s.attention = attention;
             s.grabbed = (model.drag.started && model.drag.origin.view == id) || frame->is_pressed() || frame->is_lifted();
-            s.dot = {s.rect.x, r.y2 + frame->thickness() / 2, float(frame->dot_glow), scottland::DOT_RADIUS};
+            auto own = frame->screen_rect();
+            auto dot = frame->dot_center();
+            float dot_x = r.x1 + (dot.x - own.x1) * r.width() / std::max(own.width(), .001);
+            float dot_y = r.y1 + (dot.y - own.y1) * r.height() / std::max(own.height(), .001);
+            s.dot = {dot_x, dot_y, float(frame->dot_glow), scottland::DOT_RADIUS};
             result.push_back(s);
         }
         std::map<wf::scene::node_t*, uint64_t> roots;
@@ -5750,6 +5765,23 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["frame"]["hovered"] = scottland::handle_name(frame->hovered_handle());
                 entry["frame"]["dot"]     = frame->dot_glow;
                 entry["frame"]["attention"] = frame->needs_attention();
+                if (frame->alpha_shape)
+                {
+                    auto &mask = *frame->alpha_shape;
+                    wf::json_t diagnostic;
+                    diagnostic["checks"] = (int64_t)mask.checks;
+                    diagnostic["builds"] = (int64_t)mask.builds;
+                    diagnostic["check_ms"] = mask.check_ms;
+                    diagnostic["rebuild_ms"] = mask.rebuild_ms;
+                    if (mask.shape)
+                    {
+                        auto r = frame->screen_rect();
+                        auto body = mask.shape->presented_bounds({(r.x1+r.x2)/2,(r.y1+r.y2)/2,r.width()/2,r.height()/2});
+                        diagnostic["body_left"] = body.x - body.z;
+                    }
+                    entry["frame"]["alpha_shape"] = diagnostic;
+                }
+
                 if (frame->presentation)
                 {
                     auto& p = *frame->presentation;

@@ -15,6 +15,7 @@
 // shaders (drawing). Distances are in the coordinates the window is drawn in (after scaling).
 
 #include "goo.hpp"
+#include "goo-shape.hpp"
 #include <wayfire/view-transform.hpp>
 #include <wayfire/opengl.hpp>
 #include <wayfire/core.hpp>
@@ -172,12 +173,14 @@ uniform highp vec4 rect;
 uniform highp float radius;
 uniform highp float aa;
 uniform highp vec4 hint_tint;
+uniform highp float preserve_alpha;
 
 void main()
 {
     highp vec4 c = get_pixel(uvpos);
-    c = vec4(hint_tint.rgb * hint_tint.a + c.rgb * (1.0 - hint_tint.a),
-        hint_tint.a + c.a * (1.0 - hint_tint.a));
+    c = mix(vec4(hint_tint.rgb * hint_tint.a + c.rgb * (1.0 - hint_tint.a),
+        hint_tint.a + c.a * (1.0 - hint_tint.a)),
+        vec4(mix(c.rgb, hint_tint.rgb * c.a, hint_tint.a), c.a), preserve_alpha);
     c.rgb = c.rgb * color.a;
     c = c * color;
     highp vec2 hs = rect.zw * 0.5;
@@ -212,6 +215,24 @@ highp float round_box(highp vec2 p, highp vec4 r, highp float rad)
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rad;
 }
 
+uniform sampler2D body_shape;
+uniform highp vec2 shape_size;
+uniform highp float has_shape;
+uniform highp vec4 shape_bounds, shape_body;
+highp float body_distance(highp vec2 p) {
+    if(has_shape<.5)return round_box(p,window,radius);
+    highp vec2 size=shape_size;
+    highp vec2 center=(shape_bounds.xy+shape_bounds.zw)*.5;
+    highp vec2 half_size=max((shape_bounds.zw-shape_bounds.xy)*.5,vec2(.01));
+    highp vec2 step_size=shape_body.zw/half_size;
+    highp vec2 at=(p-shape_body.xy)/step_size+center;
+    highp vec2 q=clamp(at,vec2(.5),size-.5);
+    highp vec4 c=texture2D(body_shape,q/size);
+    highp float d=(dot(c.rg,vec2(255.,65280.))-32768.)/16.+length(at-q);
+    return round_box(p,vec4(shape_body.xy-shape_body.zw,shape_body.xy+shape_body.zw),0.)
+        +(d-round_box(at,shape_bounds,0.))*min(step_size.x,step_size.y);
+}
+
 highp float hash(highp vec2 p)
 {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -231,8 +252,7 @@ highp float own_liquid(highp vec2 p)
     // Lazy, irregular undulation: two octaves of slowly drifting noise, long wavelengths.
     highp float wave = (noise(p * 0.013 + vec2(phase * 0.45, -phase * 0.3)) - 0.5) * 1.6
                      + (noise(p * 0.029 - vec2(phase * 0.2, phase * 0.35)) - 0.5) * 0.8;
-    return round_box(p, window + vec4(-thickness, -thickness, thickness, thickness), radius + thickness)
-        - ripple * wave;
+    return body_distance(p) - thickness - ripple * wave;
 }
 
 highp float cover(highp float d)
@@ -244,7 +264,7 @@ void main()
 {
     highp float d = own_liquid(pos);
     highp float a = cover(d);
-    a *= 1.0 - cover(round_box(pos, window, radius));       // not under the window itself
+    a *= 1.0 - cover(body_distance(pos));       // not under the window itself
 
     if (a <= 0.0) {
         discard;
@@ -279,7 +299,7 @@ void main()
 
     highp float alpha = clamp(body + glint * 0.6, 0.0, 1.0) * a;
     highp vec3 rgb = tone * body * a + vec3(1.0) * glint * a;
-    highp float edge = cover(round_box(pos, window, radius) - hint_border) * step(0.001, hint_dye.a);
+    highp float edge = cover(body_distance(pos) - hint_border) * step(0.001, hint_dye.a);
     gl_FragColor = mix(vec4(min(rgb, vec3(alpha)), alpha),
         vec4(hint_dye.rgb * a, a) * hint_dye.a, edge);
 })";
@@ -348,6 +368,7 @@ struct gl_programs_t
             ready = false;
         }
         widget_morph_renderer().release();
+        goo::shape_cache_t::release_programs();
     }
 };
 
@@ -394,6 +415,28 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     wayfire_toplevel_view toplevel() const
     {
         return wf::toplevel_cast(view.lock());
+    }
+
+    std::unique_ptr<goo::shape_cache_t> alpha_shape;
+    bool shape_dirty = true;
+    uint32_t shape_checked = 0;
+    wf::wl_timer<false> shape_retry;
+    static uint32_t shape_now() { return now_ms(); }
+    bool uses_alpha_shape() const
+    {
+        auto v = toplevel();
+        return (v && is_widget && is_widget(v)) || presentation || morphing();
+    }
+    std::shared_ptr<const goo::shape_t> body_shape() const
+    {
+        return uses_alpha_shape() && alpha_shape ? alpha_shape->shape : nullptr;
+    }
+    double body_distance(wf::pointf_t p) const
+    {
+        auto r = screen_rect();
+        auto shape = body_shape();
+        return shape ? shape->sample({p.x, p.y}, {(r.x1+r.x2)/2,(r.y1+r.y2)/2,r.width()/2,r.height()/2}) :
+            round_box_distance(p, r, screen_radius());
     }
 
     /** The window's geometry before scaling. */
@@ -545,14 +588,14 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** Distance from p to the edge of this window's liquid (negative inside it). */
     double liquid_distance(wf::pointf_t p) const
     {
-        return round_box_distance(p, screen_rect().grown(thickness()), screen_radius() + thickness());
+        return body_distance(p) - thickness();
     }
 
     /** Distance from p to the halo band itself: outside the liquid, or inside the window, or 0
      *  on the band. */
     double band_distance(wf::pointf_t p) const
     {
-        return std::max(liquid_distance(p), -round_box_distance(p, screen_rect(), screen_radius()));
+        return std::max(liquid_distance(p), -body_distance(p));
     }
 
     bool is_pressed() const
@@ -735,7 +778,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
         auto r = screen_rect();
         double radius = screen_radius();
-        if (round_box_distance(p, r, radius) <= 0)
+        if (body_distance(p) <= 0)
         {
             return handle_t::none;  // the window itself
         }
@@ -743,7 +786,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         // This window's own band, widened to the minimum grab target (A5).
         // Ordinary scene stacking decides which window receives input.
         double grab = std::max(thickness(), MIN_GRAB);
-        if (round_box_distance(p, r.grown(grab), radius + grab) > 0)
+        if (body_distance(p) > grab)
         {
             return handle_t::none;
         }
@@ -780,7 +823,45 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     wf::pointf_t dot_center() const
     {
         auto r = screen_rect();
-        return {(r.x1 + r.x2) / 2, r.y2 + thickness() / 2};
+        double x = (r.x1 + r.x2) / 2, edge = r.y2;
+        if (auto shape = body_shape())
+        {
+            // The close control sits on the visible bottom shore, including
+            // widgets with an inset or curved body. No texture readback on input.
+            double step = r.height() / std::max(1, shape->height - 4);
+            double previous = body_distance({x, edge});
+            bool found = false;
+            for (double y = edge - step; y >= r.y1; y -= step)
+            {
+                double d = body_distance({x, y});
+                if (d <= 0)
+                {
+                    edge = y + step * (-d / std::max(previous - d, .0001));
+                    found = true;
+                    break;
+                }
+                previous = d;
+            }
+            if (!found)
+            {
+                // A transparent surface need not put any body under its center.
+                // Start inside the cached body instead, then locate its bottom shore.
+                auto body = shape->presented_bounds({x, (r.y1+r.y2)/2, r.width()/2, r.height()/2});
+                glm::vec2 center = (glm::vec2(shape->bounds) + glm::vec2(shape->bounds.z, shape->bounds.w)) / 2.f;
+                glm::vec2 half = glm::max((glm::vec2(shape->bounds.z, shape->bounds.w) - glm::vec2(shape->bounds)) / 2.f, glm::vec2{.01f});
+                auto hint = glm::vec2(body) + (shape->bottom_hint - center) * glm::vec2(body.z, body.w) / half;
+                x = hint.x;
+                double low = hint.y, high = low + step;
+                while (high < r.y2 && body_distance({x, high}) <= 0) high += step;
+                for (int k = 0; k < 8; k++)
+                {
+                    double mid = (low + high) / 2;
+                    if (body_distance({x, mid}) <= 0) low = mid; else high = mid;
+                }
+                edge = (low + high) / 2;
+            }
+        }
+        return {x, edge + thickness() / 2};
     }
 
     /** How far the drawn halo, its swell and close dot can reach outside the window. */
@@ -811,7 +892,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return wf::scene::input_node_t{.node = this, .local_coords = at};
         }
 
-        if (presentation && round_box_distance(at, screen_rect(), screen_radius()) > 0)
+        if (presentation && body_distance(at) > 0)
             return {};
         auto hit = view_2d_transformer_t::find_node_at(at);
         // During collapse some visible pixels still belong to the old, wider surface.
@@ -962,6 +1043,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** Repaint the window and its halo. (view->damage() covers only the window.) */
     void damage()
     {
+        if (!uses_alpha_shape()) { alpha_shape.reset(); shape_retry.disconnect(); }
         if (parent())
         {
             wf::scene::damage_node(parent(), get_bounding_box());
@@ -1241,6 +1323,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
     void transform_damage_region(wf::regionf_t& damage) override
     {
+        self->shape_dirty = true;
         auto copy = damage;
         damage.clear();
         for (auto& box : copy)
@@ -1270,7 +1353,6 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
             glm::scale(glm::mat4(1.0), glm::vec3{self->get_scale_x(), self->get_scale_y(), 1.0}) *
             glm::translate(glm::mat4(1.0), glm::vec3{-mid.x, -mid.y, 0.0});
         float pixel     = 1.0f / std::max(0.01f, data.target.scale);
-        float window_aa = pixel / std::max(0.01f, self->get_scale_x());
         float alpha     = self->get_alpha();
         auto v = self->toplevel();
         bool halo = v && !v->pending_fullscreen() && !goo_enabled();
@@ -1280,14 +1362,32 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
             auto& programs = gl_programs();
             programs.ensure();
             auto tex = wf::gles_texture_t{this->get_texture(data.target.scale)};
+            bool wants_shape = self->uses_alpha_shape();
+            if (wants_shape && (self->presentation || self->morphing() ||
+                last_presentation != self->presentation.get() || last_morphing != self->morphing()))
+                self->shape_dirty = true;
+            last_presentation = self->presentation.get(); last_morphing = self->morphing();
+            if (wants_shape && self->shape_dirty)
+            {
+                auto r = self->screen_rect();
+                uint32_t now = frame_t::shape_now();
+                if (!self->alpha_shape || now - self->shape_checked >= 200)
+                {
+                    if (!self->alpha_shape) self->alpha_shape = std::make_unique<goo::shape_cache_t>();
+                    self->shape_checked = now; self->shape_dirty = false;
+                    self->shape_retry.disconnect();
+                    bool changed = self->alpha_shape->update({r.x1, r.y1, r.width(), r.height()},
+                        [&](const wf::render_target_t& target) {
+                            draw_content(programs.window, tex, bbox, geometry, flat, target, 2, 1, true);
+                        });
+                    if (changed) { self->damage(); goo_wake(*self); }
+                } else if (!self->shape_retry.is_connected())
+                    self->shape_retry.set_timeout(200 - (now - self->shape_checked), [frame = self.get()] {
+                        frame->damage();
+                    });
+            } else if (!wants_shape) { self->alpha_shape.reset(); self->shape_retry.disconnect(); }
             wf::gles::bind_render_buffer(data.target);
             auto ortho = wf::gles::render_target_orthographic_projection(data.target);
-
-            std::optional<wf::gles_texture_t> other;
-            if (self->morphing() && self->morph.snapshot && self->morph.snapshot->get_buffer())
-            {
-                other = wf::gles_texture_t::from_aux(*self->morph.snapshot);
-            }
 
             wf::gles::for_each_scissor_rect(data.target, data.damage, [&]
             {
@@ -1296,33 +1396,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                     draw_halo(programs.halo, ortho, pixel, alpha);
                 }
 
-                if (self->presentation && !self->morphing())
-                {
-                    auto r = self->screen_rect();
-                    widget_morph_renderer().draw(*self->presentation, data.target,
-                        r.x1, r.y1, r.width(), r.height(), self->screen_radius(), alpha);
-                } else if (!self->morphing())
-                {
-                    draw_window(programs.window, tex, bbox, ortho * flat, geometry, window_aa, alpha);
-                } else
-                {
-                    // Morphing: both forms' contents fill the frame (scaled evenly to cover it,
-                    // centered, clipped to its rounded rectangle), cross-fading.
-                    auto r = self->screen_rect();
-                    double radius = self->screen_radius();
-                    double fade   = std::clamp(self->morph.fade, 0.0, 1.0);
-                    if (self->presentation)
-                        widget_morph_renderer().draw(*self->presentation, data.target,
-                            r.x1, r.y1, r.width(), r.height(), radius, alpha * (1.0 - fade));
-                    else
-                        draw_covering(programs.window, tex, bbox, geometry, r, radius, ortho, pixel,
-                            alpha * (1.0 - fade), false);
-                    if (other && (fade > 0.001))
-                    {
-                        draw_covering(programs.window, *other, self->morph.snapshot_box,
-                            self->morph.other_geometry, r, radius, ortho, pixel, alpha * fade, false);
-                    }
-                }
+                draw_content(programs.window, tex, bbox, geometry, flat, data.target, pixel, alpha);
 
                 if (halo && !self->morphing() && (self->dot_glow > 0.003))
                 {
@@ -1334,6 +1408,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
     }
 
   private:
+    const widget_morph_t *last_presentation = nullptr;
+    bool last_morphing = false;
     static void quad(OpenGL::program_t& program, const rectf_t& b)
     {
         GLfloat vertices[] = {
@@ -1342,6 +1418,44 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         };
         program.attrib_pointer("position", 2, 0, vertices);
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+    }
+
+    void draw_content(OpenGL::program_t& program, const wf::gles_texture_t& tex,
+        const wf::geometry_t& bbox, const wf::geometry_t& geometry, const glm::mat4& flat,
+        const wf::render_target_t& target, float pixel, float alpha, bool shape_only = false)
+    {
+        auto ortho = wf::gles::render_target_orthographic_projection(target);
+        std::optional<wf::gles_texture_t> other;
+        if (self->morphing() && self->morph.snapshot && self->morph.snapshot->get_buffer())
+            other = wf::gles_texture_t::from_aux(*self->morph.snapshot);
+        if (self->presentation && !self->morphing())
+        {
+            auto r = self->screen_rect();
+            widget_morph_renderer().draw(*self->presentation, target,
+                r.x1, r.y1, r.width(), r.height(), self->screen_radius(), alpha);
+        } else if (!self->morphing())
+        {
+            draw_window(program, tex, bbox, ortho * flat, geometry, pixel / std::max(.01f, self->get_scale_x()), alpha, shape_only);
+        } else
+        {
+            // Morphing: both forms' contents fill the frame (scaled evenly to cover it,
+            // centered, clipped to its rounded rectangle), cross-fading.
+            auto r = self->screen_rect();
+            double radius = self->screen_radius();
+            double fade   = std::clamp(self->morph.fade, 0.0, 1.0);
+            if (self->presentation)
+                widget_morph_renderer().draw(*self->presentation, target,
+                    r.x1, r.y1, r.width(), r.height(), radius, alpha * (1.0 - fade));
+            else
+                draw_covering(program, tex, bbox, geometry, r, radius, ortho, pixel,
+                    alpha * (1.0 - fade), false, shape_only);
+            if (other && (fade > 0.001))
+            {
+                draw_covering(program, *other, self->morph.snapshot_box,
+                    self->morph.other_geometry, r, radius, ortho, pixel, alpha * fade, false, shape_only);
+            }
+        }
+
     }
 
     void draw_halo(OpenGL::program_t& program, const glm::mat4& mvp, float aa, float alpha)
@@ -1376,12 +1490,30 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform4f("cloud", self->can_resize() ?
             glm::vec4{self->cloud[0], self->cloud[1], self->cloud[2], self->cloud[3]} : glm::vec4{});
         program.uniform1f("corner_extra", CORNER_EXTRA);
+        auto shape = self->body_shape();
+        program.uniform1f("has_shape", shape ? 1 : 0);
+        if (shape)
+        {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, self->alpha_shape->texture());
+            program.uniform1i("body_shape", 0);
+            program.uniform2f("shape_size", shape->width, shape->height);
+            program.uniform4f("shape_bounds", shape->bounds);
+            program.uniform4f("shape_body", shape->presented_bounds({(r.x1+r.x2)/2,(r.y1+r.y2)/2,r.width()/2,r.height()/2}));
+        }
+
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         // Four strips around the window (not one big quad under it). Each reaches inside the
         // window by its corner radius so the corners are covered.
         double m = self->margin(), in = radius + 1;
+        if (shape)
+        {
+            quad(program, r.grown(m));
+            program.deactivate();
+            return;
+        }
         quad(program, {r.x1 - m, r.y1 - m, r.x2 + m, r.y1 + in});                 // top
         quad(program, {r.x1 - m, r.y2 - in, r.x2 + m, r.y2 + m});                 // bottom
         quad(program, {r.x1 - m, r.y1 + in, r.x1 + in, r.y2 - in});               // left
@@ -1391,7 +1523,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
     void draw_window(OpenGL::program_t& program, const wf::gles_texture_t& tex,
         const wf::geometry_t& bbox, const glm::mat4& mvp, const wf::geometry_t& geometry, float aa,
-        float alpha)
+        float alpha, bool shape_only = false)
     {
         program.use(tex.type);
         float x1 = bbox.x, y1 = bbox.y, x2 = bbox.x + bbox.width, y2 = bbox.y + bbox.height;
@@ -1404,7 +1536,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.attrib_pointer("uvPosition", 2, 0, uvs);
         program.uniformMatrix4f("MVP", mvp);
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
-        program.uniform4f("hint_tint", self->hint_dye ?
+        program.uniform1f("preserve_alpha", self->uses_alpha_shape() ? 1 : 0);
+        program.uniform4f("hint_tint", !shape_only && self->hint_dye ?
             glm::vec4{*self->hint_dye, windowing::hint_window_opacity} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{geometry.x, geometry.y, geometry.width, geometry.height});
         program.uniform1f("radius", std::min<float>(CORNER_RADIUS,
@@ -1421,7 +1554,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
      *  to it with rounded corners. Snapshots are stored upside down (`flip`). */
     void draw_covering(OpenGL::program_t& program, const wf::gles_texture_t& tex,
         const wf::geometry_t& box, const wf::geometry_t& geometry, const rectf_t& r, double radius,
-        const glm::mat4& ortho, float aa, float alpha, bool flip)
+        const glm::mat4& ortho, float aa, float alpha, bool flip, bool shape_only = false)
     {
         if ((geometry.width <= 0) || (geometry.height <= 0) || (alpha <= 0.001))
         {
@@ -1444,7 +1577,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.attrib_pointer("uvPosition", 2, 0, flip ? flipped : uvs);
         program.uniformMatrix4f("MVP", ortho);
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
-        program.uniform4f("hint_tint", self->hint_dye ?
+        program.uniform1f("preserve_alpha", self->uses_alpha_shape() ? 1 : 0);
+        program.uniform4f("hint_tint", !shape_only && self->hint_dye ?
             glm::vec4{*self->hint_dye, windowing::hint_window_opacity} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{r.x1, r.y1, r.width(), r.height()});
         program.uniform1f("radius", std::min<float>(radius, std::min(r.width(), r.height()) / 2.0f));

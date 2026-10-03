@@ -40,6 +40,12 @@ def sample(label, duration=.75):
     return series
 
 
+def body_left(frame):
+    # GO16: the body can have transparent insets and its current crossfade can
+    # change them. The frame publishes its measured alpha bounds separately.
+    return frame.get("alpha_shape", {}).get("body_left", frame["x"])
+
+
 def settle():
     t.wait_for(lambda: state()["widget_transition_count"] == 0)
     time.sleep(.1)
@@ -496,8 +502,8 @@ try:
         # with geometry, including the previous repaint, and locate the band's
         # outer edge instead of sampling a point it may already have passed.
         recent = history[-1:] + [before_shot, after_shot]
-        left = min(f["x"] - f["thickness"] for f in recent)
-        right = max(f["x"] - f["thickness"] for f in recent)
+        left = min(body_left(f) - f["thickness"] for f in recent)
+        right = max(body_left(f) - f["thickness"] for f in recent)
         y = round(before_shot["y"] + before_shot["height"] / 2)
         background = image.getpixel((round(left - 55), y))
         edge = next((x for x in range(round(left - 3), round(right + 4))
@@ -654,7 +660,8 @@ try:
         t.cleanup(); t.owned.clear()
     if t.ipc.call("scottland/goo-state")["enabled"]:
         # Infer the actual field's inner edge from its signed union distance, away
-        # from rounded corners. This catches sampling the client's final rect
+        # from rounded corners. GO16 follows the card's current alpha bounds,
+        # including WG10's transparent badge reservation. This catches sampling the client's final rect
         # instead of the compositor's animated presentation (including reversals).
         if t.ipc.call("scottland/desktop-model")["collapsed"]:
             t.toggle(); settle()
@@ -710,16 +717,16 @@ try:
                     captured = True
                 time.sleep(.006)
             active = [v for v in track if 110 < v["frame"]["width"] < 300]
-            errors = [abs(v["field_edge"] - v["frame"]["x"]) for v in active]
+            errors = [abs(v["field_edge"] - body_left(v["frame"])) for v in active]
             # IPC sees timer geometry before the next output repaint. Compare the
             # field with the recent presentation history, allowing up to 50 ms of
             # render scheduling, rather than treating IPC as a synchronized frame.
             history_errors = []
             for v in active:
-                recent = [p["frame"]["x"] for p in track
+                recent = [body_left(p["frame"]) for p in track
                     if v["stamp"] - .05 <= p["stamp"] <= v["stamp"]]
                 if v["stamp"] - start <= .05:
-                    recent.extend(f["x"] for f in previous_frames)
+                    recent.extend(body_left(f) for f in previous_frames)
                 history_errors.append(max(min(recent) - v["field_edge"],
                     v["field_edge"] - max(recent), 0))
             t.check("goo " + label + ": field follows intermediate frame", len(active) >= 4 and
@@ -727,7 +734,7 @@ try:
                 {"current_frame": errors, "recent_frames": history_errors})
             last = track[-1]
             t.check("goo " + label + ": field settles at exact final frame",
-                abs(last["field_edge"] - last["frame"]["x"]) < .1, last)
+                abs(last["field_edge"] - body_left(last["frame"])) < .1, last)
             samples["goo-" + label] = track
         f = t.card(title)["frame"]
         dye = t.ipc.call("scottland/goo-state", {"x": f["x"] + f["width"] / 2,

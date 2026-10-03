@@ -25,7 +25,8 @@ bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> 
     if (a.size() != b.size())
         return false;
     for (size_t i = 0; i < a.size(); i++)
-        if (a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
+        if (a[i].shape != b[i].shape || glm::length(a[i].shape_body - b[i].shape_body) > .03f ||
+            a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
             glm::length(a[i].dye - b[i].dye) > .001f || glm::length(a[i].corners - b[i].corners) > .001f ||
             glm::length(a[i].sides - b[i].sides) > .001f ||
             std::abs(a[i].control_extent - b[i].control_extent) > .03f ||
@@ -127,7 +128,7 @@ class goo_node_t : public wf::scene::node_t
                     list.push_back(wf::geometry_t{std::floor(a), std::floor(b),
                                                   std::ceil(c - std::floor(a)), std::ceil(d - std::floor(b))});
             };
-            if (x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
+            if (s.shape || x2 - x1 <= 2 * in || y2 - y1 <= 2 * in)
             {
                 box(x1 - out, y1 - out, x2 + out, y2 + out);
                 continue;
@@ -188,6 +189,17 @@ class goo_node_t : public wf::scene::node_t
         {
             if (!s.attention || !s.emitter) continue;
             double out = 4 * state.settings.reach + padding;
+            // A mask may have a hollow or deeply inset contour. Every part of
+            // that body can breathe; rectangle edge strips would omit it.
+            if (s.shape)
+            {
+                // body bounds already contain badge overhang; the full box also
+                // covers internal holes whose shores are away from its edges.
+                auto body = s.shape_body.z > 0 && s.shape_body.w > 0 ? s.shape_body : s.rect;
+                double x = body.x-body.z, y = body.y-body.w;
+                support |= wf::geometry_t{x-out, y-out, 2*body.z+2*out, 2*body.w+2*out};
+                continue;
+            }
             double in = s.liquid.y + padding;
             double x = s.rect.x-s.rect.z, y = s.rect.y-s.rect.w;
             double w = 2*s.rect.z, h = 2*s.rect.w;
@@ -559,6 +571,7 @@ goo_t::goo_t() : p(std::make_unique<impl>()) {}
 goo_t::~goo_t() = default;
 void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed)
 {
+    goo::shape_cache_t::prepare();
     p->snapshot = std::move(snapshot);
     p->screen_changed = std::move(screen_changed);
     for (auto &field : p->fields)
