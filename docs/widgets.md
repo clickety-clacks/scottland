@@ -30,9 +30,10 @@ verification of the stock move path does not verify this new path.
 | WG4 | Placement: a widget is free-floating on the rail, above all ordinary windows (always on top), centered where its window was dropped and kept wholly on screen with room for its halo at its widest; each drop on the rail places it again, gliding (~260 ms) from where it was let go to its place against the edge rather than jumping. Widgets are always at 100%: they never follow the zone scale, while dragged or when dropped. A widget's window is placed by Scottland as it maps (Wayfire's place plugin is told it's positioned), and keeps its screen-edge side when it changes size. Client identity is read from the toplevel’s Wayland surface resource before mapping, without unstable Wayfire headers, so rail gravity is present in the mapping transaction and changes atomically with rail placement. Resize placement uses pending geometry in that transaction, with no corrective move after a size notification. | implemented (plumbus headless 2026-10-01: 7 mapping/resize checks, including both rail changes; two extra-move checks failed before the fix; no real-screen run for this change) |
 | WG5 | Lifecycle: the real window stays alive while widgetized, so restoring is instant. Its image remains visible through startup until the card can take it over (WG22); the real window is hidden after that handoff. The window and its widget are tied: closing the widget closes the window (shown again first, so an app's "save changes?" question is visible), and closing the window closes the widget. Dragging the widget off the rail restores the window and dismisses the widget (not a close). A widget whose window doesn't appear within 8 s is abandoned: it's ended and the app's window restored. A widget asked to close that's still running 3 s later is ended. Ending a widget ends every process it started (each widget runs in its own systemd scope: SIGTERM, then SIGKILL after 2 s), never an unrelated process. Unloading the plugin restores every app window and ends every widget; a reload (scottland-reload) keeps them: the outgoing plugin hands its widgets to the new one. On load, any window whose center is on a rail becomes a widget again (WG1), whatever left it there; a reload also replaces Scottland's helper services when their installed code is newer. | verified for drag-off restore (plumbus); the rest implemented (headless) |
 | WG21 | A widget has one lifecycle: previewing, docked, restoring, closing or handed-over. One transition function applies visibility to Wayfire; renderer disable leases are resources, never independent logical flags, and are returned on unmap/unload (only handed-over app leases transfer). Collapsed intent and temporary peek presentation are independent of lifecycle. | implemented (headless) |
-| WG22 | Every window → widget transition is a continuous compositor morph, like widget → window: the visible app image moves/shrinks into the card’s place and cross-fades into it; no hide/show cut. This includes inertial pushes and drag coasts reaching exposed side rails (WK20), every starting-zone hint cycle, double-tap to rail, collapsed-mode arrivals, rail drops (including release before the preview is ready), Esc returning an undocked app to its original widget, and rail recovery on plugin load. The existing snapshot mixer owns the handoff; shape uses WG23’s 360 ms spring (240 ms circle easing when `widget_bounce` is zero), and contents retain their 180 ms fade. A card’s ordinary Wayfire map animation is suppressed so it cannot zoom/fade the composition a second time. Goo (or the fallback halo) follows the visible rectangle and interpolated scale. The app stays visible during startup; a card disappearing during the handoff restores the app and never closes it (WG5). | implemented (headless); validation below |
+| WG22 | Every window → widget transition is a continuous compositor morph, like widget → window: the visible app image moves/shrinks into the card’s place and cross-fades into it; no hide/show cut. This includes inertial pushes and drag coasts reaching exposed side rails (WK20), every starting-zone hint cycle, double-tap to rail, collapsed-mode arrivals, rail drops (including release before the preview is ready), Esc returning an undocked app to its original widget, and rail recovery on plugin load. The existing snapshot mixer owns the handoff; shape uses WG23’s 360 ms spring (240 ms circle easing when `widget_bounce` is zero), and contents retain their 180 ms fade. A card’s ordinary Wayfire map animation is suppressed so it cannot zoom/fade the composition a second time. Goo (or the fallback halo) follows the visible rectangle and interpolated scale. The app stays visible and moves/shrinks during startup toward the same provisional size used by drag previews (WG25); the applied card corrects that estimate over 180 ms while retaining the full 180 ms content fade. A card disappearing during the handoff restores the app and never closes it (WG5). | implemented (headless); validation below |
 | WG23 | Every widget expansion and contraction (Super+M, peeking on hover or attention, collapsed arrival, any other trigger) settles with a single elastic size/shape bounce, including its goo. `scottland/widget_bounce` sets the amount (default 0.04, range 0–0.1); zero disables the overshoot. S19 provides its Widgets tab control for this setting. (Mike, 2026-10-02) | implemented (headless); Settings control implemented; validation below |
 | WG24 | Repeated window/widget transitions, including attention, interrupted entry, re-grabs and cancellation, keep the compositor responsive. Hint avoidance alone never changes a window's real zone or widget lifecycle. | repeat/race and large-window probes pass on plumbus headless; October 2 live hangs unresolved; see [compositor-hangs.md](compositor-hangs.md) |
+| WG25 | Window → widget conversion starts from the displayed app image on the next morph tick, including drag/drop, fling and Window-mode keys. It continues toward a provisional card rectangle while the widget client starts, then corrects from the current drawn rectangle to the applied card and cross-fades without a jump. Healthy conversion callbacks never fork the compositor or compile the blend shader. Simple client textures and the last composed app buffer are retained rather than recaptured; complex uncached scenes retain the capture fallback. Launch cancellation, scoped teardown and reload retain WG5’s process ownership. | implemented (plumbus headless); validation below |
 | WG6 | Choosing a widget, in order: the user's assignment (`~/.config/scottland/widgets.ini`, app-id → widget), else the app's own widget (named by its `.desktop` entry, `X-Scottland-Widget=`, or installed for its app-id), else a Scottland built-in for that kind of app, else the default card (WG10). Any widget can be assigned to any app. | implemented (unit test) |
 | WG7 | A widget package is a directory with a `widget.toml` manifest (`id`, `name`, `apps` = app-id regexes it suits, `exec` = the command) and whatever the command needs. Packages are found in `$SCOTTLAND_WIDGET_PATH` (colon-separated, if set; relative entries are taken from the current directory), `~/.local/share/scottland/widgets/` (the user's), `/usr/share/scottland/widgets/` (installed with apps, removed with them) and Scottland's built-ins (`/usr/lib/scottland/widgets/`); the first package with an id wins. | implemented (unit test) |
 | WG8 | Launch context: the environment carries the window and launch identity (`SCOTTLAND_WIDGET_ID`, `_APP_ID`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID`, `_WINDOW`, `_STATE`) and the palette path (`SCOTTLAND_PALETTE`). Mutable title, rail, collapsed mode and badge come only from the complete state file, written before exec. Prepare returns an explicit error if it cannot write that file; it never launches with stale or partial state. `.desktop`-style placeholders still fill the manifest's command per argument (`%a` app-id, `%t` initial title, `%i` icon, `%p` pid, `%w` window id, `%r` initial rail, `%d` package directory, `%%`). The widget runs in its package directory. Resolved identity and traits are submitted to the plugin for that launch. See [desktop-model.md](desktop-model.md), DM4. | implemented (headless) |
@@ -522,3 +523,87 @@ The small-jobs batch reran `tests/widget-morph-test.sh` with goo: **270 passed, 
 `build/widget-morph-batch1-r3.log`. An earlier run passed 269 checks and missed the 12 pt
 intermediate goo/frame sampling bound once (14.6 pt); the unchanged-code rerun passed.
 `tests/widgets-test.sh` also passed all checks, including reload and widget-service behavior.
+
+## WG25: conversion pacing (2026-10-03)
+
+Window → widget used to synchronously fork twice through Wayfire's `core.run()`,
+render new app/card snapshots, and compile the blend shader on first use. An
+ordinary entry also held the captured app still until the new client mapped.
+Widget → window already had a live app and used its running drag morph; it did
+not have that startup dependency. Its teardown still forked for a scope stop.
+
+Conversion now sends a nonblocking packet to a small subprocess broker created
+at plugin startup. The broker inherits Wayfire's session environment, launches
+through the unchanged widget launcher and transfers an open pidfd back through
+its private socket. Cancellation before the reply, timeout, scope stop and
+reload keep the existing ownership rules. The broker reaps its children and
+exits when its compositor socket closes; it drains queued cancellations during
+unload. A failed broker retains the synchronous scope-stop recovery path.
+
+The mixer shader compiles at plugin startup. Simple surfaces retain their
+applied texture; complex app surfaces transfer the last composed frame buffer
+when one exists at the correct size. RGBX textures force alpha to one, preserving opaque client rendering even when their unused channel bits are zero. Transfer takes ownership rather than
+sharing a mutable render cache. The presentation renderer uses those retained
+pixels directly instead of composing the live app again. Uncached/unsupported
+scenes still use the existing snapshot path. Live hidden content during a drag
+continues to refresh, including client frame callbacks.
+
+The source starts moving and shrinking on the next 8 ms animation tick, using
+the same provisional card size as drag previews. On the card's applied mapping
+transaction, the handoff starts from the source's current drawn rectangle and
+corrects the estimate over 180 ms, with the full established 180 ms crossfade.
+No new card design, color, placement rule or widget selection rule is involved.
+
+Measurements used isolated plumbus sessions, the Radeon Pro 580X GLES renderer,
+1280×720 at 60 Hz, shipped goo enabled, debugoptimized builds with asserts/frame
+pointers, a 100×30-cell foot and the real built-in card. Baseline is **30514ff**.
+Each entry path ran six times with real stipc input, followed by a real reverse
+drag of that card. A separate process sent serial IPC pings with a 1 ms pause;
+opt-in test instrumentation recorded conversion callbacks and output render-hook
+timestamps. Frame intervals below are render-hook intervals, not physical screen
+presentation timestamps. The keyboard measurement begins after Window mode is
+active and includes the real hint-key double tap.
+
+| Entry path | Frame interval p99 before → after | Reverse drag frame p99 after | Worst IPC reply before → after |
+|---|---:|---:|---:|
+| Drag onto rail | 21.953 → 18.469 ms | 20.804 ms | 25.581 → 9.256 ms |
+| Fling into rail | 26.421 → 18.273 ms | 19.640 ms | 21.475 → 8.381 ms |
+| Window-mode hint key | 26.410 → 19.322 ms | 20.004 ms | 26.371 → 3.823 ms |
+
+The final entry paths had **two IPC replies over 8 ms**, versus 40 before. Entry frame maxima
+were 23.325, 18.503 and 19.652 ms respectively, versus 41.888, 31.029 and 42.075 ms
+before. Conversion capture callbacks were at most 0.015 ms; widgetize callbacks
+at most 0.197 ms; drag/drop freeze at most 1.372 ms. Baseline widgetize reached
+10.567 ms and the first blend freeze reached 18.607 ms. Full percentile/callback
+summaries are [before](measurements/widget-conversion-before-2026-10-03.json) and
+[after](measurements/widget-conversion-after-2026-10-03.json). Raw pings, input
+windows, logs and screenshots are under this checkout's
+`build/conversion-{before,rgbx-final}-results/` on plumbus and the working machine.
+
+The first hint-text raster still took 8.839 ms when entering Window mode, outside
+the conversion interval; warm hint updates during conversion topped out at
+0.036 ms. Glyph rasterization and rare uncached scene captures remain candidates
+for the separate main-loop worker effort. GL scene capture needs an appropriate
+render context; it cannot simply run arbitrary Wayfire APIs on a worker thread.
+Card-client startup still takes time, but now overlaps a moving source image.
+
+Reproduce in a disposable test checkout: build its hooks, run
+`tests/instrument-conversion.py CHECKOUT`, rebuild, and start a unique headless
+`--widgets` session with `SCOTTLAND_CONVERSION_TRACE=1`. Run
+`tests/widget-conversion-bench.py RESULTS --trials 6` through `headless.sh run`,
+copy its `wayfire.log` into RESULTS before stopping, then run
+`tests/widget-conversion-summary.py RESULTS`. Instrumentation changes only the
+test copy and is absent from shipped code. Keep all directories under `build/`.
+
+Validation on the plain build: **270 morph checks passed**, all widget lifecycle
+checks passed (including **91 real-input regressions**, scoped/no-scope timeout,
+closing, service updates and reload), and all five repeat/race suites passed
+(avoidance, repeated transitions, foot race, Ghostty race, batch race). Peek
+options passed four checks; keyboard spring/cycle input passed **79 checks**;
+elastic frame capture passed contraction/expansion overshoot and settlement.
+The deliberately delayed card passed **12 entry/restore checks** across drag,
+fling and hint-key paths. A native XRGB client with zero unused alpha bits passed
+opacity, client-resize rail anchoring and handoff checks. The broker passed live
+pidfd/cancellation and disconnect queue-draining checks. Logs and screenshots
+remain in this checkout's `build/` on plumbus; all owned sessions were stopped.
+No shared session was installed or reloaded.

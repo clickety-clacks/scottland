@@ -79,6 +79,8 @@ extern "C" {
 #include <sys/pidfd.h>  // glibc declares it without C linkage for C++
 }
 #include <unistd.h>
+#include <sys/socket.h>
+#include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <sstream>
@@ -1359,6 +1361,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         pid_t pid = 0;
         int pidfd = -1;
+        bool cancelled = false;
         std::string unit;
         scottland_plugin_t *owner = nullptr;
         wl_event_source *exit_watch = nullptr;
@@ -1441,7 +1444,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double center_x = 0;       // where the dragged frame is centered (output coords)
         wf::animation::simple_animation_t shape{wf::create_option<int>(MORPH_MS)};
         wf::animation::simple_animation_t fade{wf::create_option<int>(MORPH_MS * 3 / 4)};
-        std::shared_ptr<wf::auxilliary_buffer_t> snapshot = std::make_shared<wf::auxilliary_buffer_t>();
+        scottland::widget_image_t snapshot;
         wf::geometry_t snapshot_box{}, other_geometry{};
         bool snapshot_ready = false;
         int ticks = 0;
@@ -1651,6 +1654,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         append_hint_goo(output, result);
         return result;
     }
+    #include "widget-spawn.hpp"
     #include "widget-presentation.hpp"
     #include "widget-peek.hpp"
 
@@ -2250,11 +2254,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        process->cancelled = true; // a pending launch is ended when its pidfd arrives
         if (!process->unit.empty())
         {
             // Stopping a scope that already ended (the widget exited) does nothing.
-            wf::get_core().run("systemctl --user stop --no-block " + shell_quote(process->unit) +
-                " >/dev/null 2>&1");
+            wf::json_t request;
+            request["stop"] = process->unit;
+            if (!send_widget_spawn(request))
+            {
+                // A failed broker must not leave a scope's descendants alive.
+                // The synchronous path is only recovery, never a healthy conversion.
+                wf::get_core().run("systemctl --user stop --no-block " + shell_quote(process->unit) +
+                    " >/dev/null 2>&1");
+            }
         }
 
         if (process->pidfd >= 0)
@@ -2430,17 +2442,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         context["unit"] = process->unit;  // the launcher runs the widget in this scope
-        process->pid = wf::get_core().run(shell_quote(widget_launcher()) + " " +
-            shell_quote(context.serialize()));
-        if (process->pid <= 0)
+        if (!send_widget_spawn(context))
         {
-            LOGE("scottland: couldn't launch a widget for ", view->get_app_id());
+            LOGE("scottland: couldn't queue a widget for ", view->get_app_id());
             return;
         }
-
-        // Taken right away, while the process is certainly the one just started.
-        process->pidfd = pidfd_open(process->pid, 0);
-        watch_process(process);
+        widget_spawn_pending[process->unit] = process;
         link.launcher  = process;
         if (!preview) begin_window_widget_transition(view);
         transition_widget(link, preview ? widget_link_t::lifecycle_t::previewing : widget_link_t::lifecycle_t::docked);
@@ -4846,16 +4853,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 auto image = scottland::widget_morph_renderer().freeze(*other_frame->presentation,
                     other->get_output()->handle->scale);
-                model.drag.morph->snapshot = image.buffer;
+                model.drag.morph->snapshot = image;
                 model.drag.morph->snapshot_box = image.box;
                 model.drag.morph->other_geometry = {0, 0, image.width, image.height};
             } else
             {
-                other->take_snapshot(*model.drag.morph->snapshot);
-                model.drag.morph->snapshot_box   = other->get_surface_root_node()->get_bounding_box();
+                model.drag.morph->snapshot = scottland::widget_image_t::capture(other, 0);
                 model.drag.morph->other_geometry = other->get_geometry();
+                model.drag.morph->snapshot_box = model.drag.morph->snapshot.box;
+                model.drag.morph->snapshot_box.x += model.drag.morph->other_geometry.x;
+                model.drag.morph->snapshot_box.y += model.drag.morph->other_geometry.y;
             }
-            model.drag.morph->snapshot_ready = model.drag.morph->snapshot->get_buffer() != nullptr;
+            model.drag.morph->snapshot_ready = bool(model.drag.morph->snapshot);
         }
 
         model.drag.morph->ticks++;
@@ -4916,7 +4925,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         frame->morph.w     = model.drag.morph->shown_w;
         frame->morph.h     = model.drag.morph->shown_h;
         frame->morph.scale = scale;
-        frame->morph.snapshot       = model.drag.morph->snapshot_ready ? model.drag.morph->snapshot : nullptr;
+        frame->morph.snapshot       = model.drag.morph->snapshot_ready ? model.drag.morph->snapshot : scottland::widget_image_t{};
         frame->morph.snapshot_box   = model.drag.morph->snapshot_box;
         frame->morph.other_geometry = model.drag.morph->other_geometry;
         frame->damage();
@@ -6011,8 +6020,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // SIGQUIT is the preferred capture signal, including before plugin load.
         signal(SIGABRT, SIG_DFL);
         signal(SIGQUIT, SIG_DFL);
+        // Compile the shared blend shader during plugin startup, before any input-driven morph.
+        wf::gles::run_in_context_if_gles([] { scottland::widget_morph_renderer().prepare(); });
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
         init_output_tracking();
+        init_widget_spawn();
         if (!getenv("SCOTTLAND_INTERNAL_MODEL_SESSION"))
         {
             auto session = std::to_string(getpid()) + "-" + std::to_string(now_msec());
@@ -6280,6 +6292,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         scottland::gl_programs().release();
+        fini_widget_spawn();
         LOGI("scottland: plugin unloaded");
     }
 };

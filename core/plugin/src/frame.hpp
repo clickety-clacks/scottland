@@ -1157,7 +1157,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         double fade  = 0.0;
         double w = 0.0, h = 0.0;
         double scale = 1.0;
-        std::shared_ptr<wf::auxilliary_buffer_t> snapshot;  // the other form's contents
+        widget_image_t snapshot;  // the other form's retained contents
         wf::geometry_t snapshot_box{};   // what the snapshot covers, in the other view's coordinates
         wf::geometry_t other_geometry{}; // the other view's window geometry, same coordinates
     } morph;
@@ -1445,7 +1445,10 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         {
             auto& programs = gl_programs();
             programs.ensure();
-            auto tex = wf::gles_texture_t{this->get_texture(data.target.scale)};
+            // A retained presentation owns all displayed pixels. Rendering the live
+            // subtree here would immediately recreate a cache just transferred to it.
+            auto tex = self->presentation ? wf::gles_texture_t{} :
+                wf::gles_texture_t{this->get_texture(data.target.scale)};
             bool wants_shape = self->uses_alpha_shape();
             if (wants_shape && (self->presentation || self->morphing() ||
                 last_presentation != self->presentation.get() || last_morphing != self->morphing()))
@@ -1510,8 +1513,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
     {
         auto ortho = wf::gles::render_target_orthographic_projection(target);
         std::optional<wf::gles_texture_t> other;
-        if (self->morphing() && self->morph.snapshot && self->morph.snapshot->get_buffer())
-            other = wf::gles_texture_t::from_aux(*self->morph.snapshot);
+        if (self->morphing() && self->morph.snapshot)
+            other = self->morph.snapshot.gl_texture();
         if (self->presentation && !self->morphing())
         {
             auto r = self->screen_rect();

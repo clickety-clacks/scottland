@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Private conversion subprocess broker. Its socket is inherited from the compositor.
+
+Fork/exec and scope-stop commands happen here, in a small process with no compositor
+GPU mappings. A launch reply transfers the already-open pidfd, so a recycled PID
+can never become the plugin's process identity. Disconnect ends only the broker;
+existing widgets keep their own lifecycle/scope, including across plugin reload.
+"""
+import array
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+
+
+def main():
+    peer = socket.socket(fileno=int(sys.argv[1]))
+    peer.set_inheritable(False)
+    peer.settimeout(.5)
+    children = []
+    widgets = {}
+    launcher = str(Path(__file__).with_name('scottland-widget-launch'))
+    try:
+        while True:
+            children[:] = [child for child in children if child.poll() is None]
+            widgets = {unit: child for unit, child in widgets.items() if child.poll() is None}
+            try:
+                raw = peer.recv(65536)
+            except socket.timeout:
+                continue
+            if not raw:
+                return
+            request = json.loads(raw)
+            if 'stop' in request:
+                child = widgets.get(request['stop'])
+                if child is not None and child.poll() is None:
+                    child.terminate()
+                children.append(subprocess.Popen(['systemctl', '--user', 'stop', '--no-block', request['stop']],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                continue
+            response = {'unit': request['unit'], 'pid': 0}
+            pidfd = -1
+            child = None
+            try:
+                child = subprocess.Popen([launcher, json.dumps(request)])
+                widgets[request['unit']] = child
+                pidfd = os.pidfd_open(child.pid)
+                response['pid'] = child.pid
+            except OSError as error:
+                response['error'] = str(error)
+                if child is not None and child.poll() is None:
+                    child.terminate()
+            try:
+                rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [pidfd]))] if pidfd >= 0 else []
+                try:
+                    peer.sendmsg([json.dumps(response).encode()], rights)
+                except BrokenPipeError:
+                    # Unload can close the socket with launch/stop packets queued.
+                    # Drain them before EOF, so cancellation still ends a late launch.
+                    pass
+            finally:
+                if pidfd >= 0:
+                    os.close(pidfd)
+    finally:
+        peer.close()
+
+
+if __name__ == '__main__':
+    main()
