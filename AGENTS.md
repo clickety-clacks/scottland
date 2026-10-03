@@ -32,7 +32,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 
 - [docs/distro-notes.md](docs/distro-notes.md): defaults that belong to a future Scottland distro, not core.
 - [docs/tenets.md](docs/tenets.md): what Scottland is for; how to decide unspecified edges.
-- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG23): what a widget is, how it's chosen,
+- [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG27): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets, and elastic expansion/contraction.
 - [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints and live focused-window-anchored avoidance (WK1–WK31),

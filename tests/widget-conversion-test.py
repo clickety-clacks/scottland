@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WG25: all entry paths animate before a deliberately late card's first commit.
+"""WG27: all entry paths animate before a deliberately late card's first commit.
 Run inside an isolated --widgets session with SCOTTLAND_WIDGET_PATH=tests/widgets.
 """
 import importlib.util
