@@ -40,7 +40,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O4 | Window navigation, layout, workspace and group shortcuts are not imported. | implemented |
 | O5 | Scottland keeps the user's Omarchy shortcuts as far as it can and overrides them only where its own features need the keys: an imported shortcut on the same keys as a Scottland feature binding (the `[scottland]` section, including both center-window Alt+Tab directions, or a `scottland_*` command such as Super+, for Scottland Settings) or any `key_remaps` `from` combo steps aside, listed as displaced in the generated config. Remap combos are reserved globally because imported bindings apply to every app, while remaps apply only to matching apps. On keys held by any other default (Wayfire's, or Scottland's generic ones such as the terminal) the user's shortcut wins. Collision detection includes Scottland metadata defaults after explicit base INI overrides, normalizes modifier order/case and xkb key names, and removes every conflicting owner while preserving unclaimed alternatives. | implemented (headless) |
 | O6 | Lua-function shortcuts (Yoohoo Super+Tab, universal copy/cut/paste) run through the Lua host with their state intact. | implemented |
-| O7 | Key-release shortcuts work (Yoohoo accepts on Super release; Voxtype push-to-talk stops on release). | implemented |
+| O7 | Key-release shortcuts work (Yoohoo accepts on Super release; Voxtype push-to-talk stops on release). | partial: standalone release supported; stock F9 press/release pair loses its press action during import (reproduced with headless input on plumbus; [adapter gaps](../docs/adapter-gaps.md), AG09/H1). Modified release chords are skipped. |
 | O8 | Injected shortcuts reach the focused window with only their own modifiers; a physically held Super does not leak in (universal copy sends plain Ctrl+C / Ctrl+Insert). | implemented (headless) |
 | O13 | Shortcuts a Hyprland config switches on and off (`:set_enabled()`, e.g. Ctrl+W remapped only while Chromium is focused) follow the focused window; while off, their keys pass through to the app unchanged (terminals keep Ctrl+W = delete word). | implemented |
 | O14 | Apps in Scottland get the environment Omarchy's Hyprland config sets with `hl.env` (e.g. `QT_QPA_PLATFORMTHEME=gtk3` for native file dialogs in Qt apps, Electron/Chromium Wayland hints, cursor size, compose file, theme colors, the user's own variables), read from the same config by the Lua host, and handed to user services as uwsm does; the variables naming the desktop stay Scottland's. | implemented |
@@ -56,6 +56,12 @@ The optional `dispatch hl.dsp.window.tag(...)` translation remains logged as uns
 Wayfire has no equivalent dynamic tag state; implementing it needs a per-window tag lifecycle
 that the shim can also report consistently in `clients` and events. A dispatch-only reply would
 make tags appear to change without updating those readers.
+
+[Omarchy compatibility audit](../docs/adapter-gaps.md) records 38 behavior rows (AG01–AG38)
+for stock and optional Omarchy choices, with source evidence, observed headless failures and
+unverified outcomes kept separate. O1/O2/O10 describe their exercised shell, IPC and launch
+paths; they do not establish compatibility for every menu action, application rule, portal,
+input layout or hardware configuration. The audit proposes fix layers, not new commitments.
 
 ## Switching from Mike's personal solar timer
 
