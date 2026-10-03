@@ -371,7 +371,7 @@ ShellRoot {
       viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
       goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint,
-        edgeControls:root.edgeControls}),
+        edgeControls:root.edgeControls,rowHeight:gooSettings.rowHeight,rows:gooSettings.rows.map(row=>row.id)}),
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),

@@ -84,7 +84,10 @@ def select_goo_tab(panel):
 def set_first_goo_row(panel):
     q = settings_snapshot(panel)
     x, y = panel_origin(q)
-    click(x+q["goo"]["x"]+q["goo"]["width"]*.64, y+q["goo"]["y"]+35)
+    goo = q["goo"]
+    index = goo["rows"].index("goo_thickness")
+    row_y = goo["y"] + index * (goo["rowHeight"] + 1) + goo["rowHeight"] / 2
+    click(x+goo["x"]+goo["width"]*.64, y+row_y)
     time.sleep(.4)
 
 
