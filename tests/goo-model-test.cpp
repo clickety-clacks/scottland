@@ -35,6 +35,13 @@ int main()
     amounts(windows, s);
     assert(density({470, 300}, windows, s, 0) > s.threshold());
     assert(union_distance({300, 300}, windows) < 0);
+    windows[0].attention = true;
+    float trough = density({470, 300}, windows, s, 0, 0);
+    float crest = density({470, 300}, windows, s, 0, 1);
+    assert(crest > trough && crest < trough * 1.12f); // weighted shared bridge
+    assert(density({800, 300}, windows, s, 0, 1) == density({800, 300}, windows, s, 0, 0));
+    assert(density({300, 300}, windows, s, 0, 1) == 0); // content never swells
+    windows[0].attention = false;
     auto amount = windows[0].liquid.x;
     s.thinning = 0;
     amounts(windows, s);
@@ -134,7 +141,7 @@ int main()
             auto w = a;
             w.id = k; w.rect = {float(100 + k % 4 * 120), float(100 + k / 4 * 140), 45, 55};
             w.corners = {.7, .5, .8, .9}; w.dot = {w.rect.x, w.rect.y + 55, 1, 5};
-            w.swell = 1; w.hinted = true;
+            w.swell = 1; w.hinted = true; w.attention = k % 2;
             crowd.push_back(w);
         }
         auto radii = support_radii(crowd, s);
@@ -143,7 +150,7 @@ int main()
             for (int x = -500; x < 1100; x += 7)
             {
                 glm::vec2 p{float(x), float(y)};
-                float f = density(p, crowd, s, .6) * (1 + 3.9f * s.wave_height);
+                float f = density(p, crowd, s, .6, 1) * (1 + 3.9f * s.wave_height);
                 if (f < s.threshold() * .97f) continue;
                 bool covered = false;
                 for (size_t k = 0; k < crowd.size(); k++)

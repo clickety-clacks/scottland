@@ -26,8 +26,8 @@ remains available.
   overlap) fill because the goo pools there, with no special corner code.
 - **Mess.** The amount of goo along each edge wanders slowly (low-frequency noise): lumps drift, no
   two borders look the same, nothing looks machine-perfect.
-- **Waves.** A shared wave surface pushes the goo's boundary in and out. A grab, a drop, a swell or
-  an attention pulse starts a ripple there; it travels only through connected goo, around the whole
+- **Waves.** A shared wave surface pushes the goo's boundary in and out. A grab, a drop or an
+  interaction swell starts a ripple there; it travels only through connected goo, around the whole
   merged outline, and fades.
 - **Dye.** Color is dye carried by the goo, separate from the goo itself. Each window keeps releasing
   its current color into the goo it owns (neutral, focus, attention). Dye spreads and slowly swirls,
@@ -64,7 +64,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO2 | The goo clings: each window's goo stays within a reach of its edge; between windows close enough, it bridges, drawing from both borders, and a stretched bridge thins and snaps. | implemented; prototype volume approximation, bridge/snap input checks |
 | GO3 | Where windows meet or overlap, the summed field pools and bridges naturally; there is no separate concave-corner infill or corner-specific code (the old halo's infill was removed 2026-10-01). GO14 adds a general surface meniscus. | implemented; overlap pooling screenshot inspected |
 | GO4 | The goo isn't uniform: its amount along each edge wanders slowly, configurable (mess, lump size, drift). | implemented; prototype noise port, inspected; drift freezes to settle |
-| GO5 | Waves start at grabs, drops, swells and attention pulses, travel only through connected goo along the whole merged outline, and fade. | implemented; grab propagation across bridge and isolation across gap sampled on normal and packed GPU paths |
+| GO5 | Waves start at grabs, drops and interaction swells (attention breathing is render-only: GO17), travel only through connected goo along the whole merged outline, and fade. | implemented; grab propagation across bridge and isolation across gap sampled on normal and packed GPU paths |
 | GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks; widget presentation morph retains attention dye |
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. Widgets and non-resizable windows (resize permission denied, or both dimensions fixed by min/max hints) have no resize handles; their band remains a move handle. A single fixed dimension still permits resizing the other. | implemented; pointer/touch move, resize, close and hidden-corner checks |
@@ -76,6 +76,11 @@ The initial defaults are the prototype’s Scottland preset.
 
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
 | GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
+| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. | implemented; live slider/curve, Save/Cancel/Defaults checks; all nineteen existing hover/keyboard hints and screenshots checked on isolated headless outputs; GO14/GO15 options and hints ready for the concurrent Goo tab redesign |
+| GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Attention breathing uses cached local influence and a 25 Hz draw-only timer (GO17); interaction-driven field work uses occupied tiles, without changing the falloff. | implemented/headless checked; see the GPU cost validation below |
+| GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below; Goo tab rows reserved for the settings redesign |
+| GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below; Goo tab row reserved for the settings redesign |
+| GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 
 ## Halo jobs with goo enabled
 
@@ -152,12 +157,13 @@ RGBA8 (log density and quantization-aware wave damping); missing float source te
 targets or shaders retain the halo with a log message.
 GLES 2 limits the source list to 1024; GLES 3 loops use the actual source count.
 
-Drift and curl time freeze two seconds after the last geometry/state change (except ongoing
-attention). GPU max reduction of wave energy and dye change every 30 updates decides sleep after
-at least three seconds. Sleeping disconnects the timer, stops simulation and source uploads, and
-reuses the settled image when other desktop damage needs painting. This interprets GO10 as no
-simulation work at rest; ordinary compositor repainting still costs a draw. Tenet 1 favors stillness
-after the liquid response over endless unattended motion.
+Drift and curl time freeze two seconds after the last geometry/state change, including while
+attention breathes. GPU max reduction of wave energy and dye change every 30 updates decides sleep
+after at least three seconds. Sleeping disconnects the simulation timer, stops simulation and
+source uploads, and reuses the settled field when other desktop damage needs painting. GO17 has
+a separate bounded-damage breathing timer. This interprets GO10 as no simulation work at rest;
+ordinary compositor repainting still costs a draw. Tenet 1 favors stillness after the liquid
+response over endless unattended motion.
 
 The Goo tab has a live switch, nineteen tall grab-anywhere `ParameterStack` rows and the shared
 curve editor. These are the same component as the Layout rows (whose first row is Center edge
@@ -437,6 +443,9 @@ showed the since-removed goo rims and smoothly blended goo.
 
 
 ## GPU cost validation (2026-10-02)
+
+Historical six-window benchmark: GO17 below supersedes its attention cost and
+sleep claims with a ten-window live-like fixture and render-only breathing.
 
 This work starts from `ship-goo` (`6919af6`), merged into `goo-perf` before revising
 `944b24f` and the interrupted tile WIP `a59ceae`. The shipped on switch, independent
@@ -1063,3 +1072,163 @@ pass all checks, and an archived-baseline Xe morph run passes 186. No assertion
 threshold was relaxed. These observations do not establish the cause of the initial
 Xe pixel/timing failures. Coverage excludes physical scanout, output rotation,
 simultaneous mixed-DPI outputs and GPU families beyond Xe/RX 580.
+
+## GO17: draw-only attention breathing (2026-10-02)
+
+Core, guided by tenets 1 and 5: a quiet request for attention, without moving a
+window or maintaining an expensive screen-wide animation. This branch starts at
+`511d9f1`. GO16's widget alpha-mask work is concurrent and absent from that base;
+this change does not alter source geometry or introduce widget-specific shapes.
+
+### Curve and cadence
+
+Apple’s [US6658577B2, Breathing status LED indicator](https://patents.google.com/patent/US6658577B2/en)
+describes positively biased sinusoidal PWM with a quiet interval. Its illustrated
+cycle is **1.8 seconds**, including a 0.4-second quiet interval; it does not specify
+`exp(sin(t))` or 12 breaths/minute. We use the requested slower **five-second cycle**
+(12/minute), with the normalized exponential-sine approximation described by its
+implementer [ThingPulse](https://thingpulse.com/breathing-leds-cracking-the-algorithm-behind-our-breathing-pattern/):
+
+```
+b(t) = (exp(-cos(2πt/5)) - exp(-1)) / (exp(1) - exp(-1))
+```
+
+This is an Apple-inspired approximation, not a claim to reproduce the patent’s
+PWM waveform. Monotonic time prevents wall-clock changes from shifting the pulse.
+A 40 ms timer gives 125 samples per breath; the largest preset light increment is
+under 0.8% and the exponential contour displacement is under 0.09 logical pixels.
+The light has a long low portion and a smooth crest. This cadence is independent
+of the output refresh rate. All sources share the curve; their existing attention
+dye remains visible even at its trough. The fallback halo uses the same period.
+
+### Why the old strips stayed busy
+
+Three mechanisms interacted. `frame_t` continuously drove the attention spring,
+so every changing swell looked like a changed simulation source. `goo.cpp` also
+injected positive attention impulses every 1.5 seconds and kept noise/curl time
+advancing during attention. Every wake damaged all current and previous bands;
+field tiles saved some work but did not isolate breathing from simulation.
+
+The wave stencil also damped velocity without damping height on ordinary float
+sources. A closed band can retain a constant displacement despite zero velocity;
+repeated positive impulses accumulate it, saturating the energy readback at 1.0.
+Both float and packed paths now damp height as well as velocity. New impulses
+invalidate a previous settled energy reading so a just-woken response cannot be
+mistaken for sleep. Split wave/dye energy diagnostics make the cause observable.
+Attention requests still update state dye once and WG19 still animates its peek;
+neither transition implies ongoing simulation after it settles.
+
+### Cached influence, local drawing and input
+
+The field pass stores the contribution-weighted attention influence in its unused
+alpha channel. Source metadata gains one attention column; the renderer’s source
+texture is eight columns wide. No extra render target, per-breath upload, field
+pass, wave impulse, or dye update is needed. The draw multiplies density by
+`1 + 0.12 × (goo_swell/0.7) × b(t) × influence` and adds a small dye-colored emission.
+Depth, overlap film and antialiasing use that same modulated density. CPU field
+input uses the same source weighting and curve; the existing grab dilation remains.
+
+Only this new decorative influence has finite support: full through three reaches,
+smoothly tapering to zero at four reaches from the source’s presented boundary.
+**The original field/dye exponential tails remain unchanged.** Nearby joined goo
+inherits the source’s weighted light and swell within that support. Damage is the
+intersection of its padded perimeter support, all drawable goo bands, and the
+output. Cubic-filter/AA padding and maximum breath swell are included. It does not
+invalidate every other source, window interior or the whole output. Geometry/state
+changes still damage old/new simulation bands and refresh the influence cache.
+Fullscreen, removal and an empty attention set disconnect the breathing timer.
+
+`goo-state` now reports `breath`, `breath_ticks`, `breath_damage`, `wave_energy`,
+`dye_energy` and `draw_gpu_ms`. Existing `gpu_ms` measures active simulation plus
+draw, and is stale during sleep. `draw_gpu_ms` times draw-only frames; it too is
+stale on a completely still desktop. Neither stale number means ongoing work.
+
+### Live-like cost and regression evidence
+
+Validation uses fresh isolated headless sessions only, on Xe (osanwe) and RX 580
+(plumbus), never physical scanout or a live-session reload. Ten foot windows are
+arranged at 2560×1600; real Super drags turn two into rail widgets, and one requests
+attention. Several remaining windows overlap. Shipped film, depth, soak and noise
+remain enabled, with an actual static colorful background-layer client. Baseline
+is `511d9f1`; artifacts are under `build/go17/`. Test config contains no personal
+layout or overrides, and all owned headless sessions are stopped after use.
+
+Run `tests/goo-breath-bench.py HEADLESS_DIR 10 --verify` through `tests/headless.sh run`
+after starting a fresh session with `--widgets`. It records process GPU/CPU busy,
+step deltas, sleep, the five-second curve, 25 Hz cadence, peak/trough screenshots,
+and pixel identity outside the reported damage strips. A separate energy sample
+on the unmodified live session confirmed energy 1.0 and about 15 ms per step with
+11 sources. No live attention was cleared or live code replaced.
+
+Ten-second samples, sequential baseline/after attention workloads on each GPU:
+
+| GPU | Attention compositor GPU busy before → after | GPU query before (simulation + draw) → after (draw-only median) | Attention simulation steps before → after |
+|---|---:|---:|---:|
+| Intel Xe | 48.7% → **0.5%** | 15.924 → **0.102 ms** | 470 → **0** |
+| RX 580 | 20.2% → **0.3%** | 3.183 → **0.037 ms** | 550 → **0** |
+
+Both after builds report `sleeping=true` during attention. With no attention,
+settled **and answered** samples are **0.0% compositor GPU, zero steps** on both
+GPUs. Before attention, the baseline failed to settle within 45 seconds on this
+fixture: 50.2% GPU on Xe and 21.3% on RX 580. It eventually slept after attention
+was cleared. The first answered after-run sampled the transition because the
+harness accepted a stale sleeping flag before `prepare()`; the final runs allow
+the clear transition to reach the renderer before waiting for sleep.
+
+Xe is shared: baseline whole-GPU busy was 96.4%, versus 17.5% after; its elapsed
+query includes that contention, so the query ratio alone is not an isolated
+shader-speed claim. Process work fell from 9.4 to approximately 0.1 Mcycles/s
+at a ~19.2 MHz reference-counter timebase. RX 580 whole-GPU busy was 20.6% before
+and 0.9% after. Attention compositor CPU fell from 11.5% to 3.4% (Xe), and 11.8%
+to 2.9% (RX 580), including benchmark IPC sampling. No GPU clocks or other sessions
+were changed.
+
+The final Xe and RX visual samples cover two complete breathing periods with
+zero simulation advances and unchanged cached energy. Cadence is 24.96/24.92 Hz.
+Peak/trough screenshots change 7,428/7,420 pixels inside the widget’s four strips,
+and **zero pixels outside those strips**. The strips occupy under 2% of the
+output; screenshots show the gentle swell and stronger light at the crest.
+Evidence: `build/go17/visual.jsonl`, `bench-visual/{peak,trough}.png`,
+`bench-visual/breath-samples.json`, and `build/go17/rx/final-rx.log` plus its
+`bench-final-rx/` captures. These timings measure the actual active draw, not the
+last simulation query retained while asleep.
+
+A later permitted read-only live sample also found `sleeping=true`, energy
+0.007843 and step count 819 unchanged across two readings (`live-readonly-sleep.json`).
+The live counter had reset since the initial observation, so this is a separate
+live-state observation, not a before/after test of this branch. This task never
+changed the live session or cleared its attention, and the old diagnostic does
+not expose attention-source counts.
+
+Regression coverage on Xe: `goo-test` **46/46 normal and 46/46 packed**, overlap/hover
+**28/28 on both paths**, flow **9/9 on both paths**, and the CPU field/bounds test.
+The additional packed GO17 fixture passes **12 checks**, including switching to
+fallback breathing and back into sleeping goo with attention still outstanding;
+its two-period screenshot comparison changes 7,443 local pixels and zero outside.
+Normal Xe/RX GO17 visual fixtures each pass the original ten checks.
+
+Two old assertions explicitly depended on the removed behavior: the bridge dye
+probe now samples x=594 in the far half of the resting 570–610 bridge, retaining
+the original color-change threshold, instead of x=600 where the old large swell
+made the attention source dominate. The film-join wave test now uses a real pointer
+hover on the rear edge to excite the wave, preserving stacking, rather than using
+an attention request as an impulse. Film breathing checks the new gentle field
+modulation and an unchanged simulation spring over a full five-second period.
+Initial failing logs and diagnostic dye samples remain under `build/go17/`.
+
+`widgets-test.sh` passes in the isolated RX 580 session (192 PASS records), including its embedded
+89-case widget input regression and all lifecycle, source ownership, attention,
+peek, fullscreen, reload and scope-cleanup checks. That build precedes only the
+fallback-switch follow-up; the final packed GO17 fixture above specifically
+verifies that follow-up on an attention widget.
+
+The RX 580 widget morph suite passes **270/270**, including attention presentation
+and retained dye through morph/reversal. No live session reload is performed:
+reload checks belong to the test's own headless session. Remote results are copied
+to `build/go17/rx/{widgets-rx,morph-rx}.log`.
+
+The final Xe build also passes **270/270 widget morph checks**
+(`build/go17/morph-final-xe.log`). All task-owned local and remote headless sessions
+and their runtime directories have been stopped/removed; evidence stays on disk
+under each isolated checkout’s `build/`. This remains headless validation, not a
+physical-display acceptance or deployment.
