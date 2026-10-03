@@ -52,4 +52,34 @@ class fullscreen_hint_node : public wf::scene::node_t
     hint_rgb color{0, 0, 0};
 };
 
+// A small, click-through name plate while a quick Alt+Tab chord previews a center window.
+class center_switcher_node : public wf::scene::node_t
+{
+  public:
+    center_switcher_node() : node_t(false) {}
+    void update(double output_width, const std::string& title, unsigned position, unsigned count,
+        const hint_palette& palette, double scale);
+    wf::geometry_t get_bounding_box() override { return box; }
+    void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+        wf::scene::damage_callback damage, wf::output_t *output) override;
+    wf::geometry_t box{0, 0, 0, 0};
+    std::shared_ptr<wf::texture_t> texture;
+    std::vector<unsigned char> pixels;
+    int pixel_width = 0, pixel_height = 0;
+};
+
+// A short visual acknowledgement of a completed hint press, on windows and cards alike.
+class hint_flash_node : public wf::scene::node_t
+{
+  public:
+    hint_flash_node() : node_t(false) {}
+    void update(wf::geometry_t geometry, double corner_radius, hint_rgb dye, double strength);
+    wf::geometry_t get_bounding_box() override { return box; }
+    void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+        wf::scene::damage_callback damage, wf::output_t *output) override;
+    wf::geometry_t box{0, 0, 0, 0};
+    hint_rgb color{0, 0, 0};
+    double radius = 0, alpha = 0;
+};
+
 }

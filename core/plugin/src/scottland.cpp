@@ -878,14 +878,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             std::clamp((double)max_scale, 0.05, 1.0), scale_curve, std::max(0.0, (double)blend_width));
     }
 
-    /** Is Alt held (alone or with others) on the keyboard? */
-    static bool alt_held()
+    /** Is Shift held (alone or with others) on the keyboard? */
+    static bool shift_held()
     {
         auto keyboard = wlr_seat_get_keyboard(wf::get_core().get_current_seat());
-        return keyboard && (wlr_keyboard_get_modifiers(keyboard) & WLR_MODIFIER_ALT);
+        return keyboard && (wlr_keyboard_get_modifiers(keyboard) & WLR_MODIFIER_SHIFT);
     }
 
-    /** The scale a window shows: the one Alt pinned it at (L31), else its zone's. */
+    /** The scale a window shows: the one Shift pinned it at (L31), else its zone's. */
     double scale_for(wayfire_toplevel_view view)
     {
         auto found = model.windows.find(view->get_id());
@@ -903,7 +903,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (state.pinned_scale != scale)
         {
             state.pinned_scale = scale;
-            LOGI("scottland: window ", view->get_id(), scale ? " keeps its scale (Alt)" : " follows its zone again");
+            LOGI("scottland: window ", view->get_id(), scale ? " keeps its scale (Shift)" : " follows its zone again");
             publish_model();
         }
     }
@@ -1249,6 +1249,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             state.focused = active && active->get_id() == id;
         }
+        record_focus_recency(active);
         publish_model();
     }
 
@@ -1404,7 +1405,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double scale = 1.0;                           // target, never an animation sample
         bool focused = false;
         bool above = false;
-        std::optional<double> pinned_scale;          // kept by Alt while dragging (L31), else the zone's
+        std::optional<double> pinned_scale;          // kept by Shift during drag or arrow motion (L31)
         std::optional<scottland::windowing::window_memory> placement;
         std::optional<scottland::windowing::point> pending_rail; // refine on widget adoption
         std::set<std::string> attention;
@@ -4499,11 +4500,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     std::unique_ptr<scottland::live_drag_t> drag = std::make_unique<scottland::live_drag_t>();
 
     wf::option_wrapper_t<wf::buttonbinding_t> move_button{"scottland/move"};
+    wf::option_wrapper_t<wf::buttonbinding_t> move_shift_button{"scottland/move_shift"};
     wf::button_callback on_move = [this] (auto)
     {
         auto view = gesture_target();
         if (!view || drag->view) return false;
         start_pointer_drag(view, wf::buttonbinding_t(move_button).get_button());
+        return bool(drag->view);
+    };
+    wf::button_callback on_move_shift = [this] (auto)
+    {
+        auto view = gesture_target();
+        if (!view || drag->view) return false;
+        start_pointer_drag(view, wf::buttonbinding_t(move_shift_button).get_button());
         return bool(drag->view);
     };
 
@@ -4579,8 +4588,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         remember_window(drag->view);
         bypass_window_keys();  // L31 owns Alt for this entire drag chord
         model.drag.started = true;
-        // Dragging it again without Alt: it follows the zones again (L31).
-        if (auto view = wf::toplevel_cast(drag->view); view && !alt_held() && !is_widget(view))
+        // Dragging it again without Shift: it follows the zones again (L31).
+        if (auto view = wf::toplevel_cast(drag->view); view && !shift_held() && !is_widget(view))
         {
             pin_scale(view, std::nullopt);
         }
@@ -5444,11 +5453,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.drag.last_center = center_at(model.drag.target);
         apply_opacity(view, model.drag.last_center);
 
-        // Alt held while dragging: the window keeps the scale it has, wherever it goes, and keeps it
-        // when dropped there (L31). Letting go of Alt mid-drag returns it to the zones.
+        // Shift held while dragging: keep the displayed scale through the drag and drop (L31).
         if (!is_widget(view))
         {
-            if (alt_held())
+            if (shift_held())
             {
                 auto& state = model.windows[view->get_id()];
                 if (!state.pinned_scale)
@@ -5554,9 +5562,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto geometry = main->get_geometry();
             double screen = main->get_output()->get_relative_geometry().width;
             double center = geometry.x + geometry.width / 2.0;
-            if (alt_held())
+            if (shift_held())
             {
-                pin_scale(main, model.drag.target);  // dropped with Alt held: it stays this size (L31)
+                pin_scale(main, model.drag.target);  // dropped with Shift held (L31)
             } else if (std::abs(place_at(center, screen).scale - model.drag.target) > JUMP)
             {
                 for (int d = 1; d <= 400; d++)
@@ -6019,6 +6027,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_motion_abs);
         wf::get_core().connect(&on_button);
         wf::get_core().bindings->add_button(move_button, &on_move);
+        wf::get_core().bindings->add_button(move_shift_button, &on_move_shift);
         drag->connect(&on_drag_output);
         drag->connect(&on_drag_motion);
         drag->connect(&on_drag_done);
@@ -6064,6 +6073,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         drag->handle_input_released();
         wf::get_core().bindings->rem_binding(&on_move);
+        wf::get_core().bindings->rem_binding(&on_move_shift);
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
         installing_model = reloading;  // teardown is also part of the atomic handover
         widget_peek_tick.disconnect();

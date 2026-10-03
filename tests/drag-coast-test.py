@@ -81,12 +81,12 @@ def place(name,x,y):
 
 def flick(name,dx=40,dy=0,touch=False,pause=0,pin=False,interval=.015):
     x,y=begin(name,touch)
-    if pin: key('LEFTALT',True)
+    if pin: key('LEFTSHIFT',True)
     trace=[]
     for i in range(1,7):
         time.sleep(interval); move(x+dx*i/6,y+dy*i/6,touch); trace.append((time.monotonic(),x+dx*i/6,y+dy*i/6))
     time.sleep(pause); finish(touch)
-    if pin: key('LEFTALT',False)
+    if pin: key('LEFTSHIFT',False)
     return trace
 
 def sample(name,seconds):
@@ -159,19 +159,28 @@ try:
         check(math.dist(before,center('CoastA'))<.1,'Esc stops released coast immediately')
         place('CoastA',w*.65,h/2); flick('CoastA',50,pin=True); samples=[]
         for _ in range(25): samples.append(view('CoastA')); time.sleep(.025)
-        check(all(abs(s['applied_scale']-1)<.01 for s in samples),'Alt pin survives drag coast')
+        check(all(abs(s['applied_scale']-1)<.01 for s in samples),'Shift pin survives drag coast')
         tap('ESC'); place('CoastA',w*.64,h/2); flick('CoastA',50)
         samples=[]
         for _ in range(25): samples.append(view('CoastA')); time.sleep(.025)
         check(any(s['applied_scale']<.9 for s in samples) and all(abs(s['applied_scale']-s['scale'])<.02 for s in samples),'drag coast follows live zone scale')
         tap('ESC')
         b=launch('CoastB'); place('CoastA',w/2,h/2); place('CoastB',w/2,h/2)
-        hold(); time.sleep(.5); before=offset(b)
-        tap('RIGHT'); time.sleep(.12); during=offset(b); time.sleep(.25); later=offset(b)
+        hold(); time.sleep(.5)
+        initial={a:offset(a), b:offset(b)}
+        tracked=max(initial, key=lambda identifier: math.hypot(*initial[identifier]))
+        before=initial[tracked]
+        check(math.hypot(*before)>1,'overlapping fixture has a displaced hint to track')
+        tap('RIGHT'); time.sleep(.12); during=offset(tracked); time.sleep(.25); later=offset(tracked)
         check(math.dist(before,during)<.3 and math.dist(during,later)<.3,'declutter freezes while keyboard coast moves through neighbors')
         offsets=[]
-        for _ in range(80): offsets.append(offset(b)); time.sleep(.008)
+        for _ in range(80): offsets.append(offset(tracked)); time.sleep(.008)
         after=offsets[-1]
+        (out/'keyboard-declutter.json').write_text(json.dumps({
+            'initial':initial,'tracked':tracked,'before':before,'during':during,
+            'later':later,'offsets':offsets,
+            'centers':{'A':center('CoastA'),'B':center('CoastB')},
+        }))
         check(math.dist(before,after)>1,'declutter resumes after keyboard coast rests')
         jumps=[math.dist(a,b) for a,b in zip(offsets,offsets[1:])]
         check(max(jumps)<math.dist(before,after)*.55 and sum(d>.05 for d in jumps)>3,

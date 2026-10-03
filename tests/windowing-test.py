@@ -247,8 +247,31 @@ try:
     release()
     check(delivered('Alpha').count('f') == before+1, 'quick Alt+F reaches the application')
     key('LEFTALT', True); tap('TAB'); time.sleep(.35)
-    check(not hints()['active'], 'quick Alt+Tab keeps existing routing and cancels delayed entry')
-    release(); focus(a)
+    switch=ipc('scottland/center-switcher')
+    check(not hints()['active'] and switch['active'] and switch['selected']==b and switch['preview'] and focused()==a,
+          'quick Alt+Tab previews next center window without entering hints or changing focus')
+    subprocess.run(['tests/headless.sh','run','grim',str(artifacts/'center-switcher.png')],check=True)
+    tap('TAB')
+    check(ipc('scottland/center-switcher')['selected']==a, 'held Alt and repeated Tab steps through MRU order')
+    key('LEFTSHIFT',True);tap('TAB');key('LEFTSHIFT',False)
+    check(ipc('scottland/center-switcher')['selected']==b, 'Alt+Shift+Tab steps backward')
+    release()
+    check(focused()==b and not ipc('scottland/center-switcher')['active'], 'Alt release focuses and raises previewed center window')
+    key('LEFTSHIFT',True);key('LEFTALT',True);tap('TAB')
+    check(ipc('scottland/center-switcher')['selected']==a and not hints()['active'],
+          'Shift held before Alt chooses the reverse center switcher without hints')
+    release();key('LEFTSHIFT',False)
+    c = launch('SwitcherThird')
+    focus(b); focus(a)
+    key('LEFTALT',True);tap('TAB')
+    check(ipc('scottland/center-switcher')['selected']==b, 'three-window switcher starts with most recently used alternative')
+    tap('TAB')
+    check(ipc('scottland/center-switcher')['selected']==c, 'held Tab reaches third center window in focus recency order')
+    release()
+    check(focused()==c, 'three-window Alt release commits the second preview')
+    ipc('window-rules/close-view',{'id':c})
+    wait_for(lambda: view('SwitcherThird') is None)
+    focus(a)
     memories_before = {h['window']: h['memories'] for h in hints()['hints']}
     hold()
     check(all(h['visible'] for h in hints()['hints']), 'Alt-alone hold shows every window hint')
@@ -266,8 +289,12 @@ try:
     check(focused() == b and hints()['selected'] == b, 'held-Alt Tab selects next hint')
     key('LEFTSHIFT', True); tap('TAB'); key('LEFTSHIFT', False)
     check(focused() == a and hints()['selected'] == a, 'held-Alt Shift+Tab selects previous hint')
-    choose(b)
+    tap(hint(b)['hint'].upper())
     check(focused() == b and near(center(view('Beta')), saved[1]), 'unselected window first press selects without moving')
+    check(hint(b)['flash']>0, 'acting window hint starts hint-color flash')
+    subprocess.run(['tests/headless.sh','run','grim',str(artifacts/'hint-flash.png')],check=True)
+    time.sleep(.3)
+    check(hint(b)['flash']==0, 'hint flash fades within 250 ms')
     choose(a)
     check(focused() == a and near(center(view('Alpha')), saved[0]), 'switching hints resets selection without moving')
     key('LEFTCTRL', True); key('LEFTMETA', True); tap('F')
@@ -306,11 +333,34 @@ try:
     ipc('stipc/move_cursor', {'x': round(width*.2), 'y': round(height*.4)})
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
     time.sleep(.45)
-    pinned = view('Alpha')['applied_scale']
-    check(pinned > .999 and view('Alpha')['zone'] == 'continuous', 'Alt drag pins full scale when dropped in periphery')
+    check(view('Alpha')['zone'] == 'continuous' and view('Alpha')['applied_scale'] < .95,
+          'Alt drag follows periphery scale and no longer pins')
     check(not hints()['active'], 'Alt drag chord cannot enter hints after drop')
     release()
-    check(abs(view('Alpha')['applied_scale'] - pinned) < .003, 'Alt drop pin persists after Alt release')
+    check(not next(w for w in ipc('scottland/desktop-model')['windows'] if w['id'] == a).get('pinned_scale'),
+          'Alt drop leaves no scale pin')
+    drag('Alpha',width*.5,height*.5)
+    f = view('Alpha')['frame']; cx,cy = f['x']+f['width']/2,f['y']+f['height']/2
+    ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
+    key('LEFTMETA',True);ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'press'})
+    ipc('stipc/move_cursor',{'x':round(cx+10),'y':round(cy)})
+    key('LEFTMETA',False);key('LEFTSHIFT',True)
+    ipc('stipc/move_cursor',{'x':round(width*.2),'y':round(height*.4)})
+    ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'release'})
+    time.sleep(.4)
+    pinned = view('Alpha')['applied_scale']
+    check(pinned > .999 and view('Alpha')['zone'] == 'continuous', 'Shift drag pins full scale in periphery')
+    key('LEFTSHIFT',False)
+    check(abs(view('Alpha')['applied_scale'] - pinned) < .003, 'Shift drop pin persists after Shift release')
+    f=view('Alpha')['frame']; cx,cy=f['x']+f['width']/2,f['y']+f['height']/2
+    ipc('stipc/move_cursor',{'x':round(cx),'y':round(cy)})
+    key('LEFTSHIFT',True);key('LEFTMETA',True)
+    ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'press'})
+    ipc('stipc/move_cursor',{'x':round(width*.8),'y':round(height*.4)})
+    ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':'release'})
+    key('LEFTMETA',False);key('LEFTSHIFT',False);time.sleep(.4)
+    check(center(view('Alpha'))[0]>width*.7 and view('Alpha')['applied_scale']>.99,
+          'Super+Shift drag starts a move and keeps scale pinned')
     state = ipc('scottland/desktop-model')['windows']
     check(next(w for w in state if w['id'] == a).get('pinned_scale') == pinned, 'desktop model publishes the drag scale pin')
     hold(); choose(a); release()
@@ -337,6 +387,16 @@ try:
     check(view('Alpha') is not None, 'F4 closes only the selected window')
     check(not any(w['id'] == b for w in ipc('scottland/desktop-model')['windows']), 'closing forgets placement with its model window')
     release()
+    key('LEFTALT',True);tap('TAB')
+    check(ipc('scottland/center-switcher')['count']==1 and ipc('scottland/center-switcher')['selected']==a,
+          'one center window previews itself')
+    release()
+    drag('Alpha',width*.2,height*.5)
+    key('LEFTALT',True);tap('TAB')
+    check(ipc('scottland/center-switcher')['count']==0 and ipc('scottland/center-switcher')['selected']==0,
+          'zero center windows previews an empty set')
+    release()
+    drag('Alpha',width*.5,height*.5)
     c = launch('Gamma')
     check(hint(a)['hint'] == 'a' and hint(c)['hint'] == 's', 'closed hint reused without changing surviving letters')
     close_all()
@@ -373,12 +433,17 @@ try:
     check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), p), 'periphery second full loop returns to its starting memory again')
     choose(a); choose(a); release()
     rail_memory = hint(a)['memories']
-    hold(); choose(a)
+    hold(); tap(hint(a)['hint'].upper())
+    check(hint(a)['flash']>0, 'acting widget hint starts its hint-color flash')
+    time.sleep(.65)
     check(near(center(view('Cycle')), center_memory) and not view('Cycle')['widgetized'], 'already-selected widget first hint press opens center')
     choose(a)
     check(near(center(view('Cycle')), p), 'widget second press moves to periphery')
     choose(a); release()
     check(view('Cycle')['widgetized'] and hint(a)['memories'] == rail_memory, 'widget full loop returns to widget and retains all memories')
+    key('LEFTALT',True);tap('TAB')
+    check(ipc('scottland/center-switcher')['count']==0, 'quick Alt+Tab excludes rail widgets')
+    release()
     # A rapid second press requests the rail from either window zone.
     hold(); choose(a); release()
     hold(); rapid_hint(a, 3); time.sleep(.8)
@@ -387,6 +452,9 @@ try:
     # A longer configurable interval permits inspecting the mapped widget between rapid presses.
     ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 3000})
     hold(); rapid_hint(a, 2); time.sleep(.8)
+    wait_for(lambda: ipc('scottland/layout-state')['widget_transition_count']==0 and
+             any(v['widget'] for v in views()))
+    time.sleep(.3)
     widget_before = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == a)
     memories_before = hint(a)['memories']
     rapid_hint(a, 1); time.sleep(.4)
@@ -426,18 +494,43 @@ try:
     time.sleep(.5)
     left_rail = hint(a)['memories'][3]
     drag('Cycle', width-6, height*.73)
+    def right_rail_committed():
+        link=next((w for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==a),None)
+        if not link or link['widget_view']<0 or ipc('scottland/layout-state')['widget_transition_count']:
+            return False
+        card=next((v for v in views() if v['id']==link['widget_view'] and v['widget']),None)
+        if not card or card['frame'].get('presentation',{}).get('waiting'):
+            return False
+        frame=card['frame']; memory=hint(a)['memories'][4]
+        return memory['set'] and abs(memory['x']-(frame['x']+frame['width']/2)/width)<.01
+    wait_for(right_rail_committed)
+    time.sleep(.3)
     right_rail = hint(a)['memories'][4]
+    right_link = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==a)
+    right_card = next((v for v in views() if v['id']==right_link['widget_view']),None)
     check(left_rail['set'] and right_rail['set'], 'real widget drag remembers both rails independently')
     hold(); choose(a); choose(a); choose(a); release()
     rail_memories_after = hint(a)['memories']
-    rails_preserved = rail_memories_after[3] == left_rail and rail_memories_after[4] == right_rail
+    after_link = next((w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == a), None)
+    after_card = next((v for v in views() if after_link and v['id'] == after_link['widget_view']), None)
+    # Peek can end during the hint cycle, shrinking the card from 320 to 96 px.
+    # WG4 keeps its screen-edge anchor; its center memory must move by half the size change.
+    rails_preserved = (rail_memories_after[3] == left_rail
+                       and after_link is not None and after_link['rail'] == 'right'
+                       and right_card is not None and after_card is not None
+                       and abs((right_rail['x'] * width + right_card['frame']['width'] / 2)
+                               - (rail_memories_after[4]['x'] * width + after_card['frame']['width'] / 2)) < 2
+                       and abs(rail_memories_after[4]['y'] - right_rail['y']) * height < 2)
     if not rails_preserved:
         print('rail-memory diagnostic: ' + json.dumps({
             'left_before': left_rail, 'right_before': right_rail,
             'left_after': rail_memories_after[3], 'right_after': rail_memories_after[4],
             'widgetized': view('Cycle')['widgetized'],
+            'before_link': right_link, 'before_card_frame': right_card['frame'] if right_card else None,
+            'after_link': after_link,
+            'after_cards': [v['frame'] for v in views() if v['widget']],
         }, sort_keys=True), flush=True)
-    check(rails_preserved, 'rail cycle returns to exact most recent remembered rail')
+    check(rails_preserved, 'rail cycle preserves anchored edge and remembered height across card size change')
     hold(); choose(a); release()
     # Occupy the remembered center. Memory wins over the obstacle.
     b = launch('Blocker')

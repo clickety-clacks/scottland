@@ -112,10 +112,20 @@
 
         <option name="alt_hold_delay" type="int">
             <_short>Window mode Alt-alone hold (ms)</_short>
-            <_long>Hold Alt alone for this long to show compositor window hints. A key or modifier pressed before the delay leaves the whole chord with the app and existing desktop shortcuts. Once entered, all keys control windows until Alt is released.</_long>
+            <_long>Hold Alt alone for this long to show compositor window hints. Alt+Tab and Alt+Shift+Tab switch center windows; other quick chords keep their app and desktop routing. Once window mode opens, its keys control windows until Alt is released.</_long>
             <default>300</default>
             <min>1</min>
             <max>3000</max>
+        </option>
+        <option name="center_switcher_next" type="key">
+            <_short>Next center window</_short>
+            <_long>Preview the next center-zone window by recent use. Releasing Alt focuses and raises it.</_long>
+            <default>&lt;alt&gt; KEY_TAB</default>
+        </option>
+        <option name="center_switcher_previous" type="key">
+            <_short>Previous center window</_short>
+            <_long>Preview the previous center-zone window by recent use. Releasing Alt focuses and raises it.</_long>
+            <default>&lt;alt&gt; &lt;shift&gt; KEY_TAB</default>
         </option>
         <option name="window_double_tap_delay" type="int">
             <_short>Window mode hint double-tap interval (ms)</_short>
@@ -245,6 +255,10 @@
 		<option name="move" type="button">
 			<_short>Move a window live</_short>
 			<default>&lt;super&gt; BTN_LEFT</default>
+		</option>
+		<option name="move_shift" type="button">
+			<_short>Move a window at fixed scale</_short>
+			<default>&lt;super&gt; &lt;shift&gt; BTN_LEFT</default>
 		</option>
 		<option name="resize" type="button">
 			<_short>Resize around the center</_short>

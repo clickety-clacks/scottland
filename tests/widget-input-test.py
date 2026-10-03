@@ -146,7 +146,7 @@ def launch(title, rail="right", y=260, app_id="foot"):
 
 
 def cleanup():
-    for name in ("M", "LEFTMETA", "LEFTSHIFT", "LEFTCTRL"):
+    for name in ("M", "TAB", "LEFTALT", "LEFTMETA", "LEFTSHIFT", "LEFTCTRL"):
         key(name, False)
     for title, process in owned:
         view = app(title)
@@ -612,6 +612,26 @@ remap_from_browser_close =
             check("O5 an explicit none overrides the metadata default", "minimize_widget =" not in generated)
             generated = generate("[scottland]\n", 'hl.bind("CTRL+SUPER+M", "true")\n')
             check("O5 extra modifiers are a different shortcut", "minimize_widget =" not in generated)
+            marker.unlink(missing_ok=True)
+            center_imports = (
+                f'hl.bind("ALT+TAB", hl.dsp.exec_cmd("printf forward >> {marker}"))\n'
+                f'hl.bind("ALT+SHIFT+TAB", hl.dsp.exec_cmd("printf reverse >> {marker}"))\n'
+            )
+            generated = generate(fixture_base + "\n[scottland]\n", center_imports)
+            check("O5 center switcher owns both Alt+Tab directions",
+                  "KEY_TAB" not in '\n'.join(line for line in generated.splitlines()
+                      if line.startswith(('binding_omarchy_', 'repeatable_binding_omarchy_'))) and
+                  generated.count('displaced') >= 2, generated)
+            config.write_text(fixture_base + "\n[scottland]\n" + generated)
+            time.sleep(0.8)
+            key("LEFTALT", True); key("TAB", True); key("TAB", False)
+            forward = ipc.call("scottland/center-switcher")
+            key("LEFTSHIFT", True); key("TAB", True); key("TAB", False)
+            reverse = ipc.call("scottland/center-switcher")
+            key("LEFTSHIFT", False); key("LEFTALT", False)
+            check("O5 real Alt+Tab and Alt+Shift+Tab keep the center preview and never run imports",
+                  forward["active"] and forward["preview"] and reverse["active"] and
+                  reverse["preview"] and not marker.exists())
             # (Keys no Scottland feature uses: on those, the user's shortcuts win over other defaults.)
             generated = generate(
                 "[wm-actions]\ntoggle_fullscreen = <super> KEY_K | <super> <shift> KEY_K | <super> KEY_N\n",

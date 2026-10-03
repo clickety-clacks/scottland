@@ -52,6 +52,7 @@ void alt_mode::activate(uint64_t id, bool double_tap)
         order = cycle_order(start); step = 0;
         if (!already_selected && !double_tap)
         {
+            if (hint_action) hint_action(id);
             select(id, false);
             return;
         }
@@ -59,11 +60,16 @@ void alt_mode::activate(uint64_t id, bool double_tap)
     if (double_tap)
     {
         step = (std::find(order.begin(), order.end(), destination::widget) - order.begin() + 1) % order.size();
-        if (!widget) move(id, destination::widget);
+        if (!widget)
+        {
+            if (hint_action) hint_action(id);
+            move(id, destination::widget);
+        }
         return;
     }
     auto to = order[step];
     step = (step + 1) % order.size();
+    if (hint_action) hint_action(id);
     move(id, to);
 }
 void alt_mode::letter(char key, uint32_t time_ms)
