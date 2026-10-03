@@ -62,7 +62,7 @@ struct renderer_t::impl
     int layer_key[2] = {-1, -1};
     bool layer_b_available = true, requested_keyframes = false, use_keyframes = false;
     std::vector<source_t> sources;
-    OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
+    OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p, backdrop_p;
     OpenGL::program_t intrinsic_p, refraction_p, composite_p, composite_mix_p;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query, atlas;
@@ -130,7 +130,7 @@ struct renderer_t::impl
     {
         if (timer)
             glDeleteQueries(1, &timer);
-        for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p,
+        for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p, &backdrop_p,
                        &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p,
                        &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
@@ -257,6 +257,7 @@ struct renderer_t::impl
             glGetProgramiv(p->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
             if (!linked) available = false;
         }
+        compile(backdrop_p, vertex, backdrop_shader);
         compile(copy_p, vertex,
                 "precision highp float; uniform sampler2D image; void "
                 "main(){gl_FragColor=texture2D(image,vec2(.5));}");
@@ -554,7 +555,8 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     return true;
 }
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
-                      const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys)
+                      const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
+              bool reuse_backdrop)
 {
     if (!p->ready)
         return;
@@ -605,6 +607,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     glBindTexture(GL_TEXTURE_2D, bg.texture);
     // Keep a backdrop cache: outside this pass's damage the framebuffer still contains
     // last frame's goo/windows. Copying all of it would feed those colors back into refraction.
+    if (!reuse_backdrop)
     wf::gles::for_each_scissor_rect(data.target, capture,
                                     [&]
                                     {
@@ -621,6 +624,30 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                                                 y - viewport[1], x, y, right - x, top - y);
                                         }
                                     });
+    auto ortho = wf::gles::render_target_orthographic_projection(data.target);
+    const GLfloat vertices[] = {0, 0, float(p->width), 0, float(p->width),
+                                float(p->height), 0, float(p->height)};
+    if (reuse_backdrop)
+    {
+        // Nothing under the breathing strips changed, so nothing under them was
+        // repainted this frame: put the cached backdrop back, then draw the breath on it.
+        ++backdrop_reuses;
+        auto &program = p->backdrop_p;
+        program.use(wf::TEXTURE_TYPE_RGBA);
+        program.uniformMatrix4f("MVP", ortho);
+        program.uniformMatrix4f("uBackgroundMap", ortho);
+        bind(program, "uBackground", 5, bg.texture);
+        glDisable(GL_BLEND);
+        glEnable(GL_SCISSOR_TEST);
+        for (auto &box : data.target.framebuffer_region_from_geometry_region(data.damage) &
+                 data.target.framebuffer_region_from_geometry_region(breath_area))
+        {
+            wf::gles::scissor_render_buffer(data.target, wlr_box_from_pixman_box(box));
+            program.attrib_pointer("position", 2, 0, vertices);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        }
+        program.deactivate();
+    }
     if (damage.empty())
     {
         if (p->timer_open)
@@ -631,9 +658,6 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         }
         return;
     }
-    auto ortho = wf::gles::render_target_orthographic_projection(data.target);
-    const GLfloat vertices[] = {0, 0, float(p->width), 0, float(p->width),
-                                float(p->height), 0, float(p->height)};
     auto setup_surface = [&](OpenGL::program_t &program, float surface_breath)
     {
         p->common(program, p->width, p->height);
@@ -895,6 +919,10 @@ glm::vec4 renderer_t::sample_at(glm::vec2 point)
     return result;
 }
 bool renderer_t::overlapping() const { return p->overlap; }
+bool renderer_t::backdrop_ready() const
+{
+    return p->ready && p->background.texture && p->cache_valid && !p->cache_dirty;
+}
 bool renderer_t::highlighting() const { return p->controls; }
 float renderer_t::wave_at(glm::vec2 point) { return sample_at(point).w; }
 } // namespace scottland::goo

@@ -78,6 +78,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary windows retain analytic rounded boxes and never sample the widget atlas. (Mike, 2026-10-02; core) | implemented/headless checked; current normal/packed and merged-cache validation below; physical-display verification remains open |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 | GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
+| GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 
 ## Halo jobs with goo enabled
 
@@ -1579,3 +1580,147 @@ are in [goo-gpu-research.md](goo-gpu-research.md).
 
 This is isolated headless validation on one RX 580. Xe, forced keyframe-target
 allocation failure, physical scanout and Mike's visual acceptance remain open.
+
+## GO19: what a breath still cost, and cutting it (2026-10-03)
+
+Core. On the merged build (`5623284`) Mike's Xe session measured 11-14% compositor GPU with
+one large window breathing and keyframes on, 14-16% in exact mode and 17% with goo off
+(the fallback halo). Tenet 1 keeps the breath as it is (curve, swell, light, 25 Hz); the work
+behind it changes.
+
+### Where the cost went
+
+Read-only samples of the live session on 2026-10-03 (four-second fdinfo windows beside
+`goo-state` counters; `build/live-series-r2*.txt`), same build:
+
+| Live state (Xe, idle clock) | Compositor GPU |
+|---|---:|
+| Quiet desktop, goo asleep, nothing breathing | 0.1-0.2% |
+| A window breathing, goo asleep, keyframes (550,000 px of strips, 26 ticks/s, 0.27-0.35 ms per tick) | **2.8-3.9%** |
+| Goo simulation awake (with or without breathing) | **27-54%** |
+
+So a sleeping breath costs about three points there, and the rest of the 11-14% is time
+the simulation spent awake. In those samples it woke every 10-15 seconds while a window was
+breathing; each wake runs the full simulation and redraws every band for three seconds or
+more. Mike was using the desktop during the samples, so they do not say what woke it during
+his measurement; the new `wakes` counter will.
+
+Three causes were found and reproduced on plumbus:
+
+1. **Small changes fully wake the simulation.** A widgetized terminal whose title changes
+   every five seconds (an agent session does this) re-fits its card by a pixel, which
+   changes that source's outline. The fixture's `--title-hz 0.2` case went from 1.0% to
+   7.8% with the window breathing: more than half the time awake.
+2. **The fallback halo repainted the whole window, and everything under it, sixty times a
+   second** to animate a ring a few pixels wide.
+3. **Every breath tick repainted the wallpaper and windows under the strips and copied the
+   result back into the backdrop cache**, although nothing under them had changed.
+
+A fourth was found on the way: shrinking the breathing strips (GO18) sampled the CPU field
+for **about one second** in a debug build (which is what `make plugin` and dev-install
+produce), blocking the compositor each time the goo fell asleep with something breathing.
+
+### What changed
+
+- **Breath-only frames reuse the backdrop.** The goo node watches scene damage. If nothing
+  but its own breathing tick damaged the output since the last frame, and all of the
+  frame's damage lies in the strips, it claims the strips: nodes behind it skip them, and
+  the goo writes its cached backdrop there before drawing the breath. No window, wallpaper
+  or backdrop copy is touched. Any other scene damage takes the normal path, as does one
+  frame in 25, so a change that arrived without scene damage cannot leave a stale backdrop
+  for more than a second. Works in keyframe and exact modes.
+- **Quiet wakes.** A change of outline (`shape`, `geometry`) that raises no wave does not
+  restart drift or the three-second window; the simulation takes it up and sleeps once one
+  full energy interval (30 steps) reads settled. Changes of color, hover, swell, hints,
+  attention, stacking or window count stay loud, as do moves of more than a pixel.
+- **Shape checks ignore alpha away from the contour.** A widget's distance field depends
+  only on its 50% alpha contour; alpha changing elsewhere no longer rebuilds it.
+- **Fallback halo.** Ticks that only animate the halo damage its ring (the bounding box
+  minus the window inset by its corner radius). A breath alone repaints at 25 Hz; hover,
+  focus and color transitions keep the spring's rate. Alpha-shaped widgets and window-mode
+  hint tints, which can draw inside the rectangle, keep whole-window damage.
+- **Tightening in slices.** About 2 ms per breath tick, long strips sampled four times
+  coarser along their length; the conservative strips stay in use until it finishes
+  (about five seconds in a debug build).
+- **Diagnostics** in `goo-state`: `wakes` (count per cause), `last_wake`,
+  `backdrop_reuses`, `breath_tightens`, `tighten_ms`, `tick_ms`, `breath_loose`.
+
+### Fixture
+
+`tests/goo-idle-bench.sh` gains `--title-hz` (a widgetized terminal re-titles itself),
+`--awake` (samples the awake simulation and times settling), `--no-reuse`, a per-case
+`wakes` and `backdrop_reuses` delta, settle times, and a visual check that frames drawn
+over the reused backdrop equal frames whose scene was repainted. With `--stream-hz 2` it is
+the slowly redrawing terminal under a breathing window.
+
+### Measurements (RX 580, plumbus)
+
+Private headless sessions, 2560×1600 at 120 Hz, Mike's goo settings preset, 5 s per case
+(10 s with `--title-hz`), before is `5623284`. At most one other agent's compositor was
+running; whole-GPU busy stayed within a point of the compositor's in the rows used.
+
+| Center window breathing | Keyframes | Exact | Goo off (halo) |
+|---|---:|---:|---:|
+| Idle desktop | 1.0% → **0.4-0.7%** | 1.1% → **0.7-0.8%** | 5.1% → **0.4-0.5%** |
+| Terminal under it redraws at 2 Hz | 0.9% → 0.8% | 1.3% → 1.0% | 5.5% → 0.7% |
+| A widget re-titles every 5 s | 7.8% → **1.8-2.5%** | 7.1% → 3.1% | 5.3% → 0.4% |
+
+- Breath-only frames: 124-130 of 129-140 frames reuse the backdrop; the backdrop copy falls
+  from 229,000 to under 10,000 pixels per frame.
+- Awake simulation on this GPU: 21% (it is 27-54% on Mike's Xe).
+- Simulation steps per quiet wake: 215-230 → 30.
+- Tightening: one 988 ms block → 247 ms in slices; longest breath tick 2.9 ms.
+- A quiet wake still lasts until the energy reads settled, and a re-title that moves a
+  card edge by more than a pixel is loud as before. In the same fixture the
+  nothing-breathing case stayed at 13% (about 195 steps per wake) and the
+  breathing-widget case varied between 2.8% and 11.6% across runs. Re-titling widgets
+  remain the most expensive thing found; this change removes part of it, not all.
+
+**Expected on Xe (not measured).** Halo: the same 60 Hz whole-window repaint is gone, so
+most of its 17%. Goo on: the sleeping breath (2.8-3.9% live) loses the repaint under the
+strips and the backdrop copy; the awake share falls only for wakes caused by quiet outline
+changes. If Mike's wakes have another cause (`wakes` will name it: hover, color,
+wallpaper, frame, settings), that share remains and is the next thing to cut.
+
+### Fidelity
+
+- Goo on: no pixel differs by design. Frames over the reused backdrop were identical to
+  repainted frames in six paired screenshots; GO17's checks (curve, cadence, zero steps,
+  pixels outside the strips unchanged) pass; GO18's key comparison is unchanged.
+- Quiet wakes: the liquid's mess no longer drifts for two seconds after a one-pixel
+  outline change. The outline and dye still update.
+- Fallback halo: a breath steps at 25 Hz instead of 60, as the goo's has since GO17. The
+  fixture's halo check (it visibly breathes) passes.
+- Tight strips are up to 12 pt wider at the ends of long strips.
+
+### Regression
+
+plumbus, private headless sessions, normal and packed GLES 2 paths unless noted; the same
+suites were run on unmodified main in a scratch copy where a failure appeared.
+
+| Suite | Result |
+|---|---|
+| goo-test | 50 / 50 on both paths |
+| goo-overlap-hover | 28 / 28 on both paths |
+| goo-breath-bench `--verify` (GO17) | 12 / 12 on both paths |
+| goo-depth-soak | 26 / 26 on both paths |
+| goo-flow (connected/gapped waves, fullscreen) | 9 / 9 |
+| goo-shape | 123 pass, 7 fail on both paths: the same seven fail on main (round-widget contour checks) |
+| widget morph | 270 / 270 |
+| widgets, goo on / goo off | 194 / 194 each |
+| unsupported-GPU halo fallback | 4 / 4 |
+| halo separation (goo off) | 10 pass, 1 fail: same on main (the check expects the shipped goo default while the run forces goo off) |
+| hint style, goo on / off | 52 pass 1 fail / 51 pass 2 fail: the same widget-card checks fail on main |
+| idle fixture `--verify --visual` | GO17 checks, key comparison, tight strips, backdrop reuse and "halo visibly breathes" all pass |
+
+One assertion was changed with the behavior: goo-shape's "badge commit wakes sleeping
+field" looked for the simulation still awake some time after a badge appeared; a quiet wake
+can already be asleep again, so it now accepts simulation steps having advanced. The first
+candidate build skipped scheduling the goo when a frame's damage missed it, which stopped
+the simulation from stepping (and sleeping) behind an opaque wallpaper; the depth suite
+caught it and the scheduling is as before. Artifacts: `build/go19/`.
+
+Not covered: fractional output scale and two outputs for backdrop reuse (at a fractional
+scale the frame damage may never fit the strips, which only means the normal path is
+used; on two outputs each breathing screen sees the other's ticks as foreign damage, the
+same). No physical display.

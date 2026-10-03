@@ -161,7 +161,29 @@ bool shape_cache_t::update(glm::vec4 bounds, const std::function<void(const wf::
         for (int x = 0; x < w; x++)
             alpha[y * w + x] = (rgba[4 * ((texture.invert_y ? y : h - 1 - y) * w + x) + 3] + 8) / 17;
     checks++;
-    if (shape && shape->width == w && shape->height == h && alpha == p->alpha)
+    // The distance field is built from the 50% contour, placed within a texel by the two
+    // alphas that straddle it. Alpha changing anywhere else (a card's text over its own
+    // translucent body) leaves the shape, and so the goo around it, exactly as it was.
+    auto same_contour = [&]
+    {
+        if (p->alpha.size() != alpha.size())
+            return false;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                int i = y * w + x;
+                bool inside = alpha[i] >= 8;
+                if (inside != (p->alpha[i] >= 8))
+                    return false;
+                if (alpha[i] == p->alpha[i])
+                    continue;
+                if ((x > 0 && (alpha[i - 1] >= 8) != inside) || (x + 1 < w && (alpha[i + 1] >= 8) != inside) ||
+                    (y > 0 && (alpha[i - w] >= 8) != inside) || (y + 1 < h && (alpha[i + w] >= 8) != inside))
+                    return false;
+            }
+        return true;
+    };
+    if (shape && shape->width == w && shape->height == h && same_contour())
     {
         check_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
