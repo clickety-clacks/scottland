@@ -64,7 +64,7 @@ ShellRoot {
   readonly property var widgetDefaults: ({widget_bounce:0.04,widget_peek_enter_delay:150,
     widget_peek_leave_delay:100,widget_attention_peek_duration:5000})
   property var widgetValues: Object.assign({},widgetDefaults)
-  readonly property var solarDefaults: ({enabled:false,allow_ip:false,location_set:false,latitude:0,longitude:0})
+  readonly property var solarDefaults: ({enabled:true,allow_ip:true,location_set:false,latitude:0,longitude:0})
   property var solarValues: Object.assign({},solarDefaults)
   property var originalSolar: Object.assign({},solarDefaults)
   property bool solarLatitudeEdited:false
@@ -547,8 +547,10 @@ ShellRoot {
     margins.bottom: Math.max(24, Math.round((screen?.height || 800)*0.04))
     implicitWidth: Math.min(Math.max(320,(screen?.width || 1280)-24),1040,
       Math.max(780,Math.round((screen?.width || 1280)*0.63)))
+    // About half the screen's height (Mike, 2026-10-02: the near-full-height panel was too large),
+    // never so short that a tab's rows get cramped on small screens.
     implicitHeight: Math.min((screen?.height || 800)-24,
-      Math.round((screen?.height || 800)*(root.tabsWrapped && (screen?.height || 800)<800 ? 0.94 : 0.88)))
+      Math.max(520, Math.round((screen?.height || 800)*0.5)))
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.layer: WlrLayer.Overlay

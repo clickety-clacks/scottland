@@ -81,7 +81,7 @@ headless evidence](../docs/goo.md#go14go15-depth-and-wallpaper-dye-2026-10-02).
 | A13 | Interface sounds are synthesized at runtime (no sample files), follow the system volume and mute, and can be turned off (`scottland/sounds`). | implemented |
 | A8 | The halo's neutral tone and the close dot follow the desktop's light or dark color scheme (the desktop portal's appearance setting, or GNOME's color-scheme), switching live. The highlight color comes from the desktop portal's accent color, or from an integration (the Omarchy adapter supplies its theme's accent), and also switches live. | implemented |
 | A14 | Windows and widgets use live, eased focused/unfocused opacity for their center, side or widget zone; Window mode has its own focused/unfocused pair while active, and fullscreen is always opaque. The eight settings default to 1.0 and are exposed in metadata, `scottland-ctl` and Settings (S20). | implemented (headless) |
-| A15 | Optional sun following sets the standard light/dark preference only when local sunrise/sunset disagrees with its current mode. Geoclue is preferred, saved coordinates are the fallback, and IP location needs explicit opt-in. Scottland follows the active theme; distro/adapter engines choose named themes (S21). | implemented (headless) |
+| A15 | Sun following (on by default) sets the standard light/dark preference only when local sunrise/sunset disagrees with its current mode. Geoclue is preferred, saved coordinates are the fallback, and IP location is the last fallback (on by default, can be turned off). Scottland follows the active theme; distro/adapter engines choose named themes (S21). | implemented (headless) |
 
 ## Layout configurator (`scottland-settings`)
 

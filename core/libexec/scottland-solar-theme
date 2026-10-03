@@ -35,9 +35,10 @@ def read_config():
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG)
     section = cfg["solar"] if cfg.has_section("solar") else {}
-    def yes(name):
-        return str(section.get(name, "false")).lower() in ("true", "yes", "1", "on")
-    return dict(enabled=yes("enabled"), allow_ip=yes("allow_ip"),
+    def yes(name, default="false"):
+        return str(section.get(name, default)).lower() in ("true", "yes", "1", "on")
+    # On by default, finding the location by itself (Mike, 2026-10-02); either can be turned off.
+    return dict(enabled=yes("enabled", "true"), allow_ip=yes("allow_ip", "true"),
                 location=coordinates(section.get("latitude"), section.get("longitude")) if yes("location_set") else None)
 
 
