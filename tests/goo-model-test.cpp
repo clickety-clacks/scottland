@@ -38,9 +38,16 @@ int main()
     windows[0].attention = true;
     float trough = density({470, 300}, windows, s, 0, 0);
     float crest = density({470, 300}, windows, s, 0, 1);
-    assert(crest > trough && crest < trough * 1.12f); // weighted shared bridge
+    assert(crest > trough * 1.12f && crest < trough * 1.28f); // shared bridge retains visible travel
     assert(density({800, 300}, windows, s, 0, 1) == density({800, 300}, windows, s, 0, 0));
     assert(density({300, 300}, windows, s, 0, 1) == 0); // content never swells
+    // A light-only or GO17-sized pulse must not satisfy the geometry contract.
+    // An isolated shipped border starts at 13 px; its peak must cover 17 px
+    // but remain inside 20 px, independently of the renderer's emission.
+    std::vector<source_t> solo{a}; solo[0].attention = true; amounts(solo, s);
+    assert(density({467, 300}, solo, s, 0, 0) < s.threshold());
+    assert(density({467, 300}, solo, s, 0, 1) > s.threshold());
+    assert(density({470, 300}, solo, s, 0, 1) < s.threshold());
     windows[0].attention = false;
     auto amount = windows[0].liquid.x;
     s.thinning = 0;

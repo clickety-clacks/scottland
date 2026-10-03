@@ -76,7 +76,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
 | GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
 | GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary windows retain analytic rounded boxes and never sample the widget atlas. (Mike, 2026-10-02; core) | implemented/headless checked; current normal/packed and merged-cache validation below; physical-display verification remains open |
-| GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
+| GO17 | Attention breathes with a five-second Apple-inspired light curve and visibly moving source-local shore at draw time (about six logical pixels at shipped goo settings). Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 | GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 
@@ -1254,7 +1254,11 @@ The field pass stores the contribution-weighted attention influence in its unuse
 alpha channel. The shared source texture has eleven columns: seven existing
 values, GO17 attention at column 7, and GO16 mask data at columns 8–10. GO17
 adds no render target, per-breath upload, field pass, wave impulse, or dye update. The draw multiplies density by
-`1 + 0.12 × (goo_swell/0.7) × b(t) × influence` and adds a small dye-colored emission.
+`1 + expm1(0.45 × goo_thickness / goo_reach × goo_swell / 0.7) × b(t) × influence`
+and adds a small dye-colored emission. The exponential converts the restored
+pre-GO17 swell excursion into shore travel without changing the cached field.
+The initial GO17 multiplier was `0.12 × goo_swell/0.7`; the regression correction
+below restores visible geometry as well as light.
 Depth, overlap film and antialiasing use that same modulated density. CPU field
 input uses the same source weighting and curve; the existing grab dilation remains.
 
@@ -1724,3 +1728,53 @@ Not covered: fractional output scale and two outputs for backdrop reuse (at a fr
 scale the frame damage may never fit the strips, which only means the normal path is
 used; on two outputs each breathing screen sees the other's ticks as foreign damage, the
 same). No physical display.
+
+## Attention bulge regression (2026-10-03)
+
+Mike reported that attention still varied its light but no longer visibly bulged.
+The change is in **076348b (GO17)**, rather than GO18 keyframes or GO19 wakes:
+its parent animates the local swell from `.55` to `1`, a `.45` excursion. GO17
+stops that spring in goo mode, replaces it with a `.12` density multiplier, and
+reduces the fallback spring target to `.12`. At shipped goo settings the new
+shore travel was only `24 × log(1.12) = 2.72` logical pixels. The existing tests
+counted changing pixels, which allowed a light pulse to satisfy the test.
+
+The correction restores the `.45` excursion at draw time. For full-size goo that
+is `.45 × thickness × swell/.7` (5.85 logical pixels at defaults); converting
+that travel to a density multiplier keeps CPU hit/damage estimates, exact draw,
+and cached surface keys consistent. The fallback uses the `.45` local spring
+excursion. The five-second curve, 25 Hz timer, source weighting, sleeping
+simulation, finite modulation support, key spacing bound, backdrop reuse and
+incremental strip tightening are retained. This restores motion without
+restoring the old continuous waves/dye simulation or permanently swollen base.
+
+`tests/attention-bulge-test.sh` measures the rendered outer shore against the
+desktop, so changing emission alone cannot pass. It checks windows and actual
+rail cards, both cached keys and exact strips, and the fallback's rendered
+shore and thickness. Its main baseline fails with 2–3 pixels of motion; the
+correction passes with 5–6 pixels in goo, 4–5 in the fallback, and zero
+simulation steps during all goo measurements. All runs use fresh isolated
+sessions on **plumbus**, with input through stipc and screenshots under build/.
+
+The GO17/18/19 idle fixture also passes curve/cadence, sleep, outside-band pixel
+identity, fallback pixels, tightened/loose strip identity and reused/repainted
+backdrop identity. Paired five-second RX 580 measurements at shipped settings:
+
+| Case | Main baseline | Restored bulge | Simulation steps |
+|---|---:|---:|---:|
+| No attention | 0.0% | 0.0% | 0 |
+| Window, cached keys | 0.5% | 0.6% | 0 |
+| Widget, cached keys | 0.2% | 0.3% | 0 |
+| Window, exact strips | 0.5% | 0.6% | 0 |
+| Widget, exact strips | 0.2% | 0.2% | 0 |
+| Window, fallback halo | 0.4% | 0.4% | n/a |
+
+These are compositor GPU busy measurements on the shared test machine, not an
+Intel Xe or physical-scanout claim. Larger motion refreshes more cached keys
+(about 22 rather than 12 refreshes per five seconds for the window), but the
+expensive simulation stays asleep and backdrop reuse remains active.
+
+The rendered-shore test also passes on an isolated combination of **ship-merged5**
+and **goo-wallpaper-wake (GO20)**, including cached/exact window and widget
+shores, zero simulation steps while breathing, backdrop reuse, and fallback
+geometry. No live reload, installation or osanwe test session was used.

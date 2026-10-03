@@ -82,7 +82,7 @@ def verify_fallback(view, art):
     end = time.monotonic() + 6
     while time.monotonic() < end and len(shots) < 2:
         swell = view()['frame']['swell']
-        label = 'off-trough' if swell < .001 else 'off-peak' if swell > .123 else None
+        label = 'off-trough' if swell < .005 else 'off-peak' if swell > .44 else None
         if label and label not in shots:
             path = art / (label + '.png')
             subprocess.run(['grim', str(path)], check=True)

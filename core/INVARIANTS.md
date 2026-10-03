@@ -152,3 +152,7 @@ and cancels with real Esc input; the scene must return to its ordinary layer and
 FS1 regression: late-mapped widgets respect fullscreen before their first visible frame.
 `state-regressions-test.sh` covers late adoption and reload with keyboard focus on another
 headless output. The model audit checks visibility against Wayfire fullscreen promotion.
+
+Attention bulging is measured as shore motion, separately from emission, by
+`tests/attention-bulge-test.sh` (GO17/WG15): cached and exact goo stay asleep;
+per-window fallback halos visibly bulge too. See the 2026-10-03 correction in docs/goo.md.
