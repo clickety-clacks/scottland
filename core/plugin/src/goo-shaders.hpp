@@ -97,8 +97,8 @@ float deposit(vec2 p,vec4 r,vec4 corners,vec4 dot) {
   }
   float d=length(p-dot.xy)/12.; return a+dot.z*.45*exp(-d*d);
 }
-vec3 gooField(vec2 p) {
-  float F=0.,cloud=0.,weight=0.,breathing=0.;vec2 back=backdrop(p);
+vec4 gooField(vec2 p) {
+  float F=0.,tinted=0.,cloud=0.,weight=0.,breathing=0.;vec2 back=backdrop(p);
   // Extend the front source under its own content for bilinear reconstruction.
   // Rendering and the flow mask still clip that content analytically.
   if(back.x==0.)back=vec2(1.,0.);
@@ -117,11 +117,12 @@ vec3 gooField(vec2 p) {
     if(back.x<float(uCount)&&back.y<0.)a/=max(g.x,.0001);
     float contribution=max(a,0.)*fe;
     F+=contribution;
+    tinted+=contribution*source(i,7.).y;
     // Finite support applies only to the decorative modulation, never field/dye tails.
     float shore=g.y<0.?sourceSdf(p,i):sdBox(p-r.xy,r.zw,g.y);
     float local=1.-smoothstep(3.*uReach,4.*uReach,max(shore,0.));
     breathing+=contribution*source(i,7.).x*local;
-  } return vec3(F,cloud/max(weight,.0001),breathing/max(F,.0001));
+  } return vec4(F,tinted/max(F,.0001),cloud/max(weight,.0001),breathing/max(F,.0001));
 }
 vec2 off(int k){return k==0?vec2(1,0):k==1?vec2(-1,0):k==2?vec2(0,1):vec2(0,-1);}
 vec2 decode(vec4 hv){
@@ -150,11 +151,11 @@ void main(){
   vec2 p=gl_FragCoord.xy*uRes/uSize;
   float d=uOverlap>.5?surfaceSdf(p):unionSdf(p);
   // Deep inside a window the goo is hidden and never read: any value over the threshold will do.
-  vec3 value=d<-8.?vec3(uT*4.,0.,0.):gooField(p);
-  float f=value.x,cloud=value.y;
+  vec4 value=d<-8.?vec4(uT*4.,0.,0.,0.):gooField(p);
+  float f=value.r,cloud=value.b;
   // Log packing spends RGBA8 precision at the boundary, avoiding staircase edges.
   if(uPacked>.5)f=log(1.+f)/2.83321334;
-  gl_FragColor=vec4(f,step(0.,d),cloud,value.z);
+  gl_FragColor=vec4(f,value.g,cloud,value.a);
 }
 )";
 // Mask at quarter-resolution texel centers for the two wave stencils. Dye
@@ -256,7 +257,7 @@ void main(){
 )";
 inline const std::string render_shader = common + mask + R"(
 uniform sampler2D uWave,uDyeTex,uBackground;
-uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints,uDepth,uProfile,uSoak;
+uniform float uWaveAmp,uShine,uRelief,uAlpha,uHints,uNeutralTint,uDepth,uProfile,uSoak;
 uniform vec2 uFieldSize;
 uniform float uBreath,uBreathSwell;
 uniform mat4 uBackgroundMap;
@@ -317,6 +318,7 @@ void main(){
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
+  float dyeTint=clamp(value.g,0.,1.);
   float cloud=uControls>.5?value.b:0.;
   vec3 n=normalize(vec3(-slope,1.));
   // Keep the shipped one-pixel exclusion around window content.
@@ -334,7 +336,10 @@ void main(){
   // supplies the color so saturated wallpaper cannot repaint a focused edge.
   float dyeBlend=.55+milk*.25;
   if(uSoak>0.)dyeBlend=mix(dyeBlend,1.,1.-smoothstep(0.,uThickness*.9,d));
-  vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95)+dye*rim*.22;
+  if(uNeutralTint>.5&&dyeTint<.999999)dyeBlend*=dyeTint;
+  vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95);
+  if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;
+  else color+=dye*rim*.22;
   // Emission is independent of normal, light and dye release. Zero really is off.
   color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);
   color+=.25*pulse*mix(dye,vec3(1.),.25);

@@ -111,10 +111,11 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 | A8 | The halo's neutral tone and the close dot follow the desktop's light or dark color scheme (the desktop portal's appearance setting, or GNOME's color-scheme), switching live. The highlight color comes from the desktop portal's accent color, or from an integration (the Omarchy adapter supplies its theme's accent), and also switches live. | implemented |
 | A14 | Windows and widgets use live, eased focused/unfocused opacity for their center, side or widget zone; Window mode has its own focused/unfocused pair while active, and fullscreen is always opaque. The eight settings default to 1.0 and are exposed in metadata, `scottland-ctl` and Settings (S20). | implemented (headless) |
 | A15 | Sun following (on by default) sets the standard light/dark preference only when local sunrise/sunset disagrees with its current mode. Geoclue is preferred, saved coordinates are the fallback, and IP location is the last fallback (on by default, can be turned off). Scottland follows the active theme; distro/adapter engines choose named themes (S21). | implemented (headless) |
+| A16 | The unfocused neutral edge tone is adjustable from black to white separately for light and dark schemes, with shipped values preserving today's light/dark colors exactly. Its strength ranges continuously from clear refraction to today's full tint in both goo and fallback halo. Focus, attention and Window mode hint colors retain full strength; the live controls are in Settings (S22). | implemented; plumbus unit, live Settings and goo/halo visual checks (2026-10-03) |
 
 ## Layout configurator (`scottland-settings`)
 
-The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight tabs, zone overlay and hints): see [docs/settings.md](../docs/settings.md) (S1–S21).
+The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight tabs, zone overlay and hints): see [docs/settings.md](../docs/settings.md) (S1–S22).
 
 ## Desktop state
 

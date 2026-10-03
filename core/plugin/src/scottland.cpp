@@ -832,6 +832,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> widget_opacity_unfocused{"scottland/widget_opacity_unfocused"};
     wf::option_wrapper_t<double> window_mode_opacity_focused{"scottland/window_mode_opacity_focused"};
     wf::option_wrapper_t<double> window_mode_opacity_unfocused{"scottland/window_mode_opacity_unfocused"};
+    wf::option_wrapper_t<double> unfocused_edge_tone_light{"scottland/unfocused_edge_tone_light"};
+    wf::option_wrapper_t<double> unfocused_edge_tone_dark{"scottland/unfocused_edge_tone_dark"};
+    wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
@@ -842,6 +845,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void load_color_scheme()
     {
         scottland::palette.light = std::string(color_scheme) == "light";
+        scottland::palette.unfocused_edge_tone_light = unfocused_edge_tone_light;
+        scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
+        scottland::palette.unfocused_edge_strength = unfocused_edge_strength;
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
         wf::color_t attention = attention_color;
@@ -1600,7 +1606,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             s.rect = {(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2, r.width() / 2, r.height() / 2};
             bool attention = needs_attention(widget_link ? widget_link->window_id : id);
             s.liquid = {1, radius, float(s.id) * 1.618f, attention ? 3.f : 1.f};
-            auto neutral = scottland::palette.light ? glm::vec3{.08, .08, .1} : glm::vec3{.9, .92, .95};
+            auto neutral = scottland::palette.unfocused_edge_tone();
             s.dye = glm::mix(glm::mix(neutral, scottland::palette.accent, float(frame->focus_mix)), scottland::palette.attention,
                              float(frame->attention_mix));
             // Window mode tints the goo with the hint's color (WK14); it has no separate rim.
@@ -1609,6 +1615,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 s.dye = *frame->hint_dye;
                 s.hinted = true;
             }
+            s.dye_strength = scottland::edge_style::tint_strength(
+                scottland::palette.unfocused_edge_strength, float(frame->focus_mix),
+                float(frame->attention_mix), s.hinted);
             if (frame->can_resize())
                 s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
             s.sides = {frame->side_cloud[0], frame->side_cloud[1], frame->side_cloud[2], frame->side_cloud[3]};
@@ -6095,6 +6104,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         widget_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
         window_mode_opacity_focused.set_callback([=] { apply_all_opacity(); });
         window_mode_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
+        unfocused_edge_tone_light.set_callback([=] { load_color_scheme(); });
+        unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
+        unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
         hint_avoidance_always.set_callback([=] {
             declutter_signature.clear();
             refresh_layout_avoidance();

@@ -34,6 +34,12 @@ remains available.
   only within goo: where goo connects two windows their colors bleed across the bridge; apart, they
   stay separate. A new state blooms from the window's edge outward; an answered one fades as the
   window's neutral color replaces it.
+- **Unfocused edge appearance (A16).** Neutral gray level is stored separately for light and dark
+  schemes. Strength scales only neutral dye in the final composite; focus, attention and Window mode
+  hint dye keep their full color. Strength zero leaves refraction and glass highlights without
+  neutral dye. Strength one follows the old composite path exactly. The fallback halo uses the same
+  scheme tone and scales only its unfocused density. Defaults reproduce the old, slightly warm/cool
+  neutral RGB values.
 - **States are dye, not decorations.** Everything that marks a window's state on the halo is dye
   dropped into the goo (and, where it needs presence, a little more goo): focus, attention, the
   corner or side the pointer is near (whole-control cloudy dye and internal light, blended into
@@ -48,7 +54,7 @@ remains available.
 ## Tuning
 
 Every goo constant is a Scottland setting with a live control in the settings app (beside the zone
-sliders and scale curve): reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
+sliders and scale curve): unfocused edge tone and strength, reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
 wave persistence, wave height, dye spread, dye swirl, dye release, shine, relief, liquid depth, wall wetting, wallpaper soak, overlap film,
 control cloudiness, control glow, control proximity, and the falloff
 curve (how density drops away from an edge) in the curve editor. Changes apply live, as the zone

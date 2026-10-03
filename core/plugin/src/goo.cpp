@@ -32,7 +32,9 @@ const char *difference(const std::vector<goo::source_t> &a, const std::vector<go
     for (size_t i = 0; i < a.size(); i++)
     {
         if (a[i].id != b[i].id) return "stacking";
-        if (glm::length(a[i].dye - b[i].dye) > .001f || a[i].light != b[i].light) return "color";
+        if (glm::length(a[i].dye - b[i].dye) > .001f ||
+            std::abs(a[i].dye_strength - b[i].dye_strength) > .001f || a[i].light != b[i].light)
+            return "color";
         if (glm::length(a[i].corners - b[i].corners) > .001f || glm::length(a[i].sides - b[i].sides) > .001f ||
             std::abs(a[i].dot.z - b[i].dot.z) > .001f || std::abs(a[i].dot.w - b[i].dot.w) > .001f)
             return "hover";

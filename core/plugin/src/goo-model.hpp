@@ -30,6 +30,7 @@ struct source_t
     glm::vec4 rect{};              // center and half extent
     glm::vec4 liquid{1, 10, 1, 1}; // amount, radius, seed, release multiplier
     glm::vec3 dye{};
+    float dye_strength = 1; // source contribution to neutral-vs-state tint in the final composite
     glm::vec4 corners{};
     glm::vec4 sides{}; // top, right, bottom, left: eased whole-control proximity
     float control_extent = 26;
