@@ -4,6 +4,7 @@
 #include "goo-runtime.hpp"
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <optional>
 #include <cmath>
 #include <wayfire/config/option-wrapper.hpp>
@@ -21,21 +22,34 @@ double now()
 {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-bool same(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> &b)
+// What changed between two source lists (nullptr: nothing the goo responds to). The name
+// is reported as the reason the simulation woke, so the cost of a wake can be traced.
+const char *difference(const std::vector<goo::source_t> &a, const std::vector<goo::source_t> &b)
 {
     if (a.size() != b.size())
-        return false;
+        return "windows";
+    // Loud causes first: the last two can be a quiet wake (see prepare()).
     for (size_t i = 0; i < a.size(); i++)
-        if (a[i].shape != b[i].shape || glm::length(a[i].shape_body - b[i].shape_body) > .03f ||
-            a[i].id != b[i].id || glm::length(a[i].rect - b[i].rect) > .03f ||
-            glm::length(a[i].dye - b[i].dye) > .001f || glm::length(a[i].corners - b[i].corners) > .001f ||
-            glm::length(a[i].sides - b[i].sides) > .001f ||
+    {
+        if (a[i].id != b[i].id) return "stacking";
+        if (glm::length(a[i].dye - b[i].dye) > .001f || a[i].light != b[i].light) return "color";
+        if (glm::length(a[i].corners - b[i].corners) > .001f || glm::length(a[i].sides - b[i].sides) > .001f ||
+            std::abs(a[i].dot.z - b[i].dot.z) > .001f || std::abs(a[i].dot.w - b[i].dot.w) > .001f)
+            return "hover";
+        if (std::abs(a[i].swell - b[i].swell) > .001f || a[i].grabbed != b[i].grabbed) return "swell";
+        if (a[i].hinted != b[i].hinted) return "hints";
+        if (a[i].attention != b[i].attention || a[i].emitter != b[i].emitter) return "attention";
+    }
+    for (size_t i = 0; i < a.size(); i++)
+    {
+        if (a[i].shape != b[i].shape || glm::length(a[i].shape_body - b[i].shape_body) > .03f) return "shape";
+        // The close dot's place and the controls' extent follow the outline.
+        if (glm::length(a[i].rect - b[i].rect) > .03f || std::abs(a[i].scale - b[i].scale) > .001f ||
             std::abs(a[i].control_extent - b[i].control_extent) > .03f ||
-            glm::length(a[i].dot - b[i].dot) > .001f || std::abs(a[i].swell - b[i].swell) > .001f ||
-            a[i].hinted != b[i].hinted || a[i].grabbed != b[i].grabbed || std::abs(a[i].scale - b[i].scale) > .001f ||
-            a[i].attention != b[i].attention || a[i].emitter != b[i].emitter || a[i].light != b[i].light)
-            return false;
-    return true;
+            glm::length(glm::vec2(a[i].dot) - glm::vec2(b[i].dot)) > .001f)
+            return "geometry";
+    }
+    return nullptr;
 }
 class goo_node_t;
 class goo_instance_t : public wf::scene::simple_render_instance_t<goo_node_t>
@@ -43,6 +57,9 @@ class goo_instance_t : public wf::scene::simple_render_instance_t<goo_node_t>
   public:
     goo_instance_t(goo_node_t *, wf::scene::damage_callback, wf::output_t *);
     void render(const wf::scene::render_instruction_t &data) override;
+    void schedule_instructions(std::vector<wf::scene::render_instruction_t> &instructions,
+                               const wf::render_target_t &target, wf::regionf_t &damage) override;
+    bool reuse_backdrop = false;
 };
 class goo_node_t : public wf::scene::node_t
 {
@@ -51,6 +68,26 @@ class goo_node_t : public wf::scene::node_t
     wf::wl_timer<true> tick, breath_tick;
     uint64_t breath_ticks = 0;
     float breath_hold = -1;
+    // A breath-only frame: nothing but this node's breathing tick damaged the output since
+    // the last frame. The scene under the strips is then exactly the cached backdrop, so
+    // the goo repaints the strips itself and the windows and wallpaper beneath are left
+    // alone. Any other scene damage, or damage outside the strips, takes the normal path;
+    // one frame a second does too, so a change that arrived without scene damage cannot
+    // leave a stale backdrop for longer than that.
+    bool foreign_damage = true, own_damage = false, reuse_enabled = true;
+    int reuse_streak = 0;
+    wf::regionf_t breath_guard;
+    wf::signal::connection_t<wf::scene::node_damage_signal> on_scene_damage =
+        [this] (wf::scene::node_damage_signal *) { if (!own_damage) foreign_damage = true; };
+    bool breath_only_frame(const wf::regionf_t &damage)
+    {
+        bool foreign = std::exchange(foreign_damage, false);
+        bool reuse = !foreign && reuse_enabled && attached && goo_enabled() && wf::get_core().is_gles2() && state.sleeping &&
+            !whole && !breath_area.empty() && reuse_streak < 25 && state.renderer.backdrop_ready() &&
+            !(state.sources.size() == 1 && !state.sources[0].emitter) && (damage ^ breath_guard).empty();
+        reuse_streak = reuse ? reuse_streak + 1 : 0;
+        return reuse;
+    }
     bool breath_tight = true, breath_loose = false, breath_keys = true;
     wf::regionf_t breath_area;
     wf::effect_hook_t pre;
@@ -63,9 +100,10 @@ class goo_node_t : public wf::scene::node_t
     {
         state.output = o;
         state.settings = goo::current_settings;
-        state.wake = [this] { wake(); };
+        state.wake = [this] { wake("frame"); };
         pre = [this] { prepare(); };
         o->render->add_effect(&pre, wf::OUTPUT_EFFECT_PRE);
+        wf::get_core().scene()->connect(&on_scene_damage);
     }
     ~goo_node_t() { detach(); }
     void detach()
@@ -180,10 +218,27 @@ class goo_node_t : public wf::scene::node_t
             wf::scene::damage_node(node, b);
         last_bands = next;
     }
+    // Whole logical pixels, so a frame's damage (rounded out by the output) stays inside
+    // the guard below at integer scales.
+    static wf::regionf_t whole_pixels(const wf::regionf_t &region)
+    {
+        wf::regionf_t out;
+        for (auto &b : region)
+            out |= wf::geometry_t{std::floor(b.x1), std::floor(b.y1),
+                std::ceil(b.x2) - std::floor(b.x1), std::ceil(b.y2) - std::floor(b.y1)};
+        return out;
+    }
+    void guard_breathing()
+    {
+        breath_guard.clear();
+        for (auto &b : breath_area)
+            breath_guard |= wf::geometry_t{b.x1 - 1., b.y1 - 1., b.x2 - b.x1 + 2., b.y2 - b.y1 + 2.};
+    }
     void update_breathing()
     {
         breath_area.clear();
         breath_loose = true;
+        tightening.reset();
         // The cached influence is exactly zero past four reaches. Include cubic
         // reconstruction/AA padding and intersect the actual drawable goo bands:
         // joined goo inside this support breathes too; distant strips never do.
@@ -216,7 +271,8 @@ class goo_node_t : public wf::scene::node_t
             }
         }
         for (auto &b : bands()) visible |= b;
-        breath_area = support & visible & get_bounding_box();
+        breath_area = whole_pixels(support & visible & get_bounding_box());
+        guard_breathing();
         breath_tick.disconnect();
         state.breath = 0;
         if (breath_area.empty()) return;
@@ -224,14 +280,20 @@ class goo_node_t : public wf::scene::node_t
         // 125 samples per breath. The maximum light step is below 0.8% and the
         // preset's moving contour advances less than 0.09 logical pixels/tick.
         breath_tick.set_timeout(40, [this] {
+            double tick_start = now();
             state.breath = breath_hold >= 0 ? breath_hold : goo::attention_breath(now());
             if (state.sleeping && breath_tight && breath_loose)
                 tighten_breathing();
             if (state.sleeping)
+            {
+                own_damage = true;
                 for (auto &b : breath_area)
                     wf::scene::damage_node(shared_from_this(), wf::geometry_t{
                         double(b.x1), double(b.y1), double(b.x2-b.x1), double(b.y2-b.y1)});
+                own_damage = false;
+            }
             ++breath_ticks;
+            tick_ms = std::max(tick_ms * .98, (now() - tick_start) * 1000);
             return true;
         });
     }
@@ -239,57 +301,113 @@ class goo_node_t : public wf::scene::node_t
     // is asleep, shrink each rectangle to its widest-breath wet density plus a
     // reconstruction margin. Masked alpha contours use a denser lattice so a
     // thin lobe is covered by the same margin rather than disabling tightening.
-    void tighten_breathing()
+    //
+    // Sampling the field is slow (about a second for one large window in a debug build),
+    // so it runs in slices of a couple of milliseconds per breath tick; the conservative
+    // strips stay in use until it finishes. A long strip is sampled coarsely along its
+    // length: the shore there changes over the liquid's reach, not from pixel to pixel.
+    struct tighten_t
     {
-        breath_loose = false;
+        std::vector<wf::geometry_t> rects;
+        size_t index = 0;
+        double y = 0, x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+        bool row_started = false;
+        wf::regionf_t tight;
+    };
+    std::optional<tighten_t> tightening;
+    void tighten_breathing(double budget_ms = 2)
+    {
+        double tighten_start = now();
+        if (!tightening)
+        {
+            tightening.emplace();
+            for (auto &b : breath_area)
+                tightening->rects.push_back(wf::geometry_t{double(b.x1), double(b.y1),
+                    double(b.x2 - b.x1), double(b.y2 - b.y1)});
+            tighten_ms = 0;
+        }
+        auto &job = *tightening;
         const float wet = .5f * state.settings.threshold();
         const double support_padding = 5 + 1. / state.output->handle->scale;
         const double reach = 4 * state.settings.reach + support_padding;
-        wf::regionf_t tight;
-        for (auto &b : breath_area)
+        while (job.index < job.rects.size())
         {
+            auto &b = job.rects[job.index];
+            double bx2 = b.x + b.width, by2 = b.y + b.height;
             bool masked = false;
             for (auto &source : state.sources)
             {
                 if (!source.shape) continue;
                 auto body = source.shape_body.z > 0 && source.shape_body.w > 0 ? source.shape_body : source.rect;
-                wf::regionf_t support;
-                support |= wf::geometry_t{body.x - body.z - reach, body.y - body.w - reach,
-                    2 * body.z + 2 * reach, 2 * body.w + 2 * reach};
-                if (!(support & wf::geometry_t{double(b.x1), double(b.y1),
-                                                double(b.x2-b.x1), double(b.y2-b.y1)}).empty())
+                if (body.x - body.z - reach < bx2 && body.x + body.z + reach > b.x &&
+                    body.y - body.w - reach < by2 && body.y + body.w + reach > b.y)
                 {
                     masked = true;
                     break;
                 }
             }
-            const double step = masked ? 2 : 4;
-            const double padding = step + 5 + 1. / state.output->handle->scale;
-            double x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-            for (double y = b.y1; y < b.y2 + step; y += step)
-                for (double x = b.x1; x < b.x2 + step; x += step)
+            const double fine = masked ? 2 : 4, coarse = 4 * fine;
+            const double step_x = b.width > 2 * b.height ? coarse : fine;
+            const double step_y = b.height > 2 * b.width ? coarse : fine;
+            if (!job.row_started)
+            {
+                job.y = b.y;
+                job.x1 = job.y1 = 1e9;
+                job.x2 = job.y2 = -1e9;
+                job.row_started = true;
+            }
+            for (; job.y < by2 + step_y; job.y += step_y)
+            {
+                if ((now() - tighten_start) * 1000 > budget_ms)
                 {
-                    glm::vec2 point{std::min<double>(x, b.x2), std::min<double>(y, b.y2)};
+                    tighten_ms += (now() - tighten_start) * 1000;
+                    return;  // resume at this row on the next tick
+                }
+                for (double x = b.x; x < bx2 + step_x; x += step_x)
+                {
+                    glm::vec2 point{std::min<double>(x, bx2), std::min<double>(job.y, by2)};
                     if (goo::density(point, state.sources, state.settings, state.time, 1) < wet)
                         continue;
-                    x1 = std::min<double>(x1, point.x);
-                    y1 = std::min<double>(y1, point.y);
-                    x2 = std::max<double>(x2, point.x);
-                    y2 = std::max<double>(y2, point.y);
+                    job.x1 = std::min<double>(job.x1, point.x);
+                    job.y1 = std::min<double>(job.y1, point.y);
+                    job.x2 = std::max<double>(job.x2, point.x);
+                    job.y2 = std::max<double>(job.y2, point.y);
                 }
-            if (x2 < x1)
-                continue;
-            x1 = std::max<double>(std::floor(x1 - padding), b.x1);
-            y1 = std::max<double>(std::floor(y1 - padding), b.y1);
-            x2 = std::min<double>(std::ceil(x2 + padding), b.x2);
-            y2 = std::min<double>(std::ceil(y2 + padding), b.y2);
-            tight |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
+            }
+            if (job.x2 >= job.x1)
+            {
+                const double pad = 5 + 1. / state.output->handle->scale;
+                double x1 = std::max<double>(std::floor(job.x1 - step_x - pad), b.x);
+                double y1 = std::max<double>(std::floor(job.y1 - step_y - pad), b.y);
+                double x2 = std::min<double>(std::ceil(job.x2 + step_x + pad), bx2);
+                double y2 = std::min<double>(std::ceil(job.y2 + step_y + pad), by2);
+                job.tight |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
+            }
+            job.index++;
+            job.row_started = false;
         }
-        if (!tight.empty())
-            breath_area = tight;
+        breath_loose = false;
+        ++breath_tightens;
+        if (!job.tight.empty())
+            breath_area = whole_pixels(job.tight);
+        guard_breathing();
+        tighten_ms += (now() - tighten_start) * 1000;
+        tightening.reset();
     }
-    void wake()
+    // Wakes of a sleeping simulation by cause, for goo-state: each one runs the full
+    // simulation and redraws every band for at least three seconds.
+    std::map<std::string, uint64_t> wake_counts;
+    std::string last_wake;
+    uint64_t wake_step = 0, breath_tightens = 0;
+    double tick_ms = 0, tighten_ms = 0;
+    void wake(const char *reason)
     {
+        if (state.sleeping)
+        {
+            wake_counts[reason]++;
+            last_wake = reason;
+            wake_step = state.renderer.steps;
+        }
         // A hidden window's attention timer can wake us after prepare() suspended
         // fullscreen goo. No repaint may follow that occluded damage, so preserve
         // the suspension here too. Leaving fullscreen replaces sources in prepare.
@@ -335,7 +453,7 @@ class goo_node_t : public wf::scene::node_t
                     if (state.settings.soak > 0)
                     {
                         last_change = now();
-                        wake();
+                        wake("wallpaper");
                     }
                 }, state.output);
             wallpaper_dirty = true;
@@ -349,7 +467,7 @@ class goo_node_t : public wf::scene::node_t
                 whole = true;
             }
             last_change = now();
-            wake(); // also remove old wallpaper dye when the last background disappears
+            wake("wallpaper"); // also remove old wallpaper dye when the last background disappears
         }
         // No wallpaper client means no color source, not an implicit black dye.
         if (wallpaper_nodes.empty()) return;
@@ -370,7 +488,7 @@ class goo_node_t : public wf::scene::node_t
         wallpaper_map = wf::gles::render_target_orthographic_projection(target);
         wallpaper_dirty = false;
         last_change = now();
-        wake();
+        wake("wallpaper");
     }
     void prepare()
     {
@@ -390,8 +508,9 @@ class goo_node_t : public wf::scene::node_t
                 wf::scene::add_front(state.output->node_for_layer(wf::scene::layer::BACKGROUND), node);
             whole = true; // refresh the backdrop cache after changing its scene position
         }
-        if (!same(next, state.sources))
+        if (auto changed = difference(next, state.sources))
         {
+            size_t impulses = state.impulses.size();
             // Movement, state blooms, swells and drops excite the shared surface.
             for (auto &s : next)
             {
@@ -410,8 +529,15 @@ class goo_node_t : public wf::scene::node_t
             state.sources = std::move(next);
             band_cache.reset();
             update_breathing();
-            last_change = now();
-            wake();
+            // A quiet change: an outline that shifted without anything moving enough to
+            // raise a wave (a widget card re-fitting its text by a pixel). The field and dye
+            // take it up, but it does not restart the drift or the three-second response
+            // window, so the simulation sleeps again as soon as its energy reads settled.
+            bool quiet = state.impulses.size() == impulses &&
+                (!strcmp(changed, "shape") || !strcmp(changed, "geometry"));
+            if (!quiet)
+                last_change = now();
+            wake(changed);
         }
         if (state.sources.empty() || (state.sources.size() == 1 && !state.sources[0].emitter))
         {
@@ -429,7 +555,7 @@ class goo_node_t : public wf::scene::node_t
             state.time += std::min(.05, t - last_step);
         last_step = t;
     }
-    void render(const wf::scene::render_instruction_t &data)
+    void render(const wf::scene::render_instruction_t &data, bool reuse_backdrop)
     {
         if (!attached || !goo_enabled() || !wf::get_core().is_gles2() ||
             (state.sources.size() == 1 && !state.sources[0].emitter))
@@ -463,7 +589,10 @@ class goo_node_t : public wf::scene::node_t
                         // that quantization floor as settled; larger wave/dye
                         // deltas still exceed this bound and keep simulating.
                         const float sleep_energy = state.renderer.packed ? 16.f / 255.f + .0001f : .012f;
-                        if (now() - last_change > 3 && state.renderer.energy <= sleep_energy)
+                        // The energy is read every 30 steps; one full interval after a wake
+                        // makes the reading describe the response to it.
+                        if (now() - last_change > 3 && state.renderer.energy <= sleep_energy &&
+                            state.renderer.steps - wake_step >= 30)
                         {
                             state.sleeping = true;
                             tick.disconnect();
@@ -473,7 +602,8 @@ class goo_node_t : public wf::scene::node_t
                 wf::regionf_t area;
                 for (auto &b : band)
                     area |= b;
-                state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys);
+                state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
+                                    reuse_backdrop);
             });
     }
 };
@@ -481,7 +611,18 @@ goo_instance_t::goo_instance_t(goo_node_t *s, wf::scene::damage_callback d, wf::
     : simple_render_instance_t(s, d, o)
 {
 }
-void goo_instance_t::render(const wf::scene::render_instruction_t &data) { self->render(data); }
+void goo_instance_t::render(const wf::scene::render_instruction_t &data) { self->render(data, reuse_backdrop); }
+void goo_instance_t::schedule_instructions(std::vector<wf::scene::render_instruction_t> &instructions,
+                                           const wf::render_target_t &target, wf::regionf_t &damage)
+{
+    // Scheduled even with no damage of its own, as before: render() also steps the simulation.
+    auto ours = damage & self->get_bounding_box();
+    reuse_backdrop = !ours.empty() && self->breath_only_frame(damage);
+    instructions.push_back(wf::scene::render_instruction_t{.instance = this, .target = target, .damage = ours});
+    // The strips are fully painted by the goo this frame: nothing behind needs to draw there.
+    if (reuse_backdrop)
+        damage ^= self->breath_area;
+}
 } // namespace
 struct goo_t::impl
 {
@@ -544,7 +685,7 @@ struct goo_t::impl
             n->update_breathing();
             n->whole = true;
             n->last_change = now();
-            n->wake();
+            n->wake("settings");
         }
         for (auto &v : wf::get_core().get_all_views())
             v->damage();
@@ -571,7 +712,7 @@ struct goo_t::impl
         goo::screens[o] = &n->state;
         // prepare() moves this same surface above windows when overlap requires it.
         wf::scene::add_front(o->node_for_layer(wf::scene::layer::BACKGROUND), n);
-        n->wake();
+        n->wake("start");
         screen_changed(o, true);
     }
     void remove(wf::output_t *o)
@@ -611,6 +752,8 @@ struct goo_t::impl
                     n->state.renderer.breath_exact = data["breath_exact"].as_bool();
                     test_changed = true;
                 }
+                if (data.has_member("breath_reuse") && data["breath_reuse"].is_bool())
+                    n->reuse_enabled = data["breath_reuse"].as_bool();
                 if (data.has_member("breath_tight") && data["breath_tight"].is_bool() &&
                     n->breath_tight != data["breath_tight"].as_bool())
                 {
@@ -623,12 +766,22 @@ struct goo_t::impl
                 n->damage();
             s["output"] = o->handle->name;
             s["sleeping"] = n->state.sleeping;
+            wf::json_t wakes;
+            for (auto &[reason, count] : n->wake_counts)
+                wakes[reason] = (int64_t)count;
+            s["wakes"] = wakes;
+            s["last_wake"] = n->last_wake;
             s["breath_keys_enabled"] = n->breath_keys;
             s["steps"] = (int64_t)n->state.renderer.steps;
             s["step_ms"] = n->state.renderer.last_step_ms;
             s["gpu_ms"] = n->state.renderer.last_gpu_ms;
             s["draw_gpu_ms"] = n->state.renderer.last_draw_gpu_ms;
             s["draws"] = (int64_t)n->state.renderer.draws;
+            s["breath_tightens"] = (int64_t)n->breath_tightens;
+            s["tick_ms"] = n->tick_ms;
+            s["tighten_ms"] = n->tighten_ms;
+            s["breath_loose"] = n->breath_loose && n->breath_tight && !n->breath_area.empty();
+            s["backdrop_reuses"] = (int64_t)n->state.renderer.backdrop_reuses;
             s["surface_pixels"] = (int64_t)n->state.renderer.surface_pixels;
             s["capture_pixels"] = (int64_t)n->state.renderer.capture_pixels;
             s["composite_pixels"] = (int64_t)n->state.renderer.composite_pixels;

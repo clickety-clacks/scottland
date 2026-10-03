@@ -67,6 +67,8 @@ GO14/GO15 add a rounded depth profile and wallpaper dye; see [their design, cont
 headless evidence](../docs/goo.md#go14go15-depth-and-wallpaper-dye-2026-10-02).
 GO16 makes widget goo, fallback halos and their controls follow the visible alpha contour,
 including badges; see [its headless shape and cost checks](../docs/goo.md#go16-widget-alpha-contours-2026-10-02).
+GO19 makes a breath cost only what it changes (no repaint under the strips, quiet wakes, a ring-only
+fallback halo); see [its causes and measurements](../docs/goo.md#go19-what-a-breath-still-cost-and-cutting-it-2026-10-03).
 GO17 makes attention breathing a local draw-only modulation while simulation sleeps;
 see [its curve, damage and cost evidence](../docs/goo.md#go17-draw-only-attention-breathing-2026-10-02).
 GO10 also caches the settled goo surface for inexpensive composition over redrawing apps;

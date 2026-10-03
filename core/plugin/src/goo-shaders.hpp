@@ -385,6 +385,15 @@ void main(){
   gl_FragColor=mix(layer(a,texture2D(uRefraction,uv)),layer(b,texture2D(uRefractionB,uv)),uMix);
 }
 )";
+// Restores the cached backdrop where a breath is drawn without the scene beneath it
+// having been repainted this frame.
+inline const std::string backdrop_shader = R"(
+precision highp float;
+varying vec2 pos;
+uniform sampler2D uBackground;
+uniform mat4 uBackgroundMap;
+void main(){gl_FragColor=texture2D(uBackground,(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5);}
+)";
 // Max-reduction of changes in dye and wave energy, read back as a single pixel every 30 steps.
 inline const std::string energy_shader = common + R"(
 uniform sampler2D uWave,uDyeTex,uPrevious,uReduce;

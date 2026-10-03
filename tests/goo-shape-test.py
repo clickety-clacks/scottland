@@ -164,8 +164,13 @@ try:
             if sample(600,600)['sleeping']:break
             time.sleep(.05)
         if not args.fallback_only:t.check('shape settles with goo',sample(600,600)['sleeping'])
+        steps=sample(600,600).get('steps')
         badge(7)
-        if not args.fallback_only:t.check('badge commit wakes sleeping field',not sample(600,600)['sleeping'])
+        # GO19: an outline change without motion is a quiet wake; the field is rebuilt and
+        # the simulation may already be asleep again when this looks.
+        if not args.fallback_only:
+            now=sample(600,600)
+            t.check('badge commit wakes sleeping field',not now['sleeping'] or now.get('steps',0)>steps)
         stats=t.card('alpha-card')['frame']['alpha_shape'];records.append({'mask_cost':stats})
         t.check('ordinary window has no alpha cache', 'alpha_shape' not in t.app('alpha-card')['frame'])
         old=t.card('alpha-card')['frame']['alpha_shape']['builds']

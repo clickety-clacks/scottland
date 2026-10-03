@@ -1057,6 +1057,40 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
     }
 
+    /** Repaint only the fallback halo's ring. The window content inside it is untouched
+     *  by a breath, a hover or a color change, and repainting a large window (and what
+     *  lies under it) on every tick was most of the fallback's cost. */
+    void damage_halo()
+    {
+        if (uses_alpha_shape() || hint_dye)
+            return damage();  // these can draw inside the window's rectangle
+        auto box = get_bounding_box();
+        auto r   = screen_rect();
+        // The halo hugs the rounded corners, inside the rectangle's corner squares.
+        double inset = screen_radius() + 4;
+        double x1 = std::ceil(r.x1 + inset), y1 = std::ceil(r.y1 + inset);
+        double x2 = std::floor(r.x2 - inset), y2 = std::floor(r.y2 - inset);
+        if ((x2 <= x1) || (y2 <= y1))
+            return damage();
+        double bx2 = box.x + box.width, by2 = box.y + box.height;
+        wf::scene::damage_node(this, wf::geometry_t{box.x, box.y, box.width, y1 - box.y});
+        wf::scene::damage_node(this, wf::geometry_t{box.x, y2, box.width, by2 - y2});
+        wf::scene::damage_node(this, wf::geometry_t{box.x, y1, x1 - box.x, y2 - y1});
+        wf::scene::damage_node(this, wf::geometry_t{x2, y1, bx2 - x2, y2 - y1});
+    }
+
+    /** Only the attention breath is animating the fallback halo: nothing else moves it. */
+    bool breathing_only()
+    {
+        if (!attention || attention_mix.running() || focus_mix.running() || hovering || lifted ||
+            (std::abs(dot_glow - dot_target) >= 0.002))
+            return false;
+        for (int i = 0; i < 4; i++)
+            if ((cloud[i] > 0.002) || (cloud_target[i] > 0.002) || (side_cloud[i] > 0.002) || (side_target[i] > 0.002))
+                return false;
+        return true;
+    }
+
     /** Repaint where the halo was drawn for the window at `old` (after it moved). */
     void damage_previous(const wf::geometry_t& old)
     {
@@ -1131,7 +1165,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     handle_t touch_pressed = handle_t::none;
     wf::pointf_t last_touch{0, 0};
     wf::wl_timer<false> dot_hide;
-    uint32_t last_tick = 0;
+    uint32_t last_tick = 0, last_halo_paint = 0;
     wf::wl_timer<true> tick;
     wf::wl_timer<false> dwell;
     wf::wl_timer<false> linger;
@@ -1256,10 +1290,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             bool goo = goo_enabled();
             // A touch lift also scales window content; preserve its full old/new
             // damage until the spring settles. Only halo-only ticks use goo bands.
-            bool content = !goo || bulge != bulge_target || bulge_velocity != 0 || opacity_mix.running();
-            if (content) damage();
+            bool content = bulge != bulge_target || bulge_velocity != 0 || opacity_mix.running();
+            // The fallback halo repaints its own ring; a breath alone needs that only at the
+            // breath's 25 Hz (GO17), not at this spring's rate.
+            bool halo = !goo && !content && (!breathing_only() || now - last_halo_paint >= 40);
+            if (content) damage(); else if (halo) damage_halo();
             step(dt);
-            if (content) damage();
+            if (content) damage(); else if (halo) { damage_halo(); last_halo_paint = now; }
             if (goo) goo_wake(*this);
             if (settled())
             {

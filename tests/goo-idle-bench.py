@@ -44,6 +44,11 @@ ap.add_argument('--scale', type=float, default=1)
 ap.add_argument('--verify', action='store_true', help='GO17 and goo-off fallback pixel checks')
 ap.add_argument('--visual', action='store_true', help='compare keyframes to the exact surface')
 ap.add_argument('--deterministic', action='store_true')
+ap.add_argument('--title-hz', type=float, default=0,
+                help='a widgetized terminal changes its title this often (an agent session does)')
+ap.add_argument('--no-reuse', action='store_true', help='repaint the scene under every breath (the old path)')
+ap.add_argument('--awake', action='store_true',
+                help='also sample the awake simulation after a settings wake, and time its settling')
 args = ap.parse_args()
 if args.full_redraw and args.stream_hz <= 0:
     ap.error('--full-redraw requires --stream-hz > 0')
@@ -87,11 +92,18 @@ def move(title, x, y):
         pointer(cx+(x-cx)*i/30, cy+(y-cy)*i/30); time.sleep(.02)
     button('release'); key(False); time.sleep(1)
 def sleep_goo(what):
+    started = time.monotonic(); first = state()
     time.sleep(1)  # let the change reach prepare() before trusting the flag
     latest = None
-    for _ in range(250):
+    for _ in range(600):
         s = state()
-        if s and s['sleeping']: return
+        if s and s['sleeping'] and not s.get('breath_loose'):  # asleep, strips tightened
+            # How long a change keeps the simulation (the expensive part) running.
+            record = {'settle': what, 'seconds': round(time.monotonic()-started, 1),
+                      'steps': s['steps']-first['steps'] if first else None}
+            print(json.dumps(record), flush=True)
+            with (out/'measurements.jsonl').open('a') as f: f.write(json.dumps(record)+'\n')
+            return
         latest = s
         time.sleep(.1)
     scene = []
@@ -118,6 +130,7 @@ def load_snapshot():
             'top_processes': process[:13]}
 
 def measure(label):
+    global seconds
     before = state()
     load_before = load_snapshot()
     sample = subprocess.Popen([sys.executable, str(root/'tests/gpu-sample.py'), str(pid), str(seconds)],
@@ -146,8 +159,13 @@ def measure(label):
               'breath_keys': after.get('breath_keys') if after else None,
               'breath_keyframes_active': after.get('breath_keyframes_active') if after else None,
               'draws': delta('draws'), 'surface_pixels': delta('surface_pixels'),
+              # Breath-only frames drawn over the cached backdrop (nothing beneath repainted).
+              'backdrop_reuses': delta('backdrop_reuses'),
               'capture_pixels': delta('capture_pixels'), 'composite_pixels': delta('composite_pixels'),
               'breath_area': sum(r['width']*r['height'] for r in after['breath_damage']) if after else None,
+              # Wakes of the sleeping simulation during the sample, by cause.
+              'wakes': {k: v-((before.get('wakes') or {}).get(k, 0)) for k, v in (after.get('wakes') or {}).items()
+                        if v-((before.get('wakes') or {}).get(k, 0))} if before and after else None,
               'overlapping': after.get('overlapping') if after else None,
               'sources': after['sources'] if after else None}
     print(json.dumps(result), flush=True)
@@ -201,14 +219,30 @@ def visual(window):
     def step(tight):
         state({'breath_tight': tight, 'breath_hold': 0, 'breath_exact': False})
         time.sleep(.5)
+        while tight and state().get('breath_loose'): time.sleep(.2)
         area = sum(r['width']*r['height'] for r in state()['breath_damage'])
         return area, shot(f'visual-{"tight" if tight else "loose"}-peak', 1, False).get_pixels()
     loose_area, loose = step(False)
     tight_area, tight = step(True)
     damage = {'loose_area': loose_area, 'tight_area': tight_area, 'identical': loose == tight}
     print(json.dumps({'visual_damage': damage}), flush=True)
+    # Breath-only frames drawn over the cached backdrop must equal frames whose scene
+    # beneath was repainted. Several shots: one frame a second takes the normal path.
+    reuse = {'identical': True, 'differing_shots': 0, 'reuses': 0}
+    if 'backdrop_reuses' in state():
+        for hold in (.37, 1.):
+            state({'breath_reuse': False}); time.sleep(.3)
+            normal = shot(f'visual-repaint-{hold}', hold, False).get_pixels()
+            before = state({'breath_reuse': True})['backdrop_reuses']
+            for n in range(3):
+                time.sleep(.3)
+                if shot(f'visual-reuse-{hold}-{n}', hold, False).get_pixels() != normal:
+                    reuse['identical'] = False; reuse['differing_shots'] += 1
+            reuse['reuses'] += state()['backdrop_reuses']-before
+        print(json.dumps({'visual_backdrop_reuse': reuse}), flush=True)
     state({'breath_hold': -1, 'breath_exact': False})
-    (out/'visual.json').write_text(json.dumps({'keys': keys, 'comparisons': rows, 'damage': damage}, indent=2))
+    (out/'visual.json').write_text(json.dumps({'keys': keys, 'comparisons': rows, 'damage': damage,
+                                               'backdrop_reuse': reuse}, indent=2))
     attention(window, False)
     # Edge coverage may cross-fade over the sub-pixel step between keys; nothing else may move.
     # Measured on the RX 580: under 1,600 of four million pixels differ by 8 levels or more
@@ -220,6 +254,7 @@ def visual(window):
     strong_limit = 300 if state()['packed'] else 200
     assert all(r['changed_16_levels'] < strong_limit and r['changed_8_levels'] < 5000 for r in rows), rows
     assert damage['identical'] and tight_area < loose_area, damage
+    assert reuse['identical'] and (reuse['reuses'] or 'backdrop_reuses' not in state()), reuse
 
 try:
     changes = {'output:HEADLESS-1/mode': f'{round(2560*args.scale)}x{round(1600*args.scale)}@{args.refresh_hz*1000}',
@@ -264,6 +299,12 @@ try:
                 code = (f'import time\nn=0\nwhile True:\n print(f"frame {{n:08d}} "*8,flush=True);'
                         f'n+=1;time.sleep({1/args.stream_hz!r})')
             command = ['python3', '-u', '-c', code]
+        elif title == 'idle-widget-b' and args.title_hz:
+            # Starts once the scene is built (lookups use the original title until then).
+            code = (f'import os,time\nn=0\nwhile not os.path.exists({str(out/"retitle")!r}): time.sleep(.2)\n'
+                    f'while True:\n print(f"\\033]0;idle-widget-b {{n}}\\007",end="",flush=True);'
+                    f'n+=1;time.sleep({1/args.title_hz!r})' if args.title_hz else '')
+            command = ['python3', '-u', '-c', code]
         else:
             command = ['sleep', '900']
         clients.append(subprocess.Popen(['foot', '-c', '/dev/null', '-o', 'resize-by-cells=no',
@@ -292,6 +333,9 @@ try:
     breather = view('idle-breather')['id']
     assert not view('idle-breather')['frame']['focus'], 'the breathing window must not be focused'
     sleep_goo('initial scene')
+    (out/'retitle').touch()
+    if args.no_reuse:
+        state({'breath_reuse': False})
     (out/'fixture.json').write_text(json.dumps({'settings': args.settings, 'args': vars(args) |
         {'session': str(session), 'artifacts': str(out), 'options': str(args.options) if args.options else None},
         'views': views(), 'widgets': widgets, 'state': state(), 'load': load_snapshot(),
@@ -327,6 +371,22 @@ try:
         ipc('wayfire/set-config-options', {'scottland/goo_breath_keys': True})
         time.sleep(.5)
         visual(breather)
+
+    if args.awake:
+        # Switching goo back on (as a live on/off comparison does) wakes the simulation.
+        # It runs at least three seconds; sample those, then time the rest of the settling.
+        attention(breather, True)
+        sleep_goo('attention before the awake sample')
+        ipc('wayfire/set-config-options', {'scottland/goo': False})
+        time.sleep(1)
+        ipc('wayfire/set-config-options', {'scottland/goo': True})
+        time.sleep(.3)
+        saved, seconds = seconds, 2.5
+        results['awake-window'] = measure('awake-window')
+        seconds = saved
+        sleep_goo('goo switched on with the window breathing')
+        attention(breather, False)
+        sleep_goo('answered after the awake sample')
 
     ipc('wayfire/set-config-options', {'scottland/goo': False})
     time.sleep(1)
