@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>dnd-browser</title>
+<style>
+body { margin: 0; font: 20px sans-serif; }
+a, #target { display: block; padding: 20px; box-sizing: border-box; }
+a { height: 100px; background: #dceaff; }
+#target { height: 240px; background: #f6e4cd; }
+</style>
+<a draggable="true" href="https://example.org/scottland-dnd-payload">Drag this link into the GTK window</a>
+<div id="target">Drop text or a file here</div>
+<script>
+document.querySelector('a').addEventListener('dragstart', e => {
+  e.dataTransfer.setData('text/plain', 'scottland-dnd-payload');
+  e.dataTransfer.effectAllowed = 'copy';
+});
+const target = document.querySelector('#target');
+target.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+target.addEventListener('drop', e => {
+  e.preventDefault();
+  const text = e.dataTransfer.getData('text/plain');
+  target.textContent = [...e.dataTransfer.files].map(f => f.name).join(',') || text;
+  document.title = 'dnd-browser-drop-' + target.textContent;
+});
+</script>

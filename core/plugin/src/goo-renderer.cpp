@@ -25,7 +25,7 @@ int breath_key_count(const settings_t &s, float scale)
 {
     // The approximation is bounded to half a device pixel per interval. Extreme
     // settings use the exact direct strip path instead of silently widening it.
-    float swell = breath_swell * s.swell / .7f;
+    float swell = breath_swell(s.thickness, s.reach, s.swell);
     float travel = s.reach * std::log1p(std::max(swell, 0.f)) * std::max(scale, 1.f);
     int required = std::max(1, int(std::ceil(travel / .5f)));
     return required <= 16 ? required : 0;
@@ -677,7 +677,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         p->common(program, p->width, p->height);
         program.uniform2f("uFieldSize", p->field.width, p->field.height);
         program.uniform1f("uBreath", surface_breath);
-        program.uniform1f("uBreathSwell", breath_swell * p->settings.swell / .7f);
+        program.uniform1f("uBreathSwell", breath_swell(p->settings.thickness, p->settings.reach, p->settings.swell));
         program.uniformMatrix4f("MVP", ortho);
         program.uniformMatrix4f("uBackgroundMap", ortho);
         bind(program, "uBackground", 5, bg.texture);
@@ -748,7 +748,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         breath_key_values.clear();
         if (keys)
         {
-            const float swell = breath_swell * p->settings.swell / .7f;
+            const float swell = breath_swell(p->settings.thickness, p->settings.reach, p->settings.swell);
             for (int j = 0; j <= keys; ++j)
                 breath_key_values.push_back(breath_key_value(j, keys, swell));
         }

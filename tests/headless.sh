@@ -11,6 +11,7 @@
 #                                         (SCOTTLAND_WIDGET_PATH and SCOTTLAND_WIDGET_SCOPE pass through)
 #                                         --gdb runs Wayfire under gdb; SIGINT to that gdb prints
 #                                         all thread stacks into wayfire.log, then resumes
+#                                         --stock omits Scottland for a protocol control
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
@@ -45,10 +46,12 @@ case ${1:-} in
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
     test_outputs=${SCOTTLAND_TEST_OUTPUTS:-${SCOTTLAND_HEADLESS_OUTPUTS:-1}}
+    stock=0
     private_bus=1
     debugger=()
     for option in "${@:2}"; do
       case $option in
+        --stock) stock=1 ;;
         --omarchy) started+=(10-hyprshim 30-lua-host) ;;
         --widgets) started+=(08-widget-bus); private_bus=1 ;;
         --gdb)
@@ -74,7 +77,7 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -109,6 +112,9 @@ WRAPPER
       sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
         -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
         "$dir/wayfire.ini"
+      # A protocol control: same clients/config/stock Wayfire, without Scottland's
+      # scene transforms or input handlers. Autostart still records its environment.
+      if ((stock)); then sed -i '/^  scottland \\/d' "$dir/wayfire.ini"; fi
       # No override exercises shipped defaults; 0 explicitly tests the fallback halo.
       if [[ $test_goo == 1 || $test_goo == 0 ]]; then
         goo_value=false; [[ $test_goo == 1 ]] && goo_value=true

@@ -1,0 +1,3 @@
+id = "dnd-target"
+apps = ["^org\\.scottland\\.DndFixture\\.dndtarget$"]
+exec = "python3 %d/widget.py"

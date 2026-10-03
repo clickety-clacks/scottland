@@ -1360,7 +1360,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         if (!goo_enabled() && attention && !is_pressed())
         {
             // The fallback keeps its local spring; shared goo owns a separate draw timer.
-            swell_target = .12 * goo::attention_breath(now_ms() / 1000.);
+            swell_target = goo::attention_swell * goo::attention_breath(now_ms() / 1000.);
         }
 
         // Goo: an underdamped spring, so the swell overshoots and wobbles before settling.
