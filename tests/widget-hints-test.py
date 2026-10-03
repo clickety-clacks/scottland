@@ -143,6 +143,31 @@ def capture(name, scale=1):
     return state
 
 
+def wait_hint_settled(window_id):
+    # Hint circles ease to a new attachment over 160 ms. Sample only after both
+    # the widget frame and badge have stopped moving, so geometry assertions do
+    # not depend on which animation frame the IPC/screenshot happened to catch.
+    previous = None
+    stable_samples = 0
+
+    def settled():
+        nonlocal previous, stable_samples
+        view = next(v for v in views() if v['id'] == widget(window_id))
+        hint = next(h for h in hints() if h['window'] == window_id)
+        frame, badge = view['frame'], hint['badge']
+        sample = tuple(float(value) for value in (
+            frame['x'], frame['y'], frame['width'], frame['height'],
+            badge['x'], badge['y'], badge['size'], hint['dx'], hint['dy']))
+        if previous is not None and max(abs(a-b) for a, b in zip(sample, previous)) < .05:
+            stable_samples += 1
+        else:
+            stable_samples = 0
+        previous = sample
+        return stable_samples >= 3
+
+    wait(settled)
+
+
 try:
     palette = Path(run('python3', '-c', "import os; print(os.path.join(os.environ['XDG_RUNTIME_DIR'], 'scottland', os.environ['WAYLAND_DISPLAY']+'.palette.json'))"))
     # Session socket names can be reused; seed this session's full palette explicitly.
@@ -254,27 +279,31 @@ try:
         for i in (left, right)))
     hold()
     left_label = next(h['hint'] for h in hints() if h['window'] == left)
-    peek_started = time.monotonic()
     for letter in left_label: tap(letter.upper())
     wait(lambda: ipc('scottland/hints')['selected'] == left and
-        next(v for v in views() if v['id'] == widget(left))['frame']['width'] > 100)
+        next(v for v in views() if v['id'] == widget(left))['frame']['width'] > 100 and
+        next(w for w in links() if int(w['id']) == left)['peek'])
+    peek_started = time.monotonic()
+    wait_hint_settled(left)
     capture('wk34-hint-peek-expanded', 3)
-    time.sleep(max(0, peek_started + 4.5 - time.monotonic()))
+    time.sleep(max(0, peek_started + 3.8 - time.monotonic()))
     check(next(v for v in views() if v['id'] == widget(left))['frame']['width'] > 100 and
         next(w for w in links() if int(w['id']) == left)['peek'],
         'WK34 selected collapsed widget stays expanded during its five-second hint peek')
     wait(lambda: next(v for v in views() if v['id'] == widget(left))['frame']['width'] <= 97 and
         not next(w for w in links() if int(w['id']) == left)['peek'])
+    peek_elapsed = time.monotonic() - peek_started
+    wait_hint_settled(left)
     capture('wk34-hint-peek-collapsed', 3)
-    elapsed = time.monotonic() - peek_started
-    check(4.8 <= elapsed <= 6.2,
-        f'WK34 timed hint peek collapses on its own after about five seconds ({elapsed:.2f}s)')
+    check(4.8 <= peek_elapsed <= 6.2,
+        f'WK34 timed hint peek collapses on its own after about five seconds ({peek_elapsed:.2f}s)')
 
     ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 3000})
     right_label = next(h['hint'] for h in hints() if h['window'] == right)
     for letter in right_label: tap(letter.upper())
     wait(lambda: ipc('scottland/hints')['selected'] == right and
         next(v for v in views() if v['id'] == widget(right))['frame']['width'] > 100)
+    wait_hint_settled(right)
     capture('wk34-before-center-cycle', 3)
     time.sleep(.45)  # inside both the double-tap interval and the five-second peek
     for letter in right_label: tap(letter.upper())
