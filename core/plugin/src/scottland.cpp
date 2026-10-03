@@ -832,6 +832,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> widget_opacity_unfocused{"scottland/widget_opacity_unfocused"};
     wf::option_wrapper_t<double> window_mode_opacity_focused{"scottland/window_mode_opacity_focused"};
     wf::option_wrapper_t<double> window_mode_opacity_unfocused{"scottland/window_mode_opacity_unfocused"};
+    wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
@@ -6084,6 +6085,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         widget_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
         window_mode_opacity_focused.set_callback([=] { apply_all_opacity(); });
         window_mode_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
+        hint_avoidance_always.set_callback([=] {
+            declutter_signature.clear();
+            refresh_layout_avoidance();
+        });
         color_scheme.set_callback([=] { load_color_scheme(); });
         accent_color.set_callback([=] { load_color_scheme(); });
         attention_color.set_callback([=] { load_color_scheme(); });

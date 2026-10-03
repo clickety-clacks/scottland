@@ -55,7 +55,8 @@ ShellRoot {
   readonly property bool gooTab: tab === 1
   readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
     resize_impulse:335, resize_friction:608, key_max_velocity:6000,
-    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300})
+    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300,
+    hint_avoidance_always:false})
   property var motionValues: Object.assign({}, motionDefaults)
   readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
     side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
@@ -252,7 +253,7 @@ ShellRoot {
         root.curvePoints = root.original.curve
         const motion = Object.assign({},root.motionDefaults)
         for (const k of Object.keys(motion))
-          motion[k] = values[k] !== undefined ? values[k] : typeof motion[k] === "string" ? root.savedText(k) : root.savedValue(k,motion[k])
+          motion[k] = values[k] !== undefined ? values[k] : typeof motion[k] === "boolean" ? root.savedText(k) === "true" : typeof motion[k] === "string" ? root.savedText(k) : root.savedValue(k,motion[k])
         root.motionValues = motion
         const opacity=Object.assign({},root.opacityDefaults),widgets=Object.assign({},root.widgetDefaults)
         for (const group of [opacity,widgets]) for (const k of Object.keys(group))
@@ -364,6 +365,7 @@ ShellRoot {
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
       motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),
+      alwaysAvoidance:root.testRect(alwaysAvoidance),
       opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
       widgetSettings:root.testRect(widgetSettings),solarSettings:root.testRect(solarSettings),
       solarEnable:root.testRect(solarEnable),solarNetwork:root.testRect(solarNetwork),
@@ -730,6 +732,17 @@ ShellRoot {
           visible: root.tab === 2
           Layout.fillWidth: true
           spacing: 22
+          SettingAction {
+            id:alwaysAvoidance
+            onAcceptRequested: root.save()
+            Layout.fillWidth:true
+            design:theme
+            text:root.motionValues.hint_avoidance_always
+              ? "Always avoid hint circles · on"
+              : "Always avoid hint circles · off"
+            checked:root.motionValues.hint_avoidance_always
+            onClicked:root.setMotion("hint_avoidance_always",!root.motionValues.hint_avoidance_always)
+          }
           MotionPlayground {
             id: playground
             viewport:gooScroll; scrollOffset:gooScroll.contentY

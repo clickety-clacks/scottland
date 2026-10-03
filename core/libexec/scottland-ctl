@@ -23,10 +23,11 @@ GOO = ("goo", "goo_breath_keys", "goo_falloff", "goo_thickness", "goo_reach", "g
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak",
        "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
 WIDGETS = ("widget_bounce", "widget_peek_enter_delay", "widget_peek_leave_delay", "widget_attention_peek_duration")
+BOOL = ("goo", "goo_breath_keys", "hint_avoidance_always")
 OPACITY = ("center_opacity_focused", "center_opacity_unfocused", "side_opacity_focused", "side_opacity_unfocused",
            "widget_opacity_focused", "widget_opacity_unfocused", "window_mode_opacity_focused", "window_mode_opacity_unfocused")
 NAMES += GOO + ("cycle_overshoot", "key_impulse", "key_friction", "resize_impulse", "resize_friction",
-                "key_max_velocity", "alt_hold_delay", "window_double_tap_delay") + WIDGETS + OPACITY
+                "key_max_velocity", "alt_hold_delay", "window_double_tap_delay") + WIDGETS + OPACITY + ("hint_avoidance_always",)
 TEXT = ("scale_curve", "goo_falloff")
 
 
@@ -61,7 +62,7 @@ def main():
         for name in NAMES:
             reply = call(sock, "wayfire/get-config-option", {"option": f"scottland/{name}"})
             if "value" in reply:
-                if name in ("goo", "goo_breath_keys"):
+                if name in BOOL:
                     values[name] = str(reply["value"]).lower() in ("true", "1")
                 else:
                     values[name] = reply["value"] if name in TEXT else float(reply["value"])
