@@ -50,15 +50,26 @@ select = "#ffaa50"                # a hard-coded value
 
 ### What the engine does
 
-Evaluates the schema's algorithms, applies the config's overrides, and produces the palette. With
-no config, the schema's own algorithms decide everything.
+Evaluates the schema's algorithms, applies the config's overrides, and produces the palette for
+that schema's desktop. With no config, the schema's own algorithms decide everything.
+
+## Decided (Mike, 2026-10-03)
+
+- **`base` is just another color** defined by the schema, like accent or selection. Nothing is
+  extracted from a wallpaper.
+- **The algorithms are the standard color-wheel ones** (complementary, split complementary,
+  triadic, analogous, and so on).
+- **Light or dark is a boolean** in the palette that marks it light or dark; it is not a second
+  palette or a mode-aware algorithm.
+- **Desktops are schemas.** The engine is desktop-agnostic: Omarchy and Scottland are just
+  different schemas. Using the same tool with Omarchy means pointing it at the Omarchy schema; its
+  output is then an Omarchy theme. In a Scottland distro the output is Scottland-compatible (the
+  Scottland schema), not Omarchy's `colors.toml`.
+- **Packaging:** the engine is its own repository, which the distro installs. The distro contains
+  the default themes. Scottland knows how to read configs made with the Scottland schema.
 
 ## Open questions
 
-- Where `base` comes from: a wallpaper (extracted), a single seed color, or either.
-- The algorithm vocabulary: complementary, split complementary, triadic, analogous, lighten/darken,
-  contrast targets against background; how colors chain (`accent.complementary`).
-- Light and dark: one schema producing both modes, or a mode-aware algorithm per color.
-- Output: an Omarchy-compatible `colors.toml` plus the semantic keys, so Omarchy and Scottland both
-  read it; whether other targets (GTK, base16) are in scope.
-- Whether this lives in its own repository, desktop-agnostic, with each desktop shipping a schema.
+- The exact algorithm vocabulary and expression syntax (chaining such as `accent.complementary`,
+  indexing such as `split_complementary[0]`, any lightness or contrast adjustments).
+- The Scottland schema's semantic colors beyond attention (goo tint, halo, hint colors, ...).

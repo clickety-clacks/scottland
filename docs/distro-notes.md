@@ -33,7 +33,9 @@ come up, so the decision isn't lost while there is nowhere better to put them.
   cross-app theme engine (Omarchy’s, an equivalent, or Aether) and its default named day/night
   themes. Scottland core follows the active light/dark preference and palette; its optional solar
   schedule requests only a mode. The Omarchy adapter applies Omarchy themes when their mode is wrong.
-  A palette engine that adds the semantic colors Omarchy themes lack (attention first) is sketched in
+  Intended direction: a desktop-agnostic palette engine, its own repository that the distro installs,
+  driven by per-desktop schemas of semantic colors (attention first); the distro ships the default
+  themes and Scottland reads configs made with the Scottland schema. See
   [palette-engine.md](palette-engine.md) (concept, not started).
 
 ## Not distro material
