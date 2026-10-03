@@ -220,6 +220,23 @@ def change(a, b):
 try:
     default = ipc("wayfire/get-config-option", {"option": "scottland/goo"})["default"]
     check("switch is on by default", str(default).lower() in ("true", "1"))
+    breath_option = ipc("wayfire/get-config-option", {"option": "scottland/goo_breath_keys"})
+    check("breath keyframes are on by default", str(breath_option["default"]).lower() in ("true", "1")
+          and str(breath_option["value"]).lower() in ("true", "1"))
+    ctl = repo / "core/libexec/scottland-ctl"
+    ctl_get = subprocess.run([str(ctl), "get"], capture_output=True, text=True)
+    check("scottland-ctl reports the live keyframe switch", ctl_get.returncode == 0
+          and json.loads(ctl_get.stdout).get("goo_breath_keys") is True)
+    ctl_off = subprocess.run([str(ctl), "set", "goo_breath_keys", "false"], capture_output=True, text=True)
+    time.sleep(.3)
+    live_off = ipc("wayfire/get-config-option", {"option": "scottland/goo_breath_keys"})["value"]
+    check("scottland-ctl switches to exact breathing live", ctl_off.returncode == 0
+          and str(live_off).lower() in ("false", "0"))
+    ctl_on = subprocess.run([str(ctl), "set", "goo_breath_keys", "true"], capture_output=True, text=True)
+    time.sleep(.3)
+    live_on = ipc("wayfire/get-config-option", {"option": "scottland/goo_breath_keys"})["value"]
+    check("scottland-ctl restores cached breathing live", ctl_on.returncode == 0
+          and str(live_on).lower() in ("true", "1"))
     options(goo=False, center_width=90, min_scale=1, max_scale=1, scale_curve="0:1 1:1", sounds=False, goo_falloff="")
     spawn("goo-a"); spawn("goo-b")
     place("goo-a", 250, 230); place("goo-b", 610, 230)

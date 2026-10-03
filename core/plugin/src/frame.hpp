@@ -1044,6 +1044,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     void damage()
     {
         if (!uses_alpha_shape()) { alpha_shape.reset(); shape_retry.disconnect(); }
+        // Damage the transformer's own cached surface as well as its parent.
+        // Parent-only invalidation kept the fallback halo frozen during its
+        // idle attention animation even while the model swell continued.
+        wf::scene::damage_node(this, get_bounding_box());
         if (parent())
         {
             wf::scene::damage_node(parent(), get_bounding_box());

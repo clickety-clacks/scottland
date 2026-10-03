@@ -8,6 +8,11 @@
         <option name="goo" type="bool">
             <_short>Use the screen-wide goo</_short><default>true</default>
         </option>
+        <option name="goo_breath_keys" type="bool">
+            <_short>Cache goo breath keyframes</_short>
+            <_long>Keep the lower-cost interpolated breath cache on. Turn off live to draw every breathing strip exactly; no reload is needed.</_long>
+            <default>true</default>
+        </option>
         <option name="goo_falloff" type="string">
             <_short>Goo density falloff curve (empty: exponential)</_short><default></default>
         </option>

@@ -3,7 +3,7 @@
 Args: headless directory, measurement seconds, optional --verify.
 Ten windows, two real-input rail widgets, one attention source, shipped goo defaults.
 """
-import json, os, socket, struct, subprocess, sys, time
+import atexit, json, os, signal, socket, struct, subprocess, sys, time
 from pathlib import Path
 runtime, duration = Path(sys.argv[1]), float(sys.argv[2])
 sock = socket.socket(socket.AF_UNIX); sock.connect(os.environ['WAYFIRE_SOCKET'])
@@ -49,9 +49,28 @@ def measure(label):
 ipc('wayfire/set-config-options',{'output:HEADLESS-1/mode':'2560x1600@60000'})
 time.sleep(1)
 clients=[]
-clients.append(subprocess.Popen(['quickshell','-p',str(Path(__file__).with_name('GooWallpaper.qml'))], stdout=open(art/'wallpaper.log','w'), stderr=subprocess.STDOUT))
+def stop_clients():
+    for client in clients:
+        try:
+            os.killpg(client.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    for client in clients:
+        try:
+            client.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(client.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            client.wait()
+atexit.register(stop_clients)
+clients.append(subprocess.Popen(['quickshell','-p',str(Path(__file__).with_name('GooWallpaper.qml'))],
+                                stdout=open(art/'wallpaper.log','w'), stderr=subprocess.STDOUT,
+                                start_new_session=True))
 for i in range(10):
-    clients.append(subprocess.Popen(['foot','-c','/dev/null','-T',f'perf-{i}','sleep','600'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)); time.sleep(.25)
+    clients.append(subprocess.Popen(['foot','-c','/dev/null','-T',f'perf-{i}','sleep','600'],
+        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)); time.sleep(.25)
 time.sleep(2)
 geo=[(200,150,900,600),(1200,150,1100,700),(250,850,700,500),(1050,950,600,450),(1750,950,600,450),(1000,420,400,260),(700,400,500,360),(1100,700,520,380),(1700,500,500,380),(400,650,500,340)]
 for i,g in enumerate(geo):

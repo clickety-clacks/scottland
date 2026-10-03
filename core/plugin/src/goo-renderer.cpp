@@ -2,6 +2,7 @@
 #include "goo-shaders.hpp"
 #include "goo-gl.hpp"
 #include "attention-breath.hpp"
+#include <cmath>
 #include <chrono>
 #include <cstring>
 #include <wayfire/scene-render.hpp>
@@ -15,6 +16,20 @@ using gl::state_t;
 using gl::target_t;
 namespace
 {
+int breath_key_count(const settings_t &s, float scale)
+{
+    // The approximation is bounded to half a device pixel per interval. Extreme
+    // settings use the exact direct strip path instead of silently widening it.
+    float swell = breath_swell * s.swell / .7f;
+    float travel = s.reach * std::log1p(std::max(swell, 0.f)) * std::max(scale, 1.f);
+    int required = std::max(1, int(std::ceil(travel / .5f)));
+    return required <= 16 ? required : 0;
+}
+float breath_key_value(int key, int keys, float swell)
+{
+    float t = float(key) / keys;
+    return swell > 1e-4f ? std::expm1(t * std::log1p(swell)) / swell : t;
+}
 bool extension(const char *list, const char *name)
 {
     if (!list)
@@ -43,13 +58,15 @@ struct renderer_t::impl
     settings_t settings;
     bool overlap = false, controls = false, fast = true, has_wallpaper = false;
     bool cache_valid = false, cache_dirty = true, cache_available = true;
-    float cache_breath = -1;
+    static constexpr int exact_key = -2;
+    int layer_key[2] = {-1, -1};
+    bool layer_b_available = true, requested_keyframes = false, use_keyframes = false;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
-    OpenGL::program_t intrinsic_p, refraction_p, composite_p;
+    OpenGL::program_t intrinsic_p, refraction_p, composite_p, composite_mix_p;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query, atlas;
-    target_t intrinsic, refraction;
+    target_t intrinsic, refraction, intrinsic_b, refraction_b;
     std::vector<std::shared_ptr<const shape_t>> atlas_shapes;
     std::vector<glm::vec4> shape_tiles;
     bool upload_shapes()
@@ -114,11 +131,11 @@ struct renderer_t::impl
         if (timer)
             glDeleteQueries(1, &timer);
         for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p,
-                       &intrinsic_p, &refraction_p, &composite_p,
+                       &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p,
                        &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
         for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query,
-                       &intrinsic, &refraction, &atlas})
+                       &intrinsic, &refraction, &intrinsic_b, &refraction_b, &atlas})
             p->release();
         for (auto &t : reduction)
             t.release();
@@ -233,7 +250,8 @@ struct renderer_t::impl
         compile(intrinsic_p, vertex, cached_shader(false), true);
         compile(refraction_p, vertex, cached_shader(true), true);
         compile(composite_p, vertex, cached_composite_shader);
-        for (auto p : {&intrinsic_p, &refraction_p, &composite_p})
+        compile(composite_mix_p, vertex, cached_composite_mix_shader);
+        for (auto p : {&intrinsic_p, &refraction_p, &composite_p, &composite_mix_p})
         {
             GLint linked = 0;
             glGetProgramiv(p->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
@@ -536,10 +554,11 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     return true;
 }
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
-                      const wf::regionf_t &breath_area, float breath, bool settled)
+                      const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys)
 {
     if (!p->ready)
         return;
+    breath_keyframes_active = false;
     // Damage can arrive as one bounding box (the output collapses many small rects), so clip
     // the goo's work to its own bands rather than shading the whole box.
     auto damage = data.damage & area;
@@ -556,6 +575,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     auto capture = data.damage & capture_area;
     if (capture.empty())
         return;
+    ++draws;
     state_t guard(p->es3);
     p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
     if (!p->timer_open && p->timing && !p->timer_pending)
@@ -595,8 +615,11 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                         int right = std::min(box[0] + box[2], viewport[0] + viewport[2]);
                                         int top = std::min(box[1] + box[3], viewport[1] + viewport[3]);
                                         if (right > x && top > y)
+                                        {
+                                            capture_pixels += uint64_t(right - x) * (top - y);
                                             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, x - viewport[0],
                                                                 y - viewport[1], x, y, right - x, top - y);
+                                        }
                                     });
     if (damage.empty())
     {
@@ -611,11 +634,11 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     auto ortho = wf::gles::render_target_orthographic_projection(data.target);
     const GLfloat vertices[] = {0, 0, float(p->width), 0, float(p->width),
                                 float(p->height), 0, float(p->height)};
-    auto setup_surface = [&](OpenGL::program_t &program)
+    auto setup_surface = [&](OpenGL::program_t &program, float surface_breath)
     {
         p->common(program, p->width, p->height);
         program.uniform2f("uFieldSize", p->field.width, p->field.height);
-        program.uniform1f("uBreath", breath);
+        program.uniform1f("uBreath", surface_breath);
         program.uniform1f("uBreathSwell", breath_swell * p->settings.swell / .7f);
         program.uniformMatrix4f("MVP", ortho);
         program.uniformMatrix4f("uBackgroundMap", ortho);
@@ -640,73 +663,197 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         ok = p->refraction.allocate(viewport[2], viewport[3], true, p->es3) && ok;
         if (!ok)
         {
+            p->intrinsic.release();
+            p->refraction.release();
             p->cache_available = false;
             LOGE("scottland goo: surface cache unavailable; using direct draw");
         }
     }
     if (settled && p->cache_available)
     {
-        wf::regionf_t refresh;
-        if (!p->cache_valid || p->cache_dirty)
-            refresh = area;
-        else if (breath != p->cache_breath)
-            refresh = breath_area & area;
-        if (!refresh.empty())
+        auto strips = breath_area & area;
+        int key_intervals = strips.empty() ? 0 : breath_key_count(p->settings, data.target.scale);
+        bool requested_keys = breath_keys && !breath_exact && key_intervals > 0;
+        if (requested_keys != p->requested_keyframes)
         {
+            p->requested_keyframes = requested_keys;
+            p->layer_b_available = true;
+            p->layer_key[0] = p->layer_key[1] = -1;
+            if (!requested_keys)
+            {
+                p->intrinsic_b.release();
+                p->refraction_b.release();
+            }
+        }
+        if (requested_keys && p->layer_b_available &&
+            (p->intrinsic_b.width != viewport[2] || p->intrinsic_b.height != viewport[3]))
+        {
+            bool a_ok = p->intrinsic_b.allocate(viewport[2], viewport[3], true, p->es3);
+            bool b_ok = p->refraction_b.allocate(viewport[2], viewport[3], true, p->es3);
+            if (!a_ok || !b_ok)
+            {
+                p->intrinsic_b.release();
+                p->refraction_b.release();
+                p->layer_b_available = false;
+                LOGE("scottland goo: breathing keyframe layer unavailable; using exact strips");
+            }
+        }
+        int keys = requested_keys && p->layer_b_available ? key_intervals : 0;
+        breath_keyframes_active = keys > 0;
+        if ((keys > 0) != p->use_keyframes)
+        {
+            p->layer_key[0] = p->layer_key[1] = -1;
+            p->use_keyframes = keys > 0;
+        }
+        breath_key_values.clear();
+        if (keys)
+        {
+            const float swell = breath_swell * p->settings.swell / .7f;
+            for (int j = 0; j <= keys; ++j)
+                breath_key_values.push_back(breath_key_value(j, keys, swell));
+        }
+
+        auto fb_area = data.target.framebuffer_region_from_geometry_region(area);
+        auto fb_damage = data.target.framebuffer_region_from_geometry_region(damage);
+        auto fb_strips = data.target.framebuffer_region_from_geometry_region(strips);
+        auto static_area = fb_area ^ fb_strips;
+        bool whole = !p->cache_valid || p->cache_dirty;
+        if (whole)
+            p->layer_key[0] = p->layer_key[1] = -1;
+
+        auto each_pixel_rect = [&](const wf::region_t &region, auto draw)
+        {
+            glEnable(GL_SCISSOR_TEST);
+            for (auto &r : region)
+            {
+                wf::gles::scissor_render_buffer(data.target, wlr_box_from_pixman_box(r));
+                draw();
+            }
+        };
+        auto render_layer = [&](int layer, const wf::region_t &region, float value)
+        {
+            if (region.empty()) return;
             glDisable(GL_BLEND);
-            const std::array cache_passes{std::make_pair(&p->intrinsic, &p->intrinsic_p),
-                                          std::make_pair(&p->refraction, &p->refraction_p)};
-            for (const auto &entry : cache_passes)
+            const std::array passes{
+                std::make_pair(layer ? &p->intrinsic_b : &p->intrinsic, &p->intrinsic_p),
+                std::make_pair(layer ? &p->refraction_b : &p->refraction, &p->refraction_p)};
+            for (const auto &entry : passes)
             {
                 auto &target = *entry.first;
                 auto &program = *entry.second;
+                bool params = entry.second == &p->refraction_p;
                 glBindFramebuffer(GL_FRAMEBUFFER, target.fb);
                 glViewport(0, 0, target.width, target.height);
-                setup_surface(program);
-                wf::gles::for_each_scissor_rect(data.target, refresh, [&]
+                setup_surface(program, value);
+                each_pixel_rect(region, [&]
                 {
                     GLint box[4];
                     glGetIntegerv(GL_SCISSOR_BOX, box);
+                    surface_pixels += uint64_t(box[2]) * box[3];
                     glScissor(box[0] - viewport[0], box[1] - viewport[1], box[2], box[3]);
-                    if (&target == &p->refraction)
-                        glClearColor(.5f, .5f, 0, 0);
-                    else
-                        glClearColor(0, 0, 0, 0);
+                    glClearColor(params ? .5f : 0.f, params ? .5f : 0.f, 0, 0);
                     glClear(GL_COLOR_BUFFER_BIT);
                     program.attrib_pointer("position", 2, 0, vertices);
                     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
                 });
                 program.deactivate();
             }
+        };
+        if (whole)
+            render_layer(0, static_area, breath);
+
+        float mix = 0;
+        if (keys)
+        {
+            int lo = 0;
+            while (lo < keys - 1 && breath > breath_key_values[lo + 1])
+                ++lo;
+            int want[2] = {lo, lo + 1};
+            if (p->layer_key[0] != lo && p->layer_key[1] != lo + 1 &&
+                (p->layer_key[0] == lo + 1 || p->layer_key[1] == lo))
+                std::swap(want[0], want[1]);
+            if (whole || p->layer_key[0] != want[0])
+            {
+                render_layer(0, fb_strips, breath_key_values[want[0]]);
+                if (!whole) ++breath_refreshes;
+            }
+            if (p->layer_key[1] != want[1])
+            {
+                render_layer(1, fb_strips, breath_key_values[want[1]]);
+                if (!whole) ++breath_refreshes;
+            }
+            p->layer_key[0] = want[0];
+            p->layer_key[1] = want[1];
+            float a = breath_key_values[want[0]], b = breath_key_values[want[1]];
+            mix = std::clamp((breath - a) / (b - a), 0.f, 1.f);
+        } else
+        {
+            p->layer_key[0] = impl::exact_key;
+            p->layer_key[1] = -1;
+            // Exact fallback: only the wet strips run the full shader. Static goo
+            // remains in the GO10 cache; no breathing offset enters that cache.
         }
+
         p->cache_valid = true;
         p->cache_dirty = false;
-        p->cache_breath = breath;
         wf::gles::bind_render_buffer(data.target);
-        auto &program = p->composite_p;
-        program.use(wf::TEXTURE_TYPE_RGBA);
-        program.uniformMatrix4f("MVP", ortho);
-        program.uniformMatrix4f("uBackgroundMap", ortho);
-        bind(program, "uIntrinsic", 0, p->intrinsic.texture);
-        bind(program, "uRefraction", 1, p->refraction.texture);
-        bind(program, "uBackground", 5, bg.texture);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        wf::gles::for_each_scissor_rect(data.target, damage, [&]
+        auto composite = [&](OpenGL::program_t &program, const wf::region_t &region)
         {
-            program.attrib_pointer("position", 2, 0, vertices);
-            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-        });
-        program.deactivate();
+            if (region.empty()) return;
+            program.use(wf::TEXTURE_TYPE_RGBA);
+            program.uniformMatrix4f("MVP", ortho);
+            program.uniformMatrix4f("uBackgroundMap", ortho);
+            bind(program, "uIntrinsic", 0, p->intrinsic.texture);
+            bind(program, "uRefraction", 1, p->refraction.texture);
+            bind(program, "uBackground", 5, bg.texture);
+            if (&program == &p->composite_mix_p)
+            {
+                bind(program, "uIntrinsicB", 2, p->intrinsic_b.texture);
+                bind(program, "uRefractionB", 3, p->refraction_b.texture);
+                program.uniform1f("uMix", mix);
+            }
+            each_pixel_rect(region, [&]
+            {
+                GLint box[4];
+                glGetIntegerv(GL_SCISSOR_BOX, box);
+                composite_pixels += uint64_t(box[2]) * box[3];
+                program.attrib_pointer("position", 2, 0, vertices);
+                glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            });
+            program.deactivate();
+        };
+        composite(p->composite_p, fb_damage ^ fb_strips);
+        auto animated = fb_damage & fb_strips;
+        if (keys)
+            composite(p->composite_mix_p, animated);
+        else if (!animated.empty())
+        {
+            auto &program = p->fast ? p->render_fast : p->render_p;
+            setup_surface(program, breath);
+            each_pixel_rect(animated, [&]
+            {
+                GLint box[4];
+                glGetIntegerv(GL_SCISSOR_BOX, box);
+                surface_pixels += uint64_t(box[2]) * box[3];
+                program.attrib_pointer("position", 2, 0, vertices);
+                glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            });
+            program.deactivate();
+        }
     }
     else
     {
         auto &program = p->fast ? p->render_fast : p->render_p;
-        setup_surface(program);
+        setup_surface(program, breath);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         wf::gles::for_each_scissor_rect(data.target, damage, [&]
         {
+            GLint box[4];
+            glGetIntegerv(GL_SCISSOR_BOX, box);
+            surface_pixels += uint64_t(box[2]) * box[3];
             program.attrib_pointer("position", 2, 0, vertices);
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         });

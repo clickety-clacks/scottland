@@ -18,7 +18,7 @@ import struct
 import sys
 
 NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", "blend_width")
-GOO = ("goo", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
+GOO = ("goo", "goo_breath_keys", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak",
        "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
@@ -61,7 +61,7 @@ def main():
         for name in NAMES:
             reply = call(sock, "wayfire/get-config-option", {"option": f"scottland/{name}"})
             if "value" in reply:
-                if name == "goo":
+                if name in ("goo", "goo_breath_keys"):
                     values[name] = str(reply["value"]).lower() in ("true", "1")
                 else:
                     values[name] = reply["value"] if name in TEXT else float(reply["value"])

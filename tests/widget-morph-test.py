@@ -530,8 +530,17 @@ try:
     t.check("card's former inner corner stays opaque inside the changing frame", all(
         max(abs(a-b) for a,b in zip(pixel, background)) <= 3 for pixel in strip), (background, strip))
     f = t.card(right)["frame"]
+    card_id = t.card(right)["id"]
     t.move(f["x"] + 15, f["y"] + 48)
-    t.check("snapshot-only visible area blocks click-through", state()["cursor_view"] == t.card(right)["id"])
+    # stipc queues pointer motion through the compositor; let its hit-test
+    # snapshot catch up before asserting ownership during the animated clip.
+    deadline = time.monotonic() + .4
+    cursor_view = state()["cursor_view"]
+    while cursor_view != card_id and time.monotonic() < deadline:
+        time.sleep(.02)
+        cursor_view = state()["cursor_view"]
+    t.check("snapshot-only visible area blocks click-through", cursor_view == card_id,
+            {"cursor_view": cursor_view, "card_id": card_id, "frame": t.card(right)["frame"]})
     t.wait_for(lambda: t.card(right)["frame"]["width"] < 125)
     t.move(old["x"] + 5, old["y"] + 48)
     t.check("input excludes the part of the old frame already clipped away", state()["cursor_view"] != t.card(right)["id"])
