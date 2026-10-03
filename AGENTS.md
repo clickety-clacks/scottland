@@ -1,5 +1,14 @@
 # Scottland: agent guide
 
+## Test host on osanwe (Mike, 2026-10-02)
+
+Do not run Scottland tests, headless sessions, extra Wayfire/Quickshell instances,
+or test widget services on osanwe. Sync this checkout to its own directory on
+plumbus and run headless tests there with a unique `SCOTTLAND_HEADLESS_DIR`.
+Keep logs and screenshots under that checkout's `build/`, stop every session,
+and remove only paths created for the test. Do not dev-install or reload the
+shared plumbus session. This host rule supersedes the local-headless default below.
+
 Scottland is a spatial desktop for Linux on Wayfire, after Scott Jenson's "working memory" concept.
 Windows scale down as they move from a full-scale center zone toward the screen edges, and turn
 into widgets on thin rails at the edges. See README.md for the idea and layout.
@@ -26,7 +35,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG23): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets, and elastic expansion/contraction.
-- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia and the exterior widget hints and the declutter pause (WK1–WK31),
+- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints and live focused-window-anchored avoidance (WK1–WK31),
   remembered zones and contention-aware placement (WP1–WP7).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO13): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).

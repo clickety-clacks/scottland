@@ -113,6 +113,15 @@ int main()
     check(full[0].diameter == 132 && full[1].diameter == 132 &&
         std::hypot(full[0].offset.x,full[0].offset.y) > 140 && near(full[1].offset,{}),
         "an output-sized front window moves to reveal the wholly covered rear window");
+    auto anchored = expose_window_hints({{{0,0,1280,720},132,32,{},true},
+        {{0,0,1280,720},132,32}},desktop);
+    check(near(anchored[0].offset,{}) && anchored[0].diameter == 132 &&
+        anchored[1].diameter == 0,
+        "focused output-covering window never shifts; impossible rear hint waits");
+    auto movable_rear = expose_window_hints({{{280,160,700,440},132,32,{},true},
+        {{200,160,700,440},132,32}},desktop);
+    check(near(movable_rear[0].offset,{}) && movable_rear[1].offset.x < -60,
+        "focused front anchors a covered rear window's exposure movement");
     auto three = expose_window_hints({{{0,0,1280,720},132,32},{{0,0,1280,720},132,32},
         {{0,0,1280,720},132,32}},desktop);
     check(three.size() == 3 && three[0].diameter == 132 && three[1].diameter == 132 &&
@@ -122,6 +131,11 @@ int main()
     check(near(tiny[0].offset,{}) && tiny[0].diameter == 32,
         "tiny displayed window keeps a 32px interior badge without moving");
     auto unchanged = declutter({{100,100},{300,200}},region);
+    auto widget_anchor = declutter({{250,200},{250,200}},region,6,{72,72},
+        {{true,48,true},{true,48,false}});
+    check(near(widget_anchor[0],{250,200}) &&
+        std::abs(widget_anchor[1].y-200) > 70,
+        "focused widget keeps its rail position while the other exterior hint moves");
     check(near(unchanged[0],{100,100}) && near(unchanged[1],{300,200}), "non-overlapping centers stay put");
     auto separated = declutter({{250,200},{250,200}},region);
     check(std::hypot(separated[0].x-separated[1].x,separated[0].y-separated[1].y) >= 85,

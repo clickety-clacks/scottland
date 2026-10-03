@@ -1001,15 +1001,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void set_scale(wayfire_toplevel_view view, double target)
     {
         observe_view(view);
+        auto cycle = glides.find(view->get_id());
+        if (cycle != glides.end() && cycle->second.cycle)
+            target = cycle->second.scale_to; // transaction may still report the old center
         model.windows[view->get_id()].scale = target;
         publish_model();
-        // A hint cycle owns both visual channels. Geometry notifications may
-        // confirm its target, but must not restart the ordinary scale easing.
-        if (auto glide = glides.find(view->get_id()); glide != glides.end() && glide->second.cycle)
-        {
-            glide->second.scale_to = target;
-            return;
-        }
+        // The cycle's destination owns scale until its geometry transaction commits.
+        if (cycle != glides.end() && cycle->second.cycle) return;
         auto found = transitions.find(view->get_id());
         if (found != transitions.end())
         {
@@ -1267,6 +1265,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     !link_of_widget(represented_view(id)))
                 { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
         }
+        declutter_signature.clear(); refresh_layout_avoidance();
         // Going to another window ends a just-dropped window's hold above the others (L29): the one
         // the user went to comes forward, now and when the hold would have ended.
         if (auto held = model.drag.held_above.lock(); held && (wf::get_core().seat->get_active_view().get() != held.get()))
@@ -1336,6 +1335,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         publish_model();
+        refresh_layout_avoidance();
     };
     wf::wl_idle_call idle_focus;
 
@@ -3584,7 +3584,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (window) remember_window(window);
         if (window)
         {
-            if (hint_cycle) start_cycle_glide(window, from, from_scale);
+            if (hint_cycle) start_cycle_glide(window, from, from_scale, middle, 1.0);
             else start_glide(window, from.x - middle.x, from.y - middle.y);
         }
 
@@ -4934,14 +4934,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> cycle_overshoot{"scottland/cycle_overshoot"};
     static constexpr double CYCLE_MS = 300;
 
-    void start_cycle_glide(wayfire_toplevel_view view, wf::pointf_t from, double from_scale)
+    void start_cycle_glide(wayfire_toplevel_view view, wf::pointf_t from, double from_scale,
+        wf::pointf_t to, double to_scale)
     {
         auto g = view->get_geometry();
-        double x = g.x + g.width / 2.0, y = g.y + g.height / 2.0;
+        double x = to.x, y = to.y;
         double amount = std::clamp(double(cycle_overshoot), 0.0, 10.0) / 100;
         if (amount == 0)
         {
             start_glide(view, from.x - x, from.y - y);
+            set_scale(view, to_scale);
             return;
         }
         auto frame = frame_of(view, false);
@@ -4952,7 +4954,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         glide.view = view->weak_from_this();
         glide.cycle = true;
         glide.dx = from.x - x; glide.dy = from.y - y;
-        glide.scale_from = from_scale; glide.scale_to = scale_for(view);
+        glide.scale_from = from_scale; glide.scale_to = to_scale;
         glide.overshoot = amount;
         glide.started = std::chrono::steady_clock::now();
         auto screen = view->get_output()->get_relative_geometry();
@@ -5373,6 +5375,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto view   = drag->view;
         auto output = drag->current_output;
+        refresh_layout_avoidance();
         note_drag_start();
         drag_velocity.add(now_msec(), ev->current_position.x, ev->current_position.y);
         if (view && output && !view->pending_fullscreen())
@@ -5627,6 +5630,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.drag.widget = 0;
         model.drag.started = false;
         publish_model();
+        refresh_layout_avoidance();
     };
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
@@ -5641,7 +5645,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         apply(ev->view);
-        hint_registration.run_once([=] () { window_entries(); });
+        hint_registration.run_once([=] () { refresh_layout_avoidance(); });
         idle_focus.run_once([=] () { update_focus(); });
     };
 
@@ -5669,11 +5673,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         apply(ev->view);
         publish_model();
+        refresh_layout_avoidance();
     };
 
     wf::signal::connection_t<wf::view_set_output_signal> on_output = [=] (wf::view_set_output_signal *ev)
     {
         apply(ev->view);
+        refresh_layout_avoidance();
     };
 
     wf::ipc::method_callback layout_state = [=] (wf::json_t) -> wf::json_t
@@ -6057,6 +6063,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 else model.goo_outputs.erase(output);
                 publish_model();
             });
+        refresh_layout_avoidance();
         LOGI("scottland: plugin loaded");
     }
 

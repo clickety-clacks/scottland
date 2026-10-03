@@ -6,6 +6,7 @@ struct hint_constraint
 {
     bool vertical_only = false;
     double half_height = 0; // keep a widget's displayed frame on screen as well as its badge
+    bool anchored = false;
 };
 // Deterministic collision graph relaxation: overlapping nodes repel, springs preserve locations.
 // Bounds keep hint centers readable on screen; the caller applies offsets as visual transforms.
@@ -20,6 +21,7 @@ struct exposure_window
     rectangle frame;
     double wanted = 72, minimum = 32;
     std::vector<rectangle> fixed_foreground = {}; // widgets above this window, after rail declutter
+    bool anchored = false; // focused/selected surface stays at its real geometry
 };
 struct exposure_result { point offset; label_spot spot; double diameter = 32; };
 // In front-to-back order, expose room for each badge with the least visual travel.

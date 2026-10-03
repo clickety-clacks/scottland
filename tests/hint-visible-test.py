@@ -67,7 +67,7 @@ def wait(predicate):
 
 def drag(identifier, x, y):
     ipc('window-rules/focus-view', {'id': identifier})
-    time.sleep(.1)
+    wait(lambda: abs(hints()[identifier]['dx']) + abs(hints()[identifier]['dy']) < .5)
     f = views()[identifier]['frame']
     cx, cy = f['x']+f['width']/2, f['y']+f['height']/2
     ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
@@ -244,13 +244,16 @@ try:
     (artifacts/'raise-motion.json').write_text(json.dumps(samples, indent=2))
     key('ESC', True)
     key('ESC', False)
-    wait(lambda: all(not h['visible'] and abs(h['dx'])+abs(h['dy']) < .01 for h in hints().values()))
-    check(not ipc('scottland/hints')['active'] and all(not h['visible'] and abs(h['dx'])+abs(h['dy']) < .01 for h in hints().values()),
-          'Esc removes hint placements and restores temporary transforms')
+    wait(lambda: all(not h['visible'] for h in hints().values()))
+    escaped = hints()
+    check(not ipc('scottland/hints')['active'] and
+          all(not h['visible'] for h in escaped.values()) and
+          any(abs(h['dx'])+abs(h['dy']) > 10 for i, h in escaped.items() if i != ids[0]),
+          'Esc removes hints while always-on avoidance keeps other windows exposed')
     release()
     hold()
     release()
-    check(all(rect(views()[i]) == rect(before[i]) for i in ids), 'Alt release restores the original stack')
+    check(all(rect(views()[i]) == rect(before[i]) for i in ids), 'Alt release preserves original real geometry')
     (artifacts/'overlap.json').write_text(json.dumps({'before': original_overlap, 'held': reduced}, indent=2))
     for client in clients:
         client.terminate()
@@ -310,12 +313,11 @@ try:
         client.wait(timeout=5)
     clients.clear()
     wait(lambda: not views())
-    # The earlier edge fallback is forbidden: move front windows enough to expose
-    # each fully covered window's ordinary circle inside its own visible region.
+    # Fully covered rear windows can move around the focused front window.
     huge = []
     for name in ('HugeBack', 'HugeMiddle', 'HugeFront'):
         clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
-            str(Path('tests/hint-style-app.py').resolve()), name, '1280', '720', str(palette)],
+            str(Path('tests/hint-style-app.py').resolve()), name, '1000', '600', str(palette)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         v = wait(lambda: next((v for v in views().values() if v['title'] == name and 'frame' in v), None))
         time.sleep(.5)
@@ -324,12 +326,70 @@ try:
     hold()
     drawn, state = capture('fully-hidden', list(reversed(huge)))
     check(all(state[i]['visible'] and not state[i]['edge_label'] and
-              state[i]['badge']['size'] == 132 for i in huge),
-          'all three formerly covered windows have proportional interior circles')
-    check(any(math.hypot(state[i]['dx'],state[i]['dy']) > 140 for i in huge),
-          'foreground windows move temporarily to uncover screen-sized rear windows')
+              120 <= state[i]['badge']['size'] <= 132 for i in huge),
+          'all three formerly covered windows have clearance-limited interior circles')
+    check(abs(state[huge[-1]]['dx'])+abs(state[huge[-1]]['dy']) < 1 and
+          any(math.hypot(state[i]['dx'],state[i]['dy']) > 100 for i in huge[:-1]),
+          'focused front stays at true geometry while fully covered rear windows emerge')
     (artifacts/'fully-hidden.json').write_text(json.dumps({'views': views(), 'hints': state}, indent=2))
+    before_select = rect(views()[huge[0]])
+    key('A', True); key('A', False)
+    wait(lambda: ipc('window-rules/get-focused-view')['info']['id'] == huge[0])
+    time.sleep(1.3)
+    selected = hints()
+    check(abs(selected[huge[0]]['dx'])+abs(selected[huge[0]]['dy']) < .2 and
+          rect(views()[huge[0]]) == before_select,
+          'selecting a shifted window returns it to true geometry as the new anchor')
+    capture('fully-hidden-selected', [huge[0], huge[2], huge[1]])
+    # The selected surface stays at its real position through live keyboard motion.
+    key('RIGHT', True)
+    key('RIGHT', False)
+    motion = []
+    for _ in range(12):
+        motion.append((views()[huge[0]], hints()))
+        time.sleep(.035)
+    check(all(abs(h[huge[0]]['dx'])+abs(h[huge[0]]['dy']) < .2 for _, h in motion),
+          'focused window has no avoidance offset during a real arrow push and coast')
+    check(len({round(v['frame']['x']) for v, _ in motion}) > 1,
+          'real arrow input moved the anchored window while avoidance stayed active')
+    check(any(len({round(h[i]['dx'], 1) for _, h in motion}) > 1 for i in huge[1:]),
+          'other windows re-shift live around the focused arrow-driven window')
+    time.sleep(1)
+    capture('fully-hidden-pushed', [huge[0], huge[2], huge[1]])
     release()
+    unheld = hints()
+    check(not ipc('scottland/hints')['active'] and
+          abs(unheld[huge[0]]['dx'])+abs(unheld[huge[0]]['dy']) < .2 and
+          any(abs(unheld[i]['dx'])+abs(unheld[i]['dy']) > 10 for i in huge[1:]),
+          'avoidance remains active without Alt, anchored on the focused window')
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'always-on-before-drag.png')], check=True)
+    real_before = rect(views()[huge[0]])
+    check(real_before[2] > 700, 'pointer fixture keeps the focused surface an ordinary window')
+    cx, cy = real_before[0]+real_before[2]/2, real_before[1]+real_before[3]/2
+    ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
+    key('LEFTMETA', True)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    drag_samples = []
+    drag_diagnostics = []
+    for step in range(1, 9):
+        ipc('stipc/move_cursor', {'x': round(cx+step*12), 'y': round(cy)})
+        time.sleep(.045)
+        sample = hints()
+        drag_samples.append(sample)
+        drag_diagnostics.append({'offsets': {i: (h['dx'], h['dy']) for i, h in sample.items()},
+            'frame': rect(views()[huge[0]]), 'drag': ipc('scottland/desktop-model').get('drag')})
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    key('LEFTMETA', False)
+    (artifacts/'always-on-drag.json').write_text(json.dumps({'before': real_before,
+        'samples': drag_diagnostics, 'after': rect(views()[huge[0]])}, indent=2))
+    check(all(abs(s[huge[0]]['dx'])+abs(s[huge[0]]['dy']) < .2 for s in drag_samples) and
+          any(len({round(s[i]['dx'], 1) for s in drag_samples}) > 1 for i in huge[1:]),
+          'pointer drag keeps its window unshifted while other windows reflow live without Alt')
+    time.sleep(.8)
+    check(abs(rect(views()[huge[0]])[0] - real_before[0]) > 20 and
+          abs(hints()[huge[0]]['dx']) < .2,
+          'after pointer drop, drawn focused window agrees with its real landing position')
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'always-on-after-drag.png')], check=True)
 finally:
     key('LEFTALT', False)
     for client in clients:

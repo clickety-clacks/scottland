@@ -15,6 +15,7 @@
         wf::output_t *hint_output = nullptr;
         std::shared_ptr<scottland::windowing::fullscreen_hint_node> fullscreen_tint;
         std::shared_ptr<wf::scene::view_2d_transformer_t> offset;
+        bool offset_attached = false;
         scottland::windowing::point target;
         scottland::windowing::point label_offset;
         double label_size = 72, clearance = 0;
@@ -74,6 +75,8 @@
     }
     scottland::rectf_t hint_rectangle(wayfire_toplevel_view view)
     {
+        if (drag->view == view && view->get_output())
+            return scene_rectangle(view, view->get_output());
         if (auto frame = frame_of(view, false)) return frame->screen_rect();
         auto g = view->get_geometry();
         return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
@@ -294,8 +297,28 @@
                 region.y += WIDGET_INSET; region.height = std::max(h, region.height - 2 * WIDGET_INSET);
             } else
             {
-                // The whole side zone is eligible, not a fixed landing column. Re-evaluate
-                // the rectangle footprint as its natural zone scale changes at the chosen x.
+                // An unremembered side destination must visibly leave center priority.
+                // Find the first center inside the side zone whose natural scale has
+                // fallen by 5% (or halfway to the rail scale when less is available).
+                // Remembered positions remain exact, even inside the soft edge band.
+                if (!remembered && side.width > 0)
+                {
+                    double inner = left ? side.x + side.width : side.x;
+                    double outer = left ? side.x : side.x + side.width;
+                    double outer_scale = place_at(outer, screen.width).scale;
+                    double threshold = 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
+                    for (int step = 1; step <= 128; ++step)
+                    {
+                        double trial = inner + (outer - inner) * step / 128;
+                        if (place_at(trial, screen.width).scale > threshold) continue;
+                        if (left) side.width = trial - side.x;
+                        else { double right = side.x + side.width;
+                            side.x = trial; side.width = right - trial; }
+                        break;
+                    }
+                }
+                // Re-evaluate the rectangle footprint as its natural zone scale
+                // changes at the chosen x. Contention uses the pure placement routine.
                 // All contention decisions still go through the same pure placement routine.
                 auto obstacles = placement_obstacles(output, window->get_id());
                 double x = std::clamp(current.x, side.x, side.x + side.width);
@@ -378,7 +401,9 @@
             auto& memory = ensure_window_memory(id);
             memory.last_side = left ? -1 : 1;
             publish_model();
-        } else { remember_window(window); start_cycle_glide(window, from, from_scale); }
+        } else { remember_window(window); start_cycle_glide(window, from, from_scale,
+            {at.x, at.y}, destination == D::center ? 1.0 : place_at(at.x,
+                window->get_output()->get_relative_geometry().width).scale); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)
@@ -425,7 +450,7 @@
 
     bool step_hints()
     {
-        if (window_keys.active) refresh_hint_palette();
+        refresh_hint_palette();
         auto entries = window_entries();
         if (window_keys.active) window_keys.refresh(entries);
         std::set<uint64_t> represented;
@@ -436,12 +461,11 @@
             auto view = represented_view(e.id);
             if (!view || !view->is_mapped() || !view->get_output()) continue;
             represented.insert(e.id);
-            if (!hint_visuals.count(e.id) && window_keys.active)
+            if (!hint_visuals.count(e.id))
             {
                 hint_visual visual; visual.view = view->weak_from_this();
                 visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
-                view->get_transformed_node()->add_transformer(visual.offset, wf::TRANSFORMER_HIGHLEVEL - 1,
-                    "scottland-hint-offset"); hint_visuals[e.id] = std::move(visual);
+                hint_visuals[e.id] = std::move(visual);
             }
             auto found = hint_visuals.find(e.id);
             if (found == hint_visuals.end()) continue;
@@ -449,23 +473,32 @@
             if (visual.view.lock().get() != view.get())
             {
                 if (auto old = visual.view.lock()) { clear_hint_dye(old.get());
-                    old->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
+                    if (visual.offset_attached)
+                        old->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
                 if (visual.hint) visual.hint->relocate();
                 if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
                 visual.fullscreen_tint.reset(); visual.view = view->weak_from_this();
                 visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
+                visual.offset_attached = false;
+            }
+            // A parked widget is a fixed obstacle for window avoidance, but has no
+            // visual displacement outside Alt. Its scene transformer is only needed
+            // while its exterior hint participates in decluttering.
+            if (!visual.offset_attached && (window_keys.active || !link_of_widget(view)))
+            {
                 view->get_transformed_node()->add_transformer(visual.offset, wf::TRANSFORMER_HIGHLEVEL - 1,
                     "scottland-hint-offset");
+                visual.offset_attached = true;
             }
             auto g = view->get_geometry();
             signature << e.id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' << view->get_output()->to_string() << ';';
-            auto r = hint_rectangle(view);
+            auto r = drag->view == view ? scene_rectangle(view, view->get_output()) : hint_rectangle(view);
             auto anchor = hint_anchor(view);
             signature << ':' << std::round(anchor.x) << ',' << std::round(anchor.y) << ',' << std::round(r.height())
                 << ',' << std::round(hint_size(view)) << ';';
             by_output[view->get_output()].push_back(e.id);
         }
-        bool coasting = inertia_active();
+        auto focused = drag->view ? drag->view : wf::toplevel_cast(wf::get_core().seat->get_active_view());
         // Opening order owns letters; scene order alone owns occlusion (including dialogs
         // and fullscreen). Include it in the solve key so an explicit raise refreshes visibility.
         std::map<uint64_t, size_t> stacking;
@@ -476,8 +509,8 @@
                 for (auto id : ids) if (represented_view(id) == view)
                 { stacking[id] = stacking.size(); signature << "z:" << id << ';'; }
             }
-        signature << "coasting:" << coasting;
-        if (window_keys.active && !coasting && signature.str() != declutter_signature)
+        signature << "anchor:" << (focused ? focused->get_id() : 0);
+        if (signature.str() != declutter_signature)
         {
             declutter_signature = signature.str();
             std::map<uint64_t, scottland::windowing::point> previous_labels;
@@ -490,10 +523,11 @@
                 for (auto id : ids) { auto view = represented_view(id); auto r = hint_rectangle(view);
                     anchors.push_back(hint_anchor(view));
                     bool widget = bool(link_of_widget(view));
-                    constraints.push_back({widget, widget ? r.height() / 2 : 0});
+                    constraints.push_back({widget, widget ? r.height() / 2 : 0,
+                        view == focused});
                     diameters.push_back(std::round(hint_size(view))); }
                 auto screen = output->get_relative_geometry();
-                auto displaced = std::any_of(constraints.begin(), constraints.end(),
+                auto displaced = window_keys.active && std::any_of(constraints.begin(), constraints.end(),
                     [] (auto constraint) { return constraint.vertical_only; }) ?
                     scottland::windowing::declutter(anchors,
                         {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints) : anchors;
@@ -521,12 +555,14 @@
                         auto anchor = hint_anchor(view); double radius = hint_size(view) / 2;
                         fixed_above.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y,
                             r.width(), r.height()});
-                        fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
-                            anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
+                        if (window_keys.active)
+                            fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
+                                anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
                     } else
                     {
                         windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
-                            32 * hints_palette.text_scale, fixed_above});
+                            32 * hints_palette.text_scale, fixed_above,
+                            view == focused});
                         window_ids.push_back(id);
                     }
                 }
@@ -560,14 +596,6 @@
                     visual.label_offset.y - before.y) > 0.5) visual.hint->relocate();
             }
         }
-        // Freeze the current visual offsets while any coast is active. Geometry still drives
-        // hints, and the existing transform interpolation resumes smoothly at rest.
-        if (coasting)
-        {
-            declutter_signature.clear();
-            for (auto& [id, visual] : hint_visuals)
-                visual.target = {visual.offset->translation_x, visual.offset->translation_y};
-        }
         bool moving = false;
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
         {
@@ -575,17 +603,20 @@
             if (!view || !represented.count(it->first))
             {
                 if (view) { clear_hint_dye(view.get());
-                    view->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
+                    if (visual.offset_attached)
+                        view->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
                 if (visual.hint) wf::scene::remove_child(visual.hint);
                 if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
                 it = hint_visuals.erase(it); continue;
             }
             auto offset = visual.offset;
-            auto target = window_keys.active ? visual.target : scottland::windowing::point{};
+            auto target = visual.target;
             bool offset_changed = target.x != offset->translation_x || target.y != offset->translation_y;
             if (offset_changed) { view->damage(); view->get_transformed_node()->begin_transform_update(); }
-            offset->translation_x += (target.x - offset->translation_x) * (hints_reduced_motion ? 1 : 0.18);
-            offset->translation_y += (target.y - offset->translation_y) * (hints_reduced_motion ? 1 : 0.18);
+            double ease = hints_reduced_motion || drag->view == view ||
+                (view == focused && inertia_active()) ? 1 : 0.18;
+            offset->translation_x += (target.x - offset->translation_x) * ease;
+            offset->translation_y += (target.y - offset->translation_y) * ease;
             bool unsettled = std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > 0.1;
             moving |= unsettled;
             if (!unsettled) { offset->translation_x = target.x; offset->translation_y = target.y; }
@@ -683,12 +714,23 @@
                 bool popping = visual.hint && visual.hint->animate();
                 moving |= popping;
                 if (!popping && visual.hint) { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-                if (!unsettled && !popping) { view->get_transformed_node()->rem_transformer("scottland-hint-offset");
-                    it = hint_visuals.erase(it); continue; }
+                if (link_of_widget(view) && visual.offset_attached && !unsettled && !popping)
+                {
+                    view->get_transformed_node()->rem_transformer("scottland-hint-offset");
+                    visual.offset_attached = false;
+                }
             }
             ++it;
         }
-        return window_keys.active || moving;
+        return window_keys.active || moving || bool(drag->view) || inertia_active();
+    }
+    void refresh_layout_avoidance(bool immediate = false)
+    {
+        // Coalesce focus and geometry signals onto the next compositor tick.
+        // Hint entry still computes its first frame immediately.
+        if (immediate) step_hints();
+        if (!hints_tick.is_connected())
+            hints_tick.set_timeout(8, [=] () { return step_hints(); });
     }
     void end_window_keys()
     {
@@ -704,6 +746,7 @@
         }
         for (auto& [id, link] : model.widgets)
             if (link.docked() && in_focus_mode(link.output)) slide_widget(link, true);
+        refresh_layout_avoidance();
     }
     void begin_window_keys()
     {
@@ -716,8 +759,7 @@
         for (auto& [id, widget] : model.widgets)
             if (widget.docked() && in_focus_mode(widget.output)) slide_widget(widget, false);
         palette_read = {}; // always read the current theme on entry
-        declutter_signature.clear(); step_hints();
-        hints_tick.set_timeout(8, [=] () { return step_hints(); });
+        declutter_signature.clear(); refresh_layout_avoidance(true);
     }
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_window_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
@@ -887,7 +929,8 @@
             if (visual.hint) wf::scene::remove_child(visual.hint);
             if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
             if (auto view = visual.view.lock()) { clear_hint_dye(view.get());
-                view->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
+                if (visual.offset_attached)
+                    view->get_transformed_node()->rem_transformer("scottland-hint-offset"); }
         }
         hint_visuals.clear();
     }

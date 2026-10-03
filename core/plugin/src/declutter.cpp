@@ -74,6 +74,7 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
                 std::min(spot.clearance - .25, needed_radius(windows[k].wanted))});
     }
     auto offer = [&] (size_t moved_index, point delta) {
+        if (windows[moved_index].anchored) return;
         double distance = std::hypot(delta.x, delta.y);
         // A rear circle already uncovered in an earlier pass must remain uncovered.
         // This prevents two equally cheap moves from undoing each other in a stack.
@@ -197,8 +198,10 @@ std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds
     if (gap <= 0) return nodes;
     auto radius = [&] (size_t i) { return i < diameters.size() ? diameters[i] / 2 : 0; };
     auto vertical = [&] (size_t i) { return i < constraints.size() && constraints[i].vertical_only; };
+    auto anchored = [&] (size_t i) { return i < constraints.size() && constraints[i].anchored; };
     auto separation = [&] (size_t i, size_t j) { return gap + radius(i) + radius(j); };
     auto constrain = [&] (point p, size_t i) {
+        if (anchored(i)) return anchors[i];
         double height = i < constraints.size() ? constraints[i].half_height : 0;
         double x = std::min(radius(i), bounds.width / 2), y = std::min(std::max(radius(i), height), bounds.height / 2);
         if (vertical(i)) p.x = anchors[i].x;
@@ -254,14 +257,14 @@ std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds
                 // attachment even when a neighboring window is pinned to a screen edge.
                 // Springs already let free windows move on both axes. Input order breaks ties.
                 double required = std::sqrt(std::max(0.0, (gap + 0.01) * (gap + 0.01) - dx * dx));
-                double correction = (required - std::abs(dy)) / 2;
+                double correction = (required - std::abs(dy)) / (anchored(i) || anchored(j) ? 1 : 2);
                 double direction = dy < 0 ? -1 : 1;
                 nodes[i] = constrain({nodes[i].x, nodes[i].y + direction * correction}, i);
                 nodes[j] = constrain({nodes[j].x, nodes[j].y - direction * correction}, j);
                 continue;
             }
             if (distance < 1e-6) { dx = 1; dy = 0; distance = 1; }
-            double correction = (gap + 0.01 - distance) / (2 * distance);
+            double correction = (gap + 0.01 - distance) / ((anchored(i) || anchored(j) ? 1 : 2) * distance);
             nodes[i] = constrain({nodes[i].x + dx * correction, nodes[i].y + dy * correction}, i);
             nodes[j] = constrain({nodes[j].x - dx * correction, nodes[j].y - dy * correction}, j);
         }
