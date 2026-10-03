@@ -659,9 +659,11 @@
                 visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
                 visual.offset_attached = false;
             }
-            // Hint avoidance is a window-mode presentation effect. Keep its scene
-            // transformer only while hints are active or while an exit is easing home.
-            if (window_keys.active && !visual.offset_attached)
+            // Avoidance is a visual-only reservation for hint circles. It normally runs
+            // only with visible hints; the opt-in setting keeps that presentation active
+            // between hint requests as well. The transform never enters real geometry.
+            bool avoidance_active = window_keys.active || bool(hint_avoidance_always);
+            if (avoidance_active && !visual.offset_attached)
             {
                 view->get_transformed_node()->add_transformer(visual.offset, wf::TRANSFORMER_HIGHLEVEL - 1,
                     "scottland-hint-offset");
@@ -686,13 +688,15 @@
                 for (auto id : ids) if (represented_view(id) == view)
                 { stacking[id] = stacking.size(); signature << "z:" << id << ';'; }
             }
-        signature << "active:" << window_keys.active << ";anchor:" << (focused ? focused->get_id() : 0);
+        bool avoidance_active = window_keys.active || bool(hint_avoidance_always);
+        signature << "active:" << window_keys.active << ";avoidance:" << avoidance_active
+            << ";anchor:" << (focused ? focused->get_id() : 0);
         if (signature.str() != declutter_signature)
         {
             declutter_signature = signature.str();
             std::map<uint64_t, scottland::windowing::point> previous_labels;
             for (auto& [id, visual] : hint_visuals) previous_labels[id] = visual.label_offset;
-            if (!window_keys.active)
+            if (!avoidance_active)
             {
                 // End of the hint request: the true geometry is the only target.
                 // Offsets remain attached until the animation reaches this target.
@@ -709,7 +713,7 @@
                         view == focused});
                     diameters.push_back(std::round(hint_size(view))); }
                 auto screen = output->get_relative_geometry();
-                auto displaced = window_keys.active && std::any_of(constraints.begin(), constraints.end(),
+                auto displaced = avoidance_active && std::any_of(constraints.begin(), constraints.end(),
                     [] (auto constraint) { return constraint.vertical_only; }) ?
                     scottland::windowing::declutter(anchors,
                         {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints) : anchors;
@@ -737,7 +741,7 @@
                         auto anchor = hint_anchor(view); double radius = hint_size(view) / 2;
                         fixed_above.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y,
                             r.width(), r.height()});
-                        if (window_keys.active)
+                        if (avoidance_active)
                             fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
                                 anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
                     } else

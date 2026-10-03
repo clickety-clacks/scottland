@@ -11,10 +11,11 @@ if [ "${1:-}" = --palette ]; then
   colors="$current/theme/colors.toml"
   pick() { sed -n "s/^$1 *= *\"\(#[0-9a-fA-F]\{6\}\)\".*/\1/p" "$colors" 2>/dev/null | head -1; }
   bg=$(pick lighter_background); [ -n "$bg" ] || bg=$(pick background)
+  attention=$(pick attention); [ -n "$attention" ] || attention=$(pick yellow)
   printf '{'
   sep=
   for pair in "background=$bg" "foreground=$(pick foreground)" "muted=$(pick light_foreground)" \
-              "accent=$(pick accent)" "alert=$(pick red)" "attention=$(pick yellow)"; do
+              "accent=$(pick accent)" "alert=$(pick red)" "attention=$attention"; do
     [ -n "${pair#*=}" ] || continue
     printf '%s"%s": "%s"' "$sep" "${pair%%=*}" "${pair#*=}"
     sep=', '

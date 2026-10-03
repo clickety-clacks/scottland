@@ -1,5 +1,5 @@
 post_install() {
-  echo ":: Run 'scottland-omarchy-setup' as your user to add Switch Desktop to the Omarchy menu."
+  echo ":: Run 'scottland-omarchy-setup' as your user to add the Omarchy menu entries and install Scottland's default themes."
 }
 
 post_remove() {

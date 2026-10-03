@@ -2,9 +2,11 @@
 """Core sunrise/mode policy and Omarchy theme choice, isolated in build/."""
 from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
+import json
 import os
 from pathlib import Path
 from subprocess import CompletedProcess
+import subprocess
 from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
@@ -57,9 +59,54 @@ with patch.object(adapter.subprocess,"run") as run:
     check("mode check uses requested colors file",run.call_args.args[0][:3]==["omarchy-theme-color","--file",str(adapter.current/"theme/colors.toml")])
 with patch.object(adapter.subprocess,"run") as run:
     run.side_effect=[type("R",(),dict(returncode=0,stdout="dark\n"))(),type("R",(),dict(returncode=0,stdout=""))()]
-    check("wrong mode selects default day theme",adapter.run_once()=="Nasa2043")
-    check("adapter calls omarchy theme set",run.call_args.args[0]==["omarchy","theme","set","Nasa2043"])
+    check("wrong mode selects default day theme",adapter.run_once()=="watercolor-dream-light")
+    check("adapter calls omarchy theme set",run.call_args.args[0]==["omarchy","theme","set","watercolor-dream-light"])
+check("Sunlight defaults to the shipped light/dark pair",adapter.themes()=={
+    "light":"watercolor-dream-light","dark":"watercolor-dream-dark"})
 adapter.config_file.parent.mkdir(parents=True,exist_ok=True)
 adapter.config_file.write_text("[themes]\nday = CustomDay\nnight = CustomNight\n")
 check("adapter reads configured themes",adapter.themes()=={"light":"CustomDay","dark":"CustomNight"})
+adapter.config_file.write_text("[themes]\nday = CustomDay\n")
+check("a partial user theme choice preserves the shipped night default",
+      adapter.themes()=={"light":"CustomDay","dark":"watercolor-dream-dark"})
+
+colors_file=adapter.current/"theme/colors.toml"
+colors_file.parent.mkdir(parents=True,exist_ok=True)
+palette_provider=root/"omarchy/accent.d/10-omarchy-theme"
+colors_file.write_text('yellow = "#aabbcc"\nattention = "#123456"\n')
+palette=json.loads(subprocess.check_output([str(palette_provider),"--palette"],text=True,env=os.environ))
+check("Omarchy attention key overrides the yellow fallback",palette["attention"]=="#123456")
+colors_file.write_text('yellow = "#aabbcc"\n')
+palette=json.loads(subprocess.check_output([str(palette_provider),"--palette"],text=True,env=os.environ))
+check("Omarchy attention falls back to theme yellow",palette["attention"]=="#aabbcc")
+
+setup_config=art/f"setup-config-{os.getpid()}"
+setup_home=art/f"setup-home-{os.getpid()}"
+setup_config.mkdir(parents=True,exist_ok=True)
+setup_home.mkdir(parents=True,exist_ok=True)
+setup_env=dict(os.environ,XDG_CONFIG_HOME=str(setup_config),HOME=str(setup_home))
+setup=root/"omarchy/bin/scottland-omarchy-setup"
+subprocess.run([str(setup)],check=True,env=setup_env,capture_output=True,text=True)
+installed=setup_config/"omarchy/themes"
+check("setup installs both shipped watercolor themes",
+      all((installed/name/"colors.toml").is_file() for name in
+          ("watercolor-dream-light","watercolor-dream-dark")))
+check("setup preserves Aether-managed theme markers",
+      all((installed/name/".aether-managed").is_file() for name in
+          ("watercolor-dream-light","watercolor-dream-dark")))
+check("setup installs Omarchy-compatible WebP backgrounds and previews",
+      all((installed/name/"preview.webp").is_symlink() and
+          (installed/name/"preview.webp").is_file() and
+          list((installed/name/"backgrounds").glob("*.webp")) for name in
+          ("watercolor-dream-light","watercolor-dream-dark")))
+user_theme=installed/"watercolor-dream-light"
+sentinel=user_theme/"user-choice.txt"
+sentinel.write_text("keep this theme\n")
+(user_theme/"colors.toml").write_text("# user's chosen colors\n")
+(user_theme/".aether-managed").write_text("user marker\n")
+subprocess.run([str(setup)],check=True,env=setup_env,capture_output=True,text=True)
+check("setup leaves a user's same-named theme untouched",
+      sentinel.read_text()=="keep this theme\n" and
+      (user_theme/"colors.toml").read_text()=="# user's chosen colors\n" and
+      (user_theme/".aether-managed").read_text()=="user marker\n")
 print(f"{passed} solar checks passed")

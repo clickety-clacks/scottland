@@ -114,6 +114,11 @@
         <option name="widget_opacity_unfocused" type="double"><_short>Unfocused widget opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="window_mode_opacity_focused" type="double"><_short>Focused Window mode opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="window_mode_opacity_unfocused" type="double"><_short>Unfocused Window mode opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="hint_avoidance_always" type="bool">
+            <_short>Always reserve space for window hints</_short>
+            <_long>Keep the visual window-hint avoidance offsets active outside Window mode. It never changes real geometry, zone, scale, placement memory or widget state.</_long>
+            <default>false</default>
+        </option>
 
         <option name="alt_hold_delay" type="int">
             <_short>Window mode Alt-alone hold (ms)</_short>

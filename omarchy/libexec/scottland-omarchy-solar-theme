@@ -21,7 +21,8 @@ def themes():
     cfg = configparser.ConfigParser()
     cfg.read(config_file)
     section = cfg["themes"] if cfg.has_section("themes") else {}
-    return {"light": section.get("day", "Nasa2043"), "dark": section.get("night", "Nord")}
+    return {"light": section.get("day", "watercolor-dream-light"),
+            "dark": section.get("night", "watercolor-dream-dark")}
 
 
 def run_once():
