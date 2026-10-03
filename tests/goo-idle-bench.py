@@ -2,7 +2,8 @@
 """Large breathing window regression for GO10/GO17. Private headless session only.
 
 Run through headless.sh run: goo-idle-bench.py SESSION ARTIFACTS [--seconds 5]
-[--settings shipped|wide] [--stream-hz 0|1|30] [--scale 1] [--verify].
+[--settings shipped|wide] [--stream-hz 0|1|30] [--refresh-hz 60|120]
+[--scale 1] [--verify].
 'wide' is an explicit anonymous numeric snapshot, never a personal config import.
 """
 import argparse
@@ -22,10 +23,14 @@ ap.add_argument('artifacts', type=Path)
 ap.add_argument('--seconds', type=float, default=5)
 ap.add_argument('--settings', choices=['shipped', 'wide'], default='wide')
 ap.add_argument('--stream-hz', type=float, default=0)
+ap.add_argument('--full-redraw', action='store_true', help='change the entire terminal background each frame')
 ap.add_argument('--scale', type=float, default=1)
+ap.add_argument('--refresh-hz', type=int, default=60)
 ap.add_argument('--verify', action='store_true')
 ap.add_argument('--deterministic', action='store_true')
 args = ap.parse_args()
+if args.full_redraw and args.stream_hz <= 0:
+    ap.error('--full-redraw requires --stream-hz > 0')
 root = Path(__file__).resolve().parents[1]
 out = args.artifacts.resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -103,7 +108,7 @@ def measure(label):
     swells = []
     while time.monotonic()-start < args.seconds:
         current = state()
-        if current:
+        if current and current['draw_gpu_ms'] > 0:
             draws.append(current['draw_gpu_ms'])
         if not current:
             swells.append(view(1)['frame']['swell'])
@@ -117,19 +122,25 @@ def measure(label):
               'sources': after.get('sources'), 'breath_damage': after.get('breath_damage')}
     for key in ('steps', 'breath_ticks', 'draws', 'surface_pixels', 'capture_pixels', 'composite_pixels'):
         result[key] = after.get(key, 0)-before.get(key, 0) if after else None
+    if after and result['draws'] == 0:
+        result['draw_gpu_ms_median'] = None  # the last query is stale at rest
     if swells:
         result['fallback_swell_range'] = [min(swells), max(swells)]
-        assert max(swells)-min(swells) > .08, result
+        # Only a full five-second cycle is guaranteed to span most of the curve.
+        assert max(swells)-min(swells) > (.08 if args.seconds >= 5 else .005), result
     print(json.dumps(result), flush=True)
     with (out/'measurements.jsonl').open('a') as f:
         f.write(json.dumps(result)+'\n')
     subprocess.run(['grim', str(out/(label+'.png'))], check=True)
     if after:
         assert after['sleeping'] and result['steps'] == 0, result
+    if label == 'answered':
+        assert all(result[k] == 0 for k in ('draws', 'breath_ticks', 'surface_pixels',
+                                           'capture_pixels', 'composite_pixels')), result
 
 try:
     ipc('wayfire/set-config-options', {
-        'output:HEADLESS-1/mode': f'{round(2560*args.scale)}x{round(1600*args.scale)}@60000',
+        'output:HEADLESS-1/mode': f'{round(2560*args.scale)}x{round(1600*args.scale)}@{args.refresh_hz*1000}',
         'output:HEADLESS-1/scale': args.scale})
     time.sleep(1)
     settings = {}
@@ -148,15 +159,25 @@ try:
     if args.deterministic:
         ipc('wayfire/set-config-options', {'scottland/'+k: v for k, v in
             {'goo_noise': 0., 'goo_drift': 0., 'goo_wave_height': 0., 'goo_swirl': 0., 'goo_release': .3}.items()})
+    # Wayland display numbers are reused on the shared host. Initialize this
+    # private session's palette before cards can read a prior session's file.
+    subprocess.run([str(root/'core/libexec/scottland-color-scheme'), 'once'],
+                   check=True, stdout=subprocess.DEVNULL)
     # A stationary backdrop and six clients: live-sized overlapping pair, two
     # peripheral windows, two actual card widgets. Only the attention client streams.
     with (out/'wallpaper.log').open('w') as log:
         clients.append(subprocess.Popen(['quickshell', '-p', str(root/'tests/GooWallpaper.qml')],
             stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
     for i in range(6):
+        stream = (f'n=0\nwhile True:\n print(f"frame {{n:08d}} "*8,flush=True);n+=1;time.sleep({1/args.stream_hz!r})'
+                  if args.stream_hz else 'time.sleep(600)')
+        if args.full_redraw:
+            # OSC 11 invalidates the terminal's whole background, unlike foot's
+            # small line damage. Models a GPU client's full-surface commits.
+            stream = (f'n=0\nwhile True:\n print(f"\\033]11;#{{32+(n%2)*6:02x}}2020\\007",end="",flush=True);'
+                      f'n+=1;time.sleep({1/args.stream_hz!r})')
         code = ('import time\nprint("\\033[?25l" + "sample content "*400,flush=True)\n'
-                + (f'n=0\nwhile True:\n print(f"frame {{n:08d}} "*8,flush=True);n+=1;time.sleep({1/args.stream_hz!r})'
-                   if i == 1 and args.stream_hz else 'time.sleep(600)'))
+                + (stream if i == 1 else 'time.sleep(600)'))
         clients.append(subprocess.Popen(['foot', '-c', '/dev/null', '-o', 'resize-by-cells=no', '-T', f'idle-{i}',
             'python3', '-u', '-c', code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True))
@@ -200,9 +221,16 @@ try:
         time.sleep(.5)
     time.sleep(3)
     measure('off')
+    if args.verify:
+        from goo_idle_checks import verify_fallback
+        verify_fallback(lambda: view(1), out)
     ipc('wayfire/set-config-options', {'scottland/goo': True})
     settle()
     measure('on-2')
+    if args.verify:
+        ipc('scottland/attention', {'window': view(1)['id'], 'attention': False, 'source': 'idle-bench'})
+        settle()
+        measure('answered')
 finally:
     for client in clients:
         try:

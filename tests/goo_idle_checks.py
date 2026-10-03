@@ -59,3 +59,27 @@ def verify(ipc, art, scale):
     (art/'breath-samples.json').write_text(json.dumps(samples, indent=2))
     (art/'checks.json').write_text(json.dumps(checks, indent=2))
     assert all(ok for _, ok in checks), checks
+
+
+def verify_fallback(view, art):
+    """Check the off comparator renders its changing halo, not only model swell."""
+    import gi
+    gi.require_version('GdkPixbuf', '2.0')
+    from gi.repository import GdkPixbuf
+
+    shots = {}
+    end = time.monotonic()+6
+    while time.monotonic() < end and len(shots) < 2:
+        swell = view()['frame']['swell']
+        label = 'off-trough' if swell < .001 else 'off-peak' if swell > .123 else None
+        if label and label not in shots:
+            path = art/(label+'.png')
+            subprocess.run(['grim', str(path)], check=True)
+            shots[label] = GdkPixbuf.Pixbuf.new_from_file(str(path))
+        time.sleep(.025)
+    assert len(shots) == 2, 'fallback did not reach both extrema'
+    a, b = (shots[k].get_pixels() for k in ('off-trough', 'off-peak'))
+    changed = sum(x != y for x, y in zip(a, b))
+    (art/'fallback-pixels.json').write_text(json.dumps({'changed_channels': changed}))
+    print(('PASS ' if changed > 100 else 'FAIL ')+'goo-off halo visibly breathes', flush=True)
+    assert changed > 100, 'fallback model changes without visible breathing'
