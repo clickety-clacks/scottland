@@ -75,7 +75,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO13 | Goo outlines fade over approximately one device pixel using screen-space field derivatives, at every output/window scale. The full-resolution draw reconstructs the coarse field with smooth cubic filtering, restricted to goo bands; GO11 film and GO12 control outlines use the same coverage. Keep the existing window-edge SDF antialiasing and otherwise preserve the look, simulation and input. Added active cost stays well below one millisecond per frame, checked with the paired GO10 benchmark on Xe and RX 580. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
 | GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
-| GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary windows retain analytic rounded boxes and never sample the widget atlas. (Mike, 2026-10-02; core) | implemented/headless checked; current normal/packed and merged-cache validation below; physical-display verification remains open |
+| GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Ordinary Wayland surfaces whose root buffer bounds extend beyond their xdg window geometry also use the rendered alpha contour, covering client-side decoration insets generically; surfaces with matching bounds retain the analytic rounded box. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. (Mike, 2026-10-02; core; CSD contour extension 2026-10-03) | implemented; Plumbus Chromium CSD, server-decoration and GTK/libadwaita captures below; physical-display verification remains open |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 | GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
@@ -1098,9 +1098,16 @@ content/film clipping, dye and render passes. Atlas overflow retains masked
 fallback halos. GLES 3 capture/backdrop reads explicitly bind the read framebuffer;
 the shared GL guard restores both framebuffer bindings.
 
-Every ordinary steady window still uses the analytic rounded box; it has no alpha
-cache or atlas fetch. An app temporarily participating in a widget morph can use
-the composited alpha shape, then releases that cache on handoff/settlement. Parent
+Ordinary steady windows whose root surface bounds match xdg window geometry keep
+the analytic rounded box and have no alpha cache or atlas fetch. A normal client
+surface whose bounds extend beyond that geometry uses the same half-resolution
+alpha capture as GO16 widgets. The comparison is against Wayfire's root-surface
+bounds and xdg geometry, not an app identity or decoration setting. This lets CSD
+corners, transparent resize margins and overhanging drawing define the goo and
+fallback-halo shore. Damage invalidates the comparison and mask; at most five
+checks per second coalesce animated client commits. An app temporarily participating
+in a widget morph can use the composited alpha shape, then releases that cache on
+handoff/settlement. Parent
 transforms carry the body bounds. Elastic presentation resizing preserves the
 measured transparent insets and stretches the contour's departure from its opaque
 bounds; damage, rendering and input therefore share the animated body. Masked
@@ -1143,6 +1150,42 @@ The widget lifecycle/input suite also passes all checks on Xe and RX 580. Its Xe
 `rx580/shapes-{normal,packed,fallback}/` copies, and the fallback morph log is
 `build/go16-regressions/morph-fallback-rx580.log`; RX 580 widget results are in
 `build/go16-regressions/widgets-complete-rx580.log`.
+
+### Client-side decoration insets (2026-10-03)
+
+Wayfire's `list-views.geometry` is the xdg toplevel geometry; `base-geometry` is the root
+wl_surface buffer bounds, and `bbox` is the complete scene bound after transforms. Scottland's
+frame `screen_rect`, fallback halo and Goo source all hug the xdg geometry. On Plumbus, Chromium
+with “Use system title bar and borders” off requested client-side decoration (xdg-decoration
+mode 1) and reported geometry
+`{106,56,1068,608}` inside surface bounds `{90,46,1100,650}`. The mismatch is 16 px left/right,
+10 px top and 32 px bottom. With the setting on, it negotiated server-side mode 2 and both
+rectangles were `{90,35,1100,650}`. Nautilus (GTK/libadwaita CSD) showed 25 px insets on all
+sides. Wayfire's `core/preferred_decoration_mode=server` is a preference; the protocol still
+reports which mode each client selected. Chromium and Nautilus therefore expose the same generic
+inset-surface case, not an app-specific geometry rule. Chromium's xdg-decoration response matched
+each setting; Scottland doesn't override the client's decoration choice.
+
+For ordinary surfaces, a root buffer extending beyond xdg geometry opts into GO16's rendered
+alpha capture. The quantized body contour is shared by the rendered frame, goo field/render,
+fallback halo and input; equal-bound surfaces keep the analytic rounded box and avoid the shape
+readback. This recognizes actual transparent corners and inset margins even when the client
+uses CSD. It does not force server decorations or change the app's window geometry.
+
+The Plumbus fixture records Wayfire rectangles and decoration protocol modes, asserts that inset
+CSD clients build the alpha contour and that Chromium's server-decoration case does not, then
+captures goo and fallback screenshots. `tests/chromium-gap-test.py` passed for normal and packed
+GLES. Screenshots show the goo and fallback shore touching the rendered rounded frame in both
+Chromium modes and Nautilus; normal captures and logs are under `build/chromium-gap-plumbus/`,
+with packed captures under `build/chromium-gap-plumbus/packed/`.
+
+The final alpha-mask/SDF rebuild telemetry was 15.39 ms for Chromium and 10.40 ms for Nautilus
+on normal GLES, and 13.68 ms for Chromium and 15.00 ms for Nautilus on packed GLES. The last
+unchanged-mask checks took 2.51–3.91 ms. Both runs captured only after `goo-state` reported a
+sleeping surface with cached breath keyframes active, so the GO10 settled cache was exercised.
+These are per-shape capture timings, not full frame-time measurements, and a rebuilt shape is
+captured synchronously. Firefox is not installed on Plumbus and the attempted Mozilla download
+timed out, so its contour remains unchecked. The physical display also remains unverified.
 
 The morph suite now compares the liquid shore against measured alpha body bounds
 rather than the transparent client rectangle. Its scheduling, pixel, duration and
@@ -1268,10 +1311,11 @@ invalidate every other source, window interior or the whole output. Geometry/sta
 changes still damage old/new simulation bands and refresh the influence cache.
 Fullscreen, removal and an empty attention set disconnect the breathing timer.
 
-For a masked widget, the draw's local influence uses GO16's sampled alpha SDF,
-and breathing damage covers its opaque-body bounds plus that finite support.
-This includes a badge, a hole, or a body deeply inset from a transparent client
-rectangle; ordinary windows keep the narrower analytic perimeter strips.
+For a masked widget or CSD surface, the draw's local influence uses GO16's sampled
+alpha SDF, and breathing damage covers its opaque-body bounds plus that finite
+support. This includes a badge, a hole, or a body deeply inset from a transparent
+client rectangle; ordinary windows without surface insets keep the narrower
+analytic perimeter strips.
 
 `goo-state` now reports `breath`, `breath_ticks`, `breath_damage`, `wave_energy`,
 `dye_energy` and `draw_gpu_ms`. Existing `gpu_ms` measures active simulation plus
@@ -1474,10 +1518,11 @@ before the final GL-state adjustment. All headless sessions were stopped.
 
 The source texture keeps eleven columns: the common seven, GO17 attention at
 column 7, then GO16's atlas tile, mask bounds and body bounds at columns 8–10.
-Ordinary windows keep their analytic rounded-box SDF and do not sample the atlas.
-Widget sources use the same alpha SDF in field, direct render, and GO10's cached
-intrinsic/refraction passes; those cached shaders are derived from the same render
-shader as the direct path. When the ordered widget-shape set changes, the renderer
+Windows whose root surface bounds match xdg geometry keep their analytic
+rounded-box SDF and do not sample the atlas. Widget sources and client-decorated
+surfaces with transparent insets use the same alpha SDF in field, direct render,
+and GO10's cached intrinsic/refraction passes; those cached shaders are derived
+from the same render shader as the direct path. When the ordered masked-shape set changes, the renderer
 rebuilds the RGBA8 shelf atlas and marks the settled surface cache dirty. Active
 simulation keeps the GO10 direct path, and the cache is regenerated from the new
 atlas once the field settles. The atlas is allocated without a framebuffer and is

@@ -419,13 +419,45 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     std::unique_ptr<goo::shape_cache_t> alpha_shape;
     bool shape_dirty = true;
+    mutable bool surface_insets_dirty = true;
+    mutable bool surface_insets_known = false;
+    mutable bool surface_insets_cached = false;
+    mutable wf::geometry_t surface_insets_geometry{};
     uint32_t shape_checked = 0;
     wf::wl_timer<false> shape_retry;
     static uint32_t shape_now() { return now_ms(); }
+    bool has_surface_insets() const
+    {
+        auto v = toplevel();
+        if (!v) return false;
+        auto geometry = v->get_geometry();
+        auto same_geometry = [] (const wf::geometry_t& a, const wf::geometry_t& b) {
+            return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+        };
+        if (surface_insets_known && !surface_insets_dirty &&
+            same_geometry(surface_insets_geometry, geometry))
+            return surface_insets_cached;
+
+        auto root = v->get_surface_root_node();
+        if (!root) return false;
+        auto surface_bounds = root->get_bounding_box();
+        // Compare dimensions in the root's coordinate system. Its global origin can
+        // include Scottland's presentation scale/translation and is not a CSD inset.
+        constexpr double epsilon = 0.5;
+        surface_insets_cached = std::abs(surface_bounds.width - geometry.width) > epsilon ||
+            std::abs(surface_bounds.height - geometry.height) > epsilon;
+        surface_insets_geometry = geometry;
+        surface_insets_known = true;
+        surface_insets_dirty = false;
+        return surface_insets_cached;
+    }
     bool uses_alpha_shape() const
     {
         auto v = toplevel();
-        return (v && is_widget && is_widget(v)) || presentation || morphing();
+        // CSD clients can keep transparent shadow/resize insets outside xdg window geometry.
+        // Sample their rendered alpha contour too, so the body, goo and fallback halo follow
+        // what is actually drawn. The geometry comparison is generic to every Wayland client.
+        return (v && is_widget && is_widget(v)) || presentation || morphing() || has_surface_insets();
     }
     std::shared_ptr<const goo::shape_t> body_shape() const
     {
@@ -1365,6 +1397,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
     void transform_damage_region(wf::regionf_t& damage) override
     {
         self->shape_dirty = true;
+        self->surface_insets_dirty = true;
         auto copy = damage;
         damage.clear();
         for (auto& box : copy)
