@@ -279,9 +279,14 @@ try:
     tap('B'); time.sleep(.1)
     check(delivered('Alpha').count('b') == before, 'Esc keeps remaining Alt chord captured')
     release()
-    check(near(center(view('Alpha')), saved[0]) and near(center(view('Beta')), saved[1]), 'declutter restores original geometry')
-    wait_for(lambda: all(abs(h['dx'])+abs(h['dy']) < .1 and not h['visible'] for h in hints()['hints']))
-    check(all(abs(h['dx'])+abs(h['dy']) < .1 and not h['visible'] for h in hints()['hints']), 'visual offsets and hints clear after release')
+    check(near(center(view('Alpha')), saved[0]) and near(center(view('Beta')), saved[1]),
+          'always-on avoidance leaves original geometry unchanged')
+    wait_for(lambda: all(not h['visible'] for h in hints()['hints']))
+    after_release = {h['window']: h for h in hints()['hints']}
+    check(abs(after_release[a]['dx'])+abs(after_release[a]['dy']) < .1 and
+          math.hypot(after_release[b]['dx'], after_release[b]['dy']) > 10 and
+          all(not h['visible'] for h in after_release.values()),
+          'Alt release removes hints while the focused anchor and other avoidance offsets persist')
     focus(a); tap('X'); time.sleep(.1)
     check(any(e['key']=='x' and e['modifiers']==0 for e in map(json.loads,(artifacts/'Alpha.keys').read_text().splitlines())), 'mode release leaves no stuck modifiers in the app')
     for modifier in ('LEFTMETA','LEFTCTRL','LEFTSHIFT'):
@@ -415,10 +420,13 @@ try:
     check(hint(a)['visible'] and widget['geometry']['width'] < 120, 'collapsed widget retains a visible hint')
     release()
     f = widget['frame']
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'remembered-card-before-click.png')], check=True)
     ipc('stipc/move_cursor', {'x': round(f['x']+f['width']/2), 'y': round(f['y']+f['height']/2)})
-    ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'press'})
-    ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'release'})
+    time.sleep(.3)  # let the card finish expanding after hover before the real click
+    ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'full'})
     time.sleep(.8)
+    (artifacts/'remembered-card-after-click.json').write_text(json.dumps({'window': view('Cycle'),
+        'widget': next((v for v in views() if v['widget']), None), 'hints': hints()}, indent=2))
     check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), center_memory), 'WG17 real card click restores remembered center')
     key('LEFTMETA', True); tap('M'); key('LEFTMETA', False)
     drag('Cycle', 6, height*.27)
@@ -514,10 +522,13 @@ try:
     check(not hint(a)['memories'][0]['set'], 'rail drag from periphery preserves absence of center memory')
     widget = next(v for v in views() if v['widget'])
     f = widget['frame']
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'fresh-card-before-click.png')], check=True)
     ipc('stipc/move_cursor', {'x': round(f['x']+f['width']/2), 'y': round(f['y']+f['height']/2)})
-    ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'press'})
-    ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'release'})
+    time.sleep(.3)
+    ipc('stipc/feed_button', {'combo':'BTN_LEFT','mode':'full'})
     time.sleep(.8)
+    (artifacts/'fresh-card-after-click.json').write_text(json.dumps({'window': view('CardFresh'),
+        'widget': next((v for v in views() if v['widget']), None), 'hints': hints()}, indent=2))
     ga, gb = view('CardFresh')['geometry'], view('CardBlock')['geometry']
     overlap = max(0,min(ga['x']+ga['width'],gb['x']+gb['width'])-max(ga['x'],gb['x']))*max(0,min(ga['y']+ga['height'],gb['y']+gb['height'])-max(ga['y'],gb['y']))
     check(overlap < 1 and view('CardFresh')['applied_scale'] > .999, 'WG17 new center uses least-overlap full-size placement')
@@ -573,6 +584,20 @@ try:
     inside = f['x'] >= pad - 1 and f['y'] >= pad - 1 and f['x'] + f['width'] <= width - pad + 1 \
         and f['y'] + f['height'] <= height - pad + 1
     check(inside, 'WP7 a placed window keeps the screen padding (halo + 5 pt)')
+    placed = view('PadMe')
+    check(placed['zone'] == 'continuous' and placed['scale'] <= .951 and
+          abs(placed['applied_scale'] - placed['scale']) < .015,
+          'unremembered hint cycle lands inside the scaled periphery at its zone scale')
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'new-periphery.png')], check=True)
+    focus(p); hold()
+    outward = 'LEFT' if center(view('PadMe'))[0] < width/2 else 'RIGHT'
+    tap(outward); time.sleep(.7)
+    pushed = view('PadMe')
+    check(pushed['zone'] == 'continuous' and
+          abs(pushed['applied_scale'] - pushed['scale']) < .015,
+          'real arrow push keeps displayed scale in agreement with periphery center')
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'periphery-arrow.png')], check=True)
+    release()
     close_all()
 except Exception as error:
     check(False, 'suite exception: '+repr(error))
