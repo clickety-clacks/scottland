@@ -2368,7 +2368,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** Turn the window into a widget. With `preview` (a drag is over a rail, WG13) the widget is
      *  launched but the window stays, and the widget is kept unseen until the drop commits. */
-    void widgetize(wayfire_toplevel_view view, bool preview = false, std::optional<std::string> rail = {})
+    void widgetize(wayfire_toplevel_view view, bool preview = false, std::optional<std::string> rail = {},
+        const char *reason = "rail-drop")
     {
         if (auto existing = link_of_window(view))
         {
@@ -2396,6 +2397,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.drop   = {geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
         link.rail   = rail ? *rail : (link.drop.x < width / 2 ? "left" : "right");
         link.launched_at = now_msec();
+        LOGI("scottland: widgetize window=", link.window_id, " reason=", reason,
+            " preview=", preview, " rail=", link.rail,
+            " geometry=", geometry.x, ",", geometry.y, ",", geometry.width, ",", geometry.height);
 
         wf::json_t context;
         context["id"]     = std::to_string(link.window_id);
@@ -2575,7 +2579,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (place_at(std::clamp(g.x + g.width / 2.0, 0.0, width - 1), width).zone == zone_t::widget)
             {
                 LOGI("scottland: window ", view->get_id(), " (", view->get_title(), ") is on a rail: a widget again");
-                widgetize(view);
+                widgetize(view, false, {}, "load-rail-recovery");
             }
         }
     }
@@ -4780,7 +4784,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (!model.drag.morph->from_widget && toward)
             {
                 // Launched now, unseen, so it's ready to fade in; on the rail the drag is over.
-                widgetize(view, true, at < width / 2 ? "left" : "right");
+                widgetize(view, true, at < width / 2 ? "left" : "right", "drag-preview");
             }
 
             model.drag.morph->toward = toward;
@@ -5296,7 +5300,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             // Capture where the undocked app is shown; the entry morph returns it
             // to the original rail. Moving first would cut to that rail on Esc.
-            widgetize(view, false, origin.rail);
+            widgetize(view, false, origin.rail, "cancel-form-return");
             if (auto link = link_of_window(view))
             {
                 link->drop = home;
@@ -5991,6 +5995,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
   public:
     void init() override
     {
+        // Wayfire's PRINT_TRACE SIGABRT handler prints then _Exit(-1), losing the
+        // core (and can itself block in a hung process). Use the kernel's core
+        // disposition for operator diagnostics, independent of the event loop.
+        // SIGQUIT is the preferred capture signal, including before plugin load.
+        signal(SIGABRT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
         init_output_tracking();
         if (!getenv("SCOTTLAND_INTERNAL_MODEL_SESSION"))

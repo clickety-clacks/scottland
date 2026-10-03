@@ -48,6 +48,13 @@ main() {
   export SCOTTLAND_SESSION_PID
 
   started=$(date +%s)
+  # Keep the last session's evidence when a frozen compositor needs a new login.
+  if [ -f "$state/wayfire.log" ]; then
+    mv -f "$state/wayfire.log" "$state/wayfire.log.previous" || exit 1
+  fi
+  # SIGQUIT (or SIGABRT after the core plugin loads) must reach systemd-coredump.
+  # A hard limit imposed by the login manager cannot be raised here.
+  ulimit -c unlimited || echo 'Scottland: cannot enable core dumps; check the login core limit' >&2
   wayfire -c "$config" "$@" >"$state/wayfire.log" 2>&1
   status=$?
 

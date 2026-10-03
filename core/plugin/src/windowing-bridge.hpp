@@ -573,7 +573,7 @@
         if (rail)
         {
             model.windows[id].pending_rail = current;
-            widgetize(window, false, left ? "left" : "right");
+            widgetize(window, false, left ? "left" : "right", "hint-rail");
             if (auto link = link_of_window(window)) link->drop = {at.x, at.y};
             if (!link_of_window(window)) model.windows[id].pending_rail.reset();
             auto& memory = ensure_window_memory(id);
