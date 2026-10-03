@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <tuple>
 #include <queue>
 
 namespace scottland::windowing
@@ -60,15 +61,18 @@ double largest_opening(rectangle r, const std::vector<rectangle>& obstacles)
     return std::max(best, r.y + r.height - end);
 }
 
-double visible_clearance(point p, rectangle r, rectangle screen,
-    const std::vector<rectangle>& foreground)
+std::optional<double> visible_clearance_before(point p, rectangle r, rectangle screen,
+    const std::vector<rectangle>& foreground,
+    std::chrono::steady_clock::time_point deadline)
 {
+    bool bounded = deadline != std::chrono::steady_clock::time_point::max();
     double right = std::min(r.x + r.width, screen.x + screen.width);
     double bottom = std::min(r.y + r.height, screen.y + screen.height);
     r.x = std::max(r.x, screen.x); r.y = std::max(r.y, screen.y);
     double d = std::min({p.x - r.x, right - p.x, p.y - r.y, bottom - p.y});
     for (auto o : foreground)
     {
+        if (bounded && std::chrono::steady_clock::now() >= deadline) return {};
         // Signed distance to the exterior of an occluder. Taking the minimum implements
         // subtraction of their union without constructing polygon rings or raster masks.
         double dx = std::max({o.x - p.x, 0.0, p.x - o.x - o.width});
@@ -81,36 +85,73 @@ double visible_clearance(point p, rectangle r, rectangle screen,
     return d;
 }
 
+double visible_clearance(point p, rectangle r, rectangle screen,
+    const std::vector<rectangle>& foreground)
+{
+    return *visible_clearance_before(p, r, screen, foreground,
+        std::chrono::steady_clock::time_point::max());
+}
+
 label_spot visible_label(rectangle r, rectangle screen, const std::vector<rectangle>& foreground,
-    double precision)
+    double precision, std::chrono::steady_clock::time_point deadline, double sufficient_clearance)
 {
     double right = std::min(r.x + r.width, screen.x + screen.width);
     double bottom = std::min(r.y + r.height, screen.y + screen.height);
     r.x = std::max(r.x, screen.x); r.y = std::max(r.y, screen.y);
     r.width = right - r.x; r.height = bottom - r.y;
     if (r.width <= 0 || r.height <= 0) return {{r.x, r.y}, 0};
-    auto distance = [&] (point p) { return visible_clearance(p, r, screen, foreground); };
-    struct cell { point p; double half, d, upper; size_t order; };
+    auto distance = [&] (point p) {
+        return visible_clearance_before(p, r, screen, foreground, deadline);
+    };
+    struct cell { point p; double half, d, upper, spread; size_t order; };
     auto less = [] (const cell& a, const cell& b) {
-        return a.upper == b.upper ? a.order > b.order : a.upper < b.upper;
+        if (a.upper != b.upper) return a.upper < b.upper;
+        // Expand the coarsest tied region first, and spread equal-size plateau probes apart.
+        if (a.half != b.half) return a.half < b.half;
+        if (a.spread != b.spread) return a.spread < b.spread;
+        return a.order > b.order;
     };
     std::priority_queue<cell, std::vector<cell>, decltype(less)> queue(less);
     point preferred{r.x + r.width / 2, r.y + r.height / 2};
-    label_spot best{preferred, distance(preferred)};
+    auto initial = distance(preferred);
+    label_spot best{preferred, initial.value_or(0)};
     size_t order = 0;
+    bool interrupted = !initial;
+    bool sufficient = sufficient_clearance >= 0 && best.clearance >= sufficient_clearance;
     precision = std::max(0.1, precision);
     auto add = [&] (double x, double y, double half) {
-        point p{x, y}; double d = distance(p);
+        if (interrupted || sufficient) return;
+        auto measured = distance({x, y});
+        if (!measured) { interrupted = true; return; }
+        point p{x, y}; double d = *measured;
         if (d > best.clearance + 1e-9 || (std::abs(d - best.clearance) < 1e-9 &&
             std::hypot(x - preferred.x, y - preferred.y) <
             std::hypot(best.center.x - preferred.x, best.center.y - preferred.y))) best = {p, d};
         double upper = d + half * std::sqrt(2.0); // distance is 1-Lipschitz
-        if (upper > best.clearance + precision) queue.push({p, half, d, upper, order++});
+        if (upper > best.clearance + precision)
+            queue.push({p, half, d, upper, std::hypot(x - preferred.x, y - preferred.y), order++});
+        sufficient = sufficient_clearance >= 0 && best.clearance >= sufficient_clearance;
     };
-    double size = std::max(precision, std::min(r.width, r.height));
-    for (double x = r.x; x < right; x += size) for (double y = r.y; y < bottom; y += size)
-        add(x + size / 2, y + size / 2, size / 2);
-    while (!queue.empty())
+    // Begin with a small, spatially broad grid. Opposite corners and edges are sampled
+    // before any one region is refined, so a short deadline still has a useful candidate.
+    double size = std::max({precision, std::min(r.width, r.height) / 2,
+        std::max(r.width, r.height) / 4});
+    std::vector<point> coarse;
+    for (double x = r.x; x < right; x += size)
+        for (double y = r.y; y < bottom; y += size)
+            coarse.push_back({x + size / 2, y + size / 2});
+    std::stable_sort(coarse.begin(), coarse.end(), [&] (point a, point b) {
+        auto da = std::hypot(a.x - preferred.x, a.y - preferred.y);
+        auto db = std::hypot(b.x - preferred.x, b.y - preferred.y);
+        return da == db ? std::tie(a.x, a.y) < std::tie(b.x, b.y) : da > db;
+    });
+    for (auto p : coarse)
+    {
+        if (interrupted || sufficient || std::chrono::steady_clock::now() >= deadline) break;
+        add(p.x, p.y, size / 2);
+    }
+    while (!queue.empty() && !interrupted && !sufficient &&
+        std::chrono::steady_clock::now() < deadline)
     {
         auto c = queue.top(); queue.pop();
         if (c.upper <= best.clearance + precision) break;

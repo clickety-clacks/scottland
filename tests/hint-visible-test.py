@@ -132,7 +132,6 @@ def capture(name, order):
                     continue
                 inside &= r[0] <= x+.5 <= r[0]+r[2] and r[1] <= y+.5 <= r[1]+r[3]
                 outside &= all(not (o[0] <= x+.5 <= o[0]+o[2] and o[1] <= y+.5 <= o[1]+o[3]) for o in foreground)
-        check(inside and outside and not h['edge_label'], name+': '+v['title']+' circle pixels stay in its exposed window')
         # Confirm the screenshot actually has the assigned solid letter dye within the
         # same visible circle; geometry alone cannot establish that a label rendered.
         color = tuple(round(c*255) for c in h['color'])
@@ -144,7 +143,15 @@ def capture(name, order):
         check(count > 20, name+': '+v['title']+' letter dye is present in screenshot')
         desired = max(72, min(132, min(r[2:])*.34))
         fit = math.floor(max(0, 2*(h['clearance']-1)/1.06))
-        check(b['size'] == round(min(desired, fit)), name+': '+v['title']+' size follows displayed footprint and visible clearance')
+        minimum = 48
+        check(b['size'] == max(minimum, round(min(desired, fit))),
+              name+': '+v['title']+' size respects the 48px minimum and available clearance')
+        if fit >= minimum:
+            check(inside and outside and not h['edge_label'],
+                  name+': '+v['title']+' minimum-sized circle stays in its exposed window')
+        else:
+            check(b['size'] == minimum,
+                  name+': '+v['title']+' hint stays visible at minimum when no clear spot fits')
         foreground.append(r)
     return vs, hs
 

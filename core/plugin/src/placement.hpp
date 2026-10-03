@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <optional>
 #include <vector>
 
@@ -17,10 +18,17 @@ double largest_opening(rectangle region, const std::vector<rectangle>& obstacles
 
 struct label_spot { point center; double clearance = 0; };
 // Pole of the visible region (rectangle minus the union of foreground rectangles).
-// The priority search is accurate to precision logical pixels, including disconnected regions.
+// The coarse-to-fine search returns its best checked spot at deadline. A sufficient clearance
+// stops the search early when the caller only needs a requested badge diameter to fit.
 label_spot visible_label(rectangle window, rectangle screen,
-    const std::vector<rectangle>& foreground, double precision = 0.5);
+    const std::vector<rectangle>& foreground, double precision = 0.5,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
+    double sufficient_clearance = -1);
 // Signed radius available for a circle at this exact point, including occlusion.
 double visible_clearance(point center, rectangle window, rectangle screen,
     const std::vector<rectangle>& foreground);
+// As above, but returns empty when an exposure search deadline expires mid-check.
+std::optional<double> visible_clearance_before(point center, rectangle window, rectangle screen,
+    const std::vector<rectangle>& foreground,
+    std::chrono::steady_clock::time_point deadline);
 }
