@@ -13,24 +13,12 @@
         motion_clock::time_point settle_until;
         bool drag_coast = false;
         bool resizing = false;
-        bool restoring = false;
+        bool settling_resize = false;
         std::string released_rail; // confine the first widget-undock coast to its side
-    };
-    struct keyboard_origin
-    {
-        std::weak_ptr<wf::view_interface_t> view;
-        wf::output_t *output = nullptr;
-        wf::geometry_t geometry;
-        std::string rail;
-        std::optional<double> pin;
-        std::optional<scottland::windowing::window_memory> memory;
-        bool touched = false;
-        bool fullscreen = false;
     };
     struct deferred_impulse { uint32_t code; uint64_t id; bool resize; };
     std::vector<deferred_impulse> fullscreen_impulses;
     std::map<uint64_t, keyboard_motion> keyboard_motions;
-    std::map<uint64_t, keyboard_origin> keyboard_origins;
     struct arrow_repeat { motion_clock::time_point next; double interval; };
     std::map<uint32_t, arrow_repeat> arrow_repeats;
     wf::wl_timer<true> keyboard_tick;
@@ -63,25 +51,6 @@
     static bool arrow_key(uint32_t code)
     { return code == KEY_LEFT || code == KEY_RIGHT || code == KEY_UP || code == KEY_DOWN; }
 
-    void capture_keyboard_origins()
-    {
-        keyboard_origins.clear();
-        // Read-only even for a quick Alt chord: no hint assignment/publication on its path.
-        for (auto& [id, state] : model.windows)
-        {
-            auto app = wf::toplevel_cast(state.view.lock());
-            if (!app || !app->is_mapped() || app->role != wf::VIEW_ROLE_TOPLEVEL ||
-                is_widget(app) || runs_as_widget(state.pid)) continue;
-            auto view = represented_view(id);
-            if (!view || !view->is_mapped() || !view->get_output()) continue;
-            keyboard_origin origin;
-            origin.view = view->weak_from_this(); origin.output = view->get_output();
-            origin.geometry = view->get_geometry(); origin.fullscreen = view->pending_fullscreen();
-            if (auto link = link_of_widget(view)) origin.rail = link->rail;
-            origin.pin = state.pinned_scale; origin.memory = state.placement;
-            keyboard_origins.emplace(id, origin);
-        }
-    }
     void stop_keyboard_motion()
     {
         arrow_repeats.clear(); fullscreen_impulses.clear(); keyboard_motions.clear(); keyboard_tick.disconnect();
@@ -199,7 +168,7 @@
         // A late transaction starts its own quiet period; do not drop the anchor while
         // a client is still committing rejected/minimum or cell-snapped sizes.
         motion.settle_until = motion_clock::now() + std::chrono::milliseconds(300);
-        if (!motion.restoring) keyboard_resize_bounds(view, motion);
+        keyboard_resize_bounds(view, motion);
         auto g = view->get_geometry();
         double x = std::round(motion.x - g.width / 2.0), y = std::round(motion.y - g.height / 2.0);
         if (std::abs(g.x - x) > 0.001 || std::abs(g.y - y) > 0.001)
@@ -211,89 +180,31 @@
     }
     void cancel_keyboard_motion()
     {
-        stop_keyboard_motion();
-        for (auto& [id, origin] : keyboard_origins)
+        // Esc ends the gesture, not the user's completed movement. Geometry already
+        // committed by the pushes/coast remains; record its landing and stop further travel.
+        // Keep a resize anchor briefly so late client size commits still land centered.
+        arrow_repeats.clear(); fullscreen_impulses.clear();
+        bool settling = false;
+        auto now = motion_clock::now();
+        for (auto it = keyboard_motions.begin(); it != keyboard_motions.end();)
         {
-            if (!origin.touched || !model.windows.count(id)) continue;
-            auto view = represented_view(id);
-            if (!view || !view->is_mapped()) continue;
-            if (origin.fullscreen)
+            auto view = wf::toplevel_cast(it->second.view.lock());
+            if (view && view->is_mapped() && view->get_output() && it->second.resizing)
             {
-                auto window = wf::toplevel_cast(view_by_id(id));
-                if (auto link = link_of_window(window))
-                    restore_window(*link, wf::pointf_t{origin.geometry.x + origin.geometry.width / 2.0,
-                        origin.geometry.y + origin.geometry.height / 2.0});
-                if (window) wf::get_core().default_wm->fullscreen_request(window, window->get_output(), true);
-                model.windows.at(id).pinned_scale = origin.pin; model.windows.at(id).placement = origin.memory;
-                continue;
-            }
-            auto from = view->get_geometry();
-            // During WG22 startup/morph represented_view is still the app, so
-            // the widget-form test below cannot see its already-docked lifecycle.
-            if (origin.rail.empty())
-                if (auto link = link_of_window(view); link && link->docked())
-                    restore_window(*link, wf::pointf_t{origin.geometry.x + origin.geometry.width / 2.0,
-                        origin.geometry.y + origin.geometry.height / 2.0});
-            if (output_alive(origin.output) && view->get_output() != origin.output)
-            {
-                auto source = view->get_output()->get_layout_geometry();
-                auto target = origin.output->get_layout_geometry();
-                from.x += source.x - target.x; from.y += source.y - target.y;
-                bool focused = wf::get_core().seat->get_active_view() == view;
-                wf::move_view_to_output(view, origin.output, false);
-                if (focused)
-                {
-                    wf::get_core().seat->focus_output(origin.output);
-                    wf::get_core().default_wm->focus_raise_view(view);
-                }
-            }
-            auto& state = model.windows.at(id);
-            state.pinned_scale = origin.pin; state.placement = origin.memory;
-            // A hint cycle may have changed form before an arrow. Use WG14's lifecycle path.
-            drag_origin_t drag_origin;
-            drag_origin.first_view = origin.rail.empty() ? id :
-                (origin.view.lock() ? origin.view.lock()->get_id() : 0);
-            drag_origin.first_widget = !origin.rail.empty();
-            drag_origin.first_size = {int(std::lround(origin.geometry.width)), int(std::lround(origin.geometry.height))};
-            drag_origin.position = {int(std::lround(origin.geometry.x)), int(std::lround(origin.geometry.y))};
-            drag_origin.output = origin.output; drag_origin.rail = origin.rail;
-            if (is_widget(view) != drag_origin.first_widget && cancel_form_change(view, drag_origin))
-            {
-                // A widget may still be launching; WG14 already supplies its original drop.
-                if (drag_origin.first_widget) continue;
-                view = represented_view(id);
-                if (!view) continue;
-                // Restore size too if this hold resized the window before docking it.
-                state.pinned_scale = origin.pin; state.placement = origin.memory;
-            }
-            if (auto link = link_of_widget(view))
-            {
-                link->rail = origin.rail;
-                link->drop = {origin.geometry.x + origin.geometry.width / 2.0,
-                    origin.geometry.y + origin.geometry.height / 2.0};
-                place_widget(view, view->get_output(), *link);
+                auto& motion = it->second;
+                motion.vx.velocity = motion.vy.velocity = motion.vw.velocity = motion.vh.velocity = 0;
+                motion.settling_resize = true;
+                motion.settle_until = now + std::chrono::milliseconds(300);
+                settling = true; ++it;
             } else
             {
-                // Gravity zero centers even a client which takes a different size.
-                auto& pending = view->toplevel()->pending();
-                pending.gravity = 0; pending.geometry = origin.geometry;
-                wf::get_core().tx_manager->schedule_object(view->toplevel());
-                // Keep centering late client commits after the coast has been cancelled.
-                auto& motion = keyboard_motions[view->get_id()];
-                motion.view = view->weak_from_this(); motion.resizing = true; motion.restoring = true;
-                motion.x = origin.geometry.x + origin.geometry.width / 2.0;
-                motion.y = origin.geometry.y + origin.geometry.height / 2.0;
-                motion.width = origin.geometry.width; motion.height = origin.geometry.height;
-                motion.settle_until = motion_clock::now() + std::chrono::milliseconds(300);
-                move_window(view, origin.geometry.x, origin.geometry.y);
-                apply(view);
+                if (view && view->is_mapped() && view->get_output()) remember_window(view);
+                it = keyboard_motions.erase(it);
             }
-            start_glide(view, from.x + from.width / 2.0 - origin.geometry.x - origin.geometry.width / 2.0,
-                from.y + from.height / 2.0 - origin.geometry.y - origin.geometry.height / 2.0);
         }
-        publish_model();
-        keyboard_sample = motion_clock::now();
-        if (!keyboard_motions.empty()) keyboard_tick.set_timeout(8, [=] () { return step_keyboard_motion(); });
+        keyboard_sample = now;
+        if (settling) keyboard_tick.set_timeout(8, [=] () { return step_keyboard_motion(); });
+        else keyboard_tick.disconnect();
     }
 
     void keyboard_impulse(uint32_t code, uint64_t destination = 0, std::optional<bool> requested_resize = std::nullopt)
@@ -309,15 +220,13 @@
         if (!view || !view->is_mapped() || !view->get_output()) return;
         if (link_of_window(view))
         {
-            // A pending WG22 handoff still represents this app. Consume its
-            // impulse without moving the captured image, but keep WK22 undo.
-            if (keyboard_origins.count(id)) keyboard_origins[id].touched = true;
+            // A pending WG22 handoff still represents this app. Consume its impulse
+            // without moving the captured image.
             return;
         }
         bool resize = requested_resize.value_or(held_keys.count(KEY_LEFTCTRL) || held_keys.count(KEY_RIGHTCTRL));
         if (view->pending_fullscreen() || view->toplevel()->current().fullscreen)
         {
-            if (keyboard_origins.count(id)) keyboard_origins[id].touched = true;
             fullscreen_impulses.push_back({code, id, resize});
             if (view->pending_fullscreen())
                 wf::get_core().default_wm->fullscreen_request(view, view->get_output(), false);
@@ -369,8 +278,7 @@
             motion.y = restored_destination->y;
         }
         if (opened_widget) motion.released_rail = released_rail;
-        if (keyboard_origins.count(id)) keyboard_origins[id].touched = true;
-        motion.restoring = false; motion.drag_coast = false;
+        motion.drag_coast = false; motion.settling_resize = false;
         if (resize)
         {
             auto g = view->get_geometry();
@@ -407,9 +315,8 @@
             if (!view || !view->is_mapped() || !view->get_output() || drag->view == view || view->pending_fullscreen() || link_of_window(view))
             { it = keyboard_motions.erase(it); continue; }
             auto& m = it->second; auto g = view->get_geometry();
-            if (m.restoring)
+            if (m.settling_resize)
             {
-                // Only anchor late commits: leave WG14/L27 glide and scale rendering intact.
                 if (now >= m.settle_until) { remember_window(view); it = keyboard_motions.erase(it); }
                 else ++it;
                 continue;

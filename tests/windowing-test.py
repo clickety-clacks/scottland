@@ -307,13 +307,12 @@ try:
     check(delivered('Alpha').count('b') == before, 'Esc keeps remaining Alt chord captured')
     release()
     check(near(center(view('Alpha')), saved[0]) and near(center(view('Beta')), saved[1]),
-          'always-on avoidance leaves original geometry unchanged')
+          'temporary hint avoidance leaves true window geometry unchanged')
     wait_for(lambda: all(not h['visible'] for h in hints()['hints']))
     after_release = {h['window']: h for h in hints()['hints']}
-    check(abs(after_release[a]['dx'])+abs(after_release[a]['dy']) < .1 and
-          math.hypot(after_release[b]['dx'], after_release[b]['dy']) > 10 and
+    check(all(abs(h['dx'])+abs(h['dy']) < .1 for h in after_release.values()) and
           all(not h['visible'] for h in after_release.values()),
-          'Alt release removes hints while the focused anchor and other avoidance offsets persist')
+          'Alt release removes hints and eases every visual offset to zero')
     focus(a); tap('X'); time.sleep(.1)
     check(any(e['key']=='x' and e['modifiers']==0 for e in map(json.loads,(artifacts/'Alpha.keys').read_text().splitlines())), 'mode release leaves no stuck modifiers in the app')
     for modifier in ('LEFTMETA','LEFTCTRL','LEFTSHIFT'):

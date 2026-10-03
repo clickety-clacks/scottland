@@ -245,15 +245,19 @@ try:
     key('ESC', True)
     key('ESC', False)
     wait(lambda: all(not h['visible'] for h in hints().values()))
+    wait(lambda: all(abs(h['dx'])+abs(h['dy']) < .1 for h in hints().values()))
     escaped = hints()
     check(not ipc('scottland/hints')['active'] and
           all(not h['visible'] for h in escaped.values()) and
-          any(abs(h['dx'])+abs(h['dy']) > 10 for i, h in escaped.items() if i != ids[0]),
-          'Esc removes hints while always-on avoidance keeps other windows exposed')
+          all(abs(h['dx'])+abs(h['dy']) < .1 for h in escaped.values()) and
+          all(rect(views()[i], escaped[i]) == rect(views()[i]) for i in ids),
+          'Esc eases every hint offset back to exact true geometry')
     release()
     hold()
     release()
-    check(all(rect(views()[i]) == rect(before[i]) for i in ids), 'Alt release preserves original real geometry')
+    check(all(rect(views()[i]) == rect(before[i]) and
+              abs(hints()[i]['dx'])+abs(hints()[i]['dy']) < .1 for i in ids),
+          'Alt release preserves true geometry and leaves no visual offset')
     (artifacts/'overlap.json').write_text(json.dumps({'before': original_overlap, 'held': reduced}, indent=2))
     for client in clients:
         client.terminate()
@@ -341,7 +345,8 @@ try:
           rect(views()[huge[0]]) == before_select,
           'selecting a shifted window returns it to true geometry as the new anchor')
     capture('fully-hidden-selected', [huge[0], huge[2], huge[1]])
-    # The selected surface stays at its real position through live keyboard motion.
+    # Selection exposes the chosen window at true geometry; the move itself is real.
+    before_push = rect(views()[huge[0]])
     key('RIGHT', True)
     key('RIGHT', False)
     motion = []
@@ -359,10 +364,34 @@ try:
     release()
     unheld = hints()
     check(not ipc('scottland/hints')['active'] and
-          abs(unheld[huge[0]]['dx'])+abs(unheld[huge[0]]['dy']) < .2 and
-          any(abs(unheld[i]['dx'])+abs(unheld[i]['dy']) > 10 for i in huge[1:]),
-          'avoidance remains active without Alt, anchored on the focused window')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'always-on-before-drag.png')], check=True)
+          all(abs(unheld[i]['dx'])+abs(unheld[i]['dy']) < .1 for i in huge) and
+          abs(rect(views()[huge[0]])[0]-before_push[0]) > 20,
+          'Alt release clears every offset and keeps the explicitly pushed window move')
+    # Start a real Super-drag on the exposed hint window while its temporary offset is
+    # visible. Drag start ends this Alt hint chord; the dropped geometry remains real.
+    hold()
+    held = hints()
+    dragged = max(huge[1:], key=lambda i: math.hypot(held[i]['dx'], held[i]['dy']))
+    drag_hint = held[dragged]
+    drag_before = rect(views()[dragged])
+    drag_x = round(drag_hint['badge']['x']+drag_hint['badge']['size']/2)
+    drag_y = round(drag_hint['badge']['y']+drag_hint['badge']['size']/2)
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'hint-drag-before.png')], check=True)
+    ipc('stipc/move_cursor', {'x': drag_x, 'y': drag_y})
+    key('LEFTMETA', True)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    for step in range(1, 10):
+        ipc('stipc/move_cursor', {'x': drag_x+step*12, 'y': drag_y})
+        time.sleep(.035)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    key('LEFTMETA', False)
+    release()
+    check(not ipc('scottland/hints')['active'] and
+          abs(rect(views()[dragged])[0]-drag_before[0]) > 20 and
+          all(abs(h['dx'])+abs(h['dy']) < .1 for h in hints().values()),
+          'dragging a shifted window keeps its drop and returns every hint offset to zero')
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'hint-drag-after.png')], check=True)
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'no-avoidance-before-drag.png')], check=True)
     real_before = rect(views()[huge[0]])
     check(real_before[2] > 700, 'pointer fixture keeps the focused surface an ordinary window')
     cx, cy = real_before[0]+real_before[2]/2, real_before[1]+real_before[3]/2
@@ -380,16 +409,28 @@ try:
             'frame': rect(views()[huge[0]]), 'drag': ipc('scottland/desktop-model').get('drag')})
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
     key('LEFTMETA', False)
-    (artifacts/'always-on-drag.json').write_text(json.dumps({'before': real_before,
+    (artifacts/'no-avoidance-drag.json').write_text(json.dumps({'before': real_before,
         'samples': drag_diagnostics, 'after': rect(views()[huge[0]])}, indent=2))
-    check(all(abs(s[huge[0]]['dx'])+abs(s[huge[0]]['dy']) < .2 for s in drag_samples) and
-          any(len({round(s[i]['dx'], 1) for s in drag_samples}) > 1 for i in huge[1:]),
-          'pointer drag keeps its window unshifted while other windows reflow live without Alt')
+    check(all(abs(s[i]['dx'])+abs(s[i]['dy']) < .1 for s in drag_samples for i in huge),
+          'pointer drag outside window mode creates no hint avoidance offsets')
     time.sleep(.8)
     check(abs(rect(views()[huge[0]])[0] - real_before[0]) > 20 and
-          abs(hints()[huge[0]]['dx']) < .2,
-          'after pointer drop, drawn focused window agrees with its real landing position')
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'always-on-after-drag.png')], check=True)
+          all(abs(h['dx'])+abs(h['dy']) < .1 for h in hints().values()),
+          'after pointer drop, the real move remains with no hint offsets')
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'no-avoidance-after-drag.png')], check=True)
+    # Esc also stops a live coast without undoing the movement the user requested.
+    before_esc_move = rect(views()[huge[0]])
+    hold()
+    key('LEFT', True); key('LEFT', False)
+    wait(lambda: abs(rect(views()[huge[0]])[0]-before_esc_move[0]) > 5)
+    key('ESC', True); key('ESC', False)
+    wait(lambda: not ipc('scottland/hints')['active'] and
+         all(abs(h['dx'])+abs(h['dy']) < .1 for h in hints().values()))
+    release()
+    after_esc_move = rect(views()[huge[0]])
+    check(abs(after_esc_move[0]-before_esc_move[0]) > 5 and
+          all(rect(views()[i], hints()[i]) == rect(views()[i]) for i in huge),
+          'Esc keeps an explicit arrow move and clears all hint offsets to true geometry')
 finally:
     key('LEFTALT', False)
     for client in clients:
