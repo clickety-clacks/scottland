@@ -9,6 +9,8 @@
 #                                         Lua host; --widgets adds the widget service, on a private
 #                                         D-Bus session bus (all headless sessions have a private bus)
 #                                         (SCOTTLAND_WIDGET_PATH and SCOTTLAND_WIDGET_SCOPE pass through)
+#                                         --gdb runs Wayfire under gdb; SIGINT to that gdb prints
+#                                         all thread stacks into wayfire.log, then resumes
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
@@ -44,10 +46,26 @@ case ${1:-} in
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
     test_outputs=${SCOTTLAND_TEST_OUTPUTS:-${SCOTTLAND_HEADLESS_OUTPUTS:-1}}
     private_bus=1
+    debugger=()
     for option in "${@:2}"; do
       case $option in
         --omarchy) started+=(10-hyprshim 30-lua-host) ;;
         --widgets) started+=(08-widget-bus); private_bus=1 ;;
+        --gdb)
+          [[ $(realpath -m "$dir") == "$repo"/build/* ]] || {
+            echo '--gdb requires SCOTTLAND_HEADLESS_DIR under this checkout build/ (stack logs can be large)' >&2
+            exit 1
+          }
+          cat >"$dir/gdb.commands" <<'GDB'
+set pagination off
+set confirm off
+run
+while $_isvoid($_exitcode) && $_isvoid($_exitsignal)
+thread apply all bt full
+continue
+end
+GDB
+          debugger=(gdb -q -batch -x "$dir/gdb.commands" --args) ;;
       esac
     done
     (
@@ -56,7 +74,7 @@ case ${1:-} in
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -107,7 +125,7 @@ WRAPPER
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
-        setsid ${private_bus:+dbus-run-session --} wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
     for _ in $(seq 100); do
@@ -117,6 +135,18 @@ WRAPPER
     done
     [[ -n ${name:-} ]] || { echo "headless Scottland didn't start; see $dir/wayfire.log" >&2; exit 1; }
     echo "$name" >"$dir/display"
+    # The debugger/private-bus wrapper can exit independently. Retain the actual
+    # compositor identity so stop still reaps our inferior in that case.
+    python3 - "$runtime/scottland/$name.env" "$dir/compositor.pid" <<'PY'
+import pathlib, socket, struct, sys
+entries = pathlib.Path(sys.argv[1]).read_bytes().split(b'\0')
+endpoint = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET='))
+with socket.socket(socket.AF_UNIX) as peer:
+    peer.settimeout(2)
+    peer.connect(endpoint.decode())
+    pid, _, _ = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+pathlib.Path(sys.argv[2]).write_text(str(pid) + '\n')
+PY
     sleep 1
     echo "headless Scottland on $name (hooks: ${started[*]})"
     ;;
@@ -156,11 +186,32 @@ PY
       rm -rf "$(dirname "$lock")"
     fi
     pid=$(cat "$dir/pid")
-    # With --widgets the pid is dbus-run-session's; stop its child (Wayfire) too.
-    for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+    compositor=$(cat "$dir/compositor.pid" 2>/dev/null || true)
+    if [[ $compositor =~ ^[0-9]+$ ]] && \
+      python3 - "$compositor" "$dir/wayfire.ini" <<'PY'
+import pathlib, sys
+try:
+    args = pathlib.Path('/proc/' + sys.argv[1] + '/cmdline').read_bytes().split(b'\0')
+    sys.exit(not (sys.argv[2].encode() in args and any(a.endswith(b'wayfire') for a in args)))
+except OSError:
+    sys.exit(1)
+PY
+    then
+      kill "$compositor" 2>/dev/null || true
+    else compositor=; fi
+    # setsid gives this harness its own group. Include the debugger's inferior,
+    # not only dbus-run-session's immediate child, when stopping --gdb sessions.
+    group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    if [[ $group == "$pid" ]]; then
+      kill -- "-$pid" 2>/dev/null || true
+    else
+      for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+    fi
     kill "$pid" 2>/dev/null || true
     for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
     kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs
+    [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
+    [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
     rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo"
     rm -rf "$dir"
     echo "stopped headless Scottland on $name"

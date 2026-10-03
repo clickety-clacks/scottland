@@ -487,7 +487,7 @@
                     // End all axes before starting WG22, including pending resize
                     // recovery. Launching cards must not receive more app impulses.
                     it = keyboard_motions.erase(it);
-                    widgetize(view, false, *rail);
+                    widgetize(view, false, *rail, "inertial-contact");
                     continue;
                 }
             }
