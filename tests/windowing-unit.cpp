@@ -71,6 +71,17 @@ int main()
     auto covered = visible_label({100,100,80,60}, region, {{0,0,500,400}});
     check(covered.clearance == 0,
         "a fully hidden rectangle has no visible interior before window movement");
+    auto tiny_deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(1);
+    bool deadline_hit = false, repeat_deadline_hit = false;
+    std::vector<exposure_window> easy_deadline_case{{{150,100,220,160},72,32}};
+    auto deadline_result = expose_window_hints(easy_deadline_case, region, {}, tiny_deadline, &deadline_hit);
+    auto repeated_deadline_result = expose_window_hints(easy_deadline_case, region, {}, tiny_deadline,
+        &repeat_deadline_hit);
+    check(deadline_hit && repeat_deadline_hit && deadline_result.size() == 1 &&
+        deadline_result[0].diameter >= 72 && std::isfinite(deadline_result[0].spot.center.x) &&
+        near(deadline_result[0].offset, repeated_deadline_result[0].offset) &&
+        near(deadline_result[0].spot.center, repeated_deadline_result[0].spot.center),
+        "a forced tiny solve budget keeps a valid, deterministic no-move badge position");
     bool circle_optimum = true;
     for (int trial = 0; trial < 30; ++trial)
     {

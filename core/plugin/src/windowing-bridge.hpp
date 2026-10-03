@@ -43,6 +43,11 @@
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
     std::string declutter_signature;
+    std::chrono::steady_clock::time_point last_exposure_solve{};
+    double exposure_solve_ms = 0;
+    double exposure_solve_max_ms = 0;
+    uint64_t exposure_solve_count = 0;
+    uint64_t exposure_solve_deadline_count = 0;
     wf::wl_idle_call hint_registration;
 
     scottland::windowing::hint_palette hints_palette;
@@ -93,10 +98,26 @@
             !colors["font_family"].as_string().empty())
             hints_palette.font_family = colors["font_family"].as_string();
     }
-    scottland::rectf_t hint_rectangle(wayfire_toplevel_view view)
+    scottland::rectf_t hint_rectangle(wayfire_toplevel_view view, bool for_avoidance_solve = false)
     {
         if (drag->view == view && view->get_output())
-            return scene_rectangle(view, view->get_output());
+        {
+            auto r = scene_rectangle(view, view->get_output());
+            // Follow the user's live drag, but never feed the avoidance displacement back
+            // into its own input. The scene rectangle includes this attached translation.
+            if (for_avoidance_solve)
+            {
+                auto found = hint_visuals.find(view->get_id());
+                if (found != hint_visuals.end() && found->second.offset_attached)
+                {
+                    r.x1 -= found->second.offset->translation_x;
+                    r.x2 -= found->second.offset->translation_x;
+                    r.y1 -= found->second.offset->translation_y;
+                    r.y2 -= found->second.offset->translation_y;
+                }
+            }
+            return r;
+        }
         if (auto frame = frame_of(view, false)) return frame->screen_rect();
         auto g = view->get_geometry();
         return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
@@ -109,9 +130,9 @@
         auto r = hint_rectangle(view);
         return scottland::windowing::hint_badge_size(r.width(), r.height(), hints_palette.text_scale);
     }
-    scottland::windowing::point hint_anchor(wayfire_toplevel_view view)
+    scottland::windowing::point hint_anchor(wayfire_toplevel_view view, bool for_avoidance_solve = false)
     {
-        auto r = hint_rectangle(view);
+        auto r = hint_rectangle(view, for_avoidance_solve);
         double x = (r.x1 + r.x2) / 2;
         if (auto link = link_of_widget(view))
         {
@@ -626,7 +647,7 @@
         sources.insert(sources.begin(), circles.begin(), circles.end());
     }
 
-    bool step_hints()
+    bool step_hints(bool force_solve = false)
     {
         refresh_hint_palette();
         auto entries = window_entries();
@@ -671,8 +692,8 @@
             }
             auto g = view->get_geometry();
             signature << e.id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' << view->get_output()->to_string() << ';';
-            auto r = drag->view == view ? scene_rectangle(view, view->get_output()) : hint_rectangle(view);
-            auto anchor = hint_anchor(view);
+            auto r = hint_rectangle(view, true);
+            auto anchor = hint_anchor(view, true);
             signature << ':' << std::round(anchor.x) << ',' << std::round(anchor.y) << ',' << std::round(r.height())
                 << ',' << std::round(hint_size(view)) << ';';
             by_output[view->get_output()].push_back(e.id);
@@ -691,9 +712,15 @@
         bool avoidance_active = window_keys.active || bool(hint_avoidance_always);
         signature << "active:" << window_keys.active << ";avoidance:" << avoidance_active
             << ";anchor:" << (focused ? focused->get_id() : 0);
-        if (signature.str() != declutter_signature)
+        auto current_signature = signature.str();
+        auto solve_now = std::chrono::steady_clock::now();
+        bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
+            solve_now - last_exposure_solve < std::chrono::milliseconds(16);
+        bool signature_changed = current_signature != declutter_signature;
+        bool deferred_solve = signature_changed && avoidance_active && !force_solve && within_tick_budget;
+        if (signature_changed && (!avoidance_active || force_solve || !within_tick_budget))
         {
-            declutter_signature = signature.str();
+            declutter_signature = std::move(current_signature);
             std::map<uint64_t, scottland::windowing::point> previous_labels;
             for (auto& [id, visual] : hint_visuals) previous_labels[id] = visual.label_offset;
             if (!avoidance_active)
@@ -701,79 +728,94 @@
                 // End of the hint request: the true geometry is the only target.
                 // Offsets remain attached until the animation reaches this target.
                 for (auto& [id, visual] : hint_visuals) visual.target = {};
-            } else for (auto& [output, ids] : by_output)
+            } else
             {
-                std::vector<scottland::windowing::point> anchors;
-                std::vector<double> diameters;
-                std::vector<scottland::windowing::hint_constraint> constraints;
-                for (auto id : ids) { auto view = represented_view(id); auto r = hint_rectangle(view);
-                    anchors.push_back(hint_anchor(view));
-                    bool widget = bool(link_of_widget(view));
-                    constraints.push_back({widget, widget ? r.height() / 2 : 0,
-                        view == focused});
-                    diameters.push_back(std::round(hint_size(view))); }
-                auto screen = output->get_relative_geometry();
-                auto displaced = avoidance_active && std::any_of(constraints.begin(), constraints.end(),
-                    [] (auto constraint) { return constraint.vertical_only; }) ?
-                    scottland::windowing::declutter(anchors,
-                        {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints) : anchors;
-                for (size_t i = 0; i < ids.size(); ++i)
-                    hint_visuals[ids[i]].target = {displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
-
-                using rectangle = scottland::windowing::rectangle;
-                rectangle bounds{0, 0, double(screen.width), double(screen.height)};
-                std::vector<scottland::windowing::exposure_window> windows;
-                std::vector<uint64_t> window_ids;
-                auto ordered = ids;
-                std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
-                    auto rank = [&] (auto id) { auto found = stacking.find(id);
-                        return found == stacking.end() ? stacking.size() : found->second; };
-                    return rank(a) < rank(b);
-                });
-                std::vector<rectangle> fixed_above;
-                for (auto id : ordered)
+                auto exposure_started = std::chrono::steady_clock::now();
+                auto exposure_deadline = exposure_started + std::chrono::microseconds(
+                    scottland::windowing::avoidance_solve_budget_us);
+                bool exposure_deadline_hit = false;
+                for (auto& [output, ids] : by_output)
                 {
-                    auto view = represented_view(id);
-                    auto r = hint_rectangle(view);
-                    if (link_of_widget(view))
-                    {
-                        auto& visual = hint_visuals[id];
-                        auto anchor = hint_anchor(view); double radius = hint_size(view) / 2;
-                        fixed_above.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y,
-                            r.width(), r.height()});
-                        if (avoidance_active)
-                            fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
-                                anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
-                    } else
-                    {
-                        windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
-                            32 * hints_palette.text_scale, fixed_above,
+                    bool output_deadline_hit = false;
+                    std::vector<scottland::windowing::point> anchors;
+                    std::vector<double> diameters;
+                    std::vector<scottland::windowing::hint_constraint> constraints;
+                    for (auto id : ids) { auto view = represented_view(id); auto r = hint_rectangle(view, true);
+                        anchors.push_back(hint_anchor(view, true));
+                        bool widget = bool(link_of_widget(view));
+                        constraints.push_back({widget, widget ? r.height() / 2 : 0,
                             view == focused});
-                        window_ids.push_back(id);
-                    }
-                }
-                auto exposed = scottland::windowing::expose_window_hints(windows, bounds);
-                for (size_t i = 0; i < window_ids.size(); ++i)
-                {
-                    auto& visual = hint_visuals[window_ids[i]];
-                    visual.target = exposed[i].offset;
-                    visual.label_size = exposed[i].diameter;
-                    visual.clearance = exposed[i].spot.clearance;
-                    visual.edge_label = false;
-                    auto anchor = hint_anchor(represented_view(window_ids[i]));
-                    visual.label_offset = {exposed[i].spot.center.x - visual.target.x - anchor.x,
-                        exposed[i].spot.center.y - visual.target.y - anchor.y};
-                }
-                for (auto id : ordered)
-                {
-                    auto view = represented_view(id);
-                    if (link_of_widget(view))
+                        diameters.push_back(std::round(hint_size(view))); }
+                    auto screen = output->get_relative_geometry();
+                    auto displaced = avoidance_active && std::any_of(constraints.begin(), constraints.end(),
+                        [] (auto constraint) { return constraint.vertical_only; }) ?
+                        scottland::windowing::declutter(anchors,
+                            {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints) : anchors;
+                    for (size_t i = 0; i < ids.size(); ++i)
+                        hint_visuals[ids[i]].target = {displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
+
+                    using rectangle = scottland::windowing::rectangle;
+                    rectangle bounds{0, 0, double(screen.width), double(screen.height)};
+                    std::vector<scottland::windowing::exposure_window> windows;
+                    std::vector<uint64_t> window_ids;
+                    auto ordered = ids;
+                    std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
+                        auto rank = [&] (auto id) { auto found = stacking.find(id);
+                            return found == stacking.end() ? stacking.size() : found->second; };
+                        return rank(a) < rank(b);
+                    });
+                    std::vector<rectangle> fixed_above;
+                    for (auto id : ordered)
                     {
-                        auto& visual = hint_visuals[id];
-                        visual.label_offset = {}; visual.label_size = hint_size(view);
-                        visual.edge_label = false; visual.clearance = 0;
+                        auto view = represented_view(id);
+                        auto r = hint_rectangle(view, true);
+                        if (link_of_widget(view))
+                        {
+                            auto& visual = hint_visuals[id];
+                            auto anchor = hint_anchor(view, true); double radius = hint_size(view) / 2;
+                            fixed_above.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y,
+                                r.width(), r.height()});
+                            if (avoidance_active)
+                                fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
+                                    anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
+                        } else
+                        {
+                            windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
+                                32 * hints_palette.text_scale, fixed_above,
+                                view == focused});
+                            window_ids.push_back(id);
+                        }
+                    }
+                    auto exposed = scottland::windowing::expose_window_hints(windows, bounds, {},
+                        exposure_deadline, &output_deadline_hit);
+                    exposure_deadline_hit |= output_deadline_hit;
+                    for (size_t i = 0; i < window_ids.size(); ++i)
+                    {
+                        auto& visual = hint_visuals[window_ids[i]];
+                        visual.target = exposed[i].offset;
+                        visual.label_size = exposed[i].diameter;
+                        visual.clearance = exposed[i].spot.clearance;
+                        visual.edge_label = false;
+                        auto anchor = hint_anchor(represented_view(window_ids[i]), true);
+                        visual.label_offset = {exposed[i].spot.center.x - visual.target.x - anchor.x,
+                            exposed[i].spot.center.y - visual.target.y - anchor.y};
+                    }
+                    for (auto id : ordered)
+                    {
+                        auto view = represented_view(id);
+                        if (link_of_widget(view))
+                        {
+                            auto& visual = hint_visuals[id];
+                            visual.label_offset = {}; visual.label_size = hint_size(view);
+                            visual.edge_label = false; visual.clearance = 0;
+                        }
                     }
                 }
+                exposure_solve_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - exposure_started).count();
+                exposure_solve_max_ms = std::max(exposure_solve_max_ms, exposure_solve_ms);
+                ++exposure_solve_count;
+                exposure_solve_deadline_count += exposure_deadline_hit;
             }
             for (auto& [id, visual] : hint_visuals)
             {
@@ -781,6 +823,7 @@
                 if (visual.hint && std::hypot(visual.label_offset.x - before.x,
                     visual.label_offset.y - before.y) > 0.5) visual.hint->relocate();
             }
+            if (avoidance_active) last_exposure_solve = std::chrono::steady_clock::now();
         }
         bool moving = false;
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
@@ -900,7 +943,7 @@
                 bool popping = visual.hint && visual.hint->animate();
                 moving |= popping;
                 if (!popping && visual.hint) { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-                if (visual.offset_attached && !unsettled && !popping)
+                if (visual.offset_attached && !avoidance_active && !unsettled && !popping)
                 {
                     view->get_transformed_node()->rem_transformer("scottland-hint-offset");
                     visual.offset_attached = false;
@@ -908,13 +951,13 @@
             }
             ++it;
         }
-        return window_keys.active || moving || bool(drag->view) || inertia_active();
+        return window_keys.active || moving || bool(drag->view) || inertia_active() || deferred_solve;
     }
     void refresh_layout_avoidance(bool immediate = false)
     {
         // Coalesce focus and geometry signals onto the next compositor tick.
         // Hint entry still computes its first frame immediately.
-        if (immediate) step_hints();
+        if (immediate) step_hints(true);
         if (!hints_tick.is_connected())
             hints_tick.set_timeout(8, [=] () { return step_hints(); });
     }
@@ -1047,6 +1090,12 @@
     wf::ipc::method_callback hints_state = [=] (wf::json_t) -> wf::json_t
     {
         auto reply = wf::ipc::json_ok(); reply["active"] = window_keys.active;
+        reply["avoidance_solve_ms"] = exposure_solve_ms;
+        reply["avoidance_solve_max_ms"] = exposure_solve_max_ms;
+        reply["avoidance_solve_budget_ms"] =
+            scottland::windowing::avoidance_solve_budget_us / 1000.0;
+        reply["avoidance_solve_count"] = int64_t(exposure_solve_count);
+        reply["avoidance_solve_deadline_count"] = int64_t(exposure_solve_deadline_count);
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
         window_keys.refresh(window_entries());
         for (auto e : window_keys.entries)

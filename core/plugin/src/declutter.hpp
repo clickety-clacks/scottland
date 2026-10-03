@@ -2,6 +2,10 @@
 #include "placement.hpp"
 namespace scottland::windowing
 {
+// One avoidance refresh may spend at most this much synchronous search time on the compositor
+// thread. A later layout change starts a fresh solve; unfinished search state is never resumed.
+inline constexpr int avoidance_solve_budget_us = 2000;
+
 struct hint_constraint
 {
     bool vertical_only = false;
@@ -28,5 +32,7 @@ struct exposure_result { point offset; label_spot spot; double diameter = 32; };
 // Fixed rectangles are widget frames already placed in their rail. A foreground
 // window moves only when that is the least bounded way to reveal a covered one.
 std::vector<exposure_result> expose_window_hints(const std::vector<exposure_window>& windows,
-    rectangle screen, const std::vector<rectangle>& fixed = {});
+    rectangle screen, const std::vector<rectangle>& fixed = {},
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
+    bool *deadline_hit = nullptr);
 }
