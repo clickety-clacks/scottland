@@ -122,19 +122,19 @@
 
         <option name="alt_hold_delay" type="int">
             <_short>Window mode Alt-alone hold (ms)</_short>
-            <_long>Hold Alt alone for this long to show compositor window hints. Alt+Tab and Alt+Shift+Tab switch center windows; other quick chords keep their app and desktop routing. Once window mode opens, its keys control windows until Alt is released.</_long>
+            <_long>Hold Alt alone for this long to show compositor window hints. Alt+Tab and Alt+Shift+Tab switch center windows; other quick chords keep their app and desktop routing. Once window mode opens, its keys control windows until Alt is released. Window mode uses Alt alone to show hints and focus center windows without hiding the others.</_long>
             <default>300</default>
             <min>1</min>
             <max>3000</max>
         </option>
         <option name="center_switcher_next" type="key">
             <_short>Next center window</_short>
-            <_long>Preview the next center-zone window by recent use. Releasing Alt focuses and raises it.</_long>
+            <_long>Preview the next center-zone window by recent use. Releasing Alt focuses and raises it. Window mode uses this key so you can focus a center window while keeping the others visible.</_long>
             <default>&lt;alt&gt; KEY_TAB</default>
         </option>
         <option name="center_switcher_previous" type="key">
             <_short>Previous center window</_short>
-            <_long>Preview the previous center-zone window by recent use. Releasing Alt focuses and raises it.</_long>
+            <_long>Preview the previous center-zone window by recent use. Releasing Alt focuses and raises it. Window mode uses this key so you can focus a center window while keeping the others visible.</_long>
             <default>&lt;alt&gt; &lt;shift&gt; KEY_TAB</default>
         </option>
         <option name="window_double_tap_delay" type="int">
@@ -227,7 +227,7 @@
 		</option>
 		<option name="minimize_widget" type="key">
 			<_short>Collapse widgets</_short>
-			<_long>Collapses all widgets to just their icons, or, if they all are, expands them back.</_long>
+			<_long>Collapses all widgets to just their icons, or, if they all are, expands them back. This key reduces peripheral detail while keeping every window visible.</_long>
 			<default>&lt;super&gt; KEY_M</default>
 		</option>
 		<option name="attention_color" type="color">
@@ -285,7 +285,7 @@
 		</option>
 		<option name="key_remaps" type="dynamic-list" type-hint="dict">
 			<_short>Per-app key remaps</_short>
-			<_long>For apps whose app-id matches, turn one key combination into another before bindings and the app see it.</_long>
+			<_long>For apps whose app-id matches, turn one key combination into another before bindings and the app see it. This lets the same action have the intended editing effect in matching apps.</_long>
 			<entry prefix="remap_apps_" type="string" name="apps">
 				<_short>Apps</_short>
 				<_long>Regular expression matched against the focused app-id (case-insensitive).</_long>

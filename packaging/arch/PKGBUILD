@@ -89,6 +89,8 @@ package_scottland-omarchy() {
   install -Dm755 "$o/libexec/scottland-omarchy-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-omarchy-solar-theme"
   install -Dm755 "$o/autostart.d/30-lua-host" "$pkgdir/usr/lib/scottland/autostart.d/30-lua-host"
   install -Dm755 "$o/autostart.d/35-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/35-solar-theme"
+  install -Dm755 "$o/autostart.d/25-omarchy-override-report" "$pkgdir/usr/lib/scottland/autostart.d/25-omarchy-override-report"
+  install -dm755 "$pkgdir/usr/lib/scottland/override-report.d"
   install -dm755 "$pkgdir/usr/share/scottland-omarchy/themes"
   cp -a "$o/themes/." "$pkgdir/usr/share/scottland-omarchy/themes/"
   install -Dm755 "$o/reload.d/30-lua-host" "$pkgdir/usr/lib/scottland/reload.d/30-lua-host"

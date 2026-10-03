@@ -1,0 +1,11 @@
+#!/bin/sh
+# The initial config is generated before Wayfire starts, so show its pending report once the
+# compositor has started and the Hyprland shim can route Omarchy's editor launcher.
+[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || exit 0
+sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock"
+for _ in $(seq 50); do
+  [ -S "$sock" ] && break
+  sleep 0.1
+done
+[ -S "$sock" ] || exit 0
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/config.d/50-omarchy-shortcuts" --show-pending

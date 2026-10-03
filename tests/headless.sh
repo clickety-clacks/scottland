@@ -49,7 +49,7 @@ case ${1:-} in
     debugger=()
     for option in "${@:2}"; do
       case $option in
-        --omarchy) started+=(10-hyprshim 30-lua-host) ;;
+        --omarchy) started+=(10-hyprshim 25-omarchy-override-report 30-lua-host) ;;
         --widgets) started+=(08-widget-bus); private_bus=1 ;;
         --gdb)
           [[ $(realpath -m "$dir") == "$repo"/build/* ]] || {

@@ -632,6 +632,21 @@ remap_from_browser_close =
             check("O5 real Alt+Tab and Alt+Shift+Tab keep the center preview and never run imports",
                   forward["active"] and forward["preview"] and reverse["active"] and
                   reverse["preview"] and not marker.exists())
+            close_import = 'hl.bind("SUPER+W", hl.dsp.window.close(), {description = "Close window"})\n'
+            generated = generate(fixture_base + "\n[scottland]\n", close_import)
+            check("O9 Super+W close is omitted instead of becoming a single-press close",
+                  "close_top_view = <super> KEY_W" not in generated and
+                  "O9: close remains unbound" in generated, generated)
+            config.write_text(fixture_base + "\n[scottland]\n" + generated)
+            time.sleep(0.8)
+            key("LEFTMETA", True); key("W", True); key("W", False); key("LEFTMETA", False)
+            time.sleep(0.2)
+            report_path = Path(os.environ["XDG_STATE_HOME"]) / "scottland/omarchy-overrides.txt"
+            report = report_path.read_text() if report_path.is_file() else ""
+            check("O9 Super+W leaves the window open and explains the omission",
+                  app("shortcut-regression") is not None and
+                  "Was: Close window (Super+W)" in report and
+                  "Scottland leaves Super+W unbound" in report, report)
             # (Keys no Scottland feature uses: on those, the user's shortcuts win over other defaults.)
             generated = generate(
                 "[wm-actions]\ntoggle_fullscreen = <super> KEY_K | <super> <shift> KEY_K | <super> KEY_N\n",

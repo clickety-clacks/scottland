@@ -32,7 +32,7 @@ link-dev:
 	ln -sf $(CURDIR)/core/config/scottland.ini $(CONF)/scottland.ini
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
 	ln -sf $(CURDIR)/omarchy/bin/scottland-omarchy-setup $(HOME)/.local/bin/scottland-omarchy-setup
-	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d
+	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/override-report.d
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
@@ -50,7 +50,7 @@ link-dev:
 	for f in core/systemd/*; do ln -sf $(CURDIR)/$$f $(HOME)/.config/systemd/user/$$(basename $$f); done
 	systemctl --user daemon-reload
 	ln -sf $(CURDIR)/core/session/scottland-settings $(HOME)/.local/bin/scottland-settings
-	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d focus.d; do \
+	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d focus.d override-report.d; do \
 	  for f in core/$$d/* omarchy/$$d/* omarchy/hooks/*; do \
 	    [ -e "$$f" ] || continue; \
 	    case $$f in omarchy/hooks/*) [ $$d = early-exit.d ] || continue ;; esac; \
@@ -64,7 +64,7 @@ hooks:
 	mkdir -p $(HOOKS_DIR)/plugins $(HOOKS_DIR)/metadata
 	ln -sf $(CURDIR)/build/libscottland.so $(HOOKS_DIR)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(HOOKS_DIR)/metadata/scottland.xml
-	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d
+	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d $(HOOKS_DIR)/override-report.d
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(HOOKS_DIR)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(HOOKS_DIR)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(HOOKS_DIR)/libexec/scottland-autostart
@@ -75,7 +75,7 @@ hooks:
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
-	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d focus.d; do \
+	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d focus.d override-report.d; do \
 	  for f in core/$$d/* omarchy/$$d/* omarchy/hooks/*; do \
 	    [ -e "$$f" ] || continue; \
 	    case $$f in omarchy/hooks/*) [ $$d = early-exit.d ] || continue ;; esac; \
