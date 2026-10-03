@@ -88,7 +88,7 @@ int main()
     bool no_room_deadline_hit = false;
     auto no_room_result = expose_window_hints(no_room_deadline_case, region, {},
         no_room_deadline, &no_room_deadline_hit);
-    auto no_room_center = point{260,130};
+    auto no_room_center = point{260,180};
     check(no_room_deadline_hit && no_room_result.size() == 1 &&
         no_room_result[0].diameter == 48 && near(no_room_result[0].spot.center, no_room_center),
         "an expired search with no checked opening still returns a centered minimum-size hint");

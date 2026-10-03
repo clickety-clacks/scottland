@@ -907,39 +907,6 @@
                         view->get_output()->get_scale(), widget ?
                             std::optional{hints_palette.background} : std::nullopt,
                         model.goo_outputs.count(view->get_output()), hints_reduced_motion);
-                    if (!widget)
-                    {
-                        using rectangle = scottland::windowing::rectangle;
-                        auto r = hint_rectangle(view); auto screen = view->get_output()->get_relative_geometry();
-                        rectangle drawn{r.x1 + offset->translation_x, r.y1 + offset->translation_y,
-                            r.width(), r.height()};
-                        std::vector<rectangle> foreground;
-                        for (auto other_id : by_output[view->get_output()]) if (other_id != it->first)
-                        {
-                            auto other_view = represented_view(other_id);
-                            auto other_r = hint_rectangle(other_view); auto other_offset = hint_visuals[other_id].offset;
-                            if (stacking[other_id] < stacking[it->first])
-                            {
-                                foreground.push_back({other_r.x1 + other_offset->translation_x,
-                                    other_r.y1 + other_offset->translation_y,
-                                    other_r.width(), other_r.height()});
-                                if (link_of_widget(other_view))
-                                {
-                                    auto other_anchor = hint_anchor(other_view);
-                                    double radius = hint_size(other_view) / 2;
-                                    foreground.push_back({other_anchor.x + other_offset->translation_x - radius - 6,
-                                        other_anchor.y + other_offset->translation_y - radius - 6,
-                                        2 * radius + 12, 2 * radius + 12});
-                                }
-                            }
-                        }
-                        auto circle = visual.hint->circle;
-                        auto clearance = scottland::windowing::visible_clearance(
-                            {circle.x + circle.width / 2, circle.y + circle.height / 2}, drawn,
-                            {0, 0, double(screen.width), double(screen.height)}, foreground);
-                        if (clearance + .25 < circle.width / 2)
-                        { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-                    }
                 }
             } else
             {

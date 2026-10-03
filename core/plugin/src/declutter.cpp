@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <queue>
 #include <set>
 #include <tuple>
 namespace scottland::windowing
@@ -247,21 +248,22 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
         }
         return lower;
     };
-    std::vector<std::tuple<double, size_t, size_t>> refinement;
-    bool refinement_complete = true;
-    for (size_t xi = 0; xi < xs.size() && refinement_complete; ++xi)
+    using refinement_entry = std::tuple<double, size_t, size_t>;
+    auto later = [] (const refinement_entry& a, const refinement_entry& b) { return a > b; };
+    std::priority_queue<refinement_entry, std::vector<refinement_entry>, decltype(later)> refinement(later);
+    for (size_t xi = 0; xi < xs.size(); ++xi)
         for (size_t yi = 0; yi < ys.size(); ++yi)
             if (!tried.count({xi, yi}))
             {
-                if (expired(deadline)) { refinement_complete = false; break; }
+                if (expired(deadline)) return best;
                 double lower = movement_lower_bound(xs[xi], ys[yi]);
-                if (expired(deadline)) { refinement_complete = false; break; }
-                if (std::isfinite(lower)) refinement.emplace_back(lower, xi, yi);
+                if (expired(deadline)) return best;
+                if (std::isfinite(lower)) refinement.emplace(lower, xi, yi);
             }
-    if (!refinement_complete) return best;
-    std::sort(refinement.begin(), refinement.end());
-    for (auto [travel, xi, yi] : refinement)
+    while (!refinement.empty() && !expired(deadline))
     {
+        auto [travel, xi, yi] = refinement.top();
+        refinement.pop();
         // Remaining candidates have at least this much travel. Once a satisfactory minimum
         // is known, farther cells cannot improve it.
         if (best && travel > best->travel + .01) break;
@@ -404,6 +406,15 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             }
         } else if (has_spot[i]) spot = best_spots[i];
         else spot = {{nodes[i].x + nodes[i].width / 2, nodes[i].y + nodes[i].height / 2}, 0};
+        // A non-positive clearance means there is no point in the window's visible
+        // region at all (for example, an output-sized foreground window covers it).
+        // Treat that as no spot and anchor the always-visible minimum hint to the
+        // window center instead of a search boundary just outside the covered area.
+        if (spot.clearance <= 0)
+        {
+            spot.center = {nodes[i].x + nodes[i].width / 2, nodes[i].y + nodes[i].height / 2};
+            spot.clearance = 0;
+        }
         best_spots[i] = spot;
         double available = std::floor(std::max(0.0, 2 * (spot.clearance - 1) / pop_scale));
         // Attention remains present even when no unobscured circle can fit. Use the

@@ -53,7 +53,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK28 | Hint circles pop in when window mode starts: each scales up from nothing with a short springy overshoot (and pops out quickly when the mode ends), and each circle has its own goo: it is a round goo source dyed its hint color, so it is part of the one liquid, joining the goo of the window or widget it touches (a widget's exterior hint visibly connects to the widget). With the goo off, circles get the fallback halo ring. Within the GO10 cost budget. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
 | WK29 | When a hint cycle (keyboard, window mode) moves a window to its next place, it comes to rest with a small elastic overshoot: an underdamped spring passes the target once in position and scale, then settles without wobble in 300 ms. `scottland/cycle_overshoot` is the peak percentage of the move (default 3%, range 0–10%; zero retains the original 260 ms position/180 ms scale motion). Geometry, zone, target scale and memories stay at the destination; drawn scale follows its own spring, never the intermediate position's zone. The live scaled content footprint is constrained to its output, including shared seams, without correcting existing off-screen memories or oversized endpoints; scale stays at least 5%. These limits may reduce overshoot. Keyboard widget opens use this window placement motion; widget morphs, rail glides, drops, drags, coasts and pointer/IPC opens retain their own motion. The cycle-overshoot setting is available through plugin metadata, `scottland-ctl` and the Window mode Settings tab. (Mike, 2026-10-02) | implemented (headless) |
 | WK30 | Widgets' hint circles keep a consistent 48 logical px diameter (2/3 of WK5's ordinary 72 px minimum), multiplied by desktop text scale, independent of expanded/collapsed form or client dimensions (WK31). Pressing a widget's hint first selects the widget (like a window that isn't selected yet); only a further press cycles it (to the center, etc.). Supersedes widget behavior in WK6-WK11/WK26 where they differ. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
-| WK31 | In window mode, each ordinary hint seeks the clearest spot inside its own screen-visible window region (the displayed rectangle minus foreground rectangles). It uses WK5/WK25 proportional size when feasible, shrinking only as needed to a 48 px × text-scale minimum; WK28 pop clearance is included when room allows. A visible-label search has a 250 μs deadline and samples far-apart corners and edges before refining its best regions. The movement solver tests opposite left/right/up/down screen and occluder-edge placements first, then refines candidates by a lower bound on total travel. It stops when the least-travel position that fits the wanted diameter is found; if the shared 2 ms WK13 budget expires first, it uses its best checked spot and discards unfinished work. If even the minimum cannot fit, the hint still appears at minimum size at the best spot found; if none was checked, it is centered on its window. It may overlap foreground content or extend beyond that window's visible region in this fallback case; lack of space never hides a window hint. Tenet 1 decides that attention remains visible when the ideal placement cannot be achieved. The focused window never moves for avoidance. Selecting a shifted window makes it the anchor. Hints use the most open visible spot, never exterior attachment; only widgets use WK26 exterior hints. During reflow a hint may wait for affected window offsets to settle, but not for additional room. Scene stacking determines occlusion. Geometry, scale and memories do not change. With the always-avoid setting off, Alt release or Esc eases offsets to zero; with it on, avoidance remains active outside Window mode. Explicit user moves remain. WK28 goo/pop still apply. | implemented (plumbus headless, 2026-10-03); validation below |
+| WK31 | In window mode, each ordinary hint seeks the clearest spot inside its own screen-visible window region (the displayed rectangle minus foreground rectangles). It uses WK5/WK25 proportional size when feasible, shrinking only as needed to a 48 px × text-scale minimum; WK28 pop clearance is included when room allows. A visible-label search has a 250 μs deadline and samples far-apart corners and edges before refining its best regions. The movement solver tests opposite left/right/up/down screen and occluder-edge placements first, then refines candidates by a lower bound on total travel. It stops when the least-travel position that fits the wanted diameter is found; if the shared 2 ms WK13 budget expires first, it uses its best checked spot and discards unfinished work. If even the minimum cannot fit, the hint still appears at minimum size at the best spot found; when the search finds no visible point (clearance ≤ 0), or checks none before its deadline, it is centered on its window. It may overlap foreground content or extend beyond that window's visible region in this fallback case; lack of space never hides a window hint. Tenet 1 decides that attention remains visible when the ideal placement cannot be achieved. The focused window never moves for avoidance. Selecting a shifted window makes it the anchor. Hints use the most open visible spot, never exterior attachment; only widgets use WK26 exterior hints. During reflow a hint may wait for affected window offsets to settle, but not for additional room. Scene stacking determines occlusion. Geometry, scale and memories do not change. With the always-avoid setting off, Alt release or Esc eases offsets to zero; with it on, avoidance remains active outside Window mode. Explicit user moves remain. WK28 goo/pop still apply. | implemented (plumbus headless, 2026-10-03); validation below |
 | WK32 | Quick Alt+Tab previews the next center-zone window in MRU order; Alt+Shift+Tab previews the previous, and further Tab presses while holding Alt keep stepping. Releasing Alt focuses and raises the preview. The small, click-through preview names the next window and its place in the cycle, or says there are no center windows. With one center window it previews that same window; with none, focus stays as it was. Side windows and widgets never enter the list. This owns Wayfire switcher's former bindings and is reserved from Omarchy imports (O5). Once window mode has opened, Tab instead retains WK10 hint order. Tenets 2 and 3 choose the brief visible preview and immediate, no-op empty behavior. | implemented (headless) |
 | WK33 | Each completed hint press that acts on a window or widget briefly pulses its hint-color tint over that representation, peaking quickly and fading within about 220 ms. Repeated acting presses pulse again. The flash is visual only: it does not alter focus, zone, scale, memory, or input routing. Tenet 2 gives immediate feedback for the chosen hint. | implemented (headless) |
 | WK34 | In window mode, the hint press that first selects an unselected collapsed widget also expands it for a five-second peek; collapsed intent and placement stay unchanged, and it collapses again at expiry unless another peek trigger is active. A further hint press during the peek follows WK30's center-first cycle and restores the app window to center, even within WK15's double-tap interval; this ends the peek. Tab selection keeps WK10 behavior; hint circles remain click-through (WK4). Tenets 2 and 3 make a minimized widget recognizable briefly while preserving its stored place. | implemented (plumbus headless, 2026-10-03) |
@@ -84,8 +84,9 @@ Double-tap requests the widget step directly.
   search for the nearest circle-sized opening before reducing the proportional circle. The
   focused surface stays at its true position, including during movement. If no circle-sized
   region exists, keep attention visible at the 48 px × text-scale minimum in the best checked
-  spot, or centered on the window if the search checks none; this fallback may overlay another
-  window. Tenet 1's visible attention takes priority over perfect containment. Keep a stable
+  spot, or centered on the window if there is no positive-clearance spot or the search checks none;
+  this fallback may overlay another window. Tenet 1's visible attention takes priority over perfect
+  containment. Keep a stable
   label point for an unchanged stack. Recognition keeps widget circles at 48 px × text scale
   across client sizes and forms.
 - WK13/WK22/WK27, tenet 3: by default, exposure movement exists only to show window-mode hints.
@@ -795,3 +796,34 @@ stopped and removed. Screenshots include `window-mode-avoiding.png`,
 `always-on-new-large-window.png`, `before-live-drag.png` and `after-live-drag.png`.
 This is plumbus headless verification with stipc input, not physical-display
 verification.
+
+## WK13 / WK31 optimized merged-build recheck (2026-10-03, plumbus)
+
+The `ship-merged5` build includes the optimized GO19 Makefile configuration.
+The label and placement searches still share the 250 μs / 2 ms deadlines;
+coarse opposite-edge placements are checked before best-bound refinement, and
+the solver exits as soon as the least-travel placement fits the requested
+diameter. Refinement uses a deadline-checked priority queue, so sorting a large
+plateau cannot run past the solve budget. A layout with no positive-clearance
+point centers its hint on the window; otherwise the best checked point is used.
+In all cases, including a forced 1 ns budget, the ordinary hint stays visible
+at or above 48 × text scale even if it overlaps foreground content. Widget and
+window hints share that readable floor, replacing the previous 32 × text scale
+window floor.
+
+| Merged-build Plumbus check | Result |
+|---|---|
+| `tests/windowing-unit.sh` | **114 passed**; forced 1 ns deadline returns a finite, centered minimum hint consistently |
+| `tests/hint-style-test.sh` | **53 passed**; 5% window scale retains the 48 px × text-scale floor |
+| `tests/hint-visible-test.sh` | **85 passed**; Alt/Esc return, no-room visibility and explicit moves |
+| `tests/hint-avoidance-animation-test.sh` | **15 passed**; easing in/out, always-on reflow and reduced-motion snap |
+| `tests/hint-avoidance-hang-test.sh` | **10 passed**; real drag with attention, bounded solve, IPC and stationary stability |
+| `tests/windowing-test.sh` | **102 passed** |
+
+The optimized-build drag run completed 38 solves under a 2 ms search budget;
+the latest largest measured solve was **2.030 ms** and the slowest IPC request
+was **1.105 ms**. The fixture allows up to 4 ms for total solve overhead. Repeated
+stationary samples kept the solve count fixed at 37 after the final pointer
+position. A 1 ns-budget unit case confirms the fallback remains finite and
+stable. Logs and screenshots are under
+`build/ship-merged5-evidence/avoidance-{animation,hang,visible}/`.

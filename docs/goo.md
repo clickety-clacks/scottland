@@ -1769,3 +1769,24 @@ Not covered: fractional output scale and two outputs for backdrop reuse (at a fr
 scale the frame damage may never fit the strips, which only means the normal path is
 used; on two outputs each breathing screen sees the other's ticks as foreign damage, the
 same). No physical display.
+
+## Optimized ship-merged5 recheck (2026-10-03, plumbus)
+
+The merged optimized build re-ran the CSD contour fixture against Chromium with
+client decorations both off and on, plus Nautilus. The normal path reported
+**5.70 ms** (Chromium) and **4.80 ms** (Nautilus) for alpha-mask/SDF rebuilds;
+packed GLES 2 reported **7.31 ms** and **9.26 ms**. Unchanged-mask checks took
+about **1.6–2.3 ms**. The inset CSD cases rebuilt the contour, the server-titlebar
+case used matching xdg and surface bounds, and the screenshot assertions passed.
+This work remains synchronous main-loop work; a separate design effort is moving
+it off the main loop, and this merge does not change that path. These optimized
+measurements are below the earlier debugoptimized 10.40–15.39 ms samples, but
+they still represent a potentially visible main-loop stall. Firefox remains
+unverified because it is unavailable on Plumbus.
+
+The requested merged-build suite results are recorded alongside their individual
+fixtures: goo regression **50/50** on normal and packed paths; GO16 shape/contour
+**133/133** on both; breathing checks passed on both; overlap/hover **28/28** on
+both; depth/soak **26/26** on both; and the combined five-second keyframe/exact
+idle fixture passed on both paths. Screenshots and logs are under
+`build/ship-merged5-evidence/`.

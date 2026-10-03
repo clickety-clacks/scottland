@@ -212,7 +212,10 @@ try:
                 scheme+': 7% surface tint on '+v['title'])
             if GOO:
                 # With the goo, window mode tints the goo itself; there is no separate rim.
-                check(dyed(image, round(f['x']+f['width']/2+h['dx']), round(f['y']-4+h['dy']), c),
+                # A widget's visible alpha body can start inside its transparent client
+                # reservation, so sample the actual body shore instead of that empty margin.
+                goo_y = f['y'] + (2 if v['widget'] else -4) + h['dy']
+                check(dyed(image, round(f['x']+f['width']/2+h['dx']), round(goo_y), c),
                     scheme+': the goo takes the hint dye on '+v['title'])
             else:
                 bx, by = round(f['x']+f['width']/2+h['dx']), round(f['y']-1+h['dy'])
