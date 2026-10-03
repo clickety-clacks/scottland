@@ -14,6 +14,18 @@ DHH pronounces "om-ah-shee". The name was checked for collisions on 2026-10-03: 
 by that name, GitHub name and the .com/.org domains unregistered. Public repository:
 [clickety-clacks/gooarchy](https://github.com/clickety-clacks/gooarchy).
 
+## Where taste lives: gooarchy-flavorings (Mike, 2026-10-03)
+
+Gooarchy's taste (which app widgets ship and whose, e.g. Mike's Ghostty widget rather than someone
+else's, and the app defaults listed below) lives in its own package,
+[clickety-clacks/gooarchy-flavorings](https://github.com/clickety-clacks/gooarchy-flavorings), not in
+Scottland's core (which defines what a widget is, never which ones ship) and not in the distro alone.
+Both the Gooarchy distro and Scottland's Omarchy adapter install it: Omarchy has no widget concept, so
+without it Scottland on Omarchy is incomplete. On Omarchy, flavorings add what Omarchy doesn't define
+(widgets); where Omarchy did make a choice, they don't fight it, and app tuning stays additive (C7).
+Each app widget is its own component built on Scottland's public widget interface (WG1-WG23), which
+therefore has to stay stable enough for outside packages.
+
 ## Defaults to ship
 
 - **Terminal window titles read "session on host"** (Mike, 2026-10-01), the same on every machine:

@@ -23,6 +23,7 @@ tenets themselves. Status says whether every feature that should follow one does
 | P6 | **What came from the center outranks the periphery.** When windows leave the center to make room, they matter more right now than windows already in the periphery: they may push those outward to stay larger, but only when they would otherwise have to land noticeably smaller (P2 still holds). Follows tenet 3. (Mike, 2026-10-03) | spread: designed, not built |
 | P7 | **Space is for looking good; it gives way first.** Gaps between windows are chosen for appearance (a halo-sized gap). When room runs out, the gap is the first rule given up, before anything overlaps. (Mike, 2026-10-03) | spread: designed, not built |
 | P8 | **Scottland never freezes the pointer.** Work Scottland does on the compositor's main loop stays short; anything that can take long (layout solves, geometry, shape analysis) runs off the main loop or in bounded slices with a usable best-so-far result. Input always wins. (Mike, 2026-10-03) | partly: avoidance and breathing are bounded; worker-thread design in review |
+| P9 | **Scottland defines mechanisms; taste is curated outside it.** Core defines what a widget (or theme, or default) is; which app widgets and app defaults ship is taste, curated by the distro in gooarchy-flavorings, which the Omarchy adapter also installs because Omarchy has no such concept. Core never ships an app-specific widget. (Mike, 2026-10-03) | decided; package started, empty |
 
 ## Layout and scaling
 
