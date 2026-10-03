@@ -56,7 +56,12 @@ why**, and ask only if it's genuinely unclear:
 2. **Adapter** (`omarchy/`, package `scottland-omarchy`): exists only because Scottland runs on
    Omarchy beside Hyprland and uwsm. The Hyprland shim, Lua host, shortcut import, switching
    between desktops, service handover, Omarchy menu entries.
-3. **Mike's personal preference**: his taste, not a default others should get. Goes in his own
+3. **Gooarchy flavorings** (repo `clickety-clacks/gooarchy-flavorings`, installed by the Gooarchy distro
+   and by the adapter): curated choices for Gooarchy users, not desktop mechanisms. Which app
+   widgets ship (and whose, e.g. Mike's Ghostty widget), app defaults such as Chromium's system
+   title bar. Core defines what a widget/theme/default *is*; it never ships an app-specific widget
+   (P9). Machine-independent distro notes still collect in docs/distro-notes.md until they move.
+4. **Mike's personal preference**: his taste, not a default others should get. Goes in his own
    files, never in the repo: `~/.config/scottland/overrides.ini` (appended last, wins over
    everything; example: natural scrolling), or `~/.config/scottland/layout.ini` (written by the
    settings app).
@@ -64,7 +69,18 @@ why**, and ask only if it's genuinely unclear:
 Hints: "turn X off in both installed and shipped" is core. Anything mentioning Hyprland,
 Omarchy's menu, uwsm or Hyprland-config behavior is the adapter. "I like", "for me", or a tweak to
 feel/appearance with no reason others would want it is personal. A shipped default that's just
-a value (a slider position) is usually personal unless Mike says it should ship.
+a value (a slider position) is usually personal unless Mike says it should ship. "Gooarchy should
+ship X", a particular app's widget, or "for the distro" belongs in Gooarchy flavorings.
+
+**Principles.** When Mike states a general rule while deciding a specific feature (it reads like a
+tenet: "if I put it on the left I should find it on the left"), record it in the same change as a
+P-row in core/INVARIANTS.md "Principles (tenet candidates)", with his words and the date, and cite
+it where it decides an edge. Don't edit docs/tenets.md: it mirrors Mike's own notes; he promotes
+principles himself.
+
+**No silent overrides (P10, O20).** Anything that replaces or displaces something the user already
+had (an Omarchy shortcut, a mapping, an app setting) must be reported to the user with what it was,
+what it is now and why. A change that adds an override adds its reason to that report.
 
 ## Scope and project rules
 
