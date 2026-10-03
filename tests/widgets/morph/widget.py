@@ -11,6 +11,9 @@ from gi.repository import Gtk, GLib
 
 path = os.environ["SCOTTLAND_WIDGET_STATE"]
 state = json.load(open(path))
+if state["title"].startswith("startup-delayed-"):
+    import time
+    time.sleep(.6)  # exercise the compositor before the destination surface exists
 app = Gtk.Application(application_id="org.scottland.MorphFixture")
 
 

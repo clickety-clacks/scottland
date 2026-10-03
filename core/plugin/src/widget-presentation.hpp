@@ -11,6 +11,7 @@ struct widget_transition_t
     bool buffer_applied = false;
     bool target_collapsed = false;
     bool card = false;
+    bool provisional_started = false;
     uint64_t entering_window = 0; // waiting launch or form morph; not a new lifecycle
     scottland::rectf_t origin{};
 };
@@ -50,7 +51,10 @@ void begin_window_widget_transition(wayfire_toplevel_view window)
     transition->entering_window = window->get_id();
     transition->origin = scene_rectangle(window, window->get_output());
     auto pixels = std::make_shared<scottland::widget_morph_t>();
-    pixels->from = scottland::widget_image_t::capture(window, 0);
+    auto root = window->get_surface_root_node();
+    auto& children = frame->get_children();
+    auto drawn = children.size() == 1 && children.front() == root ? &frame->inner_content : nullptr;
+    pixels->from = scottland::widget_image_t::capture(window, 0, drawn);
     if (!pixels->from) return;
     pixels->cover = true;
     pixels->scale = pixels->from_scale = frame->halo_scale();
@@ -61,7 +65,7 @@ void begin_window_widget_transition(wayfire_toplevel_view window)
         pixels->width = transition->origin.width();
         pixels->height = transition->origin.height();
         pixels->fade = frame->morph.fade;
-        pixels->to.buffer = frame->morph.snapshot;
+        pixels->to = frame->morph.snapshot;
         pixels->to.box = frame->morph.snapshot_box;
         auto g = frame->morph.other_geometry;
         pixels->to.box.x -= g.x; pixels->to.box.y -= g.y;
@@ -114,7 +118,17 @@ void adopt_window_widget_transition(widget_link_t& link)
     auto& p = *observer->pixels;
     auto g = widget->get_geometry();
     p.right = link.rail == "right";
-    auto& r = observer->origin;
+    // The source has already moved/shrunk while the client was starting. Rebase
+    // on that drawn rectangle; the same retained image covers it without a recapture.
+    auto r = observer->provisional_started && window ? scene_rectangle(window, window->get_output()) : observer->origin;
+    if (observer->provisional_started)
+    {
+        p.width = p.from_width = r.width();
+        p.height = p.from_height = r.height();
+        p.from_scale = p.scale;
+        p.duration_ms = 180; // correction to the applied size, with the full content fade
+    }
+    p.to_dx = p.to_dy = 0;
     p.dx = p.from_dx = (p.right ? r.x2 - g.x - g.width : r.x1 - g.x);
     p.dy = p.from_dy = (r.y1 + r.y2 - 2 * g.y - g.height) / 2;
     p.to = std::move(target);
@@ -261,7 +275,37 @@ bool step_widget_transitions()
                     auto next = std::next(it);
                     adopt_window_widget_transition(*app_link);
                     it = next;
-                } else ++it;
+                } else
+                {
+                    // Start from the app pixels already on screen. Card startup is not
+                    // a reason to hold the animation still (drag previews do this too).
+                    auto& p = *transition.pixels;
+                    if (!transition.provisional_started)
+                    {
+                        double height = PROVISIONAL_WIDGET_H;
+                        size_t chars = std::max(view->get_title().size(), view->get_app_id().size());
+                        double width = app_link->minimized() ? height : std::clamp(102.0 + 7.6 * chars, height, 320.0);
+                        p.to.width = width; p.to.height = height;
+                        auto spot = widget_spot(view->get_output(), *app_link, width, height);
+                        auto g = view->get_geometry();
+                        p.right = app_link->rail == "right";
+                        auto& r = transition.origin;
+                        p.dx = p.from_dx = p.right ? r.x2 - g.x - g.width : r.x1 - g.x;
+                        p.dy = p.from_dy = (r.y1 + r.y2 - 2 * g.y - g.height) / 2;
+                        p.to_dx = p.right ? spot.x + width - g.x - g.width : spot.x - g.x;
+                        p.to_dy = spot.y + height / 2 - g.y - g.height / 2;
+                        p.started = now;
+                        transition.provisional_started = true;
+                    }
+                    view->get_transformed_node()->begin_transform_update();
+                    frame->damage();
+                    p.step(now);
+                    p.fade = 0; // the source image alone until a real card buffer is applied
+                    ++widget_transition_steps;
+                    frame->damage();
+                    view->get_transformed_node()->end_transform_update();
+                    ++it;
+                }
                 continue;
             }
         }
