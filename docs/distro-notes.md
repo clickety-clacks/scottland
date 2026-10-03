@@ -22,7 +22,7 @@ else's, and the app defaults listed below) lives in its own package,
 Scottland's core (which defines what a widget is, never which ones ship) and not in the distro alone.
 Both the Gooarchy distro and Scottland's Omarchy adapter install it: Omarchy has no widget concept, so
 without it Scottland on Omarchy is incomplete. On Omarchy, flavorings add what Omarchy doesn't define
-(widgets); where Omarchy did make a choice, they don't fight it, and app tuning stays additive (C7).
+(widgets); they override an Omarchy choice only where that gives a better core Gooarchy experience than Omarchy's binding, and every override is reported to the user with its reason (adapter O20/O21). App tuning stays additive (C7).
 Each app widget is its own component built on Scottland's public widget interface (WG1-WG23), which
 therefore has to stay stable enough for outside packages.
 
