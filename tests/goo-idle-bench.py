@@ -39,6 +39,8 @@ ap.add_argument('--settings', choices=('shipped', 'wide'), default='wide')
 ap.add_argument('--options', type=Path, help='JSON overrides, with or without scottland/ prefixes')
 ap.add_argument('--stream-hz', type=float, default=0)
 ap.add_argument('--full-redraw', action='store_true')
+ap.add_argument('--stream-focus', action='store_true',
+                help='the focused front window redraws instead of the breathing one behind it')
 ap.add_argument('--refresh-hz', type=int, default=60)
 ap.add_argument('--scale', type=float, default=1)
 ap.add_argument('--verify', action='store_true', help='GO17 and goo-off fallback pixel checks')
@@ -47,6 +49,8 @@ ap.add_argument('--deterministic', action='store_true')
 ap.add_argument('--title-hz', type=float, default=0,
                 help='a widgetized terminal changes its title this often (an agent session does)')
 ap.add_argument('--no-reuse', action='store_true', help='repaint the scene under every breath (the old path)')
+ap.add_argument('--wallpaper-recommit', type=float, default=0,
+                help='the wallpaper client commits an identical frame every this many seconds')
 ap.add_argument('--awake', action='store_true',
                 help='also sample the awake simulation after a settings wake, and time its settling')
 args = ap.parse_args()
@@ -166,6 +170,12 @@ def measure(label):
               # Wakes of the sleeping simulation during the sample, by cause.
               'wakes': {k: v-((before.get('wakes') or {}).get(k, 0)) for k, v in (after.get('wakes') or {}).items()
                         if v-((before.get('wakes') or {}).get(k, 0))} if before and after else None,
+              # Background damage callbacks, and captures of it that differed (GO20).
+              'wallpaper_damages': delta('wallpaper_damages'), 'wallpaper_changes': delta('wallpaper_changes'),
+              # All bands, and the part of them that holds liquid while the goo sleeps (GO20).
+              'band_pixels': after.get('band_pixels') if after else None,
+              'settled_pixels': after.get('settled_pixels') if after else None,
+              'dry_pixels': after.get('dry_pixels') if after else None,
               'overlapping': after.get('overlapping') if after else None,
               'sources': after['sources'] if after else None}
     print(json.dumps(result), flush=True)
@@ -240,6 +250,16 @@ def visual(window):
                     reuse['identical'] = False; reuse['differing_shots'] += 1
             reuse['reuses'] += state()['backdrop_reuses']-before
         print(json.dumps({'visual_backdrop_reuse': reuse}), flush=True)
+    # GO20: leaving dry window content out of the goo's regions must not change a pixel.
+    dry = {'identical': True}
+    if 'dry_pixels' in state():
+        for hold in (.37, 1.):
+            state({'dry_content': False}); time.sleep(.3)
+            everywhere = shot(f'visual-dry-off-{hold}', hold, False).get_pixels()
+            state({'dry_content': True}); time.sleep(.3)
+            if shot(f'visual-dry-on-{hold}', hold, False).get_pixels() != everywhere: dry['identical'] = False
+        dry['dry_pixels'] = state()['dry_pixels']
+        print(json.dumps({'visual_dry_content': dry}), flush=True)
     state({'breath_hold': -1, 'breath_exact': False})
     (out/'visual.json').write_text(json.dumps({'keys': keys, 'comparisons': rows, 'damage': damage,
                                                'backdrop_reuse': reuse}, indent=2))
@@ -254,6 +274,7 @@ def visual(window):
     strong_limit = 300 if state()['packed'] else 200
     assert all(r['changed_16_levels'] < strong_limit and r['changed_8_levels'] < 5000 for r in rows), rows
     assert damage['identical'] and tight_area < loose_area, damage
+    assert dry['identical'], dry
     assert reuse['identical'] and (reuse['reuses'] or 'backdrop_reuses' not in state()), reuse
 
 try:
@@ -285,13 +306,14 @@ try:
     time.sleep(1)
     with (out/'wallpaper.log').open('w') as f:
         clients.append(subprocess.Popen(['quickshell', '-p', str(root/'tests/GooWallpaper.qml')],
+                                        env=dict(os.environ, GOO_WALLPAPER_RECOMMIT_MS=str(round(args.wallpaper_recommit*1000))),
                                         stdout=f, stderr=subprocess.STDOUT, start_new_session=True))
     # Front to back at the end: focus, breather, two periphery windows, two rail widgets.
     geometry = {'idle-widget-a': (1500, 300, 700, 500), 'idle-widget-b': (1500, 900, 700, 500),
                 'idle-left-a': (60, 120, 962, 1159), 'idle-left-b': (-360, 720, 1180, 780),
                 'idle-breather': (1193, 73, 941, 940), 'idle-focus': (819, 312, 992, 1146)}
     for title in geometry:
-        if title == 'idle-breather' and args.stream_hz:
+        if title == ('idle-focus' if args.stream_focus else 'idle-breather') and args.stream_hz:
             if args.full_redraw:
                 code = (f'import time\nn=0\nwhile True:\n print(f"\\033]11;#{{32+(n%2)*6:02x}}2020\\007",end="",flush=True);'
                         f'n+=1;time.sleep({1/args.stream_hz!r})')

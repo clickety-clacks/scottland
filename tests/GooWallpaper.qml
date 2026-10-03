@@ -2,7 +2,8 @@ import QtQuick
 import Quickshell
 import Quickshell.Wayland
 
-// Static, colorful background layer for GO14/GO15. No app content or animation.
+// Static, colorful background layer for GO14/GO15. No app content or animation;
+// GOO_WALLPAPER_RECOMMIT_MS makes it commit identical frames periodically (GO20).
 ShellRoot {
   PanelWindow {
     anchors { top: true; bottom: true; left: true; right: true }
@@ -29,6 +30,19 @@ ShellRoot {
         x: -100; y: index * 85 - 300
         width: 1800; height: 28; rotation: 12
         color: index % 2 ? "#25ffffff" : "#25000000"
+      }
+    }
+    // GO20: a shell that commits its background again without changing a pixel (the
+    // Omarchy shell does, in step with its 30-second timers). An item no one can see
+    // changes, so Qt renders and commits the same picture with full damage.
+    Rectangle {
+      id: recommit
+      width: 1; height: 1; opacity: 0.004
+      color: "#101827"
+      Timer {
+        interval: Number(Quickshell.env("GOO_WALLPAPER_RECOMMIT_MS") || 0)
+        running: interval > 0; repeat: true
+        onTriggered: recommit.color = Qt.colorEqual(recommit.color, "#101827") ? "#101828" : "#101827"
       }
     }
     Rectangle {

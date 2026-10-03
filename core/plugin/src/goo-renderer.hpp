@@ -21,7 +21,7 @@ class renderer_t
     // Draws only where `area` (output-logical) meets the damage: the goo never leaves its bands.
     void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
               const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys = true,
-              bool reuse_backdrop = false);
+              bool reuse_backdrop = false, const wf::regionf_t *dry = nullptr);
     // The settled surface and the backdrop under it are cached: a breath can be drawn
     // over the cached backdrop without the scene beneath being repainted first.
     bool backdrop_ready() const;

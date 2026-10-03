@@ -556,7 +556,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
 }
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
                       const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
-              bool reuse_backdrop)
+              bool reuse_backdrop, const wf::regionf_t *dry)
 {
     if (!p->ready)
         return;
@@ -575,6 +575,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             double(r.x2 - r.x1) + 2 * refract_margin,
             double(r.y2 - r.y1) + 2 * refract_margin};
     auto capture = data.damage & capture_area;
+    // Window content no goo lies on is never sampled as backdrop either.
+    if (dry)
+        capture ^= *dry;
     if (capture.empty())
         return;
     ++draws;
