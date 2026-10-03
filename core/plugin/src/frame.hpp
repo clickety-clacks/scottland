@@ -407,6 +407,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     ~frame_t()
     {
         tick.disconnect();
+        halo_breath_tick.disconnect();
         dwell.disconnect();
         linger.disconnect();
         dot_hide.disconnect();
@@ -419,6 +420,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     std::unique_ptr<goo::shape_cache_t> alpha_shape;
     bool shape_dirty = true;
+    // Test-session work counters: device pixels submitted for window contents.
+    uint64_t content_pixels = 0, render_calls = 0;
     uint32_t shape_checked = 0;
     wf::wl_timer<false> shape_retry;
     static uint32_t shape_now() { return now_ms(); }
@@ -1071,6 +1074,24 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             std::ceil(2 * hw) + 1, std::ceil(2 * hh) + 1});
     }
 
+    // The halo shader draws edge strips, not the unchanged window interior.
+    // Include rounded corners and the dot. Alpha-shaped widgets can have holes
+    // anywhere in their body, so retain their complete box.
+    void damage_halo()
+    {
+        wf::regionf_t area{get_bounding_box()};
+        if (!uses_alpha_shape())
+        {
+            auto r = screen_rect();
+            double in = screen_radius() + 1;
+            if (r.width() > 2 * in && r.height() > 2 * in)
+                area ^= wf::geometry_t{std::ceil(r.x1 + in), std::ceil(r.y1 + in),
+                    std::floor(r.x2 - in) - std::ceil(r.x1 + in),
+                    std::floor(r.y2 - in) - std::ceil(r.y1 + in)};
+        }
+        wf::scene::damage_node(this, area);
+    }
+
     /** A live morph between this window and its other form (window <-> widget) while it's
      *  dragged in or out of a widget rail (WG13). `shape` blends the frame from this view's own
      *  size to the other form's (`w` x `h` on screen, with that form's scale for corners and
@@ -1133,6 +1154,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     wf::wl_timer<false> dot_hide;
     uint32_t last_tick = 0;
     wf::wl_timer<true> tick;
+    wf::wl_timer<true> halo_breath_tick;
     wf::wl_timer<false> dwell;
     wf::wl_timer<false> linger;
 
@@ -1256,10 +1278,24 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             bool goo = goo_enabled();
             // A touch lift also scales window content; preserve its full old/new
             // damage until the spring settles. Only halo-only ticks use goo bands.
-            bool content = !goo || bulge != bulge_target || bulge_velocity != 0 || opacity_mix.running();
+            bool content = bulge != bulge_target || bulge_velocity != 0 || opacity_mix.running();
+            bool passive_breath = !goo && attention && !content && !hovering && !lifted && !is_pressed() &&
+                !attention_mix.running() && !focus_mix.running() && dot_glow < .003 && dot_target == 0;
+            for (int i = 0; i < 4; ++i)
+                passive_breath &= cloud[i] < .002 && cloud_target[i] == 0 &&
+                    side_cloud[i] < .002 && side_target[i] == 0;
+            // Keep the existing 16 ms spring integration, but present a passive
+            // attention halo at the shared goo's 25 Hz cadence. Interaction and
+            // content animations retain their original cadence.
+            if (passive_breath && !halo_breath_tick.is_connected())
+                halo_breath_tick.set_timeout(40, [this] { damage_halo(); return true; });
+            else if (!passive_breath)
+                halo_breath_tick.disconnect();
             if (content) damage();
+            else if (!goo && !passive_breath) damage_halo();
             step(dt);
             if (content) damage();
+            else if (!goo && !passive_breath) damage_halo();
             if (goo) goo_wake(*this);
             if (settled())
             {
@@ -1338,6 +1374,16 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
     void render(const wf::scene::render_instruction_t& data) override
     {
+        if (data.damage.empty()) return;
+        if (getenv("SCOTTLAND_TEST_MODEL"))
+        {
+            ++self->render_calls;
+            auto r = self->screen_rect();
+            auto pixels = data.target.framebuffer_region_from_geometry_region(data.damage &
+                wf::geometry_t{r.x1, r.y1, r.width(), r.height()});
+            for (auto& b : pixels)
+                self->content_pixels += uint64_t(b.x2-b.x1) * (b.y2-b.y1);
+        }
         self->sync_goo_animation();
         if (!wf::get_core().is_gles2())
         {

@@ -42,6 +42,8 @@ class goo_instance_t : public wf::scene::simple_render_instance_t<goo_node_t>
 {
   public:
     goo_instance_t(goo_node_t *, wf::scene::damage_callback, wf::output_t *);
+    void schedule_instructions(std::vector<wf::scene::render_instruction_t> &instructions,
+        const wf::render_target_t &target, wf::regionf_t &damage) override;
     void render(const wf::scene::render_instruction_t &data) override;
 };
 class goo_node_t : public wf::scene::node_t
@@ -57,6 +59,10 @@ class goo_node_t : public wf::scene::node_t
     double last_change = now(), last_step = 0;
     std::map<uint64_t, double> motion_pulse;
     bool attached = true, above_windows = false;
+    bool reuse_backdrop = true;
+    std::unique_ptr<wf::scene::render_instance_manager_t> backdrop_observer;
+    wf::signal::connection_t<wf::scene::root_node_update_signal> backdrop_scene_update =
+        [this](auto *) { state.renderer.invalidate_backdrop(); };
     std::function<void()> failed;
     goo_t::source_provider_t snapshot;
     goo_node_t(wf::output_t *o, goo_t::source_provider_t provider) : node_t(false), snapshot(std::move(provider))
@@ -71,6 +77,8 @@ class goo_node_t : public wf::scene::node_t
     void detach()
     {
         wallpaper_instances.clear();
+        backdrop_observer.reset();
+        backdrop_scene_update.disconnect();
         wallpaper_nodes.clear();
         if (attached)
             state.output->render->rem_effect(&pre);
@@ -413,6 +421,28 @@ class goo_node_t : public wf::scene::node_t
             last_change = now();
             wake();
         }
+        // Track real damage below the liquid independently from the liquid's
+        // own animation. The existing backdrop texture can then restore an
+        // unchanged band without repainting its windows or copying them again.
+        if (above_windows && !breath_area.empty() && reuse_backdrop)
+        {
+            if (!backdrop_observer)
+            {
+                std::vector<wf::scene::node_ptr> nodes;
+                for (auto layer : {wf::scene::layer::UNMANAGED, wf::scene::layer::TOP,
+                    wf::scene::layer::WORKSPACE, wf::scene::layer::BOTTOM, wf::scene::layer::BACKGROUND})
+                    nodes.push_back(state.output->node_for_layer(layer));
+                backdrop_observer = std::make_unique<wf::scene::render_instance_manager_t>(nodes,
+                    [this](const wf::regionf_t &) { state.renderer.invalidate_backdrop(); }, state.output);
+                wf::get_core().scene()->connect(&backdrop_scene_update);
+                state.renderer.invalidate_backdrop();
+            }
+        } else if (backdrop_observer)
+        {
+            backdrop_observer.reset();
+            backdrop_scene_update.disconnect();
+            state.renderer.invalidate_backdrop();
+        }
         if (state.sources.empty() || (state.sources.size() == 1 && !state.sources[0].emitter))
         {
             state.sleeping = true;
@@ -473,7 +503,9 @@ class goo_node_t : public wf::scene::node_t
                 wf::regionf_t area;
                 for (auto &b : band)
                     area |= b;
-                state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys);
+                auto reuse = std::any_cast<wf::regionf_t>(&data.data);
+                state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
+                    reuse ? *reuse : wf::regionf_t{});
             });
     }
 };
@@ -482,6 +514,29 @@ goo_instance_t::goo_instance_t(goo_node_t *s, wf::scene::damage_callback d, wf::
 {
 }
 void goo_instance_t::render(const wf::scene::render_instruction_t &data) { self->render(data); }
+void goo_instance_t::schedule_instructions(std::vector<wf::scene::render_instruction_t> &instructions,
+    const wf::render_target_t &target, wf::regionf_t &damage)
+{
+    wf::regionf_t reuse;
+    if (self->state.sleeping && self->backdrop_observer)
+    {
+        // The output damage ring rounds out to device pixels. At fractional
+        // scale those pixels can extend beyond the logical band. Partition in
+        // the same pixel grid as the capture/restore scissors, so no edge pixel
+        // is both reused and repainted underneath it.
+        auto pixels = target.framebuffer_region_from_geometry_region(damage);
+        auto band = target.framebuffer_region_from_geometry_region(self->breath_area);
+        if ((pixels ^ band).empty())
+        {
+            auto valid = target.framebuffer_region_from_geometry_region(
+                self->state.renderer.reusable_backdrop(target));
+            reuse = target.geometry_region_from_framebuffer_region(pixels & valid);
+        }
+    }
+    instructions.push_back({.instance = this, .target = target,
+        .damage = damage & self->get_bounding_box(), .data = reuse});
+    damage ^= reuse;
+}
 } // namespace
 struct goo_t::impl
 {
@@ -599,6 +654,12 @@ struct goo_t::impl
             bool test_changed = false;
             if (getenv("SCOTTLAND_TEST_MODEL"))
             {
+                if (data.has_member("reuse_backdrop") && data["reuse_backdrop"].is_bool())
+                {
+                    n->reuse_backdrop = data["reuse_backdrop"].as_bool();
+                    n->state.renderer.invalidate_backdrop();
+                    test_changed = true;
+                }
                 if (data.has_member("breath_hold") &&
                     (data["breath_hold"].is_int() || data["breath_hold"].is_double()))
                 {
@@ -633,6 +694,7 @@ struct goo_t::impl
             s["capture_pixels"] = (int64_t)n->state.renderer.capture_pixels;
             s["composite_pixels"] = (int64_t)n->state.renderer.composite_pixels;
             s["breath_refreshes"] = (int64_t)n->state.renderer.breath_refreshes;
+            s["backdrop_reuse_pixels"] = (int64_t)n->state.renderer.backdrop_reuse_pixels;
             s["breath_keys"] = (int64_t)n->state.renderer.breath_key_values.size();
             s["breath_keyframes_active"] = n->state.renderer.breath_keyframes_active;
             auto key_values = wf::json_t::array();

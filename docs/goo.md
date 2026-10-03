@@ -78,6 +78,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary windows retain analytic rounded boxes and never sample the widget atlas. (Mike, 2026-10-02; core) | implemented/headless checked; current normal/packed and merged-cache validation below; physical-display verification remains open |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and gentle source-local swell at draw time. Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 | GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
+| GO19 | Passive attention repaints only decoration bands; settled overlapping goo reuses its backdrop while the scene beneath it is unchanged. Client damage and scene changes refresh that backdrop, in both keyframe and exact modes. Fallback breathing presents at 25 Hz while its original spring integration and interactive cadence remain intact. Center content, input, stacking and goo shading remain unchanged. | implemented; plumbus damage/pixel/input checks below; Xe measurement pending |
 
 ## Halo jobs with goo enabled
 
@@ -1579,3 +1580,129 @@ are in [goo-gpu-research.md](goo-gpu-research.md).
 
 This is isolated headless validation on one RX 580. Xe, forced keyframe-target
 allocation failure, physical scanout and Mike's visual acceptance remain open.
+
+## GO19: breathing damage and retained backdrop (2026-10-03)
+
+Mike's combined `5623284` live Xe measurement removed goo's increment relative
+to the now-breathing fallback, but not the total attention cost: keyframes
+11.4/13.6%, exact 14.4/16.3%, fallback 17.3/17.4%. The target was a 1012×1106
+center terminal at 2560×1600, with the GPU reported near 1000 MHz. These are
+Mike's measurements; no test session or settings change was made on osanwe.
+
+The fallback's `frame_t::start_ticking()` called whole-frame `damage()` both
+before and after each 16 ms spring step, even when only the halo changed.
+For the new fixture this repeatedly repainted a 1.25-million-pixel box,
+including the window interior and translucent windows beneath it. Goo already
+used band damage: its 556,386-pixel band was repainted at 25 Hz in both modes.
+However, each tick still drew the windows underneath and copied their result
+into the refraction backdrop. The scene damage counters did **not** show a
+whole-output repaint for steady goo breathing. They do not measure hidden
+GPU-driver resolves or scanout costs.
+
+A later read-only live snapshot (not the exact scene of Mike's table) had
+three overlapping windows and four breathing rectangles totaling 549,664
+logical pixels. Its attention window was then 992×1256. Thus the new fixture
+covers a similar band area without claiming to reproduce Xe's absolute cost.
+
+Implementation:
+
+- Fallback decoration-only ticks damage the drawn edge strips. Rounded
+  corners and the dot remain covered; alpha-shaped widgets retain their full
+  body bounds because their shores and holes may be anywhere inside them.
+  Content opacity and lift/scale animations retain whole-frame damage.
+- Passive fallback attention presents at 25 Hz. The original 16 ms spring
+  integration continues, preserving the spring and ripple motion; pointer,
+  touch, focus and content animations keep their prior cadence. This is the
+  only intended fidelity change: fewer presentations of the same slow curve.
+- In the overlapping, settled goo path, an independent scene damage observer
+  watches every layer below the goo. The already-allocated RGBA8 refraction
+  backdrop can restore an unchanged breathing band. Scheduling subtracts that
+  region from the work below it; rendering restores the background before
+  applying the unchanged keyframe or exact goo shader. No additional image
+  cache or reduced-resolution surface is introduced.
+- Any observed client damage or scene update invalidates reuse conservatively.
+  A frame with damage outside the breathing band also renders normally.
+  Changed target geometry, scale, transform, dimensions, non-SDR transfer
+  functions and non-8-bit buffers cannot reuse the old backdrop. No-overlap
+  scenes and active simulation retain the prior rendering path.
+- Empty frame render instructions return before acquiring content textures.
+
+Tenets 1, 4 and 5 decide the unspecified edge: retain attention, full-quality
+center content, input, placement, stacking and the existing goo curve. Avoid
+work on unchanged pixels instead of weakening the attention effect.
+
+The new `tests/goo-breath-damage.sh` fixture uses real clicks to stack a
+1012×1106 center attention window above a 1520×1280 terminal, with a separate
+focused window and static wallpaper. Both large terminals change one line
+once a second. Wide goo settings, 0.91 unfocused opacity, 2560×1600 scale 1,
+120 Hz output, 10 s warmup per case, 5 s fdinfo samples. `--stream-hz 0` isolates
+breathing; `--full-redraw` changes terminal backgrounds; `--scale` exercises
+fractional outputs. GPU samples include concurrent whole-GPU load.
+
+Test-only counters report output damage pixels and per-window submitted
+content pixels. `layout-state` can capture the next natural render pass into
+the test session's state directory: unlike a screencopy request, this does
+not force a full repaint that could hide incorrect partial damage. The
+fixture compares retained and freshly composed frames at held breath values,
+checks that reuse actually happened, and checks fresh client updates.
+
+RX 580 results, repeated same-fixture 5 s samples, `5623284` plus work
+counters versus the candidate (`baseline-r2` / `final-r2` artifacts):
+
+| Mode | Before compositor GPU | After compositor GPU | Whole GPU, before / after |
+|---|---:|---:|---:|
+| Slow terminals, no attention | 0.2 / 0.2% | 0.2 / 0.2% | 13.2 / 0.4%; 7.9 / 0.4% |
+| Goo, keyframes | 1.5 / 1.9% | 1.1 / 1.1% | 14.6 / 17.4%; 12.7 / 20.6% |
+| Goo, exact | 2.2 / 1.6% | 0.8 / 1.0% | 2.2 / 14.9%; 23.6 / 13.8% |
+| Goo off, breathing halo | 8.9 / 7.8% | 0.9 / 0.9% | 8.9 / 12.2%; 6.5 / 1.9% |
+
+Each pair of values is two rounds, not an uncertainty interval. Another
+agent's headless session appeared during measurements; regular browser and
+desktop clients also remained running. The changing shared-GPU load affects
+clocking and makes these percentages directional rather than an isolated
+GPU throughput comparison. Earlier low-load keyframe samples were 1.9%
+before (whole GPU 2.0%) and 1.3% after (whole GPU 1.2–1.3%, separately sampled
+and rounded). No other session was stopped or modified.
+
+The work counters are much less ambiguous. Across a sample interval (about
+5.2 s, slightly longer than the fdinfo sampler), goo's unchanged-content
+submission drops from about **62.5–63.0 million to 4.9–5.4 million device
+pixels**, and its backdrop capture drops from **71.8–72.4 million to
+5.6–6.1 million**: approximately **91–92% less**. The output damage stays
+around 72 million pixels because the band still animates. Goo's 25 Hz curve,
+keyframes and exact shader are unchanged. The fallback's output damage
+falls from 418–421 million to about 29 million pixels; content submission
+falls from 780–785 million to about 35 million. Its measured output frames
+fall from 334–335 to 140–141, including the clients' slow redraw frames.
+
+A staged prototype using just edge damage kept the fallback's old cadence:
+7.9% → 1.9–2.0%, before the additional 25 Hz presentation reduction to about
+0.9%. The retained-backdrop prototype then reduced goo's content and copy
+work in both modes. These are separate causes, not a change to liquid
+resolution or a replacement animation.
+
+Validation on plumbus: goo 50/50 normal and 50/50 packed GLES, overlap/hover
+input 28/28, alpha-shaped widgets and their fallback/input behavior 133/133.
+Native-scale natural-frame comparisons at trough/midpoint/crest and after
+client updates match exactly in both goo modes (zero changed channels),
+while the reuse counter advances. Packed GLES additionally passes full
+terminal-background updates and a real window move/stacking change. The
+fallback still visibly breathes. Native scale, packed GLES with whole-terminal
+updates, 1.5× output scale and 90° rotation give 35 natural-frame image pairs
+with zero changed channels. The packed/fractional/rotated fixtures also cover
+a real move and stacking change. A first fractional run correctly rendered
+but rejected reuse because buffer-age damage rounds beyond logical bands;
+partitioning the damage in device pixels fixes that missed optimization and
+passes the image checks. These remain headless checks, not a physical-screen
+fidelity judgment.
+Artifacts, logs, source/binary identities and screenshots are under
+`build/breath-damage/` in the Astra checkout.
+
+Expected Xe effect: fewer backdrop copies and roughly 91% less unchanged
+window composition should help the same live band, especially at low idle
+clocks. AMD busy percentages do not establish a Xe speedup or prove the
+2–3-point live target. `goo-state.backdrop_reuse_pixels` makes reuse observable
+on the candidate without enabling test controls. Mike's paired live Xe
+measurement, physical-screen judgment of the 25 Hz fallback, and HDR/10-bit
+and color-managed output behavior remain unverified; non-8-bit/non-SDR
+backdrops conservatively use the original redraw path.

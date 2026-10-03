@@ -71,6 +71,8 @@ GO17 makes attention breathing a local draw-only modulation while simulation sle
 see [its curve, damage and cost evidence](../docs/goo.md#go17-draw-only-attention-breathing-2026-10-02).
 GO10 also caches the settled goo surface for inexpensive composition over redrawing apps;
 see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-windows-2026-10-02).
+GO19 retains the scene beneath unchanged breathing bands and limits passive fallback
+breathing to edge damage at 25 Hz; see [damage, fidelity and cost evidence](../docs/goo.md#go19-breathing-damage-and-retained-backdrop-2026-10-03).
 
 
 | ID | Invariant | Status |

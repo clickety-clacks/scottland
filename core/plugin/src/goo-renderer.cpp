@@ -7,6 +7,11 @@
 #include <cstring>
 #include <wayfire/scene-render.hpp>
 #include <wayfire/util/log.hpp>
+#include <drm_fourcc.h>
+extern "C" {
+#include <wlr/types/wlr_buffer.h>
+#include <wlr/render/dmabuf.h>
+}
 
 namespace scottland::goo
 {
@@ -63,7 +68,11 @@ struct renderer_t::impl
     bool layer_b_available = true, requested_keyframes = false, use_keyframes = false;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p;
-    OpenGL::program_t intrinsic_p, refraction_p, composite_p, composite_mix_p;
+    OpenGL::program_t intrinsic_p, refraction_p, composite_p, composite_mix_p, backdrop_p;
+    wf::regionf_t backdrop_valid;
+    wf::geometry_t backdrop_geometry{};
+    float backdrop_scale = 0;
+    wl_output_transform backdrop_transform = WL_OUTPUT_TRANSFORM_NORMAL;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query, atlas;
     target_t intrinsic, refraction, intrinsic_b, refraction_b;
@@ -131,7 +140,7 @@ struct renderer_t::impl
         if (timer)
             glDeleteQueries(1, &timer);
         for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p,
-                       &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p,
+                       &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p, &backdrop_p,
                        &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
         for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query,
@@ -251,7 +260,16 @@ struct renderer_t::impl
         compile(refraction_p, vertex, cached_shader(true), true);
         compile(composite_p, vertex, cached_composite_shader);
         compile(composite_mix_p, vertex, cached_composite_mix_shader);
-        for (auto p : {&intrinsic_p, &refraction_p, &composite_p, &composite_mix_p})
+        compile(backdrop_p, vertex, R"(
+            precision highp float;
+            varying vec2 pos;
+            uniform sampler2D image;
+            uniform mat4 uBackgroundMap;
+            void main() {
+                vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
+                gl_FragColor=texture2D(image,uv);
+            })");
+        for (auto p : {&intrinsic_p, &refraction_p, &composite_p, &composite_mix_p, &backdrop_p})
         {
             GLint linked = 0;
             glGetProgramiv(p->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
@@ -553,8 +571,26 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return true;
 }
+void renderer_t::invalidate_backdrop() { p->backdrop_valid.clear(); }
+wf::regionf_t renderer_t::reusable_backdrop(const wf::render_target_t &target) const
+{
+    // The existing refraction backdrop is RGBA8. It can replace scene pixels
+    // losslessly only on an ordinary 8-bit SDR target.
+    wlr_dmabuf_attributes attrs{};
+    if (target.get_output_transfer_function() != WLR_COLOR_TRANSFER_FUNCTION_SRGB ||
+        !wlr_buffer_get_dmabuf(target.get_buffer(), &attrs) ||
+        (attrs.format != DRM_FORMAT_XRGB8888 && attrs.format != DRM_FORMAT_ARGB8888 &&
+         attrs.format != DRM_FORMAT_XBGR8888 && attrs.format != DRM_FORMAT_ABGR8888))
+        return {};
+    if (p->backdrop_geometry != target.geometry || p->backdrop_scale != target.scale ||
+        p->backdrop_transform != target.wl_transform ||
+        target.get_size().width != p->background.width || target.get_size().height != p->background.height)
+        return {};
+    return p->backdrop_valid;
+}
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
-                      const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys)
+                      const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
+                      const wf::regionf_t &reuse)
 {
     if (!p->ready)
         return;
@@ -572,8 +608,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         capture_area |= wf::geometry_t{double(r.x1) - refract_margin, double(r.y1) - refract_margin,
             double(r.x2 - r.x1) + 2 * refract_margin,
             double(r.y2 - r.y1) + 2 * refract_margin};
-    auto capture = data.damage & capture_area;
-    if (capture.empty())
+    auto capture = (data.damage & capture_area) ^ reuse;
+    if (capture.empty() && reuse.empty())
         return;
     ++draws;
     state_t guard(p->es3);
@@ -601,7 +637,16 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     // Real scene beneath the shared visible liquid, including overlapped window content.
     auto &bg = p->background;
     if (!bg.texture || bg.width != viewport[2] || bg.height != viewport[3])
+    {
         bg.allocate(viewport[2], viewport[3], true, p->es3, false);
+        p->backdrop_valid.clear();
+    }
+    if (p->backdrop_geometry != data.target.geometry || p->backdrop_scale != data.target.scale ||
+        p->backdrop_transform != data.target.wl_transform)
+        p->backdrop_valid.clear();
+    p->backdrop_geometry = data.target.geometry;
+    p->backdrop_scale = data.target.scale;
+    p->backdrop_transform = data.target.wl_transform;
     glBindTexture(GL_TEXTURE_2D, bg.texture);
     // Keep a backdrop cache: outside this pass's damage the framebuffer still contains
     // last frame's goo/windows. Copying all of it would feed those colors back into refraction.
@@ -621,6 +666,27 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                                                 y - viewport[1], x, y, right - x, top - y);
                                         }
                                     });
+    p->backdrop_valid |= capture;
+    if (!reuse.empty())
+    {
+        auto ortho = wf::gles::render_target_orthographic_projection(data.target);
+        auto &program = p->backdrop_p;
+        program.use(wf::TEXTURE_TYPE_RGBA);
+        program.uniformMatrix4f("MVP", ortho);
+        program.uniformMatrix4f("uBackgroundMap", ortho);
+        bind(program, "image", 0, bg.texture);
+        glDisable(GL_BLEND);
+        auto g = data.target.geometry;
+        GLfloat vertices[] = {float(g.x), float(g.y), float(g.x+g.width), float(g.y),
+            float(g.x+g.width), float(g.y+g.height), float(g.x), float(g.y+g.height)};
+        wf::gles::for_each_scissor_rect(data.target, reuse, [&] {
+            GLint box[4]; glGetIntegerv(GL_SCISSOR_BOX, box);
+            backdrop_reuse_pixels += uint64_t(box[2]) * box[3];
+            program.attrib_pointer("position", 2, 0, vertices);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        });
+        program.deactivate();
+    }
     if (damage.empty())
     {
         if (p->timer_open)

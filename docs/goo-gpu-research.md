@@ -145,3 +145,33 @@ packed screenshot is not by itself proof of correct live backdrop reads.
 - Apple, [Core Animation performance](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/CoreAnimation_guide/ImprovingAnimationPerformance/ImprovingAnimationPerformance.html) and [ProMotion optimization](https://developer.apple.com/documentation/quartzcore/optimizing-iphone-and-ipad-apps-to-support-promotion-displays); [Chromium compositor-only properties](https://web.dev/articles/stick-to-compositor-only-properties-and-manage-layer-count); Android [RenderNode](https://developer.android.com/reference/android/graphics/RenderNode) and [RenderEffect](https://developer.android.com/reference/android/graphics/RenderEffect); Flutter [RepaintBoundary](https://api.flutter.dev/flutter/widgets/RepaintBoundary-class.html) and [BackdropFilter](https://api.flutter.dev/flutter/widgets/BackdropFilter-class.html).
 - KWin [blur implementation](https://invent.kde.org/plasma/kwin/-/raw/master/src/plugins/blur/blur.cpp); Hyprland [renderer](https://raw.githubusercontent.com/hyprwm/Hyprland/main/src/render/Renderer.cpp); Khronos [OpenGL ES 3.1](https://www.khronos.org/news/press/khronos-releases-opengl-es-3.1-specification) and [ES 3.0 `glDrawBuffers`](https://registry.khronos.org/OpenGL-Refpages/es3.0/html/glDrawBuffers.xhtml); Intel [checkerboard rendering](https://www.intel.com/content/dam/develop/external/us/en/documents/checkerboard-rendering-for-real-time-upscaling-on-intel-integrated-graphics.pdf).
 - Linux DRM [GPU usage stats](https://docs.kernel.org/gpu/drm-usage-stats.html), Xe [frequency management](https://docs.kernel.org/gpu/xe/xe_gt_freq.html), and [Xe client counters](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/xe/xe_drm_client.c). The counter timebase is not the execution frequency; the original Xe frequency explanation was a hypothesis, not a measured cause.
+
+
+## Round 2: retain the scene beneath the breathing band
+
+The combined GO18 build's live Xe numbers (Mike, October 3) changed the
+bottleneck: goo cost less than the breathing fallback, but the entire
+compositor still spent 11–16% with goo. See [GO19](goo.md#go19-breathing-damage-and-retained-backdrop-2026-10-03)
+for the follow-up fixture, changes, measurements and remaining verification.
+
+Tracing the installed Wayfire 0.11 rendering contract explains why band
+damage alone does not eliminate content composition. A transformer schedules
+its damaged intersection without occluding layers below. Its cached child
+texture avoids rebuilding unchanged client surfaces, but that texture is
+still sampled and blended into the output on every intersecting breath.
+Scottland's goo then copies those pixels into its refraction backdrop.
+The selected temporal-reuse prototype restores the **existing** backdrop
+and removes that band from lower-layer scheduling, invalidating it on scene
+or client changes. This changes composition work, not the field or its
+resolution. The fallback independently needed edge-only damage and a 25 Hz
+passive presentation timer. Its 16 ms physics stays unchanged.
+
+Sources inspected for this implementation:
+[Wayfire transformer rendering](https://github.com/WayfireWM/wayfire/blob/v0.11.0/src/api/wayfire/view-transform.hpp),
+[render-instance scheduling contract](https://github.com/WayfireWM/wayfire/blob/v0.11.0/src/api/wayfire/scene-render.hpp),
+[scene damage observer](https://github.com/WayfireWM/wayfire/blob/v0.11.0/src/core/scene.cpp),
+[output damage and buffer-age handling](https://github.com/WayfireWM/wayfire/blob/v0.11.0/src/output/render-manager.cpp).
+The wlroots damage ring can collapse more than 20 rectangles into their
+bounding box; the read-only live snapshot had four breathing rectangles,
+so that mechanism does not explain its steady breathing region.
+[wlroots damage ring](https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/0.20/types/wlr_damage_ring.c).

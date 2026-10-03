@@ -1,4 +1,6 @@
 #include <chrono>
+#include <fstream>
+#include "goo-gl.hpp"
 #include <wayfire/plugin.hpp>
 #include <wayfire/core.hpp>
 #include <wayfire/output.hpp>
@@ -5709,7 +5711,45 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         refresh_layout_avoidance();
     };
 
-    wf::ipc::method_callback layout_state = [=] (wf::json_t) -> wf::json_t
+    uint64_t output_frames = 0, output_damage_pixels = 0;
+    uint64_t captured_frames = 0;
+    bool capture_next_frame = false;
+    wf::signal::connection_t<wf::render_pass_begin_signal> on_test_render =
+        [this] (wf::render_pass_begin_signal *ev)
+    {
+        ++output_frames;
+        auto damage = ev->pass.get_target().framebuffer_region_from_geometry_region(ev->damage);
+        for (auto& b : damage)
+            output_damage_pixels += uint64_t(b.x2-b.x1) * (b.y2-b.y1);
+    };
+    // Capture the next natural repaint, without a screencopy request forcing
+    // full-output damage and hiding a partial-damage rendering bug.
+    wf::signal::connection_t<wf::render_pass_end_signal> on_test_render_end =
+        [this] (wf::render_pass_end_signal *ev)
+    {
+        if (!capture_next_frame) return;
+        capture_next_frame = false;
+        auto target = ev->pass.get_target();
+        auto size = target.get_size();
+        std::vector<unsigned char> pixels(size.width * size.height * 4);
+        wf::gles::run_in_context_if_gles([&] {
+            bool es3 = std::strstr((const char *)glGetString(GL_VERSION), "OpenGL ES 3");
+            scottland::goo::gl::state_t guard(es3);
+            glBindFramebuffer(GL_FRAMEBUFFER, wf::gles::ensure_render_buffer_fb_id(target));
+            glReadPixels(0, 0, size.width, size.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        });
+        auto path = std::string(getenv("SCOTTLAND_TEST_STATE")) + "/render-frame.ppm";
+        std::ofstream image(path, std::ios::binary);
+        image << "P6\n" << size.width << " " << size.height << "\n255\n";
+        // Wayfire's output projection already uses the buffer's top-left
+        // convention; its first readback row is the displayed top row.
+        for (int y = 0; y < size.height; ++y)
+            for (int x = 0; x < size.width; ++x)
+                image.write((char *)&pixels[(y * size.width + x) * 4], 3);
+        ++captured_frames;
+    };
+
+    wf::ipc::method_callback layout_state = [=] (wf::json_t data) -> wf::json_t
     {
         wf::json_t reply = wf::ipc::json_ok();
         wf::json_t views = wf::json_t::array();
@@ -5717,6 +5757,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["widget_transition_steps"] = (int64_t)widget_transition_steps;
         if (getenv("SCOTTLAND_TEST_MODEL"))
         {
+            reply["output_frames"] = (int64_t)output_frames;
+            reply["output_damage_pixels"] = (int64_t)output_damage_pixels;
+            reply["captured_frames"] = (int64_t)captured_frames;
+            if (data.has_member("capture_next_frame") && data["capture_next_frame"].is_bool() &&
+                data["capture_next_frame"].as_bool() && getenv("SCOTTLAND_TEST_STATE"))
+                capture_next_frame = true;
             auto cursor_view = wf::get_core().get_cursor_focus_view();
             reply["cursor_view"] = cursor_view ? (int64_t)cursor_view->get_id() : (int64_t)-1;
         }
@@ -5753,6 +5799,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["frame"] = wf::json_t{};
                 if (getenv("SCOTTLAND_TEST_MODEL"))
                 {
+                    entry["frame"]["content_pixels"] = (int64_t)frame->content_pixels;
+                    entry["frame"]["render_calls"] = (int64_t)frame->render_calls;
                     auto shown = scene_rectangle(view, view->get_output());
                     entry["scene_frame"]["x"] = shown.x1;
                     entry["scene_frame"]["y"] = shown.y1;
@@ -6002,6 +6050,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         signal(SIGABRT, SIG_DFL);
         signal(SIGQUIT, SIG_DFL);
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
+        if (getenv("SCOTTLAND_TEST_MODEL"))
+        {
+            wf::get_core().connect(&on_test_render);
+            wf::get_core().connect(&on_test_render_end);
+        }
         init_output_tracking();
         if (!getenv("SCOTTLAND_INTERNAL_MODEL_SESSION"))
         {
