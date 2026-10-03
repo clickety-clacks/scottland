@@ -97,6 +97,8 @@ alt_hold.disconnect()`). This keeps a layer's Alt chord from navigating windows 
 unclaimed window mode navigation to work. While hints are active, exact claims reach the focused surface and
 unclaimed keys continue navigating. Tenet 4 decides this limited concession: registering one chord
 does not suppress the rest of window navigation. Drag and lock grabs still take precedence.
+For a focused widget, the default Return-to-window action also falls through to key layers first;
+a custom widget that claims Return receives the ordinary press and release (WG25).
 The Alt key tracking runs for claimed presses/releases too, so neither side can leave hints stuck.
 
 Future cross-window scopes or stacked layers should resolve a winner here before processing an

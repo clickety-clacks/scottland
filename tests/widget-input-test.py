@@ -98,6 +98,96 @@ def key(name, down):
     ipc.call("stipc/feed_key", {"key": "KEY_" + name, "state": down})
 
 
+def view_geometry(identifier):
+    return next(v["geometry"] for v in ipc.call("window-rules/list-views")
+                if v["id"] == identifier)
+
+
+def return_behavior():
+    marker_root = Path(os.environ["SCOTTLAND_TEST_STATE"])
+    text_marker = marker_root / "wg25-return-text"
+    claim_marker = marker_root / "wg25-return-claim"
+    for marker in (text_marker, claim_marker):
+        marker.unlink(missing_ok=True)
+
+    title = "return-default"
+    launch(title, rail=None)
+    opened = app(title)
+    before = view_geometry(opened["id"])
+    drag_begin(opened, screen["width"] - 6, 270)
+    drag_end()
+    wait_for(lambda: card(title) and not card(title)["preview"])
+    key("ENTER", True)
+    key("ENTER", False)
+    wait_for(lambda: app(title) and not app(title)["widgetized"])
+    restored = app(title)
+    after = view_geometry(restored["id"])
+    before_center = (before["x"] + before["width"] / 2, before["y"] + before["height"] / 2)
+    after_center = (after["x"] + after["width"] / 2, after["y"] + after["height"] / 2)
+    wait_for(lambda: ipc.call("window-rules/get-focused-view")["info"]["id"] == restored["id"])
+    focused_id = ipc.call("window-rules/get-focused-view")["info"]["id"]
+    check("WG25 Return opens the default card at its remembered center, raised and focused",
+          not restored["widgetized"] and
+          max(abs(a - b) for a, b in zip(before_center, after_center)) < 4 and
+          focused_id == restored["id"],
+          {"before_center": before_center, "after_center": after_center,
+           "focused_id": focused_id, "window_id": restored["id"]})
+
+    # Keypad Enter is the same activation and uses the same WG17 placement path.
+    drag_begin(restored, screen["width"] - 6, 300)
+    drag_end()
+    wait_for(lambda: card(title) and not card(title)["preview"])
+    key("KPENTER", True)
+    key("KPENTER", False)
+    wait_for(lambda: app(title) and not app(title)["widgetized"])
+    check("WG25 keypad Enter opens the focused default card", not app(title)["widgetized"])
+
+    title = "return-custom"
+    launch(title, app_id="scottland-test-return-plain")
+    wait_for(lambda: ipc.call("window-rules/get-focused-view")["info"]["id"] ==
+             next(w for w in widgets() if w["title"] == title)["widget_view"])
+    key("ENTER", True)
+    key("ENTER", False)
+    wait_for(lambda: app(title) and not app(title)["widgetized"])
+    check("WG25 Return also opens a custom widget without a text field",
+          card(title) is None and not app(title)["widgetized"])
+
+    title = "return-text"
+    launch(title, app_id="scottland-test-return-text")
+    wait_for(lambda: ipc.call("window-rules/get-focused-view")["info"]["id"] ==
+             next(w for w in widgets() if w["title"] == title)["widget_view"])
+    f = card(title)["frame"]
+    move(f["x"] + f["width"] / 2, f["y"] + f["height"] / 2)
+    time.sleep(.1)
+    ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "full"})
+    time.sleep(.4)  # let GTK report its clicked entry through text-input-v3
+    key("ENTER", True)
+    key("ENTER", False)
+    time.sleep(.35)
+    check("WG25 Return in a focused custom-widget text field stays in the widget",
+          card(title) is not None and app(title)["widgetized"],
+          {"card_present": card(title) is not None, "widgetized": app(title)["widgetized"]})
+    check("WG25 Return activates the focused text field", text_marker.exists(), text_marker)
+
+    title = "return-claim"
+    launch(title, app_id="scottland-test-return-claim")
+    row = wait_for(lambda: next((w for w in widgets() if w["title"] == title and
+                                 w["widget_view"] >= 0), None))
+    wait_for(lambda: ipc.call("window-rules/get-focused-view")["info"]["id"] == row["widget_view"])
+    ipc.call("scottland/key-layer", {"action": "set", "window": row["widget_view"],
+                                     "keys": ["0:Return"]})
+    layer = wait_for(lambda: next((s for s in ipc.call("scottland/key-layer", {"action": "list"})["surfaces"]
+                                   if s["window"] == row["widget_view"] and s["active"]), None))
+    key("ENTER", True)
+    key("ENTER", False)
+    time.sleep(.35)
+    check("WG25 a custom widget's key layer can claim Return", card(title) is not None and
+          app(title)["widgetized"] and claim_marker.exists(),
+          {"layer_active": layer["active"], "card_present": card(title) is not None,
+           "widgetized": app(title)["widgetized"], "received": claim_marker.exists()})
+    ipc.call("scottland/key-layer", {"action": "clear", "window": row["widget_view"]})
+
+
 def toggle():
     key("LEFTMETA", True)
     key("M", True)
@@ -644,7 +734,8 @@ remap_from_browser_close =
 
 
 if __name__ == "__main__":
-    cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts, "peek": peeking}
+    cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts,
+             "peek": peeking, "return": return_behavior}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
     parser.add_argument("cases", nargs="*", choices=list(cases))
