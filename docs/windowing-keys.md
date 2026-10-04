@@ -64,7 +64,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. Each zone memory also keeps the window's scale pin there, if the user set one (Shift-drag, L31): returning to that zone by cycling restores both the remembered position and that pinned scale; with no pin the zone's normal scale applies. Only the periphery memories keep a pin; the center and rails never do (see Decisions). (Mike, 2026-10-04) | implemented (plumbus headless, 2026-10-04) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
-| WP4 | Without a memory, use the pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. An unremembered periphery destination reads as the periphery (WP8): its center goes past the point where the zone scale has visibly fallen (5% when available, otherwise halfway toward the rail scale), and far enough out that its scaled footprint clears the center zone, where that still fits on screen with its WP7 padding; where it can't, as far out as fits. Contention then places it within what remains of the side zone, re-evaluating its natural scaled footprint at the landing position. A remembered spot remains exact (WP2). Rail placement is refined to the actual widget footprint when it maps. (Clearing the center zone: Mike, 2026-10-04, cycles "rarely land in the periphery".) | implemented (plumbus headless, 2026-10-04) |
+| WP4 | Without a memory, use the pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. An unremembered periphery destination goes as close to the center as possible while overlapping the center as little as possible (Mike, 2026-10-04): its center goes past the point where the zone scale has visibly fallen (5% when available, otherwise halfway toward the rail scale), so it reads as the periphery (WP8), and at most a quarter of its scaled width may hang into the center zone, never its middle point over the line with half of it in the center; where that doesn't fit on screen with its WP7 padding, as far out as fits. From that innermost spot, contention (this routine) keeps it off center windows and any others, so it hangs into the center zone only where that covers no window, and otherwise lands nearest the center, re-evaluating its natural scaled footprint at the landing position. Best effort when space is tight. A remembered spot remains exact (WP2). Rail placement is refined to the actual widget footprint when it maps. | implemented (plumbus headless, 2026-10-04) |
 | WP5 | Explicit zone cycling, card opens and presenting a side window clear the current Shift scale pin, but a zone's remembered pin (WP1) is restored when the window returns to that zone. Center destinations keep the original window size and are at 100%, except a remembered center spot in the softness band just past the center zone's edge (WP8), which returns at its own zone scale there, between 95% and 100% (the scale the user left it at). A cycle's drawn scale target is computed from its destination center, after pixel rounding, before the geometry transaction commits, so the final displayed scale matches that zone (on a steep scale curve, half a pixel shows); later old-geometry notifications cannot retarget the cycle. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). A restored pin is also the cycle's drawn scale target, so the window lands at the pin with no jump. | implemented (plumbus headless, 2026-10-04) |
 | WP8 | A zone memory belongs to the zone the window reads as, and a cycle starts from it: a side spot just past the center zone's edge, where an unpinned window still shows at full scale (its zone scale above the WP4 threshold: 95%, or halfway to the rail's scale on a curve with less range), is the center's, so dropping a periphery window there doesn't replace its periphery memory, and its next cycle goes to that memory. A remembered spot counts only while it still reads as its zone at the current zone settings; otherwise the cycle places the window afresh (WP4), with no pin. A Shift-pinned window anywhere in the side zone is a periphery window with its pin, even pinned at full size (L31: moving it aside at 100% is what Shift is mostly for). A center spot of this kind returns at the scale it has there (between that threshold and 100%; WP5); one inside the center zone is 100%. (Mike, 2026-10-04: a window dragged from the periphery back to the center then cycled between two center spots and a widget.) | implemented (plumbus headless, 2026-10-04) |
 | WP6 | The placement routine and force solver have no Wayfire dependencies and have standalone unit tests. The placement routine is reusable for any rectangle/region contention; it never resizes an incoming rectangle or moves obstacles. | implemented (headless) |
@@ -102,14 +102,20 @@ Double-tap requests the widget step directly.
 - WP4/WP5, tenets 3 and 4: a new periphery placement must read as lower priority through
   its center's zone scale. Exclude the near-center soft band when no side memory exists,
   and pin a cycle's scale target to that chosen center before the move transaction completes.
-- WP4 (2026-10-04), tenet 3 (the center is for looking, the periphery for keeping): a 5% smaller
-  window whose center sits a few points past the center zone's edge still covers most of the center
-  zone; with Mike's steep curve that was 47 pt past the edge at 94%, read as "another spot in the
-  center" or "unscaled". A window sent to the periphery therefore also clears the center zone with
-  its scaled footprint. Where the screen can't hold it clear (very wide windows), it goes as far out
-  as fits on screen (WP7) rather than past the edge: off-screen content would break WP7, and an
-  overlap with the center is the smaller concession. Contention (WP4's routine) still decides
-  within the remaining side zone.
+- WP4 (2026-10-04): a 5% smaller window whose center sits a few points past the center zone's
+  edge still covers most of the center zone; with Mike's steep curve that was 47 pt past the edge
+  at 94%, read as "another spot in the center" or "unscaled". A first fix kept the whole scaled
+  window clear of the center zone (about 52% for his windows); Mike ruled instead: as close to the
+  center as possible, overlapping the center (zone and its windows) as little as possible, hanging
+  a little into the zone only where that covers no center window, never half of it. How much is
+  "a little" was left open; the agent chose a quarter of the window's scaled width, by tenet 4
+  (concede as little scale as possible: about 62% for his windows) against tenet 3 (the center is
+  for looking: three quarters of it, and its center, stay in the periphery), comfortably short of
+  the half he ruled out. The quarter bounds the innermost spot; the shared placement routine then
+  moves it off any window it would cover (its 1% overlap tolerance and pixel rounding may leave a
+  sliver), so center windows at the edge push it outward. Where the screen can't hold that spot
+  (very wide windows), it goes as far out as fits on screen (WP7): off-screen content would break
+  WP7, and more overlap with the center is the smaller concession.
 - WP8, tenets 2, 3 and 4: zones are what the user sees. Past the center zone's edge the scale eases
   in (the softness band), so a window dropped a few points outside still shows at 100% and the user
   put it "in the center"; recording it as a periphery spot replaced the real one and made the
@@ -1243,3 +1249,20 @@ plumbus with origin/main `2bf738e` (main ships zone-scale-memory but not WP8):
 | Cycle periphery real input | 25 passed | 14 passed, 11 failed | — |
 | Windowing end-to-end | 102 passed | — | — |
 | Cycle overshoot | 79 passed | — | — |
+
+Follow-up, fresh periphery spot (Mike's ruling, 2026-10-04): the innermost fresh spot now hangs up
+to a quarter of its scaled width into the center zone instead of clearing it; the placement routine
+keeps it off center windows. With his settings on nacelle (headless, real input), landing scales:
+
+| Window, nothing else open | This change | Clear of the zone (before) | main `1bdbe57` |
+|---|---|---|---|
+| 301x181 | 0.818, hangs 24% | 0.723 | 0.941 |
+| 1179x1051 (his terminals) | 0.624, hangs 25% | 0.513 | 0.941 |
+| 1601x1121 | 0.575, hangs 25% | 0.467 | 0.941 |
+
+Beside a center window whose edge is at the zone's edge it lands at 0.516, touching but not covering
+it; beside a center window wider than the zone (its edge 206 pt into the periphery) at 0.426, clear
+of it. `tests/cycle-periphery-test.sh`: 28 passed (the branch before: 24 passed, 4 failed, the
+quarter-hang checks; main: 16 passed, 12 failed). Side by side with main on nacelle: zone pin 37
+passed (main's own copy of that suite: 32 passed), windowing 102 and cycle overshoot 79 passed on
+both.

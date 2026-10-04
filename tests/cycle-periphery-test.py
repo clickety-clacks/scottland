@@ -9,7 +9,13 @@ Mike's report (2026-10-04, on 2560x1600 with a 30% center zone and a steep scale
    most of it over the center zone: it read as another center spot or an unscaled periphery window.
    Its drawn scale also stayed off the zone's scale by its center's pixel rounding.
 Both are checked here, plus a periphery memory that zone settings have since moved into the
-center's softness band (a memory like Mike's live window 52 kept)."""
+center's softness band (a memory like Mike's live window 52 kept).
+
+Mike's ruling on where a fresh periphery spot goes (2026-10-04): as close to the center as possible
+while overlapping the center as little as possible; it may hang a little into the center zone
+where that covers no center window, never half of it. WP4 allows up to a quarter of its scaled
+width there: with empty space at the center edge it hangs about that far (and lands bigger than
+a spot clear of the zone would); with a center window at the edge it stays clear of that window."""
 import json
 import math
 import socket
@@ -182,10 +188,23 @@ def on_screen(v):
             y - g['height'] * s / 2 >= PAD - 1 and y + g['height'] * s / 2 <= height - PAD + 1)
 
 
-def clear_of_center(v):
-    """The scaled footprint stays out of the center zone (WP4)."""
-    x, s, w = center(v)[0], v['applied_scale'], v['geometry']['width']
-    return x - w * s / 2 >= right_edge - 1 if x > width / 2 else x + w * s / 2 <= left_edge + 1
+def drawn(v):
+    """The drawn (scaled) rectangle: x, y, width, height."""
+    (x, y), s, g = center(v), v['applied_scale'], v['geometry']
+    return (x - g['width'] * s / 2, y - g['height'] * s / 2, g['width'] * s, g['height'] * s)
+
+
+def overlap(a, b):
+    ax, ay, aw, ah = drawn(a)
+    bx, by, bw, bh = drawn(b)
+    return max(0, min(ax + aw, bx + bw) - max(ax, bx)) * max(0, min(ay + ah, by + bh) - max(ay, by))
+
+
+def hang(v):
+    """The share of its drawn width over the center zone (WP4 allows a quarter)."""
+    x, _, w, _ = drawn(v)
+    inside = (right_edge - x) if center(v)[0] > width / 2 else (x + w - left_edge)
+    return max(0.0, inside) / w
 
 
 def lands_in_periphery(v):
@@ -258,17 +277,22 @@ try:
           'left: cycling from there reaches the remembered periphery spot', summary(out))
     close_all()
 
-    # --- 2. Never in the periphery, cycled there: visibly scaled, out of the center zone.
+    # --- 2. Never in the periphery, cycled there: visibly scaled, as close to the center as it
+    # may: with nothing at the center edge it hangs a quarter of its width into the center zone.
     for name, w, h in (('Small', 301, 181), ('Mike', ww, wh), ('Wide', 1601, 1121)):
         i = launch(name, width * .5, height * .45, w, h)
         start = center(view(name))
         out = stops(i, name, 1)[0]
         spread = settled(name)
-        footprint_ok = clear_of_center(out) if name != 'Wide' else out['scale'] < .7
-        check(lands_in_periphery(out) and footprint_ok and on_screen(out) and spread < .003,
-              f'{name} ({w}x{h}): an unremembered cycle lands in the periphery, scaled, '
-              + ('clear of the center zone' if name != 'Wide' else 'as far out as fits') + ', drawn at its zone scale',
-              dict(summary(out), spread=spread, clear=clear_of_center(out), on_screen=on_screen(out)))
+        check(lands_in_periphery(out) and on_screen(out) and spread < .003 and .2 <= hang(out) <= .25 + 1 / w,
+              f'{name} ({w}x{h}): an unremembered cycle lands in the periphery, visibly scaled, hanging '
+              'at most a quarter of its width into the empty center zone, drawn at its zone scale',
+              dict(summary(out), spread=spread, hang=round(hang(out), 3), on_screen=on_screen(out)))
+        print(f'      {name} landed: {summary(out)}, hang {hang(out):.3f}', flush=True)
+        if name == 'Mike':
+            # The first fix kept the whole window clear of the zone: 0.52 for this window.
+            check(out['scale'] > .6, 'Mike-sized: it lands bigger than a spot clear of the center zone (0.52)',
+                  summary(out))
         subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / f'fresh-{name}.png')], check=True)
         side = 1 if center(out)[0] < width / 2 else 2
         check(abs(memory(i, side) - center(out)[0]) < 2, f'{name}: that spot is its periphery memory')
@@ -277,14 +301,39 @@ try:
               f'{name}: cycling back returns to its center spot at 100%', summary(back))
         close_all()
 
-    # With other windows about, like Mike's desktop: two in the left periphery, one in the center.
+    # A center window reaching the center zone's right edge, nearly full height: the fresh spot
+    # stays clear of it (it may hang into the zone only where that covers no center window).
+    launch('AtEdge', width * .5, height * .5, 700, 1400)
+    drag('AtEdge', right_edge - 352, height * .5)
+    edge_window = view('AtEdge')
+    check(edge_window['zone'] == 'center' and abs(drawn(edge_window)[0] + drawn(edge_window)[2] - right_edge) < 6,
+          'a center window reaches the center zone edge', summary(edge_window))
+    i = launch('BesideEdge', width * .55, height * .45, ww, wh)
+    out = stops(i, 'BesideEdge', 1)[0]
+    edge_window = view('AtEdge')
+    # Pixel rounding may leave a sliver under 2 pt wide.
+    check(center(out)[0] > width / 2 and lands_in_periphery(out) and on_screen(out) and
+          overlap(out, edge_window) < 2 * drawn(out)[3],
+          'with a center window at the edge, it lands clear of that window',
+          dict(summary(out), overlap=overlap(out, edge_window), hang=round(hang(out), 3)))
+    print(f'      beside the edge window: {summary(out)}, hang {hang(out):.3f}', flush=True)
+    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'fresh-beside-edge.png')], check=True)
+    close_all()
+
+    # With other windows about, like Mike's desktop: two in the left periphery, one in the center
+    # wider than the center zone (its right edge 206 pt into the periphery).
     launch('Left1', width * .2, height * .3, 1050, 960); drag('Left1', width * .17, height * .3)
     launch('Left2', width * .2, height * .6, 1021, 960); drag('Left2', width * .18, height * .7)
     launch('Middle', width * .5, height * .5, ww, wh)
     i = launch('Crowded', width * .5, height * .4, ww, wh)
     out = stops(i, 'Crowded', 1)[0]
-    check(center(out)[0] > width / 2 and lands_in_periphery(out) and clear_of_center(out) and on_screen(out),
-          'among other windows it takes the open side, scaled and clear of the center zone', summary(out))
+    others = [v for v in views() if not v['widget'] and v['id'] != i]
+    covered = sum(overlap(out, v) for v in others)
+    check(center(out)[0] > width / 2 and lands_in_periphery(out) and on_screen(out) and
+          covered < .01 * drawn(out)[2] * drawn(out)[3],
+          'among other windows it takes the open side, clear of the center window and the others',
+          dict(summary(out), covered=covered))
+    print(f'      crowded: {summary(out)}, hang {hang(out):.3f}', flush=True)
     subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'fresh-crowded.png')], check=True)
     close_all()
 
@@ -298,7 +347,7 @@ try:
     ipc('wayfire/set-config-options', {'scottland/center_width': 34.0}); time.sleep(.5)
     left_edge, right_edge = width * .33, width * .67   # the old spot is now 19 pt past the edge
     out = stops(i, 'Moved', 1)[0]
-    check(abs(center(out)[0] - spot) > 20 and lands_in_periphery(out) and clear_of_center(out),
+    check(abs(center(out)[0] - spot) > 20 and lands_in_periphery(out) and hang(out) <= .25 + .002,
           'once it reads as full scale, that memory is not used: the cycle places it in the periphery',
           dict(summary(out), old_spot=spot))
     ipc('wayfire/set-config-options', {'scottland/center_width': MIKE['scottland/center_width']}); time.sleep(.5)

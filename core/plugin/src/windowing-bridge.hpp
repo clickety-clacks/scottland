@@ -658,10 +658,12 @@
                 region.y += WIDGET_INSET; region.height = std::max(h, region.height - 2 * WIDGET_INSET);
             } else
             {
-                // An unremembered side destination must visibly leave center priority (WP4): its
-                // center past where the zone scale has visibly fallen (WP8), and its scaled
-                // footprint clear of the center zone where it fits on screen (WP7), else as far
-                // out as fits. Remembered positions remain exact (WP2).
+                // An unremembered side destination goes as close to the center as it may (WP4): its
+                // center past where the zone scale has visibly fallen (WP8), and at most a quarter
+                // of its scaled width hanging into the center zone, never half of it (Mike,
+                // 2026-10-04), where it fits on screen (WP7); else as far out as fits. From there
+                // the placement routine below keeps it off center windows (and any other) and
+                // nearest the center. Remembered positions remain exact (WP2).
                 if (!remembered && side.width > 0)
                 {
                     double inner = left ? side.x + side.width : side.x;
@@ -682,7 +684,8 @@
                         auto pa = padded(area, g.width * scale, g.height * scale);
                         if (left ? trial - half < pa.x : trial + half > pa.x + pa.width) continue;
                         chosen = trial;
-                        if (left ? trial + half <= boundary : trial - half >= boundary) break;
+                        double hang = half / 2;   // a quarter of its scaled width
+                        if (left ? trial + half - hang <= boundary : trial - half + hang >= boundary) break;
                     }
                     if (chosen)
                     {
