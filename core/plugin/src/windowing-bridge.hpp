@@ -40,17 +40,26 @@
         std::shared_ptr<wf::scene::view_2d_transformer_t> offset;
         bool offset_attached = false;
         scottland::windowing::point target;
+        uint64_t branch_owner = 0;
+        int branch_axis = 0, branch_sign = 0;
         scottland::windowing::point label_offset;
         double label_size = 72, clearance = 0;
+        double retained_clearance = -1;
         bool edge_label = false;
+        std::chrono::steady_clock::time_point last_offset_step{};
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
     std::string declutter_signature;
     std::chrono::steady_clock::time_point last_exposure_solve{};
     double exposure_solve_ms = 0;
     double exposure_solve_max_ms = 0;
+    double exposure_search_ms = 0;
+    double exposure_search_max_ms = 0;
+    scottland::windowing::exposure_profile exposure_last_profile;
+    std::vector<uint64_t> exposure_last_order;
     uint64_t exposure_solve_count = 0;
     uint64_t exposure_solve_deadline_count = 0;
+    bool exposure_solve_pending = false;
     wf::wl_idle_call hint_registration;
 
     scottland::windowing::hint_palette hints_palette;
@@ -683,10 +692,11 @@
                 visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
                 visual.offset_attached = false;
             }
-            // Avoidance is a visual-only reservation for hint circles. It normally runs
-            // only with visible hints; the opt-in setting keeps that presentation active
-            // between hint requests as well. The transform never enters real geometry.
-            bool avoidance_active = window_keys.active || bool(hint_avoidance_always);
+            // Window avoidance is a visual-only reservation for hint circles. It normally
+            // runs only with visible hints; the opt-in setting also keeps it active between
+            // requests. The legacy option remains an alias for existing user config.
+            bool avoidance_active = window_keys.active || bool(window_avoidance_always) ||
+                bool(hint_avoidance_always);
             if (avoidance_active && !visual.offset_attached)
             {
                 view->get_transformed_node()->add_transformer(visual.offset, wf::TRANSFORMER_HIGHLEVEL - 1,
@@ -712,7 +722,8 @@
                 for (auto id : ids) if (represented_view(id) == view)
                 { stacking[id] = stacking.size(); signature << "z:" << id << ';'; }
             }
-        bool avoidance_active = window_keys.active || bool(hint_avoidance_always);
+        bool avoidance_active = window_keys.active || bool(window_avoidance_always) ||
+            bool(hint_avoidance_always);
         signature << "active:" << window_keys.active << ";avoidance:" << avoidance_active
             << ";anchor:" << (focused ? focused->get_id() : 0);
         auto current_signature = signature.str();
@@ -720,23 +731,37 @@
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
             solve_now - last_exposure_solve < std::chrono::milliseconds(16);
         bool signature_changed = current_signature != declutter_signature;
-        bool deferred_solve = signature_changed && avoidance_active && !force_solve && within_tick_budget;
-        if (signature_changed && (!avoidance_active || force_solve || !within_tick_budget))
+        bool retry_pending = exposure_solve_pending && !signature_changed && avoidance_active;
+        bool solve_requested = signature_changed || retry_pending;
+        bool deferred_solve = solve_requested && avoidance_active && !force_solve && within_tick_budget;
+        if (solve_requested && (!avoidance_active || force_solve || !within_tick_budget))
         {
             declutter_signature = std::move(current_signature);
             std::map<uint64_t, scottland::windowing::point> previous_labels;
-            for (auto& [id, visual] : hint_visuals) previous_labels[id] = visual.label_offset;
+            for (auto& [id, visual] : hint_visuals)
+                previous_labels[id] = visual.label_offset;
             if (!avoidance_active)
             {
                 // End of the hint request: the true geometry is the only target.
                 // Offsets remain attached until the animation reaches this target.
                 for (auto& [id, visual] : hint_visuals) visual.target = {};
+                exposure_solve_pending = false;
+                for (auto& [id, visual] : hint_visuals)
+                { visual.branch_owner = 0; visual.branch_axis = visual.branch_sign = 0; }
+                for (auto& [id, visual] : hint_visuals)
+                {
+                    visual.label_offset = {};
+                    visual.clearance = 0;
+                    visual.retained_clearance = -1;
+                    visual.edge_label = false;
+                }
             } else
             {
                 auto exposure_started = std::chrono::steady_clock::now();
                 auto exposure_deadline = exposure_started + std::chrono::microseconds(
                     scottland::windowing::avoidance_solve_budget_us);
                 bool exposure_deadline_hit = false;
+                exposure_last_order.clear();
                 for (auto& [output, ids] : by_output)
                 {
                     bool output_deadline_hit = false;
@@ -755,7 +780,14 @@
                         scottland::windowing::declutter(anchors,
                             {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints) : anchors;
                     for (size_t i = 0; i < ids.size(); ++i)
-                        hint_visuals[ids[i]].target = {displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
+                    {
+                        // Widget circles use the vertical-only declutter pass. Preserve
+                        // each window's last avoidance target for the exposure solver;
+                        // resetting it to its undisturbed anchor here defeated hysteresis.
+                        if (constraints[i].vertical_only)
+                            hint_visuals[ids[i]].target = {
+                                displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
+                    }
 
                     using rectangle = scottland::windowing::rectangle;
                     rectangle bounds{0, 0, double(screen.width), double(screen.height)};
@@ -783,21 +815,56 @@
                                     anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
                         } else
                         {
+                            auto& visual = hint_visuals[id];
                             windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
                                 48 * hints_palette.text_scale, fixed_above,
-                                view == focused});
+                                view == focused,
+                                {double(visual.offset->translation_x),
+                                    double(visual.offset->translation_y)},
+                                visual.target, visual.label_offset, visual.clearance});
                             window_ids.push_back(id);
+                            auto& input = windows.back();
+                            input.center_zone = window_zone(view) == scottland::windowing::zone::center;
+                            input.center_zone_half_width = double(screen.width) *
+                                std::clamp(double(center_width), 0.0, 100.0) / 200.0;
+                            input.branch_axis = visual.branch_axis;
+                            input.branch_sign = visual.branch_sign;
+                            exposure_last_order.push_back(id);
                         }
                     }
+                    for (size_t i = 0; i < window_ids.size(); ++i)
+                    {
+                        auto owner = hint_visuals[window_ids[i]].branch_owner;
+                        if (!owner) continue;
+                        auto found = std::find(window_ids.begin(), window_ids.end(), owner);
+                        windows[i].branch_owner = found == window_ids.end() ? -1 :
+                            int(found - window_ids.begin());
+                    }
+                    auto search_started = std::chrono::steady_clock::now();
+                    scottland::windowing::exposure_limits exposure_limits;
+                    // Outside window mode no badge is being drawn, so reserve its
+                    // guaranteed widget-size minimum only. Visible window mode may
+                    // spend the remaining bounded work to enlarge a readable badge.
+                    exposure_limits.allow_size_upgrades = window_keys.active && !drag->view &&
+                        !inertia_active();
                     auto exposed = scottland::windowing::expose_window_hints(windows, bounds, {},
-                        exposure_deadline, &output_deadline_hit);
+                        exposure_deadline, &output_deadline_hit, &exposure_last_profile,
+                        exposure_limits);
+                    exposure_search_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - search_started).count();
+                    exposure_search_max_ms = std::max(exposure_search_max_ms, exposure_search_ms);
                     exposure_deadline_hit |= output_deadline_hit;
                     for (size_t i = 0; i < window_ids.size(); ++i)
                     {
                         auto& visual = hint_visuals[window_ids[i]];
                         visual.target = exposed[i].offset;
+                        visual.branch_owner = exposed[i].branch_owner >= 0 ?
+                            window_ids.at(exposed[i].branch_owner) : 0;
+                        visual.branch_axis = exposed[i].branch_axis;
+                        visual.branch_sign = exposed[i].branch_sign;
                         visual.label_size = exposed[i].diameter;
                         visual.clearance = exposed[i].spot.clearance;
+                        visual.retained_clearance = exposed[i].retained_clearance;
                         visual.edge_label = false;
                         auto anchor = hint_anchor(represented_view(window_ids[i]), true);
                         visual.label_offset = {exposed[i].spot.center.x - visual.target.x - anchor.x,
@@ -819,6 +886,16 @@
                 exposure_solve_max_ms = std::max(exposure_solve_max_ms, exposure_solve_ms);
                 ++exposure_solve_count;
                 exposure_solve_deadline_count += exposure_deadline_hit;
+                if (exposure_deadline_hit)
+                {
+                    // Retry in a fixed front-to-back order; valid incumbents make later
+                    // passes cheap, and order no longer alternates with tick parity. Every
+                    // retry is still subject to the same per-tick deadline.
+                    exposure_solve_pending = true;
+                } else
+                {
+                    exposure_solve_pending = false;
+                }
             }
             for (auto& [id, visual] : hint_visuals)
             {
@@ -842,14 +919,39 @@
                 it = hint_visuals.erase(it); continue;
             }
             auto offset = visual.offset;
-            auto target = visual.target;
-            bool offset_changed = target.x != offset->translation_x || target.y != offset->translation_y;
-            if (offset_changed) { view->damage(); view->get_transformed_node()->begin_transform_update(); }
-            double ease = hints_reduced_motion || drag->view == view ||
-                (view == focused && inertia_active()) ? 1 : 0.18;
-            offset->translation_x += (target.x - offset->translation_x) * ease;
-            offset->translation_y += (target.y - offset->translation_y) * ease;
-            bool unsettled = std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > 0.1;
+            const bool grabbed = drag->view == view;
+            auto target = grabbed ? scottland::windowing::point{
+                double(offset->translation_x), double(offset->translation_y)} : visual.target;
+            bool offset_changed = false;
+            if (std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > .001)
+            {
+                view->damage(); view->get_transformed_node()->begin_transform_update();
+                if (hints_reduced_motion || (view == focused && inertia_active()))
+                {
+                    offset->translation_x = target.x;
+                    offset->translation_y = target.y;
+                } else
+                {
+                    const auto now = std::chrono::steady_clock::now();
+                    double dt = visual.last_offset_step.time_since_epoch().count() == 0 ? .008 :
+                        std::chrono::duration<double>(now - visual.last_offset_step).count();
+                    // Keep a stalled compositor from converting elapsed wall time
+                    // into one visible jump when it resumes. Capping each update at
+                    // a display interval gives the temporal-coherence speed limit a
+                    // frame-independent maximum.
+                    dt = std::clamp(dt, 0.0, 1.0 / 60.0);
+                    double dx = (target.x - offset->translation_x) * .18;
+                    double dy = (target.y - offset->translation_y) * .18;
+                    const double step = std::hypot(dx, dy), cap = 1000 * dt;
+                    if (step > cap && step > .001) { dx *= cap / step; dy *= cap / step; }
+                    offset->translation_x += dx;
+                    offset->translation_y += dy;
+                }
+                visual.last_offset_step = std::chrono::steady_clock::now();
+                offset_changed = true;
+            }
+            bool unsettled = !grabbed &&
+                std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > 0.1;
             moving |= unsettled;
             if (!unsettled) { offset->translation_x = target.x; offset->translation_y = target.y; }
             if (offset_changed) { view->get_transformed_node()->end_transform_update(); view->damage(); }
@@ -924,7 +1026,8 @@
             }
             ++it;
         }
-        return window_keys.active || moving || bool(drag->view) || inertia_active() || deferred_solve;
+        return window_keys.active || moving || bool(drag->view) || inertia_active() || deferred_solve ||
+            exposure_solve_pending;
     }
     void refresh_layout_avoidance(bool immediate = false)
     {
@@ -1088,8 +1191,22 @@
     wf::ipc::method_callback hints_state = [=] (wf::json_t) -> wf::json_t
     {
         auto reply = wf::ipc::json_ok(); reply["active"] = window_keys.active;
+        reply["hint_text_scale"] = hints_palette.text_scale;
+        reply["minimum_window_hint_size"] = 48 * hints_palette.text_scale;
+        reply["size_upgrades_enabled"] = window_keys.active && !drag->view && !inertia_active();
         reply["avoidance_solve_ms"] = exposure_solve_ms;
         reply["avoidance_solve_max_ms"] = exposure_solve_max_ms;
+        reply["avoidance_search_ms"] = exposure_search_ms;
+        reply["avoidance_search_max_ms"] = exposure_search_max_ms;
+        reply["avoidance_init_ms"] = exposure_last_profile.initialization_ms;
+        reply["avoidance_placement_ms"] = exposure_last_profile.placement_ms;
+        reply["avoidance_finalization_ms"] = exposure_last_profile.finalization_ms;
+        reply["avoidance_work_count"] = int64_t(exposure_last_profile.work_count);
+        reply["avoidance_label_work_count"] = int64_t(exposure_last_profile.label_work_count);
+        reply["avoidance_movement_work_count"] = int64_t(exposure_last_profile.movement_work_count);
+        reply["avoidance_movement_searches"] = int64_t(exposure_last_profile.movement_searches);
+        reply["avoidance_truncated_searches"] = int64_t(exposure_last_profile.truncated_searches);
+        reply["avoidance_last_search_window"] = int64_t(exposure_last_profile.last_search_window);
         reply["avoidance_solve_budget_ms"] =
             scottland::windowing::avoidance_solve_budget_us / 1000.0;
         reply["avoidance_solve_count"] = int64_t(exposure_solve_count);
@@ -1113,6 +1230,15 @@
             if (visible)
             {
                 auto g = visible->get_geometry(); item["x"] = g.x; item["y"] = g.y;
+                // Test telemetry distinguishes the dragged scene rectangle from true
+                // geometry and from the hint-offset transformer. This is also the
+                // exact rectangle passed to the avoidance solve.
+                auto solve_frame = hint_rectangle(visible, true);
+                item["solve_frame"] = wf::json_t();
+                item["solve_frame"]["x"] = solve_frame.x1;
+                item["solve_frame"]["y"] = solve_frame.y1;
+                item["solve_frame"]["width"] = solve_frame.width();
+                item["solve_frame"]["height"] = solve_frame.height();
                 if (item["visible"].as_bool())
                 {
                     auto& badge = hint_visuals[e.id].hint->circle;
@@ -1125,7 +1251,20 @@
             }
             item["dx"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_x) : 0.0;
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
+            item["target_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.x : 0.0;
+            item["target_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.y : 0.0;
+            item["branch_owner"] = hint_visuals.count(e.id) ?
+                int64_t(hint_visuals[e.id].branch_owner) : int64_t(0);
+            item["branch_axis"] = hint_visuals.count(e.id) ? hint_visuals[e.id].branch_axis : 0;
+            item["branch_sign"] = hint_visuals.count(e.id) ? hint_visuals[e.id].branch_sign : 0;
+            item["label_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.x : 0.0;
+            item["label_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.y : 0.0;
             item["clearance"] = hint_visuals.count(e.id) ? hint_visuals[e.id].clearance : 0.0;
+            item["incumbent_clearance"] = hint_visuals.count(e.id) ?
+                hint_visuals[e.id].retained_clearance : -1.0;
+            auto order = std::find(exposure_last_order.begin(), exposure_last_order.end(), e.id);
+            item["avoidance_order"] = order == exposure_last_order.end() ? -1 :
+                int64_t(order - exposure_last_order.begin());
             item["edge_label"] = hint_visuals.count(e.id) && hint_visuals[e.id].edge_label;
             item["flash"] = hint_flashes.count(e.id) && hint_flashes[e.id].node ?
                 hint_flashes[e.id].node->alpha : 0.0;

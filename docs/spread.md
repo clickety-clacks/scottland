@@ -4,6 +4,17 @@ This document records the signed-off WG26 rail profile and the reusable presenta
 uses. The implementation in this change is **rail-only**. The separate whole-screen spread policy
 is not implemented here.
 
+Window avoidance for Window-mode hints is a separate policy ([WK13](windowing-keys.md#invariants),
+[WK31](windowing-keys.md#invariants)). It follows P1/P2/P11: periphery windows stay on their
+original side, center-zone windows stay in Scottland's center zone, and automatic moves do not
+cross between the top and bottom regions (a window already in the vertical center band stays in
+that band). A retained way identifies the hint it exposes and the moved window's axis and
+direction. While that way works, each solve chooses the smallest offset from the moved window's
+true frame along that ray, returning to zero when the obstruction clears. If the way stops working,
+the solver chooses a new candidate by travel from the displayed position. The whole-screen spread
+search does not choose window-avoidance moves. Far-apart-first sampling is limited to placing a
+hint inside its window.
+
 ## Rail behavior (WG26)
 
 While a window is shown as a widget during a drag, or a widget is dragged along a rail, only

@@ -1,5 +1,5 @@
 #!/bin/bash
-# WK13's optional always-avoid mode and widgetization stress on an isolated test session.
+# WK13's optional always-on window avoidance and widgetization stress in an isolated session.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 hdir=${SCOTTLAND_HEADLESS_DIR:?set a task-specific headless directory}

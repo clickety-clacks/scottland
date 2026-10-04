@@ -3,6 +3,7 @@
 #include "alt-mode.hpp"
 #include "hint-style.hpp"
 #include "widget-spring.hpp"
+#include <array>
 #include <set>
 #include <tuple>
 #include <cmath>
@@ -73,15 +74,33 @@ int main()
         "a fully hidden rectangle has no visible interior before window movement");
     auto tiny_deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(1);
     bool deadline_hit = false, repeat_deadline_hit = false;
-    std::vector<exposure_window> easy_deadline_case{{{150,100,220,160},72,48}};
+    std::vector<exposure_window> easy_deadline_case{{{150,100,220,160},72,48,{},false,
+        {23,-17},{23,-17}}};
     auto deadline_result = expose_window_hints(easy_deadline_case, region, {}, tiny_deadline, &deadline_hit);
     auto repeated_deadline_result = expose_window_hints(easy_deadline_case, region, {}, tiny_deadline,
         &repeat_deadline_hit);
+    std::cout << "tiny-deadline: hit=" << deadline_hit << '/' << repeat_deadline_hit
+        << " size=" << deadline_result.at(0).diameter << '/' << repeated_deadline_result.at(0).diameter
+        << " offset=" << deadline_result.at(0).offset.x << ',' << deadline_result.at(0).offset.y
+        << " spot=" << deadline_result.at(0).spot.center.x << ',' << deadline_result.at(0).spot.center.y
+        << " repeat-spot=" << repeated_deadline_result.at(0).spot.center.x << ','
+        << repeated_deadline_result.at(0).spot.center.y << '\n';
     check(deadline_hit && repeat_deadline_hit && deadline_result.size() == 1 &&
-        deadline_result[0].diameter >= 72 && std::isfinite(deadline_result[0].spot.center.x) &&
+        deadline_result[0].diameter >= 48 && deadline_result[0].diameter <= 72 &&
+        std::isfinite(deadline_result[0].spot.center.x) &&
         near(deadline_result[0].offset, repeated_deadline_result[0].offset) &&
-        near(deadline_result[0].spot.center, repeated_deadline_result[0].spot.center),
-        "a forced tiny solve budget keeps a valid, deterministic no-move badge position");
+        near(deadline_result[0].spot.center, repeated_deadline_result[0].spot.center) &&
+        near(deadline_result[0].offset,{23,-17}) &&
+        near(repeated_deadline_result[0].offset,{23,-17}) &&
+        near(deadline_result[0].spot.center,{283,163}),
+        "a forced tiny solve budget returns a finite, stable held target");
+    auto stale_budget = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+    std::vector<exposure_window> easing_deadline_case{{{150,100,220,160},72,48,{},false,
+        {23,-17},{80,24},{35,0},90}};
+    auto easing_deadline = expose_window_hints(easing_deadline_case, region, {}, stale_budget);
+    check(near(easing_deadline[0].offset,{80,24}) &&
+        near(easing_deadline[0].spot.center,{375,204}),
+        "a deadline holds the prior target for one frame while unfinished work retries");
     std::vector<exposure_window> no_room_deadline_case{{{150,100,220,160},72,48,
         {{140,90,240,180}},true}};
     auto no_room_deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(1);
@@ -116,38 +135,586 @@ int main()
     check(near(enough[0].offset,{}) && near(enough[1].offset,{}) && enough[1].diameter == 132,
         "a rear window with an already wide enough left strip stays exactly put");
     auto narrow = expose_window_hints({{{280,160,700,440},132,48},{{200,160,700,440},132,48}},desktop);
-    check(near(narrow[0].offset,{}) && narrow[1].offset.x < -60 && narrow[1].offset.x > -65 &&
-        std::abs(narrow[1].offset.y) < 1 && narrow[1].diameter == 132,
-        "narrow left strip moves the rear window only far enough for its proportional circle");
+    check(near(narrow[0].offset,{}) && std::hypot(narrow[1].offset.x,narrow[1].offset.y) <= 26.5 &&
+        narrow[1].diameter >= 48 && narrow[1].spot.clearance + .25 >=
+            narrow[1].diameter*1.06/2,
+        "a wanted-size upgrade stays within a small travel radius and has checked clearance");
     check(visible_clearance(narrow[1].spot.center,
-        {200+narrow[1].offset.x,160,700,440},desktop,{{280,160,700,440}}) >= 132*1.06/2,
-        "rear label circle stays inside the exposed strip and outside the front window");
+        {200+narrow[1].offset.x,160,700,440},desktop,{{280,160,700,440}}) >=
+            narrow[1].diameter*1.06/2,
+        "the narrow-strip hint circle stays visible at its checked size");
     auto same = expose_window_hints({{{280,160,700,440},132,48},{{200,160,700,440},132,48}},desktop);
     check(near(narrow[0].offset,same[0].offset) && near(narrow[1].offset,same[1].offset),
         "least-exposure displacement is deterministic");
+    auto retained_start = expose_window_hints({{{240,160,700,440},132,48},
+        {{200,160,700,440},132,48}},desktop);
+    check(retained_start[1].offset.x < -10 && retained_start[1].diameter >= 48,
+        "a covered minimum-size hint opens with the smallest necessary displacement");
+    auto half_incumbent = retained_start[1].offset;
+    half_incumbent.x /= 2;
+    exposure_window incumbent_window{{200,160,700,440},132,48,{},false,
+        half_incumbent,retained_start[1].offset};
+    incumbent_window.branch_owner = retained_start[1].branch_owner;
+    incumbent_window.branch_axis = retained_start[1].branch_axis;
+    incumbent_window.branch_sign = retained_start[1].branch_sign;
+    std::vector<exposure_window> incumbent_case{{{240,160,700,440},132,48}, incumbent_window};
+    auto incumbent = expose_window_hints(incumbent_case,desktop);
+    check(near(incumbent[0].offset,retained_start[0].offset) &&
+        near(incumbent[1].offset,retained_start[1].offset),
+        "a feasible owner/axis/direction branch stays while its least offset is recomputed from true geometry");
+    const point retained_label_offset{
+        retained_start[1].spot.center.x - retained_start[1].offset.x - 550,
+        retained_start[1].spot.center.y - retained_start[1].offset.y - 380};
+    exposure_window retained_label_window{{200,160,700,440},132,48,{},false,
+        retained_start[1].offset,retained_start[1].offset,retained_label_offset,
+        retained_start[1].spot.clearance};
+    retained_label_window.branch_owner = retained_start[1].branch_owner;
+    retained_label_window.branch_axis = retained_start[1].branch_axis;
+    retained_label_window.branch_sign = retained_start[1].branch_sign;
+    auto retained_label = expose_window_hints({{{240,160,700,440},132,48},
+        retained_label_window},desktop);
+    const point rest_label{550 + retained_label_offset.x,380 + retained_label_offset.y};
+    const double rest_clearance=visible_clearance(rest_label,{200,160,700,440},desktop,
+        {{240,160,700,440}});
+    std::cout << "retained-label: expected=" << rest_clearance << " reported="
+        << retained_label[1].retained_clearance << " target=" << retained_label[1].offset.x << ','
+        << retained_label[1].offset.y << " spot=" << retained_label[1].spot.center.x << ','
+        << retained_label[1].spot.center.y << " size=" << retained_label[1].diameter << '\n';
+    check(std::abs(retained_label[1].retained_clearance-rest_clearance)<.01 &&
+        retained_label[1].diameter>=48 &&
+        std::isfinite(retained_label[1].spot.center.x) &&
+        std::isfinite(retained_label[1].spot.center.y),
+        "the incumbent badge point is rechecked from true geometry without feeding back its old transform");
+    incumbent_window.incumbent_offset = retained_start[1].offset;
+    incumbent_window.target_offset = retained_start[1].offset;
+    double previous_ray_length = std::hypot(retained_start[1].offset.x,retained_start[1].offset.y);
+    bool ray_contracts = true;
+    exposure_result ray_result = retained_start[1];
+    int ray_growth_at = -1;
+    double max_ray_step = 0;
+    int ray_branch_changes = 0;
+    for (int front_x = 241; front_x <= 270; ++front_x)
+    {
+        std::vector<exposure_window> relaxed_case{{{double(front_x),160,700,440},132,48,{},true},
+            incumbent_window};
+        auto relaxed = expose_window_hints(relaxed_case,desktop);
+        ray_result = relaxed[1];
+        const double length = std::hypot(ray_result.offset.x,ray_result.offset.y);
+        max_ray_step = std::max(max_ray_step,std::hypot(
+            ray_result.offset.x-incumbent_window.target_offset.x,
+            ray_result.offset.y-incumbent_window.target_offset.y));
+        ray_branch_changes += ray_result.branch_owner != incumbent_window.branch_owner ||
+            ray_result.branch_axis != incumbent_window.branch_axis ||
+            ray_result.branch_sign != incumbent_window.branch_sign;
+        if (length > previous_ray_length + .01 && ray_growth_at < 0)
+        {
+            ray_growth_at = front_x;
+            std::cout << "retained-ray growth at=" << front_x << " target="
+                << ray_result.offset.x << ',' << ray_result.offset.y << " axis="
+                << ray_result.branch_axis << " sign=" << ray_result.branch_sign << '\n';
+        }
+        ray_contracts &= length <= previous_ray_length + .01;
+        previous_ray_length = length;
+        incumbent_window.incumbent_offset = ray_result.offset;
+        incumbent_window.target_offset = ray_result.offset;
+        incumbent_window.branch_owner = ray_result.branch_owner;
+        incumbent_window.branch_axis = ray_result.branch_axis;
+        incumbent_window.branch_sign = ray_result.branch_sign;
+    }
+    std::cout << "retained-ray: start=" << std::hypot(retained_start[1].offset.x,
+        retained_start[1].offset.y)
+        << " end=" << std::hypot(ray_result.offset.x,ray_result.offset.y)
+        << " growth-at=" << ray_growth_at << " max-step=" << max_ray_step
+        << " branch-changes=" << ray_branch_changes << " branch=" << ray_result.branch_owner << '\n';
+    check(ray_contracts && max_ray_step <= 4 && ray_branch_changes == 0 &&
+        near(ray_result.offset,{}) && ray_result.branch_owner == 1 &&
+        ray_result.branch_axis == retained_start[1].branch_axis &&
+        ray_result.branch_sign == retained_start[1].branch_sign,
+        "a 1 px obstruction retreat shrinks the least offset smoothly to exact zero on the retained way");
+    auto label_offset = retained_label_offset;
+    std::vector<exposure_window> clear_after_drag{{{900,160,700,440},132,48},
+        {{200,160,700,440},132,48,{},false,retained_start[1].offset,retained_start[1].offset,
+            label_offset,retained_start[1].spot.clearance,false,0,retained_start[1].branch_owner,
+            retained_start[1].branch_axis,retained_start[1].branch_sign}};
+    auto cleared = expose_window_hints(clear_after_drag, desktop);
+    check(near(cleared[0].offset,{}) && near(cleared[1].offset,{}),
+        "a moved window returns exactly to its true frame when the obstruction leaves");
+    auto same_half_left = expose_window_hints({{{280,160,700,440},132,48},
+        {{200,160,700,440},132,48}},desktop);
+    auto same_half_right = expose_window_hints({{{680,160,700,440},132,48},
+        {{760,160,700,440},132,48}},desktop);
+    bool side_preserved = true;
+    const std::array<rectangle, 2> left_frames{{{280,160,700,440},{200,160,700,440}}};
+    const std::array<rectangle, 2> right_frames{{{680,160,700,440},{760,160,700,440}}};
+    for (size_t i = 0; i < same_half_left.size(); ++i)
+        side_preserved &= left_frames[i].x + left_frames[i].width / 2 + same_half_left[i].offset.x <=
+            desktop.width / 2 + .01;
+    for (size_t i = 0; i < same_half_right.size(); ++i)
+        side_preserved &= right_frames[i].x + right_frames[i].width / 2 + same_half_right[i].offset.x >=
+            desktop.width / 2 - .01;
+    check(side_preserved,
+        "automatic avoidance stays on the true-center side of the screen");
+    bool one_pixel_sides = true;
+    for (double center : {desktop.width / 2 - 1, desktop.width / 2 + 1})
+    {
+        exposure_window near_center{{center - 200,160,400,400},132,48};
+        auto guarded = expose_window_hints({near_center},desktop,{{center - 200,0,400,720}});
+        const double moved_center = center + guarded[0].offset.x;
+        one_pixel_sides &= center < desktop.width / 2 ? moved_center <= desktop.width / 2 + .01 :
+            moved_center >= desktop.width / 2 - .01;
+    }
+    check(one_pixel_sides,
+        "windows one pixel either side of the periphery boundary never cross the centerline");
+    exposure_window center_window{{440,160,400,400},132,48};
+    center_window.center_zone = true;
+    center_window.center_zone_half_width = 300;
+    auto centerline = expose_window_hints({center_window},desktop,{{440,0,400,720}});
+    auto centerline_repeat_input = center_window;
+    centerline_repeat_input.incumbent_offset = centerline[0].offset;
+    centerline_repeat_input.target_offset = centerline[0].offset;
+    centerline_repeat_input.branch_owner = centerline[0].branch_owner;
+    centerline_repeat_input.branch_axis = centerline[0].branch_axis;
+    centerline_repeat_input.branch_sign = centerline[0].branch_sign;
+    auto centerline_repeat = expose_window_hints({centerline_repeat_input},desktop,{{440,0,400,720}});
+    check(std::abs(centerline[0].offset.x) > 1 &&
+        centerline[0].offset.x * centerline_repeat[0].offset.x > 0 &&
+        near(centerline[0].offset,centerline_repeat[0].offset) &&
+        std::abs(centerline[0].offset.x) <= center_window.center_zone_half_width,
+        "a center-zone window retains its way inside Scottland's center-zone limits");
+    size_t tiny_work = 0, repeat_tiny_work = 0;
+    bool tiny_work_hit = false, repeat_tiny_work_hit = false;
+    auto tiny_work_case = clear_after_drag;
+    tiny_work_case[1].incumbent_offset = retained_start[1].offset;
+    tiny_work_case[1].target_offset = retained_start[1].offset;
+    exposure_limits tiny_limits{4, &tiny_work, true};
+    auto tiny_work_result = expose_window_hints(tiny_work_case, desktop, {},
+        std::chrono::steady_clock::time_point::max(), &tiny_work_hit, nullptr, tiny_limits);
+    tiny_limits.inspection_count = &repeat_tiny_work;
+    auto repeat_tiny_work_result = expose_window_hints(tiny_work_case, desktop, {},
+        std::chrono::steady_clock::time_point::max(), &repeat_tiny_work_hit, nullptr, tiny_limits);
+    check(tiny_work_hit && repeat_tiny_work_hit && tiny_work <= 4 && repeat_tiny_work <= 4 &&
+        near(tiny_work_result[1].offset, retained_start[1].offset) &&
+        near(repeat_tiny_work_result[1].offset, tiny_work_result[1].offset) &&
+        tiny_work_result[1].diameter >= 48,
+        "a forced tiny inspection budget holds a valid, stable minimum-size target");
+    auto failing_way = retained_label_window;
+    const point incumbent_badge{550 + retained_label_offset.x,380 + retained_label_offset.y};
+    failing_way.fixed_foreground.push_back({incumbent_badge.x - 80, incumbent_badge.y - 80,160,160});
+    std::vector<exposure_window> failing_way_case{{{240,160,700,440},132,48,{},true},failing_way};
+    bool truncated_lost_way_held = false;
+    size_t lost_way_budget = 0, lost_way_work = 0;
+    for (size_t budget : {size_t(1),size_t(2),size_t(4),size_t(8),size_t(16),
+        size_t(32),size_t(64),size_t(128),size_t(256)})
+    {
+        size_t work = 0;
+        exposure_limits limits{budget,&work,false};
+        exposure_profile profile;
+        bool truncated = false;
+        auto result = expose_window_hints(failing_way_case,desktop,{},
+            std::chrono::steady_clock::time_point::max(),&truncated,&profile,limits);
+        if (profile.truncated_searches && truncated &&
+            near(result[1].offset,retained_start[1].offset,.01))
+        {
+            truncated_lost_way_held = true;
+            lost_way_budget = budget;
+            lost_way_work = work;
+            break;
+        }
+    }
+    std::cout << "lost-way hold: work-budget=" << lost_way_budget << " inspections="
+        << lost_way_work << '\n';
+    check(truncated_lost_way_held,
+        "a deadline-truncated solve holds the prior target when its old badge point loses clearance");
+
+    rectangle pile_screen{0,0,1280,720};
+    std::vector<exposure_window> large_pile;
+    for (int i = 0; i < 5; ++i)
+    {
+        exposure_window item{{192,101,894,510},72,48};
+        item.anchored = i == 0;
+        item.center_zone = true;
+        item.center_zone_half_width = 256;
+        large_pile.push_back(item);
+    }
+    size_t pile_work = 0;
+    exposure_limits pile_limits{std::numeric_limits<size_t>::max(),&pile_work,false};
+    auto pile_result = expose_window_hints(large_pile,pile_screen,{},
+        std::chrono::steady_clock::time_point::max(),nullptr,nullptr,pile_limits);
+    bool pile_visible = pile_result.size() == large_pile.size();
+    bool pile_shifted = false;
+    for (size_t i = 0; i < pile_result.size(); ++i)
+    {
+        pile_visible &= pile_result[i].diameter >= 48 &&
+            std::isfinite(pile_result[i].spot.center.x) &&
+            std::isfinite(pile_result[i].spot.center.y);
+        if (i) pile_shifted |= std::hypot(pile_result[i].offset.x,pile_result[i].offset.y) > 40;
+    }
+    std::cout << "large-pile: work=" << pile_work << " shifted=" << pile_shifted << '\n';
+    check(pile_visible && pile_shifted,
+        "five overlapping large windows find a nearby minimum-hint placement");
+
+    auto drag_sweep = [&] (size_t budget, int repeats) {
+        const rectangle screen{0,0,1920,1080};
+        const std::vector<rectangle> base{{100,250,700,500},{300,200,500,400},
+            {900,500,500,400},{800,100,500,300}};
+        double largest_one_px_target_change = 0, largest_unbranched_target_change = 0,
+            largest_frame_jump = 0;
+        size_t largest_work = 0; int max_branch_switches = 0;
+        bool boundaries = true, visible = true, held = true, cleared_matches_fresh = true;
+        bool any_shift = false;
+        std::vector<std::vector<point>> settled_repeats;
+        for (int repeat = 0; repeat < repeats; ++repeat)
+        {
+            auto frames = base;
+            std::vector<point> target(base.size()), shown(base.size()), labels(base.size());
+            std::vector<double> clearance(base.size());
+            std::vector<int> owner(base.size(), -1), axis(base.size()), direction(base.size());
+            std::vector<int> branch_switches(base.size());
+            std::vector<exposure_window> seed_inputs;
+            for (size_t i = 0; i < frames.size(); ++i)
+                seed_inputs.push_back({frames[i],132,48,{},i == 0});
+            const auto seed = expose_window_hints(seed_inputs,screen);
+            for (size_t i = 0; i < seed.size(); ++i)
+            {
+                target[i] = shown[i] = seed[i].offset;
+                labels[i] = {seed[i].spot.center.x - seed[i].offset.x -
+                        (frames[i].x + frames[i].width/2),
+                    seed[i].spot.center.y - seed[i].offset.y -
+                        (frames[i].y + frames[i].height/2)};
+                clearance[i] = seed[i].spot.clearance;
+                owner[i] = seed[i].branch_owner; axis[i] = seed[i].branch_axis;
+                direction[i] = seed[i].branch_sign;
+            }
+            std::vector<point> path;
+            for (int x = 100; x <= 1100; ++x) path.push_back({double(x),250});
+            for (int x = 1099; x >= 100; --x) path.push_back({double(x),250});
+            for (int i = 0; i < 50; ++i) path.push_back({100,250});
+            path.push_back({1210,1000}); // A leaves the cluster and parks bottom-right.
+            for (int i = 0; i < 50; ++i) path.push_back({1210,1000});
+            const size_t return_hold_start = 2001, park_frame = 2051;
+            point previous_drag{}; bool have_previous = false;
+            std::vector<point> after_return, held_target;
+            std::vector<int> held_owner, held_axis, held_direction;
+            for (size_t frame_number = 0; frame_number < path.size(); ++frame_number)
+            {
+                frames = base; frames[0].x = path[frame_number].x; frames[0].y = path[frame_number].y;
+                std::vector<exposure_window> inputs;
+                for (size_t i = 0; i < frames.size(); ++i)
+                {
+                    exposure_window input{frames[i],132,48,{},i == 0};
+                    input.incumbent_offset = shown[i]; input.target_offset = target[i];
+                    input.prior_label_offset = labels[i]; input.prior_clearance = clearance[i];
+                    input.branch_owner = owner[i]; input.branch_axis = axis[i];
+                    input.branch_sign = direction[i];
+                    inputs.push_back(input);
+                }
+                size_t work = 0; exposure_limits limits{budget,&work,false}; bool truncated = false;
+                auto result = expose_window_hints(inputs,screen,{},
+                    std::chrono::steady_clock::time_point::max(),&truncated,nullptr,limits);
+                largest_work = std::max(largest_work, work);
+                visible &= work <= budget && result.size() == frames.size();
+                point input_now = path[frame_number];
+                double input_step = have_previous ? std::hypot(input_now.x-previous_drag.x,
+                    input_now.y-previous_drag.y) : 1000;
+                previous_drag = input_now; have_previous = true;
+                std::vector<point> next_target(base.size());
+                for (size_t i = 0; i < frames.size(); ++i)
+                {
+                    next_target[i] = result[i].offset;
+                    visible &= result[i].diameter >= 48 && std::isfinite(result[i].spot.center.x) &&
+                        std::isfinite(result[i].spot.center.y);
+                    const double jump = std::hypot(next_target[i].x-target[i].x,
+                        next_target[i].y-target[i].y);
+                    const bool new_way = i && result[i].branch_owner >= 0 &&
+                        (owner[i] != result[i].branch_owner || axis[i] != result[i].branch_axis ||
+                            direction[i] != result[i].branch_sign);
+                    if (i && input_step <= 1.01)
+                    {
+                        largest_one_px_target_change = std::max(largest_one_px_target_change,jump);
+                        if (!new_way) largest_unbranched_target_change =
+                            std::max(largest_unbranched_target_change,jump);
+                        if (jump > 20)
+                            std::cout << "drag-target jump x=" << input_now.x << " w=" << i
+                                << " jump=" << jump << " new-way=" << new_way << " old="
+                                << target[i].x << ',' << target[i].y << " way=" << owner[i] << '/'
+                                << axis[i] << '/' << direction[i] << " new=" << next_target[i].x
+                                << ',' << next_target[i].y << " way=" << result[i].branch_owner << '/'
+                                << result[i].branch_axis << '/' << result[i].branch_sign << '\n';
+                    }
+                    largest_frame_jump = std::max(largest_frame_jump,jump);
+                    any_shift |= i && std::hypot(next_target[i].x,next_target[i].y)>2;
+                    if (i && result[i].branch_owner >= 0 &&
+                        (owner[i] != result[i].branch_owner || axis[i] != result[i].branch_axis ||
+                            direction[i] != result[i].branch_sign)) ++branch_switches[i];
+                    if (i && frame_number > return_hold_start + 5 && frame_number < park_frame)
+                        held &= held_owner.size() == owner.size() &&
+                            held_owner[i] == result[i].branch_owner &&
+                            held_axis[i] == result[i].branch_axis &&
+                            held_direction[i] == result[i].branch_sign;
+                    auto before_center = frames[i].x + frames[i].width/2;
+                    auto after_center = before_center + next_target[i].x;
+                    auto vertical_center = frames[i].y + frames[i].height/2 + next_target[i].y;
+                    if (i)
+                    {
+                        if (before_center < screen.width/2-.01)
+                            boundaries &= after_center <= screen.width/2+.01;
+                        else boundaries &= after_center >= screen.width/2-.01;
+                        double cy = frames[i].y + frames[i].height/2, middle = screen.height/2;
+                        double band = screen.height*.25;
+                        if (std::abs(cy-middle) <= band)
+                            boundaries &= vertical_center >= middle-band-.01 && vertical_center <= middle+band+.01;
+                        else if (cy < middle) boundaries &= vertical_center <= middle+.01;
+                        else boundaries &= vertical_center >= middle-.01;
+                    }
+                    labels[i] = {result[i].spot.center.x-next_target[i].x-(frames[i].x+frames[i].width/2),
+                        result[i].spot.center.y-next_target[i].y-(frames[i].y+frames[i].height/2)};
+                    clearance[i] = result[i].spot.clearance;
+                    owner[i] = result[i].branch_owner; axis[i] = result[i].branch_axis;
+                    direction[i] = result[i].branch_sign;
+                    for (int tick = 0; tick < 2; ++tick)
+                    {
+                        shown[i].x += (next_target[i].x-shown[i].x)*.18;
+                        shown[i].y += (next_target[i].y-shown[i].y)*.18;
+                    }
+                }
+                target = next_target;
+                if (frame_number == return_hold_start + 5)
+                { held_target = target; held_owner = owner; held_axis = axis; held_direction = direction; }
+                if (frame_number > return_hold_start + 5 && frame_number < park_frame)
+                    for (size_t i=1; i<target.size(); ++i)
+                        held &= near(target[i],held_target[i],.01);
+                if (frame_number == path.size()-1) after_return = target;
+            }
+            max_branch_switches = std::max(max_branch_switches,
+                *std::max_element(branch_switches.begin()+1,branch_switches.end()));
+            auto final_frames = base; final_frames[0].x = 1210; final_frames[0].y = 1000;
+            auto fresh = expose_window_hints({{final_frames[0],132,48,{},true},{final_frames[1],132,48},
+                {final_frames[2],132,48},{final_frames[3],132,48}},screen);
+            // The held input layout is A parked bottom-right; it leaves the three
+            // otherwise separated windows at their stateless zero-offset answer.
+            if (budget == std::numeric_limits<size_t>::max())
+            {
+                cleared_matches_fresh &= after_return.size() == fresh.size();
+                for (size_t i=1; i<fresh.size() && i<after_return.size(); ++i)
+                    cleared_matches_fresh &= near(after_return[i],fresh[i].offset,.5);
+            }
+            settled_repeats.push_back(after_return);
+        }
+        if (budget == std::numeric_limits<size_t>::max())
+            for (size_t r=1;r<settled_repeats.size();++r)
+                for (size_t i=1;i<settled_repeats[r].size();++i)
+                    cleared_matches_fresh &= near(settled_repeats[r][i],settled_repeats[0][i],.5);
+        std::cout << "avoidance sweep budget=" << budget << " work=" << largest_work
+            << " max1px=" << largest_one_px_target_change
+            << " max-unbranched=" << largest_unbranched_target_change
+            << " maxjump=" << largest_frame_jump
+            << " branch-switches=" << max_branch_switches << '\n';
+        check(largest_unbranched_target_change <= 4,
+            "1 px drag steps produce at most 4 px target changes unless a new way is declared");
+        check(largest_one_px_target_change <= 64,
+            "even a necessary way change cannot retarget farther than 64 px in one solve");
+        check(max_branch_switches <= 1,
+            "three repeated sweeps switch each window's way at most once");
+        check(boundaries,"avoidance targets stay in the original horizontal and vertical zone");
+        check(held,"a stationary drag produces stable targets");
+        if (budget == std::numeric_limits<size_t>::max())
+            check(cleared_matches_fresh,
+                "three sweeps return to the fresh final-layout solution with no ratchet");
+        else
+            check(held && largest_unbranched_target_change <= 4 &&
+                largest_one_px_target_change <= 64 && max_branch_switches <= 1,
+                "a truncated sweep holds stable checked targets while staying within its work cap");
+        check(visible,"work-count budget is respected and every hint retains its minimum size");
+        check(any_shift,"the sweep starts from a displaced, checked incumbent");
+    };
+    for (size_t budget : {size_t(25),size_t(50),size_t(100),size_t(200)})
+        drag_sweep(budget,1);
+    drag_sweep(std::numeric_limits<size_t>::max(),3);
+    {
+        const rectangle screen{0,0,1280,720};
+        std::vector<rectangle> base{{290,110,700,500},{289,110,700,500},
+            {290,110,700,500},{291,110,700,500}};
+        std::vector<point> target(base.size()), shown(base.size()), labels(base.size());
+        std::vector<double> clearances(base.size());
+        std::vector<int> owner(base.size(),-1), axis(base.size()), direction(base.size());
+        std::vector<exposure_window> seed_inputs;
+        for (size_t i=0;i<base.size();++i)
+        {
+            exposure_window input{base[i],72,48,{},i==0};
+            input.center_zone = i != 0; input.center_zone_half_width = 300;
+            seed_inputs.push_back(input);
+        }
+        const auto seed = expose_window_hints(seed_inputs,screen);
+        for (size_t i=0;i<seed.size();++i)
+        {
+            target[i]=shown[i]=seed[i].offset;
+            labels[i]={seed[i].spot.center.x-seed[i].offset.x-(base[i].x+base[i].width/2),
+                seed[i].spot.center.y-seed[i].offset.y-(base[i].y+base[i].height/2)};
+            clearances[i]=seed[i].spot.clearance; owner[i]=seed[i].branch_owner;
+            axis[i]=seed[i].branch_axis; direction[i]=seed[i].branch_sign;
+        }
+        // The three rear centers begin one pixel left of, exactly on, and one pixel
+        // right of the screen center. Move the foreground one pixel at a time and
+        // feed back the same branch/label/display state as the compositor bridge.
+        bool zones=true, held=true, visible=true, actual_label_clearance=true;
+        double max_step=0, max_nonrelease_step=0, max_held_step=0, max_clearance_error=0;
+        int zero_releases=0; size_t max_work=0;
+        auto frames=base;
+        int prior_sign[4]{};
+        std::vector<point> stationary;
+        for (int x=290; x<=410; ++x)
+        {
+            frames=base; frames[0].x=x;
+            // Feed back the complete compositor state: true frames, displayed and target
+            // offsets, the label point, and the beneficiary/axis/direction of each way.
+            // Omitting way identity makes a repeat appear to ratchet because every pass
+            // then looks like a new branch instead of the same ray returning toward zero.
+            std::vector<exposure_window> inputs;
+            for (size_t i=0;i<frames.size();++i)
+            {
+                exposure_window input{frames[i],72,48,{},i==0};
+                input.center_zone=i!=0; input.center_zone_half_width=300;
+                input.incumbent_offset=shown[i]; input.target_offset=target[i];
+                input.prior_label_offset=labels[i]; input.prior_clearance=clearances[i];
+                input.branch_owner=owner[i]; input.branch_axis=axis[i]; input.branch_sign=direction[i];
+                inputs.push_back(input);
+            }
+            size_t work=0; exposure_limits limits{std::numeric_limits<size_t>::max(),&work,false};
+            auto result=expose_window_hints(inputs,screen,{},
+                std::chrono::steady_clock::time_point::max(),nullptr,nullptr,limits);
+            max_work=std::max(max_work,work);
+            for (size_t i=0;i<frames.size();++i)
+            {
+                std::vector<rectangle> foreground;
+                for (size_t j=0;j<i;++j)
+                    foreground.push_back({frames[j].x+result[j].offset.x,
+                        frames[j].y+result[j].offset.y,frames[j].width,frames[j].height});
+                const rectangle moved_frame{frames[i].x+result[i].offset.x,
+                    frames[i].y+result[i].offset.y,frames[i].width,frames[i].height};
+                const double actual=visible_clearance(result[i].spot.center,moved_frame,screen,foreground);
+                const double error=std::abs(actual-result[i].spot.clearance);
+                max_clearance_error=std::max(max_clearance_error,error);
+                actual_label_clearance &= error<=.75;
+            }
+            for (size_t i=1;i<frames.size();++i)
+            {
+                const auto old=target[i]; target[i]=result[i].offset;
+                const auto step=std::hypot(target[i].x-old.x,target[i].y-old.y);
+                max_step=std::max(max_step,step);
+                const bool release_to_zero = step > 4 && std::hypot(target[i].x,target[i].y) < .01 &&
+                    result[i].spot.clearance + .25 >= 48 * 1.06 / 2 + 1;
+                if (release_to_zero) ++zero_releases;
+                else max_nonrelease_step=std::max(max_nonrelease_step,step);
+                const double center_x=frames[i].x+frames[i].width/2+target[i].x;
+                zones &= center_x>=screen.width/2-300-.01 && center_x<=screen.width/2+300+.01;
+                visible &= result[i].diameter>=48;
+                if (std::abs(target[i].x)>1)
+                {
+                    const int sign=target[i].x<0?-1:1;
+                    if (prior_sign[i] && sign!=prior_sign[i]) zones=false;
+                    prior_sign[i]=sign;
+                }
+                labels[i]={result[i].spot.center.x-target[i].x-(frames[i].x+frames[i].width/2),
+                    result[i].spot.center.y-target[i].y-(frames[i].y+frames[i].height/2)};
+                clearances[i]=result[i].spot.clearance; owner[i]=result[i].branch_owner;
+                axis[i]=result[i].branch_axis; direction[i]=result[i].branch_sign;
+                for (int tick=0;tick<2;++tick)
+                { shown[i].x+=(target[i].x-shown[i].x)*.18; shown[i].y+=(target[i].y-shown[i].y)*.18; }
+            }
+        }
+        stationary=target;
+        for (int frame=0;frame<12;++frame)
+        {
+            std::vector<exposure_window> inputs;
+            for (size_t i=0;i<frames.size();++i)
+            {
+                exposure_window input{frames[i],72,48,{},i==0};
+                input.center_zone=i!=0; input.center_zone_half_width=300;
+                input.incumbent_offset=shown[i]; input.target_offset=target[i];
+                input.prior_label_offset=labels[i]; input.prior_clearance=clearances[i];
+                input.branch_owner=owner[i]; input.branch_axis=axis[i]; input.branch_sign=direction[i];
+                inputs.push_back(input);
+            }
+            auto result=expose_window_hints(inputs,screen);
+            for (size_t i=1;i<frames.size();++i)
+            {
+                const double step=std::hypot(result[i].offset.x-target[i].x,
+                    result[i].offset.y-target[i].y);
+                max_held_step=std::max(max_held_step,step);
+                held &= step <= .01;
+                held &= owner[i] == result[i].branch_owner && axis[i] == result[i].branch_axis &&
+                    direction[i] == result[i].branch_sign;
+                target[i]=stationary[i]=result[i].offset;
+                labels[i]={result[i].spot.center.x-target[i].x-(frames[i].x+frames[i].width/2),
+                    result[i].spot.center.y-target[i].y-(frames[i].y+frames[i].height/2)};
+                clearances[i]=result[i].spot.clearance; owner[i]=result[i].branch_owner;
+                axis[i]=result[i].branch_axis; direction[i]=result[i].branch_sign;
+                shown[i]=target[i];
+            }
+        }
+        std::cout << "center-zone sweep: max1px=" << max_step << " max-nonrelease="
+            << max_nonrelease_step << " zero-releases=" << zero_releases << " max-held="
+            << max_held_step << " max-work=" << max_work << " clearance-error="
+            << max_clearance_error << '\n';
+        check(zones && visible && actual_label_clearance && max_nonrelease_step<=4 && zero_releases<=1,
+            "a 1 px drag through a centerline pile stays in the center zone without a jump");
+        check(held,"an exactly centered window's way stays stable while held");
+    }
+    rectangle chain_screen{0,0,1280,720};
+    auto chain = expose_window_hints({{{200,110,700,500},132,48,{},true},
+        {{200,110,700,500},132,48},{{200,110,700,500},132,48}},chain_screen);
+    bool chain_keeps_badges = chain.size() == 3;
+    bool chain_moves_cause = false;
+    for (size_t i = 0; i < chain.size(); ++i)
+    {
+        chain_keeps_badges &= chain[i].diameter >= 48 &&
+            std::isfinite(chain[i].spot.center.x) && std::isfinite(chain[i].spot.center.y);
+        if (i) chain_moves_cause |= std::hypot(chain[i].offset.x,chain[i].offset.y) > 1;
+    }
+    check(chain_keeps_badges && chain_moves_cause && near(chain[0].offset,{}),
+        "a foreground-concession chain preserves hints and keeps its anchored front in place");
+    exposure_window widget_obstacle{{200,160,700,440},132,48,
+        {{200,160,700,440}},false};
+    auto beside_widget = expose_window_hints({widget_obstacle},chain_screen);
+    const rectangle widget_frame{200,160,700,440};
+    const rectangle widget_window{200+beside_widget[0].offset.x,
+        160+beside_widget[0].offset.y,700,440};
+    check(std::hypot(beside_widget[0].offset.x,beside_widget[0].offset.y) > 1 &&
+        beside_widget[0].diameter >= 48 &&
+        visible_clearance(beside_widget[0].spot.center,widget_window,chain_screen,
+            {widget_frame}) >= 48*1.06/2,
+        "window exposure moves around a fixed widget foreground rectangle");
     auto hidden = expose_window_hints({{{220,180,360,270},72,48},{{250,200,300,220},72,48}},desktop);
-    check(hidden[1].diameter == 72 && hidden[1].spot.clearance >= 72*1.06/2 &&
+    check(hidden[1].diameter >= 48 && hidden[1].spot.clearance >= 48*1.06/2 &&
         (std::hypot(hidden[0].offset.x,hidden[0].offset.y)>1 ||
          std::hypot(hidden[1].offset.x,hidden[1].offset.y)>1),
         "fully covered ordinary window is revealed by visual movement");
     auto full = expose_window_hints({{{0,0,1280,720},132,48},{{0,0,1280,720},132,48}},desktop);
-    check(full[0].diameter == 132 && full[1].diameter == 132 &&
-        std::hypot(full[0].offset.x,full[0].offset.y) > 140 && near(full[1].offset,{}),
+    check(full[0].diameter >= 48 && full[1].diameter >= 48 &&
+        full[0].spot.clearance >= 48*1.06/2 && full[1].spot.clearance >= 48*1.06/2 &&
+        std::hypot(full[0].offset.x,full[0].offset.y) > 40 && near(full[1].offset,{}),
         "an output-sized front window moves to reveal the wholly covered rear window");
     auto anchored = expose_window_hints({{{0,0,1280,720},132,48,{},true},
         {{0,0,1280,720},132,48}},desktop);
     check(near(anchored[0].offset,{}) && anchored[0].diameter == 132 &&
         anchored[1].diameter == 48 && near(anchored[1].spot.center,{640,360}),
         "focused output-covering window stays put; impossible rear hint remains at minimum center");
-    auto movable_rear = expose_window_hints({{{280,160,700,440},132,48,{},true},
+    auto movable_rear = expose_window_hints({{{240,160,700,440},132,48,{},true},
         {{200,160,700,440},132,48}},desktop);
-    check(near(movable_rear[0].offset,{}) && movable_rear[1].offset.x < -60,
+    check(near(movable_rear[0].offset,{}) && movable_rear[1].offset.x < -10 &&
+        movable_rear[1].diameter >= 48,
         "focused front anchors a covered rear window's exposure movement");
     auto three = expose_window_hints({{{0,0,1280,720},132,48},{{0,0,1280,720},132,48},
         {{0,0,1280,720},132,48}},desktop);
-    check(three.size() == 3 && three[0].diameter == 132 && three[1].diameter == 132 &&
-        three[2].diameter == 132,
-        "three output-sized windows each expose enough interior for a circle");
+    bool three_visible = three.size() == 3;
+    bool three_move = false;
+    for (size_t i = 0; i < three.size(); ++i)
+    {
+        three_visible &= three[i].diameter >= 48 && three[i].spot.clearance >= 48*1.06/2;
+        if (i) three_move |= std::hypot(three[i].offset.x,three[i].offset.y) > 40;
+    }
+    check(three_visible && three_move,
+        "three output-sized windows each retain a visible minimum hint as needed");
     auto tiny = expose_window_hints({{{140,100,64,36},72,48}},desktop);
     check(near(tiny[0].offset,{}) && tiny[0].diameter == 48,
         "tiny displayed window retains the 48px minimum hint even when it cannot fit");

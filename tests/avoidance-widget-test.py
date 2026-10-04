@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Large-window avoidance must not change real geometry or widgetize (WK13/WK31)."""
+"""Window avoidance must not change real geometry or widgetize (WK13/WK31)."""
 import importlib.util
 import json
 import os

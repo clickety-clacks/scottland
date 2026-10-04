@@ -1,5 +1,5 @@
 #!/bin/bash
-# WK13's easing regression, sampled through Wayfire IPC on a private headless session.
+# WK13's window-avoidance easing regression in a private headless session.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 hdir=${SCOTTLAND_HEADLESS_DIR:?set a task-specific headless directory}

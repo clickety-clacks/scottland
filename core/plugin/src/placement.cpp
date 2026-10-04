@@ -93,14 +93,22 @@ double visible_clearance(point p, rectangle r, rectangle screen,
 }
 
 label_spot visible_label(rectangle r, rectangle screen, const std::vector<rectangle>& foreground,
-    double precision, std::chrono::steady_clock::time_point deadline, double sufficient_clearance)
+    double precision, std::chrono::steady_clock::time_point deadline, double sufficient_clearance,
+    size_t inspection_budget, size_t *inspection_count)
 {
+    size_t inspections = 0;
     double right = std::min(r.x + r.width, screen.x + screen.width);
     double bottom = std::min(r.y + r.height, screen.y + screen.height);
     r.x = std::max(r.x, screen.x); r.y = std::max(r.y, screen.y);
     r.width = right - r.x; r.height = bottom - r.y;
-    if (r.width <= 0 || r.height <= 0) return {{r.x, r.y}, 0};
+    if (r.width <= 0 || r.height <= 0)
+    {
+        if (inspection_count) *inspection_count = inspections;
+        return {{r.x, r.y}, 0};
+    }
     auto distance = [&] (point p) {
+        if (inspections >= inspection_budget) return std::optional<double>{};
+        ++inspections;
         return visible_clearance_before(p, r, screen, foreground, deadline);
     };
     struct cell { point p; double half, d, upper, spread; size_t order; };
@@ -159,6 +167,7 @@ label_spot visible_label(rectangle r, rectangle screen, const std::vector<rectan
         for (double dx : {-h, h}) for (double dy : {-h, h}) add(c.p.x + dx, c.p.y + dy, h);
     }
     best.clearance = std::max(0.0, best.clearance);
+    if (inspection_count) *inspection_count = inspections;
     return best;
 }
 }

@@ -129,9 +129,14 @@
         <option name="widget_opacity_unfocused" type="double"><_short>Unfocused widget opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="window_mode_opacity_focused" type="double"><_short>Focused Window mode opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="window_mode_opacity_unfocused" type="double"><_short>Unfocused Window mode opacity</_short><default>1</default><min>0</min><max>1</max></option>
+        <option name="window_avoidance_always" type="bool">
+            <_short>Window avoidance outside Window mode</_short>
+            <_long>Keep windows visually shifted to reserve space for Window mode hints outside Window mode. This affects no geometry, zone, scale, placement memory or widget state.</_long>
+            <default>false</default>
+        </option>
         <option name="hint_avoidance_always" type="bool">
-            <_short>Always reserve space for window hints</_short>
-            <_long>Keep the visual window-hint avoidance offsets active outside Window mode. It never changes real geometry, zone, scale, placement memory or widget state.</_long>
+            <_short>Legacy window avoidance setting</_short>
+            <_long>Compatibility alias for window_avoidance_always. New configuration should use that key.</_long>
             <default>false</default>
         </option>
 

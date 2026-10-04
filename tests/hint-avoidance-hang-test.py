@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce WK13's live-drag solve feedback and bound its per-solve work."""
+"""Reproduce WK13's live-drag solve feedback and bound window-avoidance work."""
 import importlib.util
 import json
 import math
@@ -60,7 +60,7 @@ def open_foot(title, columns, rows):
 
 
 try:
-    cli("set", "hint_avoidance_always", "false")
+    cli("set", "window_avoidance_always", "false")
     t.ipc.sock.settimeout(.8)
     t.ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
     output = timed("window-rules/list-outputs")[0]["geometry"]
@@ -86,9 +86,22 @@ try:
     attention_id = ids[specs[0]]
     attention_state = timed("scottland/attention", {"window": attention_id, "attention": True,
                                       "source": "avoidance-live-drag-regression"})
-    cli("set", "hint_avoidance_always", "true")
-    t.wait_for(lambda: json.loads(cli("get")).get("hint_avoidance_always") is True)
-    t.wait_for(lambda: magnitude(offsets()) > 30, timeout=8)
+    cli("set", "window_avoidance_always", "true")
+    t.wait_for(lambda: json.loads(cli("get")).get("window_avoidance_always") is True)
+    wait_end = time.monotonic() + 8
+    initial_state = timed("scottland/hints")
+    while magnitude(offsets(initial_state)) <= 30 and time.monotonic() < wait_end:
+        time.sleep(.08)
+        initial_state = timed("scottland/hints")
+    if magnitude(offsets(initial_state)) <= 30:
+        raise AssertionError("initial displacement timed out: " + json.dumps({
+            "solve_ms": initial_state.get("avoidance_solve_ms"),
+            "solve_count": initial_state.get("avoidance_solve_count"),
+            "deadline_count": initial_state.get("avoidance_solve_deadline_count"),
+            "windows": [{key: row.get(key) for key in (
+                "window", "dx", "dy", "target_dx", "target_dy", "clearance")}
+                for row in initial_state.get("hints", [])],
+        }))
     time.sleep(.35)
     before = offsets()
     check("always-on exposure has moved large overlapping windows", magnitude(before) > 50)
@@ -164,17 +177,22 @@ try:
                            after.get(key, (0, 0))[1] - before.get(key, (0, 0))[1])
                      for key in before.keys() | after.keys()}) > 5)
     solve_ms = state.get("avoidance_solve_max_ms")
+    search_ms = state.get("avoidance_search_max_ms")
+    profile = {name: state.get(name) for name in (
+        "avoidance_init_ms", "avoidance_placement_ms", "avoidance_finalization_ms")}
     solve_count = state.get("avoidance_solve_count")
     solve_budget_ms = state.get("avoidance_solve_budget_ms")
     deadline_count = state.get("avoidance_solve_deadline_count")
     check("solve telemetry is published for the live-drag regression",
           isinstance(solve_ms, (int, float)) and isinstance(solve_count, int) and solve_count > 0 and
-          solve_budget_ms == 2.0 and isinstance(deadline_count, int),
-          f"solve_ms={solve_ms}, solve_count={solve_count}, budget={solve_budget_ms}, "
+          solve_budget_ms == 2.0 and isinstance(deadline_count, int) and
+          isinstance(search_ms, (int, float)),
+          f"solve_ms={solve_ms}, search_ms={search_ms}, solve_count={solve_count}, budget={solve_budget_ms}, "
           f"deadline_count={deadline_count}")
     check("bounded exposure solve stays under 4 ms with a 2 ms search deadline",
           isinstance(solve_ms, (int, float)) and solve_ms < 4.0,
-          f"maximum complete solve {solve_ms} ms (search deadline 2 ms)")
+          f"maximum complete solve {solve_ms} ms; exposure body {search_ms} ms "
+          f"(init/placement/final={profile}, search deadline 2 ms)")
     count_at_rest = solve_count
     time.sleep(.25)
     settled_state = timed("scottland/hints")
@@ -213,7 +231,7 @@ finally:
     except Exception:
         pass
     try:
-        cli("set", "hint_avoidance_always", "false")
+        cli("set", "window_avoidance_always", "false")
     except Exception:
         pass
     for _, proc in children:

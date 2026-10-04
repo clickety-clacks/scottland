@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real stipc/drag checks for WK13's always-avoid preference, including a bounded stress run."""
+"""Real stipc/drag checks for always-on window avoidance, including a bounded stress run."""
 import importlib.util
 import json
 from pathlib import Path
@@ -88,7 +88,7 @@ def cpu_sample(seconds=3):
 
 try:
     values = json.loads(cli("get"))
-    check("scottland-ctl reports the shipped default off", values.get("hint_avoidance_always") is False, values)
+    check("scottland-ctl reports the shipped default off", values.get("window_avoidance_always") is False, values)
     outputs = t.ipc.call("window-rules/list-outputs")
     output = outputs[0]["geometry"]
     titles = [f"avoidance-large-{i}" for i in range(6)]
@@ -101,10 +101,11 @@ try:
         t.wait_for(lambda title=title: t.app(title))
     time.sleep(.5)
 
-    # Use identical, large fixture rectangles to make the hint-circle exposure solve work hard.
-    # These are fixture setup only; all setting toggles and widget transitions below use real input.
-    width, height = round(output["width"] * .72), round(output["height"] * .76)
-    rect = {"x": output["x"] + (output["width"] - width) // 2,
+    # A tall stack just left of the centerline leaves outward rail-side placements
+    # available while P1 forbids crossing into the opposite half. Fixture geometry
+    # is the only programmatic setup; setting and widget transitions use real input.
+    width, height = round(output["width"] * .48), round(output["height"] * .90)
+    rect = {"x": round(output["x"] + output["width"] / 2 - width / 2 - 20),
             "y": output["y"] + (output["height"] - height) // 2,
             "width": width, "height": height}
     ids = {title: t.app(title)["id"] for title in titles}
@@ -118,9 +119,27 @@ try:
     check("default off leaves no visual offset outside Window mode",
           not any(abs(dx) + abs(dy) >= .15 for dx, dy, _ in offsets().values()))
 
-    cli("set", "hint_avoidance_always", "true")
-    t.wait_for(lambda: json.loads(cli("get")).get("hint_avoidance_always") is True)
-    t.wait_for(lambda: sum(abs(dx) + abs(dy) > 10 for dx, dy, _ in offsets().values()) >= 3)
+    cli("set", "window_avoidance_always", "true")
+    t.wait_for(lambda: json.loads(cli("get")).get("window_avoidance_always") is True)
+    wait_end = time.monotonic() + 8
+    hint_state = t.ipc.call("scottland/hints")
+    def enough_offsets(state):
+        return sum(abs(row["dx"]) + abs(row["dy"]) > 10 for row in state["hints"]) >= 2
+    while not enough_offsets(hint_state) and time.monotonic() < wait_end:
+        time.sleep(.08)
+        hint_state = t.ipc.call("scottland/hints")
+    if not enough_offsets(hint_state):
+        raise AssertionError("large-stack avoidance timed out: " + json.dumps({
+            "solve_ms": hint_state.get("avoidance_solve_ms"),
+            "solve_max_ms": hint_state.get("avoidance_solve_max_ms"),
+            "search_ms": hint_state.get("avoidance_search_max_ms"),
+            "profile": {key: hint_state.get(key) for key in (
+                "avoidance_init_ms", "avoidance_placement_ms", "avoidance_finalization_ms")},
+            "deadline_count": hint_state.get("avoidance_solve_deadline_count"),
+            "windows": [{key: row.get(key) for key in (
+                "window", "dx", "dy", "target_dx", "target_dy", "clearance")}
+                for row in hint_state["hints"]],
+        }))
     displaced = offsets()
     stable_geometry = geometry()
     output_center_x = output["x"] + output["width"] / 2
@@ -130,9 +149,9 @@ try:
         for window in ids.values())
     check("always-on avoids overlapping hint circles outside Window mode",
           not t.ipc.call("scottland/hints")["active"] and
-          sum(abs(dx) + abs(dy) > 10 for dx, dy, _ in displaced.values()) >= 3 and
+          sum(abs(dx) + abs(dy) > 10 for dx, dy, _ in displaced.values()) >= 2 and
           all(not visible for _, _, visible in displaced.values()), displaced)
-    check("large-window exposure moves several surfaces outward toward the widget rails",
+    check("large-window exposure moves several surfaces outward toward the left rail",
           toward_rail >= 2, f"{toward_rail} windows shifted outward")
     check("always-on offsets leave model geometry and widget state untouched",
           stable_geometry == original and not t.ipc.call("scottland/widgets")["widgets"])
@@ -209,12 +228,28 @@ try:
     after_cycles = geometry()
     check("stress moves only the window being explicitly dragged",
           all(after_cycles[window] == stable_geometry[window] for window in ids.values() if window != ids[target]))
-    cli("set", "hint_avoidance_always", "false")
-    t.wait_for(lambda: json.loads(cli("get")).get("hint_avoidance_always") is False)
+    cli("set", "window_avoidance_always", "false")
+    t.wait_for(lambda: json.loads(cli("get")).get("window_avoidance_always") is False)
     settled_zero()
+    geometry_after_off = geometry()
     check("turning always-avoid off eases every scene offset home",
           all(abs(dx) + abs(dy) < .15 for dx, dy, _ in offsets().values()))
-    check("turning avoidance off changes no true window geometry", geometry() == after_cycles)
+    changed_by_disable = {window: (after_cycles.get(window), geometry_after_off.get(window))
+                          for window in ids.values()
+                          if after_cycles.get(window) != geometry_after_off.get(window)}
+    check("turning avoidance off changes no true window geometry", not changed_by_disable,
+          f"geometry changed on disable: {changed_by_disable}")
+    t.ipc.call("wayfire/set-config-options", {"scottland/hint_avoidance_always": "true"})
+    t.wait_for(lambda: json.loads(cli("get")).get("window_avoidance_always") is True)
+    t.wait_for(lambda: any(abs(dx) + abs(dy) > 8 for dx, dy, _ in offsets().values()))
+    check("the legacy option still enables window avoidance",
+          json.loads(cli("get")).get("window_avoidance_always") is True and
+          str(json.loads(cli("option", "scottland/hint_avoidance_always"))).lower() in ("true", "1"))
+    cli("set", "hint_avoidance_always", "false")
+    t.wait_for(lambda: json.loads(cli("get")).get("window_avoidance_always") is False)
+    settled_zero()
+    check("scottland-ctl accepts the legacy setting name",
+          all(abs(dx) + abs(dy) < .15 for dx, dy, _ in offsets().values()))
     print(f"always-avoid stress: {passes} passed, {failures} failed; settled compositor CPU {sample:.1%} of one core",
           flush=True)
 finally:

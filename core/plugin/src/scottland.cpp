@@ -839,6 +839,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> unfocused_edge_tone_light{"scottland/unfocused_edge_tone_light"};
     wf::option_wrapper_t<double> unfocused_edge_tone_dark{"scottland/unfocused_edge_tone_dark"};
     wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
+    wf::option_wrapper_t<bool> window_avoidance_always{"scottland/window_avoidance_always"};
+    // Keep parsing the historical key so existing user config still opts in.
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
@@ -4893,7 +4895,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.drag.margin   = frame ? frame->margin() :
             std::max(0.0, (drag->view->get_bounding_box().width - drawn) / 2.0);
         double box   = drawn + 2 * model.drag.margin;
-        double left  = geometry.x + geometry.width / 2.0 - box / 2.0;
+        double avoidance_x = 0;
+        if (auto visual = hint_visuals.find(drag->view->get_id());
+            visual != hint_visuals.end() && visual->second.offset_attached)
+            avoidance_x = visual->second.offset->translation_x;
+        // The pointer hit the displayed surface, which may be translated away from
+        // its true frame. Include that temporary presentation in the grab fraction
+        // so focusing/grabbing cannot pull the visible window out from under the cursor.
+        double left  = geometry.x + avoidance_x + geometry.width / 2.0 - box / 2.0;
         model.drag.relative_x = box > 0 ? (local_x - left) / box : 0.5;
         // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
         // reset on the touchpad, out of room), it's the same move: keep the first origin.
@@ -6411,10 +6420,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_tone_light.set_callback([=] { load_color_scheme(); });
         unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
-        hint_avoidance_always.set_callback([=] {
+        auto avoidance_setting_changed = [=] {
             declutter_signature.clear();
             refresh_layout_avoidance();
-        });
+        };
+        window_avoidance_always.set_callback(avoidance_setting_changed);
+        hint_avoidance_always.set_callback(avoidance_setting_changed);
         color_scheme.set_callback([=] { load_color_scheme(); });
         accent_color.set_callback([=] { load_color_scheme(); });
         attention_color.set_callback([=] { load_color_scheme(); });

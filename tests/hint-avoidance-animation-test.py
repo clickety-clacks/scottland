@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WK13: sample real scene transforms to ensure hint avoidance eases, not jumps."""
+"""WK13: sample real scene transforms to ensure window avoidance eases, not jumps."""
 import importlib.util
 import json
 import math
@@ -90,6 +90,8 @@ class Sampler:
                     "active": bool(state["active"]),
                     "offsets": {str(row["window"]): [row["dx"], row["dy"]]
                                 for row in state["hints"]},
+                    "targets": {str(row["window"]): [row["target_dx"], row["target_dy"]]
+                                for row in state["hints"]},
                 })
                 self.stop.wait(.006)
         finally:
@@ -170,7 +172,7 @@ def settle(timeout=6):
 
 
 try:
-    cli("set", "hint_avoidance_always", "false")
+    cli("set", "window_avoidance_always", "false")
     t.ipc.call("wayfire/set-config-options", {
         "scottland/sounds": False, "scottland/alt_hold_delay": 100,
     })
@@ -216,7 +218,7 @@ try:
     eased_ramp([s for s in exit_samples if not s["active"]], entered,
                "window-mode exit eases offsets home over multiple samples")
 
-    cli("set", "hint_avoidance_always", "true")
+    cli("set", "window_avoidance_always", "true")
     t.wait_for(lambda: total_magnitude(offsets()) > 30, timeout=8)
     always_base = settle()
     check("always-on setting keeps offsets outside window mode",
@@ -248,7 +250,7 @@ try:
           new_geometry["height"] >= output["height"] * .75)
     check("always-on avoidance retains a visible displacement after the large window arrives",
           total_magnitude(added) > 30 and
-          json.loads(cli("get")).get("hint_avoidance_always") is True,
+          json.loads(cli("get")).get("window_avoidance_always") is True,
           f"offset magnitude={total_magnitude(added):.1f}")
     eased_ramp(added_samples, always_base,
                "always-on solve eases when a new large window arrives")
@@ -265,16 +267,28 @@ try:
     exit_window_mode()
     time.sleep(.35)
     mode_trace = mode_samples.finish()
-    mode_deviation = max((difference(values, stable_always)
-                          for values in values_in(mode_trace)), default=0)
+    mode_values = values_in(mode_trace)
+    mode_steps = [difference(after, before)
+                  for before, after in zip(mode_values, mode_values[1:])]
+    mode_switch_steps = []
+    for before, after in zip(mode_trace, mode_trace[1:]):
+        if before["active"] != after["active"]:
+            mode_switch_steps.append(difference(
+                {key: tuple(value) for key, value in after["offsets"].items()},
+                {key: tuple(value) for key, value in before["offsets"].items()}))
+    mode_change_samples = sum(step > .25 for step in mode_steps)
     (artifacts / "always-on-window-mode-roundtrip.json").write_text(
         json.dumps(mode_trace, indent=2) + "\n")
-    check("always-on offsets remain continuous entering and leaving window mode",
-          mode_deviation < 1.0, f"largest deviation from settled offsets {mode_deviation:.3f}")
+    check("always-on offsets ease across both Window mode toggles without a snap",
+          len(mode_switch_steps) == 2 and mode_change_samples >= 4 and
+          max(mode_steps, default=0) < 12 and max(mode_switch_steps, default=0) < 12,
+          f"{mode_change_samples} intermediate transform changes; max sample step "
+          f"{max(mode_steps, default=0):.2f}px; toggle-frame steps "
+          f"{[round(step, 2) for step in mode_switch_steps]}")
 
     # Turning the setting off is the other inactive-target path: it must ease back to zero.
     turning_off = Sampler(); turning_off.start()
-    cli("set", "hint_avoidance_always", "false")
+    cli("set", "window_avoidance_always", "false")
     t.wait_for(lambda: total_magnitude(offsets()) < total_magnitude(stable_always), timeout=3)
     time.sleep(.65)
     off_samples = turning_off.finish()
@@ -294,13 +308,20 @@ try:
     enter_window_mode()
     time.sleep(.18)
     reduced_samples = reduced.finish()
-    reduced_values = values_in([s for s in reduced_samples if s["active"]])
+    active_reduced_samples = [s for s in reduced_samples if s["active"]]
+    reduced_values = values_in(active_reduced_samples)
     reduced_final = offsets()
     reduced_jump = difference(reduced_values[0], zero) if reduced_values else 0
     reduced_total = difference(reduced_final, zero)
+    snap_error = max((math.hypot(sample["offsets"][key][0] - target[0],
+                                 sample["offsets"][key][1] - target[1])
+                      for sample in active_reduced_samples
+                      for key, target in sample["targets"].items()), default=0)
     check("reduced motion snaps avoidance to its destination",
-          reduced_total > 30 and reduced_jump >= reduced_total * .98,
-          f"first active sample moved {reduced_jump:.1f} of {reduced_total:.1f}")
+          reduced_total > 30 and snap_error < .15,
+          f"{len(active_reduced_samples)} samples, max transform-to-target gap "
+          f"{snap_error:.3f}px; first active displacement {reduced_jump:.1f} of "
+          f"{reduced_total:.1f} after bounded solve slices")
     exit_window_mode()
     t.wait_for(lambda: total_magnitude(offsets()) < .15, timeout=3)
     check("reduced motion snaps temporary avoidance home", total_magnitude(offsets()) < .15)
@@ -315,7 +336,7 @@ finally:
         palette_path.write_bytes(old_palette)
     try:
         t.key("LEFTALT", False)
-        cli("set", "hint_avoidance_always", "false")
+        cli("set", "window_avoidance_always", "false")
     except Exception:
         pass
     for _, proc in children:

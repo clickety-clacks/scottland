@@ -208,7 +208,8 @@ Drag coasts (L32) share the keyboard motion controller and its inertial axes. Re
 input samples and velocities are transient input resources, not a second geometry owner or reload
 state. The existing drag record still owns origin, re-grab chain, form and scale pin. Released
 geometry, zone/scale targets and final placement use the same model path as keyboard coasts.
-Hint avoidance (WK13/WK27/WK31) is active during Window mode, and outside it only when
-`scottland/hint_avoidance_always` is enabled. It recomputes visual offsets as real geometry moves,
-then eases those offsets to zero when avoidance becomes inactive. The offsets never feed model
+Window avoidance (WK13/WK27/WK31) is active during Window mode, and outside it only when
+`scottland/window_avoidance_always` is enabled (the old key remains an alias). It recomputes visual
+offsets from true geometry plus the displayed incumbent, then eases those offsets to zero when
+avoidance becomes inactive. The offsets never feed model
 geometry or placement memory; explicit keyboard moves remain committed if Esc stops a coast.

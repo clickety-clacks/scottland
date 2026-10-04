@@ -307,7 +307,7 @@ try:
     check(delivered('Alpha').count('b') == before, 'Esc keeps remaining Alt chord captured')
     release()
     check(near(center(view('Alpha')), saved[0]) and near(center(view('Beta')), saved[1]),
-          'temporary hint avoidance leaves true window geometry unchanged')
+          'temporary window avoidance leaves true window geometry unchanged')
     wait_for(lambda: all(not h['visible'] for h in hints()['hints']))
     after_release = {h['window']: h for h in hints()['hints']}
     check(all(abs(h['dx'])+abs(h['dy']) < .1 for h in after_release.values()) and

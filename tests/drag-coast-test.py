@@ -171,27 +171,35 @@ try:
         tracked=max(initial, key=lambda identifier: math.hypot(*initial[identifier]))
         before=initial[tracked]
         check(math.hypot(*before)>1,'overlapping fixture has a displaced hint to track')
-        tap('RIGHT'); time.sleep(.12); during=offset(tracked); time.sleep(.25); later=offset(tracked)
-        check(math.dist(before,during)<.3 and math.dist(during,later)<.3,'declutter freezes while keyboard coast moves through neighbors')
+        tap('RIGHT')
         offsets=[]
-        for _ in range(80): offsets.append(offset(tracked)); time.sleep(.008)
+        for _ in range(100): offsets.append(offset(tracked)); time.sleep(.008)
         after=offsets[-1]
         (out/'keyboard-declutter.json').write_text(json.dumps({
-            'initial':initial,'tracked':tracked,'before':before,'during':during,
-            'later':later,'offsets':offsets,
+            'initial':initial,'tracked':tracked,'before':before,'offsets':offsets,
             'centers':{'A':center('CoastA'),'B':center('CoastB')},
         }))
-        check(math.dist(before,after)>1,'declutter resumes after keyboard coast rests')
         jumps=[math.dist(a,b) for a,b in zip(offsets,offsets[1:])]
-        check(max(jumps)<math.dist(before,after)*.55 and sum(d>.05 for d in jumps)>3,
-              'resumed declutter interpolates across frames without a jump')
+        check(math.dist(before,after)>1 and sum(d>.05 for d in jumps)>3,
+              'keyboard coast layout changes update window avoidance over several frames')
+        check(max(jumps,default=0)<17,
+              'keyboard-coast avoidance easing stays under its per-frame speed cap')
+        check(math.hypot(*after)<2,
+              'keyboard movement lets the hint return to its true-frame position when the obstruction clears')
         key('LEFTALT',False); time.sleep(.4)
         # A drag ends hints; enter them while the released window is still moving.
         place('CoastA',w/2+175,h/2); place('CoastB',w/2,h/2); flick('CoastB',40); hold()
-        during=offset(a); time.sleep(.15); later=offset(a)
-        check(math.dist(during,later)<.3,'declutter remains paused on hint entry during drag coast')
-        time.sleep(.7); after=offset(a)
-        check(math.dist(after,later)>1,'declutter resumes after drag coast rests')
+        during=offset(a); coast_offsets=[]
+        for _ in range(100): coast_offsets.append(offset(a)); time.sleep(.008)
+        after=coast_offsets[-1]
+        coast_jumps=[math.dist(x,y) for x,y in zip(coast_offsets,coast_offsets[1:])]
+        (out/'drag-coast-declutter.json').write_text(json.dumps({
+            'during':during,'offsets':coast_offsets,'final':after,
+        }))
+        check(math.dist(during,after)>1 and sum(d>.05 for d in coast_jumps)>3,
+              'avoidance follows real layout updates during a released drag coast')
+        check(max(coast_jumps,default=0)<17,
+              'released drag-coast avoidance eases under its per-frame speed cap')
         key('LEFTALT',False); time.sleep(.3)
         # Explicit rail release owns form even with high recent velocity.
         place('CoastB',w*.18,h/2); sx,sy=begin('CoastB')

@@ -64,7 +64,7 @@ ShellRoot {
   readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
     resize_impulse:335, resize_friction:608, key_max_velocity:6000,
     cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300,
-    hint_avoidance_always:false})
+    window_avoidance_always:false})
   property var motionValues: Object.assign({}, motionDefaults)
   readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
     side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
@@ -748,11 +748,11 @@ ShellRoot {
             onAcceptRequested: root.save()
             Layout.fillWidth:true
             design:theme
-            text:root.motionValues.hint_avoidance_always
-              ? "Always avoid hint circles · on"
-              : "Always avoid hint circles · off"
-            checked:root.motionValues.hint_avoidance_always
-            onClicked:root.setMotion("hint_avoidance_always",!root.motionValues.hint_avoidance_always)
+            text:root.motionValues.window_avoidance_always
+              ? "Window avoidance · on"
+              : "Window avoidance · off"
+            checked:root.motionValues.window_avoidance_always
+            onClicked:root.setMotion("window_avoidance_always",!root.motionValues.window_avoidance_always)
           }
           MotionPlayground {
             id: playground

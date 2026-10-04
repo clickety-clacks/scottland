@@ -286,8 +286,12 @@ try:
     medium_held = overlap_sum([rect(drawn[i], state[i]) for i in medium])
     check(medium_before > 0 and 0 < medium_held < medium_before,
           'windows retain overlap once their hint circles fit')
-    check([state[i]['badge']['size'] for i in medium] == [95, 102, 129],
-          'different displayed window sizes produce proportionally different circles')
+    medium_sizes = [state[i]['badge']['size'] for i in medium]
+    preferred_sizes = [max(72, min(132, min(rect(drawn[i], state[i])[2:])*.34))
+                       for i in medium]
+    check(all(48 <= size <= preferred for size, preferred in zip(medium_sizes, preferred_sizes)) and
+          medium_sizes[-1] > medium_sizes[0],
+          'mixed-size hints respect preferred size and shrink only as far as clearance requires')
     (artifacts/'fitting-overlap.json').write_text(json.dumps({'before': medium_before, 'held': medium_held}, indent=2))
     release()
     for client in clients:
@@ -296,7 +300,8 @@ try:
     clients.clear()
     wait(lambda: not views())
     # Mike's layout: a large front window covers almost all of a back window, leaving
-    # an 80px left strip. Only enough visual movement to fit the 132px circle is allowed.
+    # an 80px left strip. The rear window should stay put and use the largest circle
+    # that fits there, never smaller than its 48px minimum.
     peeking = []
     for name, x in [('PeekingBack', 640), ('CoveringFront', 720)]:
         clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
@@ -311,11 +316,12 @@ try:
     drawn, state = capture('mike-left-strip', list(reversed(peeking)))
     back, front = peeking
     check(abs(state[front]['dx']) + abs(state[front]['dy']) < 1 and
-          -66 < state[back]['dx'] < -58 and abs(state[back]['dy']) < 1,
-          'left-strip case moves only the rear window by the ~62px needed for its circle')
+          abs(state[back]['dx']) + abs(state[back]['dy']) < 1 and
+          48 <= state[back]['badge']['size'] < 132,
+          'left-strip case keeps both windows still and shrinks the rear hint into the strip')
     check(state[back]['badge']['x']+state[back]['badge']['size'] <= rect(drawn[front],state[front])[0]+1 and
-          state[back]['badge']['size'] == 132 and state[front]['badge']['size'] == 132,
-          'rear hint sits in its left visible strip and front hint remains inside the front window')
+          state[back]['badge']['size'] >= 48 and state[front]['badge']['size'] >= 48,
+          'rear minimum-fit hint sits wholly in its left strip while the front hint stays visible')
     check(all(rect(drawn[i]) == rect(before_peek[i]) for i in peeking),
           'left-strip declutter changes neither real window geometry nor scale')
     release()
@@ -337,8 +343,8 @@ try:
     hold()
     drawn, state = capture('fully-hidden', list(reversed(huge)))
     check(all(state[i]['visible'] and not state[i]['edge_label'] and
-              120 <= state[i]['badge']['size'] <= 132 for i in huge),
-          'all three formerly covered windows have clearance-limited interior circles')
+              48 <= state[i]['badge']['size'] <= 132 for i in huge),
+          'all three formerly covered windows retain visible interior hints at the 48px minimum')
     check(abs(state[huge[-1]]['dx'])+abs(state[huge[-1]]['dy']) < 1 and
           any(math.hypot(state[i]['dx'],state[i]['dy']) > 100 for i in huge[:-1]),
           'focused front stays at true geometry while fully covered rear windows emerge')
@@ -419,7 +425,7 @@ try:
     (artifacts/'no-avoidance-drag.json').write_text(json.dumps({'before': real_before,
         'samples': drag_diagnostics, 'after': rect(views()[huge[0]])}, indent=2))
     check(all(abs(s[i]['dx'])+abs(s[i]['dy']) < .1 for s in drag_samples for i in huge),
-          'pointer drag outside window mode creates no hint avoidance offsets')
+          'pointer drag outside window mode creates no window-avoidance offsets')
     time.sleep(.8)
     check(abs(rect(views()[huge[0]])[0] - real_before[0]) > 20 and
           all(abs(h['dx'])+abs(h['dy']) < .1 for h in hints().values()),

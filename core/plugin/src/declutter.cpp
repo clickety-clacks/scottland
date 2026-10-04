@@ -20,16 +20,79 @@ rectangle moved(rectangle r, point delta)
 {
     r.x += delta.x; r.y += delta.y; return r;
 }
+bool fully_occluded(rectangle r, const std::vector<rectangle>& foreground)
+{
+    return std::any_of(foreground.begin(), foreground.end(), [&] (rectangle cover) {
+        return cover.x <= r.x && cover.y <= r.y &&
+            cover.x + cover.width >= r.x + r.width &&
+            cover.y + cover.height >= r.y + r.height;
+    });
+}
+int original_side(rectangle frame, rectangle screen)
+{
+    const double center = screen.x + screen.width / 2;
+    const double x = frame.x + frame.width / 2;
+    return x < center ? -1 : 1;
+}
+int avoidance_side(const exposure_window& window, rectangle screen)
+{
+    return window.center_zone ? 0 : original_side(window.frame, screen);
+}
+std::pair<double, double> horizontal_center_limits(const exposure_window& window, rectangle screen)
+{
+    const double center = screen.x + screen.width / 2;
+    if (window.center_zone)
+    {
+        const double half = std::max(0.0, window.center_zone_half_width);
+        return {center - half, center + half};
+    }
+    return avoidance_side(window, screen) < 0 ?
+        std::pair{-std::numeric_limits<double>::infinity(), center} :
+        std::pair{center, std::numeric_limits<double>::infinity()};
+}
+std::pair<double, double> vertical_center_limits(rectangle frame, rectangle screen)
+{
+    const double center = screen.y + screen.height / 2;
+    const double band = screen.height * .25;
+    const double original = frame.y + frame.height / 2;
+    if (std::abs(original - center) <= band)
+        return {center - band, center + band};
+    return original < center ? std::pair{-std::numeric_limits<double>::infinity(), center} :
+        std::pair{center, std::numeric_limits<double>::infinity()};
+}
+bool remains_in_avoidance_zone(const exposure_window& window, rectangle position, rectangle screen)
+{
+    const auto [xlo, xhi] = horizontal_center_limits(window, screen);
+    const auto [ylo, yhi] = vertical_center_limits(window.frame, screen);
+    const double x = position.x + position.width / 2, y = position.y + position.height / 2;
+    return x >= xlo - .01 && x <= xhi + .01 && y >= ylo - .01 && y <= yhi + .01;
+}
+void constrain_zone_delta(const exposure_window& window, rectangle current, rectangle screen,
+    double& xlo, double& xhi, double& ylo, double& yhi)
+{
+    const auto [cxlo, cxhi] = horizontal_center_limits(window, screen);
+    const auto [cylo, cyhi] = vertical_center_limits(window.frame, screen);
+    const double x = current.x + current.width / 2, y = current.y + current.height / 2;
+    xlo = std::max(xlo, cxlo - x); xhi = std::min(xhi, cxhi - x);
+    ylo = std::max(ylo, cylo - y); yhi = std::min(yhi, cyhi - y);
+}
 struct move_bounds { double xlo, xhi, ylo, yhi; };
-move_bounds bounds_for(rectangle r, rectangle screen, double diameter)
+move_bounds bounds_for(const exposure_window& window, rectangle r, rectangle screen, double diameter)
 {
     double visible = 2 * needed_radius(diameter);
     // Keep the badge-sized portion on screen, but permit the minimal off-screen movement
     // needed when a screen-sized front window covers another window completely.
-    return {std::min(r.x, screen.x - r.width + visible),
+    move_bounds bounds{std::min(r.x, screen.x - r.width + visible),
         std::max(r.x, screen.x + screen.width - visible),
         std::min(r.y, screen.y - r.height + visible),
         std::max(r.y, screen.y + screen.height - visible)};
+    const auto [cxlo, cxhi] = horizontal_center_limits(window, screen);
+    const auto [cylo, cyhi] = vertical_center_limits(window.frame, screen);
+    bounds.xlo = std::max(bounds.xlo, cxlo - r.width / 2);
+    bounds.xhi = std::min(bounds.xhi, cxhi - r.width / 2);
+    bounds.ylo = std::max(bounds.ylo, cylo - r.height / 2);
+    bounds.yhi = std::min(bounds.yhi, cyhi - r.height / 2);
+    return bounds;
 }
 std::vector<double> candidate_axis(rectangle r, rectangle screen,
     const std::vector<rectangle>& obstacles, double radius, bool horizontal,
@@ -64,6 +127,23 @@ bool expired(std::chrono::steady_clock::time_point deadline)
     return deadline != std::chrono::steady_clock::time_point::max() &&
         std::chrono::steady_clock::now() >= deadline;
 }
+bool take_inspection(size_t& count, size_t budget)
+{
+    if (count >= budget) return false;
+    ++count;
+    return true;
+}
+bool stopped(std::chrono::steady_clock::time_point deadline, size_t count, size_t budget)
+{
+    return expired(deadline) || count >= budget;
+}
+std::optional<double> checked_clearance(point center, rectangle window, rectangle screen,
+    const std::vector<rectangle>& foreground, std::chrono::steady_clock::time_point deadline,
+    size_t& count, size_t budget)
+{
+    if (!take_inspection(count, budget)) return {};
+    return visible_clearance_before(center, window, screen, foreground, deadline);
+}
 std::chrono::steady_clock::time_point label_deadline(std::chrono::steady_clock::time_point solve_deadline)
 {
     if (solve_deadline == std::chrono::steady_clock::time_point::max()) return solve_deadline;
@@ -74,16 +154,27 @@ struct candidate
     size_t moved_index;
     point delta;
     double travel;
+    double displayed_travel;
     point label_center;
     double clearance;
+    int branch_axis;
+    int branch_sign;
+    bool branch_match;
 };
 std::optional<candidate> least_exposure_move(size_t index, double diameter,
     const std::vector<rectangle>& nodes, const std::vector<exposure_window>& windows,
     rectangle screen, const std::vector<rectangle>& fixed,
     std::chrono::steady_clock::time_point deadline,
-    const std::vector<label_spot>& known_spots, const std::vector<bool>& has_spot)
+    const std::vector<label_spot>& known_spots, const std::vector<bool>& has_spot,
+    size_t& work_count, size_t work_budget, bool *search_truncated)
 {
-    if (expired(deadline)) return {};
+    if (search_truncated) *search_truncated = false;
+    std::optional<candidate> best;
+    auto partial_result = [&] () {
+        if (search_truncated) *search_truncated = true;
+        return best;
+    };
+    if (stopped(deadline, work_count, work_budget)) return partial_result();
     auto r = nodes[index]; double radius = needed_radius(diameter);
     std::vector<rectangle> static_here = fixed;
     static_here.reserve(fixed.size() + windows[index].fixed_foreground.size());
@@ -94,43 +185,116 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
     for (size_t j = 0; j < index; ++j) obstacles.push_back(nodes[j]);
     auto xs = candidate_axis(r, screen, obstacles, radius, true, deadline);
     auto ys = candidate_axis(r, screen, obstacles, radius, false, deadline);
-    std::optional<candidate> best;
     struct protected_label { size_t index; point center; double radius; };
     std::vector<protected_label> protected_labels;
-    protected_labels.reserve(nodes.size() - index - 1);
-    for (size_t k = index + 1; k < nodes.size(); ++k)
+    protected_labels.reserve(nodes.size() - (nodes.empty() ? 0 : 1));
+    for (size_t k = 0; k < nodes.size(); ++k)
     {
-        if (expired(deadline)) return best;
-        if (has_spot[k] && known_spots[k].clearance + .25 >= needed_radius(windows[k].minimum))
+        if (stopped(deadline, work_count, work_budget)) return partial_result();
+        if (k != index && has_spot[k] &&
+            known_spots[k].clearance + .25 >= needed_radius(windows[k].minimum))
             protected_labels.push_back({k, known_spots[k].center,
                 std::min(known_spots[k].clearance - .25,
                     needed_radius(std::max(windows[k].wanted, windows[k].minimum)))});
     }
     std::vector<rectangle> one_obstacle;
     one_obstacle.reserve(1);
+    std::vector<rectangle> label_foreground;
+    size_t label_foreground_capacity = fixed.size() + nodes.size();
+    for (const auto& window : windows)
+        label_foreground_capacity += window.fixed_foreground.size();
+    label_foreground.reserve(label_foreground_capacity);
+    auto same_displacement_side = [&] (size_t moved_index, point delta) {
+        // Prefer the direction already on screen and retain a prior destination while
+        // it is easing in. A new solve must not reverse either incumbent by tie order.
+        const point old = windows[moved_index].incumbent_offset;
+        const point old_target = windows[moved_index].target_offset;
+        const point target{nodes[moved_index].x + delta.x - windows[moved_index].frame.x,
+            nodes[moved_index].y + delta.y - windows[moved_index].frame.y};
+        if (std::abs(old.x) > .01 && target.x * old.x < -.01) return false;
+        if (std::abs(old.y) > .01 && target.y * old.y < -.01) return false;
+        if (std::abs(old_target.x) > .01 && target.x * old_target.x < -.01) return false;
+        if (std::abs(old_target.y) > .01 && target.y * old_target.y < -.01) return false;
+        return true;
+    };
+    auto branch_of = [] (point offset) {
+        const bool x = std::abs(offset.x) >= .01, y = std::abs(offset.y) >= .01;
+        if (!x && !y) return std::pair{0, 0};
+        // A way is a one-dimensional ray from true geometry. Combining x and y
+        // offsets creates a diagonal route whose identity changes as it eases.
+        if (x && y) return std::pair{-1, 0};
+        const int axis = x ? 1 : 2;
+        const double value = x ? offset.x : offset.y;
+        return std::pair{axis, value < 0 ? -1 : 1};
+    };
+    auto matches_branch = [&] (size_t moved_index, point delta) {
+        point offset{nodes[moved_index].x + delta.x - windows[moved_index].frame.x,
+            nodes[moved_index].y + delta.y - windows[moved_index].frame.y};
+        // Zero is valid on every way when the label fits at true geometry. Keep the
+        // way identity dormant so the same direction wins again if its obstruction returns.
+        if (std::hypot(offset.x, offset.y) < .01) return true;
+        auto [axis, direction] = branch_of(offset);
+        return windows[moved_index].branch_owner == int(index) &&
+            windows[moved_index].branch_axis == axis && windows[moved_index].branch_sign == direction;
+    };
     auto offer = [&] (size_t moved_index, point delta, point label_center, double clearance) {
-        if (expired(deadline)) return false;
-        if (windows[moved_index].anchored) return true;
-        double distance = std::hypot(delta.x, delta.y);
+        if (stopped(deadline, work_count, work_budget)) return false;
+        const bool is_zero = std::hypot(delta.x, delta.y) < .01;
+        if (windows[moved_index].anchored && !is_zero) return true;
+        if (!remains_in_avoidance_zone(windows[moved_index],
+            moved(nodes[moved_index], delta), screen)) return true;
+        const point final_offset{nodes[moved_index].x + delta.x - windows[moved_index].frame.x,
+            nodes[moved_index].y + delta.y - windows[moved_index].frame.y};
+        if (std::abs(final_offset.x) >= .01 && std::abs(final_offset.y) >= .01)
+            return true; // all retained ways and replacements are single-axis rays
+        double displayed_distance = std::hypot(final_offset.x - windows[moved_index].incumbent_offset.x,
+            final_offset.y - windows[moved_index].incumbent_offset.y);
+        auto [axis, direction] = branch_of(final_offset);
+        bool branch_match = matches_branch(moved_index, delta);
+        // A retained way wins while feasible; inside it the solve returns to the
+        // smallest offset from true geometry. A new way is ranked from the displayed
+        // incumbent, so a necessary branch change starts nearby.
+        double distance = branch_match ? std::hypot(final_offset.x, final_offset.y) : displayed_distance;
         // A rear circle already uncovered in an earlier pass must remain uncovered.
-        // This prevents two equally cheap moves from undoing each other in a stack.
+        // A visible foreground circle must remain visible too. Otherwise moving a front
+        // window for a rear one can retarget it back and forth on every small input change.
         for (auto label : protected_labels)
         {
-            if (expired(deadline)) return false;
+            if (stopped(deadline, work_count, work_budget)) return false;
+            if (moved_index > label.index) continue; // a rear move cannot cover this label
             auto rear = moved_index == label.index ? moved(nodes[label.index], delta) : nodes[label.index];
-            auto shifted = moved(nodes[moved_index], delta);
-            one_obstacle.assign(1, shifted);
-            auto clearance = visible_clearance_before(label.center, rear, screen, one_obstacle, deadline);
+            auto center = label.center;
+            if (moved_index == label.index)
+            { center.x += delta.x; center.y += delta.y; }
+            label_foreground.assign(fixed.begin(), fixed.end());
+            label_foreground.insert(label_foreground.end(),
+                windows[label.index].fixed_foreground.begin(),
+                windows[label.index].fixed_foreground.end());
+            for (size_t k = 0; k < label.index; ++k)
+                label_foreground.push_back(k == moved_index ? moved(nodes[k], delta) : nodes[k]);
+            auto clearance = checked_clearance(center, rear, screen, label_foreground, deadline,
+                work_count, work_budget);
             if (!clearance) return false;
             if (*clearance < label.radius - .01) return true;
         }
-        if (!best || distance < best->travel - .01 ||
-            (std::abs(distance - best->travel) < .01 && moved_index == index &&
-             best->moved_index != index))
-            best = candidate{moved_index, delta, distance, label_center, clearance};
+        // A feasible branch already wins on rank. If it has no candidate, a replacement
+        // branch is allowed and is ranked from the displayed offset below.
+        bool wins_tie = false;
+        if (best && branch_match != best->branch_match)
+            wins_tie = branch_match;
+        else if (best && std::abs(distance - best->travel) < .01)
+        {
+            const bool follows = same_displacement_side(moved_index, delta);
+            const bool best_follows = same_displacement_side(best->moved_index, best->delta);
+            wins_tie = (follows && !best_follows) || (follows == best_follows &&
+                moved_index == index && best->moved_index != index);
+        }
+        if (!best || (branch_match == best->branch_match && distance < best->travel - .01) || wins_tie)
+            best = candidate{moved_index, delta, distance, displayed_distance, label_center,
+                clearance, axis, direction, branch_match};
         return true;
     };
-    auto current_bounds = bounds_for(r, screen, diameter);
+    auto current_bounds = bounds_for(windows[index], r, screen, diameter);
     std::vector<rectangle> other_foreground;
     other_foreground.reserve(static_here.size() + index);
     size_t center_x = std::min_element(xs.begin(), xs.end(), [&] (double a, double b) {
@@ -141,12 +305,15 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
     }) - ys.begin();
     std::set<std::pair<size_t, size_t>> tried;
     auto inspect = [&] (size_t xi, size_t yi) {
-        if (expired(deadline) || !tried.emplace(xi, yi).second) return !expired(deadline);
+        if (stopped(deadline, work_count, work_budget) || !tried.emplace(xi, yi).second)
+            return !stopped(deadline, work_count, work_budget);
+        if (!take_inspection(work_count, work_budget)) return false;
         double x = xs[xi], y = ys[yi];
         point center{x, y};
         if (x < screen.x + radius || x > screen.x + screen.width - radius ||
             y < screen.y + radius || y > screen.y + screen.height - radius) return true;
-        auto unobscured = visible_clearance_before(center, screen, screen, obstacles, deadline);
+        auto unobscured = checked_clearance(center, screen, screen, obstacles, deadline,
+            work_count, work_budget);
         if (!unobscured) return false;
         // First try moving only the covered window. Its foreground stays put.
         if (*unobscured >= radius - .01)
@@ -155,23 +322,37 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
             double xhi = std::min(x - radius - r.x, current_bounds.xhi - r.x);
             double ylo = std::max(y + radius - r.y - r.height, current_bounds.ylo - r.y);
             double yhi = std::min(y - radius - r.y, current_bounds.yhi - r.y);
-            if (xlo <= xhi && ylo <= yhi &&
-                !offer(index, {std::clamp(0.0, xlo, xhi), std::clamp(0.0, ylo, yhi)},
-                    center, *unobscured)) return false;
+            constrain_zone_delta(windows[index], r, screen, xlo, xhi, ylo, yhi);
+            if (xlo <= xhi && ylo <= yhi)
+            {
+                const point own{std::clamp(0.0, xlo, xhi), std::clamp(0.0, ylo, yhi)};
+                if (std::abs(own.x) < .01 && std::abs(own.y) < .01 &&
+                    !offer(index, {}, center, *unobscured)) return false;
+                // Each candidate is the nearest point on one ray that contains this
+                // circle. Among all visible-label candidates, the solver selects the
+                // smallest true-position offset on the retained ray. A diagonal move
+                // is not a branch: it would have no stable way identity.
+                if (std::abs(own.x) > .01 && ylo <= .01 && yhi >= -.01 &&
+                    !offer(index, {own.x, 0}, center, *unobscured)) return false;
+                if (std::abs(own.y) > .01 && xlo <= .01 && xhi >= -.01 &&
+                    !offer(index, {0, own.y}, center, *unobscured)) return false;
+            }
         }
         // A fully covering foreground surface may have to move to reveal a rear circle.
-        auto this_clearance = visible_clearance_before(center, r, screen, static_here, deadline);
+        auto this_clearance = checked_clearance(center, r, screen, static_here, deadline,
+            work_count, work_budget);
         if (!this_clearance) return false;
         if (*this_clearance < radius - .01) return true;
         for (size_t j = 0; j < index; ++j)
         {
-            if (expired(deadline)) return false;
+            if (stopped(deadline, work_count, work_budget)) return false;
             other_foreground.assign(static_here.begin(), static_here.end());
             for (size_t k = 0; k < index; ++k) if (k != j) other_foreground.push_back(nodes[k]);
-            auto open = visible_clearance_before(center, r, screen, other_foreground, deadline);
+            auto open = checked_clearance(center, r, screen, other_foreground, deadline,
+                work_count, work_budget);
             if (!open) return false;
             if (*open < radius - .01) continue;
-            auto front = nodes[j]; auto limit = bounds_for(front, screen, diameter);
+            auto front = nodes[j]; auto limit = bounds_for(windows[j], front, screen, diameter);
             std::array<point, 4> deltas{{
                 {x + radius + .5 - front.x, 0},
                 {x - radius - .5 - front.x - front.width, 0},
@@ -179,12 +360,14 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
                 {0, y - radius - .5 - front.y - front.height}}};
             for (point delta : deltas)
             {
-                if (expired(deadline)) return false;
+                if (stopped(deadline, work_count, work_budget)) return false;
                 auto shifted = moved(front, delta);
                 if (shifted.x < limit.xlo - .01 || shifted.x > limit.xhi + .01 ||
-                    shifted.y < limit.ylo - .01 || shifted.y > limit.yhi + .01) continue;
+                    shifted.y < limit.ylo - .01 || shifted.y > limit.yhi + .01 ||
+                    !remains_in_avoidance_zone(windows[j], shifted, screen)) continue;
                 one_obstacle.assign(1, shifted);
-                auto clearance = visible_clearance_before(center, r, screen, one_obstacle, deadline);
+                auto clearance = checked_clearance(center, r, screen, one_obstacle, deadline,
+                    work_count, work_budget);
                 if (!clearance) return false;
                 if (*clearance >= radius - .01 &&
                     !offer(j, delta, center, std::min(*open, *clearance))) return false;
@@ -193,30 +376,32 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
         return true;
     };
 
-    // First test the left/right/top/bottom edge slides, then the four opposite corners.
-    // These are the coarse exact-contact candidates that can expose a wanted circle quickly.
-    auto spread = [] (size_t count) {
-        std::vector<size_t> result;
-        size_t lo = 0, hi = count ? count - 1 : 0;
-        while (lo <= hi && count)
-        {
-            result.push_back(lo++);
-            if (lo <= hi) result.push_back(hi--);
-        }
-        return result;
-    };
-    auto x_order = spread(xs.size()), y_order = spread(ys.size());
-    for (auto xi : x_order) if (!inspect(xi, center_y)) return best;
-    for (auto yi : y_order) if (!inspect(center_x, yi)) return best;
-    for (auto xi : {size_t(0), xs.size() - 1})
-        for (auto yi : {size_t(0), ys.size() - 1})
-            if (!inspect(xi, yi)) return best;
-
-    // Refine the coarse result by examining remaining contact pairs in increasing
-    // lower-bound travel. Include moves of either the covered window or a foreground
-    // window in the bound, so the first satisfactory minimum is safe to stop at.
+    // Estimate the least movement that each visible-label candidate could require.
     auto movement_lower_bound = [&] (double x, double y) {
-        double lower = std::numeric_limits<double>::infinity();
+        std::pair<int, double> lower{2, std::numeric_limits<double>::infinity()};
+        if (stopped(deadline, work_count, work_budget)) return lower;
+        auto offer_lower = [&] (size_t moved_index, point delta) {
+            if (stopped(deadline, work_count, work_budget)) return;
+            // A zero-distance lower bound is useful only when the proposed badge
+            // center is actually visible after this move. Previously, covered centers
+            // inside a window's own frame sorted ahead of every real opening at cost
+            // zero; a stack then spent the entire deadline proving those impossible.
+            auto lower_foreground = obstacles;
+            if (moved_index != index)
+                lower_foreground[static_here.size() + moved_index] = moved(nodes[moved_index], delta);
+            auto visible = checked_clearance({x, y}, screen, screen, lower_foreground, deadline,
+                work_count, work_budget);
+            if (!visible || *visible < radius - .01) return;
+            const auto final_offset = point{nodes[moved_index].x + delta.x - windows[moved_index].frame.x,
+                nodes[moved_index].y + delta.y - windows[moved_index].frame.y};
+            if (std::abs(final_offset.x) >= .01 && std::abs(final_offset.y) >= .01) return;
+            const bool branch_match = matches_branch(moved_index, delta);
+            const double distance = branch_match ? std::hypot(final_offset.x, final_offset.y) :
+                std::hypot(final_offset.x - windows[moved_index].incumbent_offset.x,
+                    final_offset.y - windows[moved_index].incumbent_offset.y);
+            std::pair<int, double> candidate_lower{branch_match ? 0 : 1, distance};
+            if (candidate_lower < lower) lower = candidate_lower;
+        };
         if (x < screen.x + radius || x > screen.x + screen.width - radius ||
             y < screen.y + radius || y > screen.y + screen.height - radius) return lower;
         if (!windows[index].anchored)
@@ -225,14 +410,27 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
             double xhi = std::min(x - radius - r.x, current_bounds.xhi - r.x);
             double ylo = std::max(y + radius - r.y - r.height, current_bounds.ylo - r.y);
             double yhi = std::min(y - radius - r.y, current_bounds.yhi - r.y);
+            constrain_zone_delta(windows[index], r, screen, xlo, xhi, ylo, yhi);
             if (xlo <= xhi && ylo <= yhi)
-                lower = std::hypot(std::clamp(0.0, xlo, xhi), std::clamp(0.0, ylo, yhi));
+            {
+                const point own{std::clamp(0.0, xlo, xhi), std::clamp(0.0, ylo, yhi)};
+                if (std::abs(own.x) < .01 && std::abs(own.y) < .01)
+                    offer_lower(index, {});
+                if (std::abs(own.x) > .01 && ylo <= .01 && yhi >= -.01)
+                    offer_lower(index, {own.x, 0});
+                if (std::abs(own.y) > .01 && xlo <= .01 && xhi >= -.01)
+                    offer_lower(index, {0, own.y});
+            }
         }
-        for (size_t j = 0; j < index && !expired(deadline); ++j)
+        auto owner_clearance = checked_clearance({x, y}, r, screen, static_here, deadline,
+            work_count, work_budget);
+        const bool owner_can_stay = owner_clearance && *owner_clearance >= radius - .01;
+        for (size_t j = 0; owner_can_stay && j < index &&
+            !stopped(deadline, work_count, work_budget); ++j)
         {
             if (windows[j].anchored) continue;
             auto front = nodes[j];
-            auto limit = bounds_for(front, screen, diameter);
+            auto limit = bounds_for(windows[j], front, screen, diameter);
             std::array<point, 4> deltas{{
                 {x + radius + .5 - front.x, 0},
                 {x - radius - .5 - front.x - front.width, 0},
@@ -242,72 +440,201 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
             {
                 auto shifted = moved(front, delta);
                 if (shifted.x < limit.xlo - .01 || shifted.x > limit.xhi + .01 ||
-                    shifted.y < limit.ylo - .01 || shifted.y > limit.yhi + .01) continue;
-                lower = std::min(lower, std::hypot(delta.x, delta.y));
+                    shifted.y < limit.ylo - .01 || shifted.y > limit.yhi + .01 ||
+                    !remains_in_avoidance_zone(windows[j], shifted, screen)) continue;
+                offer_lower(j, delta);
             }
         }
         return lower;
     };
-    using refinement_entry = std::tuple<double, size_t, size_t>;
-    auto later = [] (const refinement_entry& a, const refinement_entry& b) { return a > b; };
-    std::priority_queue<refinement_entry, std::vector<refinement_entry>, decltype(later)> refinement(later);
+    using candidate_entry = std::tuple<int, double, double, size_t, size_t>;
+    auto label_distance = [&] (size_t xi, size_t yi) {
+        if (!has_spot[index]) return 0.0;
+        return std::hypot(xs[xi] - known_spots[index].center.x,
+            ys[yi] - known_spots[index].center.y);
+    };
+    auto add_candidate = [&] (std::vector<candidate_entry>& entries, size_t xi, size_t yi) {
+        if (stopped(deadline, work_count, work_budget) || !take_inspection(work_count, work_budget)) return;
+        const auto lower = movement_lower_bound(xs[xi], ys[yi]);
+        if (!stopped(deadline, work_count, work_budget) && std::isfinite(lower.second))
+            entries.emplace_back(lower.first, lower.second, label_distance(xi, yi), xi, yi);
+    };
+    // Window-move candidates are ordered by travel from the displayed incumbent;
+    // opposite screen edges are never privileged by their coordinate or array index.
+    std::vector<candidate_entry> coarse;
+    for (size_t xi = 0; xi < xs.size() && !stopped(deadline, work_count, work_budget); ++xi)
+        add_candidate(coarse, xi, center_y);
+    for (size_t yi = 0; yi < ys.size() && !stopped(deadline, work_count, work_budget); ++yi)
+        add_candidate(coarse, center_x, yi);
+    for (auto xi : {size_t(0), xs.size() - 1})
+        for (auto yi : {size_t(0), ys.size() - 1}) add_candidate(coarse, xi, yi);
+    std::sort(coarse.begin(), coarse.end());
+    for (const auto& [branch_penalty, travel, label_travel, xi, yi] : coarse)
+    {
+        // The coarse set is ordered by a lower bound on window travel. Once the
+        // nearest checked branch has a feasible placement, farther coarse points
+        // cannot improve it. Do not build/refine the full x-by-y matrix on every
+        // drag tick: that repeated matrix build was consuming the whole frame
+        // budget before a useful answer could be committed.
+        if (best && (branch_penalty > (best->branch_match ? 0 : 1) ||
+            (branch_penalty == (best->branch_match ? 0 : 1) && travel > best->travel + .01)))
+            return best;
+        (void)label_travel;
+        if (!inspect(xi, yi)) return partial_result();
+    }
+    // Window moves are nearest-travel first. If the coarse pass only found a
+    // replacement way, refine the remaining label positions before declaring the
+    // retained way impossible. A deadline here leaves the bridge on its current
+    // target for this tick; it must never switch ways just because the coarse set
+    // missed a same-way opening.
+
+    // Refine over all remaining contact pairs in increasing lower-bound travel. Candidate
+    // generation is deadline checked, so a truncated search keeps its checked coarse answer.
+    auto later = [] (const candidate_entry& a, const candidate_entry& b) { return a > b; };
+    std::priority_queue<candidate_entry, std::vector<candidate_entry>, decltype(later)> refinement(later);
     for (size_t xi = 0; xi < xs.size(); ++xi)
         for (size_t yi = 0; yi < ys.size(); ++yi)
             if (!tried.count({xi, yi}))
             {
-                if (expired(deadline)) return best;
-                double lower = movement_lower_bound(xs[xi], ys[yi]);
-                if (expired(deadline)) return best;
-                if (std::isfinite(lower)) refinement.emplace(lower, xi, yi);
+                if (stopped(deadline, work_count, work_budget)) return partial_result();
+                if (!take_inspection(work_count, work_budget)) return partial_result();
+                const auto lower = movement_lower_bound(xs[xi], ys[yi]);
+                if (stopped(deadline, work_count, work_budget)) return partial_result();
+                if (std::isfinite(lower.second)) refinement.emplace(lower.first, lower.second,
+                    label_distance(xi, yi), xi, yi);
             }
-    while (!refinement.empty() && !expired(deadline))
+    while (!refinement.empty() && !stopped(deadline, work_count, work_budget))
     {
-        auto [travel, xi, yi] = refinement.top();
+        auto [branch_penalty, travel, label_travel, xi, yi] = refinement.top();
         refinement.pop();
-        // Remaining candidates have at least this much travel. Once a satisfactory minimum
-        // is known, farther cells cannot improve it.
-        if (best && travel > best->travel + .01) break;
-        if (!inspect(xi, yi)) return best;
+        (void)label_travel;
+        // Within a way, remaining candidates have at least this much rest-relative travel.
+        // Exhaust that way before considering any branch switch.
+        if (best && branch_penalty > (best->branch_match ? 0 : 1)) break;
+        if (best && branch_penalty == (best->branch_match ? 0 : 1) && travel > best->travel + .01) break;
+        if (!inspect(xi, yi)) return partial_result();
     }
+    if (stopped(deadline, work_count, work_budget)) return partial_result();
     return best;
 }
 }
 
 std::vector<exposure_result> expose_window_hints(const std::vector<exposure_window>& windows,
     rectangle screen, const std::vector<rectangle>& fixed,
-    std::chrono::steady_clock::time_point deadline, bool *deadline_hit)
+    std::chrono::steady_clock::time_point deadline, bool *deadline_hit, exposure_profile *profile,
+    exposure_limits limits)
 {
+    const auto profile_start = std::chrono::steady_clock::now();
     if (deadline_hit) *deadline_hit = false;
+    size_t work_count = 0;
+    if (profile)
+    {
+        profile->work_count = 0;
+        profile->label_work_count = 0;
+        profile->movement_work_count = 0;
+        profile->movement_searches = 0;
+        profile->truncated_searches = 0;
+        profile->last_search_window = 0;
+    }
+    auto do_clearance = [&] (point center, rectangle window, const std::vector<rectangle>& foreground,
+        auto until) { return checked_clearance(center, window, screen, foreground, until,
+            work_count, limits.inspection_budget); };
+    auto do_label = [&] (rectangle window, const std::vector<rectangle>& foreground,
+        double precision, auto until, double sufficient = -1.0) {
+        if (!take_inspection(work_count, limits.inspection_budget)) return label_spot{};
+        size_t local_inspections = 0;
+        const size_t remaining = limits.inspection_budget - work_count;
+        auto result = visible_label(window, screen, foreground, precision, until, sufficient,
+            remaining, &local_inspections);
+        work_count += local_inspections;
+        if (profile) profile->label_work_count += local_inspections;
+        return result;
+    };
+    auto active_windows = windows;
+    std::vector<double> retained_clearances(windows.size(), -1);
+    auto held_result = [&] (size_t i) {
+            const auto& window = windows[i];
+            auto offset = window.anchored ? point{} : window.target_offset;
+            auto center = point{window.frame.x + window.frame.width / 2 + offset.x +
+                    window.prior_label_offset.x,
+                window.frame.y + window.frame.height / 2 + offset.y +
+                    window.prior_label_offset.y};
+            double clearance = std::max(0.0, window.prior_clearance);
+            if (clearance <= 0)
+            {
+                center = {window.frame.x + window.frame.width / 2 + offset.x,
+                    window.frame.y + window.frame.height / 2 + offset.y};
+                clearance = 0;
+            }
+            const double wanted = std::max(window.wanted, window.minimum);
+            const double available = std::floor(std::max(0.0, 2 * (clearance - 1) / pop_scale));
+            return exposure_result{offset, {center, clearance},
+                std::max(window.minimum, std::min(wanted, available)),
+                window.branch_owner, window.branch_axis, window.branch_sign,
+                retained_clearances[i]};
+    };
     std::vector<rectangle> nodes;
-    for (auto w : windows) nodes.push_back(w.frame);
+    for (auto w : active_windows)
+    {
+        // Every layout solve starts from true geometry. Stored offsets describe a
+        // branch and deadline fallback only; a drawn transformer never becomes input.
+        nodes.push_back(w.frame);
+    }
     std::vector<label_spot> best_spots(nodes.size());
     std::vector<bool> has_spot(nodes.size(), false);
     // Keep a cheap checked no-move answer so a deadline still leaves unobscured badges usable.
     for (size_t i = 0; i < nodes.size(); ++i)
     {
-        if (i && expired(deadline)) break;
         std::vector<rectangle> foreground = fixed;
-        foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
-            windows[i].fixed_foreground.end());
+        foreground.insert(foreground.end(), active_windows[i].fixed_foreground.begin(),
+            active_windows[i].fixed_foreground.end());
         for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
         point center{nodes[i].x + nodes[i].width / 2, nodes[i].y + nodes[i].height / 2};
-        if (auto clearance = visible_clearance_before(center, nodes[i], screen, foreground, deadline))
+        // The stored label point is relative to true geometry: the previous target
+        // was subtracted when the bridge recorded it. Rechecking it from the true
+        // frame lets this solve recompute the least offset along the retained way;
+        // adding the prior target here feeds yesterday's visual transform back into
+        // today's solver and can falsely invalidate the way by putting the badge
+        // outside the new, undisplaced frame.
+        point previous_label{center.x + active_windows[i].prior_label_offset.x,
+            center.y + active_windows[i].prior_label_offset.y};
+        auto prior_clearance = stopped(deadline, work_count, limits.inspection_budget) ?
+            std::optional<double>{} : do_clearance(previous_label, nodes[i], foreground, deadline);
+        if (prior_clearance) retained_clearances[i] = *prior_clearance;
+        if (prior_clearance && *prior_clearance + .25 >= needed_radius(active_windows[i].minimum))
         {
-            best_spots[i] = {center, *clearance};
+            best_spots[i] = {previous_label, *prior_clearance};
             has_spot[i] = true;
+        } else if (!stopped(deadline, work_count, limits.inspection_budget))
+        {
+            if (auto clearance = do_clearance(center, nodes[i], foreground, deadline))
+            {
+                best_spots[i] = {center, *clearance};
+                has_spot[i] = true;
+            }
         }
     }
+    const auto placement_started = std::chrono::steady_clock::now();
+    if (profile) profile->initialization_ms = std::chrono::duration<double, std::milli>(
+        placement_started - profile_start).count();
+    std::vector<bool> hold_targets(nodes.size(), false);
+    std::vector<bool> visited(nodes.size(), false);
+    std::vector<bool> moved_this_solve(nodes.size(), false);
+    bool incomplete = false;
     // A later rear window may require moving a foreground window, so revisit all
     // constraints until each one has room. No move is proposed for an already legible
     // window unless exposing a covered window requires that foreground concession.
-    for (size_t pass = 0; pass < 2 * windows.size() + 4; ++pass)
+    for (size_t pass = 0; pass < 2 * active_windows.size() + 4; ++pass)
     {
-        if (expired(deadline)) break;
+        if (stopped(deadline, work_count, limits.inspection_budget)) break;
         bool changed = false;
-        for (size_t i = 0; i < nodes.size(); ++i)
+        for (size_t order = 0; order < nodes.size(); ++order)
         {
-            const double wanted = std::max(windows[i].wanted, windows[i].minimum);
-            if (expired(deadline)) break;
+            const size_t i = order; // fixed front-to-back order; retries never rotate
+            if (hold_targets[i]) continue;
+            const double wanted = std::max(active_windows[i].wanted, active_windows[i].minimum);
+            if (stopped(deadline, work_count, limits.inspection_budget)) break;
+            visited[i] = true;
             // Share remaining time with the windows still waiting in this pass. A single
             // difficult mid-stack window must not consume the whole refresh before a
             // completely covered rear window gets any checked placement.
@@ -315,97 +642,381 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             if (deadline != std::chrono::steady_clock::time_point::max())
             {
                 auto now = std::chrono::steady_clock::now();
-                window_deadline = now + (deadline - now) / (nodes.size() - i);
+                window_deadline = now + (deadline - now) / (nodes.size() - order);
             }
             std::vector<rectangle> foreground = fixed;
-            foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
-                windows[i].fixed_foreground.end());
+            foreground.insert(foreground.end(), active_windows[i].fixed_foreground.begin(),
+                active_windows[i].fixed_foreground.end());
             for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
-            auto spot = has_spot[i] && best_spots[i].clearance <
-                needed_radius(windows[i].minimum) ? best_spots[i] :
-                visible_label(nodes[i], screen, foreground, .5, label_deadline(window_deadline),
-                    needed_radius(wanted));
+            // First look for the widget-size minimum in the current visible region.
+            // Preferred-size enlargement is a later, separately bounded movement step;
+            // asking visible_label to certify the wanted diameter before that check
+            // turns every overlapped window into a full 250 us maximization pass.
+            const double solve_diameter = active_windows[i].minimum;
+            const bool covered = fully_occluded(nodes[i], foreground);
+            const bool incumbent_fits_request = has_spot[i] && best_spots[i].clearance + .25 >=
+                needed_radius(solve_diameter);
+            auto spot = incumbent_fits_request ? best_spots[i] :
+                (covered ? label_spot{{nodes[i].x + nodes[i].width / 2,
+                    nodes[i].y + nodes[i].height / 2}, 0} :
+                    do_label(nodes[i], foreground, .5, label_deadline(window_deadline),
+                        needed_radius(solve_diameter)));
             if (!has_spot[i] || spot.clearance > best_spots[i].clearance)
             { best_spots[i] = spot; has_spot[i] = true; }
+            else spot = best_spots[i]; // an expired label refinement cannot eclipse its checked incumbent
             if (spot.clearance + .25 >= needed_radius(wanted)) continue;
+            if (spot.clearance + .25 >= needed_radius(active_windows[i].minimum) &&
+                !limits.allow_size_upgrades) continue;
             std::optional<candidate> choice;
-            if (spot.clearance < needed_radius(windows[i].minimum))
+            bool movement_search_truncated = false;
+            auto find_move = [&] (double diameter) {
+                bool this_search_truncated = false;
+                const auto work_before = work_count;
+                auto found = least_exposure_move(i, diameter, nodes, active_windows, screen, fixed,
+                    window_deadline, best_spots, has_spot, work_count,
+                    limits.inspection_budget, &this_search_truncated);
+                if (profile)
+                {
+                    ++profile->movement_searches;
+                    profile->movement_work_count += work_count - work_before;
+                    profile->truncated_searches += this_search_truncated;
+                    profile->last_search_window = i;
+                }
+                movement_search_truncated |= this_search_truncated;
+                return found;
+            };
+            const bool minimum_fits_here = spot.clearance + .25 >=
+                needed_radius(active_windows[i].minimum);
+            if (!minimum_fits_here)
             {
-                // A fully covered window may still move into a broad free strip. Find
-                // that opening once, derive its actual readable diameter, and search
-                // movement for that size directly instead of binary-searching upward.
-                auto open = visible_label(screen, screen, foreground, .5,
-                    label_deadline(window_deadline));
-                double available = std::floor(std::max(0.0,
-                    2 * (open.clearance - 1) / pop_scale));
-                available = std::min(available, wanted);
-                if (available >= windows[i].minimum && !expired(window_deadline))
-                    choice = least_exposure_move(i, available, nodes, windows, screen, fixed,
-                        window_deadline, best_spots, has_spot);
+                // First solve only for the visible minimum. Looking for the largest
+                // free strip before moving a covered window spent several thousand
+                // label inspections and could starve every solve. A nearby size upgrade
+                // is considered after the minimum badge has a checked home.
+                choice = find_move(active_windows[i].minimum);
+            } else if (limits.allow_size_upgrades &&
+                spot.clearance + .25 < needed_radius(wanted))
+            {
+                choice = find_move(wanted);
             }
-            if (!choice && !expired(window_deadline))
-                choice = least_exposure_move(i, wanted,
-                    nodes, windows, screen, fixed, window_deadline, best_spots, has_spot);
             if (!choice)
             {
+                if (movement_search_truncated)
+                {
+                    if (!minimum_fits_here)
+                    {
+                        hold_targets[i] = true;
+                        if (!moved_this_solve[i])
+                            nodes[i] = moved(windows[i].frame, windows[i].anchored ? point{} :
+                                windows[i].target_offset);
+                        incomplete = true;
+                    }
+                    continue; // keep the checked incumbent for this tick
+                }
+                if (!minimum_fits_here || !limits.allow_size_upgrades)
+                    continue; // no minimum placement, or no larger-size request
+
                 // If the wanted circle cannot fit, refine upward from the least-travel
                 // readable placement while budget remains.
-                double lo = windows[i].minimum, hi = wanted;
-                if (!expired(window_deadline))
-                    choice = least_exposure_move(i, lo, nodes, windows, screen, fixed, window_deadline,
-                        best_spots, has_spot);
-                if (!choice) continue; // no on-screen circle exists in this configuration
+                double lo = active_windows[i].minimum, hi = wanted;
+                if (!stopped(window_deadline, work_count, limits.inspection_budget))
+                    choice = find_move(lo);
+                if (!choice)
+                {
+                    if (movement_search_truncated && !minimum_fits_here)
+                    {
+                        hold_targets[i] = true;
+                        if (!moved_this_solve[i])
+                            nodes[i] = moved(windows[i].frame, windows[i].anchored ? point{} :
+                                windows[i].target_offset);
+                        incomplete = true;
+                    }
+                    continue;
+                }
                 while (hi - lo > 1)
                 {
-                    if (expired(window_deadline)) break;
+                    if (stopped(window_deadline, work_count, limits.inspection_budget)) break;
                     double mid = std::floor((lo + hi) / 2);
-                    if (auto possible = least_exposure_move(i, mid, nodes, windows, screen, fixed,
-                        window_deadline, best_spots, has_spot))
+                    if (auto possible = find_move(mid))
                     { lo = mid; choice = possible; }
                     else hi = mid;
                 }
             }
-            if (choice->travel < .01) continue;
+            auto readable_diameter = [&] (double clearance) {
+                return std::max(active_windows[i].minimum, std::min(wanted,
+                    std::floor(std::max(0.0, 2 * (clearance - 1) / pop_scale))));
+            };
+            // A way is a one-axis ray from the window's true frame. Candidate
+            // generation finds a checked point on that ray; tighten it toward zero
+            // before committing. This is what lets an old concession shrink as its
+            // obstruction moves away instead of ratcheting at the previous target.
+            // The fixed iteration count makes the extra work deterministic.
+            const bool incumbent_fits_minimum = spot.clearance + .25 >=
+                needed_radius(active_windows[i].minimum);
+            const double movement_diameter = incumbent_fits_minimum ? wanted :
+                active_windows[i].minimum;
+            bool ray_search_truncated = false;
+            auto minimize_on_way = [&] (candidate& selected) {
+                const size_t moved_index = selected.moved_index;
+                if (selected.branch_axis != 1 && selected.branch_axis != 2) return;
+                const auto& moved_window = active_windows[moved_index];
+                const point selected_offset{
+                    nodes[moved_index].x + selected.delta.x - moved_window.frame.x,
+                    nodes[moved_index].y + selected.delta.y - moved_window.frame.y};
+                const double endpoint = selected.branch_axis == 1 ? selected_offset.x : selected_offset.y;
+                if (std::abs(endpoint) < .01 || (endpoint < 0 ? -1 : 1) != selected.branch_sign)
+                    return;
+                const double limit = std::abs(endpoint);
+                const double radius = needed_radius(movement_diameter);
+                const auto owner_true = active_windows[i].frame;
+                const auto selected_owner = moved(moved_index == i ? nodes[i] : owner_true,
+                    moved_index == i ? selected.delta : point{});
+                const point label_relative{selected.label_center.x -
+                        (selected_owner.x + selected_owner.width / 2),
+                    selected.label_center.y - (selected_owner.y + selected_owner.height / 2)};
+                auto placement_at = [&] (double amount, double *clearance_out) -> std::optional<bool> {
+                    if (stopped(window_deadline, work_count, limits.inspection_budget))
+                    { ray_search_truncated = true; return {}; }
+                    point absolute_delta{};
+                    if (selected.branch_axis == 1)
+                        absolute_delta.x = selected.branch_sign * amount;
+                    else absolute_delta.y = selected.branch_sign * amount;
+                    const auto moved_frame = moved(moved_window.frame, absolute_delta);
+                    const auto owner_frame = moved_index == i ? moved_frame : nodes[i];
+                    point center = selected.label_center;
+                    if (moved_index == i)
+                    {
+                        center = {owner_frame.x + owner_frame.width / 2 + label_relative.x,
+                            owner_frame.y + owner_frame.height / 2 + label_relative.y};
+                    }
+                    std::vector<rectangle> foreground = fixed;
+                    foreground.insert(foreground.end(), active_windows[i].fixed_foreground.begin(),
+                        active_windows[i].fixed_foreground.end());
+                    for (size_t k = 0; k < i; ++k)
+                        foreground.push_back(k == moved_index ? moved_frame : nodes[k]);
+                    auto clearance = do_clearance(center, owner_frame, foreground, window_deadline);
+                    if (!clearance) { ray_search_truncated = true; return {}; }
+                    if (clearance_out) *clearance_out = *clearance;
+                    return *clearance + .25 >= radius;
+                };
+                // A closer offset is useful only if it keeps the other visible hints
+                // already protected by the candidate. Check those labels at each ray
+                // sample too, so minimizing this way cannot steal their clearance.
+                auto preserves_labels = [&] (double amount) -> std::optional<bool> {
+                    if (moved_index >= nodes.size()) return false;
+                    point delta{};
+                    if (selected.branch_axis == 1) delta.x = selected.branch_sign * amount;
+                    else delta.y = selected.branch_sign * amount;
+                    const auto shifted = moved(active_windows[moved_index].frame, delta);
+                    const point moved_label_relative{
+                        best_spots[moved_index].center.x -
+                            (nodes[moved_index].x + nodes[moved_index].width / 2),
+                        best_spots[moved_index].center.y -
+                            (nodes[moved_index].y + nodes[moved_index].height / 2)};
+                    for (size_t k = moved_index; k < nodes.size(); ++k)
+                    {
+                        if (k == i) continue; // placement_at checks the beneficiary label itself
+                        if (!has_spot[k] || best_spots[k].clearance + .25 <
+                            needed_radius(active_windows[k].minimum)) continue;
+                        if (stopped(window_deadline, work_count, limits.inspection_budget))
+                        { ray_search_truncated = true; return {}; }
+                        const auto rear = k == moved_index ? shifted : nodes[k];
+                        const auto center = k == moved_index ? point{
+                            shifted.x + shifted.width / 2 + moved_label_relative.x,
+                            shifted.y + shifted.height / 2 + moved_label_relative.y} :
+                            best_spots[k].center;
+                        std::vector<rectangle> foreground = fixed;
+                        foreground.insert(foreground.end(), active_windows[k].fixed_foreground.begin(),
+                            active_windows[k].fixed_foreground.end());
+                        for (size_t f = 0; f < k; ++f)
+                            foreground.push_back(f == moved_index ? shifted : nodes[f]);
+                        const double required = std::min(best_spots[k].clearance - .25,
+                            needed_radius(std::max(active_windows[k].wanted,
+                                active_windows[k].minimum)));
+                        auto clearance = do_clearance(center, rear, foreground, window_deadline);
+                        if (!clearance) { ray_search_truncated = true; return {}; }
+                        if (*clearance + .01 < required) return false;
+                    }
+                    return true;
+                };
+                double endpoint_clearance = 0;
+                auto endpoint_fits = placement_at(limit, &endpoint_clearance);
+                if (!endpoint_fits || !*endpoint_fits) return;
+                auto endpoint_preserves = preserves_labels(limit);
+                if (!endpoint_preserves || !*endpoint_preserves) return;
+                double zero_clearance = 0;
+                auto zero_fits = placement_at(0, &zero_clearance);
+                if (!zero_fits) return;
+                bool zero_works = *zero_fits;
+                if (zero_works)
+                {
+                    auto zero_preserves = preserves_labels(0);
+                    if (!zero_preserves) return;
+                    zero_works = *zero_preserves;
+                }
+                if (zero_works)
+                {
+                    selected.delta = {active_windows[moved_index].frame.x - nodes[moved_index].x,
+                        active_windows[moved_index].frame.y - nodes[moved_index].y};
+                    selected.label_center = moved_index == i ? point{
+                        owner_true.x + owner_true.width / 2 + label_relative.x,
+                        owner_true.y + owner_true.height / 2 + label_relative.y} : selected.label_center;
+                    selected.clearance = zero_clearance;
+                    selected.travel = 0;
+                    return;
+                }
+                // Zero is the failing lower bound when any part of this way is still
+                // needed. Search inward from the checked endpoint so the chosen target
+                // is the smallest true-geometry offset that keeps this hint and every
+                // already protected hint readable. This also lets a window glide back
+                // continuously as the obstruction recedes instead of holding a large
+                // endpoint and snapping home only after the obstruction fully clears.
+                double low = 0, high = limit, high_clearance = endpoint_clearance;
+                for (int probe = 0; probe < 8 && high - low > .5; ++probe)
+                {
+                    const double middle = (low + high) / 2;
+                    double clearance = 0;
+                    auto fits = placement_at(middle, &clearance);
+                    if (!fits) return; // the already checked endpoint remains the safe result
+                    bool works = *fits;
+                    if (works)
+                    {
+                        auto preserves = preserves_labels(middle);
+                        if (!preserves) return;
+                        works = *preserves;
+                    }
+                    if (works)
+                    { high = middle; high_clearance = clearance; }
+                    else low = middle;
+                }
+                point delta{};
+                if (selected.branch_axis == 1) delta.x = selected.branch_sign * high;
+                else delta.y = selected.branch_sign * high;
+                selected.delta = {active_windows[moved_index].frame.x + delta.x - nodes[moved_index].x,
+                    active_windows[moved_index].frame.y + delta.y - nodes[moved_index].y};
+                selected.clearance = high_clearance;
+                const point final_offset{delta.x, delta.y};
+                selected.travel = selected.branch_match ? std::hypot(final_offset.x, final_offset.y) :
+                    std::hypot(final_offset.x - moved_window.incumbent_offset.x,
+                        final_offset.y - moved_window.incumbent_offset.y);
+                selected.displayed_travel = std::hypot(
+                    final_offset.x - moved_window.incumbent_offset.x,
+                    final_offset.y - moved_window.incumbent_offset.y);
+            };
+            if (!movement_search_truncated)
+            {
+                const size_t ray_work_before = work_count;
+                minimize_on_way(*choice);
+                if (profile) profile->movement_work_count += work_count - ray_work_before;
+                if (ray_search_truncated)
+                {
+                    movement_search_truncated = true;
+                    if (profile) ++profile->truncated_searches;
+                }
+            }
+            const bool candidate_fits_wanted = choice->clearance + .25 >= needed_radius(wanted);
+            if (movement_search_truncated)
+            {
+                if (!incumbent_fits_minimum)
+                {
+                    hold_targets[i] = true;
+                    if (!moved_this_solve[i])
+                        nodes[i] = moved(windows[i].frame, windows[i].anchored ? point{} :
+                            windows[i].target_offset);
+                    incomplete = true;
+                }
+                continue;
+            }
+            // A wanted-size improvement is opportunistic: it may move at most one badge
+            // radius and is deferred while the user is moving a window or coasting.
+            if (incumbent_fits_minimum && candidate_fits_wanted &&
+                (!limits.allow_size_upgrades || choice->displayed_travel > std::max(12.0, wanted * .2)))
+                continue;
+            if (incumbent_fits_minimum && !candidate_fits_wanted &&
+                readable_diameter(choice->clearance) < readable_diameter(spot.clearance) + 12)
+                continue;
+            if (choice->travel < .01)
+            {
+                if (choice->moved_index == i)
+                {
+                    best_spots[i] = {choice->label_center, choice->clearance};
+                    has_spot[i] = true;
+                }
+                const auto moved_index = choice->moved_index;
+                const auto& true_frame = active_windows[moved_index].frame;
+                const bool returned_to_true_frame =
+                    std::hypot(nodes[moved_index].x - true_frame.x,
+                        nodes[moved_index].y - true_frame.y) > .01;
+                if (returned_to_true_frame)
+                {
+                    // A later hint in this same solve may release a foreground
+                    // concession made for an earlier one. Apply the zero-ray result
+                    // to the working layout too; otherwise the final output would keep
+                    // the temporary pass-local move even though the chosen minimum is 0.
+                    nodes[moved_index] = true_frame;
+                    active_windows[moved_index].target_offset = {};
+                    moved_this_solve[moved_index] = true;
+                    if (moved_index != i) has_spot[moved_index] = false;
+                    changed = true;
+                }
+                continue;
+            }
             nodes[choice->moved_index] = moved(nodes[choice->moved_index], choice->delta);
+            moved_this_solve[choice->moved_index] = true;
+            active_windows[choice->moved_index].target_offset = {
+                nodes[choice->moved_index].x - active_windows[choice->moved_index].frame.x,
+                nodes[choice->moved_index].y - active_windows[choice->moved_index].frame.y};
+            active_windows[choice->moved_index].branch_owner = int(i);
+            active_windows[choice->moved_index].branch_axis = choice->branch_axis;
+            active_windows[choice->moved_index].branch_sign = choice->branch_sign;
             if (choice->moved_index != i && has_spot[choice->moved_index])
             {
                 best_spots[choice->moved_index].center.x += choice->delta.x;
                 best_spots[choice->moved_index].center.y += choice->delta.y;
             }
             for (size_t rear = choice->moved_index + 1; rear < has_spot.size(); ++rear)
-                has_spot[rear] = false;
+            {
+                // offer() checked that every readable rear label survived this move.
+                // Keep those checked incumbents instead of forcing a fresh, potentially
+                // deadline-truncated visible_label search later in the same solve.
+                if (!has_spot[rear] || best_spots[rear].clearance + .25 <
+                    needed_radius(active_windows[rear].minimum)) has_spot[rear] = false;
+            }
             best_spots[i] = {choice->label_center, choice->clearance};
             has_spot[i] = true;
             changed = true;
-            if (expired(deadline)) break;
+            if (stopped(deadline, work_count, limits.inspection_budget)) break;
         }
         if (!changed) break;
-        if (expired(deadline)) break;
+        if (stopped(deadline, work_count, limits.inspection_budget)) break;
+    }
+    const auto finalization_started = std::chrono::steady_clock::now();
+    if (profile) profile->placement_ms = std::chrono::duration<double, std::milli>(
+        finalization_started - placement_started).count();
+    for (size_t i = 0; i < nodes.size(); ++i)
+    {
+        if (!visited[i])
+        {
+            hold_targets[i] = true;
+            if (!moved_this_solve[i])
+                nodes[i] = moved(windows[i].frame, windows[i].anchored ? point{} :
+                    windows[i].target_offset);
+            incomplete = true;
+        }
     }
     std::vector<exposure_result> result;
     for (size_t i = 0; i < nodes.size(); ++i)
     {
-        const double wanted = std::max(windows[i].wanted, windows[i].minimum);
+        const double wanted = std::max(active_windows[i].wanted, active_windows[i].minimum);
         label_spot spot;
-        if (!expired(deadline))
+        if (has_spot[i]) spot = best_spots[i];
+        else
         {
-            std::vector<rectangle> foreground = fixed;
-            foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
-                windows[i].fixed_foreground.end());
-            for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
-            auto refined = visible_label(nodes[i], screen, foreground, .5, label_deadline(deadline),
-                needed_radius(wanted));
-            if (!has_spot[i] || refined.clearance > best_spots[i].clearance)
-            { best_spots[i] = refined; has_spot[i] = true; }
-            spot = best_spots[i];
-            if (spot.clearance < needed_radius(windows[i].minimum) && !expired(deadline))
-            {
-                auto fallback = visible_label(nodes[i], screen, foreground, .5, label_deadline(deadline));
-                if (fallback.clearance > best_spots[i].clearance)
-                    best_spots[i] = spot = fallback;
-            }
-        } else if (has_spot[i]) spot = best_spots[i];
-        else spot = {{nodes[i].x + nodes[i].width / 2, nodes[i].y + nodes[i].height / 2}, 0};
+            // The search budget may expire before reaching a later window. Its hint
+            // remains at the true target center until its own checked placement runs.
+            spot = {{nodes[i].x + nodes[i].width / 2,
+                nodes[i].y + nodes[i].height / 2}, 0};
+        }
         // A non-positive clearance means there is no point in the window's visible
         // region at all (for example, an output-sized foreground window covers it).
         // Treat that as no spot and anchor the always-visible minimum hint to the
@@ -419,11 +1030,27 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
         double available = std::floor(std::max(0.0, 2 * (spot.clearance - 1) / pop_scale));
         // Attention remains present even when no unobscured circle can fit. Use the
         // best checked label center (or the window center if the deadline found none).
-        double diameter = std::max(windows[i].minimum, std::min(wanted, available));
-        result.push_back({{nodes[i].x - windows[i].frame.x,
-            nodes[i].y - windows[i].frame.y}, spot, diameter});
+        double diameter = std::max(active_windows[i].minimum, std::min(wanted, available));
+        point offset{nodes[i].x - active_windows[i].frame.x,
+            nodes[i].y - active_windows[i].frame.y};
+        int owner = active_windows[i].branch_owner;
+        // Keep the selected way dormant at zero. It has no geometric effect, but if
+        // the same obstruction returns during a drag it resumes on that way instead
+        // of counting as a new, potentially discontinuous choice.
+        result.push_back({offset, spot, diameter, owner,
+            owner < 0 ? 0 : active_windows[i].branch_axis,
+            owner < 0 ? 0 : active_windows[i].branch_sign});
+        result.back().retained_clearance = retained_clearances[i];
     }
-    if (deadline_hit) *deadline_hit = expired(deadline);
+    for (size_t i = 0; i < result.size(); ++i)
+        if (hold_targets[i] && !moved_this_solve[i]) result[i] = held_result(i);
+    if (profile) profile->finalization_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - finalization_started).count();
+    if (profile) profile->work_count = work_count;
+    if (limits.inspection_count) *limits.inspection_count = work_count;
+    // A truncated minimum search needs a stable retry. An optional size upgrade
+    // that ran out of time does not: the checked minimum placement is complete.
+    if (deadline_hit) *deadline_hit = incomplete;
     return result;
 }
 

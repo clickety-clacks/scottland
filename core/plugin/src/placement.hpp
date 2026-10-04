@@ -1,5 +1,7 @@
 #pragma once
 #include <chrono>
+#include <cstddef>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -23,7 +25,9 @@ struct label_spot { point center; double clearance = 0; };
 label_spot visible_label(rectangle window, rectangle screen,
     const std::vector<rectangle>& foreground, double precision = 0.5,
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
-    double sufficient_clearance = -1);
+    double sufficient_clearance = -1,
+    size_t inspection_budget = std::numeric_limits<size_t>::max(),
+    size_t *inspection_count = nullptr);
 // Signed radius available for a circle at this exact point, including occlusion.
 double visible_clearance(point center, rectangle window, rectangle screen,
     const std::vector<rectangle>& foreground);
