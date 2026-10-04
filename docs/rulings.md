@@ -90,6 +90,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 10-04 | Returning to a zone restores both the remembered position and the Shift-pinned scale, through every return path (cycling by hint taps, Esc, double-tap and back). | WP1, WP5 |
 | 10-04 | The pointer follows the desktop text size. | A17 |
+| 10-04 | A window sent to the periphery without a remembered spot goes as close to the center as possible while overlapping the center (zone and its windows) as little as possible: normally the whole scaled window sits just outside the center zone, never just its middle point over the line; best effort when space is tight. Whether a few-point full-size sliver past the edge counts as center is secondary. | WP4, WP8 |
 
 ## Goo and appearance
 
