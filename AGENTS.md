@@ -78,6 +78,8 @@ P-row in core/INVARIANTS.md "Principles (tenet candidates)", with his words and 
 it where it decides an edge. Don't edit docs/tenets.md: it mirrors Mike's own notes; he promotes
 principles himself.
 
+**Rulings log.** Every decision Mike makes goes into [docs/rulings.md](docs/rulings.md) (date, ruling in his terms, where it's specified) in the same change that updates the spec, so behavior can be reviewed against one list.
+
 **No silent overrides (P10, O20).** Anything that replaces or displaces something the user already
 had (an Omarchy shortcut, a mapping, an app setting) must be reported to the user with what it was,
 what it is now and why. A change that adds an override adds its reason to that report.
