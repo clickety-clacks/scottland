@@ -77,6 +77,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Rail make-room waits for a pause (hold buffer), animates every move, and applies to every way into a rail. | WG26 |
 | 10-04 | Return on a focused widget always opens its window; nothing inside the widget gets it. | WG25 |
 | 10-04 | Super+M taps cycle expanded -> collapsed -> hidden; holding is momentary (hide from expanded, expand otherwise). | WG16 |
+| 10-04 | Hidden widgets come back for Window mode (temporarily expanded while Alt is held) and still show attention. | WG16 |
 
 ## Zones and scale
 
