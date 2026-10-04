@@ -347,18 +347,18 @@ try:
           metrics["stale_window_drop_onto_neighbor"])
     clear_case()
 
-    # Review F2: five cards packed at the top of the left rail, a window dropped at the top.
-    # Least total movement (for the chosen split): the drop settles just below the pinned top
-    # card, 1 px clear of it, and the four below make room. Overlap is only for a full rail.
-    # A small re-pause doesn't make the hole jump, and after the drop the cards stay exactly
-    # as shown at the last pause: the settle shown is the settle applied (round 3, finding 3).
+    # Review F2 under P14 (the user always wins): five cards packed at the top of the left
+    # rail, a window dropped at the top with its center on the top card. The drop stays
+    # exactly where it was put; the top card goes below it with the rest. During the drag
+    # the gap opens exactly under the pointer, where the card will land. A small re-pause
+    # moves the gap with the pointer, and after the drop nothing rearranges a second time.
     packed = tuple(f"packed-{i}" for i in range(5))
     for name, y in zip(packed, (72, 168, 264, 360, 456)):
         t.launch(name, rail="left", y=y)
     packed_before = {n: card_scene(n) for n in packed}
     t.move(screen["width"] / 2, screen["height"] / 2)
     t.launch("packed-arrival", rail=None)
-    reused_before = ipc.call("scottland/layout-state")["rail_settles_reused"]
+    kept_before = ipc.call("scottland/layout-state")["rail_drop_layouts_kept"]
     x0, y0 = begin_drag(t.app("packed-arrival"))
     glide(x0, y0, 6, 80)
     time.sleep(.9)
@@ -366,6 +366,8 @@ try:
     glide(6, 80, 6, 86, steps=2)   # 6 px: past the 4 px wobble, so a second pause solves
     time.sleep(.9)
     shown = scene_ys(packed)
+    under = t.app("packed-arrival").get("scene_frame")   # the dragged card, under the pointer
+    gap_below_pointer = shown["packed-0"] - (under["y"] + under["height"])
     hole_moved = max(abs(shown[n] - shown_first[n]) for n in packed)
     release_drag(wait=1.5)
     t.wait_for(lambda: t.card("packed-arrival") and not t.card("packed-arrival")["preview"], timeout=5)
@@ -373,26 +375,25 @@ try:
     landed = card_scene("packed-arrival")
     packed_after = {n: card_scene(n) for n in packed}
     rearranged = max(abs(packed_after[n]["y"] - shown[n]) for n in packed)
-    settle_state = ipc.call("scottland/layout-state")
-    reused = settle_state["rail_settles_reused"] - reused_before
+    kept = ipc.call("scottland/layout-state")["rail_drop_layouts_kept"] - kept_before
     in_order = all(packed_after[a]["y"] < packed_after[b]["y"] for a, b in zip(packed, packed[1:]))
     metrics["packed_not_full"] = {"before_y": {n: packed_before[n]["y"] for n in packed},
-        "after_y": {n: packed_after[n]["y"] for n in packed}, "landing": landed,
-        "overlap": {n: round(overlap(landed, packed_after[n]), 1) for n in packed}}
-    metrics["packed_not_full"].update(hole_moved_on_6px_repause=round(hole_moved, 2),
-        rearranged_after_drop=round(rearranged, 2), settle_reused=reused,
-        settles_resolved_total=settle_state["rail_settles_resolved"], settle_from_pointer_px=round(landed["y"] - (86 - 48), 1))
+        "after_y": {n: packed_after[n]["y"] for n in packed}, "landing": landed, "under_pointer": under,
+        "overlap": {n: round(overlap(landed, packed_after[n]), 1) for n in packed},
+        "gap_below_pointer_px": round(gap_below_pointer, 2), "hole_moved_on_6px_repause": round(hole_moved, 2),
+        "rearranged_after_drop": round(rearranged, 2), "drop_layout_kept": kept}
     check("WG26 a packed but not full rail makes room without overlap",
           max(metrics["packed_not_full"]["overlap"].values()) <= 0 and in_order and
           all(f["y"] + f["height"] <= screen["height"] - 23 for f in packed_after.values()),
           metrics["packed_not_full"])
-    check("WG26 the drop settles exactly the least its split needs (just below the pinned card)",
-          abs(landed["y"] - (packed_after["packed-0"]["y"] + packed_after["packed-0"]["height"] + 1)) <= 1 and
-          abs(packed_after["packed-0"]["y"] - packed_before["packed-0"]["y"]) < .5, metrics["packed_not_full"])
-    check("WG26 a small re-pause moves the hole no more than the pointer moved", hole_moved <= 6.5,
+    check("P14 the dropped card lands exactly where it was put",
+          abs(landed["y"] - under["y"]) <= 1 and abs(landed["height"] - under["height"]) <= 1, metrics["packed_not_full"])
+    check("P14 during the drag the gap opens exactly under the pointer (1 px clearance)",
+          abs(gap_below_pointer - 1) <= 1, metrics["packed_not_full"])
+    check("WG26 a small re-pause moves the gap with the pointer, no further", hole_moved <= 6.5,
           metrics["packed_not_full"])
     check("WG26 after the drop the cards stay as shown at the last pause (no second solve)",
-          rearranged <= .5 and reused == 1, metrics["packed_not_full"])
+          rearranged <= .5 and kept == 1, metrics["packed_not_full"])
     clear_case()
 
     # A direct window drop before any pause still solves once on drop. Peers visibly
@@ -445,10 +446,12 @@ try:
     sx, sy = arrival_frame["x"] + arrival_frame["width"] / 2, arrival_frame["y"] + arrival_frame["height"] / 2
     t.move(sx, sy); time.sleep(.06); t.key("LEFTMETA", True)
     ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+    # 160 px in ~60 ms: firm enough that the coast reaches the rail on every test host
+    # (100 px fell short on nacelle, whose scripted motion arrives slower).
     for i in range(1, 7):
-        t.move(sx + 100 * i / 6, sy)
-        time.sleep(.015)
-    released_x = sx + 100
+        t.move(sx + 160 * i / 6, sy)
+        time.sleep(.01)
+    released_x = sx + 160
     release_drag(wait=0)
     coast_frames = sample_y(coast_names, 2.5)
     try:
@@ -572,26 +575,22 @@ try:
           {"unique_neighbor_positions": len(key_unique)})
     clear_case()
 
-    # A widget dragged along its rail and dropped over a card pinned at the rail top: least
-    # total movement settles the dropped card just below it (89 px) rather than sending the
-    # pinned card below the drop (105 px). It lands, then eases into place; nothing overlaps.
-    for name, y in (("settle-top", 72), ("settle-moved", 400)):
+    # P14 for a widget dragged along its rail and dropped onto the card at the rail top: it
+    # lands exactly where it was put and that card makes room below it.
+    for name, y in (("top-card", 72), ("moved-card", 400)):
         t.launch(name, rail="right", y=y)
-    top_home = card_scene("settle-top")
-    reused_before = ipc.call("scottland/layout-state")["rail_settles_reused"]
-    x0, y0 = begin_drag(t.card("settle-moved"))
+    x0, y0 = begin_drag(t.card("moved-card"))
     glide(x0, y0, screen["width"] - 6, 80)
     time.sleep(.75)
+    under = card_scene("moved-card")
     release_drag(wait=1.6)
-    landed = card_scene("settle-moved")
-    pinned = card_scene("settle-top")
-    metrics["widget_settle"] = {"pinned_before": top_home["y"], "pinned_after": pinned["y"], "landed": landed,
-        "gap": round(vertical_gap(pinned, landed), 2),
-        "settle_reused": ipc.call("scottland/layout-state")["rail_settles_reused"] - reused_before}
-    check("WG26 a widget dropped over a pinned card settles beside it with nothing overlapping",
-          abs(pinned["y"] - top_home["y"]) < .5 and vertical_gap(pinned, landed) >= .5 and
-          abs(landed["y"] - (top_home["y"] + top_home["height"] + 1)) <= 1 and
-          metrics["widget_settle"]["settle_reused"] == 1, metrics["widget_settle"])
+    landed = card_scene("moved-card")
+    moved_aside = card_scene("top-card")
+    metrics["widget_drop_p14"] = {"under_pointer": under, "landed": landed, "top_card_after": moved_aside,
+        "gap": round(vertical_gap(landed, moved_aside), 2)}
+    check("P14 a widget dropped onto the top card lands exactly where it was put; the card moves below",
+          abs(landed["y"] - under["y"]) <= 1 and moved_aside["y"] >= landed["y"] + landed["height"] + .5,
+          metrics["widget_drop_p14"])
     clear_case()
 
     # Window avoidance plans against where rail widgets are going, so a make-room ease

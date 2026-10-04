@@ -842,8 +842,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> unfocused_edge_tone_dark{"scottland/unfocused_edge_tone_dark"};
     wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
     wf::option_wrapper_t<int> widget_make_room_dwell{"scottland/widget_make_room_dwell"};
-    // DECISION PENDING (Mike; rail review round 3): aim, not total movement, decides the order.
-    wf::option_wrapper_t<bool> widget_make_room_by_aim{"scottland/widget_make_room_by_aim"};
     wf::option_wrapper_t<double> window_mode_tint{"scottland/window_mode_tint"};
     wf::option_wrapper_t<bool> window_avoidance_always{"scottland/window_avoidance_always"};
     // Keep parsing the historical key so existing user config still opts in.
@@ -1420,10 +1418,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool minimized() const { return collapsed && !peek; }
         bool away = false;                           // slid off its screen for full-screen focus (FS1)
         bool make_room_pending = false;              // non-drag arrivals wait for their mapped rail spot
-        // The settle a drop's solve chose for it (shown during the drag) and the landing
-        // interval it was solved for: applied as is once it lands there, not re-solved.
-        bool settle_pending = false;
-        double settle_dy = 0, settle_lo = 0, settle_hi = 0;
+        // A drag's drop already laid the rail out for this landing interval (shown during the
+        // drag); if it lands there, nothing is solved again.
+        bool drop_solved = false;
+        double drop_lo = 0, drop_hi = 0;
 
         bool previewing() const { return lifecycle == lifecycle_t::previewing; }
         bool docked() const { return lifecycle == lifecycle_t::docked; }
@@ -1489,9 +1487,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::pointf_t pause_anchor{0, 0};
         uint32_t pause_deadline = 0;
         bool has_item = false, has_pause_anchor = false, pause_pending = false, solved_once = false;
-        // A landed item (not one under the pointer) is the presentation's last actor, so it
-        // can settle (WG26: when a side can't fit, the item moves the least that fits).
-        bool item_actor = false;
         bool active = false;
     };
     // One drag session owns the Esc origin, re-grab chain, morph and temporarily raised view.
@@ -1540,10 +1535,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // a widget's drawn position along the rail (geometry plus rail offset) over the time
     // since the previous tick, the largest such step, and the longest gap between ticks.
     // Only y: a card's x changes with its width (rail gravity), which is not rail motion.
-    struct rail_drawn_sample_t { double y = 0; uint32_t at = 0; int geometry_y = 0; double offset = 0; };
+    struct rail_drawn_sample_t { double y = 0; uint32_t at = 0; double geometry_y = 0, offset = 0; };
     std::map<uint64_t, rail_drawn_sample_t> rail_drawn_samples;
     double rail_drawn_speed_max = 0, rail_drawn_step_max = 0;
-    uint64_t rail_settles_reused = 0, rail_settles_resolved = 0;  // drop settles: as shown / solved again
+    uint64_t rail_drop_layouts_kept = 0;  // landings that kept the drop's layout (no second solve)
     uint32_t rail_tick_gap_max = 0;
     wf::wl_timer<true> rail_layout_tick;
     wf::wl_timer<false> rail_dwell_tick;
@@ -3168,12 +3163,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.pause_anchor = {};
         rail.pause_deadline = 0;
         rail.has_item = rail.has_pause_anchor = rail.pause_pending = rail.solved_once = false;
-        rail.item_actor = false;
         rail.active = false;
     }
 
-    bool begin_rail_drag(wf::output_t *output, bool left, uint64_t dragged,
-        wayfire_toplevel_view landed = nullptr)
+    bool begin_rail_drag(wf::output_t *output, bool left, uint64_t dragged)
     {
         clear_rail_drag();
         auto& rail = model.drag.rail;
@@ -3206,17 +3199,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             origins.push_back({widget->get_id(), (double)geometry.x, (double)geometry.y});
         }
 
-        if (landed)
-        {
-            auto geometry = landed->get_geometry();
-            origins.push_back({landed->get_id(), (double)geometry.x, (double)geometry.y});
-        }
-
         // WG4's widget placement inset defines the usable rail span for both the solver and drop.
         auto area = output->workarea->get_workarea();
         double top = area.y + WIDGET_INSET;
         double bottom = area.y + area.height - WIDGET_INSET;
-        rail.solver.set_aim_decides_order(widget_make_room_by_aim);
         if (bottom < top || !rail.solver.begin(intervals) ||
             !rail.presentation.begin(origins, scottland::rail::MAX_ACTORS)) return false;
 
@@ -3225,7 +3211,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.left = left;
         rail.top = top;
         rail.bottom = bottom;
-        rail.item_actor = bool(landed);
         rail.active = true;
         return true;
     }
@@ -3241,7 +3226,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto& shifts = rail.solver.shifts();
         for (size_t i = 0; i < rail.presentation.size(); ++i)
         {
-            double dy = i < shifts.size() ? shifts[i] : rail.item_actor ? rail.solver.item_shift() : 0;
+            double dy = i < shifts.size() ? shifts[i] : 0;
             rail.presentation.set_offset(i, 0, dy);
             animate_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, dy);
         }
@@ -3330,47 +3315,39 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.rail.active || (pending_drag_layout && pending_drag_layout->is_committing()))
             return false;
 
-        // Where it has landed: without a landing glide still under way or an earlier settle
-        // still easing, both of which are presentation, not its place on the rail.
+        // Where it has landed: without a landing glide still under way or an earlier rail
+        // ease, both of which are presentation, not its place on the rail.
         auto item = scene_rectangle(widget, output);
         if (auto frame = frame_of(widget, false))
         {
             item.y1 -= frame->translation_y + frame->drag_layout_y;
             item.y2 -= frame->translation_y + frame->drag_layout_y;
         }
-        if (item.height() <= 0 || !begin_rail_drag(output, link.rail == "left", link.window_id, widget))
+        // P14: it stays exactly there. If the drop already laid the rail out for this
+        // interval (what was shown during the drag), that layout stands as committed;
+        // solving again from it could only disagree with what was shown.
+        const bool kept = link.drop_solved && std::abs(item.y1 - link.drop_lo) <= RAIL_POINTER_WOBBLE &&
+            std::abs(item.y2 - link.drop_hi) <= RAIL_POINTER_WOBBLE;
+        link.drop_solved = false;
+        if (kept)
+        {
+            link.make_room_pending = false;
+            ++rail_drop_layouts_kept;
+            return true;
+        }
+        // A different landing (the real card is another size, or placement moved it).
+        if (item.height() <= 0 || !begin_rail_drag(output, link.rail == "left", link.window_id))
             return false;
         auto& rail = model.drag.rail;
         rail.last_item = item;
         rail.has_item = true;
-        if (link.settle_pending && std::abs(item.y1 - link.settle_lo) <= RAIL_POINTER_WOBBLE &&
-            std::abs(item.y2 - link.settle_hi) <= RAIL_POINTER_WOBBLE)
-        {
-            // It landed where the drop was solved: the neighbors already hold that layout,
-            // so only the settle shown during the drag is applied. Solving again from the
-            // committed positions could pick a different arrangement than the one shown.
-            for (size_t i = 0; i < rail.presentation.size(); ++i)
-            {
-                double dy = rail.item_actor && i + 1 == rail.presentation.size() ? link.settle_dy : 0;
-                rail.presentation.set_offset(i, 0, dy);
-                animate_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, dy);
-            }
-            rail.solved_item = item;
-            rail.solved_once = true;
-            ++rail_settles_reused;
-        } else
-        {
-            rail_settles_resolved += link.settle_pending;
-            // A different landing (the real card is another size, or placement moved it):
-            // the shown layout was for another interval, so solve for this one.
-            solve_rail_layout(item);
-        }
-        link.settle_pending = false;
+        solve_rail_layout(item);
         // Clear this before committing: view->move() may synchronously acknowledge geometry
         // and retry pending arrivals. Leaving the flag set would re-enter this solve against
         // the just-committed layout and restart the same presentation animation at zero.
         link.make_room_pending = false;
         commit_rail_drag();
+        link.drop_solved = false;  // an arrival, not a drag's drop
         return true;
     }
 
@@ -3410,19 +3387,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             std::max(std::abs(rail.last_item.y1 - solved.y1), std::abs(rail.last_item.y2 - solved.y2)) >
                 RAIL_POINTER_WOBBLE))
             solve_rail_layout(rail.last_item);
-        // The layout may have the dropped item settle (a side couldn't fit as dropped). It
-        // isn't an actor while under the pointer, so settle it once it has landed.
-        if (auto dropped = model.widgets.find(rail.dragged); !rail.item_actor && dropped != model.widgets.end())
+        // Remember the interval this layout was solved for, so the landing doesn't solve again.
+        if (auto dropped = model.widgets.find(rail.dragged); dropped != model.widgets.end())
         {
-            auto& link = dropped->second;
-            link.settle_pending = std::abs(rail.solver.item_shift()) > 0.5;
-            if (link.settle_pending)
-            {
-                link.make_room_pending = true;
-                link.settle_dy = rail.solver.item_shift();
-                link.settle_lo = rail.solved_item.y1;
-                link.settle_hi = rail.solved_item.y2;
-            }
+            dropped->second.drop_solved = rail.has_item;
+            dropped->second.drop_lo = rail.solved_item.y1;
+            dropped->second.drop_hi = rail.solved_item.y2;
         }
 
         rail.presentation.commit();
@@ -6521,8 +6491,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["rail_max_drawn_speed_px_s"] = rail_drawn_speed_max;
         reply["rail_max_drawn_step_px"] = rail_drawn_step_max;
         reply["rail_max_tick_gap_ms"] = int64_t(rail_tick_gap_max);
-        reply["rail_settles_reused"] = int64_t(rail_settles_reused);
-        reply["rail_settles_resolved"] = int64_t(rail_settles_resolved);
+        reply["rail_drop_layouts_kept"] = int64_t(rail_drop_layouts_kept);
         return reply;
     };
 

@@ -27,27 +27,24 @@ enum class status_t { clear, overlap, skipped };
 // WG26 (Mike, 2026-10-04): making room on a rail is a spread over the whole rail. Any widget
 // may move when that's what it takes, widgets keep their order, total movement is the least
 // it can be (squared displacement from where each widget is), and widgets overlap only when
-// the rail is truly full.
+// the rail is truly full. P14 (Mike, 2026-10-04, "the user always wins"): the dropped item
+// ends up exactly where the user put it; only the other widgets move around it, and the
+// order around it is decided by where it was placed.
 //
-// The dragged item splits the widgets into those above it and those below it. For a given
-// split each side is independent: its widgets must stay in order, 1 px apart (or no further
-// into each other than they already are), between a rail end and the item, and as close to
-// home as possible. That is an isotonic regression on gap-adjusted positions with bounds,
-// solved exactly by pool-adjacent-violators in O(n). The item itself moves only as much as
-// its split needs: if a side can't fit, it settles toward the side with room by the least
-// amount, and otherwise not at all. So each split's layout is the least total movement *for
-// that split with the item settled the least it must be*, not a joint minimum in which the
-// item shares the move with its neighbors (that would move the dropped card more often).
-// The split with the least total movement, the item's settle included, wins; a widget
-// crosses the item only when that is less movement. The whole solve is O(n²), n ≤ 256.
+// The item never moves, so it splits the widgets into those above it and those below it.
+// For a given split each side is independent: its widgets must stay in order, 1 px apart (or
+// no further into each other than they already are), between a rail end and the item, and as
+// close to home as possible. That is an isotonic regression on gap-adjusted positions with
+// bounds, solved exactly by pool-adjacent-violators in O(n).
 //
-// DECISION PENDING (Mike; rail review 2, round 3, finding 1): whether the user's aim decides
-// the order instead of total movement. With `aim_decides_order` set, the split by centers
-// (each widget stays on the side of the item its center is on) is kept whenever the item
-// needs to settle by at most half its own height for it; otherwise the fewest widgets
-// nearest the item cross it so that the settle is at most that leftover; only if no such
-// split exists does total movement decide, as it does by default. Off by default: today total
-// movement decides, so a card dropped onto a card at a rail end usually settles past it.
+// Which split: where the item was placed decides. A widget whose span the item's center is
+// past stays on that side (the center below a widget puts it above, and the reverse). A
+// widget the item's center is on (the user dropped onto it) may go either way, since both
+// orders match the placement; of those splits, the ones that fit compete on total movement.
+// If none fits, the widgets overlap the item rather than it moving or the aimed order being
+// broken: on a rail that is truly full, or where the item clips a widget pinned at a rail
+// end with its center past that widget (at most about half the item). Touching within the
+// 1 px contact gap is not overlap. With n capped at 256 a solve is O(n²).
 class solver_t
 {
   public:
@@ -142,7 +139,6 @@ class solver_t
         }
 
         std::fill(offsets.begin(), offsets.end(), 0.0);
-        settle = 0;
         result = status_t::clear;
         if (!valid_input || !std::isfinite(drag_lo) || !std::isfinite(drag_hi) || !std::isfinite(top) ||
             !std::isfinite(bottom) || drag_hi < drag_lo || bottom < top)
@@ -150,10 +146,9 @@ class solver_t
             return invalid_result();
         }
 
-        // The item lands on the rail: lay out for it moved onto the rail if it hangs off an
-        // end (that's where placement puts it), so every position below moves at most 1 px
-        // per pixel of drag (P11). Its settle is reported from where it actually is.
-        const double given_lo = drag_lo;
+        // The item lands on the rail: if it hangs off an end, lay out for where placement puts
+        // it, so the gap opens exactly where it will land and every position below moves at
+        // most 1 px per pixel of drag (P11).
         if (drag_hi - drag_lo >= bottom - top)
         {
             drag_lo = top;
@@ -170,97 +165,82 @@ class solver_t
 
         const size_t count = original.size();
         const double drag_center = (drag_lo + drag_hi) * 0.5;
-        size_t natural = 0;  // the split by centers: what the drop says, all else equal
+        size_t natural = 0;  // the split by centers: the tie-break, all else equal
         while (natural < count && home[natural] + height[natural] * 0.5 < drag_center) ++natural;
 
+        // The splits the placement allows: every widget the center is past keeps its side.
+        // P11: a widget that was on the other side keeps its way until the center is its
+        // direction margin past its edge, so a small re-pause at an edge can't flip it back
+        // and forth across the item.
+        size_t first = 0, last = count;
+        for (size_t k = 0; k < count; ++k)
+        {
+            const double margin = std::max(direction_margin, 0.10 * height[k]);
+            const bool was_below = split <= count && k >= split, was_above = split <= count && k < split;
+            if (home[k] + height[k] < drag_center - (was_below ? margin : 0)) first = std::max(first, k + 1);
+            if (home[k] > drag_center + (was_above ? margin : 0)) last = std::min(last, k);
+        }
+        if (first > last) first = last = natural;  // nested widgets disagree: by centers
+
+        // Among the allowed splits, the least total movement that fits; if none fits, the
+        // least overlap with the item (ties: the split by centers).
         size_t best = count + 1;
-        double best_cost = 0;
-        if (aim_decides_order)
+        double best_cost = 0, best_overlap = 0;
+        for (size_t k = first; k <= last; ++k)
         {
-            // DECISION PENDING (see the class comment): keep the aimed order, crossing the
-            // fewest widgets nearest the item, with the item settling at most half its height.
-            const double leftover = (drag_hi - drag_lo) * 0.5;
-            for (size_t crossed = 0; crossed <= count && best > count; ++crossed)
+            const double over = overlap(k, drag_lo, drag_hi, top, bottom);
+            const bool fits = over <= EPSILON;
+            const bool best_fits = best <= count && best_overlap <= EPSILON;
+            double cost = 0;
+            if (fits) cost = evaluate(k, drag_lo, drag_hi, top, bottom);
+            bool better;
+            if (best > count) better = true;
+            else if (fits != best_fits) better = fits;
+            else if (fits) better = cost < best_cost - EPSILON ||
+                (cost <= best_cost + EPSILON && distance(k, natural) < distance(best, natural));
+            else better = over < best_overlap - CONTACT ||
+                (over <= best_overlap + CONTACT && distance(k, natural) < distance(best, natural));
+            if (better)
             {
-                for (size_t k : {natural - crossed, natural + crossed})  // wraps past 0: skipped
-                {
-                    if (k > count) continue;
-                    double cost, shift;
-                    if (!evaluate(k, drag_lo, drag_hi, top, bottom, 0, cost, false, &shift) ||
-                        std::abs(shift) > leftover + EPSILON) continue;
-                    if (best > count || cost < best_cost - EPSILON)
-                    {
-                        best = k;
-                        best_cost = cost;
-                    }
-                }
+                best = k;
+                best_cost = cost;
+                best_overlap = over;
             }
         }
 
-        if (best > count)
+        // P11 hysteresis ("a window keeps its current way out of the way until it stops
+        // working"): the previous split stands while the placement allows it and it fits as
+        // well, unless every widget it would move across the item has had its center passed
+        // by its direction margin toward its new side. Near-equal alternatives can't trade
+        // places on small re-pauses.
+        if (split <= count && split != best && split >= first && split <= last)
         {
-            for (size_t k = 0; k <= count; ++k)
-            {
-                double cost;
-                if (!evaluate(k, drag_lo, drag_hi, top, bottom, 0, cost, false)) continue;
-                if (best > count || cost < best_cost - EPSILON || (cost <= best_cost + EPSILON &&
-                    distance(k, natural) < distance(best, natural)))
-                {
-                    best = k;
-                    best_cost = cost;
-                }
-            }
-        }
-
-        // The rail is truly full for every split: take the split that needs the least
-        // overlap and let the widgets encroach on the item by exactly that, shared evenly at
-        // its two edges. The needed overlap grows continuously from zero as the rail fills.
-        const bool full = best > count;
-        double overlap = 0;
-        if (full)
-        {
-            overlap = std::numeric_limits<double>::infinity();
-            for (size_t k = 0; k <= count; ++k)
-            {
-                const double need = squeeze(k, drag_lo, drag_hi, top, bottom);
-                if (need < overlap - EPSILON || (need <= overlap + EPSILON &&
-                    distance(k, natural) < distance(best, natural)))
-                {
-                    overlap = need;
-                    best = k;
-                }
-            }
-        }
-
-        // P11 hysteresis: the split (which widgets are above the item) keeps its previous
-        // value until the item's center has moved a direction margin from where it last
-        // changed, as long as it still fits as well. Small re-pauses can't flip a widget
-        // across the item and back.
-        if (split <= count && split != best)
-        {
-            double margin = direction_margin;
+            bool passed = true;
+            double slack = direction_margin;
             for (size_t k = std::min(split, best); k < std::max(split, best); ++k)
-                margin = std::max(margin, 0.10 * height[k]);
-            double unused;
-            const bool fits = full ? squeeze(split, drag_lo, drag_hi, top, bottom) <= overlap + EPSILON :
-                evaluate(split, drag_lo, drag_hi, top, bottom, 0, unused, false);
-            if (std::abs(drag_center - anchor) < margin && fits) best = split;
+            {
+                const double margin = std::max(direction_margin, 0.10 * height[k]);
+                const double center = home[k] + height[k] * 0.5;
+                passed &= best > split ? drag_center > center + margin : drag_center < center - margin;
+                slack = std::max(slack, margin);
+            }
+            // On a full rail it still works while it overlaps no more than that margin extra.
+            // On a nearly full one, where the alternative fits only within that margin, it
+            // still works while it overlaps by no more than the margin: a widget doesn't fly
+            // across the item and back for a sub-pixel fit (review round 4 fuzz witness).
+            const double over = overlap(split, drag_lo, drag_hi, top, bottom);
+            const bool fragile = overlap(best, drag_lo - slack, drag_hi + slack, top, bottom) > EPSILON;
+            const bool works = best_overlap <= EPSILON ? over <= EPSILON || (fragile && over <= slack) :
+                over <= best_overlap + slack;
+            // A change by choice must also fit with that margin to spare: a split that just
+            // stopped fitting (and forced the change) can't come straight back a pixel later.
+            passed = passed && !fragile;
+            if (works && !passed) best = split;
         }
 
-        double cost;
-        if (!evaluate(best, drag_lo, drag_hi, top, bottom, overlap, cost, true))
-        {
-            // Not even the least-overlapping split can be placed: leave every widget where
-            // it is.
-            return invalid_result();
-        }
-
-        settle += drag_lo - given_lo;
-        if (best != split)
-        {
-            split = best;
-            anchor = drag_center;
-        }
+        const double over = overlap(best, drag_lo, drag_hi, top, bottom);
+        evaluate(best, drag_lo, drag_hi, top, bottom);
+        split = best;
 
         for (size_t k = 0; k < count; ++k)
         {
@@ -268,11 +248,10 @@ class solver_t
             directions[order[k]] = k < best ? -1 : 1;
         }
 
-        result = full ? status_t::overlap : status_t::clear;
+        result = over > EPSILON ? status_t::overlap : status_t::clear;
         if (!validate(top, bottom))
         {
             std::fill(offsets.begin(), offsets.end(), 0.0);
-            settle = 0;
             result = status_t::overlap;
         }
         return result;
@@ -281,10 +260,6 @@ class solver_t
     const std::vector<interval_t>& actors() const { return original; }
     const std::vector<int8_t>& latched_directions() const { return directions; }
     const std::vector<double>& shifts() const { return offsets; }
-    // How far the dragged item itself should settle (0 unless a side couldn't fit).
-    double item_shift() const { return settle; }
-    // DECISION PENDING (see the class comment). Survives begin(); off by default.
-    void set_aim_decides_order(bool aim) { aim_decides_order = aim; }
     status_t status() const { return result; }
     bool is_ready() const { return ready; }
     bool is_skipped() const { return skipped; }
@@ -303,8 +278,7 @@ class solver_t
     std::vector<double> placed, upper;
     std::vector<block_t> blocks;
     size_t split = std::numeric_limits<size_t>::max();
-    double anchor = 0, settle = 0;
-    bool ready = false, skipped = false, valid_input = true, aim_decides_order = false;
+    bool ready = false, skipped = false, valid_input = true;
     status_t result = status_t::skipped;
 
     void clear()
@@ -322,7 +296,6 @@ class solver_t
         upper.clear();
         blocks.clear();
         split = std::numeric_limits<size_t>::max();
-        anchor = settle = 0;
         ready = false;
         skipped = false;
         result = status_t::skipped;
@@ -333,53 +306,37 @@ class solver_t
     status_t invalid_result()
     {
         std::fill(offsets.begin(), offsets.end(), 0.0);
-        settle = 0;
         result = status_t::overlap;
         return result;
     }
 
-    // What split k asks of the item's settle (negative = up): the cards above need it at
-    // least `cards_need` down, the cards below allow at most `cards_room`; it stays on the
-    // rail (`rail_need`, `rail_room`).
-    void settle_terms(size_t k, double lo, double hi, double top, double bottom, double& cards_need,
-        double& cards_room, double& rail_need, double& rail_room) const
+    // How far split k's widgets reach into the item if packed tight against the rail ends:
+    // `above` into its top edge, `below` into its bottom edge, both including the 1 px
+    // contact gap (so up to CONTACT on a side is touching, not overlap).
+    void reach_into(size_t k, double lo, double hi, double top, double bottom, double& above,
+        double& below) const
     {
-        const size_t count = original.size();
-        const double inf = std::numeric_limits<double>::infinity();
-        cards_need = k ? top + reach_above[k] + CONTACT - lo : -inf;
-        cards_room = k < count ? bottom - reach_below[k] - CONTACT - hi : inf;
-        rail_need = top - lo;
-        rail_room = bottom - hi;
+        above = k ? std::max(0.0, top + reach_above[k] + CONTACT - lo) : 0.0;
+        below = k < original.size() ? std::max(0.0, hi + CONTACT + reach_below[k] - bottom) : 0.0;
     }
 
-    // The least overlap with the item that lets split k fit (0 when it fits as is).
-    double squeeze(size_t k, double lo, double hi, double top, double bottom) const
+    // How far split k's widgets must overlap the item (0 when it fits, touching included).
+    double overlap(size_t k, double lo, double hi, double top, double bottom) const
     {
-        double cards_need, cards_room, rail_need, rail_room;
-        settle_terms(k, lo, hi, top, bottom, cards_need, cards_room, rail_need, rail_room);
-        return std::max({0.0, cards_need - cards_room, 2 * (cards_need - rail_room),
-            2 * (rail_need - cards_room)});
+        double above, below;
+        reach_into(k, lo, hi, top, bottom, above, below);
+        return std::max(0.0, above - CONTACT) + std::max(0.0, below - CONTACT);
     }
 
-    // Places split k with the item at [lo, hi], letting the widgets encroach `overlap` on it
-    // (half at each edge) and settling it the least that fits. Returns false if it can't
-    // fit; otherwise the total squared movement (widgets and item). `keep` stores the
-    // placement and the item's settle.
-    bool evaluate(size_t k, double lo, double hi, double top, double bottom, double overlap,
-        double& cost, bool keep, double *settle_out = nullptr)
+    // Places split k around the item at [lo, hi], which never moves: each side as close to
+    // home as possible, reaching into the item only as far as it must. Leaves the placement
+    // in `placed` and returns the total squared movement.
+    double evaluate(size_t k, double lo, double hi, double top, double bottom)
     {
-        double cards_need, cards_room, rail_need, rail_room;
-        settle_terms(k, lo, hi, top, bottom, cards_need, cards_room, rail_need, rail_room);
-        const double need = std::max(cards_need - overlap * 0.5, rail_need);
-        const double room = std::min(cards_room + overlap * 0.5, rail_room);
-        if (need > room + EPSILON) return false;
-        const double shift = std::clamp(0.0, need, std::max(need, room));
-        cost = shift * shift;
-        cost += place(0, k, top, lo + shift - CONTACT + overlap * 0.5);
-        cost += place(k, original.size(), hi + shift + CONTACT - overlap * 0.5, bottom);
-        if (keep) settle = shift;
-        if (settle_out) *settle_out = shift;
-        return true;
+        double above, below;
+        reach_into(k, lo, hi, top, bottom, above, below);
+        return place(0, k, top, lo - CONTACT + above) +
+            place(k, original.size(), hi + CONTACT - below, bottom);
     }
 
     // Widgets a..b-1 in rail order, between `low` (first top) and `high` (every bottom), in
@@ -448,7 +405,7 @@ class solver_t
                 return false;
             }
         }
-        return std::isfinite(settle);
+        return true;
     }
 };
 }
