@@ -9,7 +9,7 @@ if (($#)); then shift; fi
 mkdir -p "$artifacts"
 export SCOTTLAND_WIDGET_PATH=$PWD/tests/widgets
 options=(--widgets --omarchy)
-if [[ ${1:-} == --stock ]]; then options=(--stock); fi
+if [[ ${1:-} == --stock ]]; then options=(--stock --omarchy); fi
 cleanup() {
   [[ ! -f $SCOTTLAND_HEADLESS_DIR/wayfire.log ]] || cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$artifacts/wayfire.log"
   tests/headless.sh stop

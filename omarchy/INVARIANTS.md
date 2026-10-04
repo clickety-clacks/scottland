@@ -51,7 +51,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O19 | `scottland-omarchy-setup` installs Watercolor Dream Light and Dark into the user's Omarchy theme directory only when each destination name is absent; an existing same-named theme is kept intact. The adapter package and dev-install snapshot ship the themes, including their `.aether-managed` markers; dev-install links the matching setup command from its snapshot. | implemented (Plumbus isolated config check, 2026-10-03) |
 | O17 | Full screen holds Omarchy's notifications (FS1): the `focus.d` hook turns the shell's do-not-disturb on while a fullscreen window is in front, and back off after; a do-not-disturb the user already had on stays on. | implemented (tests/omarchy-focus-test.sh, with a stand-in shell) |
 | O9 | A double-tap close shortcut (Super+W) is not turned into a single-press close. | implemented (left unmapped) |
-| O10 | Apps launched through Omarchy's launcher (uwsm-app) open in Scottland. | verified |
+| O10 | Apps launched through Omarchy's launcher (uwsm-app) open in Scottland. | verified; Files via imported Super+Shift+F and a real uwsm scope also completes native file drops on plumbus ([evidence](../docs/native-dnd.md)) |
 | O11 | The shim reports the real session-lock state. | not built |
 | O12 | Keyboard layout switching and night light work under the shim. Runtime surface shortcuts use core key layers (K1; [../docs/key-layers.md](../docs/key-layers.md)), rather than adapter submaps. | layout/night light: not built; key layers: core K1 |
 

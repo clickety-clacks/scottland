@@ -20,7 +20,9 @@ Super drags arrange peripheral and rail fixtures. Tests check:
   client-local coordinates and no movement/resizing of the source window.
 - Text into a native GTK rail widget that accepts drops, at 100% scale.
 - GTK text into Chromium and a Chromium link into GTK.
-- Nautilus's built-in file source into Chromium's file drop target.
+- Nautilus's built-in file source into Chromium's file drop target, including
+  a peripheral scaled target, and into an interactive GTK rail widget's file
+  drop target (with received filenames and client-local coordinates).
 - `WAYLAND_DEBUG=1` source traces: every `start_drag` serial came from a real
   left-button press, and the compositor subsequently sent a DnD `enter`.
 
@@ -34,7 +36,40 @@ An interactive widget is its own client surface and receives its own data offer.
 The default card does not expose a drop target; this test does not claim that
 dropping on a default card forwards data to the hidden represented app.
 
-The failing source app and item are still needed to exercise the reported path.
-These are headless compositor sessions on plumbus; physical libinput touchpad
-input and Mike's osanwe desktop have not been driven. No installed package or
-live-session build was changed.
+### Files through the imported Omarchy binding (2026-10-03)
+
+Mike identified the source as Files, opened with Super+Shift+F through
+`omarchy-launch-nautilus` (`setsid uwsm-app -- nautilus --new-window`). This is
+an adapter launch path (O10); the content transfer itself is core behavior
+(L35/C8). `tests/dnd-test.sh ARTIFACTS --nautilus-launcher` now exercises that
+binding with real stipc key input, the installed launcher and uwsm-app, and an
+actual systemd scope. A test-directory PATH wrapper only records the process
+environment/cgroup and enables `WAYLAND_DEBUG=1` before execing the real binary
+with the launcher's original arguments. Ctrl+L navigation uses real keyboard
+input to select the isolated fixture folder. No global service environment is
+imported or changed.
+
+The launcher path passes on the branch, on the unmodified compositor code at
+30514ff (the 43149b4 test checkout differs only in documentation), on stock
+Wayfire, and on ship-merged5 plus goo-wallpaper-wake. The native client receives
+`GDK_BACKEND=wayland,x11,*`, `XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots`, and
+the isolated session's display. Versions match osanwe: Nautilus 50.3.1, GTK
+4.22.4, Wayfire 0.11.0 and uwsm 0.26.7.
+
+For example, the branch's first launcher run records pointer press serial 318,
+`start_drag(..., 318)`, compositor DnD `enter`, departure from the source,
+`dnd_drop_performed` and `dnd_finished`. Chromium receives and accepts a
+`text/uri-list` offer and receives the file drop. A later **discarded**
+`cancelled` event follows completion, rather than rejecting that drag. The
+pre-fix and stock controls likewise complete the transfer (serials 348 and
+254). Compared with direct launch, the launcher starts at Home with only
+`--new-window`, then navigates to the test folder, and runs in a scope;
+both paths connect natively to Wayland and successfully transfer the file.
+`nautilus-launch.json`, `nautilus.log`, `nautilus-drag-events.log`,
+`chromium.log`, `protocol.json` and screenshots retain the evidence.
+
+Mike's trapped preview remains **unreproduced and unfixed**. These are isolated
+headless compositor sessions on plumbus with a private D-Bus session and fresh
+Nautilus, rather than his existing desktop/application state. Physical
+libinput touchpad input and osanwe's desktop have not been driven. No installed
+package or live-session build was changed, and every test session was stopped.

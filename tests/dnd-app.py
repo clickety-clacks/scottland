@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import gi
 gi.require_version('Gtk', '4.0')
+gi.require_version('Gdk', '4.0')
 from gi.repository import Gdk, GLib, GObject, Gtk
 
 title, journal = sys.argv[1:3]
@@ -37,6 +38,14 @@ def activate(app):
         return True
     drop.connect('drop', receive)
     target.add_controller(drop)
+    files = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+    def receive_files(_, value, x, y):
+        names = [file.get_basename() for file in value.get_files()]
+        record('file-drop', names=names, x=x, y=y)
+        target.set_text(', '.join(names))
+        return True
+    files.connect('drop', receive_files)
+    target.add_controller(files)
     box.append(target)
     window.set_child(box)
     window.present()

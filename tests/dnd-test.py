@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import socket
 import struct
@@ -31,7 +32,7 @@ def ipc(method, data=None):
 stock = '--stock' in sys.argv
 def views():
     if not stock: return ipc('scottland/layout-state')['views']
-    return [v | {'frame':v['geometry'],'scale':1,'applied_scale':1}
+    return [v | {'frame':v['geometry'],'scale':1,'applied_scale':1,'app_id':v['app-id']}
             for v in ipc('window-rules/list-views') if v['mapped']]
 def view(title): return next(v for v in views() if v['title'] == title)
 def pointer(x, y): ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
@@ -59,6 +60,8 @@ def transfer(source, target):
     time.sleep(.4); button('release'); time.sleep(.8)
 
 clients = []
+launcher_pid = None
+launcher_cgroup = None
 try:
     ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': '1600x1000@60000'})
     for title in ('dnd-source', 'dnd-target'):
@@ -133,8 +136,51 @@ try:
         clients[0].terminate(); clients[0].wait(timeout=5)
         folder=art/'files'; folder.mkdir(exist_ok=True)
         (folder/'dnd-file.txt').write_text('scottland-dnd-payload\n')
-        clients.append(subprocess.Popen(['nautilus','--new-window',str(folder)],
-            env=os.environ|{'WAYLAND_DEBUG':'1'}, stdout=open(art/'nautilus.log','w'), stderr=subprocess.STDOUT))
+        if '--nautilus-launcher' in sys.argv:
+            # Instrument only Nautilus. The imported binding, installed Omarchy
+            # launcher, uwsm-app and systemd-run scope all remain the real ones.
+            # Scope launches inherit the recorded session environment; do not
+            # import a headless display into the shared user manager.
+            test_bin = Path(os.environ['XDG_STATE_HOME']).parent/'bin'
+            wrapper = test_bin/'nautilus'
+            snapshot = art/'nautilus-launch.json'
+            snapshot.unlink(missing_ok=True)
+            wrapper.write_text('#!/usr/bin/python3\n'
+                'import json, os, pathlib, sys\n'
+                f'pathlib.Path({str(snapshot)!r}).write_text(json.dumps({{"pid":os.getpid(),'
+                '"argv":sys.argv,"cgroup":pathlib.Path("/proc/self/cgroup").read_text(),'
+                '"environment":{k:os.environ.get(k) for k in '
+                '["WAYLAND_DISPLAY","DISPLAY","GDK_BACKEND","XDG_CURRENT_DESKTOP",'
+                '"DBUS_SESSION_BUS_ADDRESS","XDG_CONFIG_HOME"]}},indent=2))\n'
+                f'fd=os.open({str(art/"nautilus.log")!r},os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)\n'
+                'os.dup2(fd,1); os.dup2(fd,2)\n'
+                'os.environ["WAYLAND_DEBUG"]="1"\n'
+                'os.execv("/usr/bin/nautilus",["nautilus"]+sys.argv[1:])\n')
+            wrapper.chmod(0o755)
+            assert str(test_bin) in os.environ['PATH'].split(':'), os.environ['PATH']
+            for k in ('KEY_LEFTMETA','KEY_LEFTSHIFT','KEY_F'):
+                ipc('stipc/feed_key',{'key':k,'state':True})
+            for k in ('KEY_F','KEY_LEFTSHIFT','KEY_LEFTMETA'):
+                ipc('stipc/feed_key',{'key':k,'state':False})
+            deadline=time.monotonic()+20
+            while time.monotonic()<deadline and not snapshot.exists(): time.sleep(.1)
+            launch=json.loads(snapshot.read_text())
+            launcher_pid=launch['pid']
+            launcher_cgroup=launch['cgroup']
+            assert '.scope' in launch['cgroup'], launch
+            assert launch['argv'][1:]==['--new-window'], launch
+            assert launch['environment']['WAYLAND_DISPLAY']==os.environ['WAYLAND_DISPLAY'], launch
+            assert launch['environment']['GDK_BACKEND']==os.environ['GDK_BACKEND'], launch
+            assert launch['environment']['XDG_CURRENT_DESKTOP']==os.environ['XDG_CURRENT_DESKTOP'], launch
+            deadline=time.monotonic()+20
+            while time.monotonic()<deadline and not any(v['app_id']=='org.gnome.Nautilus' for v in views()): time.sleep(.1)
+            v=next(v for v in views() if v['app_id']=='org.gnome.Nautilus')
+            f=v['frame']; pointer(f['x']+f['width']/2,f['y']+f['height']/2)
+            button('press'); button('release'); time.sleep(.3)
+            subprocess.run(['wtype','-M','ctrl','-k','l','-m','ctrl','-s','100',str(folder),'-k','Return'],check=True)
+        else:
+            clients.append(subprocess.Popen(['nautilus','--new-window',str(folder)],
+                env=os.environ|{'WAYLAND_DEBUG':'1'}, stdout=open(art/'nautilus.log','w'), stderr=subprocess.STDOUT))
         deadline=time.monotonic()+20
         while time.monotonic()<deadline and not any(v['title']=='files' for v in views()): time.sleep(.1)
         v=view('files')
@@ -146,8 +192,48 @@ try:
         icon_x=280 if view('files')['frame']['width']>800 else 110
         transfer(point('files',icon_x,120),point('dnd-browser-drop-scottland-dnd-payload',330,240))
         subprocess.run(['grim',str(art/'nautilus-after.png')],check=True)
+        trace=(art/'nautilus.log').read_text()
+        events=[line for line in trace.splitlines() if re.search(
+            r'\.(start_drag|enter|leave|drop|cancelled|dnd_drop_performed|dnd_finished)\(',line)
+            and ('wl_data_' in line)]
+        (art/'nautilus-drag-events.log').write_text('\n'.join(events)+'\n')
+        print('Nautilus drag protocol: '+json.dumps(events),flush=True)
         assert any(v['title']=='dnd-browser-drop-dnd-file.txt' for v in views()), views()
         print('PASS Nautilus file to Chromium',flush=True)
+        if not stock:
+            move('dnd-browser-drop-dnd-file.txt',1250,750)
+            assert view('dnd-browser-drop-dnd-file.txt')['applied_scale']<.95
+            # Reload the target with real input so a second successful drop is
+            # observable independently of the first identical filename.
+            pointer(*point('dnd-browser-drop-dnd-file.txt',330,240))
+            button('press'); button('release')
+            subprocess.run(['wtype','-M','ctrl','-k','r','-m','ctrl'],check=True)
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline and not any(v['title']=='dnd-browser' for v in views()): time.sleep(.1)
+            transfer(point('files',icon_x,120),point('dnd-browser',330,240))
+            assert any(v['title']=='dnd-browser-drop-dnd-file.txt' for v in views()), views()
+            subprocess.run(['grim',str(art/'nautilus-scaled.png')],check=True)
+            print('PASS Nautilus file to scaled Chromium',flush=True)
+            clients.append(subprocess.Popen([sys.executable,str(Path(__file__).with_name('dnd-app.py')),
+                'dnd-target',str(art/'dnd-target.jsonl')]))
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline and not any(v['title']=='dnd-target' for v in views()): time.sleep(.1)
+            v=view('dnd-target')
+            ipc('window-rules/configure-view',{'id':v['id'],'geometry':{'x':800,'y':200,'width':400,'height':340}})
+            time.sleep(1)
+            move('dnd-target',1585,600)
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline and not any(v['title']=='dnd-widget' for v in views()): time.sleep(.1)
+            journal=Path(os.environ['SCOTTLAND_TEST_STATE'])/'dnd-widget.jsonl'
+            before=journal.read_text().count('"file-drop"') if journal.exists() else 0
+            transfer(point('files',icon_x,120),point('dnd-widget',180,240))
+            events=[json.loads(s) for s in journal.read_text().splitlines()]
+            drops=[e for e in events if e['event']=='file-drop']
+            assert len(drops)==before+1 and drops[-1]['names']==['dnd-file.txt'], events
+            assert abs(drops[-1]['x']-180)<2 and abs(drops[-1]['y']-140)<2, drops[-1]
+            (art/'nautilus-widget.jsonl').write_text(journal.read_text())
+            subprocess.run(['grim',str(art/'nautilus-widget.png')],check=True)
+            print('PASS Nautilus file to widget',flush=True)
     protocol=[]
     for name in ('dnd-source','chromium','nautilus'):
         path=art/(name+'.log')
@@ -156,13 +242,20 @@ try:
         presses=set(re.findall(r'wl_pointer#\d+\.button\((\d+), \d+, 272, 1\)',text))
         requests=list(re.finditer(r'wl_data_device#\d+\.start_drag\([^\n]*, (\d+)\)',text))
         assert requests, ('source sent no start_drag',name)
-        for request in requests:
+        for index, request in enumerate(requests):
             assert request[1] in presses, ('start_drag serial is not its left press',name,request[1])
-            assert re.search(r'wl_data_device#\d+\.enter\(',text[request.end():]), ('drag rejected',name,request[1])
+            end=requests[index+1].start() if index+1<len(requests) else len(text)
+            assert re.search(r'wl_data_device#\d+\.enter\(',text[request.end():end]), ('drag rejected',name,request[1])
         protocol.append({'source':name,'accepted_start_drag_serials':[r[1] for r in requests]})
     (art/'protocol.json').write_text(json.dumps(protocol,indent=2))
     print('PASS start_drag serials and compositor DnD enters',flush=True)
 finally:
+    if launcher_pid is not None:
+        try:
+            process=Path('/proc')/str(launcher_pid)
+            if process.joinpath('cgroup').read_text()==launcher_cgroup:
+                os.kill(launcher_pid, signal.SIGTERM)
+        except (FileNotFoundError, ProcessLookupError): pass
     for client in clients:
         if client.poll() is None: client.terminate()
     for client in clients: client.wait(timeout=5)
