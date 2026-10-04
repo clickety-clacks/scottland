@@ -41,6 +41,38 @@ def launcher_count(path, count, timeout=4):
     return False
 
 
+def prompt_count(path):
+    return path.read_text().count("__PROMPT_END__") if path.is_file() else 0
+
+
+def wait_prompt_count(path, count, timeout=4):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if prompt_count(path) >= count:
+            return True
+        time.sleep(0.025)
+    return False
+
+
+def make_default_fixture(root):
+    hypr = root / "default/hypr"
+    (hypr / "bindings").mkdir(parents=True)
+    (hypr / "helpers.lua").write_text('''
+o = o or {}
+function o.bind(keys, description, action, options)
+  options = options or {}
+  options.description = description
+  if type(action) == "string" then action = hl.dsp.exec_cmd(action) end
+  hl.bind(keys, action, options)
+end
+''')
+    (hypr / "bindings/tiling.lua").write_text('''
+o.bind("ALT + TAB", "Focus on next window", hl.dsp.window.cycle_next())
+o.bind("SUPER + 1", "Workspace 1", hl.dsp.workspace.focus({workspace = "1"}))
+o.bind("SUPER + 2", "Workspace 2", hl.dsp.workspace.focus({workspace = "2"}), {repeating = true})
+''')
+
+
 def report_group(report, heading):
     marker = f"## {heading}\n"
     start = report.find(marker)
@@ -84,9 +116,18 @@ def main():
         home.mkdir()
         (hooks / "config.d/50-omarchy-shortcuts").symlink_to(script)
         launch_log = temp / "launches.txt"
+        agent_log = temp / "agent-prompts.txt"
+        defaults = temp / "omarchy"
+        make_default_fixture(defaults)
         fake_editor = fake_bin / "omarchy-launch-editor"
         fake_editor.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >>\"$SCOTTLAND_REPORT_LAUNCH_LOG\"\n")
         fake_editor.chmod(0o755)
+        fake_selector = fake_bin / "omarchy-default-agent"
+        fake_selector.write_text("#!/bin/sh\nprintf '%s\\n' \"${SCOTTLAND_DEFAULT_AGENT:-}\"\n")
+        fake_selector.chmod(0o755)
+        fake_agent_prompt = fake_bin / "omarchy-agent-prompt"
+        fake_agent_prompt.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >>\"$SCOTTLAND_AGENT_PROMPT_LOG\"\nprintf '%s\\n' '__PROMPT_END__' >>\"$SCOTTLAND_AGENT_PROMPT_LOG\"\n")
+        fake_agent_prompt.chmod(0o755)
         hypr = home / ".config/hypr/hyprland.lua"
         hypr.parent.mkdir(parents=True)
         hypr.write_text('''
@@ -115,9 +156,13 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
         {description = "Unsupported Hyprland action"})
 ''')
         env = test_env(home, hooks, launch_log, fake_bin)
+        env["SCOTTLAND_AGENT_PROMPT_LOG"] = str(agent_log)
+        env["SCOTTLAND_DEFAULT_AGENT"] = "codex-test"
+        env["OMARCHY_PATH"] = str(defaults)
 
         old_env = os.environ.copy()
         try:
+            os.environ.clear()
             os.environ.update(env)
             loader = importlib.machinery.SourceFileLoader("o20_shortcut_import", str(script))
             importer = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
@@ -153,6 +198,29 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
                   "Scottland's Window mode previews the next center window" in report and
                   "these keys to focus center windows while keeping the others visible" in report,
                   report)
+            check("O20 labels a changed default shortcut from the live/default comparison",
+                  "Alt+Tab — Was: Open Ask." in report and
+                  "[Your custom/changed shortcut]" in next(
+                      line for line in report.splitlines() if "Alt+Tab — Was: Open Ask." in line),
+                  report)
+            default_line = next(line for line in report.splitlines()
+                                if "Super+1 — Was: Workspace 1." in line)
+            check("O20 labels an unchanged Omarchy shortcut as a default",
+                  "[Omarchy default]" in default_line and
+                  "[Your custom/changed shortcut] differs from shipped defaults" in report,
+                  report)
+            check("O20 treats a changed shortcut option as a user change",
+                  "[Your custom/changed shortcut]" in next(
+                      line for line in report.splitlines() if "Super+2 — Was: Workspace 2." in line),
+                  report)
+            configured_omarchy = os.environ["OMARCHY_PATH"]
+            os.environ["OMARCHY_PATH"] = str(temp / "missing-omarchy-defaults")
+            generate((str(base_source),))
+            check("O20 marks source as unverified when shipped defaults cannot be scanned",
+                  "[Source not verified]" in report_path.read_text(), report_path.read_text())
+            os.environ["OMARCHY_PATH"] = configured_omarchy
+            generate((str(base_source),))
+            report = report_path.read_text()
             check("O20 report explains an Omarchy Alt-only action becoming Window mode",
                   "Alt — Was: Open Ask on Alt hold. Now:" in report and
                   "Holding Alt now enters Scottland's Window mode" in report and
@@ -170,8 +238,8 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
                     generate(("--show-pending",))
             finally:
                 os.environ["PATH"] = original_path
-            check("O20 unavailable editor launcher leaves the report pending",
-                  not seen_path.exists() and not launch_log.exists())
+            check("O20 missing launch tools leave the report pending",
+                  not seen_path.exists() and not launch_log.exists() and not agent_log.exists())
             check("O20 report records app-specific remap reservations",
                   "## App-specific remaps" in report and
                   "Ctrl+W — Was: Close tab." in report and
@@ -218,11 +286,28 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
             check("O20 identical report generation preserves the stable file",
                   report_path.stat().st_mtime_ns == first_mtime and
                   "Generated:" not in report_path.read_text(), report_path.read_text())
-            check("O20 startup can show a pending report once",
-                  generate(("--show-pending",)) == "" and launcher_count(launch_log, 1),
-                  launch_log.read_text() if launch_log.exists() else "no launcher call")
+            check("O20 startup chooses the selected coding agent instead of the editor",
+                  generate(("--show-pending",)) == "" and wait_prompt_count(agent_log, 1) and
+                  not launch_log.exists(),
+                  agent_log.read_text() if agent_log.exists() else "no agent prompt")
+            prompt = agent_log.read_text().split("__PROMPT_END__", 1)[0]
+            check("O20 prompt names the report and gives plain-language, one-group-at-a-time instructions",
+                  str(report_path) in prompt and "user may not know what happened and may not be technical" in prompt and
+                  "short, plain-words explanation" in prompt and
+                  "Avoid jargon unless the user asks" in prompt and
+                  "Explain one group at a time" in prompt,
+                  prompt)
+            check("O20 prompt covers safe Scottland-only remapping and the relevant docs",
+                  "[Your custom/changed shortcut]" in prompt and
+                  "~/.config/scottland/overrides.ini" in prompt and
+                  "verify that key is free" in prompt and
+                  "Never edit Hyprland or Omarchy files without the user's explicit OK" in prompt and
+                  "core/autostart.d/02-link-agent-skills" in prompt and
+                  "docs/key-layers.md" in prompt and "docs/windowing-keys.md" in prompt and
+                  "docs/widgets.md" in prompt,
+                  prompt)
             generate(("--show-pending",))
-            check("O20 does not reopen content already shown", len(launch_log.read_text().splitlines()) == 1)
+            check("O20 does not reopen content already shown", prompt_count(agent_log) == 1)
             check("O20 records the report content that was shown",
                   seen_path.read_text().strip() == hashlib.sha256(report_path.read_bytes()).hexdigest(),
                   seen_path.read_text() if seen_path.exists() else "missing seen digest")
@@ -233,10 +318,59 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
             os.environ["WAYFIRE_SOCKET"] = "/test/session.sock"
             generate((str(base_source),))
             check("O20 changed shortcut content opens once during a session",
-                  launcher_count(launch_log, 2), launch_log.read_text())
+                  wait_prompt_count(agent_log, 2), agent_log.read_text())
             generate((str(base_source),))
             check("O20 unchanged session rebuild does not reopen the report",
-                  len(launch_log.read_text().splitlines()) == 2, launch_log.read_text())
+                  prompt_count(agent_log) == 2, agent_log.read_text())
+
+            # An empty selected-agent value uses Omarchy's editor launcher.
+            os.environ["SCOTTLAND_DEFAULT_AGENT"] = ""
+            hypr.write_text(hypr.read_text() +
+                            'hl.bind("ALT+TAB", hl.dsp.exec_cmd("ask"), {description = "Open Ask changed"})\n')
+            generate((str(base_source),))
+            check("O20 falls back to the editor when no default agent is selected",
+                  launcher_count(launch_log, 1) and prompt_count(agent_log) == 2,
+                  launch_log.read_text() if launch_log.exists() else "no editor fallback")
+            generate((str(base_source),))
+            check("O20 does not reopen fallback content without another report change",
+                  len(launch_log.read_text().splitlines()) == 1)
+
+            # Each missing Omarchy agent tool falls back to the editor independently.
+            no_selector_bin = temp / "agent-prompt-only-bin"
+            no_selector_bin.mkdir()
+            (no_selector_bin / "omarchy-agent-prompt").symlink_to(fake_agent_prompt)
+            (no_selector_bin / "omarchy-launch-editor").symlink_to(fake_editor)
+            report_path.write_text(report_path.read_text() + "\n# missing default-agent tool\n")
+            os.environ["SCOTTLAND_DEFAULT_AGENT"] = "codex-test"
+            os.environ["PATH"] = str(no_selector_bin)
+            generate(("--show-pending",))
+            check("O20 falls back when omarchy-default-agent is missing",
+                  launcher_count(launch_log, 2) and prompt_count(agent_log) == 2,
+                  launch_log.read_text())
+
+            no_prompt_bin = temp / "selector-only-bin"
+            no_prompt_bin.mkdir()
+            (no_prompt_bin / "omarchy-default-agent").symlink_to(fake_selector)
+            (no_prompt_bin / "omarchy-launch-editor").symlink_to(fake_editor)
+            report_path.write_text(report_path.read_text() + "\n")
+            os.environ["PATH"] = str(no_prompt_bin)
+            generate(("--show-pending",))
+            check("O20 falls back when omarchy-agent-prompt is missing",
+                  launcher_count(launch_log, 3) and prompt_count(agent_log) == 2,
+                  launch_log.read_text())
+
+            # With neither agent tool available, a report still uses the editor.
+            isolated_bin = temp / "editor-only-bin"
+            isolated_bin.mkdir()
+            (isolated_bin / "omarchy-launch-editor").symlink_to(fake_editor)
+            report_path.write_text(report_path.read_text() + "\n# both agent tools missing\n")
+            os.environ["PATH"] = str(isolated_bin)
+            generate(("--show-pending",))
+            check("O20 falls back to the editor when both agent tools are missing",
+                  launcher_count(launch_log, 4) and prompt_count(agent_log) == 2,
+                  launch_log.read_text())
+            os.environ["PATH"] = original_path
+            os.environ["SCOTTLAND_DEFAULT_AGENT"] = ""
 
             # Flavorings can append stable entries without changing the generator.
             dropin = hooks / "override-report.d/gooarchy.txt"
@@ -257,14 +391,20 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
                   "## Gooarchy flavorings" in report and
                   "Alt+Space — Was: Open Ask. Now: Opens Gooarchy's widget controls." in report and
                   "Super+G — Was: Open Gooarchy widget list. Now: Opens Gooarchy's widget controls." in report and
+                  "[Gooarchy flavoring]" in next(
+                      line for line in report.splitlines() if "Alt+Space — Was: Open Ask." in line) and
                   report.count("## Gooarchy flavorings") == 1 and
-                  launcher_count(launch_log, 3), report)
+                  launcher_count(launch_log, 5), report)
 
-            # Setup calls the same generator and editor launcher in an isolated home.
+            # Setup calls the same generator and agent prompt in an isolated home.
             install_home = temp / "install-home"
             install_home.mkdir()
             install_log = temp / "install-launches.txt"
+            install_agent_log = temp / "install-agent-prompts.txt"
             install_env = test_env(install_home, hooks, install_log, fake_bin)
+            install_env["SCOTTLAND_AGENT_PROMPT_LOG"] = str(install_agent_log)
+            install_env["SCOTTLAND_DEFAULT_AGENT"] = "codex-test"
+            install_env["OMARCHY_PATH"] = str(defaults)
             install_env["SCOTTLAND_OMARCHY_THEMES_DIR"] = str(temp / "themes")
             for theme in ("watercolor-dream-light", "watercolor-dream-dark"):
                 (temp / "themes" / theme).mkdir(parents=True)
@@ -273,11 +413,12 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
             check("O20 setup generates and opens the report at install",
                   completed.returncode == 0 and install_report.is_file() and
                   "This report lists Omarchy shortcuts and mappings" in install_report.read_text() and
-                  launcher_count(install_log, 1), completed.stdout + completed.stderr)
+                  wait_prompt_count(install_agent_log, 1) and not install_log.exists(),
+                  completed.stdout + completed.stderr)
             subprocess.run([str(setup)], env=install_env, capture_output=True, text=True, timeout=10)
             check("O20 repeated setup does not reopen the same report",
-                  len(install_log.read_text().splitlines()) == 1,
-                  install_log.read_text() if install_log.exists() else "no launcher call")
+                  prompt_count(install_agent_log) == 1,
+                  install_agent_log.read_text() if install_agent_log.exists() else "no agent prompt")
             print("\n--- sample O20 report ---", flush=True)
             print(report_path.read_text(), end="", flush=True)
         finally:
