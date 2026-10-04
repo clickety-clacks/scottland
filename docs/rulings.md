@@ -39,6 +39,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | peek-strip design |
 | 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
+| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | peek-strip design |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 
