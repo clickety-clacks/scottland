@@ -150,7 +150,7 @@ def check_pair(name, left, right, held, area, sizes=None):
           f'got {got} want {want} scale {scale:.4f} gap {gap:.2f}')
     scales = [layout(i)['applied_scale'] for i in (left, right)]
     check(all(abs(s - scale) < .01 for s in scales), f'{name}: both drawn at the shared scale {scale:.3f}', str(scales))
-    check(hints()['selected'] == held, f'{name}: the held window stays selected')
+    if held is not None: check(hints()['selected'] == held, f'{name}: the held window stays selected')
     return want, scale, gap
 
 def sizes_of(*ids): return {i: (geometry(i)['width'], geometry(i)['height']) for i in ids}
@@ -424,6 +424,83 @@ try:
         check_pair('taller than the screen', A, B, B, area, before)
         shot('tall-paired.png'); alt(False)
     else: check(False, 'fixture: a window taller than the screen', str(geometry(A)))
+
+    # 16. Three-finger touchpad hold (WK35/WK36, Mike 2026-10-04), through a virtual touchpad that
+    # emits wlroots' hold/swipe/button events as libinput's backend does (scottland/test-touchpad).
+    def pad(event, **data): return ipc('scottland/test-touchpad', dict(event=event, **data))
+    def over(id): x1, y1, x2, y2 = footprint(id); pointer((x1 + x2) / 2, (y1 + y2) / 2); time.sleep(.1)
+    def still(): return {i: geometry(i) for i in (A, B)}
+    setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
+    before = sizes_of(A, B); over(B)
+    check(pad('hold_begin', fingers=3)['hold_pending'], 'touchpad: three still fingers on a window start a hold')
+    time.sleep(.75); pad('hold_end', cancelled=False)
+    check_pair('three-finger hold on an unfocused window', A, B, None, area, before)
+    check(focused_id() == B, 'three-finger hold: the held window ends focused, like a hint hold')
+    shot('touchpad-paired.png')
+    # After a hold has acted, the fingers moving is still an ordinary drag (L23).
+    b_before = geometry(B); over(B)
+    pad('hold_begin', fingers=3); time.sleep(.6); pad('hold_end', cancelled=True)
+    pad('swipe_begin', fingers=3)
+    for _ in range(8): pad('swipe_update', fingers=3, dx=0, dy=-10); time.sleep(.02)
+    time.sleep(.25); pad('swipe_end'); time.sleep(.8)
+    check(geometry(B)['y'] < b_before['y'] - 40, 'touchpad: after a hold, moving fingers still drag the window (L23)',
+          f"{b_before['y']} -> {geometry(B)['y']}")
+
+    setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
+    before = still(); over(B)
+    pad('hold_begin', fingers=3); time.sleep(.3); pad('hold_end', cancelled=False); time.sleep(.6)
+    check(still() == before, 'touchpad: fingers lifted before the hold delay do nothing')
+
+    setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
+    before = still(); over(B)
+    pad('hold_begin', fingers=3); time.sleep(.15); pad('hold_end', cancelled=True)
+    r = pad('swipe_begin', fingers=3)
+    check(not r['hold_pending'] and r['swipe_moving'], 'touchpad: fingers moving first start the L23 drag and end the hold')
+    for _ in range(10): pad('swipe_update', fingers=3, dx=-12, dy=0); time.sleep(.03)
+    time.sleep(.6); pad('swipe_end'); time.sleep(.8)
+    g = geometry(B)
+    check(g['x'] < before[B]['x'] - 60 and geometry(A) == before[A], 'touchpad: a drag that starts first moves the window and pairs nothing',
+          f"B {before[B]['x']} -> {g['x']}; A {geometry(A)}")
+
+    for cancelled_first in (False, True):
+        setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
+        before = still(); over(B)
+        pad('hold_begin', fingers=3); time.sleep(.15)
+        if cancelled_first: pad('hold_end', cancelled=True)
+        r = pad('button', button='middle', pressed=True)
+        check(not r['hold_pending'] and r['middle_pending'], f'touchpad: a three-finger click first is L24 (hold ended: {cancelled_first})')
+        time.sleep(.7); r = pad('button', button='middle', pressed=False)
+        if not cancelled_first: pad('hold_end', cancelled=True)
+        time.sleep(.4)
+        check(not r['middle_pending'] and not r['middle_resizing'] and still() == before,
+              f'touchpad: the click stays a middle click and pairs nothing (hold ended: {cancelled_first})')
+
+    setup([(B, 1060, 520, 420, 300), (A, 520, 140, 520, 360)], A)
+    before = still(); over(A)
+    pad('hold_begin', fingers=3); time.sleep(.75); pad('hold_end', cancelled=False); time.sleep(.5)
+    check(still() == before and layout(A)['zone'] == 'center', 'touchpad: a hold on the focused window reaches the solo hook; nothing moves')
+
+    setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
+    before = still(); over(B)
+    check(not pad('hold_begin', fingers=2)['hold_pending'], 'touchpad: a two-finger hold is not a window hold')
+    time.sleep(.75); pad('hold_end', cancelled=False); time.sleep(.3)
+    check(still() == before, 'touchpad: a two-finger hold moves nothing')
+
+    setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
+    alt(True); widget = widgetize_by_double_tap(B); time.sleep(1); alt(False)
+    ipc('window-rules/focus-view', {'id': A}); time.sleep(.4)
+    wg = next(v['geometry'] for v in views() if v['id'] == widget)
+    pointer(wg['x'] + wg['width'] / 2, wg['y'] + wg['height'] / 2); time.sleep(.1)
+    before = sizes_of(A, B)
+    if pad('hold_begin', fingers=3)['hold_pending']:
+        time.sleep(.75); pad('hold_end', cancelled=False)
+        wait(lambda: not layout(B)['widgetized'], 3, 'touchpad widget restore')
+        time.sleep(.8)
+        check_pair('three-finger hold on a widget pairs its app', A, B, None, area, before)
+        shot('touchpad-widget-paired.png')
+    else:
+        pad('hold_end', cancelled=False)
+        check(False, 'touchpad: a three-finger hold on a widget card starts a hold')
 finally:
     try: key('LEFTALT', False)
     except Exception: pass

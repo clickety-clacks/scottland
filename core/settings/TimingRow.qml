@@ -14,7 +14,7 @@ FocusScope {
   HoverHandler { id:helpHover }
   ControlHint {
     control:row;design:row.design;title:row.title
-    explanation:row.hintHold ? "How long a hint must be held, without letting go, to place an unfocused window side by side with the focused one. A shorter press stays a tap. Higher makes accidental holds less likely; lower pairs sooner." : row.doubleTap ? "The first hint press acts immediately. After releasing it, begin typing the same hint again within this interval to send the window to its rail. Complete every letter; key hold time and typing the rest do not use up the gap. Higher gives you more time; lower makes accidental double taps less likely." : "How long Alt alone must be held before window hints appear. Higher waits longer; lower enters sooner. Quick app shortcuts stay immediate."
+    explanation:row.hintHold ? "How long a hint must be held, without letting go (or three fingers rest still on a window on a touchpad), to place an unfocused window side by side with the focused one. A shorter press stays a tap. Higher makes accidental holds less likely; lower pairs sooner." : row.doubleTap ? "The first hint press acts immediately. After releasing it, begin typing the same hint again within this interval to send the window to its rail. Complete every letter; key hold time and typing the rest do not use up the gap. Higher gives you more time; lower makes accidental double taps less likely." : "How long Alt alone must be held before window hints appear. Higher waits longer; lower enters sooner. Quick app shortcuts stay immediate."
     showing:helpHover.hovered || row.activeFocus
     viewport:row.viewport;scrollOffset:row.scrollOffset
   }

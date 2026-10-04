@@ -171,7 +171,7 @@
         </option>
         <option name="window_hold_delay" type="int">
             <_short>Window mode hint hold time (ms)</_short>
-            <_long>Holding an unfocused window's hint this long, without releasing it, places it side by side with the focused window. A shorter press stays a tap. Key auto-repeat never counts.</_long>
+            <_long>Holding an unfocused window's hint this long, without releasing it, or resting three fingers on it on a touchpad this long without moving or clicking, places it side by side with the focused window. A shorter press stays a tap. Key auto-repeat never counts.</_long>
             <default>500</default>
             <min>1</min>
             <max>3000</max>
