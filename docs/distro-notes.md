@@ -29,6 +29,7 @@ therefore has to stay stable enough for outside packages.
 
 ## Defaults to ship
 
+- **Strata ([lgse/strata](https://github.com/lgse/strata)) is Gooarchy's standard file browser** (Mike, 2026-10-04): installed by default and set as the file manager (folder handler, Super+Shift+F). It ships in gooarchy-flavorings.
 - **Terminal window titles read "session on host"** (Mike, 2026-10-01), the same on every machine:
   tmux `set -g set-titles on` and `set -g set-titles-string '#S on #h'`, and no `[mosh] ` prefix
   (mosh honors `MOSH_TITLE_NOPREFIX=1` in the client's environment). The window title is what a
