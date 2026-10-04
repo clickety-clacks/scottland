@@ -1449,6 +1449,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t first_view = 0;
         bool first_widget = false;
         wf::dimensions_t first_size{0, 0};
+        std::optional<double> pin;        // the first window's Shift scale pin then (L31): Esc restores it
         uint64_t became = 0;              // after a drop: the window that now stands for it
     };
     struct drag_morph_t
@@ -2230,6 +2231,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (next != widget_link_t::lifecycle_t::docked && next != widget_link_t::lifecycle_t::previewing)
             stop_widget_transition(wf::toplevel_cast(link.window.lock()));
         link.lifecycle = next;
+        // A widget never scales (WG4), so its window keeps no pin: whichever way it leaves the rail
+        // it follows its new zone or that zone's remembered pin. The zone it left already has the
+        // pin in its memory (WP1): drag starts and cycles record it before the window docks.
+        if (auto window = wf::toplevel_cast(link.window.lock());
+            window && next == widget_link_t::lifecycle_t::docked && model.windows.count(window->get_id()))
+            pin_scale(window, std::nullopt);
         bool waiting_form = widget_transitions.count(link.window_id) && entering_widget(link.window_id);
         render_hidden(link.window.lock(), (link.docked() && !waiting_form) || next == widget_link_t::lifecycle_t::handed_over);
         auto widget = wf::toplevel_cast(link.widget.lock());
@@ -2719,7 +2726,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (entry.has_member("placement")) found->second.placement = read_memory(entry["placement"]);
                 if (entry.has_member("pending_rail")) found->second.pending_rail = scottland::windowing::point{
                     entry["pending_rail"]["x"].as_double(), entry["pending_rail"]["y"].as_double()};
-                if (entry.has_member("pinned_scale")) found->second.pinned_scale = entry["pinned_scale"].as_double();
+                if (entry.has_member("pinned_scale") && entry["pinned_scale"].is_double())
+                    found->second.pinned_scale = scottland::windowing::valid_pin(entry["pinned_scale"].as_double());
                 auto sources = entry["attention"];
                 for (size_t j = 0; j < sources.size(); j++)
                 {
@@ -4858,6 +4866,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag_velocity.add(now_msec(), input.x, input.y);
         window_entries();
         remember_window(drag->view);
+        // Esc puts back the pin it had (L27, WP1); the drag may clear it just below.
+        auto pin_at_start = origin_of(drag->view).pin;
         bypass_window_keys();  // L31 owns Alt for this entire drag chord
         model.drag.started = true;
         // Dragging it again without Shift: it follows the zones again (L31).
@@ -4912,6 +4922,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         stop_glide(drag->view);  // picked up again mid-glide: it's where it's drawn
         model.drag.widget = is_widget(drag->view) ? drag->view->get_id() : 0;
         model.drag.origin = origin_of(drag->view);
+        model.drag.origin.pin = pin_at_start;
         if (continued)
         {
             auto view = model.drag.origin.view;
@@ -5194,6 +5205,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (auto link = link_of_widget(view))
         {
             origin.rail = link->rail;
+        }
+        else if (auto found = model.windows.find(view->get_id()); found != model.windows.end())
+        {
+            origin.pin = found->second.pinned_scale;
         }
         origin.first_size   = {g.width, g.height};
         return origin;
@@ -5500,6 +5515,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             cancel_preview(*link);
         }
 
+        if (!is_widget(view))
+        {
+            pin_scale(view, origin.pin);  // in its original form: its scale pin too (L27, L31)
+        }
+
         apply(view);
         start_glide(view, dx, dy);
     }
@@ -5535,6 +5555,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     move_window(window, std::round(home.x - wg.width / 2.0), std::round(home.y - wg.height / 2.0));
                 }
 
+                pin_scale(window, origin.pin);  // the pin it had before it became a widget
                 apply(window);
                 auto to = layout_origin(window->get_output());
                 start_glide(window, from.x - (to.x + home.x), from.y - (to.y + home.y));

@@ -61,11 +61,11 @@ on a physical session. This change is not tested on either machine's live displa
 | WK36 | Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side. Window sizes are preserved: they are never resized and never scaled up. If both fit side by side at their own size they stay at 100%; only if they don't fit are they scaled down, together, just enough to fit, going edge-to-edge across the screen only when necessary. When scaling is needed, both get roughly the same magnification (the larger window takes the larger share), best effort, rather than 50/50. The other windows already in the center stay where they are; window avoidance makes them peek out (above and below the pair) rather than sending them to the periphery, since the pair may span the screen. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Tenet 4 exception: pairing is an explicit request, so scaling center windows down to fit the pair is a concession the user grants. Order: the two keep their current left/right order (whichever is further left now goes left; P1). Placement: both windows vertically centered on the screen's horizontal center line, the pair centered horizontally on the screen as a unit, with a halo-sized gap between them that is the first thing given up when space is tight (P7). (Mike, 2026-10-04) | specified, not built |
 | WK37 | In Window mode, a window that is mostly occluded (proposed: less than half of it visible) also gets an opaque outline in its hint color, drawn above the windows covering it, so its full extent and identity show through them. Thin enough not to obscure the front windows' content; clears with the hints. (Mike, 2026-10-04) | not built |
 | WK38 | The Window mode hint-color overlay on windows and cards (WK14, today a fixed 7%) has a strength setting with a live slider in the Window mode Settings tab; 0 turns the overlay off; the default stays 7%. (Mike, 2026-10-04) | not built |
-| WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. Each zone memory also keeps the window's scale pin there, if the user set one (Shift-drag, L31): returning to that zone by cycling restores both the remembered position and that pinned scale; with no pin the zone's normal scale applies. (Mike, 2026-10-04) | implemented (headless) |
+| WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. Each zone memory also keeps the window's scale pin there, if the user set one (Shift-drag, L31): returning to that zone by cycling restores both the remembered position and that pinned scale; with no pin the zone's normal scale applies. Only the periphery memories keep a pin; the center and rails never do (see Decisions). (Mike, 2026-10-04) | implemented (plumbus headless, 2026-10-04) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
 | WP4 | Without a memory, use the pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. An unremembered periphery destination places its center far enough into the side zone for a visible scale reduction (5% when available, otherwise halfway toward the rail scale), then re-evaluates its natural scaled footprint at the landing position. A remembered spot remains exact (WP2). Rail placement is refined to the actual widget footprint when it maps. | implemented (headless) |
-| WP5 | Explicit zone cycling, card opens and presenting a side window clear the current Shift scale pin, but a zone's remembered pin (WP1) is restored when the window returns to that zone. Center destinations keep the original window size and are always at 100%. A cycle's drawn scale target is computed from its destination center before the geometry transaction commits, so the final displayed scale matches that zone; later old-geometry notifications cannot retarget the cycle. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). | implemented (headless) |
+| WP5 | Explicit zone cycling, card opens and presenting a side window clear the current Shift scale pin, but a zone's remembered pin (WP1) is restored when the window returns to that zone. Center destinations keep the original window size and are always at 100%. A cycle's drawn scale target is computed from its destination center before the geometry transaction commits, so the final displayed scale matches that zone; later old-geometry notifications cannot retarget the cycle. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). A restored pin is also the cycle's drawn scale target, so the window lands at the pin with no jump. | implemented (plumbus headless, 2026-10-04) |
 | WP6 | The placement routine and force solver have no Wayfire dependencies and have standalone unit tests. The placement routine is reusable for any rectangle/region contention; it never resizes an incoming rectangle or moves obstacles. | implemented (headless) |
 | WP7 | Windows Scottland places (zone cycling, card opens: the placement routine) keep off the screen's edges by the halo's width plus 5 pt (about 16 pt), in each dimension where the window fits; one larger than the screen in a dimension is not padded there. Widgets keep their own, wider rail inset. Remembered spots (WP2) and the user's own drops are kept exactly. | implemented (headless) |
 
@@ -101,6 +101,38 @@ Double-tap requests the widget step directly.
 - WP4/WP5, tenets 3 and 4: a new periphery placement must read as lower priority through
   its center's zone scale. Exclude the near-center soft band when no side memory exists,
   and pin a cycle's scale target to that chosen center before the move transaction completes.
+- WP1/WP5 zone pins (Mike, 2026-10-04): a zone memory stores the L31 pin the window has when that
+  memory is established (drop, finished keyboard or drag coast, cycle placement, the spot it is
+  leaving on a cycle), or its absence, so an unpinned drop there clears that zone's pin. Edges:
+  - Center: no pin is kept or restored. Tenet 4 (the center is full scale, always) and WP5's
+    "center destinations are always at 100%" decide it, even though L31 lets a Shift drop leave a
+    window scaled in the center for as long as it stays there. Card opens and presenting go only
+    to the center, so they restore 100%.
+  - Rails: no pin. Widgets are always at 100% (WG4), so a window's pin is cleared the moment it
+    becomes a widget (any way: rail drop, hint cycle, double tap, keyboard push). The zone it left
+    already has the pin in its memory (drag starts and cycles record it first), so every way off
+    the rail starts clean: a hint cycle back to the periphery restores that zone's pin, a card
+    opens at 100%, and a widget dragged off its rail follows its new zone (widget drags never pin).
+  - Returns versus moves (Mike, 2026-10-04: every path by which a window leaves a periphery zone
+    and returns to it restores that zone's pin). Returns put the window back on a remembered spot:
+    hint presses in Window mode (WK6/WK7 slow presses, the WK15 double tap to the rail and back),
+    cycles through the widget, and Esc. Esc returns the window in its original form (L27), pin
+    included, and leaves the zone memory holding it; a Shift drag of an unpinned window, cancelled,
+    leaves no pin. Drags and arrow pushes are moves to a new place, where L31 applies as before:
+    Shift keeps the scale, otherwise the window follows the zone (tenet 3: moving it is how you
+    change its priority).
+  - Left and right periphery keep separate pins; a pin comes back only with its own zone's
+    remembered spot and never reaches another zone. If zone settings have since put that spot
+    inside the center zone, the window comes back there at 100% (tenet 4).
+  - Screens: the pin is the window's own scale factor, the same logical size on any screen, so it
+    is applied unchanged on a screen of another size or output scale, like its normalized spot.
+  - Persistence: pins travel in the desktop model's placement record (`positions[z].pin`), so a
+    marked reload keeps them; closing the window forgets them with the rest of its memory. A pin
+    read back (a zone pin or the current `pinned_scale`) is clamped to the scale range, 0.05 to 1;
+    zero, negative or non-numeric values read as no pin.
+  - Known edge: when zone settings have moved a remembered spot into the center, the window comes
+    back there at 100% and the memory still holds the pin until the window next leaves that spot
+    (which records it with no pin). Only reachable by changing zone settings between cycles.
 
 
 - WK29, tenets 2 and 4: animate only the drawn position and scale, preserving the destination,
@@ -1071,3 +1103,37 @@ both text-scale sizes and WK34 peek attachment checks pass. No avoidance solver
 logic changed. Logs and screenshots are under
 `build/review3-tests/plumbus/` and
 `build/review3-tests/plumbus-artifacts/`.
+
+## WP1/WP5 zone scale pins (2026-10-04, plumbus headless)
+
+`tests/zone-pin-test.sh` (needs `SCOTTLAND_HEADLESS_DIR`) first builds this checkout's plugin and
+test helpers (`make test-hooks`) and refuses to run without them, so it never falls back to a
+machine's dev-installed helpers; then it starts its own widget session and drives real stipc
+Super/Shift drags, Esc, Shift+arrows and Alt hint presses. It covers: a Shift pin in the left
+periphery (0.48, where the zone scale is 0.85) restored with its spot after a cycle to the center,
+drawn toward the pin from the first frame with no change after landing; the same without a pin;
+no leak to the right periphery; pins kept across a marked reload; the pin cleared on becoming a
+widget and a widget dragged off its rail following its zone; hint keys periphery -> center ->
+widget -> periphery in one hold, periphery -> center -> periphery, and a WK15 double tap to the
+rail then rail -> center -> periphery, each restoring the spot and pin; Esc on a plain drag of a
+pinned window (spot and pin back, and still restored by a later cycle), Esc on a Shift drag over
+the rail (the window, not a widget, with its pin), Esc on a Shift drag of an unpinned window (no
+pin); a Shift+arrow pin recorded and restored; and a remembered spot moved into the center by a
+wider center zone returning at 100%. `tests/windowing-unit.sh` covers the pure memory rules
+(`remember_spot`, `remembered_pin`, `valid_pin` in `window-memory.hpp`), including the clamp.
+
+| Suite (plumbus, isolated checkouts) | Branch | Before |
+|---|---|---|
+| Windowing unit | 194 passed | — |
+| Zone pin real input | 32 passed (twice, from a checkout with no prebuilt helpers) | `bc71c66`: 27 passed, 5 failed (all Esc checks and the widget pin clear); origin/main fails the pin restore itself |
+| Windowing end-to-end | 102 passed | origin/main 102 passed |
+| Widgets | all passed | — |
+| Present (L30) | 0 failed | origin/main 0 failed |
+| Drag coast | 25 passed, 2 failed | origin/main: the same 2 hint-avoidance failures |
+| State regressions | stops at the late-widget fixture | origin/main: stops at the same point |
+| Widget morph | 262–269 of 270, timing checks vary by run | origin/main 266–270 of 270, run side by side under the same load |
+
+Plumbus carried a load average of 11–16 from other agents' sessions during the widget-morph runs;
+its failures are timing samples that differ from run to run on both builds, and no pins occur in
+it. No live session on osanwe or plumbus was installed into, reloaded or used; nothing ran on
+osanwe.
