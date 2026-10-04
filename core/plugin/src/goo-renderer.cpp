@@ -305,7 +305,7 @@ struct renderer_t::impl
         // GO24: the refraction cache's alpha is the dye's share of the color.
         const std::string cached_params =
             "float dyeShare=hintAmount>0.?0.:(1.-wallBand)*(1.-milk*.8)*(.85*dyeBlend*diff+"
-            "rim*.22*(uNeutralTint>.5?dyeTint:1.)+cloud*uEmissivity*.35+.25*pulse*.75);"
+            "rim*.22*(uDyeStrength!=1.?stateTint:uNeutralTint>.5?dyeTint:1.)+cloud*uEmissivity*.35+.25*pulse*.75);"
             "OUT=vec4(clamp((refr-p)/32.+.5,0.,1.),"
             "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),clamp(dyeShare/1.5,0.,1.));";
         auto params_to = [&](const std::string &output)
