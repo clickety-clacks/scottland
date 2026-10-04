@@ -58,7 +58,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK33 | Each completed hint press that acts on a window or widget briefly pulses its hint-color tint over that representation, peaking quickly and fading within about 220 ms. Repeated acting presses pulse again. The flash is visual only: it does not alter focus, zone, scale, memory, or input routing. Tenet 2 gives immediate feedback for the chosen hint. | implemented (headless) |
 | WK34 | In window mode, the hint press that first selects an unselected collapsed widget also expands it for a five-second peek; collapsed intent and placement stay unchanged, and it collapses again at expiry unless another peek trigger is active. A further hint press during the peek follows WK30's center-first cycle and restores the app window to center, even within WK15's double-tap interval; this ends the peek. Tab selection keeps WK10 behavior; hint circles remain click-through (WK4). Tenets 2 and 3 make a minimized widget recognizable briefly while preserving its stored place. | implemented (plumbus headless, 2026-10-03) |
 | WK35 | Holding the hint of the focused window (past a hold delay, proposed 500 ms, a setting) solos it: it goes to the center and the other center windows go to the periphery, which spreads (docs/spread.md; spread's keyboard solo). It commits outright, no undo (P5). A tap keeps today's behavior (WK15 double-tap, WK6 slow repeats); key auto-repeat never counts as a hold or a repeat (WK16). (Mike, 2026-10-03; focused-window condition 2026-10-04) For the focused window only, its hint press acts on key release instead of key-down, so a hold doesn't first move the window one step: a tap still acts (on release), a hold solos it. Unfocused windows keep acting on key-down. (Mike, 2026-10-04) | hold detection and the focused window's release timing implemented (WK39, plumbus headless, 2026-10-04); the solo itself not built: the hold reaches an empty hook, `solo_window` |
-| WK36 | Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side. Window sizes are preserved: they are never resized and never scaled up. If both fit side by side at their own size they stay at 100%; only if they don't fit are they scaled down, together, just enough to fit, going edge-to-edge across the screen only when necessary. When scaling is needed, both get roughly the same magnification (the larger window takes the larger share), best effort, rather than 50/50. The other windows already in the center stay where they are; window avoidance makes them peek out (above and below the pair) rather than sending them to the periphery, since the pair may span the screen. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Tenet 4 exception: pairing is an explicit request, so scaling center windows down to fit the pair is a concession the user grants. Order: the two keep their current left/right order (whichever is further left now goes left; P1). Placement: both windows vertically centered on the screen's horizontal center line, the pair centered horizontally on the screen as a unit, with a halo-sized gap between them that is the first thing given up when space is tight (P7). (Mike, 2026-10-04) Edges decided in [Pairing](#pairing-wk36-and-hint-holds-wk39). | implemented (plumbus headless, real stipc input, 2026-10-04) |
+| WK36 | Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side. Window sizes are preserved: they are never resized and never scaled up. If both fit side by side at their own size they stay at 100%; only if they don't fit are they scaled down, together, just enough to fit, going edge-to-edge across the screen only when necessary. When scaling is needed, both get roughly the same magnification (the larger window takes the larger share), best effort, rather than 50/50. The other windows already in the center stay where they are; window avoidance makes them peek out (above and below the pair) rather than sending them to the periphery, since the pair may span the screen. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Tenet 4 exception: pairing is an explicit request, so scaling center windows down to fit the pair is a concession the user grants. Order: the two keep their current left/right order (whichever is further left now goes left; P1). Placement: both windows vertically centered on the screen's horizontal center line, the pair centered horizontally on the screen as a unit, with a halo-sized gap between them that is the first thing given up when space is tight (P7). (Mike, 2026-10-04) Edges decided in [Pairing](#pairing-wk36-and-hint-holds-wk39). | implemented (plumbus headless, real stipc input, 2026-10-04; not yet seen on a physical screen) |
 | WK37 | In Window mode, a window that is mostly occluded (proposed: less than half of it visible) also gets an opaque outline in its hint color, drawn above the windows covering it, so its full extent and identity show through them. Thin enough not to obscure the front windows' content; clears with the hints. (Mike, 2026-10-04) | not built |
 | WK38 | The Window mode hint-color overlay on windows and cards (WK14, today a fixed 7%) has a strength setting with a live slider in the Window mode Settings tab; 0 turns the overlay off; the default stays 7%. (Mike, 2026-10-04) | not built |
 | WK39 | Holding a complete hint's final key, without releasing it, for `scottland/window_hold_delay` ms (default 500, range 1–3000; Settings “Hold a hint”) is a hint hold, timed from the physical press (the input event's timestamp, the same clock WK15 uses). An unfocused window's or widget's press still acts immediately on key-down (WK6), and holding it pairs (WK36) with the window that had focus before the press. The focused window's press acts on key release instead (WK35, Mike 2026-10-04): a tap acts when released, and a hold is WK35's solo (not built yet: nothing happens, the window does not move). Releasing the key first is a tap. Key auto-repeat neither counts nor restarts the hold (WK16). Any other key press (another hint, Tab, an arrow, F4) or Alt release ends the hold; a focused window's press still waiting for release acts first, as the tap it was. Esc ends the hold and drops a waiting focused press. A press that completed a double-tap acts at once and never becomes a hold, and after a hold the next press of that hint is not its double-tap. (Mike, 2026-10-03/04, WK35/WK36) | implemented (plumbus headless, real stipc input, 2026-10-04) |
@@ -143,26 +143,43 @@ halos meet across it, so the pair reads as one liquid unit; the padding is WP7's
   settled frames; before this, a window the pair had just covered kept its pre-pair result (no
   offset) until Window mode was entered again.
 
-**Verification (plumbus, isolated headless sessions, 2026-10-04, commit `96c5c0c`).**
-`tests/pairing-unit.sh`: 42 passed (the fit's four regimes, centering, edge-to-edge, height,
-offset areas, 5% floor, 20,000 random pairs for order/centering/containment/minimal scale/gap
-rule; holds: delay, tap, focused hook, cancellations by another key, Tab, Esc/Alt release and
-closing, nothing focused, double-tap interplay, widgets, two-letter hints).
-`tests/pairing-test.sh` (real stipc keys; fixtures placed over IPC): 35 passed on one
-1600×1000 output and 4 on two outputs (1600×1000 + 1280×800). It covers 100% with the halo
-gap from a scaled periphery start, kept order, a pair scaled to 0.844 edge to edge, a later
-arrow push clearing the pin, a tap, a hold with key auto-repeat, Esc and Alt release mid-hold,
-the focused hold, a widget restored into the pair, a window taller than the output, and a
-held window joining the focused window's other output. Screenshots show the covered center
-window peeking above or below the anchored pair, and the pair's halos meeting across the gap.
-Regression suites on the same build: windowing end-to-end 102, key layers 59, widget hints
-228, settings coverage passed, Settings help 185 (its timeline clicks now scroll each row into
-view: three timing rows no longer fit the viewport together). The same Settings suite on
-unmodified main failed 9 unrelated border-drag/Escape checks on the loaded test machine.
-Fullscreen members are not exercised by these tests.
-A trial merge with `double-tap-fix` (`7f6c3e5`) conflicts only textually (alt-mode, the
-bridge's letter call, TimingRow, WK15/16 rows); resolved by keeping both, it builds and passes
-pairing unit 42 and that branch's windowing unit 186.
+**Verification (plumbus, isolated headless sessions, 2026-10-04).** Second round, after
+Fable's review, on the merge of `double-tap-fix` (`7f6c3e5`) and main:
+
+| Suite | Result |
+|---|---|
+| `tests/pairing-unit.sh` (fit regimes, 20,000 random pairs; holds, focused release timing, Esc/another key/Alt release, remaining-time re-arm) | 51 passed |
+| `tests/windowing-unit.sh` (with `double-tap-fix`'s release-timed cases) | 186 passed |
+| `tests/pairing-test.sh`, one 1600×1000 output, real stipc keys | 70 passed |
+| `tests/pairing-test.sh`, two outputs (1600×1000 + 1280×800) | 17 passed |
+| `tests/window-double-tap-test.sh` (`double-tap-fix`'s human-timing suite) | 57 passed (same as on `7f6c3e5`) |
+| windowing end-to-end / key layers / widget hints / cycle overshoot | 102 / 59 / 228 / 79 passed |
+| window-avoidance calm | 18 passed |
+| settings coverage | passed |
+
+The real-input suite now covers: a third window wholly inside the pair's footprint getting a
+real offset within the same hold, part of it visible and its badge on that part (finding 1);
+exact size preservation in every case; the gap-shrinks and padding-gives-way regimes with
+exact-size GTK clients; a scaled pair edge to edge, then an inward arrow push and a real
+Super+drag each clearing the pin; an unfocused hint focused while still held; Esc and Alt
+release mid-hold with the focus checked through `window-rules/get-focused-view`; the focused
+window's tap moving only on release and its hold moving nothing; a 450 ms near-hold then a quick
+press going to the rail for both a focused and an unfocused window; a held widget and a focused
+widget partner opening into the pair; a full-screen partner leaving full screen at its restored
+size; a window taller than the screen; and on two outputs, scaled pairs in both directions.
+
+Correction to the first round: its "an arrow push clears the pair scale" check pushed the right
+window outward at the screen's edge, which docks it (WK20), so the check passed on a widget.
+The push is now inward and asserts the window stays a window. The first round's peek check
+accepted "offset or visible badge" and its third window overhung the pair, so it did not test
+finding 1.
+
+Flaky on this loaded shared machine, and not reproduced on rerun: one `window-double-tap` run
+stopped at its own fixture-focus assertion before any key of that case (57/57 on rerun), and one
+calm run failed 3 drag-geometry checks (18/18 on rerun; unmodified main failed its search-budget
+check in the same comparison). Settings help fails its border-drag slider checks on this machine
+with and without this branch (6 here; 9 on unmodified main earlier); nothing in Settings changed
+in this round. No physical screen was used.
 
 ## Cycle rule (WK7)
 
