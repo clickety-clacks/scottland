@@ -21,27 +21,34 @@ disk and its digest is not marked as shown, so a later install or session can re
 
 ## What it reports
 
-Each entry states the keys, what the imported shortcut did, what happens now, and why. This covers
-feature-key conflicts and active app-specific `key_remaps` (including reservations that do not
-collide with an imported shortcut), Omarchy shortcuts the adapter cannot translate (O4), and
-Super+W close, which remains unbound so it cannot become an immediate single-press close (O9). Core
-metadata and comments provide short, generic feature reasons; the adapter combines them with the
-imported shortcut description. Core contains no Omarchy-specific names (C4).
+The report groups entries by reason. Each group has one heading and one plain-language explanation;
+each key line says what that shortcut did in Omarchy and what happens in Scottland. It includes
+feature-key conflicts, active app-specific `key_remaps` (including reservations that do not collide
+with an imported shortcut), and omissions (O4): window navigation, tiling/layout, workspace and
+window-group shortcuts, plus any unsupported key or action. Super+W is included because it remains
+unbound so a press cannot immediately close a window (O9). Core metadata and comments provide short,
+generic reasons for Scottland features; the adapter groups them and adds the imported shortcut
+description. Core contains no Omarchy-specific names (C4).
 
 ## Adding flavoring overrides
 
 Gooarchy flavorings is empty today. When it adds an Omarchy override, it can add a `.txt` fragment
 under `$SCOTTLAND_HOOKS/override-report.d/` (for a package this is
 `/usr/lib/scottland/override-report.d/`) or the user's
-`$XDG_CONFIG_HOME/scottland/override-report.d/`. The adapter appends fragments in sorted path order.
-Each fragment contains one or more entries in this plain-text format:
+`$XDG_CONFIG_HOME/scottland/override-report.d/`. The adapter reads fragments in sorted path order.
+Each fragment contains one or more reason groups. The adapter merges entries with the same heading
+and explanation, so each reason appears only once in the report:
 
 ```text
+## Gooarchy widget controls
+Reason: Gooarchy uses this shortcut to open its widget controls.
+
 - Keys: Alt+Space
   Was: Open Ask
-  Now: Open Scottland's Window mode hints.
-  Why: Window mode keeps windows visible while you choose what to focus.
+  Now: Opens Gooarchy's widget controls.
 ```
 
-Fragments should be stable text without timestamps. Their contents are included in the same report
-and change detection as adapter-generated entries, so a changed fragment is shown once.
+`Was` is the shortcut's Omarchy action; `Now` is its current Scottland or flavoring action. Keep
+group explanations short and generic. Fragments are stable text without timestamps and participate
+in the same report digest and open-once behavior. The earlier four-field form with a per-entry `Why`
+is still accepted; those entries are grouped by their `Why` text.

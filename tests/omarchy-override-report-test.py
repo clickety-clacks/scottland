@@ -41,6 +41,16 @@ def launcher_count(path, count, timeout=4):
     return False
 
 
+def report_group(report, heading):
+    marker = f"## {heading}\n"
+    start = report.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    end = report.find("\n## ", start)
+    return report[start:] if end < 0 else report[start:end]
+
+
 def test_env(home, hooks, launch_log, path_prefix):
     config = home / ".config"
     state = home / ".local/state"
@@ -84,8 +94,25 @@ hl.bind("ALT+TAB", hl.dsp.exec_cmd("ask"), {description = "Open Ask"})
 hl.bind("ALT", hl.dsp.exec_cmd("ask-hold"), {description = "Open Ask on Alt hold"})
 hl.bind("SUPER+COMMA", hl.dsp.exec_cmd("ask-settings"), {description = "Open Ask settings"})
 hl.bind("CTRL+W", hl.dsp.exec_cmd("close-tab"), {description = "Close tab"})
+hl.bind("CTRL+ALT+W", hl.dsp.exec_cmd("close-window"), {description = "Close browser window"})
 hl.bind("SUPER+W", hl.dsp.window.close(), {description = "Close window"})
 hl.bind("SUPER+1", hl.dsp.workspace.focus({workspace = "1"}), {description = "Workspace 1"})
+hl.bind("SUPER+2", hl.dsp.workspace.focus({workspace = "2"}), {description = "Workspace 2"})
+hl.bind("SUPER+SHIFT+1", hl.dsp.window.move_to_workspace({workspace = "1"}),
+        {description = "Move window to workspace 1"})
+hl.bind("SUPER+SHIFT+3", hl.dsp.workspace.focus({workspace = "3"}))
+hl.bind("SUPER+L", hl.dsp.layout("cycle"), {description = "Cycle tiling layout"})
+hl.bind("SUPER+J", hl.dsp.window.focus({direction = "next"}), {description = "Focus next window"})
+hl.bind("SUPER+F", hl.dsp.exec_cmd("hyprctl dispatch movefocus l"))
+hl.bind("SUPER+V", hl.dsp.exec_cmd("hyprctl dispatch layoutmsg togglesplit"))
+hl.bind("SUPER+G", hl.dsp.group.toggle(), {description = "Toggle window group"})
+hl.bind("SUPER+K", hl.dsp.window.tag({tag = "work"}), {description = "Tag window"})
+hl.bind("SHIFT+F4", hl.dsp.exec_cmd("release-action"),
+        {description = "Release action with modifier", release = true})
+hl.bind("SUPER+NoSuchKey", hl.dsp.exec_cmd("unsupported-key"),
+        {description = "Unsupported key name"})
+hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
+        {description = "Unsupported Hyprland action"})
 ''')
         env = test_env(home, hooks, launch_log, fake_bin)
 
@@ -121,15 +148,18 @@ hl.bind("SUPER+1", hl.dsp.workspace.focus({workspace = "1"}), {description = "Wo
             seen_path = report_path.with_name("omarchy-overrides.seen")
             report = report_path.read_text() if report_path.is_file() else ""
             check("O20 report records the displaced center-window shortcut and its reason",
-                  "Was: Open Ask (Alt+Tab)" in report and
+                  "## Used by Scottland Window mode" in report and
+                  "Alt+Tab — Was: Open Ask. Now:" in report and
                   "Scottland's Window mode previews the next center window" in report and
-                  "focus a center window while keeping the others visible" in report, report)
+                  "these keys to focus center windows while keeping the others visible" in report,
+                  report)
             check("O20 report explains an Omarchy Alt-only action becoming Window mode",
-                  "Was: Open Ask on Alt hold (Alt)" in report and
+                  "Alt — Was: Open Ask on Alt hold. Now:" in report and
                   "Holding Alt now enters Scottland's Window mode" in report and
-                  "uses Alt alone to show hints and focus center windows" in report, report)
+                  "Window mode uses Alt alone to show hints and these keys to focus center windows" in report,
+                  report)
             check("O20 report composes the core reason for Scottland Settings",
-                  "Was: Open Ask settings (Super+,)" in report and
+                  "Super+, — Was: Open Ask settings. Now: Opens Scottland Settings." in report and
                   "Now: Opens Scottland Settings." in report and
                   "Opens the desktop controls for spatial layout, Goo, and Window mode." in report,
                   report)
@@ -143,16 +173,43 @@ hl.bind("SUPER+1", hl.dsp.workspace.focus({workspace = "1"}), {description = "Wo
             check("O20 unavailable editor launcher leaves the report pending",
                   not seen_path.exists() and not launch_log.exists())
             check("O20 report records app-specific remap reservations",
-                  "Was: Close tab (Ctrl+W)" in report and
+                  "## App-specific remaps" in report and
+                  "Ctrl+W — Was: Close tab." in report and
                   "Scottland omits this imported shortcut globally; Ctrl+W sends Ctrl+Backspace" in report and
-                  "Was: Ctrl+Alt+W reached its matching apps unchanged" in report and
+                  "Ctrl+Alt+W — Was: Close browser window." in report and
                   "Ctrl+Alt+W sends Ctrl+F4" in report and
                   "intended editing effect in matching apps" in report, report)
-            check("O20 report explains unsupported workspace shortcuts and O9 close",
-                  "Was: Workspace 1 (Super+1)" in report and
-                  "Scottland has one spatial desktop" in report and
-                  "Was: Close window (Super+W)" in report and
-                  "Scottland leaves Super+W unbound" in report, report)
+            check("O20 groups workspace, layout, navigation, group, unsupported and close omissions",
+                  "Was: Workspace 1." in report_group(report, "Scottland has no workspaces") and
+                  "Was: Workspace 2." in report_group(report, "Scottland has no workspaces") and
+                  "Was: Move window to workspace 1." in report_group(report, "Scottland has no workspaces") and
+                  "Super+Shift+3 — Was: Switch or move windows between workspaces." in
+                  report_group(report, "Scottland has no workspaces") and
+                  report.count("## Scottland has no workspaces") == 1 and
+                  "Scottland arranges windows spatially by moving and scaling them" in
+                  report_group(report, "Scottland does its own window layout (no tiling)") and
+                  "Super+L — Was: Cycle tiling layout." in
+                  report_group(report, "Scottland does its own window layout (no tiling)") and
+                  "Super+J — Was: Focus next window." in
+                  report_group(report, "Scottland uses its own window navigation") and
+                  "Super+F — Was: Navigate between windows." in
+                  report_group(report, "Scottland uses its own window navigation") and
+                  "Super+G — Was: Toggle window group." in
+                  report_group(report, "Scottland has no window groups") and
+                  "Super+V — Was: Change the window layout." in
+                  report_group(report, "Scottland does its own window layout (no tiling)") and
+                  "Super+K — Was: Tag window." in report_group(report, "Unsupported in Scottland") and
+                  "Shift+F4 — Was: Release action with modifier." in
+                  report_group(report, "Unsupported in Scottland") and
+                  "Super+Nosuchkey — Was: Unsupported key name." in
+                  report_group(report, "Unsupported in Scottland") and
+                  "Super+Y — Was: Unsupported Hyprland action." in
+                  report_group(report, "Unsupported in Scottland") and
+                  "## Scottland leaves Super+W unbound" in report and
+                  "Super+W — Was: Close window." in report, report)
+            report_headings = [line for line in report.splitlines() if line.startswith("## ")]
+            check("O20 emits one heading for each report reason",
+                  len(report_headings) == len(set(report_headings)), report)
             check("O9 Super+W is not generated as a single-press close binding",
                   "close_top_view = <super> KEY_W" not in generated and
                   "O9: close remains unbound" in generated, generated)
@@ -183,12 +240,24 @@ hl.bind("SUPER+1", hl.dsp.workspace.focus({workspace = "1"}), {description = "Wo
 
             # Flavorings can append stable entries without changing the generator.
             dropin = hooks / "override-report.d/gooarchy.txt"
-            dropin.write_text("- Keys: Alt+Space\n  Was: Open Ask\n  Now: Open Window mode hints.\n"
-                              "  Why: Window mode keeps windows visible while you choose what to focus.\n")
+            dropin.write_text("## Gooarchy flavorings\n"
+                              "Reason: Gooarchy supplies its own widget controls for the desktop.\n\n"
+                              "- Keys: Alt+Space\n"
+                              "  Was: Open Ask\n"
+                              "  Now: Opens Gooarchy's widget controls.\n")
+            second_dropin = hooks / "override-report.d/gooarchy-extra.txt"
+            second_dropin.write_text("## Gooarchy flavorings\n"
+                                     "Reason: Gooarchy supplies its own widget controls for the desktop.\n\n"
+                                     "- Keys: Super+G\n"
+                                     "  Was: Open Gooarchy widget list\n"
+                                     "  Now: Opens Gooarchy's widget controls.\n")
             generate((str(base_source),))
             report = report_path.read_text()
-            check("O20 flavoring drop-ins append to the report and trigger one display",
-                  "Additional overrides" in report and "Keys: Alt+Space" in report and
+            check("O20 flavoring entries with one reason share a heading and trigger one display",
+                  "## Gooarchy flavorings" in report and
+                  "Alt+Space — Was: Open Ask. Now: Opens Gooarchy's widget controls." in report and
+                  "Super+G — Was: Open Gooarchy widget list. Now: Opens Gooarchy's widget controls." in report and
+                  report.count("## Gooarchy flavorings") == 1 and
                   launcher_count(launch_log, 3), report)
 
             # Setup calls the same generator and editor launcher in an isolated home.

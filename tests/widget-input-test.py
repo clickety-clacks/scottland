@@ -645,8 +645,9 @@ remap_from_browser_close =
             report = report_path.read_text() if report_path.is_file() else ""
             check("O9 Super+W leaves the window open and explains the omission",
                   app("shortcut-regression") is not None and
-                  "Was: Close window (Super+W)" in report and
-                  "Scottland leaves Super+W unbound" in report, report)
+                  "## Scottland leaves Super+W unbound" in report and
+                  "Super+W — Was: Close window. Now: Super+W is left unbound" in report,
+                  report)
             # (Keys no Scottland feature uses: on those, the user's shortcuts win over other defaults.)
             generated = generate(
                 "[wm-actions]\ntoggle_fullscreen = <super> KEY_K | <super> <shift> KEY_K | <super> KEY_N\n",
