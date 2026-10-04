@@ -597,6 +597,35 @@ def modes():
     check("WG16 a 200 ms press is a tap", mode() == "collapsed", mode())
     set_widget_mode("expanded")
     time.sleep(.5)
+    # Near the 300 ms boundary; the key events' own times decide.
+    press(.25)
+    check("WG16 a 250 ms press is still a tap", mode() == "collapsed", mode())
+    set_widget_mode("expanded")
+    time.sleep(.5)
+    press(.35)
+    check("WG16 a 350 ms press is a hold: released, nothing changed", mode() == "expanded" and
+          widget_mode()["shown"] == "expanded" and all(placed(t, "in") for t in titles), widget_mode())
+    # Rapid reversals mid-slide: each slide starts from where the widget is drawn, and the last
+    # mode wins with every widget exactly in its place.
+    def at_rest():
+        a = {t: card(t)["frame"]["x"] for t in titles}
+        time.sleep(.1)
+        return a == {t: card(t)["frame"]["x"] for t in titles} and a
+    rest = wait_for(at_rest)
+    for _ in range(2):
+        press(.03); time.sleep(.05)   # collapsed
+        press(.03); time.sleep(.08)   # hidden: sliding away
+        press(.03); time.sleep(.08)   # expanded: sliding back mid-way
+    track = []
+    began = time.monotonic()
+    while time.monotonic() - began < .6:
+        track.append(card("mode-right")["frame"]["x"])
+        time.sleep(.01)
+    check("WG16 rapid reversals mid-slide end in place, without a jump", mode() == "expanded" and
+          all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles) and
+          all(abs(card(t)["frame"]["x"] - rest[t]) < .5 for t in titles) and
+          max(abs(b - a) for a, b in zip(track, track[1:])) < 60,
+          (rest, {t: card(t)["frame"]["x"] for t in titles}, track))
 
     # Holding is momentary: from expanded it hides; release returns.
     hold_m()
@@ -683,6 +712,21 @@ def modes():
           abs(screen["width"] - card("mode-right")["frame"]["x"] - strip) < 1,
           (link("mode-right"), card("mode-right")["frame"], strip))
     shot("attention-peeking")
+    if artifacts:
+        # Measured on screen: the card's body shows at the screen edge. The strip counts the
+        # widget's surface; the default card keeps 6 px of it for its badge, inward.
+        raw = subprocess.check_output(["grim", "-t", "ppm", "-"])
+        header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
+        width, pixels = int(header[1]), raw[header.end():]
+        f = card("mode-right")["frame"]
+        y = round(f["y"] + f["height"] / 2)
+        at = lambda x: tuple(pixels[(y * width + x) * 3:(y * width + x) * 3 + 3])
+        body = at(width - 1)
+        run = 0
+        while run < 200 and sum(abs(a - b) for a, b in zip(at(width - 1 - run), body)) <= 6:
+            run += 1
+        check("WG16 the attention strip shows the card's body at the edge, measured in pixels",
+              strip - 6 - 1.5 <= run <= strip + 1, (run, strip, body))
     f = card("mode-right")["frame"]
     move(screen["width"] - strip / 2, f["y"] + f["height"] / 2)
     check("WG16 hovering the strip brings it in", placed("mode-right", "in"), link("mode-right"))
@@ -733,6 +777,94 @@ def modes():
           all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles + ("mode-new",)))
     shot("expanded-again")
     ipc.call("wayfire/set-config-options", {"scottland/widget_attention_peek_duration": 5000})
+
+
+def outputs():
+    """WG16 with two screens: hidden widgets on a rail between the screens slide off their own
+    screen and never show on the other one, peeking included. Needs SCOTTLAND_TEST_OUTPUTS=2."""
+    screens = sorted(ipc.call("window-rules/list-outputs"), key=lambda o: o["geometry"]["x"])
+    if len(screens) < 2:
+        raise AssertionError("the outputs case needs a two-output session")
+    first, second = screens[0]["geometry"], screens[1]["geometry"]
+    artifacts = (args.log.parent.with_name(args.log.parent.name + ".results") / "outputs") if args.log else None
+    if artifacts:
+        artifacts.mkdir(parents=True, exist_ok=True)
+
+    def link(title):
+        return next(w for w in widgets() if w["title"] == title)
+
+    def put(title, x, y, widget=True):
+        process = subprocess.Popen(["foot", "-T", title, "-W", "40x8", "sh", "-c", "exec sleep 600"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owned.append((title, process))
+        wait_for(lambda: app(title))
+        time.sleep(.4)
+        f = app(title)["frame"]
+        move(f["x"] + f["width"] / 2, f["y"] + f["height"] / 2)
+        time.sleep(.1)
+        key("LEFTMETA", True)
+        ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+        sx, sy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
+        for i in range(1, 21):
+            move(sx + (x - sx) * i / 20, sy + (y - sy) * i / 20)
+            time.sleep(.025)
+        time.sleep(.4)
+        drag_end()
+        if widget:
+            wait_for(lambda: card(title) and not card(title)["preview"])
+        time.sleep(.7)
+
+    set_widget_mode("expanded")
+    # The first screen's right rail borders the second screen; the second's left rail too.
+    put("two-a", first["x"] + first["width"] - 6, 250)
+    put("two-b", second["x"] + 6, 420)
+    put("two-focus", first["x"] + first["width"] / 2, 300, widget=False)
+    wait_for(lambda: card("two-a") and card("two-b"))
+    move(first["x"] + first["width"] / 2, 40)
+
+    def grab():
+        raw = subprocess.check_output(["grim", "-t", "ppm", "-"])
+        header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
+        width, pixels = int(header[1]), raw[header.end():]
+        return lambda x, y: pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
+
+    # The neighbor screen's band along the shared edge, beside each widget, while nothing of
+    # theirs should be there: every later screenshot must match it.
+    y_a = round(card("two-a")["frame"]["y"]); y_b = round(card("two-b")["frame"]["y"])
+    sx, fx = round(second["x"]), round(first["x"] + first["width"])
+    bands = {"two-a": (sx, sx + 140, y_a - 20, y_a + 116), "two-b": (fx - 140, fx, y_b - 20, y_b + 116)}
+    reference = grab()
+
+    def band_clear(pixel):
+        return all(pixel(x, y) == reference(x, y) for x0, x1, y0, y1 in bands.values()
+                   for y in range(max(0, y0), y1, 3) for x in range(x0, x1, 3))
+
+    ipc.call("window-rules/focus-view", {"id": card("two-a")["id"]})  # a focused widget goes away too
+    tap_mode_key(); tap_mode_key()  # expanded -> collapsed -> hidden
+    samples = []
+    for _ in range(8):
+        samples.append(band_clear(grab()))
+        time.sleep(.03)
+    wait_for(lambda: link("two-a")["away"] and link("two-b")["away"])
+    check("WG16 two screens: hidden widgets slide off their own screen's edge, never onto the other",
+          all(samples), samples)
+    focused = ipc.call("window-rules/get-focused-view")["info"]
+    check("WG16 a focused widget that slides away passes keyboard focus on",
+          focused and focused["id"] not in (card("two-a")["id"], card("two-b")["id"]), focused)
+    window = app("two-a")["id"]
+    ipc.call("scottland/attention", {"window": window, "attention": True, "source": "two-screens"})
+    try:
+        wait_for(lambda: link("two-a")["place"] == "peeking", timeout=8)
+    except AssertionError:
+        print("two-a did not peek:", link("two-a"), widget_mode(), flush=True)
+    time.sleep(.5)
+    check("WG16 two screens: a peeking widget shows only on its own screen",
+          band_clear(grab()) and not card("two-a")["hidden"], card("two-a")["frame"])
+    if artifacts:
+        subprocess.run(["grim", str(artifacts / "two-screens-peeking.png")], check=True)
+    ipc.call("scottland/attention", {"window": window, "attention": False, "source": "two-screens"})
+    set_widget_mode("expanded")
+    wait_for(lambda: not link("two-a")["away"] and not link("two-b")["away"])
 
 
 def gravity():
@@ -1044,15 +1176,16 @@ remap_from_browser_close =
 if __name__ == "__main__":
     cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts,
              "peek": peeking, "return": return_behavior, "modes": modes}
+    extra = {"outputs": outputs}  # only when asked for: needs a two-output session
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
-    parser.add_argument("cases", nargs="*", choices=list(cases))
+    parser.add_argument("cases", nargs="*", choices=list(cases) + list(extra))
     args = parser.parse_args()
     try:
         ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
         for name in args.cases or cases:
             try:
-                cases[name]()
+                {**cases, **extra}[name]()
             finally:
                 cleanup()
     finally:

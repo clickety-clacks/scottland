@@ -34,7 +34,7 @@ def screenshot(name):
     header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
     width, height = int(header[1]), int(header[2])
     pixels = raw[header.end():]
-    (out / (name + ".ppm")).write_bytes(raw)
+    (out / (name + ".ppm")).write_bytes(raw)  # the last attempt per case
     return lambda x, y: tuple(pixels[(y * width + x) * 3:(y * width + x) * 3 + 3])
 
 
@@ -74,6 +74,8 @@ def settled(collapsed):
     time.sleep(.6)  # the goo and the client's last frame
 
 
+# The palette file is shared runtime state: put back exactly what was there (or nothing).
+original_palette = palette.read_bytes() if palette.exists() else None
 try:
     t.ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
     t.set_widget_mode("expanded")
@@ -97,16 +99,34 @@ try:
                     t.set_widget_mode("expanded")
                 settled(collapsed)
                 label = f"{scheme}-{scale}-{'collapsed' if collapsed else 'expanded'}"
-                pixel = screenshot(label)
+                # The card redraws after the palette and size change on its own schedule: measure
+                # until two screenshots in a row agree, with the body in this palette's color.
+                previous, stable = None, None
+                for attempt in range(20):
+                    pixel = screenshot(label)
+                    current = {title: measure(pixel, t.card(title)["frame"], rgb(colors["background"]))
+                               for title in ("icon-left", "icon-right")}
+                    if all(current.values()) and current == previous:
+                        stable = current
+                        break
+                    previous = current
+                    time.sleep(.25)
                 for title in ("icon-left", "icon-right"):
                     rail = title.split("-")[1]
-                    m = measure(pixel, t.card(title)["frame"], rgb(colors["background"]))
-                    report[f"{label}-{rail}"] = m
+                    m = stable[title] if stable else previous[title]
+                    report[f"{label}-{rail}"] = dict(m or {}, stable=bool(stable))
                     name = f"{'collapsed' if collapsed else 'expanded'} icon {'centered' if collapsed else 'vertically centered'} on the card ({scheme}, text scale {scale}, {rail} rail)"
-                    ok = m is not None and abs(m["dy"]) <= TOLERANCE and (not collapsed or abs(m["dx"]) <= TOLERANCE)
-                    t.check("WG10 " + name, ok, m)
+                    ok = bool(stable) and abs(m["dy"]) <= TOLERANCE and (not collapsed or abs(m["dx"]) <= TOLERANCE)
+                    t.check("WG10 " + name, ok, report[f"{label}-{rail}"])
     (out / "measurements.json").write_text(json.dumps(report, indent=2))
 finally:
+    tmp = palette.with_suffix(".icon-center.tmp")
+    if original_palette is None:
+        palette.unlink(missing_ok=True)
+    else:
+        tmp.write_bytes(original_palette)
+        tmp.replace(palette)
+    tmp.unlink(missing_ok=True)
     t.set_widget_mode("expanded")
     t.cleanup()
     print(f"icon center: {t.passes} passed, {t.failures} failed", flush=True)

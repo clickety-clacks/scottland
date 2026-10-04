@@ -1793,6 +1793,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             announce_widgets();
         }
 
+        reconcile_rail_slides();  // a hidden widget peeks in, or goes, with its attention
         publish_model();
     }
 
@@ -1833,6 +1834,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     std::string minimize_device;
     // The press being judged: released before the hold delay it's a tap, else a hold.
     uint32_t minimize_gesture = 0;
+    uint32_t minimize_gesture_pressed = 0;  // the press's own input time
     wf::wl_timer<false> minimize_hold;
 
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_minimize_edge =
@@ -1905,7 +1907,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 bool gesture = it->first == minimize_gesture;
                 it = minimize_presses.erase(it);
-                if (gesture) end_minimize_gesture();
+                if (gesture) end_minimize_gesture(false);
             } else
             {
                 ++it;
@@ -1951,8 +1953,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         // A press of another binding key while one is judged ends that one first.
-        if (minimize_gesture) end_minimize_gesture();
+        if (minimize_gesture) end_minimize_gesture(false);
         minimize_gesture = key.get_key();
+        minimize_gesture_pressed = minimize_event_time;
         minimize_hold.set_timeout(std::max(1, int(minimize_hold_delay)), [=] ()
         {
             model.widget_mode_held = model.widget_mode == widget_mode_t::expanded ?
@@ -1965,19 +1968,28 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
 
     /** The judged Super+M press was released: before the hold delay it was a tap; after it, the
-     *  momentary mode ends and the mode it was in comes back. */
-    void end_minimize_gesture()
+     *  momentary mode ends and the mode it was in comes back. The key events' own times decide,
+     *  so a busy main loop can't turn a quick tap into a hold (or a long press into a tap). */
+    void end_minimize_gesture(bool released = true)
     {
         minimize_gesture = 0;
-        if (minimize_hold.is_connected())
-        {
-            minimize_hold.disconnect();
-            cycle_widget_mode();
-        } else if (model.widget_mode_held)
+        bool tap = released && int32_t(minimize_event_time - minimize_gesture_pressed) <
+            std::max(1, int(minimize_hold_delay));
+        bool pending = minimize_hold.is_connected();
+        minimize_hold.disconnect();
+        if (model.widget_mode_held)
         {
             model.widget_mode_held.reset();
             LOGI("scottland: minimize-key hold-release mode=", widget_mode_name(model.widget_mode));
-            apply_widget_mode();
+            if (!tap) apply_widget_mode();
+        }
+
+        if (tap)
+        {
+            cycle_widget_mode();
+        } else if (pending)
+        {
+            LOGI("scottland: minimize-key late-hold mode=", widget_mode_name(model.widget_mode));
         }
     }
 
@@ -2342,6 +2354,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      *  disable leases above only keep Wayfire's reference counts balanced. */
     void transition_widget(widget_link_t& link, widget_link_t::lifecycle_t next)
     {
+        if (next != link.lifecycle) reconcile_rail_slides();  // docked widgets have a place
         if (next != widget_link_t::lifecycle_t::docked && next != widget_link_t::lifecycle_t::previewing)
             stop_widget_transition(wf::toplevel_cast(link.window.lock()));
         link.lifecycle = next;
@@ -2699,6 +2712,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // or taking the fullscreen window's attention before its first slide.
             link.away = in_focus_mode(output) && !window_keys.active;
             transition_widget(link, link.lifecycle);
+            reconcile_rail_slides();  // e.g. one docked while widgets are hidden slides off
             keep_above(view);
             place_cycled_widget(view, link.window_id, link.rail);
             place_widget(view, output, link);
@@ -3668,8 +3682,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             return;
         }
-
-        reconcile_rail_slides();  // attention, focus and lifecycle all decide where widgets are
 
         auto full = model_snapshot("desktop");
         auto text = full.serialize();
@@ -5600,6 +5612,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         frame.damage();
     }
 
+    void focus_recent_shown_window()
+    {
+        for (auto id : focus_recency)
+        {
+            auto view = view_by_id(id);
+            if (view && view->is_mapped() && view->get_root_node()->is_enabled() && !is_widget(view) &&
+                !model.widgets.count(id))
+            {
+                wf::get_core().default_wm->focus_raise_view(view);
+                return;
+            }
+        }
+
+        wf::get_core().seat->refocus();
+    }
+
     /** Show a widget that's away again, just off its edge, so it can slide in. Done before it
      *  changes presentation: its client draws (and the change animates) only while shown. */
     void return_from_away(widget_link_t& link)
@@ -5702,7 +5730,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     transition_widget(link, link.lifecycle);
                 }
 
-                LOGI("scottland: widget ", id, " slides ", rail_place_name(slide.to), " -> ", rail_place_name(place));
                 slide.from = frame->rail_slide_x;
                 slide.to = place;
                 slide.running = true;
@@ -5734,6 +5761,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 link.away = true;
                 transition_widget(link, link.lifecycle);
+                // Keys never go to a widget that isn't there: focus passes to the window used
+                // most recently that is still shown.
+                if (wf::get_core().seat->get_active_view() == widget)
+                {
+                    focus_recent_shown_window();
+                }
             }
 
             changed = true;
@@ -6167,6 +6200,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
         swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
+        reconcile_rail_slides();  // a widget held in place by the grab may go now
         if (model.drag.cancelled)
         {
             model.drag.cancelled = false;
@@ -6339,6 +6373,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (auto link = link_of_widget(view); link && link->docked() &&
                 drag->view != view && view->get_id() != model.drag.widget)
                 remember_window(view);
+            if (auto link = link_of_widget(view); link && rail_place(*link) == rail_place_t::peeking)
+                reconcile_rail_slides();  // its strip follows its size
         }
 
         apply(ev->view);

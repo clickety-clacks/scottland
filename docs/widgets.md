@@ -378,8 +378,10 @@ widget carries its `place` (`in`, `away` or `peeking`) and `away`.
 
 **Keys.** The binding's press is consumed when there are docked widgets (otherwise the key goes
 on to the app, as before). Released within `minimize_hold_delay` it is a tap; still held then, it
-is a hold. Acting on release follows the rule Mike set for a focused hint (WK35): a hold must not
-first take a tap's step. WG20 is unchanged: one gesture per held key across devices, the last
+is a hold. The key events' own times decide (as hint holds do), so a busy main loop can't turn a
+quick tap into a hold: a hold already shown for a press whose release says "tap" is undone and
+the tap counts. Acting on release follows the rule Mike set for a focused hint (WK35): a hold must
+not first take a tap's step. WG20 is unchanged: one gesture per held key across devices, the last
 release ends it, a modifier release doesn't, and no debounce drops rapid taps. The default delay
 matches `alt_hold_delay` (300 ms). Releasing a hold returns to the mode as it was.
 
@@ -391,12 +393,19 @@ widget coming back start after it is shown again, so its client draws and the mo
 A slide starts from where the widget is drawn, so reversals (tap during a slide, Alt during a hold)
 never jump. A widget docked while hidden, by a drop, a fling or a key, lands first (its handoff
 and drop glide finish) and then slides off: tenet 2, you see where it went. Making room on a rail
-(WG26) still counts hidden widgets, so they come back to places that don't overlap (P1).
+(WG26) still counts hidden widgets, so they come back to places that don't overlap (P1). A widget
+that has keyboard focus when it slides away passes focus to the most recently used window still
+shown: keys never go to a widget that isn't there. Each widget is drawn only on its own screen, so
+on a rail between two screens it slides off its screen's edge, and a peeking strip shows only on
+its own screen. Slides are reconciled only when something that decides a widget's place changes
+(the mode, a hold, Window mode, full screen, attention, a peek, a lifecycle change, the end of a
+grab, a peeking widget's size), never on every model publication; idle widgets cost nothing.
 
 **Attention while hidden** (tenets 1 and 5). Mike asked that hidden widgets still show attention
 and left the how open. A widget whose app needs the user comes in for WG19's attention peek
 (`widget_attention_peek_duration`, restarted by each request) so it says what it is (tenet 2);
-afterwards it keeps a strip of itself in at its screen edge: 24 pt of the widget, the peek-strip
+afterwards it keeps a strip of itself in at its screen edge: 24 pt of the widget's surface (for
+the default card, 18 pt of its body plus its halo, the rest being its badge room), the peek-strip
 depth Mike set for windows, growing with text size, with its halo breathing the attention color
 (WG15) beyond it. It stays until the user goes to it (attention cleared), then slides off. Hovering
 the strip brings the widget in with WG19's enter/leave delays; a grab never slides from under the
@@ -407,7 +416,41 @@ full screen ends (tenet 6).
 `scottland/widget-mode` reports `{mode, shown}` and takes `{"mode": "expanded" | "collapsed" |
 "hidden" | "next"}`, for menus and tests; it is the same mode change as a tap.
 
-### WG16 modes validation (2026-10-04, plumbus headless)
+### WG16 modes validation (2026-10-04, plumbus and nacelle headless)
+
+Review follow-ups (Fable, 2026-10-04), on nacelle (aarch64) unless noted: the modes case gained a
+250 ms press (a tap), a 350 ms press (a hold: nothing changes), two rounds of taps 50-80 ms apart
+reversing slides mid-way (every widget ends exactly in place, no jump), and the attention strip
+measured in screenshot pixels; a two-screen case (`widget-input-test.py outputs`, with
+`SCOTTLAND_TEST_OUTPUTS=2`) checks pixels of the neighboring screen along the shared edge while
+widgets slide away and while one peeks, and that a focused widget sliding away passes focus on
+(this found the focus bug, fixed). `tests/widget-mode-reload-rehearsal.py` rehearses the reload
+AGENTS.md asks for: a session started on main `2bf738e` (the installed plugin), widgets collapsed
+and away behind full screen, then the new plugin XML installed and reread and the plugin swapped
+with the reload mark, as `scottland-reload` does: 9/9, no crash; collapsed carried over through
+the old handover's flag, and hidden mode then survived a second reload. Running cards keep the QML
+they were started with, so the WG10 icon fix shows on cards started after an update. The
+icon-center test now measures until two screenshots agree and restores the session's palette
+file exactly (it had left one in the shared runtime directory; leftovers it had created on
+displays no session was using were removed; two on displays then in use by other sessions were
+left alone). It passed 16/16 three times in a row on plumbus.
+
+Final runs of this change on nacelle, against main (`2bf738e`, the installed build) run the same
+way there:
+
+| Suite (nacelle) | This branch | main |
+|---|---|---|
+| `tests/widgets-test.sh` | 197 + all modes checks; stops in the WG25 Return case's re-drag (no preview starts) | same Return-case stop: 2 of 3 runs of that case alone on both |
+| `tests/widget-morph-test.sh`, goo / goo off | 266/4, 241/1 | 266/4, 241/1 (same checks: reversal pixels, timing samples) |
+| `tests/widget-hints-test.sh` | **193/0** | not run |
+| `tests/windowing-test.sh` | **103/0** | not run |
+| `tests/state-model-test.sh 104729 50` | **100/0** | not run |
+| `tests/widget-peek-options-test.sh` | **4/4** | not run |
+| `widget-input-test.py outputs` (two screens) | **3/3** | (new) |
+| `tests/widget-icon-center-test.sh` | **16/16** (and 3 × 16/16 on plumbus) | 3 px offset |
+| `tests/widget-mode-reload-rehearsal.py` (main session → this plugin) | **9/9**, no crash | (rehearsal) |
+
+Earlier runs, plumbus:
 
 Branch `superm-modes` rebased on main at `5a2fb5d` (final runs; earlier runs at `2bf738e`); every run in its own `SCOTTLAND_HEADLESS_DIR`
 under the plumbus checkout's `build/`, with real stipc input; nothing ran on osanwe and nothing
