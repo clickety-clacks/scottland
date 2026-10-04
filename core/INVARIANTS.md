@@ -173,6 +173,13 @@ FS1 regression: late-mapped widgets respect fullscreen before their first visibl
 `state-regressions-test.sh` covers late adoption and reload with keyboard focus on another
 headless output. The model audit checks visibility against Wayfire fullscreen promotion.
 
+E4 regression: `tests/reload-touch-focus-test.sh` reloads after a window and a card were
+moved by finger, and with a finger drag, a mouse morph, a collapse/expand animation and a
+card peek in flight; the next mouse and touch input must reach a running compositor. (A
+touch drag's grab stayed Wayfire's pointer focus after release; the first mouse motion after
+a reload sent it a pointer leave in the unloaded plugin. Unload now hands that focus to an
+inert node.)
+
 Attention bulging is measured as shore motion, separately from emission, by
 `tests/attention-bulge-test.sh` (GO17/WG15): cached and exact goo stay asleep;
 per-window fallback halos visibly bulge too. See the 2026-10-03 correction in docs/goo.md.

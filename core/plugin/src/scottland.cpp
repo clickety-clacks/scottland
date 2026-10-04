@@ -427,6 +427,34 @@ placement_t place(double x, double width, double center_pct, double rail_pct, do
 }
 
 /**
+ * Before a grab owner goes away (and before this library unloads), take Wayfire's pointer focus
+ * off a node that has left the scene. A touch turns pointer focus off, but a grab started by touch
+ * still becomes the pointer focus, and its removal can't refocus the pointer; the next mouse event
+ * then sends that grab node a pointer leave. After a reload its interaction object is freed and
+ * its code unmapped (the compositor crashed there). An inert core node takes the focus instead
+ * (the old grab node is freed now, while its code is still here); the next pointer event focuses
+ * what's under the cursor as usual.
+ */
+static void release_stale_pointer_focus()
+{
+    auto focus = wf::get_core().get_cursor_focus();
+    if (!focus || (typeid(*focus) == typeid(wf::scene::node_t))) return;  // none, or already inert
+    auto top = focus.get();
+    while (top->parent()) top = top->parent();
+    if (top == wf::get_core().scene().get()) return;
+    LOGI("scottland: released stale pointer focus ", focus->stringify());
+    focus.reset();
+    // A core node_t has core code only, but its shared_ptr control block is instantiated here: it
+    // is never released, so Wayfire dropping it later can't call into an unloaded library.
+    auto inert = new wf::scene::node_ptr(std::make_shared<wf::scene::node_t>(false));
+    wf::get_core().transfer_grab(*inert);
+    // The transfer also took keyboard focus and made the inert node an explicit pointer grab: an
+    // input-state update ends that grab (the node isn't in the scene) and refocus restores keys.
+    wf::scene::update(wf::get_core().scene(), wf::scene::update_flag::INPUT_STATE);
+    wf::get_core().seat->refocus();
+}
+
+/**
  * Center-anchored resize (Super + right-drag by default), like visionOS: the window grows or
  * shrinks symmetrically around its center, which stays put, so it keeps its zone and scale. Cursor
  * motion is divided by the window's current scale so the edges track the cursor on screen.
@@ -640,6 +668,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         on_geometry.disconnect();
         output->rem_binding(&on_activate);
         output->rem_binding(&on_activate_alt);
+        release_stale_pointer_focus();  // it may be this grab, whose interaction is this object
     }
 
     void handle_pointer_button(const wlr_pointer_button_event& event) override
@@ -6624,6 +6653,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scottland::windowing::release_hint_gl();
         fini_widget_spawn();
         fini_hint_palette_watch();
+        release_stale_pointer_focus();  // e.g. the live drag's grab: its owner and code go next
         LOGI("scottland: plugin unloaded");
     }
 };
