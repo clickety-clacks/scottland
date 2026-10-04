@@ -89,6 +89,10 @@
             <_short>Wallpaper soak</_short><_long>Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.</_long>
             <default>0.12</default><min>0</min><max>1</max>
         </option>
+        <option name="goo_dye_strength" type="double">
+            <_short>Dye strength</_short><_long>Scales focus, attention and Window mode hint colors in goo and fallback halos. One keeps today's look; higher values strengthen state colors, capped at full opacity. The unfocused neutral edge keeps its separate strength.</_long>
+            <default>1</default><min>0</min><max>1.5</max>
+        </option>
 
         <option name="goo_overlap_film" type="double">
             <_short>Overlap film</_short><_long>Width of goo over windows behind. Higher covers a wider strip; zero hides the film.</_long>
@@ -264,6 +268,11 @@
 			<_short>Attention color</_short>
 			<_long>The secondary highlight a widget's halo takes while its app needs attention (it also breathes). Set by scottland-color-scheme from the desktop's palette, or by an integration.</_long>
 			<default>#EBCB8BFF</default>
+		</option>
+		<option name="attention_color_family" type="string">
+			<_short>Attention color family</_short>
+			<_long>Choose the desktop palette's attention color (theme), or scheme-aware warm red/amber or cool yellow/green colors. The Goo Settings tab applies changes live to window and widget attention.</_long>
+			<default>theme</default>
 		</option>
 		<option name="resize_alt" type="button">
 			<_short>Resize around center (second binding)</_short>

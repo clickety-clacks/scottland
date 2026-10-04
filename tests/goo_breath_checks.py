@@ -18,6 +18,9 @@ def verify(ipc, art):
         checks.append((name, bool(result)))
         print(('PASS ' if result else 'FAIL ') + name, flush=True)
 
+    # GO24: the watercolor moves all the settled liquid; hold it so these checks see
+    # the breath alone.
+    ipc('scottland/goo-state', {'water_freeze': True})
     before = state()
     check('breathing simulation sleeps', before['sleeping'])
     damage = before['breath_damage']
@@ -66,6 +69,7 @@ def verify(ipc, art):
         check('screenshots outside the breathing strips stay pixel-identical', outside==0)
         print(json.dumps({'changed_inside':inside,'changed_outside':outside,'rate':rate}),flush=True)
     (art/'breath-samples.json').write_text(json.dumps(samples,indent=2))
+    ipc('scottland/goo-state', {'water_freeze': False})
     # Both directions of a live switch must preserve an outstanding request.
     ipc('wayfire/set-config-options', {'scottland/goo':False})
     swells=[]

@@ -126,6 +126,9 @@ def check(name, condition):
 def option(name):
     return float(ipc("wayfire/get-config-option", {"option": "scottland/" + name})["value"])
 
+def string_option(name):
+    return str(ipc("wayfire/get-config-option", {"option": "scottland/" + name})["value"])
+
 def bool_option(name):
     return str(ipc("wayfire/get-config-option", {"option": "scottland/" + name})["value"]).lower() in ("true", "1")
 
@@ -163,6 +166,14 @@ def option_reaches(name, expected, timeout=2):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if abs(option(name)-expected) < .01:
+            return True
+        time.sleep(.03)
+    return False
+
+def string_option_reaches(name, expected, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if string_option(name) == expected:
             return True
         time.sleep(.03)
     return False
@@ -358,6 +369,8 @@ try:
     initial = values()
     initial_edge = {name: option(name) for name in (
         "unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfocused_edge_strength")}
+    initial_attention_family = string_option("attention_color_family")
+    check("GO22 defaults to the palette attention color", initial_attention_family == "theme")
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
     baseline_motion=motion_trial()
@@ -366,6 +379,34 @@ try:
     check("S15 heading/application name",snapshot()["title"] == "Scottland Settings")
     check("S15 launcher name", "Name=Scottland Settings" in (repo/"core/settings/scottland-settings.desktop").read_text())
     bands("01-softness-bands")
+    tab(1)
+    check("GO22 selector appears in Goo Settings", set(snapshot()["attentionColor"]) == {"theme", "warm", "cool"})
+    for family in ("warm", "cool", "theme"):
+        rect = snapshot()["attentionColor"][family]
+        click(*screen_point({"x":rect["x"]+rect["width"]/2,"y":rect["y"]+rect["height"]/2}))
+        check("GO22 " + family + " selection previews through real input",
+              string_option_reaches("attention_color_family", family)
+              and snapshot()["values"]["attention_color_family"] == family)
+    rect = snapshot()["attentionColor"]["cool"]
+    click(*screen_point({"x":rect["x"]+rect["width"]/2,"y":rect["y"]+rect["height"]/2}))
+    close_panel(panel,save=True,via_button=True)
+    check("GO22 Save stores the selected family", "attention_color_family = cool" in layout.read_text())
+    panel=open_panel();tab(1)
+    check("GO22 saved family is restored on reopen", snapshot()["values"]["attention_color_family"] == "cool")
+    rect = snapshot()["attentionColor"]["warm"]
+    click(*screen_point({"x":rect["x"]+rect["width"]/2,"y":rect["y"]+rect["height"]/2}))
+    close_panel(panel)
+    check("GO22 Cancel restores its opening family", string_option_reaches("attention_color_family", "cool"))
+    panel=open_panel();tab(1)
+    rect = snapshot()["attentionColor"]["warm"]
+    click(*screen_point({"x":rect["x"]+rect["width"]/2,"y":rect["y"]+rect["height"]/2}))
+    click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
+    check("GO22 Defaults previews Theme", string_option_reaches("attention_color_family", "theme"))
+    close_panel(panel,save=True,via_button=True)
+    check("GO22 Theme choice saves", "attention_color_family = theme" in layout.read_text())
+    layout.unlink(missing_ok=True)  # Keep the existing suite's fresh-file Save/Cancel baseline.
+    panel=open_panel()
+    tab(0)
     for i,label in enumerate(["Center edge softness","Center zone width","Widget rail width"]):
         point = control_point("zones",200,34+69*i)
         row_top = point[1]-34
@@ -418,19 +459,19 @@ try:
     check("tone slider applies while held",abs(option("unfocused_edge_tone_dark")-initial_edge["unfocused_edge_tone_dark"])>.01)
     key("KEY_BACKSPACE")
     check("tone Backspace restores opening value",option_reaches("unfocused_edge_tone_dark",initial_edge["unfocused_edge_tone_dark"]))
-    drag(*control_point("goo",350,103),-180,live_name="unfocused_edge_strength")
+    drag(*reveal("goo",350,103),-180,live_name="unfocused_edge_strength")
     check("edge strength slider applies while held",abs(option("unfocused_edge_strength")-initial_edge["unfocused_edge_strength"])>.01)
     key("KEY_BACKSPACE")
     check("edge strength Backspace restores opening value",option_reaches("unfocused_edge_strength",initial_edge["unfocused_edge_strength"]))
-    click(*control_point("goo",240,2*69+34));key("KEY_BACKSPACE");pointer(10,690)
-    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper soak","Overlap film","Control cloudiness","Control glow","Control proximity"]
+    click(*reveal("goo",240,2*69+34));key("KEY_BACKSPACE");pointer(10,690)
+    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper soak","Overlap film","Control cloudiness","Control glow","Control proximity","Dye strength"]
     for i,label in enumerate(labels):
         if i:key("KEY_DOWN")
         for _ in range(20):
             if snapshot()["goo"]["hint"]==label:break
             time.sleep(.025)
         check(label+" keyboard hint and automatic reveal",snapshot()["goo"]["hint"]==label)
-    key("KEY_RIGHT");check("Goo last row live",option_reaches("goo_hover_distance",49))
+    key("KEY_RIGHT");check("GO23 Dye strength previews live",option_reaches("goo_dye_strength",1.01))
     shot("04-goo-keyboard")
     tab(0);tab(1)
     # A discrete wheel burst ends before the position samples; the coast must continue,
@@ -782,6 +823,7 @@ try:
           ("enabled = true","allow_ip = true","location_set = true")))
     # Restore caller's session settings; the saved fixture remains evidence.
     ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in {**initial,**initial_edge}.items()})
+    ipc("wayfire/set-config-options", {"scottland/attention_color_family":initial_attention_family})
 finally:
     for proc in clients:
         if proc.poll() is None:
