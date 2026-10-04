@@ -37,10 +37,15 @@ class alt_mode
     unsigned hold_delay = 500;
     // A hint press is still held and may yet become a hold.
     bool hold_waiting() const { return bool(hold); }
+    // Milliseconds until a pending hold is due at time_ms (0: due now or none pending).
+    uint32_t hold_remaining(uint32_t time_ms) const;
     // Act on a hold whose delay has passed by time_ms; true if it acted.
     bool hold_due(uint32_t time_ms);
-    // Another key (Tab, an arrow, any other press) ends a pending hold without acting.
-    void cancel_hold() { hold.reset(); }
+    // Another key (Tab, an arrow, F4, Alt release) ends a pending hold: it is not a hold, so a
+    // focused window's press that waits for release acts now, before that key (WK35).
+    void interrupt();
+    // Esc: end a pending hold and drop a focused window's waiting press without acting.
+    void cancel_pending() { hold.reset(); waiting_tap.reset(); }
     void tab(bool backwards);
     void close_selected();
     std::string label(unsigned slot) const;
@@ -57,6 +62,10 @@ class alt_mode
     bool repeat_candidate = false;
     struct pending_hold { uint64_t id; char key; uint32_t pressed; uint64_t partner; };
     std::optional<pending_hold> hold;
+    // WK35: a press on the focused window's hint acts on release, so a hold can solo it unmoved.
+    struct pending_tap { uint64_t id; char key; };
+    std::optional<pending_tap> waiting_tap;
+    void act_waiting_tap();
     void activate(uint64_t id, bool double_tap);
 };
 }

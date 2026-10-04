@@ -749,7 +749,7 @@
             {
                 waiting = true;
                 wf::get_core().default_wm->fullscreen_request(window, window->get_output(), false);
-            }
+            } else if (window->toplevel()->current().fullscreen) waiting = true; // until its size commits
         if (waiting)
         {
             if (attempts < 10) deferred_pair.set_timeout(100, [=] () {
@@ -824,11 +824,17 @@
     // WK35 (not built yet): holding the focused window's hint will solo it. Until then the hold
     // does nothing; its press has already acted as an ordinary tap (WK6).
     void solo_window(uint64_t) {}
+    // One clock for hint timing: presses and releases carry their input event time (WK15), and
+    // holds compare it with the same monotonic clock, so a hold is timed from the physical press.
+    static uint32_t key_event_time(wlr_keyboard_key_event *event)
+    {
+        auto now = now_msec();
+        // An event stamped by another clock (in the future or implausibly old) counts as now.
+        return uint32_t(now - event->time_msec) > 1000 ? now : event->time_msec;
+    }
     void arm_hint_hold()
     {
-        window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
-        hint_hold.set_timeout(window_keys.hold_delay, [=] () {
-            // The timer runs from the press's arrival; its timestamp can only be earlier.
+        hint_hold.set_timeout(std::max(1u, window_keys.hold_remaining(now_msec())), [=] () {
             if (!window_keys.hold_due(now_msec()) && window_keys.hold_waiting())
                 hint_hold_retry.run_once([=] () { if (window_keys.hold_waiting()) arm_hint_hold(); });
         });
@@ -1265,6 +1271,7 @@
     }
     void end_window_keys()
     {
+        window_keys.interrupt(); // Alt release: a focused window's waiting press acts first
         arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
         apply_all_opacity();
@@ -1323,7 +1330,7 @@
         if (!down && swallowed_keys.erase(code))
         {
             if (auto letter = window_hint_letter(keyboard, code))
-                window_keys.release(*letter, ev->event->time_msec);
+                window_keys.release(*letter, key_event_time(ev->event));
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // finish our own pair; this is not a new compositor grab
         }
@@ -1407,7 +1414,9 @@
         if (!down) return;
         bool first = swallowed_keys.insert(code).second;
         if (!window_keys.active) return; // Esc cancels, but this whole Alt chord remains ours.
-        if (first || arrow_key(code)) window_keys.cancel_hold(); // another key ends a hint hold
+        // Another key ends a hint hold; Esc also drops a focused window's waiting press (WK35).
+        if (code == KEY_ESC && first) window_keys.cancel_pending();
+        else if (first || arrow_key(code)) window_keys.interrupt();
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
         if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
@@ -1420,7 +1429,8 @@
             {
                 window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
                 window_keys.refresh(window_entries());
-                window_keys.letter(*letter, ev->event->time_msec);
+                window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
+                window_keys.letter(*letter, key_event_time(ev->event));
                 if (window_keys.hold_waiting()) arm_hint_hold();
             }
         }
@@ -1535,6 +1545,17 @@
             }
             item["dx"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_x) : 0.0;
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
+            if (hint_visuals.count(e.id))
+            {
+                // Avoidance telemetry: the solved target the offset eases toward, the checked
+                // badge clearance, the retained way, and whether the window holds still (WK36).
+                auto& visual = hint_visuals[e.id];
+                item["target_dx"] = visual.target.x; item["target_dy"] = visual.target.y;
+                item["clearance"] = visual.clearance;
+                item["branch_axis"] = visual.branch_axis; item["branch_sign"] = visual.branch_sign;
+            }
+            item["pair_anchored"] = std::any_of(pair_anchors.begin(), pair_anchors.end(),
+                [&] (auto& anchor) { return anchor.first == e.id; });
             item["target_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.x : 0.0;
             item["target_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.y : 0.0;
             item["branch_owner"] = hint_visuals.count(e.id) ?

@@ -61,7 +61,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK36 | Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side. Window sizes are preserved: they are never resized and never scaled up. If both fit side by side at their own size they stay at 100%; only if they don't fit are they scaled down, together, just enough to fit, going edge-to-edge across the screen only when necessary. When scaling is needed, both get roughly the same magnification (the larger window takes the larger share), best effort, rather than 50/50. The other windows already in the center stay where they are; window avoidance makes them peek out (above and below the pair) rather than sending them to the periphery, since the pair may span the screen. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Tenet 4 exception: pairing is an explicit request, so scaling center windows down to fit the pair is a concession the user grants. Order: the two keep their current left/right order (whichever is further left now goes left; P1). Placement: both windows vertically centered on the screen's horizontal center line, the pair centered horizontally on the screen as a unit, with a halo-sized gap between them that is the first thing given up when space is tight (P7). (Mike, 2026-10-04) Edges decided in [Pairing](#pairing-wk36-and-hint-holds-wk39). | implemented (plumbus headless, real stipc input, 2026-10-04) |
 | WK37 | In Window mode, a window that is mostly occluded (proposed: less than half of it visible) also gets an opaque outline in its hint color, drawn above the windows covering it, so its full extent and identity show through them. Thin enough not to obscure the front windows' content; clears with the hints. (Mike, 2026-10-04) | not built |
 | WK38 | The Window mode hint-color overlay on windows and cards (WK14, today a fixed 7%) has a strength setting with a live slider in the Window mode Settings tab; 0 turns the overlay off; the default stays 7%. (Mike, 2026-10-04) | not built |
-| WK39 | Holding a complete hint's final key, without releasing it, for `scottland/window_hold_delay` ms (default 500, range 1–3000; Settings “Hold a hint”) is a hint hold. The press still acts immediately as a tap (WK6); the hold acts once, after the delay, only while Window mode lasts. Held on an unfocused window or widget it pairs (WK36) with the window that had focus before the press; held on the focused window it is WK35's solo (not built yet: nothing happens). Releasing the key first is a tap. Key auto-repeat neither counts nor restarts the hold (WK16); any other key press (another hint, Tab, an arrow, F4, Esc) or Alt release cancels it. A press that completed a double-tap never becomes a hold, and after a hold the next press of that hint is not its double-tap. (Mike, 2026-10-03/04, WK35/WK36) | implemented (plumbus headless, real stipc input, 2026-10-04) |
+| WK39 | Holding a complete hint's final key, without releasing it, for `scottland/window_hold_delay` ms (default 500, range 1–3000; Settings “Hold a hint”) is a hint hold, timed from the physical press (the input event's timestamp, the same clock WK15 uses). An unfocused window's or widget's press still acts immediately on key-down (WK6), and holding it pairs (WK36) with the window that had focus before the press. The focused window's press acts on key release instead (WK35, Mike 2026-10-04): a tap acts when released, and a hold is WK35's solo (not built yet: nothing happens, the window does not move). Releasing the key first is a tap. Key auto-repeat neither counts nor restarts the hold (WK16). Any other key press (another hint, Tab, an arrow, F4) or Alt release ends the hold; a focused window's press still waiting for release acts first, as the tap it was. Esc ends the hold and drops a waiting focused press. A press that completed a double-tap acts at once and never becomes a hold, and after a hold the next press of that hint is not its double-tap. (Mike, 2026-10-03/04, WK35/WK36) | implemented (plumbus headless, real stipc input, 2026-10-04) |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. Each zone memory also keeps the window's scale pin there, if the user set one (Shift-drag, L31): returning to that zone by cycling restores both the remembered position and that pinned scale; with no pin the zone's normal scale applies. (Mike, 2026-10-04) | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
@@ -121,13 +121,27 @@ halos meet across it, so the pair reads as one liquid unit; the padding is WP7's
   pair geometry, window avoidance treats them as anchored, like the focused window, so it is the
   covered windows that peek out, never the pair that shifts. Moving or resizing either member
   ends that.
-- *Focused hold (WK35, not built)*: the press is an ordinary tap, so on the focused window it has
-  already taken the first cycle step (WK6) when the hold is recognized. WK35's builder must decide
-  whether that press waits for release on the focused window, or the solo starts from the cycled
-  place; the hook is `solo_window` and receives the window.
-- *Double-tap compatibility*: holds key on the same `release(char, time)` entry point as the
-  release-timed double-tap fix (`double-tap-fix` branch), and a hold clears double-tap
-  recognition, so that fix's release-to-press timing cannot turn a hold's release into a repeat.
+- *Focused hold (WK35)*: Mike decided (2026-10-04) that the focused window's press acts on
+  release, so a hold solos it without first moving it one step. The solo itself is not built:
+  the hold reaches `solo_window`, which does nothing. A press still waiting for release acts as
+  a tap when another key arrives or Alt is released first (tenet 2: a rolled key is still the
+  tap the user typed); Esc drops it, as Esc cancels.
+- *Pairing needs the first press* (WK6): only a hold that starts on an unfocused window pairs.
+  A tap focuses that window, so holding it next is a hold on the focused window, which is
+  WK35's solo.
+- *A Shift-pinned window* (L31): pairing replaces its pin with the pair's scale, so a window the
+  user had pinned small is shown at the pair's scale (never above 100%). Pairing is the newer
+  explicit request.
+- *Zone memory* (WP1): the pair spot becomes each window's remembered spot for the zone its center
+  lands in, so a later cycle back to that zone returns there, as after any explicit move.
+- *Double-tap compatibility*: holds share the `release(char, time)` entry point and the event
+  clock with the release-timed double-tap (WK15, merged from `double-tap-fix`), and a hold clears
+  double-tap recognition, so its release never starts a repeat. A near-hold (450 ms, released)
+  followed by a quick press is therefore a double-tap to the rail, as WK15 says.
+- *Avoidance after a glide* (WK13, P12): a cycle or pair glide moves only the drawn frame, so its
+  end raises no geometry signal. Each finished glide now requests one avoidance solve on the
+  settled frames; before this, a window the pair had just covered kept its pre-pair result (no
+  offset) until Window mode was entered again.
 
 **Verification (plumbus, isolated headless sessions, 2026-10-04, commit `96c5c0c`).**
 `tests/pairing-unit.sh`: 42 passed (the fit's four regimes, centering, edge-to-edge, height,

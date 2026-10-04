@@ -122,12 +122,35 @@ int main()
     check(!mode.hold_due(1700) && mode.hold_due(1800) && pairs.size() == 1, "the hold delay is a setting");
     mode.hold_delay = 500;
 
+    // WK35 (Mike, 2026-10-04): the focused window's press acts on release, so a hold never moves it first.
     reset(1); mode.letter('a', 1000);
-    check(moves == std::vector<D>{D::periphery}, "focused hint press still acts at once (WK6)");
-    check(mode.hold_due(1500) && solos == std::vector<uint64_t>{1} && pairs.empty(),
-        "holding the focused window's hint reaches the WK35 solo hook, not pairing");
+    check(moves.empty() && mode.hold_waiting(), "focused hint press waits for its release");
+    mode.release('a', 1100);
+    check(moves == std::vector<D>{D::periphery} && flashes == std::vector<uint64_t>{1} && !mode.hold_due(2000),
+        "focused hint tap acts on release (WK6 next zone), and is not a hold");
+    reset(1); mode.letter('a', 1000);
+    check(!mode.hold_due(1499) && mode.hold_due(1500) && solos == std::vector<uint64_t>{1} && pairs.empty() && moves.empty(),
+        "holding the focused window's hint reaches the WK35 solo hook without moving it first");
+    mode.release('a', 1700);
+    check(moves.empty(), "releasing after a focused hold does not also tap");
+    mode.letter('a', 1800); mode.release('a', 1850);
+    check(moves == std::vector<D>{D::periphery}, "a quick tap after a focused hold is a tap, not a double-tap");
+    reset(1); mode.letter('a', 1000); mode.release('a', 1080); mode.letter('a', 1200);
+    check(moves == std::vector<D>{D::periphery, D::widget} && !mode.hold_waiting(),
+        "focused double-tap: first tap acts on release, the repeat acts at once to the rail");
+    reset(1); mode.letter('a', 1000); mode.interrupt();
+    check(moves == std::vector<D>{D::periphery} && !mode.hold_due(2000), "another key acts a waiting focused tap first");
+    reset(1); mode.letter('a', 1000); mode.letter('s', 1100);
+    check(moves == std::vector<D>{D::periphery} && selected == 2, "rolling onto another hint acts the focused tap, then the next");
+    reset(1); mode.letter('a', 1000); mode.cancel_pending(); mode.release('a', 1100);
+    check(moves.empty() && !mode.hold_due(2000) && solos.empty(), "Esc drops a waiting focused tap");
+    reset(1); mode.letter('a', 1000); mode.interrupt(); mode.end(); mode.release('a', 1100);
+    check(moves == std::vector<D>{D::periphery}, "Alt release before the key acts the focused tap once");
+    reset(1); mode.letter('a', 1000);
+    check(mode.hold_remaining(1000) == 500 && mode.hold_remaining(1300) == 200 && mode.hold_remaining(1600) == 0 &&
+        mode.hold_remaining(900) == 500, "hold timing re-arms for the remainder, never past the delay");
 
-    reset(1); mode.letter('s', 1000); mode.cancel_hold();
+    reset(1); mode.letter('s', 1000); mode.interrupt();
     check(!mode.hold_due(2000) && pairs.empty(), "another key during the hold cancels it");
     reset(1); mode.letter('s', 1000); mode.end();
     check(!mode.hold_due(2000) && pairs.empty(), "Esc or Alt release during the hold cancels it");
@@ -148,7 +171,7 @@ int main()
     check(moves == std::vector<D>{D::widget} && !mode.hold_waiting() && !mode.hold_due(2000) && pairs.empty(),
         "a double-tap press never becomes a hold");
     reset(1); mode.double_tap_delay = 3000; mode.letter('s', 1000); mode.hold_due(1500);
-    mode.release('s', 1600); mode.letter('s', 1700);
+    mode.release('s', 1600); mode.letter('s', 1700); mode.release('s', 1750);
     check(moves == std::vector<D>{D::periphery}, "after a hold the next press cycles from the pair, never a double-tap");
     mode.double_tap_delay = 300;
 

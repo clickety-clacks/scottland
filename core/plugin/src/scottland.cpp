@@ -919,7 +919,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (state.pinned_scale != scale)
         {
             state.pinned_scale = scale;
-            LOGI("scottland: window ", view->get_id(), scale ? " keeps its scale (Shift)" : " follows its zone again");
+            LOGI("scottland: window ", view->get_id(), scale ? " keeps a pinned scale (Shift or pairing)" : " follows its zone again");
             publish_model();
         }
     }
@@ -5600,6 +5600,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     bool step_glides()
     {
+        // A glide moves only the drawn frame, so its end changes the layout window avoidance
+        // sees without any geometry signal. Ask for one solve on the settled frames then
+        // (WK13/WK36: a window the move left covered must still peek out in this hold).
+        bool settled = false;
         for (auto it = glides.begin(); it != glides.end();)
         {
             auto view  = wf::toplevel_cast(it->second.view.lock());
@@ -5634,6 +5638,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     frame->translation_x = frame->translation_y = 0;
                     frame->scale_x = frame->scale_y = glide.scale_to;
                     it = glides.erase(it);
+                    settled = true;
                 } else ++it;
                 continue;
             }
@@ -5647,6 +5652,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 auto done = std::move(glide.done);
                 it = glides.erase(it);
+                settled = true;
                 if (done)
                 {
                     done();  // (it puts the frame where it's to stay)
@@ -5661,6 +5667,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             ++it;
         }
 
+        if (settled) refresh_layout_avoidance();
         return !glides.empty();
     }
 
