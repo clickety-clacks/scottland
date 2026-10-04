@@ -159,6 +159,17 @@ def capture(name):
     return vs, hs, order
 
 
+def check_hints_apart(name, vs, hs, order):
+    """Pending P1/P12, a hint that would land on a hint in front of it moves off it."""
+    drawn = [i for i in order if 'badge' in hs[i]]
+    for k, i in enumerate(drawn):
+        for j in drawn[:k]:
+            gap = math.dist(badge_center(hs[i]), badge_center(hs[j])) - (
+                hs[i]['badge']['size'] + hs[j]['badge']['size'])/2
+            check(gap >= 0, f'{name}: {vs[i]["title"]} hint does not overlap {vs[j]["title"]} hint',
+                  f'gap {gap:.1f}px')
+
+
 def check_uncovered_centered(name, vs, hs, order):
     for i in order:
         if uncovered(i, vs, hs, order):
@@ -199,6 +210,7 @@ try:
     check(order[0] == ids['Front'], 'Front is the frontmost window')
     check(uncovered(ids['Side'], vs, hs, order), 'Side is uncovered although it is not frontmost')
     check_uncovered_centered('held', vs, hs, order)
+    check_hints_apart('held', vs, hs, order)
     check(not uncovered(ids['Back'], vs, hs, order) and center_error(ids['Back'], vs, hs) > 20,
           'covered Back keeps searching for a visible spot (strict rule)')
 
@@ -212,6 +224,7 @@ try:
     check(order[0] == ids['Back'], 'Back is frontmost after selecting its hint')
     check(abs(hs[ids['Back']]['dx'])+abs(hs[ids['Back']]['dy']) < .1, 'focused front Back never moves')
     check_uncovered_centered('back raised', vs, hs, order)
+    check_hints_apart('back raised', vs, hs, order)
 
     # 3. Select Front again: it had been covered (its hint off center), now it is frontmost.
     for letter in letters['Front']:
@@ -223,6 +236,7 @@ try:
     check(order[0] == ids['Front'], 'Front is frontmost after selecting its hint')
     check(abs(hs[ids['Front']]['dx'])+abs(hs[ids['Front']]['dy']) < .1, 'focused front Front never moves')
     check_uncovered_centered('front raised', vs, hs, order)
+    check_hints_apart('front raised', vs, hs, order)
     key('LEFTALT', False)
     time.sleep(.8)
 
@@ -243,6 +257,7 @@ try:
     vs, hs, order = capture('4-always-clicked')
     check(order[0] == ids['Back'], 'clicked Back is frontmost')
     check_uncovered_centered('always-on avoidance', vs, hs, order)
+    check_hints_apart('always-on avoidance', vs, hs, order)
     key('LEFTALT', False)
     time.sleep(.5)
 finally:

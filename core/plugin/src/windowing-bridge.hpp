@@ -51,6 +51,8 @@
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
     std::string declutter_signature;
+    // Hint draw order needs recomputing: stacking changed or a hint node was (re)added.
+    bool hint_order_dirty = true;
     std::chrono::steady_clock::time_point last_exposure_solve{};
     double exposure_solve_ms = 0;
     double exposure_solve_max_ms = 0;
@@ -805,6 +807,7 @@
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
             solve_now - last_exposure_solve < std::chrono::milliseconds(16);
         bool signature_changed = current_signature != declutter_signature;
+        hint_order_dirty |= signature_changed;
         bool retry_pending = exposure_solve_pending && !signature_changed && avoidance_active;
         bool solve_requested = signature_changed || retry_pending;
         bool deferred_solve = solve_requested && avoidance_active && !force_solve && within_tick_budget;
@@ -949,6 +952,7 @@
                     exposure_last_profile.movement_searches += output_profile.movement_searches;
                     exposure_last_profile.truncated_searches += output_profile.truncated_searches;
                     exposure_last_profile.last_search_window = output_profile.last_search_window;
+                    exposure_last_profile.finish_work_count += output_profile.finish_work_count;
                     exposure_search_ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - search_started).count();
                     exposure_search_max_ms = std::max(exposure_search_max_ms, exposure_search_ms);
@@ -1079,6 +1083,7 @@
                     visual.hint_output = view->get_output();
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
                     wf::scene::add_front(view->get_output()->node_for_layer(wf::scene::layer::OVERLAY), visual.hint);
+                    hint_order_dirty = true;
                 }
                 auto anchor = hint_anchor(view);
                 unsigned slot = ensure_window_memory(it->first).hint_slot;
@@ -1125,22 +1130,24 @@
         }
         // WK31: hints draw in window stacking order, so a covered window's fallback hint
         // never draws over the front window's centered one. Only the hints' own slots in the
-        // overlay layer are reordered; other overlay nodes keep their places.
-        if (window_keys.active)
+        // overlay layer are reordered; other overlay nodes keep their places. Anything that
+        // re-adds a hint node to the overlay sets hint_order_dirty.
+        if (window_keys.active && std::exchange(hint_order_dirty, false))
             for (auto& [output, ids] : by_output)
             {
+                auto parent = output->node_for_layer(wf::scene::layer::OVERLAY);
                 std::vector<std::pair<size_t, wf::scene::node_ptr>> drawn;
                 for (auto id : ids)
                 {
                     auto found = hint_visuals.find(id);
-                    if (found == hint_visuals.end() || !found->second.hint) continue;
+                    if (found == hint_visuals.end() || !found->second.hint ||
+                        found->second.hint->parent() != parent.get()) continue;
                     auto rank = stacking.find(id);
                     drawn.emplace_back(rank == stacking.end() ? stacking.size() : rank->second,
                         found->second.hint);
                 }
                 std::stable_sort(drawn.begin(), drawn.end(),
                     [] (const auto& a, const auto& b) { return a.first < b.first; });
-                auto parent = output->node_for_layer(wf::scene::layer::OVERLAY);
                 auto children = parent->get_children();
                 std::vector<size_t> slots;
                 for (size_t k = 0; k < children.size(); ++k)
@@ -1341,6 +1348,7 @@
         reply["avoidance_movement_searches"] = int64_t(exposure_last_profile.movement_searches);
         reply["avoidance_truncated_searches"] = int64_t(exposure_last_profile.truncated_searches);
         reply["avoidance_last_search_window"] = int64_t(exposure_last_profile.last_search_window);
+        reply["avoidance_finish_work_count"] = int64_t(exposure_last_profile.finish_work_count);
         reply["avoidance_solve_budget_ms"] =
             scottland::windowing::avoidance_solve_budget_us / 1000.0;
         reply["avoidance_solve_count"] = int64_t(exposure_solve_count);

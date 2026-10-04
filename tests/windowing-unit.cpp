@@ -815,9 +815,13 @@ int main()
         "an output-sized front window moves to reveal the wholly covered rear window");
     auto anchored = expose_window_hints({{{0,0,1280,720},132,48,{},true},
         {{0,0,1280,720},132,48}},desktop);
+    // The impossible rear hint would land on the front's centered hint (WK31), so the
+    // collision stopgap moves it about one diameter off; it stays at the minimum.
     check(near(anchored[0].offset,{}) && anchored[0].diameter == 132 &&
-        anchored[1].diameter == 48 && near(anchored[1].spot.center,{640,360}),
-        "focused output-covering window stays put; impossible rear hint remains at minimum center");
+        near(anchored[0].spot.center,{640,360}) && anchored[1].diameter == 48 &&
+        std::hypot(anchored[1].spot.center.x - 640, anchored[1].spot.center.y - 360) >=
+            (132 + 48) / 2 * 1.06 + hint_collision_gap - 1e-6,
+        "focused output-covering window stays put; impossible rear hint stays at minimum, off the front hint");
     auto movable_rear = expose_window_hints({{{240,160,700,440},132,48,{},true},
         {{200,160,700,440},132,48}},desktop);
     check(near(movable_rear[0].offset,{}) && movable_rear[1].offset.x < -10 &&
@@ -1042,9 +1046,40 @@ int main()
         exposure_window buried{{400,240,480,320},109,48};
         buried.prior_clearance = 160; buried.center_zone = true; buried.center_zone_half_width = 50;
         auto held = expose_window_hints({front, buried}, screen);
-        check(held[1].spot.clearance == 0 && held[1].diameter == 48 &&
-            centered(held[1], {640,400}),
+        check(held[1].diameter == 48 && held[1].spot.clearance < 26,
             "a covered window with no room is not reported visible at its pre-raise size");
+        // Stopgap pending P1/P12: a hint that would land on a hint in front of it moves about
+        // one diameter off it, staying on its own window, so both letters read.
+        auto apart_from = [] (const exposure_result& a, const exposure_result& b) {
+            return std::hypot(a.spot.center.x - b.spot.center.x, a.spot.center.y - b.spot.center.y) >=
+                (a.diameter + b.diameter) / 2 * 1.06 + hint_collision_gap - 1e-6; };
+        auto on_own = [] (const exposure_result& r, rectangle w) {
+            const double e = r.diameter / 2 * 1.06;
+            return r.spot.center.x - e >= w.x && r.spot.center.x + e <= w.x + w.width &&
+                r.spot.center.y - e >= w.y && r.spot.center.y + e <= w.y + w.height; };
+        exposure_window concentric{{400,200,480,320},132,48}; // no legal room in its zone
+        concentric.center_zone = true; concentric.center_zone_half_width = 50;
+        auto stacked = expose_window_hints({front, concentric}, screen);
+        auto stacked_again = expose_window_hints({front, concentric}, screen);
+        check(centered(stacked[0], {640,360}) && near(stacked[1].offset, {}) &&
+            apart_from(stacked[0], stacked[1]) &&
+            on_own(stacked[1], concentric.frame) &&
+            std::hypot(stacked[1].spot.center.x - 640, stacked[1].spot.center.y - 360) < 2 * 132,
+            "a buried hint concentric with the front hint moves about one diameter, onto its own window");
+        check(near(stacked[1].spot.center, stacked_again[1].spot.center),
+            "the collision offset is deterministic");
+        exposure_window concentric2{{420,220,440,280},132,48};
+        concentric2.center_zone = true; concentric2.center_zone_half_width = 50;
+        auto three = expose_window_hints({front, concentric, concentric2}, screen);
+        check(centered(three[0], {640,360}) && apart_from(three[0], three[1]) &&
+            apart_from(three[0], three[2]) && apart_from(three[1], three[2]),
+            "three concentric hints all read: each rear hint clears every hint in front of it");
+        exposure_progress collision_progress;
+        expose_window_hints_progressively({front, concentric, concentric2}, screen, {},
+            collision_progress, std::chrono::steady_clock::time_point::max());
+        const auto& pr = collision_progress.results;
+        check(centered(pr[0], {640,360}) && apart_from(pr[0], pr[1]) && apart_from(pr[0], pr[2]) &&
+            apart_from(pr[1], pr[2]), "the progressive solver keeps concentric hints apart");
         exposure_progress progress;
         expose_window_hints_progressively({front, behind}, screen, {}, progress,
             std::chrono::steady_clock::time_point::max());

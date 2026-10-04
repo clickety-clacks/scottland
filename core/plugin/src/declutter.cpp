@@ -59,22 +59,104 @@ double badge_diameter(const exposure_window& window, double clearance)
     return std::max(window.minimum, std::min(std::max(window.wanted, window.minimum),
         std::floor(std::max(0.0, 2 * (clearance - 1) / pop_scale))));
 }
-// Final WK31 pass over a whole layout: whatever path produced a result (search, held
-// target, deadline fallback, way recheck), a window that nothing covers at its final
-// position has its hint at its center.
-void center_uncovered_hints(const std::vector<exposure_window>& windows, rectangle screen,
-    const std::vector<rectangle>& fixed, std::vector<exposure_result>& results)
+// Reserved out of a solve's deadline for finish_hints, so the whole solve stays in budget.
+std::chrono::nanoseconds finish_reserve(size_t windows)
 {
-    for (size_t i = 0; i < windows.size() && i < results.size(); ++i)
+    return std::chrono::nanoseconds(2000 + 25 * windows * windows);
+}
+// The one end-of-solve pass, front to back over a whole layout, with the foreground list
+// built as it goes:
+// - WK31: a window nothing covers at its final position has its hint at its center,
+//   whatever path produced its result (search, held target, deadline fallback, way recheck).
+// - A held label keeps its point, but its clearance is measured on this layout: the
+//   previous layout's (e.g. before a raise buried the window) would report a covered hint
+//   as visible at its old size.
+// - Stopgap pending P1/P12: a hint that would land on a hint in front of it moves about one
+//   diameter off it, onto its own window's on-screen part where possible, so both letters
+//   read. Front hints never move for rear ones. The choice is deterministic.
+// Work is bounded: per window, one clearance check and at most 8 candidates per hint it hits.
+void finish_hints(const std::vector<exposure_window>& windows, rectangle screen,
+    const std::vector<rectangle>& fixed, std::vector<exposure_result>& results, size_t& work)
+{
+    struct drawn_hint { point center; double radius; };
+    std::vector<drawn_hint> placed;
+    std::vector<rectangle> foreground = fixed;
+    const size_t count = std::min(windows.size(), results.size());
+    auto clearance_at = [&] (point p, rectangle frame, const exposure_window& window) {
+        work += foreground.size() + window.fixed_foreground.size();
+        return std::min(visible_clearance(p, frame, screen, foreground),
+            visible_clearance(p, frame, screen, window.fixed_foreground));
+    };
+    auto hits = [&] (point p, double radius, const drawn_hint& other) {
+        return std::hypot(p.x - other.center.x, p.y - other.center.y) <
+            (radius + other.radius) * pop_scale + hint_collision_gap;
+    };
+    for (size_t i = 0; i < count; ++i)
     {
-        std::vector<rectangle> foreground = fixed;
-        foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
-            windows[i].fixed_foreground.end());
-        for (size_t j = 0; j < i; ++j) foreground.push_back(moved(windows[j].frame, results[j].offset));
-        const auto frame = moved(windows[i].frame, results[i].offset);
-        if (!uncovered(frame, screen, foreground)) continue;
-        results[i].spot = centered_spot(frame, screen);
-        results[i].diameter = badge_diameter(windows[i], results[i].spot.clearance);
+        const auto& window = windows[i];
+        auto& result = results[i];
+        const auto frame = moved(window.frame, result.offset);
+        work += foreground.size() + window.fixed_foreground.size();
+        if (uncovered(frame, screen, foreground) && uncovered(frame, screen, window.fixed_foreground))
+        {
+            result.spot = centered_spot(frame, screen);
+            result.diameter = badge_diameter(window, result.spot.clearance);
+        } else if (result.held)
+        {
+            const double checked = clearance_at(result.spot.center, frame, window);
+            if (checked < result.spot.clearance)
+            {
+                result.spot.clearance = std::max(0.0, checked);
+                if (checked <= 0)
+                    result.spot.center = {frame.x + frame.width / 2, frame.y + frame.height / 2};
+                result.diameter = badge_diameter(window, result.spot.clearance);
+            }
+        }
+        const double radius = result.diameter / 2;
+        work += placed.size();
+        if (std::any_of(placed.begin(), placed.end(),
+            [&] (const drawn_hint& other) { return hits(result.spot.center, radius, other); }))
+        {
+            const auto own = on_screen(frame, screen);
+            auto inside = [&] (point p, rectangle r) {
+                const double edge = radius * pop_scale;
+                return p.x - edge >= r.x && p.x + edge <= r.x + r.width &&
+                    p.y - edge >= r.y && p.y + edge <= r.y + r.height;
+            };
+            std::optional<std::tuple<int, double, double, size_t>> best_score;
+            point best{};
+            size_t order = 0;
+            for (const auto& other : placed)
+            {
+                if (!hits(result.spot.center, radius, other)) continue;
+                const double distance = (radius + other.radius) * pop_scale + hint_collision_gap + .5;
+                for (int k = 0; k < 8; ++k, ++order)
+                {
+                    const double angle = k * 0.7853981633974483; // 45 degrees
+                    const point p{other.center.x + distance * std::cos(angle),
+                        other.center.y + distance * std::sin(angle)};
+                    if (!inside(p, screen)) continue;
+                    work += placed.size();
+                    if (std::any_of(placed.begin(), placed.end(),
+                        [&] (const drawn_hint& h) { return hits(p, radius, h); })) continue;
+                    // Own window first, then the most visible spot, then the nearest.
+                    const std::tuple<int, double, double, size_t> score{inside(p, own) ? 0 : 1,
+                        -std::max(0.0, clearance_at(p, frame, window)),
+                        std::hypot(p.x - result.spot.center.x, p.y - result.spot.center.y), order};
+                    if (!best_score || score < *best_score) { best_score = score; best = p; }
+                }
+            }
+            if (best_score)
+            {
+                result.spot.center = best;
+                result.spot.clearance = std::max(0.0, -std::get<1>(*best_score));
+                // Never grow: the collision checks above used the current diameter.
+                result.diameter = std::min(result.diameter,
+                    badge_diameter(window, result.spot.clearance));
+            }
+        }
+        placed.push_back({result.spot.center, result.diameter / 2});
+        foreground.push_back(frame);
     }
 }
 int original_side(rectangle frame, rectangle screen)
@@ -635,6 +717,8 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
     const auto profile_start = std::chrono::steady_clock::now();
     if (deadline_hit) *deadline_hit = false;
     size_t work_count = 0;
+    if (limits.finish && deadline != std::chrono::steady_clock::time_point::max())
+        deadline -= finish_reserve(windows.size());
     if (profile)
     {
         profile->work_count = 0;
@@ -1265,24 +1349,14 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
         if (hold_targets[i] && !moved_this_solve[i])
         {
             result[i] = held_result(i);
-            // A held label keeps its point, but its clearance is measured on this layout:
-            // the previous one's (e.g. before a raise covered the window) would report a
-            // covered hint as visible at its old size.
-            std::vector<rectangle> foreground = fixed;
-            foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
-                windows[i].fixed_foreground.end());
-            for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
-            const auto frame = moved(windows[i].frame, result[i].offset);
-            const double checked = visible_clearance(result[i].spot.center, frame, screen, foreground);
-            if (checked < result[i].spot.clearance)
-            {
-                result[i].spot.clearance = std::max(0.0, checked);
-                if (checked <= 0)
-                    result[i].spot.center = {frame.x + frame.width / 2, frame.y + frame.height / 2};
-                result[i].diameter = badge_diameter(windows[i], result[i].spot.clearance);
-            }
+            result[i].held = true;
         }
-    center_uncovered_hints(windows, screen, fixed, result);
+    if (limits.finish)
+    {
+        size_t finish_work = 0;
+        finish_hints(windows, screen, fixed, result, finish_work);
+        if (profile) profile->finish_work_count = finish_work;
+    }
     if (profile) profile->finalization_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - finalization_started).count();
     if (profile) profile->work_count = work_count;
@@ -1309,6 +1383,17 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
         progress.attempts.resize(windows.size(), 0);
     }
     if (profile) *profile = {};
+    // Each call runs finish_hints exactly once, over the results it publishes; its time is
+    // reserved out of this call's deadline.
+    auto inner_limits = limits;
+    inner_limits.finish = false;
+    const auto inner_deadline = deadline == std::chrono::steady_clock::time_point::max() ?
+        deadline : deadline - finish_reserve(windows.size());
+    auto finish = [&] (std::vector<exposure_result>& results) {
+        size_t finish_work = 0;
+        finish_hints(windows, screen, fixed, results, finish_work);
+        if (profile) profile->finish_work_count = finish_work;
+    };
     auto all_complete = [&] {
         return std::all_of(progress.complete.begin(), progress.complete.end(), [] (bool value) { return value; });
     };
@@ -1336,10 +1421,10 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
         }
         exposure_profile fresh_profile;
         size_t work = 0;
-        auto fresh_limits = limits;
+        auto fresh_limits = inner_limits;
         fresh_limits.inspection_count = &work;
         bool truncated = false;
-        auto fresh = expose_window_hints(fresh_windows, screen, fixed, deadline,
+        auto fresh = expose_window_hints(fresh_windows, screen, fixed, inner_deadline,
             &truncated, &fresh_profile, fresh_limits);
         if (profile) *profile = fresh_profile;
         if (fresh.size() != windows.size() || truncated)
@@ -1436,8 +1521,8 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
         }
         if (!adopted && replacements.empty()) ++progress.way_recheck_rejections;
         if (adopted) ++progress.way_recheck_adoptions;
-        // Adopting one window's fresh way can uncover another window.
-        center_uncovered_hints(windows, screen, fixed, proposal);
+        // Adopting one window's fresh way can uncover or collide with another window.
+        finish(proposal);
         progress.results = std::move(proposal);
         if (profile) profile->work_count = work;
         if (limits.inspection_count) *limits.inspection_count = work;
@@ -1477,13 +1562,17 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
     }
 
     bool truncated = false;
-    auto results = expose_window_hints(working, screen, fixed, deadline,
-        &truncated, profile, limits);
+    auto results = expose_window_hints(working, screen, fixed, inner_deadline,
+        &truncated, profile, inner_limits);
     if (results.size() != windows.size())
     {
         if (deadline_hit) *deadline_hit = true;
         return false;
     }
+    // Finish before deciding completion, so a held label that is now buried counts as not
+    // visible and its window gets its retry. A result retained from an earlier slice of this
+    // same layout was finished in that slice.
+    finish(results);
 
     progress.next_window = windows.size();
     for (size_t i = 0; i < results.size(); ++i)
@@ -1530,10 +1619,6 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
         progress.complete[i] = true;
         ++progress.fallback_count;
     }
-    // Results retained from an earlier slice sit beside this slice's results.
-    if (std::all_of(progress.has_result.begin(), progress.has_result.end(),
-        [] (bool value) { return value; }))
-        center_uncovered_hints(windows, screen, fixed, progress.results);
     for (size_t i = 0; i < progress.complete.size(); ++i)
     {
         if (!progress.complete[i])
