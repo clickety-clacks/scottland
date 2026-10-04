@@ -123,9 +123,14 @@ def setup(spec, focus_last):
     for id, *_ in spec: ipc('window-rules/focus-view', {'id': id}); time.sleep(.05)
     ipc('window-rules/focus-view', {'id': focus_last})
     settle([s[0] for s in spec])
-    for id, x, y, w, h in spec:
-        g = geometry(id)
-        if (g['x'], g['y'], g['width'], g['height']) != (x, y, w, h): raise RuntimeError(f'fixture {id} drifted to {g}')
+    # A just-mapped client can still answer late with its default size: place it again.
+    for attempt in range(3):
+        drifted = [(id, x, y, w, h) for id, x, y, w, h in spec
+                   if (lambda g: (g['x'], g['y'], g['width'], g['height']))(geometry(id)) != (x, y, w, h)]
+        if not drifted: return
+        for item in drifted: place(*item)
+        settle([s[0] for s in spec])
+    raise RuntimeError(f'fixture drifted: {[(d[0], geometry(d[0])) for d in drifted]}')
 
 def solves(): return spread()['solves']
 

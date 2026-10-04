@@ -14,5 +14,11 @@ cleanup() {
 }
 trap cleanup EXIT
 SCOTTLAND_TEST_OUTPUTS=1 tests/headless.sh start
+set +e
 tests/headless.sh run python3 -u tests/spread-test.py "$artifacts" | tee "$artifacts/spread-test.log"
-exit "${PIPESTATUS[0]}"
+status=${PIPESTATUS[0]}
+# A fresh session for the load measurement (many windows).
+tests/headless.sh stop; rm -rf "$SCOTTLAND_HEADLESS_DIR"
+SCOTTLAND_TEST_OUTPUTS=1 tests/headless.sh start
+tests/headless.sh run python3 -u tests/spread-load-test.py "$artifacts" | tee "$artifacts/spread-load-test.log"
+exit $(( status || PIPESTATUS[0] ))
