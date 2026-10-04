@@ -984,5 +984,19 @@ int main()
     check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
+    // WK37 occlusion share.
+    const rectangle fraction_screen{0,0,1000,800};
+    check(visible_fraction({100,100,400,200},fraction_screen,{})==1,"uncovered window is fully visible");
+    check(std::abs(visible_fraction({100,100,400,200},fraction_screen,{{300,0,600,800}})-.5)<1e-9,
+        "half-covered window is half visible");
+    check(std::abs(visible_fraction({100,100,400,200},fraction_screen,
+        {{100,100,300,200},{200,100,300,100}})-.125)<1e-9,"overlapping covers count once");
+    check(visible_fraction({100,100,400,200},fraction_screen,{{0,0,1000,800}})==0,"fully covered window");
+    check(std::abs(visible_fraction({-200,100,400,200},fraction_screen,{{0,100,100,200}})-.5)<1e-9,
+        "only the on-screen part counts");
+    check(visible_fraction({1200,100,400,200},fraction_screen,{{0,0,1000,800}})==1,
+        "off-screen window never counts as occluded");
+    check(visible_fraction({100,100,400,200},fraction_screen,{{600,0,100,100}})==1,"disjoint cover ignored");
+    check(hint_outline_visible_fraction==.5,"outline threshold is less than half visible");
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }

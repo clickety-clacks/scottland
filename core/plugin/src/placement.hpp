@@ -31,6 +31,10 @@ label_spot visible_label(rectangle window, rectangle screen,
 // Signed radius available for a circle at this exact point, including occlusion.
 double visible_clearance(point center, rectangle window, rectangle screen,
     const std::vector<rectangle>& foreground);
+// Share of the window's on-screen area left uncovered by the union of foreground rectangles
+// (exact sweep; O(n² log n) for n foreground rectangles). A window
+// wholly off screen counts as fully visible: an outline there would show nothing.
+double visible_fraction(rectangle window, rectangle screen, const std::vector<rectangle>& foreground);
 // As above, but returns empty when an exposure search deadline expires mid-check.
 std::optional<double> visible_clearance_before(point center, rectangle window, rectangle screen,
     const std::vector<rectangle>& foreground,

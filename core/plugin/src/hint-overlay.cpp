@@ -128,10 +128,11 @@ void hint_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr
 {
     instances.push_back(std::make_unique<hint_render>(this, damage, output));
 }
-void fullscreen_hint_node::update(wf::geometry_t geometry, hint_rgb dye)
+void fullscreen_hint_node::update(wf::geometry_t geometry, hint_rgb dye, double tint)
 {
+    if (geometry == box && dye.r == color.r && dye.g == color.g && dye.b == color.b && tint == alpha) return;
     wf::scene::damage_node(this, box);
-    box = geometry; color = dye;
+    box = geometry; color = dye; alpha = std::clamp(tint, 0.0, 1.0);
     wf::scene::damage_node(this, box);
     wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
 }
@@ -141,10 +142,10 @@ class fullscreen_hint_render : public wf::scene::simple_render_instance_t<fullsc
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
-        auto r = self->box; auto c = self->color;
+        auto r = self->box; auto c = self->color; double a = self->alpha;
         // The render pass takes premultiplied colors (the frame shader composites explicitly).
-        data.pass->add_rect({c.r * hint_window_opacity, c.g * hint_window_opacity,
-            c.b * hint_window_opacity, hint_window_opacity}, data.target, r, data.damage);
+        if (a > 0)
+            data.pass->add_rect({c.r * a, c.g * a, c.b * a, a}, data.target, r, data.damage);
         double line = hint_border_width;
         wf::color_t rim{c.r, c.g, c.b, 1};
         for (auto strip : std::vector<wf::geometry_t>{{r.x, r.y, r.width, line},
@@ -291,6 +292,64 @@ void hint_flash_node::gen_render_instances(std::vector<wf::scene::render_instanc
     wf::scene::damage_callback damage, wf::output_t *output)
 {
     instances.push_back(std::make_unique<hint_flash_render>(this, damage, output));
+}
+
+void hint_outline_node::update(wf::geometry_t geometry, double corner_radius, hint_rgb dye, double width)
+{
+    corner_radius = std::max(0.0, corner_radius);
+    if (geometry == box && corner_radius == radius && width == line &&
+        dye.r == color.r && dye.g == color.g && dye.b == color.b) return;
+    wf::scene::damage_node(this, box);
+    box = geometry; radius = corner_radius; color = dye; line = std::max(1.0, width);
+    wf::scene::damage_node(this, box);
+    wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
+}
+
+class hint_outline_render : public wf::scene::simple_render_instance_t<hint_outline_node>
+{
+  public:
+    using simple_render_instance_t::simple_render_instance_t;
+    void render(const wf::scene::render_instruction_t& data) override
+    {
+        auto b = self->box;
+        if (b.width <= 0 || b.height <= 0) return;
+        double line = std::min({std::round(self->line), b.width / 2.0, b.height / 2.0});
+        double r = std::min({self->radius, b.width / 2.0, b.height / 2.0});
+        double inner = std::max(0.0, r - line);
+        wf::color_t rim{self->color.r, self->color.g, self->color.b, 1};
+        auto strip = [&] (double x, double y, double w, double h)
+        {
+            if (w > 0 && h > 0) data.pass->add_rect(rim, data.target, {x, y, w, h}, data.damage);
+        };
+        // Horizontal inset of a rounded rectangle's edge at pixel row `row` from its top.
+        auto inset = [] (double radius, double row)
+        {
+            if (row >= radius) return 0.0;
+            double distance = std::max(0.0, radius - row - .5);
+            return radius - std::sqrt(std::max(0.0, radius * radius - distance * distance));
+        };
+        int rows = int(std::ceil(std::max(r, line)));
+        for (int row = 0; row < rows; ++row)
+        {
+            double outer = inset(r, row);
+            double k = row - line;  // row within the inner (inset) rounded rectangle
+            for (double y : {double(b.y + row), double(b.y + b.height - row - 1)})
+            {
+                if (k < 0) { strip(b.x + outer, y, b.width - 2 * outer, 1); continue; }
+                double in = line + inset(inner, k);
+                strip(b.x + outer, y, in - outer, 1);
+                strip(b.x + b.width - in, y, in - outer, 1);
+            }
+        }
+        strip(b.x, b.y + rows, line, b.height - 2 * rows);
+        strip(b.x + b.width - line, b.y + rows, line, b.height - 2 * rows);
+    }
+};
+
+void hint_outline_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+    wf::scene::damage_callback damage, wf::output_t *output)
+{
+    instances.push_back(std::make_unique<hint_outline_render>(this, damage, output));
 }
 
 }
