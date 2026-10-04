@@ -61,6 +61,15 @@ def open_app(app_id):
     return next(v['id'] for v in ipc.call('window-rules/list-views') if v['app-id'] == app_id)
 
 
+def collapse_toggle():
+    """Expanded <-> collapsed: a real Super+M tap collapses; expanding is two taps through hidden
+    now (WG16), so it uses the same mode change through scottland/widget-mode."""
+    if ipc.call('scottland/widget-mode')['mode'] == 'expanded':
+        key('KEY_LEFTMETA', True); key('KEY_M', True); key('KEY_M', False); key('KEY_LEFTMETA', False)
+    else:
+        ipc.call('scottland/widget-mode', {'mode': 'expanded'})
+
+
 def finger_drag(view_id, dx, dy, hold):
     x, y = center(view_id)
     ipc.call('stipc/touch', {'finger': 0, 'x': round(x), 'y': round(y)})
@@ -164,12 +173,12 @@ try:
     alive('reload with a mouse drag morphing a window')
 
     for change in ('collapse', 'expand'):  # reload mid-animation each time
-        key('KEY_LEFTMETA', True); key('KEY_M', True); key('KEY_M', False); key('KEY_LEFTMETA', False)
+        collapse_toggle()
         time.sleep(.05)
         reload_plugin()
         alive(f'reload during the cards\' {change} animation')
 
-    key('KEY_LEFTMETA', True); key('KEY_M', True); key('KEY_M', False); key('KEY_LEFTMETA', False)
+    collapse_toggle()
     time.sleep(.8)
     x, y = center(card)
     ipc.call('stipc/move_cursor', {'x': round(x), 'y': round(y)})
