@@ -1,8 +1,10 @@
-# Making room during a drag
+# Spread: solo, and making room during a drag
 
-This document records the signed-off WG26 rail profile and the reusable presentation contract it
-uses. The implementation in this change is **rail-only**. The separate whole-screen spread policy
-is not implemented here.
+This document records the two layouts that make room for something the user placed, and the
+presentation contract they share: **solo** (one window takes the center; the other center windows
+go to the periphery, which spreads; built from the signed-off design in
+`~/.local/state/scottland-jobs/spread/final.md`) and the **WG26 rail profile**. Both follow P14:
+the thing the user placed stays exactly where it was put; everything else flows around it.
 
 Window avoidance for Window-mode hints is a separate policy ([WK13](windowing-keys.md#invariants),
 [WK31](windowing-keys.md#invariants)). It follows P1/P2/P11: periphery windows stay on their
@@ -14,6 +16,94 @@ true frame along that ray, returning to zero when the obstruction clears. If the
 the solver chooses a new candidate by travel from the displayed position. The whole-screen spread
 search does not choose window-avoidance moves. Far-apart-first sampling is limited to placing a
 hint inside its window.
+
+## Spread and solo
+
+**Triggers (P4).** Only explicit requests solo: holding the focused window's hint in Window mode
+or a three-finger hold on the focused window (WK35, committed outright, no undo, P5), and the drag
+audition below (committed by the drop). Present, card clicks, zone cycling and ordinary drops never
+spread.
+
+**The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
+to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
+scale, in front.
+
+**The solve** (`core/plugin/src/spread.{hpp,cpp}`, pure, no Wayfire). Windows whose center is in the
+center zone are *arrivals*; periphery windows are *residents*; widgets and rail windows are fixed.
+Residents never change zone (P13); arrivals leave the center only because the user asked for
+the solo, which is what a solo is. In order: a legal seed for every arrival; residents the solo target really covers move first (own
+side, same scale at their own x first, else outward, never larger); then up to four arrangements,
+residents frozen first, then privileged (P6), each largest-first then most-recent-first. Each arrival
+takes the first rung that gives a spot, at 1 pt contact clearance: clear and in band (scale at least
+85% of the largest it could have beside the fixed things alone); push residents aside (only when it
+would otherwise land below that band, only residents that then land clear on their own side, depth
+one); clear at any scale; least overlap. A return pass puts back every pushed resident whose spot
+came free. The best checkpoint under the lexicographic comparison of final.md wins. A bounded
+spacing pass then tries a halo-sized gap (P7) between the windows it moved, else one smaller common
+gap, else none; residents only slide vertically for it, nobody moves more than one halo for it, and
+nothing untouched moves. Arrivals hang into the center zone at most 16 pt when they fit (ruling
+10-04). If nothing clear exists the least-overlap legal layout is used, solo in front; nothing ever
+goes to a rail or becomes a widget.
+
+**Bounded (P8).** Every unit operation charges one work counter (cap 1,000,000 units, about 12 ms
+on plumbus). Until the main-loop worker lands (branch mainloop-impl), the solve runs on the event
+loop in 2 ms slices with the loop free for at least 1 ms between them (`spread-job.hpp`: the solve
+is suspended inside its unit operations on its own small stack, so the worker can call the same
+`step()` later). A keyboard solo commits the best validated checkpoint after 12 ms of solving or
+30 ms of waiting. Measured in the real build (plumbus headless, `tests/spread-load-test.py`): 12,
+24 and 40 windows took 1, 2 and 6 slices, longest 0.75, 2.00 and 2.00 ms; 40 windows were cut at
+12 ms of solving (delivered after 30 ms) with the best checkpoint. Unit operations measure under
+40 µs of CPU; longer wall-clock slices seen on plumbus were preemption under load (nacelle, idle:
+longest 1.008 ms for a 1 ms allowance).
+
+**The drag audition.** A drag of a window (not a widget, not a Shift drag, L31) whose center is in
+the center zone, with the pointer resting within 8 pt for `solo_audition_delay` (3000 ms; 0 turns it
+off), is offered the solo. At 1 s the anchor is frozen and the solve runs against a reservation: the
+window's full-scale footprint grown by the hotspot on every side, so any accepted drop is honest. At
+the delay the result is shown as a presentation layer only (a translation and scale per window on the
+shared drag layer); no true geometry, zone, memory, pin or widget state changes. Moving the pointer
+more than `solo_audition_hotspot` (50 pt) from the anchor, leaving the center zone, Esc, or a client
+mapping, closing or resizing refuses it: every window eases back to exactly where it was (its true
+geometry never changed) and the pause is timed again. A drop inside the hotspot accepts it: each
+window glides from where it is drawn to its spot, and the dropped window stays exactly where it was
+dropped (no settle, no coast, P14). Unloading the plugin refuses an offer before it releases the drag.
+
+### Invariants
+
+| ID | Invariant | Status |
+|---|---|---|
+| SP1 | Only the focused window's hint hold, its three-finger hold and an accepted audition solo; nothing else spreads (P4). | verified (plumbus and nacelle headless, real stipc input, 2026-10-04) |
+| SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
+| SP3 | A resident moves only if the solo target covers it or an arrival would otherwise land below its band (P6); it stays on its side (P1), never grows, never moves inward, ends clear when pushed, and returns when its spot is free again (P2). | verified (unit fuzz and fixtures; headless) |
+| SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
+| SP5 | Every unit operation is charged; the solve runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. | verified (unit suite; real-build slices measured on plumbus) |
+| SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (plumbus and nacelle headless) |
+| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc or on a client change (never rolling that change back), returns every window exactly, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (plumbus and nacelle headless, real stipc drags) |
+| SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (plumbus and nacelle headless reload rehearsal) |
+
+Not yet seen on a physical screen or with a physical touchpad (the shared plumbus session was not
+reloaded). The two settings have no row in Scottland Settings yet.
+
+### Implementation choices (for review against final.md)
+
+- Outward distances closer than one halo count as equal, so travel decides between near-equal spots
+  (P11). Strict lexicographic order sent an arrival across the screen for a 0.6 pt gain (seen on
+  plumbus).
+- A pinned resident that moves vertically at its own x keeps its pin ("same scale", decision 4);
+  anywhere else it takes the natural scale there and loses the pin.
+- The work cap is 1,000,000 of this kernel's units (about 12 ms on plumbus); final.md's 150,000 was a
+  starting value for a prototype that counted coarser units.
+- Running glides are not paused under an offer: they and the offer are both relative to the same
+  unchanged true geometry, so they compose and the restoration baseline cannot drift. Hint-avoidance
+  offsets of offered windows are held still (as for a pair) rather than suspended.
+- A solo whose solve moves nothing (unchanged, unavailable) still takes the solo window to the center.
+- The spacing pass may also run when the seed checkpoint wins.
+
+### Tests
+
+`tests/spread-unit.sh` (fixtures, fuzz, determinism, slices, starved budgets, cancellation, timing),
+`tests/spread-test.sh` (46 real-input checks plus the load measurement),
+`tests/spread-reload-test.sh` (reload rehearsal), all headless on plumbus or nacelle.
 
 ## Rail behavior (WG26)
 
@@ -56,8 +146,9 @@ keeps responding).
 
 ## Shared drag presentation
 
-`drag_presentation_t` is independent of rails and can serve later layout auditions. It records
-actor origins, supplies additive visual offsets while a gesture is active, and derives committed
+`drag_presentation_t` is independent of rails and serves both auditions. It records
+actor origins, supplies additive visual offsets (and, for the solo audition, a scale factor on the
+window's own scale; the rail leaves it at 1) while a gesture is active, and derives committed
 positions from those origins. Real geometry is unchanged during the audition. On drop, the caller
 applies the target positions and retains the visual offsets until those geometry transactions
 apply. A widget's hidden app window and saved drop anchor follow the same committed vertical

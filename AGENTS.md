@@ -42,6 +42,9 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/settings.md](docs/settings.md): Scottland Settings (S1–S19): zone sliders and overlay with draggable borders, Goo and Window mode tabs, hint popouts, and the planned Widgets tab.
 - [docs/desktop-model.md](docs/desktop-model.md): the single reactive desktop state model and its snapshots.
 - [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
+- [docs/spread.md](docs/spread.md): spread and solo (SP1–SP8: keyboard and three-finger solo, the
+  drag audition, the bounded solver) and the WG26 rail make-room profile (SM1–SM4), with the shared
+  drag presentation they use.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
 
