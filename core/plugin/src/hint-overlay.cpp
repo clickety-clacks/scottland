@@ -9,7 +9,7 @@ extern "C" {
 namespace scottland::windowing
 {
 hint_node::hint_node() : node_t(false) {}
-void hint_node::update(double x, double y, const std::string& text, double size, const std::string& family,
+bool hint_node::update(double x, double y, const std::string& text, double size, const std::string& family,
     hint_rgb color, double scale, std::optional<hint_rgb> background, bool goo, bool reduced_motion)
 {
     reduced = reduced_motion;
@@ -76,7 +76,8 @@ void hint_node::update(double x, double y, const std::string& text, double size,
         cairo_show_text(cr, text.c_str());
         cairo_destroy(cr); cairo_surface_flush(surface); cairo_surface_destroy(surface);
     }
-    animate();
+    const bool popping = animate();
+    return popping || (!reduced && (t < 1.0 || resize_t < 1.0));
 }
 void hint_node::geometry()
 {

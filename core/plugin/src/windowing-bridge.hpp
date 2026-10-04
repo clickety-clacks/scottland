@@ -40,6 +40,7 @@
         std::shared_ptr<wf::scene::view_2d_transformer_t> offset;
         bool offset_attached = false;
         scottland::windowing::point target;
+        scottland::windowing::point branch_base_offset;
         uint64_t branch_owner = 0;
         int branch_axis = 0, branch_sign = 0;
         scottland::windowing::point label_offset;
@@ -55,11 +56,16 @@
     double exposure_solve_max_ms = 0;
     double exposure_search_ms = 0;
     double exposure_search_max_ms = 0;
+    double exposure_easing_speed_max = 0;
     scottland::windowing::exposure_profile exposure_last_profile;
     std::vector<uint64_t> exposure_last_order;
     uint64_t exposure_solve_count = 0;
     uint64_t exposure_solve_deadline_count = 0;
     bool exposure_solve_pending = false;
+    uint64_t hint_step_count = 0;
+    bool hint_step_animation = false, hint_step_offset = false;
+    std::string exposure_progress_signature;
+    std::map<std::string, scottland::windowing::exposure_progress> exposure_progress_by_output;
     wf::wl_idle_call hint_registration;
 
     scottland::windowing::hint_palette hints_palette;
@@ -661,6 +667,7 @@
 
     bool step_hints(bool force_solve = false)
     {
+        ++hint_step_count;
         refresh_hint_palette();
         auto entries = window_entries();
         if (window_keys.active) window_keys.refresh(entries);
@@ -734,6 +741,13 @@
         bool retry_pending = exposure_solve_pending && !signature_changed && avoidance_active;
         bool solve_requested = signature_changed || retry_pending;
         bool deferred_solve = solve_requested && avoidance_active && !force_solve && within_tick_budget;
+        if (signature_changed || exposure_progress_signature != current_signature)
+        {
+            // A changed true layout invalidates every cached placement. Within an
+            // unchanged signature, validated front windows carry into later slices.
+            exposure_progress_by_output.clear();
+            exposure_progress_signature = current_signature;
+        }
         if (solve_requested && (!avoidance_active || force_solve || !within_tick_budget))
         {
             declutter_signature = std::move(current_signature);
@@ -746,6 +760,7 @@
                 // Offsets remain attached until the animation reaches this target.
                 for (auto& [id, visual] : hint_visuals) visual.target = {};
                 exposure_solve_pending = false;
+                exposure_progress_by_output.clear();
                 for (auto& [id, visual] : hint_visuals)
                 { visual.branch_owner = 0; visual.branch_axis = visual.branch_sign = 0; }
                 for (auto& [id, visual] : hint_visuals)
@@ -755,12 +770,14 @@
                     visual.retained_clearance = -1;
                     visual.edge_label = false;
                 }
-            } else
-            {
-                auto exposure_started = std::chrono::steady_clock::now();
+        } else
+        {
+            auto exposure_started = std::chrono::steady_clock::now();
                 auto exposure_deadline = exposure_started + std::chrono::microseconds(
                     scottland::windowing::avoidance_solve_budget_us);
                 bool exposure_deadline_hit = false;
+                exposure_solve_pending = false;
+                exposure_last_profile = {};
                 exposure_last_order.clear();
                 for (auto& [output, ids] : by_output)
                 {
@@ -829,6 +846,7 @@
                                 std::clamp(double(center_width), 0.0, 100.0) / 200.0;
                             input.branch_axis = visual.branch_axis;
                             input.branch_sign = visual.branch_sign;
+                            input.branch_base_offset = visual.branch_base_offset;
                             exposure_last_order.push_back(id);
                         }
                     }
@@ -847,28 +865,46 @@
                     // spend the remaining bounded work to enlarge a readable badge.
                     exposure_limits.allow_size_upgrades = window_keys.active && !drag->view &&
                         !inertia_active();
-                    auto exposed = scottland::windowing::expose_window_hints(windows, bounds, {},
-                        exposure_deadline, &output_deadline_hit, &exposure_last_profile,
-                        exposure_limits);
+                    exposure_limits.reconsider_ways_when_idle = !drag->view && !inertia_active();
+                    auto& progress = exposure_progress_by_output[output->to_string()];
+                    scottland::windowing::exposure_profile output_profile;
+                    const bool output_complete =
+                        scottland::windowing::expose_window_hints_progressively(windows, bounds, {},
+                            progress, exposure_deadline, &output_deadline_hit, &output_profile,
+                            exposure_limits);
+                    exposure_solve_pending |= !output_complete;
+                    exposure_last_profile.initialization_ms += output_profile.initialization_ms;
+                    exposure_last_profile.placement_ms += output_profile.placement_ms;
+                    exposure_last_profile.finalization_ms += output_profile.finalization_ms;
+                    exposure_last_profile.work_count += output_profile.work_count;
+                    exposure_last_profile.label_work_count += output_profile.label_work_count;
+                    exposure_last_profile.movement_work_count += output_profile.movement_work_count;
+                    exposure_last_profile.movement_searches += output_profile.movement_searches;
+                    exposure_last_profile.truncated_searches += output_profile.truncated_searches;
+                    exposure_last_profile.last_search_window = output_profile.last_search_window;
                     exposure_search_ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - search_started).count();
                     exposure_search_max_ms = std::max(exposure_search_max_ms, exposure_search_ms);
                     exposure_deadline_hit |= output_deadline_hit;
                     for (size_t i = 0; i < window_ids.size(); ++i)
                     {
+                        if (i >= progress.complete.size() || !progress.complete[i]) continue;
+                        const auto& exposed = progress.results[i];
                         auto& visual = hint_visuals[window_ids[i]];
-                        visual.target = exposed[i].offset;
-                        visual.branch_owner = exposed[i].branch_owner >= 0 ?
-                            window_ids.at(exposed[i].branch_owner) : 0;
-                        visual.branch_axis = exposed[i].branch_axis;
-                        visual.branch_sign = exposed[i].branch_sign;
-                        visual.label_size = exposed[i].diameter;
-                        visual.clearance = exposed[i].spot.clearance;
-                        visual.retained_clearance = exposed[i].retained_clearance;
+                        visual.target = exposed.offset;
+                        visual.branch_owner = exposed.branch_owner >= 0 &&
+                            size_t(exposed.branch_owner) < window_ids.size() ?
+                                window_ids.at(exposed.branch_owner) : 0;
+                        visual.branch_axis = exposed.branch_axis;
+                        visual.branch_sign = exposed.branch_sign;
+                        visual.branch_base_offset = exposed.branch_base_offset;
+                        visual.label_size = exposed.diameter;
+                        visual.clearance = exposed.spot.clearance;
+                        visual.retained_clearance = exposed.retained_clearance;
                         visual.edge_label = false;
                         auto anchor = hint_anchor(represented_view(window_ids[i]), true);
-                        visual.label_offset = {exposed[i].spot.center.x - visual.target.x - anchor.x,
-                            exposed[i].spot.center.y - visual.target.y - anchor.y};
+                        visual.label_offset = {exposed.spot.center.x - visual.target.x - anchor.x,
+                            exposed.spot.center.y - visual.target.y - anchor.y};
                     }
                     for (auto id : ordered)
                     {
@@ -886,16 +922,6 @@
                 exposure_solve_max_ms = std::max(exposure_solve_max_ms, exposure_solve_ms);
                 ++exposure_solve_count;
                 exposure_solve_deadline_count += exposure_deadline_hit;
-                if (exposure_deadline_hit)
-                {
-                    // Retry in a fixed front-to-back order; valid incumbents make later
-                    // passes cheap, and order no longer alternates with tick parity. Every
-                    // retry is still subject to the same per-tick deadline.
-                    exposure_solve_pending = true;
-                } else
-                {
-                    exposure_solve_pending = false;
-                }
             }
             for (auto& [id, visual] : hint_visuals)
             {
@@ -905,7 +931,7 @@
             }
             if (avoidance_active) last_exposure_solve = std::chrono::steady_clock::now();
         }
-        bool moving = false;
+        bool moving = false, animation_moving = false;
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
         {
             auto& visual = it->second; auto view = wf::toplevel_cast(visual.view.lock());
@@ -944,6 +970,8 @@
                     double dy = (target.y - offset->translation_y) * .18;
                     const double step = std::hypot(dx, dy), cap = 1000 * dt;
                     if (step > cap && step > .001) { dx *= cap / step; dy *= cap / step; }
+                    exposure_easing_speed_max = std::max(exposure_easing_speed_max,
+                        std::hypot(dx, dy) / std::max(dt, .0001));
                     offset->translation_x += dx;
                     offset->translation_y += dy;
                 }
@@ -1005,13 +1033,15 @@
                 }
                 if (visual.hint)
                 {
-                    visual.hint->update(anchor.x + offset->translation_x + visual.label_offset.x,
+                    const bool hint_moving = visual.hint->update(anchor.x + offset->translation_x + visual.label_offset.x,
                         anchor.y + offset->translation_y + visual.label_offset.y, text,
                         widget ? hint_size(view) : visual.label_size,
                         hints_palette.font_family, color,
                         view->get_output()->get_scale(), widget ?
                             std::optional{hints_palette.background} : std::nullopt,
                         model.goo_outputs.count(view->get_output()), hints_reduced_motion);
+                    moving |= hint_moving;
+                    animation_moving |= hint_moving;
                 }
             } else
             {
@@ -1026,7 +1056,9 @@
             }
             ++it;
         }
-        return window_keys.active || moving || bool(drag->view) || inertia_active() || deferred_solve ||
+        hint_step_animation = animation_moving;
+        hint_step_offset = moving && !animation_moving;
+        return moving || bool(drag->view) || inertia_active() || deferred_solve ||
             exposure_solve_pending;
     }
     void refresh_layout_avoidance(bool immediate = false)
@@ -1198,6 +1230,7 @@
         reply["avoidance_solve_max_ms"] = exposure_solve_max_ms;
         reply["avoidance_search_ms"] = exposure_search_ms;
         reply["avoidance_search_max_ms"] = exposure_search_max_ms;
+        reply["avoidance_max_easing_speed_px_s"] = exposure_easing_speed_max;
         reply["avoidance_init_ms"] = exposure_last_profile.initialization_ms;
         reply["avoidance_placement_ms"] = exposure_last_profile.placement_ms;
         reply["avoidance_finalization_ms"] = exposure_last_profile.finalization_ms;
@@ -1211,6 +1244,52 @@
             scottland::windowing::avoidance_solve_budget_us / 1000.0;
         reply["avoidance_solve_count"] = int64_t(exposure_solve_count);
         reply["avoidance_solve_deadline_count"] = int64_t(exposure_solve_deadline_count);
+        reply["avoidance_solve_pending"] = exposure_solve_pending;
+        reply["hint_step_count"] = int64_t(hint_step_count);
+        reply["hint_step_animation"] = hint_step_animation;
+        reply["hint_step_offset"] = hint_step_offset;
+        reply["avoidance_fallback_count"] = int64_t([&] () {
+            size_t total = 0;
+            for (const auto& [output, progress] : exposure_progress_by_output)
+                total += progress.fallback_count;
+            return total;
+        }());
+        reply["avoidance_progress_attempts"] = int64_t([&] () {
+            size_t total = 0;
+            for (const auto& [output, progress] : exposure_progress_by_output)
+                for (auto count : progress.attempts) total += count;
+            return total;
+        }());
+        reply["avoidance_progress_windows"] = int64_t([&] () {
+            size_t total = 0;
+            for (const auto& [output, progress] : exposure_progress_by_output)
+                total += progress.complete.size();
+            return total;
+        }());
+        reply["avoidance_way_recheck_pending"] = std::any_of(
+            exposure_progress_by_output.begin(), exposure_progress_by_output.end(),
+            [] (const auto& item) { return item.second.way_recheck_pending; });
+        reply["avoidance_way_recheck_done"] = std::any_of(
+            exposure_progress_by_output.begin(), exposure_progress_by_output.end(),
+            [] (const auto& item) { return item.second.way_recheck_done; });
+        reply["avoidance_way_recheck_attempts"] = int64_t([&] () {
+            size_t total = 0;
+            for (const auto& [output, progress] : exposure_progress_by_output)
+                total += progress.way_recheck_attempts;
+            return total;
+        }());
+        reply["avoidance_way_recheck_adoptions"] = int64_t([&] () {
+            size_t total = 0;
+            for (const auto& [output, progress] : exposure_progress_by_output)
+                total += progress.way_recheck_adoptions;
+            return total;
+        }());
+        reply["avoidance_way_recheck_rejections"] = int64_t([&] () {
+            size_t total = 0;
+            for (const auto& [output, progress] : exposure_progress_by_output)
+                total += progress.way_recheck_rejections;
+            return total;
+        }());
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
         window_keys.refresh(window_entries());
         for (auto e : window_keys.entries)
@@ -1257,9 +1336,20 @@
                 int64_t(hint_visuals[e.id].branch_owner) : int64_t(0);
             item["branch_axis"] = hint_visuals.count(e.id) ? hint_visuals[e.id].branch_axis : 0;
             item["branch_sign"] = hint_visuals.count(e.id) ? hint_visuals[e.id].branch_sign : 0;
+            item["branch_base_dx"] = hint_visuals.count(e.id) ?
+                hint_visuals[e.id].branch_base_offset.x : 0.0;
+            item["branch_base_dy"] = hint_visuals.count(e.id) ?
+                hint_visuals[e.id].branch_base_offset.y : 0.0;
             item["label_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.x : 0.0;
             item["label_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.y : 0.0;
             item["clearance"] = hint_visuals.count(e.id) ? hint_visuals[e.id].clearance : 0.0;
+            item["minimum_patch_clearance"] = hint_visuals.count(e.id) ?
+                hint_visuals[e.id].clearance : 0.0;
+            item["surface_patch_size"] = hint_visuals.count(e.id) ?
+                std::max(0.0, 2 * (hint_visuals[e.id].clearance - 1) / 1.06) : 0.0;
+            item["minimum_patch_visible"] = hint_visuals.count(e.id) &&
+                hint_visuals[e.id].clearance + .25 >=
+                    (48 * hints_palette.text_scale * 1.06 / 2 + 1);
             item["incumbent_clearance"] = hint_visuals.count(e.id) ?
                 hint_visuals[e.id].retained_clearance : -1.0;
             auto order = std::find(exposure_last_order.begin(), exposure_last_order.end(), e.id);

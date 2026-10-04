@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <queue>
 #include <set>
@@ -60,16 +61,20 @@ std::pair<double, double> vertical_center_limits(rectangle frame, rectangle scre
     return original < center ? std::pair{-std::numeric_limits<double>::infinity(), center} :
         std::pair{center, std::numeric_limits<double>::infinity()};
 }
-bool remains_in_avoidance_zone(const exposure_window& window, rectangle position, rectangle screen)
+bool remains_in_avoidance_zone(const exposure_window& window, rectangle position, rectangle screen,
+    bool allow_minimum_patch_zone_overshoot = false)
 {
+    if (allow_minimum_patch_zone_overshoot) return true;
     const auto [xlo, xhi] = horizontal_center_limits(window, screen);
     const auto [ylo, yhi] = vertical_center_limits(window.frame, screen);
     const double x = position.x + position.width / 2, y = position.y + position.height / 2;
     return x >= xlo - .01 && x <= xhi + .01 && y >= ylo - .01 && y <= yhi + .01;
 }
 void constrain_zone_delta(const exposure_window& window, rectangle current, rectangle screen,
-    double& xlo, double& xhi, double& ylo, double& yhi)
+    double& xlo, double& xhi, double& ylo, double& yhi,
+    bool allow_minimum_patch_zone_overshoot = false)
 {
+    if (allow_minimum_patch_zone_overshoot) return;
     const auto [cxlo, cxhi] = horizontal_center_limits(window, screen);
     const auto [cylo, cyhi] = vertical_center_limits(window.frame, screen);
     const double x = current.x + current.width / 2, y = current.y + current.height / 2;
@@ -77,7 +82,8 @@ void constrain_zone_delta(const exposure_window& window, rectangle current, rect
     ylo = std::max(ylo, cylo - y); yhi = std::min(yhi, cyhi - y);
 }
 struct move_bounds { double xlo, xhi, ylo, yhi; };
-move_bounds bounds_for(const exposure_window& window, rectangle r, rectangle screen, double diameter)
+move_bounds bounds_for(const exposure_window& window, rectangle r, rectangle screen, double diameter,
+    bool allow_minimum_patch_zone_overshoot = false)
 {
     double visible = 2 * needed_radius(diameter);
     // Keep the badge-sized portion on screen, but permit the minimal off-screen movement
@@ -86,12 +92,15 @@ move_bounds bounds_for(const exposure_window& window, rectangle r, rectangle scr
         std::max(r.x, screen.x + screen.width - visible),
         std::min(r.y, screen.y - r.height + visible),
         std::max(r.y, screen.y + screen.height - visible)};
-    const auto [cxlo, cxhi] = horizontal_center_limits(window, screen);
-    const auto [cylo, cyhi] = vertical_center_limits(window.frame, screen);
-    bounds.xlo = std::max(bounds.xlo, cxlo - r.width / 2);
-    bounds.xhi = std::min(bounds.xhi, cxhi - r.width / 2);
-    bounds.ylo = std::max(bounds.ylo, cylo - r.height / 2);
-    bounds.yhi = std::min(bounds.yhi, cyhi - r.height / 2);
+    if (!allow_minimum_patch_zone_overshoot)
+    {
+        const auto [cxlo, cxhi] = horizontal_center_limits(window, screen);
+        const auto [cylo, cyhi] = vertical_center_limits(window.frame, screen);
+        bounds.xlo = std::max(bounds.xlo, cxlo - r.width / 2);
+        bounds.xhi = std::min(bounds.xhi, cxhi - r.width / 2);
+        bounds.ylo = std::max(bounds.ylo, cylo - r.height / 2);
+        bounds.yhi = std::min(bounds.yhi, cyhi - r.height / 2);
+    }
     return bounds;
 }
 std::vector<double> candidate_axis(rectangle r, rectangle screen,
@@ -160,13 +169,15 @@ struct candidate
     int branch_axis;
     int branch_sign;
     bool branch_match;
+    point branch_base_offset;
 };
 std::optional<candidate> least_exposure_move(size_t index, double diameter,
     const std::vector<rectangle>& nodes, const std::vector<exposure_window>& windows,
     rectangle screen, const std::vector<rectangle>& fixed,
     std::chrono::steady_clock::time_point deadline,
     const std::vector<label_spot>& known_spots, const std::vector<bool>& has_spot,
-    size_t& work_count, size_t work_budget, bool *search_truncated)
+    size_t& work_count, size_t work_budget, bool *search_truncated,
+    bool allow_minimum_patch_zone_overshoot = false, bool replacement_probe = false)
 {
     if (search_truncated) *search_truncated = false;
     std::optional<candidate> best;
@@ -175,7 +186,21 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
         return best;
     };
     if (stopped(deadline, work_count, work_budget)) return partial_result();
-    auto r = nodes[index]; double radius = needed_radius(diameter);
+    auto route_base = [&] (size_t moved_index) {
+        const auto& window = windows[moved_index];
+        if (replacement_probe && window.branch_axis && window.branch_owner >= 0)
+            return window.incumbent_offset;
+        // Stay on a retained way's stable base while testing its least true-frame
+        // offset. A separate replacement probe starts from the displayed incumbent.
+        return window.branch_owner >= 0 && window.branch_axis ?
+            window.branch_base_offset : window.incumbent_offset;
+    };
+    auto scene_delta_for = [&] (size_t moved_index, point target_offset) {
+        const auto& frame = windows[moved_index].frame;
+        return point{frame.x + target_offset.x - nodes[moved_index].x,
+            frame.y + target_offset.y - nodes[moved_index].y};
+    };
+    auto r = moved(windows[index].frame, route_base(index)); double radius = needed_radius(diameter);
     std::vector<rectangle> static_here = fixed;
     static_here.reserve(fixed.size() + windows[index].fixed_foreground.size());
     static_here.insert(static_here.end(), windows[index].fixed_foreground.begin(),
@@ -217,7 +242,8 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
         if (std::abs(old_target.y) > .01 && target.y * old_target.y < -.01) return false;
         return true;
     };
-    auto branch_of = [] (point offset) {
+    auto branch_of = [] (point offset, point base) {
+        offset.x -= base.x; offset.y -= base.y;
         const bool x = std::abs(offset.x) >= .01, y = std::abs(offset.y) >= .01;
         if (!x && !y) return std::pair{0, 0};
         // A way is a one-dimensional ray from true geometry. Combining x and y
@@ -230,27 +256,42 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
     auto matches_branch = [&] (size_t moved_index, point delta) {
         point offset{nodes[moved_index].x + delta.x - windows[moved_index].frame.x,
             nodes[moved_index].y + delta.y - windows[moved_index].frame.y};
-        // Zero is valid on every way when the label fits at true geometry. Keep the
-        // way identity dormant so the same direction wins again if its obstruction returns.
         if (std::hypot(offset.x, offset.y) < .01) return true;
-        auto [axis, direction] = branch_of(offset);
-        return windows[moved_index].branch_owner == int(index) &&
-            windows[moved_index].branch_axis == axis && windows[moved_index].branch_sign == direction;
+        const auto& window = windows[moved_index];
+        if (window.branch_owner == int(index) && window.branch_axis &&
+            std::hypot(offset.x - window.branch_base_offset.x,
+                offset.y - window.branch_base_offset.y) < .01) return true;
+        auto [axis, direction] = branch_of(offset, windows[moved_index].branch_base_offset);
+        return window.branch_owner == int(index) &&
+            window.branch_axis == axis && window.branch_sign == direction;
     };
     auto offer = [&] (size_t moved_index, point delta, point label_center, double clearance) {
         if (stopped(deadline, work_count, work_budget)) return false;
         const bool is_zero = std::hypot(delta.x, delta.y) < .01;
         if (windows[moved_index].anchored && !is_zero) return true;
         if (!remains_in_avoidance_zone(windows[moved_index],
-            moved(nodes[moved_index], delta), screen)) return true;
+            moved(nodes[moved_index], delta), screen, allow_minimum_patch_zone_overshoot)) return true;
         const point final_offset{nodes[moved_index].x + delta.x - windows[moved_index].frame.x,
             nodes[moved_index].y + delta.y - windows[moved_index].frame.y};
-        if (std::abs(final_offset.x) >= .01 && std::abs(final_offset.y) >= .01)
-            return true; // all retained ways and replacements are single-axis rays
+        const bool branch_match = matches_branch(moved_index, delta);
+        const point branch_base = branch_match ? windows[moved_index].branch_base_offset :
+            windows[moved_index].incumbent_offset;
+        const point branch_delta{final_offset.x - branch_base.x, final_offset.y - branch_base.y};
+        if (std::abs(branch_delta.x) >= .01 && std::abs(branch_delta.y) >= .01) return true;
         double displayed_distance = std::hypot(final_offset.x - windows[moved_index].incumbent_offset.x,
             final_offset.y - windows[moved_index].incumbent_offset.y);
-        auto [axis, direction] = branch_of(final_offset);
-        bool branch_match = matches_branch(moved_index, delta);
+        if (windows[moved_index].branch_axis && windows[moved_index].branch_owner >= 0 &&
+            !branch_match)
+        {
+            if (displayed_distance > avoidance_replacement_step_limit + .01 ||
+                !same_displacement_side(moved_index, delta)) return true;
+        }
+        auto [axis, direction] = branch_of(final_offset, branch_base);
+        if (branch_match && axis == 0)
+        {
+            axis = windows[moved_index].branch_axis;
+            direction = windows[moved_index].branch_sign;
+        }
         // A retained way wins while feasible; inside it the solve returns to the
         // smallest offset from true geometry. A new way is ranked from the displayed
         // incumbent, so a necessary branch change starts nearby.
@@ -291,10 +332,11 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
         }
         if (!best || (branch_match == best->branch_match && distance < best->travel - .01) || wins_tie)
             best = candidate{moved_index, delta, distance, displayed_distance, label_center,
-                clearance, axis, direction, branch_match};
+                clearance, axis, direction, branch_match, branch_base};
         return true;
     };
-    auto current_bounds = bounds_for(windows[index], r, screen, diameter);
+    auto current_bounds = bounds_for(windows[index], r, screen, diameter,
+        allow_minimum_patch_zone_overshoot);
     std::vector<rectangle> other_foreground;
     other_foreground.reserve(static_here.size() + index);
     size_t center_x = std::min_element(xs.begin(), xs.end(), [&] (double a, double b) {
@@ -322,20 +364,27 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
             double xhi = std::min(x - radius - r.x, current_bounds.xhi - r.x);
             double ylo = std::max(y + radius - r.y - r.height, current_bounds.ylo - r.y);
             double yhi = std::min(y - radius - r.y, current_bounds.yhi - r.y);
-            constrain_zone_delta(windows[index], r, screen, xlo, xhi, ylo, yhi);
+            constrain_zone_delta(windows[index], r, screen, xlo, xhi, ylo, yhi,
+                allow_minimum_patch_zone_overshoot);
             if (xlo <= xhi && ylo <= yhi)
             {
                 const point own{std::clamp(0.0, xlo, xhi), std::clamp(0.0, ylo, yhi)};
-                if (std::abs(own.x) < .01 && std::abs(own.y) < .01 &&
-                    !offer(index, {}, center, *unobscured)) return false;
+                const point own_target{route_base(index).x + own.x,
+                    route_base(index).y + own.y};
+                if (!offer(index, scene_delta_for(index, own_target), center, *unobscured))
+                    return false;
                 // Each candidate is the nearest point on one ray that contains this
                 // circle. Among all visible-label candidates, the solver selects the
                 // smallest true-position offset on the retained ray. A diagonal move
                 // is not a branch: it would have no stable way identity.
                 if (std::abs(own.x) > .01 && ylo <= .01 && yhi >= -.01 &&
-                    !offer(index, {own.x, 0}, center, *unobscured)) return false;
+                    !offer(index, scene_delta_for(index,
+                        {route_base(index).x + own.x, route_base(index).y}),
+                        center, *unobscured)) return false;
                 if (std::abs(own.y) > .01 && xlo <= .01 && xhi >= -.01 &&
-                    !offer(index, {0, own.y}, center, *unobscured)) return false;
+                    !offer(index, scene_delta_for(index,
+                        {route_base(index).x, route_base(index).y + own.y}),
+                        center, *unobscured)) return false;
             }
         }
         // A fully covering foreground surface may have to move to reveal a rear circle.
@@ -352,7 +401,10 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
                 work_count, work_budget);
             if (!open) return false;
             if (*open < radius - .01) continue;
-            auto front = nodes[j]; auto limit = bounds_for(windows[j], front, screen, diameter);
+            const auto base = route_base(j);
+            auto front = moved(windows[j].frame, base);
+            auto limit = bounds_for(windows[j], front, screen, diameter,
+                allow_minimum_patch_zone_overshoot);
             std::array<point, 4> deltas{{
                 {x + radius + .5 - front.x, 0},
                 {x - radius - .5 - front.x - front.width, 0},
@@ -364,13 +416,15 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
                 auto shifted = moved(front, delta);
                 if (shifted.x < limit.xlo - .01 || shifted.x > limit.xhi + .01 ||
                     shifted.y < limit.ylo - .01 || shifted.y > limit.yhi + .01 ||
-                    !remains_in_avoidance_zone(windows[j], shifted, screen)) continue;
+                    !remains_in_avoidance_zone(windows[j], shifted, screen,
+                        allow_minimum_patch_zone_overshoot)) continue;
                 one_obstacle.assign(1, shifted);
                 auto clearance = checked_clearance(center, r, screen, one_obstacle, deadline,
                     work_count, work_budget);
                 if (!clearance) return false;
                 if (*clearance >= radius - .01 &&
-                    !offer(j, delta, center, std::min(*open, *clearance))) return false;
+                    !offer(j, scene_delta_for(j, {base.x + delta.x, base.y + delta.y}),
+                        center, std::min(*open, *clearance))) return false;
             }
         }
         return true;
@@ -394,7 +448,6 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
             if (!visible || *visible < radius - .01) return;
             const auto final_offset = point{nodes[moved_index].x + delta.x - windows[moved_index].frame.x,
                 nodes[moved_index].y + delta.y - windows[moved_index].frame.y};
-            if (std::abs(final_offset.x) >= .01 && std::abs(final_offset.y) >= .01) return;
             const bool branch_match = matches_branch(moved_index, delta);
             const double distance = branch_match ? std::hypot(final_offset.x, final_offset.y) :
                 std::hypot(final_offset.x - windows[moved_index].incumbent_offset.x,
@@ -410,16 +463,20 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
             double xhi = std::min(x - radius - r.x, current_bounds.xhi - r.x);
             double ylo = std::max(y + radius - r.y - r.height, current_bounds.ylo - r.y);
             double yhi = std::min(y - radius - r.y, current_bounds.yhi - r.y);
-            constrain_zone_delta(windows[index], r, screen, xlo, xhi, ylo, yhi);
+            constrain_zone_delta(windows[index], r, screen, xlo, xhi, ylo, yhi,
+                allow_minimum_patch_zone_overshoot);
             if (xlo <= xhi && ylo <= yhi)
             {
                 const point own{std::clamp(0.0, xlo, xhi), std::clamp(0.0, ylo, yhi)};
-                if (std::abs(own.x) < .01 && std::abs(own.y) < .01)
-                    offer_lower(index, {});
+                const point own_target{route_base(index).x + own.x,
+                    route_base(index).y + own.y};
+                offer_lower(index, scene_delta_for(index, own_target));
                 if (std::abs(own.x) > .01 && ylo <= .01 && yhi >= -.01)
-                    offer_lower(index, {own.x, 0});
+                    offer_lower(index, scene_delta_for(index,
+                        {route_base(index).x + own.x, route_base(index).y}));
                 if (std::abs(own.y) > .01 && xlo <= .01 && xhi >= -.01)
-                    offer_lower(index, {0, own.y});
+                    offer_lower(index, scene_delta_for(index,
+                        {route_base(index).x, route_base(index).y + own.y}));
             }
         }
         auto owner_clearance = checked_clearance({x, y}, r, screen, static_here, deadline,
@@ -429,8 +486,10 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
             !stopped(deadline, work_count, work_budget); ++j)
         {
             if (windows[j].anchored) continue;
-            auto front = nodes[j];
-            auto limit = bounds_for(windows[j], front, screen, diameter);
+            const auto base = route_base(j);
+            auto front = moved(windows[j].frame, base);
+            auto limit = bounds_for(windows[j], front, screen, diameter,
+                allow_minimum_patch_zone_overshoot);
             std::array<point, 4> deltas{{
                 {x + radius + .5 - front.x, 0},
                 {x - radius - .5 - front.x - front.width, 0},
@@ -441,8 +500,9 @@ std::optional<candidate> least_exposure_move(size_t index, double diameter,
                 auto shifted = moved(front, delta);
                 if (shifted.x < limit.xlo - .01 || shifted.x > limit.xhi + .01 ||
                     shifted.y < limit.ylo - .01 || shifted.y > limit.yhi + .01 ||
-                    !remains_in_avoidance_zone(windows[j], shifted, screen)) continue;
-                offer_lower(j, delta);
+                    !remains_in_avoidance_zone(windows[j], shifted, screen,
+                        allow_minimum_patch_zone_overshoot)) continue;
+                offer_lower(j, scene_delta_for(j, {base.x + delta.x, base.y + delta.y}));
             }
         }
         return lower;
@@ -571,7 +631,7 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             return exposure_result{offset, {center, clearance},
                 std::max(window.minimum, std::min(wanted, available)),
                 window.branch_owner, window.branch_axis, window.branch_sign,
-                retained_clearances[i]};
+                retained_clearances[i], window.branch_base_offset};
     };
     std::vector<rectangle> nodes;
     for (auto w : active_windows)
@@ -664,25 +724,55 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             if (!has_spot[i] || spot.clearance > best_spots[i].clearance)
             { best_spots[i] = spot; has_spot[i] = true; }
             else spot = best_spots[i]; // an expired label refinement cannot eclipse its checked incumbent
-            if (spot.clearance + .25 >= needed_radius(wanted)) continue;
+            const double fit_request = limits.allow_size_upgrades ? wanted :
+                active_windows[i].minimum;
+            if (spot.clearance + .25 >= needed_radius(fit_request))
+            {
+                const bool retained_way = active_windows[i].branch_owner >= 0 &&
+                    active_windows[i].branch_axis;
+                if (!retained_way || spot.clearance + .25 >=
+                    needed_radius(fit_request) + avoidance_way_release_margin) continue;
+                // Release only after the true frame clears the current wanted size
+                // by a small margin. This keeps a one-pixel clearance fluctuation
+                // from toggling a window between its retained way and zero.
+                hold_targets[i] = true;
+                if (!moved_this_solve[i]) nodes[i] = moved(windows[i].frame,
+                    windows[i].anchored ? point{} : windows[i].target_offset);
+                continue;
+            }
             if (spot.clearance + .25 >= needed_radius(active_windows[i].minimum) &&
                 !limits.allow_size_upgrades) continue;
             std::optional<candidate> choice;
             bool movement_search_truncated = false;
-            auto find_move = [&] (double diameter) {
-                bool this_search_truncated = false;
-                const auto work_before = work_count;
-                auto found = least_exposure_move(i, diameter, nodes, active_windows, screen, fixed,
-                    window_deadline, best_spots, has_spot, work_count,
-                    limits.inspection_budget, &this_search_truncated);
-                if (profile)
+            auto find_move = [&] (double diameter, bool allow_zone_overshoot = false) {
+                auto run_search = [&] (bool replacement_probe) {
+                    bool this_search_truncated = false;
+                    const auto work_before = work_count;
+                    auto result = least_exposure_move(i, diameter, nodes, active_windows, screen, fixed,
+                        window_deadline, best_spots, has_spot, work_count,
+                        limits.inspection_budget, &this_search_truncated, allow_zone_overshoot,
+                        replacement_probe);
+                    if (profile)
+                    {
+                        ++profile->movement_searches;
+                        profile->movement_work_count += work_count - work_before;
+                        profile->truncated_searches += this_search_truncated;
+                        profile->last_search_window = i;
+                    }
+                    movement_search_truncated |= this_search_truncated;
+                    return result;
+                };
+                auto found = run_search(false);
+                const bool has_retained_way = std::any_of(active_windows.begin(), active_windows.end(),
+                    [] (const auto& window) { return window.branch_owner >= 0 && window.branch_axis; });
+                if (has_retained_way && (!found || !found->branch_match) &&
+                    !stopped(window_deadline, work_count, limits.inspection_budget))
                 {
-                    ++profile->movement_searches;
-                    profile->movement_work_count += work_count - work_before;
-                    profile->truncated_searches += this_search_truncated;
-                    profile->last_search_window = i;
+                    auto nearby = run_search(true);
+                    if (nearby && (!found || (nearby->branch_match && !found->branch_match) ||
+                        (nearby->branch_match == found->branch_match &&
+                            nearby->travel < found->travel - .01))) found = nearby;
                 }
-                movement_search_truncated |= this_search_truncated;
                 return found;
             };
             const bool minimum_fits_here = spot.clearance + .25 >=
@@ -701,7 +791,16 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             }
             if (!choice)
             {
-                if (movement_search_truncated)
+                if (!movement_search_truncated && !minimum_fits_here &&
+                    limits.allow_minimum_patch_zone_overshoot)
+                {
+                    // This is the only P1/P12 policy seam. First exhaust legal
+                    // placements inside the window's own zone; only then, if the
+                    // configured policy permits it, find the nearest minimum badge
+                    // just beyond that bound. Default P1 keeps this path disabled.
+                    choice = find_move(active_windows[i].minimum, true);
+                }
+                if (!choice && movement_search_truncated)
                 {
                     if (!minimum_fits_here)
                     {
@@ -713,33 +812,47 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                     }
                     continue; // keep the checked incumbent for this tick
                 }
-                if (!minimum_fits_here || !limits.allow_size_upgrades)
-                    continue; // no minimum placement, or no larger-size request
+                if (!choice && !minimum_fits_here)
+                {
+                    // If this changed layout has no checked legal move, do not
+                    // reinterpret the true frame as a new zero target. Hold the
+                    // displayed route for this frame and keep the minimum hint.
+                    hold_targets[i] = true;
+                    if (!moved_this_solve[i])
+                        nodes[i] = moved(windows[i].frame, windows[i].anchored ? point{} :
+                            windows[i].target_offset);
+                    continue;
+                }
+                if (!choice && !limits.allow_size_upgrades)
+                    continue; // no larger-size request
 
                 // If the wanted circle cannot fit, refine upward from the least-travel
                 // readable placement while budget remains.
-                double lo = active_windows[i].minimum, hi = wanted;
-                if (!stopped(window_deadline, work_count, limits.inspection_budget))
-                    choice = find_move(lo);
                 if (!choice)
                 {
-                    if (movement_search_truncated && !minimum_fits_here)
+                    double lo = active_windows[i].minimum, hi = wanted;
+                    if (!stopped(window_deadline, work_count, limits.inspection_budget))
+                        choice = find_move(lo);
+                    if (!choice)
                     {
-                        hold_targets[i] = true;
-                        if (!moved_this_solve[i])
-                            nodes[i] = moved(windows[i].frame, windows[i].anchored ? point{} :
-                                windows[i].target_offset);
-                        incomplete = true;
+                        if (movement_search_truncated && !minimum_fits_here)
+                        {
+                            hold_targets[i] = true;
+                            if (!moved_this_solve[i])
+                                nodes[i] = moved(windows[i].frame, windows[i].anchored ? point{} :
+                                    windows[i].target_offset);
+                            incomplete = true;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                while (hi - lo > 1)
-                {
-                    if (stopped(window_deadline, work_count, limits.inspection_budget)) break;
-                    double mid = std::floor((lo + hi) / 2);
-                    if (auto possible = find_move(mid))
-                    { lo = mid; choice = possible; }
-                    else hi = mid;
+                    while (hi - lo > 1)
+                    {
+                        if (stopped(window_deadline, work_count, limits.inspection_budget)) break;
+                        double mid = std::floor((lo + hi) / 2);
+                        if (auto possible = find_move(mid))
+                        { lo = mid; choice = possible; }
+                        else hi = mid;
+                    }
                 }
             }
             auto readable_diameter = [&] (double clearance) {
@@ -763,26 +876,37 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                 const point selected_offset{
                     nodes[moved_index].x + selected.delta.x - moved_window.frame.x,
                     nodes[moved_index].y + selected.delta.y - moved_window.frame.y};
-                const double endpoint = selected.branch_axis == 1 ? selected_offset.x : selected_offset.y;
-                if (std::abs(endpoint) < .01 || (endpoint < 0 ? -1 : 1) != selected.branch_sign)
-                    return;
+                const point base = selected.branch_base_offset;
+                const point active_leg{selected_offset.x - base.x, selected_offset.y - base.y};
+                const double endpoint = selected.branch_axis == 1 ? active_leg.x : active_leg.y;
+                if (std::abs(endpoint) >= .01 &&
+                    (endpoint < 0 ? -1 : 1) != selected.branch_sign) return;
                 const double limit = std::abs(endpoint);
                 const double radius = needed_radius(movement_diameter);
                 const auto owner_true = active_windows[i].frame;
-                const auto selected_owner = moved(moved_index == i ? nodes[i] : owner_true,
-                    moved_index == i ? selected.delta : point{});
+                const point owner_base = active_windows[i].branch_owner == int(i) &&
+                    active_windows[i].branch_axis ? active_windows[i].branch_base_offset :
+                    active_windows[i].incumbent_offset;
+                const auto selected_owner = moved_index == i ? moved(nodes[i], selected.delta) :
+                    moved(active_windows[i].frame, owner_base);
                 const point label_relative{selected.label_center.x -
                         (selected_owner.x + selected_owner.width / 2),
                     selected.label_center.y - (selected_owner.y + selected_owner.height / 2)};
-                auto placement_at = [&] (double amount, double *clearance_out) -> std::optional<bool> {
+                auto target_at = [&] (double base_fraction, double amount) {
+                    point target_offset{base.x * base_fraction, base.y * base_fraction};
+                    if (selected.branch_axis == 1)
+                        target_offset.x += selected.branch_sign * amount;
+                    else target_offset.y += selected.branch_sign * amount;
+                    return target_offset;
+                };
+                auto placement_at = [&] (double base_fraction, double amount,
+                    double *clearance_out) -> std::optional<bool> {
                     if (stopped(window_deadline, work_count, limits.inspection_budget))
                     { ray_search_truncated = true; return {}; }
-                    point absolute_delta{};
-                    if (selected.branch_axis == 1)
-                        absolute_delta.x = selected.branch_sign * amount;
-                    else absolute_delta.y = selected.branch_sign * amount;
-                    const auto moved_frame = moved(moved_window.frame, absolute_delta);
-                    const auto owner_frame = moved_index == i ? moved_frame : nodes[i];
+                    const point target_offset = target_at(base_fraction, amount);
+                    const auto moved_frame = moved(moved_window.frame, target_offset);
+                    const auto owner_frame = moved_index == i ? moved_frame :
+                        moved(active_windows[i].frame, owner_base);
                     point center = selected.label_center;
                     if (moved_index == i)
                     {
@@ -802,12 +926,10 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                 // A closer offset is useful only if it keeps the other visible hints
                 // already protected by the candidate. Check those labels at each ray
                 // sample too, so minimizing this way cannot steal their clearance.
-                auto preserves_labels = [&] (double amount) -> std::optional<bool> {
+                auto preserves_labels = [&] (double base_fraction, double amount) -> std::optional<bool> {
                     if (moved_index >= nodes.size()) return false;
-                    point delta{};
-                    if (selected.branch_axis == 1) delta.x = selected.branch_sign * amount;
-                    else delta.y = selected.branch_sign * amount;
-                    const auto shifted = moved(active_windows[moved_index].frame, delta);
+                    const point target_offset = target_at(base_fraction, amount);
+                    const auto shifted = moved(active_windows[moved_index].frame, target_offset);
                     const point moved_label_relative{
                         best_spots[moved_index].center.x -
                             (nodes[moved_index].x + nodes[moved_index].width / 2),
@@ -840,29 +962,70 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                     return true;
                 };
                 double endpoint_clearance = 0;
-                auto endpoint_fits = placement_at(limit, &endpoint_clearance);
+                auto endpoint_fits = placement_at(1, limit, &endpoint_clearance);
                 if (!endpoint_fits || !*endpoint_fits) return;
-                auto endpoint_preserves = preserves_labels(limit);
+                auto endpoint_preserves = preserves_labels(1, limit);
                 if (!endpoint_preserves || !*endpoint_preserves) return;
                 double zero_clearance = 0;
-                auto zero_fits = placement_at(0, &zero_clearance);
+                auto zero_fits = placement_at(1, 0, &zero_clearance);
                 if (!zero_fits) return;
                 bool zero_works = *zero_fits;
                 if (zero_works)
                 {
-                    auto zero_preserves = preserves_labels(0);
+                    auto zero_preserves = preserves_labels(1, 0);
                     if (!zero_preserves) return;
                     zero_works = *zero_preserves;
                 }
                 if (zero_works)
                 {
-                    selected.delta = {active_windows[moved_index].frame.x - nodes[moved_index].x,
-                        active_windows[moved_index].frame.y - nodes[moved_index].y};
+                    double base_low = 0, base_high = 1;
+                    double base_clearance = zero_clearance;
+                    double rest_clearance = 0;
+                    auto rest_fits = placement_at(0, 0, &rest_clearance);
+                    if (!rest_fits) return;
+                    bool rest_works = *rest_fits;
+                    if (rest_works)
+                    {
+                        auto rest_preserves = preserves_labels(0, 0);
+                        if (!rest_preserves) return;
+                        rest_works = *rest_preserves;
+                    }
+                    if (rest_works)
+                    {
+                        base_high = 0;
+                        base_clearance = rest_clearance;
+                    } else
+                    {
+                        for (int probe = 0; probe < 8 && base_high - base_low > .01; ++probe)
+                        {
+                            const double middle = (base_low + base_high) / 2;
+                            double clearance = 0;
+                            auto fits = placement_at(middle, 0, &clearance);
+                            if (!fits) return;
+                            bool works = *fits;
+                            if (works)
+                            {
+                                auto preserves = preserves_labels(middle, 0);
+                                if (!preserves) return;
+                                works = *preserves;
+                            }
+                            if (works) { base_high = middle; base_clearance = clearance; }
+                            else base_low = middle;
+                        }
+                    }
+                    const auto final_offset = target_at(base_high, 0);
+                    selected.delta = {active_windows[moved_index].frame.x + final_offset.x - nodes[moved_index].x,
+                        active_windows[moved_index].frame.y + final_offset.y - nodes[moved_index].y};
                     selected.label_center = moved_index == i ? point{
                         owner_true.x + owner_true.width / 2 + label_relative.x,
                         owner_true.y + owner_true.height / 2 + label_relative.y} : selected.label_center;
-                    selected.clearance = zero_clearance;
-                    selected.travel = 0;
+                    selected.clearance = base_clearance;
+                    selected.branch_base_offset = final_offset;
+                    selected.travel = selected.branch_match ? std::hypot(final_offset.x, final_offset.y) :
+                        std::hypot(final_offset.x - moved_window.incumbent_offset.x,
+                            final_offset.y - moved_window.incumbent_offset.y);
+                    selected.displayed_travel = std::hypot(final_offset.x - moved_window.incumbent_offset.x,
+                        final_offset.y - moved_window.incumbent_offset.y);
                     return;
                 }
                 // Zero is the failing lower bound when any part of this way is still
@@ -876,12 +1039,12 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                 {
                     const double middle = (low + high) / 2;
                     double clearance = 0;
-                    auto fits = placement_at(middle, &clearance);
+                    auto fits = placement_at(1, middle, &clearance);
                     if (!fits) return; // the already checked endpoint remains the safe result
                     bool works = *fits;
                     if (works)
                     {
-                        auto preserves = preserves_labels(middle);
+                        auto preserves = preserves_labels(1, middle);
                         if (!preserves) return;
                         works = *preserves;
                     }
@@ -889,13 +1052,10 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                     { high = middle; high_clearance = clearance; }
                     else low = middle;
                 }
-                point delta{};
-                if (selected.branch_axis == 1) delta.x = selected.branch_sign * high;
-                else delta.y = selected.branch_sign * high;
-                selected.delta = {active_windows[moved_index].frame.x + delta.x - nodes[moved_index].x,
-                    active_windows[moved_index].frame.y + delta.y - nodes[moved_index].y};
+                const point final_offset = target_at(1, high);
+                selected.delta = {active_windows[moved_index].frame.x + final_offset.x - nodes[moved_index].x,
+                    active_windows[moved_index].frame.y + final_offset.y - nodes[moved_index].y};
                 selected.clearance = high_clearance;
-                const point final_offset{delta.x, delta.y};
                 selected.travel = selected.branch_match ? std::hypot(final_offset.x, final_offset.y) :
                     std::hypot(final_offset.x - moved_window.incumbent_offset.x,
                         final_offset.y - moved_window.incumbent_offset.y);
@@ -915,7 +1075,8 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
                 }
             }
             const bool candidate_fits_wanted = choice->clearance + .25 >= needed_radius(wanted);
-            if (movement_search_truncated)
+            if (movement_search_truncated && (!choice ||
+                choice->clearance + .25 < needed_radius(active_windows[i].minimum)))
             {
                 if (!incumbent_fits_minimum)
                 {
@@ -929,35 +1090,18 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             }
             // A wanted-size improvement is opportunistic: it may move at most one badge
             // radius and is deferred while the user is moving a window or coasting.
-            if (incumbent_fits_minimum && candidate_fits_wanted &&
-                (!limits.allow_size_upgrades || choice->displayed_travel > std::max(12.0, wanted * .2)))
+            if (incumbent_fits_minimum && limits.allow_size_upgrades &&
+                choice->displayed_travel > std::max(12.0, wanted * .2))
                 continue;
             if (incumbent_fits_minimum && !candidate_fits_wanted &&
                 readable_diameter(choice->clearance) < readable_diameter(spot.clearance) + 12)
                 continue;
-            if (choice->travel < .01)
+            if (std::hypot(choice->delta.x, choice->delta.y) < .01)
             {
                 if (choice->moved_index == i)
                 {
                     best_spots[i] = {choice->label_center, choice->clearance};
                     has_spot[i] = true;
-                }
-                const auto moved_index = choice->moved_index;
-                const auto& true_frame = active_windows[moved_index].frame;
-                const bool returned_to_true_frame =
-                    std::hypot(nodes[moved_index].x - true_frame.x,
-                        nodes[moved_index].y - true_frame.y) > .01;
-                if (returned_to_true_frame)
-                {
-                    // A later hint in this same solve may release a foreground
-                    // concession made for an earlier one. Apply the zero-ray result
-                    // to the working layout too; otherwise the final output would keep
-                    // the temporary pass-local move even though the chosen minimum is 0.
-                    nodes[moved_index] = true_frame;
-                    active_windows[moved_index].target_offset = {};
-                    moved_this_solve[moved_index] = true;
-                    if (moved_index != i) has_spot[moved_index] = false;
-                    changed = true;
                 }
                 continue;
             }
@@ -969,6 +1113,7 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             active_windows[choice->moved_index].branch_owner = int(i);
             active_windows[choice->moved_index].branch_axis = choice->branch_axis;
             active_windows[choice->moved_index].branch_sign = choice->branch_sign;
+            active_windows[choice->moved_index].branch_base_offset = choice->branch_base_offset;
             if (choice->moved_index != i && has_spot[choice->moved_index])
             {
                 best_spots[choice->moved_index].center.x += choice->delta.x;
@@ -1033,13 +1178,23 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
         double diameter = std::max(active_windows[i].minimum, std::min(wanted, available));
         point offset{nodes[i].x - active_windows[i].frame.x,
             nodes[i].y - active_windows[i].frame.y};
+        if (spot.clearance <= 0 && !moved_this_solve[i] && !active_windows[i].anchored)
+        {
+            // No legal patch was found in this zone on this layout. Keep the last
+            // checked visual position for this frame and show the minimum hint there;
+            // falling back to zero would make a retained way snap across the window.
+            offset = active_windows[i].target_offset;
+            spot.center = {active_windows[i].frame.x + active_windows[i].frame.width / 2 + offset.x,
+                active_windows[i].frame.y + active_windows[i].frame.height / 2 + offset.y};
+        }
         int owner = active_windows[i].branch_owner;
         // Keep the selected way dormant at zero. It has no geometric effect, but if
         // the same obstruction returns during a drag it resumes on that way instead
         // of counting as a new, potentially discontinuous choice.
         result.push_back({offset, spot, diameter, owner,
             owner < 0 ? 0 : active_windows[i].branch_axis,
-            owner < 0 ? 0 : active_windows[i].branch_sign});
+            owner < 0 ? 0 : active_windows[i].branch_sign,
+            -1, active_windows[i].branch_base_offset});
         result.back().retained_clearance = retained_clearances[i];
     }
     for (size_t i = 0; i < result.size(); ++i)
@@ -1052,6 +1207,259 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
     // that ran out of time does not: the checked minimum placement is complete.
     if (deadline_hit) *deadline_hit = incomplete;
     return result;
+}
+
+bool expose_window_hints_progressively(const std::vector<exposure_window>& windows,
+    rectangle screen, const std::vector<rectangle>& fixed, exposure_progress& progress,
+    std::chrono::steady_clock::time_point deadline, bool *deadline_hit,
+    exposure_profile *profile, exposure_limits limits)
+{
+    if (deadline_hit) *deadline_hit = false;
+    if (progress.results.size() != windows.size() || progress.has_result.size() != windows.size() ||
+        progress.complete.size() != windows.size() || progress.attempts.size() != windows.size())
+    {
+        progress = {};
+        progress.results.resize(windows.size());
+        progress.has_result.resize(windows.size(), false);
+        progress.complete.resize(windows.size(), false);
+        progress.attempts.resize(windows.size(), 0);
+    }
+    if (profile) *profile = {};
+    auto all_complete = [&] {
+        return std::all_of(progress.complete.begin(), progress.complete.end(), [] (bool value) { return value; });
+    };
+    auto has_active_way = [&] {
+        for (size_t i = 0; i < progress.results.size(); ++i)
+            if (progress.has_result[i] && progress.results[i].branch_axis &&
+                std::hypot(progress.results[i].offset.x, progress.results[i].offset.y) > .01)
+                return true;
+        return false;
+    };
+    auto recheck_from_rest = [&] {
+        progress.way_recheck_pending = false;
+        progress.way_recheck_done = true; // one bounded reconsideration per settled layout
+        ++progress.way_recheck_attempts;
+        auto fresh_windows = windows;
+        for (auto& window : fresh_windows)
+        {
+            window.incumbent_offset = {};
+            window.target_offset = {};
+            window.prior_label_offset = {};
+            window.prior_clearance = 0;
+            window.branch_owner = -1;
+            window.branch_axis = window.branch_sign = 0;
+            window.branch_base_offset = {};
+        }
+        exposure_profile fresh_profile;
+        size_t work = 0;
+        auto fresh_limits = limits;
+        fresh_limits.inspection_count = &work;
+        bool truncated = false;
+        auto fresh = expose_window_hints(fresh_windows, screen, fixed, deadline,
+            &truncated, &fresh_profile, fresh_limits);
+        if (profile) *profile = fresh_profile;
+        if (fresh.size() != windows.size() || truncated)
+        {
+            ++progress.way_recheck_rejections;
+            if (deadline_hit) *deadline_hit = true;
+            if (limits.inspection_count) *limits.inspection_count = work;
+            return true;
+        }
+
+        auto proposal = progress.results;
+        std::vector<std::pair<double, size_t>> replacements;
+        for (size_t i = 0; i < fresh.size(); ++i)
+        {
+            const double minimum_clearance = needed_radius(windows[i].minimum);
+            const bool old_visible = progress.has_result[i] &&
+                progress.results[i].spot.clearance + .25 >= minimum_clearance;
+            const bool fresh_visible = fresh[i].spot.clearance + .25 >= minimum_clearance;
+            if (!fresh_visible) continue;
+            if (!old_visible)
+            {
+                replacements.emplace_back(std::numeric_limits<double>::infinity(), i);
+                continue;
+            }
+            const double old_travel = std::hypot(progress.results[i].offset.x,
+                progress.results[i].offset.y);
+            const double fresh_travel = std::hypot(fresh[i].offset.x, fresh[i].offset.y);
+            const double improvement = old_travel - fresh_travel;
+            // A calm way change at rest must save at least one badge and halve
+            // that window's remaining displacement. Similar alternatives keep the
+            // existing direction, avoiding a gratuitous flip on an equal-cost tie.
+            if (improvement + .01 >= std::max(windows[i].minimum, old_travel * .5))
+                replacements.emplace_back(improvement, i);
+        }
+        std::sort(replacements.begin(), replacements.end(), std::greater<>());
+        bool adopted = false;
+        for (const auto& [improvement, index] : replacements)
+        {
+            (void)improvement;
+            auto candidate = proposal;
+            candidate[index] = fresh[index];
+            bool proposal_valid = true;
+            for (size_t i = 0; i < candidate.size(); ++i)
+            {
+                if (candidate[i].spot.clearance + .25 < needed_radius(windows[i].minimum))
+                    continue; // preserve an isolated P1 no-room result
+                if (expired(deadline) || work >= limits.inspection_budget)
+                { proposal_valid = false; break; }
+                std::vector<rectangle> foreground = fixed;
+                foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
+                    windows[i].fixed_foreground.end());
+                for (size_t j = 0; j < i; ++j)
+                    foreground.push_back(moved(windows[j].frame, candidate[j].offset));
+                const auto frame = moved(windows[i].frame, candidate[i].offset);
+                auto clearance = checked_clearance(candidate[i].spot.center, frame, screen,
+                    foreground, deadline, work, limits.inspection_budget);
+                if (!clearance || *clearance + .25 < needed_radius(windows[i].minimum))
+                { proposal_valid = false; break; }
+                candidate[i].spot.clearance = *clearance;
+            }
+            if (proposal_valid)
+            { proposal = std::move(candidate); adopted = true; }
+            else ++progress.way_recheck_rejections;
+        }
+        if (!adopted)
+        {
+            // Some necessary route changes are only valid as a group: changing one
+            // window at a time can temporarily steal another's patch. Accept the
+            // fresh global solution only when every previously visible window still
+            // has a patch, no window's travel grows, and the whole layout saves at
+            // least one minimum badge of movement. Easing handles the resulting glide.
+            double old_total = 0, fresh_total = 0, minimum_badge = 0;
+            bool no_growth = true;
+            for (size_t i = 0; i < fresh.size(); ++i)
+            {
+                const double required = needed_radius(windows[i].minimum);
+                const bool old_visible = progress.has_result[i] &&
+                    progress.results[i].spot.clearance + .25 >= required;
+                const bool fresh_visible = fresh[i].spot.clearance + .25 >= required;
+                if (!old_visible || !fresh_visible) { no_growth = false; break; }
+                const double old_travel = std::hypot(progress.results[i].offset.x,
+                    progress.results[i].offset.y);
+                const double fresh_travel = std::hypot(fresh[i].offset.x, fresh[i].offset.y);
+                if (fresh_travel > old_travel + .01) { no_growth = false; break; }
+                old_total += old_travel;
+                fresh_total += fresh_travel;
+                minimum_badge = std::max(minimum_badge, windows[i].minimum);
+            }
+            if (no_growth && old_total - fresh_total >= minimum_badge)
+            {
+                proposal = fresh;
+                adopted = true;
+            }
+        }
+        if (!adopted && replacements.empty()) ++progress.way_recheck_rejections;
+        if (adopted) ++progress.way_recheck_adoptions;
+        progress.results = std::move(proposal);
+        if (profile) profile->work_count = work;
+        if (limits.inspection_count) *limits.inspection_count = work;
+        return true;
+    };
+    if (all_complete())
+    {
+        progress.next_window = windows.size();
+        if (limits.reconsider_ways_when_idle && !progress.way_recheck_done && has_active_way())
+        {
+            if (progress.way_recheck_pending) return recheck_from_rest();
+            progress.way_recheck_pending = true;
+            return false;
+        }
+        if (limits.inspection_count) *limits.inspection_count = 0;
+        return true;
+    }
+    // Carry every validated result into the next slice, but re-run the shared
+    // layout solve over the full stack. A per-window slice that treats all prior
+    // results as immovable foreground can strand a rear window even when moving a
+    // checked foreground window a little would expose its minimum patch.
+    auto working = windows;
+    for (size_t i = 0; i < working.size(); ++i)
+    {
+        if (!progress.has_result[i]) continue;
+        auto& current = working[i];
+        const auto& previous = progress.results[i];
+        current.target_offset = previous.offset;
+        current.branch_owner = previous.branch_owner;
+        current.branch_axis = previous.branch_axis;
+        current.branch_sign = previous.branch_sign;
+        current.branch_base_offset = previous.branch_base_offset;
+        current.prior_label_offset = {
+            previous.spot.center.x - current.frame.x - current.frame.width / 2 - previous.offset.x,
+            previous.spot.center.y - current.frame.y - current.frame.height / 2 - previous.offset.y};
+        current.prior_clearance = previous.spot.clearance;
+    }
+
+    bool truncated = false;
+    auto results = expose_window_hints(working, screen, fixed, deadline,
+        &truncated, profile, limits);
+    if (results.size() != windows.size())
+    {
+        if (deadline_hit) *deadline_hit = true;
+        return false;
+    }
+
+    progress.next_window = windows.size();
+    for (size_t i = 0; i < results.size(); ++i)
+    {
+        const auto& current = working[i];
+        const auto& value = results[i];
+        const bool minimum_visible = value.spot.clearance + .25 >=
+            needed_radius(current.minimum);
+        auto better_fallback = [&] (const exposure_result& candidate,
+            const exposure_result& incumbent) {
+            if (candidate.spot.clearance > incumbent.spot.clearance + .01) return true;
+            if (incumbent.spot.clearance > candidate.spot.clearance + .01) return false;
+            const double candidate_travel = std::hypot(
+                candidate.offset.x - windows[i].incumbent_offset.x,
+                candidate.offset.y - windows[i].incumbent_offset.y);
+            const double incumbent_travel = std::hypot(
+                incumbent.offset.x - windows[i].incumbent_offset.x,
+                incumbent.offset.y - windows[i].incumbent_offset.y);
+            return candidate_travel < incumbent_travel - .01;
+        };
+        if (minimum_visible)
+        {
+            progress.results[i] = value;
+            progress.has_result[i] = true;
+            progress.complete[i] = true;
+            continue;
+        }
+        if (progress.complete[i]) continue; // retain its last validated/no-room result
+        if (!progress.has_result[i] || better_fallback(value, progress.results[i]))
+        {
+            progress.results[i] = value;
+            progress.has_result[i] = true;
+        }
+        if (truncated && progress.attempts[i] + 1 < avoidance_attempts_per_window)
+        {
+            ++progress.attempts[i];
+            progress.complete[i] = false;
+            progress.next_window = std::min(progress.next_window, i);
+            continue;
+        }
+        // The only non-visible completion is a fully searched no-room case. This
+        // is the isolated P1/P12 policy seam: the default preserves the zone; when
+        // Mike chooses P12, the caller enables the minimum overshoot path above.
+        progress.complete[i] = true;
+        ++progress.fallback_count;
+    }
+    for (size_t i = 0; i < progress.complete.size(); ++i)
+    {
+        if (!progress.complete[i])
+        {
+            progress.next_window = std::min(progress.next_window, i);
+        }
+    }
+    if (deadline_hit) *deadline_hit = truncated;
+    const bool complete = progress.next_window >= windows.size();
+    if (complete && limits.reconsider_ways_when_idle && !progress.way_recheck_done &&
+        has_active_way())
+    {
+        progress.way_recheck_pending = true;
+        return false;
+    }
+    return complete;
 }
 
 std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds, double gap,

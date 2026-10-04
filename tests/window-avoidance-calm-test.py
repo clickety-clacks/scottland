@@ -86,6 +86,7 @@ def take_sample(phase, step):
               "solve_count": state.get("avoidance_solve_count"),
               "solve_ms": state.get("avoidance_solve_ms"),
               "solve_max_ms": state.get("avoidance_solve_max_ms"),
+              "easing_max_speed": state.get("avoidance_max_easing_speed_px_s"),
               "search_ms": state.get("avoidance_search_ms"),
               "search_max_ms": state.get("avoidance_search_max_ms"),
               "work_count": state.get("avoidance_work_count"),
@@ -94,6 +95,15 @@ def take_sample(phase, step):
               "movement_searches": state.get("avoidance_movement_searches"),
               "truncated_searches": state.get("avoidance_truncated_searches"),
               "solve_deadlines": state.get("avoidance_solve_deadline_count"),
+              "solve_pending": state.get("avoidance_solve_pending"),
+              "progress_attempts": state.get("avoidance_progress_attempts"),
+              "progress_windows": state.get("avoidance_progress_windows"),
+              "fallback_count": state.get("avoidance_fallback_count"),
+              "way_recheck_pending": state.get("avoidance_way_recheck_pending"),
+              "way_recheck_done": state.get("avoidance_way_recheck_done"),
+              "way_recheck_attempts": state.get("avoidance_way_recheck_attempts"),
+              "way_recheck_adoptions": state.get("avoidance_way_recheck_adoptions"),
+              "way_recheck_rejections": state.get("avoidance_way_recheck_rejections"),
               "minimum_hint_size": float(state.get("minimum_window_hint_size", 48)),
               "size_upgrades_enabled": state.get("size_upgrades_enabled"),
               "input_dragging": input_state.get("dragging"),
@@ -119,8 +129,15 @@ def take_sample(phase, step):
             "target_offset": [float(row["target_dx"]), float(row["target_dy"])],
             "branch": [int(row.get("branch_owner", 0)), int(row.get("branch_axis", 0)),
                        int(row.get("branch_sign", 0))],
+            "branch_base": [float(row.get("branch_base_dx", 0)),
+                            float(row.get("branch_base_dy", 0))],
             "label_offset": [float(row.get("label_dx", 0)), float(row.get("label_dy", 0))],
             "clearance": float(row.get("clearance", 0)),
+            "surface_patch_size": float(row.get("surface_patch_size", 0)),
+            "minimum_patch_visible": bool(row.get("minimum_patch_visible", False)),
+            "hint_visible": bool(row.get("visible", False)),
+            "hint_rendered": bool(row.get("rendered", False)),
+            "hint_size": float((row.get("circle") or {}).get("size", 0)),
             "incumbent_clearance": float(row.get("incumbent_clearance", -1)),
             "minimum_size": float(state.get("minimum_window_hint_size", 48)),
         }
@@ -177,7 +194,7 @@ def target_metrics(phase):
             required_clearance = minimum * 1.06 / 2 + 1
             incumbent_fits = float(next_row.get("incumbent_clearance", -1)) + .25 >= required_clearance
             returns_to_zero = math.hypot(*after) <= .1 and \
-                float(next_row.get("clearance", 0)) + .25 >= required_clearance
+                float(next_row.get("clearance", 0)) + .25 >= required_clearance + 4
             if opened_new_way and incumbent_fits:
                 unjustified += 1
             if change > 4 and not opened_new_way and not returns_to_zero and incumbent_fits:
@@ -246,10 +263,14 @@ try:
     # over the displayed frame as focus anchors it and the drag takes ownership.
     displaced = [row for identifier, row in samples[-1]["windows"].items()
                  if int(identifier) != dragged_id and row["title"] != titles[0]
-                 and math.hypot(*row["target_offset"]) > 20 and row["drawn_frame"]]
+                 and abs(row["target_offset"][1]) > 20 and row["drawn_frame"]]
     grab_stays_put = False
+    grab_drop_stays_put = False
+    grab_drop_drift = math.inf
+    grabbed_title = None
     if displaced:
         grabbed = max(displaced, key=lambda row: math.hypot(*row["target_offset"]))
+        grabbed_title = grabbed["title"]
         frame = grabbed["drawn_frame"]
         grab_x = round(frame["x"] + frame["width"] / 2)
         grab_y = round(frame["y"] + frame["height"] / 2)
@@ -269,7 +290,7 @@ try:
         check("grabbing an already-shifted window keeps its drawn frame under the pointer",
               press_delta <= 5 and samples[-1]["input_dragging"],
               f"press displacement {press_delta:.2f}px; active {samples[-1]['input_dragging']}")
-        ipc("stipc/move_cursor", {"x": grab_x + 1, "y": grab_y})
+        ipc("stipc/move_cursor", {"x": grab_x, "y": grab_y + 1})
         time.sleep(.03)
         take_sample("grab-shifted", 1)
         moved_row = next((row for row in samples[-1]["windows"].values()
@@ -278,15 +299,42 @@ try:
         if moved_frame:
             actual = [moved_frame["x"] + moved_frame["width"] / 2,
                       moved_frame["y"] + moved_frame["height"] / 2]
-            original = [frame["x"] + frame["width"] / 2 + 1,
-                        frame["y"] + frame["height"] / 2]
+            original = [frame["x"] + frame["width"] / 2,
+                        frame["y"] + frame["height"] / 2 + 1]
             grab_stays_put = math.dist(actual, original) <= 6 and samples[-1]["input_dragging"]
         check("first 1 px move after grab preserves the pointer anchor",
               grab_stays_put,
               f"frame {moved_frame}; active {samples[-1]['input_dragging']}")
+        release_frame = moved_frame
         ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
         t.key("LEFTMETA", False)
-        time.sleep(.2)
+        time.sleep(.08)
+        take_sample("grab-shifted-drop", 0)
+        released_row = next((row for row in samples[-1]["windows"].values()
+                             if row["title"] == grabbed_title), None)
+        released_frame = released_row["drawn_frame"] if released_row else None
+        if release_frame and released_frame:
+            grab_drop_drift = math.dist(
+                [release_frame["x"] + release_frame["width"] / 2,
+                 release_frame["y"] + release_frame["height"] / 2],
+                [released_frame["x"] + released_frame["width"] / 2,
+                 released_frame["y"] + released_frame["height"] / 2])
+        time.sleep(.35)
+        take_sample("grab-shifted-drop-settled", 0)
+        settled_row = next((row for row in samples[-1]["windows"].values()
+                            if row["title"] == grabbed_title), None)
+        settled_frame = settled_row["drawn_frame"] if settled_row else None
+        settled_drift = math.inf
+        if released_frame and settled_frame:
+            settled_drift = math.dist(
+                [released_frame["x"] + released_frame["width"] / 2,
+                 released_frame["y"] + released_frame["height"] / 2],
+                [settled_frame["x"] + settled_frame["width"] / 2,
+                 settled_frame["y"] + settled_frame["height"] / 2])
+        grab_drop_stays_put = grab_drop_drift <= 8 and settled_drift <= 8
+        check("dropping a shifted window preserves its position without an old-offset glide",
+              grab_drop_stays_put,
+              f"release displacement {grab_drop_drift:.2f}px; settle displacement {settled_drift:.2f}px")
         ipc("window-rules/focus-view", {"id": dragged_id})
         wait_for_offset()
         before = take_sample("settled-before", 1)
@@ -338,23 +386,29 @@ try:
     max_replacement_jump = max(replacement_jumps.values(), default=0)
     max_display_speed = max(displayed_speeds.values(), default=0)
     max_unbranched_jump = max(unbranched_jumps.values(), default=0)
+    one_hint_step_limit = max((float(row["minimum_size"]) + 8
+        for sample in samples if sample["phase"] == "drag"
+        for row in sample["windows"].values()), default=56)
     max_solve_ms = max((float(sample.get("search_ms") or 0) for sample in samples
                         if sample["phase"] == "drag"), default=0)
     max_work = max((int(sample.get("work_count") or 0) for sample in samples
                     if sample["phase"] == "drag"), default=0)
-    check("one-pixel drag changes targets only when the incumbent stops working or zero fits",
-          max_unbranched_jump <= 4 and max_required_jump <= 64 and
-          max_replacement_jump <= 220 and max_jump <= 220 and
+    check("one-pixel drag changes targets calmly and bounds a necessary move to one hint step",
+          max_unbranched_jump <= 4 and max_required_jump <= one_hint_step_limit and
+          max_replacement_jump <= 64 and max_jump <= one_hint_step_limit and
           max(unjustified.values(), default=0) == 0,
-          f"largest target change {max_jump:.2f}px including new ways; "
+          f"largest target change {max_jump:.2f}px; allowed necessary step "
+          f"{one_hint_step_limit:.2f}px; "
           f"same-way valid-incumbent max {max_unbranched_jump:.2f}px; "
           f"same-way required max {max_required_jump:.2f}px; "
           f"replacement-way max {max_replacement_jump:.2f}px; "
           f"unjustified {unjustified}; "
           f"per-window {unbranched_jumps}")
     check("displayed window offsets still ease toward a newly needed target",
-          max_display_speed <= 1200,
-          f"max displayed-offset speed {max_display_speed:.1f}px/s; per-window {displayed_speeds}")
+          max((float(sample.get("easing_max_speed") or 0) for sample in samples), default=0) <= 1000.1,
+          f"sampled max {max_display_speed:.1f}px/s; compositor step max "
+          f"{max((float(sample.get('easing_max_speed') or 0) for sample in samples), default=0):.1f}px/s; "
+          f"per-window {displayed_speeds}")
     check("live avoidance search stays within the 2 ms budget plus scheduler margin",
           max_solve_ms <= 2.5,
           f"max search {max_solve_ms:.3f}ms; max deterministic work count {max_work}")
@@ -437,72 +491,97 @@ try:
     subprocess.run(["grim", str(artifacts / "after-one-pixel-drag.png")],
                    check=True, timeout=8)
     time.sleep(1.2)
-    # The initial large-window cluster is intentionally impossible to park fully clear
-    # on this 1280x720 output. Keep the real drag stress above, then spread the disposable
-    # fixtures into a non-overlap grid so the second real move tests that old visual
-    # offsets return to zero when their obstruction is gone.
-    slot_rects = [
-        {"x": 32, "y": 32, "width": 320, "height": 240},
-        {"x": 432, "y": 32, "width": 320, "height": 240},
-        {"x": 832, "y": 32, "width": 320, "height": 240},
-        {"x": 32, "y": 432, "width": 320, "height": 240},
-        {"x": 432, "y": 432, "width": 320, "height": 240},
-    ]
-    for identifier, slot in zip(ids.values(), slot_rects):
-        ipc("window-rules/configure-view", {"id": identifier, "geometry": slot})
-    time.sleep(.45)
-    # Park the dragged surface in the empty lower-right corner with real pointer input.
+    # Keep the four-window pile intact. Move only the front obstruction to the top
+    # edge with stipc, leaving a narrow visible strip above the pile without entering
+    # a side rail (WG22 would widgetize a rail drop).
     parked_source = t.app(titles[-1])["frame"]
-    grab_x, grab_y = round(parked_source["x"] + 10), round(parked_source["y"] + 10)
+    grab_x = round(parked_source["x"] + parked_source["width"] / 2)
+    grab_y = round(parked_source["y"] + parked_source["height"] - 6)
     t.move(grab_x, grab_y)
     time.sleep(.05)
     t.key("LEFTMETA", True)
     ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
     time.sleep(.08)
-    park_cursor_x = round(output["x"] + output["width"] - 15)
-    park_cursor_y = round(output["y"] + output["height"] - 15)
-    ipc("stipc/move_cursor", {"x": park_cursor_x, "y": park_cursor_y})
-    time.sleep(.25)
+    park_cursor_y = round(output["y"] + 8)
+    for step in range(1, 61):
+        y = round(grab_y + (park_cursor_y - grab_y) * step / 60)
+        ipc("stipc/move_cursor", {"x": grab_x, "y": y})
+        time.sleep(.008)
+        if step in (20, 40, 60):
+            take_sample("park-drag", step)
     ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
     t.key("LEFTMETA", False)
-    time.sleep(.5)
+    time.sleep(.4)
     parked_geometry = views().get(dragged_id, {}).get("geometry")
-    parked_state = take_sample("parked", 0)
-    other_geometry = [row["geometry"] for identifier, row in views().items()
-                      if identifier != dragged_id and row.get("title", "").startswith("avoidance-calm-")]
-    outside_cluster = parked_geometry is not None and all(
-        parked_geometry["x"] >= other["x"] + other["width"] or
-        other["x"] >= parked_geometry["x"] + parked_geometry["width"] or
-        parked_geometry["y"] >= other["y"] + other["height"] or
-        other["y"] >= parked_geometry["y"] + parked_geometry["height"]
-        for other in other_geometry)
-    check("a second real drag parks the old obstruction outside the separated windows",
-          outside_cluster and not samples[-1]["input_dragging"],
-          f"parked frame {parked_geometry}; input settled {not samples[-1]['input_dragging']}")
-    subprocess.run(["grim", str(artifacts / "window-parked-outside-cluster.png")],
+    take_sample("parked", 0)
+    time.sleep(.8)
+    take_sample("parked-settled", 0)
+    settled_park = samples[-1]
+    park_recheck = {key: settled_park[key] for key in (
+        "way_recheck_pending", "way_recheck_done", "way_recheck_attempts",
+        "way_recheck_adoptions", "way_recheck_rejections")}
+    check("one bounded at-rest way reconsideration settles after the drag",
+          park_recheck["way_recheck_done"] and not park_recheck["way_recheck_pending"] and
+          park_recheck["way_recheck_attempts"] == 1,
+          f"recheck state {park_recheck}")
+    remaining = [row["geometry"] for identifier, row in views().items()
+                 if identifier != dragged_id and row.get("title", "").startswith("avoidance-calm-")]
+    remain_overlapping = len(remaining) == 4 and all(
+        min(a["x"] + a["width"], b["x"] + b["width"]) > max(a["x"], b["x"]) and
+        min(a["y"] + a["height"], b["y"] + b["height"]) > max(a["y"], b["y"])
+        for index, a in enumerate(remaining) for b in remaining[index + 1:])
+    parked_entry = settled_park["windows"].get(str(dragged_id), {})
+    not_widgetized = parked_entry.get("zone") != "widget"
+    check("real drag clears the front obstruction while the other four windows stay overlapped",
+          remain_overlapping and not_widgetized and not samples[-1]["input_dragging"],
+          f"parked frame {parked_geometry}; remaining pairwise overlap={remain_overlapping}; "
+          f"zone={parked_entry.get('zone')}; drag settled={not samples[-1]['input_dragging']}")
+    after_targets = {identifier: row["target_offset"] for identifier, row in
+                     settled_park["windows"].items()}
+    subprocess.run(["grim", str(artifacts / "window-parked-above-overlap.png")],
                    check=True, timeout=8)
-    time.sleep(.8)
-    post_drop = take_sample("post-drop", 0)
-    post_drop_targets = {identifier: row["target_offset"]
-                         for identifier, row in samples[-1]["windows"].items()}
-    post_drop_order = sorted(samples[-1]["windows"],
-        key=lambda identifier: samples[-1]["windows"][identifier]["avoidance_order"])
+    held_targets = []
+    for step in range(5):
+        time.sleep(.08)
+        take_sample("parked-hold", step)
+        held_targets.append({identifier: row["target_offset"]
+                             for identifier, row in samples[-1]["windows"].items()})
+    stable_after_park = all(
+        math.dist(held_targets[step - 1][identifier], held_targets[step][identifier]) <= .1
+        for step in range(1, len(held_targets)) for identifier in held_targets[step])
+    check("the held overlapping always-avoid layout stops solving without target drift",
+          stable_after_park and not samples[-1]["solve_pending"],
+          f"stable={stable_after_park}; pending={samples[-1]['solve_pending']}; "
+          f"attempts={samples[-1]['progress_attempts']}; fallbacks={samples[-1]['fallback_count']}")
+
+    # Force a fresh solve of the unchanged true geometry. The displayed offsets
+    # first return home, then the same parked layout is solved again from rest.
+    # This catches a retained route that is stable but has grown beyond the least
+    # fresh solution after the obstruction leaves.
     cli("set", "window_avoidance_always", "false")
-    time.sleep(.8)
+    t.wait_for(lambda: json.loads(cli("get")).get("window_avoidance_always") is False)
+    t.wait_for(lambda: all(math.hypot(float(row["dx"]), float(row["dy"])) <= .5
+                           for row in ipc("scottland/hints")["hints"]), timeout=8)
     cli("set", "window_avoidance_always", "true")
-    t.wait_for(lambda: json.loads(cli("get")).get("window_avoidance_always") is True)
-    time.sleep(1.2)
-    fresh = take_sample("fresh-layout", 0)
-    fresh_targets = {identifier: row["target_offset"] for identifier, row in samples[-1]["windows"].items()}
-    fresh_order = sorted(samples[-1]["windows"],
-        key=lambda identifier: samples[-1]["windows"][identifier]["avoidance_order"])
-    same_order = post_drop_order == fresh_order
-    same_as_fresh = same_order and all(identifier in fresh_targets and
-        math.dist(offset, fresh_targets[identifier]) <= .5
-        for identifier, offset in post_drop_targets.items())
-    check("after parking the dragged window targets equal a fresh solve with no ratchet", same_as_fresh,
-          f"same stack order={same_order} post-drop order={post_drop_order}; fresh order={fresh_order}; "
-          f"post-drop {post_drop_targets}; fresh {fresh_targets}")
+    def fresh_solve_settled():
+        state = ipc("scottland/hints")
+        return (json.loads(cli("get")).get("window_avoidance_always") is True and
+                state.get("avoidance_solve_count", 0) > settled_park.get("solve_count", 0) and
+                not state.get("avoidance_solve_pending") and
+                all(math.hypot(float(row["dx"]) - float(row["target_dx"]),
+                               float(row["dy"]) - float(row["target_dy"])) <= .5
+                    for row in state["hints"]))
+    t.wait_for(fresh_solve_settled, timeout=8)
+    take_sample("fresh-layout", 0)
+    fresh_targets = {identifier: row["target_offset"] for identifier, row in
+                     samples[-1]["windows"].items()}
+    fresh_diffs = {identifier: math.dist(after_targets.get(identifier, [0, 0]), offset)
+                   for identifier, offset in fresh_targets.items()}
+    max_fresh_diff = max(fresh_diffs.values(), default=math.inf)
+    check("post-drag targets equal a fresh solve of the still-overlapped layout",
+          len(fresh_targets) == len(after_targets) and max_fresh_diff <= .5,
+          f"max delta {max_fresh_diff:.2f}px; per-window {fresh_diffs}; "
+          f"parked {after_targets}; fresh {fresh_targets}")
     print(f"trace stats: target max={max_jump:.2f}px; same-way={max_unbranched_jump:.2f}px; "
           f"required={max_required_jump:.2f}px; branch replacement={max_replacement_jump:.2f}px; "
           f"max displayed speed={max_display_speed:.1f}px/s; peak search={max_solve_ms:.3f}ms; "
@@ -530,8 +609,13 @@ try:
         "drag_branch_changes": branches,
         "drag_unjustified_target_changes": unjustified,
         "grab_keeps_displayed_frame": grab_stays_put,
-        "post_drop_targets": post_drop_targets,
+        "shifted_y_grabbed_window": grabbed_title,
+        "shifted_drop_stays_put": grab_drop_stays_put,
+        "shifted_drop_drift_px": grab_drop_drift,
+        "post_drag_targets": after_targets,
         "fresh_targets": fresh_targets,
+        "fresh_target_delta_px": fresh_diffs,
+        "park_recheck": park_recheck,
         "held_target_jumps_px": held_jumps,
         "held_side_flips": held_flips,
         "held_solve_counts": hold_counts,

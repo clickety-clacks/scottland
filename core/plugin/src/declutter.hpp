@@ -4,8 +4,20 @@
 namespace scottland::windowing
 {
 // One avoidance refresh may spend at most this much synchronous search time on the compositor
-// thread. A later layout change starts a fresh solve; unfinished search state is never resumed.
+// thread. Unfinished per-window work resumes on the next bounded tick; a true-layout change
+// discards it and starts a fresh solve.
 inline constexpr int avoidance_solve_budget_us = 2000;
+inline constexpr unsigned avoidance_attempts_per_window = 2;
+// A necessary change of way advances from the displayed incumbent in short steps.
+inline constexpr double avoidance_replacement_step_limit = 64.0;
+// Avoid a one-pixel layout change toggling a retained way on and off at its fit edge.
+inline constexpr double avoidance_way_release_margin = 4.0;
+
+// If P1's zone bound leaves no legal visible patch, this is the single policy
+// seam for Mike's pending P1/P12 decision. False preserves the user's side/zone;
+// true permits the nearest minimum-patch placement beyond that bound. Mike's
+// choice is pending, so the shipped value remains P1-preserving.
+inline constexpr bool allow_minimum_patch_zone_overshoot = false;
 
 struct hint_constraint
 {
@@ -36,6 +48,7 @@ struct exposure_window
     int branch_owner = -1; // index of the hint whose exposure this window's retained way serves
     int branch_axis = 0; // 1 = horizontal, 2 = vertical
     int branch_sign = 0;
+    point branch_base_offset = {}; // frozen first leg of a two-segment replacement way
 };
 struct exposure_result
 {
@@ -46,12 +59,29 @@ struct exposure_result
     int branch_axis = 0;
     int branch_sign = 0;
     double retained_clearance = -1; // old target's badge point after this layout change
+    point branch_base_offset = {};
+};
+struct exposure_progress
+{
+    std::vector<exposure_result> results;
+    std::vector<bool> has_result;
+    std::vector<bool> complete;
+    std::vector<unsigned> attempts;
+    size_t next_window = 0;
+    size_t fallback_count = 0;
+    bool way_recheck_pending = false;
+    bool way_recheck_done = false;
+    unsigned way_recheck_attempts = 0;
+    unsigned way_recheck_adoptions = 0;
+    unsigned way_recheck_rejections = 0;
 };
 struct exposure_limits
 {
     size_t inspection_budget = std::numeric_limits<size_t>::max();
     size_t *inspection_count = nullptr;
     bool allow_size_upgrades = true;
+    bool allow_minimum_patch_zone_overshoot = scottland::windowing::allow_minimum_patch_zone_overshoot;
+    bool reconsider_ways_when_idle = false;
 };
 struct exposure_profile
 {
@@ -73,4 +103,11 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
     bool *deadline_hit = nullptr, exposure_profile *profile = nullptr,
     exposure_limits limits = {});
+// Resume the full stack solver in bounded slices. Checked per-window results and
+// their ways persist between slices, while foreground windows remain movable if
+// a rear window needs a patch. The caller resets state on true-layout changes.
+bool expose_window_hints_progressively(const std::vector<exposure_window>& windows,
+    rectangle screen, const std::vector<rectangle>& fixed, exposure_progress& progress,
+    std::chrono::steady_clock::time_point deadline, bool *deadline_hit = nullptr,
+    exposure_profile *profile = nullptr, exposure_limits limits = {});
 }

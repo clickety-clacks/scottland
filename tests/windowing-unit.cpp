@@ -135,10 +135,15 @@ int main()
     check(near(enough[0].offset,{}) && near(enough[1].offset,{}) && enough[1].diameter == 132,
         "a rear window with an already wide enough left strip stays exactly put");
     auto narrow = expose_window_hints({{{280,160,700,440},132,48},{{200,160,700,440},132,48}},desktop);
-    check(near(narrow[0].offset,{}) && std::hypot(narrow[1].offset.x,narrow[1].offset.y) <= 26.5 &&
-        narrow[1].diameter >= 48 && narrow[1].spot.clearance + .25 >=
-            narrow[1].diameter*1.06/2,
-        "a wanted-size upgrade stays within a small travel radius and has checked clearance");
+    const double upgrade_travel_limit = std::max(12.0, 132.0 * .2);
+    const bool intermediate_upgrade = narrow[1].diameter > 48.01 && narrow[1].diameter < 131.99;
+    std::cout << "intermediate-upgrade: size=" << narrow[1].diameter << " offset="
+        << narrow[1].offset.x << ',' << narrow[1].offset.y << " travel-limit="
+        << upgrade_travel_limit << '\n';
+    check(near(narrow[0].offset,{}) && intermediate_upgrade &&
+        std::hypot(narrow[1].offset.x,narrow[1].offset.y) <= upgrade_travel_limit + .1 &&
+        narrow[1].spot.clearance + .25 >= narrow[1].diameter*1.06/2,
+        "an intermediate-size hint upgrade stays within its travel cap and has checked clearance");
     check(visible_clearance(narrow[1].spot.center,
         {200+narrow[1].offset.x,160,700,440},desktop,{{280,160,700,440}}) >=
             narrow[1].diameter*1.06/2,
@@ -353,6 +358,109 @@ int main()
     check(pile_visible && pile_shifted,
         "five overlapping large windows find a nearby minimum-hint placement");
 
+    {
+        const rectangle screen{0,0,1920,1080};
+        std::vector<exposure_window> dense;
+        for (int i = 0; i < 16; ++i)
+        {
+            exposure_window item{{513,285,894,510},72,48,{},i == 0};
+            item.center_zone = true; item.center_zone_half_width = 320;
+            dense.push_back(item);
+        }
+        exposure_progress progress;
+        exposure_limits limits; limits.allow_size_upgrades = false;
+        limits.inspection_budget = 1800;
+        size_t largest_work = 0; int solves = 0; bool done = false;
+        size_t first_slice_completed = 0;
+        while (!done && solves < int(dense.size() * avoidance_attempts_per_window + 2))
+        {
+            exposure_profile profile; size_t work = 0;
+            limits.inspection_count = &work;
+            done = expose_window_hints_progressively(dense,screen,{},progress,
+                std::chrono::steady_clock::time_point::max(),nullptr,&profile,limits);
+            largest_work = std::max(largest_work,work); ++solves;
+            if (solves == 1)
+                first_slice_completed = std::count(progress.complete.begin(), progress.complete.end(), true);
+            check(work <= limits.inspection_budget,
+                "progressive dense-layout slice respects its deterministic work budget");
+        }
+        const double required = 48 * 1.06 / 2 + 1;
+        bool all_hints_published = done && progress.complete.size() == dense.size();
+        size_t visible_patches = 0;
+        for (size_t i = 0; i < progress.results.size(); ++i)
+        {
+            const auto& result = progress.results[i];
+            all_hints_published &= progress.has_result[i] && result.diameter >= 48 &&
+                std::isfinite(result.spot.center.x) && std::isfinite(result.spot.center.y);
+            if (result.spot.clearance + .25 >= required)
+            {
+                ++visible_patches;
+                all_hints_published &= result.diameter >= 48;
+            }
+        }
+        size_t attempts = 0;
+        for (auto count : progress.attempts) attempts += count;
+        std::cout << "progressive-16: slices=" << solves << " largest-work=" << largest_work
+            << " first-slice-complete=" << first_slice_completed
+            << " attempts=" << attempts << " patches=" << visible_patches
+            << " no-room=" << progress.fallback_count << '\n';
+        check(first_slice_completed > 0 && first_slice_completed < dense.size(),
+            "a bounded dense-layout slice commits some, but not all, validated windows");
+        check(done && solves > 1 && attempts <= dense.size() * (avoidance_attempts_per_window - 1),
+            "a static 16-window layout converges across bounded retries");
+        check(all_hints_published,
+            "every dense-layout window finishes with a finite minimum-size hint placement");
+        check(visible_patches + progress.fallback_count == dense.size(),
+            "each dense-layout window ends with a checked patch or the isolated P1 no-room result");
+        exposure_profile idle_profile; size_t idle_work = 0;
+        limits.inspection_count = &idle_work;
+        done = expose_window_hints_progressively(dense,screen,{},progress,
+            std::chrono::steady_clock::time_point::max(),nullptr,&idle_profile,limits);
+        check(done && idle_work == 0 && idle_profile.work_count == 0,
+            "a converged unchanged layout does no further avoidance work");
+        std::vector<exposure_window> no_zone_room{{{210,60,1500,960},72,48,{},true},
+            {{760,340,400,400},72,48}};
+        no_zone_room[1].center_zone = true;
+        no_zone_room[1].center_zone_half_width = 0;
+        exposure_progress p1_choice;
+        exposure_limits p1_limits; p1_limits.allow_size_upgrades = false;
+        bool p1_done = expose_window_hints_progressively(no_zone_room,screen,{},p1_choice,
+            std::chrono::steady_clock::time_point::max(),nullptr,nullptr,p1_limits);
+        check(p1_done && near(p1_choice.results[1].offset,{}) &&
+            p1_choice.results[1].spot.clearance + .25 < 48 * 1.06 / 2 + 1,
+            "the isolated P1/P12 choice preserves the center zone by default");
+        exposure_progress p12_choice;
+        auto p12_limits = p1_limits;
+        p12_limits.allow_minimum_patch_zone_overshoot = true;
+        bool p12_done = expose_window_hints_progressively(no_zone_room,screen,{},p12_choice,
+            std::chrono::steady_clock::time_point::max(),nullptr,nullptr,p12_limits);
+        const double p12_required = 48 * 1.06 / 2 + 1;
+        const double p12_center_y = no_zone_room[1].frame.y + no_zone_room[1].frame.height / 2 +
+            p12_choice.results[1].offset.y;
+        const double p12_band = screen.height * .25;
+        const bool beyond_zone = std::abs(no_zone_room[1].frame.x +
+            no_zone_room[1].frame.width / 2 + p12_choice.results[1].offset.x - screen.width / 2) >
+                no_zone_room[1].center_zone_half_width + .01 ||
+            std::abs(p12_center_y - screen.height / 2) > p12_band + .01;
+        check(p12_done && beyond_zone &&
+            p12_choice.results[1].spot.clearance + .25 >= p12_required &&
+            std::hypot(p12_choice.results[1].offset.x,p12_choice.results[1].offset.y) > 0,
+            "the isolated P12 alternative crosses a zone edge only far enough to reveal a minimum patch");
+
+        auto retained_no_room = no_zone_room;
+        retained_no_room[1].center_zone_half_width = 200;
+        retained_no_room[1].incumbent_offset = {16, 0};
+        retained_no_room[1].target_offset = {16, 0};
+        exposure_progress held_no_room;
+        bool held_no_room_done = expose_window_hints_progressively(retained_no_room,screen,{},
+            held_no_room,std::chrono::steady_clock::time_point::max(),nullptr,nullptr,p1_limits);
+        check(held_no_room_done && near(held_no_room.results[1].offset,{16, 0}) &&
+            held_no_room.results[1].diameter >= 48 &&
+            std::isfinite(held_no_room.results[1].spot.center.x),
+            "when no patch fits in-zone, the minimum hint stays at the held way instead of snapping to zero");
+
+    }
+
     auto drag_sweep = [&] (size_t budget, int repeats) {
         const rectangle screen{0,0,1920,1080};
         const std::vector<rectangle> base{{100,250,700,500},{300,200,500,400},
@@ -363,28 +471,30 @@ int main()
         bool boundaries = true, visible = true, held = true, cleared_matches_fresh = true;
         bool any_shift = false;
         std::vector<std::vector<point>> settled_repeats;
+        auto frames = base;
+        std::vector<point> target(base.size()), shown(base.size()), labels(base.size());
+        std::vector<double> clearance(base.size());
+        std::vector<int> owner(base.size(), -1), axis(base.size()), direction(base.size());
+        std::vector<point> branch_base(base.size());
+        std::vector<exposure_window> seed_inputs;
+        for (size_t i = 0; i < frames.size(); ++i)
+            seed_inputs.push_back({frames[i],132,48,{},i == 0});
+        const auto seed = expose_window_hints(seed_inputs,screen);
+        for (size_t i = 0; i < seed.size(); ++i)
+        {
+            target[i] = shown[i] = seed[i].offset;
+            labels[i] = {seed[i].spot.center.x - seed[i].offset.x -
+                    (frames[i].x + frames[i].width/2),
+                seed[i].spot.center.y - seed[i].offset.y -
+                    (frames[i].y + frames[i].height/2)};
+            clearance[i] = seed[i].spot.clearance;
+            owner[i] = seed[i].branch_owner; axis[i] = seed[i].branch_axis;
+            direction[i] = seed[i].branch_sign; branch_base[i] = seed[i].branch_base_offset;
+        }
         for (int repeat = 0; repeat < repeats; ++repeat)
         {
             auto frames = base;
-            std::vector<point> target(base.size()), shown(base.size()), labels(base.size());
-            std::vector<double> clearance(base.size());
-            std::vector<int> owner(base.size(), -1), axis(base.size()), direction(base.size());
             std::vector<int> branch_switches(base.size());
-            std::vector<exposure_window> seed_inputs;
-            for (size_t i = 0; i < frames.size(); ++i)
-                seed_inputs.push_back({frames[i],132,48,{},i == 0});
-            const auto seed = expose_window_hints(seed_inputs,screen);
-            for (size_t i = 0; i < seed.size(); ++i)
-            {
-                target[i] = shown[i] = seed[i].offset;
-                labels[i] = {seed[i].spot.center.x - seed[i].offset.x -
-                        (frames[i].x + frames[i].width/2),
-                    seed[i].spot.center.y - seed[i].offset.y -
-                        (frames[i].y + frames[i].height/2)};
-                clearance[i] = seed[i].spot.clearance;
-                owner[i] = seed[i].branch_owner; axis[i] = seed[i].branch_axis;
-                direction[i] = seed[i].branch_sign;
-            }
             std::vector<point> path;
             for (int x = 100; x <= 1100; ++x) path.push_back({double(x),250});
             for (int x = 1099; x >= 100; --x) path.push_back({double(x),250});
@@ -406,6 +516,7 @@ int main()
                     input.prior_label_offset = labels[i]; input.prior_clearance = clearance[i];
                     input.branch_owner = owner[i]; input.branch_axis = axis[i];
                     input.branch_sign = direction[i];
+                    input.branch_base_offset = branch_base[i];
                     inputs.push_back(input);
                 }
                 size_t work = 0; exposure_limits limits{budget,&work,false}; bool truncated = false;
@@ -470,7 +581,7 @@ int main()
                         result[i].spot.center.y-next_target[i].y-(frames[i].y+frames[i].height/2)};
                     clearance[i] = result[i].spot.clearance;
                     owner[i] = result[i].branch_owner; axis[i] = result[i].branch_axis;
-                    direction[i] = result[i].branch_sign;
+                    direction[i] = result[i].branch_sign; branch_base[i] = result[i].branch_base_offset;
                     for (int tick = 0; tick < 2; ++tick)
                     {
                         shown[i].x += (next_target[i].x-shown[i].x)*.18;
