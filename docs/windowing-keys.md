@@ -154,7 +154,10 @@ halos meet across it, so the pair reads as one liquid unit; the padding is WP7's
 - *Avoidance after a glide* (WK13, P12): a cycle or pair glide moves only the drawn frame, so its
   end raises no geometry signal. Each finished glide now requests one avoidance solve on the
   settled frames; before this, a window the pair had just covered kept its pre-pair result (no
-  offset) until Window mode was entered again.
+  offset) until Window mode was entered again. The same cause hid a cycled window's own hint:
+  the hint refresh ticks only while something it tracks animates, a cycle's first refresh still
+  sees the window drawn at its old place, and nothing refreshed after its glide, so the hint
+  stayed where the window had been (Mike's report on `2bf738e`, 2026-10-04).
 
 **Verification (plumbus, isolated headless sessions, 2026-10-04).** Second round, after
 Fable's review, on the merge of `double-tap-fix` (`7f6c3e5`) and main:
@@ -229,6 +232,19 @@ compositor every millisecond; worst round trip per phase, two runs each:
 Medians stay below 0.1 ms. Pairing adds no measurable stall. Window mode entry stalls about
 60 ms on nacelle on main as well, so it predates this branch; it is outside this change and
 recorded here for P8.
+
+**Cycled window's hint (2026-10-04, nacelle, isolated headless sessions).** Mike reported on
+`2bf738e` that cycling a window by its hint left its hint where the window had been.
+`tests/hint-follow-test.sh` cycles the focused window center → periphery → widget → center and an
+unfocused window, with window avoidance always-on and off, at output scales 1 and 2. After each
+move it checks the badge against the window's drawing through IPC, and once with no Scottland
+IPC at all between the key and a screenshot, by finding the hint's letter color in the image
+(the focused window is anchored, so its letter must be on its true frame). On `2bf738e` it fails
+6 checks at each scale: the periphery hint stays at the old center (818,482) while the window is
+drawn at 218..706, and an unfocused window's hint never reaches it within 2 s. On this branch
+(the glide-end re-check above) all 14 checks pass at both scales, twice, and the hint is on the
+moving window 33–64 ms after the key. The fix is the re-check when a glide ends; ship7's hint
+draw-order change is not involved (the hint was in the wrong place, not the wrong order).
 
 ## Cycle rule (WK7)
 
