@@ -71,6 +71,7 @@ struct palette_t
     float unfocused_edge_tone_light = .08f;
     float unfocused_edge_tone_dark = .92f;
     float unfocused_edge_strength = 1.f;
+    float hint_tint = .07f;             // WK38 Window mode overlay strength (0 = off)
 
     glm::vec3 unfocused_edge_tone() const
     {
@@ -1629,7 +1630,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
         program.uniform1f("preserve_alpha", self->uses_alpha_shape() ? 1 : 0);
         program.uniform4f("hint_tint", !shape_only && self->hint_dye ?
-            glm::vec4{*self->hint_dye, windowing::hint_window_opacity} : glm::vec4{0});
+            glm::vec4{*self->hint_dye, palette.hint_tint} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{geometry.x, geometry.y, geometry.width, geometry.height});
         program.uniform1f("radius", std::min<float>(CORNER_RADIUS,
             std::min(geometry.width, geometry.height) / 2.0f));
@@ -1670,7 +1671,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
         program.uniform1f("preserve_alpha", self->uses_alpha_shape() ? 1 : 0);
         program.uniform4f("hint_tint", !shape_only && self->hint_dye ?
-            glm::vec4{*self->hint_dye, windowing::hint_window_opacity} : glm::vec4{0});
+            glm::vec4{*self->hint_dye, palette.hint_tint} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{r.x1, r.y1, r.width(), r.height()});
         program.uniform1f("radius", std::min<float>(radius, std::min(r.width(), r.height()) / 2.0f));
         program.uniform1f("aa", aa);
