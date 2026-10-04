@@ -2294,8 +2294,10 @@ neutral color and the goo showed the wallpaper only by refraction.
 - **Cheap while it moves.** The cached surface no longer contains the dye: the caches hold
   the surface's own light and the dye's share of the color, and the composite multiplies
   the live dye in. So the dye moves without the surface shader running. The coasting
-  ticks damage the settled liquid as at most 16 rectangles, and reuse the cached backdrop
-  like a breath does (GO19/GO21), so nothing beneath is repainted.
+  ticks damage the settled liquid as at most 16 rectangles and reuse the cached backdrop
+  like a breath does (GO19/GO21), under GO27's rule: only on the liquid itself. Where a
+  merged rectangle covers window content or open desktop, the scene beneath repaints it
+  (see [the goo release](#goo-release-integration-2026-10-04)).
 - With soak 0 or no background-layer client, nothing changes from GO21: the swirl stops
   with the drift and the dye rests.
 

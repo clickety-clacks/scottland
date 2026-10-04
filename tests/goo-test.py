@@ -429,9 +429,15 @@ try:
     key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
     check("keyboard navigation reaches the Control proximity row", abs(float(ipc("wayfire/get-config-option",
           {"option": "scottland/goo_hover_distance"})["value"])-49) < .01)
-    key("KEY_DOWN", True); key("KEY_DOWN", False); key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
+    key("KEY_DOWN", True); key("KEY_DOWN", False); time.sleep(.3)  # the selection scrolls first
+    key("KEY_RIGHT", True); key("KEY_RIGHT", False)
+    dye = None
+    for _ in range(20):
+        dye = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_dye_strength"})["value"])
+        if abs(dye-1.01) < .001: break
+        time.sleep(.1)
     check("keyboard navigation reaches the last Goo row (Dye strength)", rows[-1] == "goo_dye_strength" and
-          abs(float(ipc("wayfire/get-config-option", {"option": "scottland/goo_dye_strength"})["value"])-1.01) < .001)
+          abs(dye-1.01) < .001)
     ipc("wayfire/set-config-options", {"scottland/goo_dye_strength": 1.0})
     for name, value in {"goo_overlap_film": 4.5, "goo_hover_cloudiness": .66, "goo_hover_emissivity": .36}.items():
         result = subprocess.run([str(repo / "core/libexec/scottland-ctl"), "option", "scottland/"+name],
