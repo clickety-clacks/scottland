@@ -746,6 +746,21 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         p->layer_key[0] = p->layer_key[1] = -1;
         p->cache_fb_tex[0][0] = p->cache_fb_tex[0][1] = p->cache_fb_tex[1][0] = p->cache_fb_tex[1][1] = 0;
     }
+    // New cache storage has undefined contents (zero on some drivers, not on others). Give
+    // it the value of "no goo here", so a pixel composited before it was ever shaded draws nothing.
+    auto clear_cache = [&] (target_t &color, target_t &params)
+    {
+        GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, color.fb);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_FRAMEBUFFER, params.fb);
+        glClearColor(.5f, .5f, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        if (scissor)
+            glEnable(GL_SCISSOR_TEST);
+    };
     if (settled && p->cache_available &&
         (p->intrinsic.width != viewport[2] || p->intrinsic.height != viewport[3]))
     {
@@ -761,6 +776,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             p->cache_available = false;
             LOGE("scottland goo: surface cache unavailable; using direct draw");
         }
+        else
+            clear_cache(p->intrinsic, p->refraction);
     }
     if (settled && !p->cache_available)
     {
@@ -814,6 +831,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                 p->refraction_b.release();
                 p->layer_b_available = false;
             }
+            else
+                clear_cache(p->intrinsic_b, p->refraction_b);
         }
         int keys = requested_keys && p->layer_b_available ? key_intervals : 0;
         breath_keyframes_active = keys > 0;
