@@ -77,6 +77,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 10-03 | Rail make-room: only widgets in the way move, ripple only when needed, no retiling, visual during drag, real on drop, exact restore on cancel. | WG26 |
 | 10-04 | Rail make-room waits for a pause (hold buffer), animates every move, and applies to every way into a rail. | WG26 |
+| 10-04 | The rail is a spread: the whole rail may re-lay out when needed. "Don't touch what doesn't need touching" is a preference (least total movement), not a prohibition; overlap only when the rail is truly full. | WG26 |
 | 10-04 | Return on a focused widget always opens its window; nothing inside the widget gets it. | WG25 |
 | 10-04 | Super+M taps cycle expanded -> collapsed -> hidden; holding is momentary (hide from expanded, expand otherwise). | WG16 |
 | 10-04 | Entering Window mode temporarily expands collapsed and hidden widgets until Alt is released; hidden widgets still show attention. | WG16 |
