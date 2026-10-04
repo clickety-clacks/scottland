@@ -4,7 +4,7 @@
 
 Do not run Scottland tests, headless sessions, extra Wayfire/Quickshell instances,
 or test widget services on osanwe. Sync this checkout to its own directory on
-plumbus and run headless tests there with a unique `SCOTTLAND_HEADLESS_DIR`.
+plumbus (or nacelle, the second test host: aarch64, Asahi GPU; spread load across both) and run headless tests there with a unique `SCOTTLAND_HEADLESS_DIR`.
 Keep logs and screenshots under that checkout's `build/`, stop every session,
 and remove only paths created for the test. Do not dev-install or reload the
 shared plumbus session. This host rule supersedes the local-headless default below.
