@@ -3896,7 +3896,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (window) remember_window(window);
         if (window)
         {
-            if (hint_cycle) start_cycle_glide(window, from, from_scale, middle, 1.0);
+            // A remembered center spot just past the zone's edge keeps its own (full-looking)
+            // scale (WP8); anywhere in the center zone that is 100%.
+            if (hint_cycle) start_cycle_glide(window, from, from_scale, middle, scale_for(window));
             else start_glide(window, from.x - middle.x, from.y - middle.y);
         }
 
