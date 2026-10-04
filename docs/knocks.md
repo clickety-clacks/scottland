@@ -45,6 +45,14 @@ picture of what is trying to get the user's attention.
 - **Mapping a knock to the window representing its sender must be dependable** (declared identity,
   exact match, never a guess).
 
+## How a knock is reached on a sender (direction, Mike, 2026-10-04)
+
+The breathing border (the goo/halo in the attention color) is the direct representation of a knock,
+not a pointer to something else. The existing interaction to hang access on: hovering near a border
+makes it swell (A7; the swell is a fixed on-screen size however small the window is, so it works for
+full-size windows, scaled windows and widgets alike). A swollen border that carries a knock is where
+its message and answer UI come from.
+
 ## Open
 
 - How knocks from objects with no representation appear, and how urgency/kind changes the look.

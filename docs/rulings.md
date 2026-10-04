@@ -123,3 +123,4 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Mapping a knock to its sender's window must be dependable. |
 | 10-04 | The bigger frame is attention regimes: center, periphery, widgets, and the ether (objects not on the desktop that still exist and can be promoted). Scottland models and visualizes all of it. | P15 |
 | 10-04 | The ether is a mental place, not a spot on screen: closed things still exist and can keep running. Knocks must be reachable and actionable in every form a sender takes on the desktop: window, scaled window, widget. | docs/knocks.md |
+| 10-04 | The breathing border is the direct representation of a knock; the hover swell of a border is the interaction to reach it. | docs/knocks.md |
