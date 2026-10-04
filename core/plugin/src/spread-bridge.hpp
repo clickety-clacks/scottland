@@ -29,6 +29,9 @@
     wf::wl_timer<true> spread_tick;
     wf::json_t spread_last;  // the last delivered solve (scottland/spread-state)
     uint64_t spread_solves = 0;
+    // Test sessions only (SCOTTLAND_TEST_MODEL): stretch a solve over many event-loop turns, so a
+    // reload or an input can land while it is in flight.
+    bool spread_test_slow = false;
 
     // ------------------------------------------------------------------ snapshot
     // Everything a result depends on besides the solo window: zone settings, the output, and
@@ -127,8 +130,8 @@
         run.job = std::make_unique<scottland::spread::job_t>(std::move(snapshot));
         run.deliver = std::move(deliver);
         run.started = std::chrono::steady_clock::now();
-        run.compute_limit = compute_limit;
-        run.wall_limit = wall_limit;
+        run.compute_limit = spread_test_slow ? std::chrono::nanoseconds(0) : compute_limit;
+        run.wall_limit = spread_test_slow ? std::chrono::nanoseconds(0) : wall_limit;
         run.purpose = std::move(purpose);
         // The first slice runs now (the key press or the pause); the rest from a timer, so input
         // and frames are served between slices.
@@ -146,7 +149,7 @@
     {
         if (!spread_run) return false;
         auto& run = *spread_run;
-        bool done = run.job->step(SPREAD_SLICE);
+        bool done = run.job->step(spread_test_slow ? std::chrono::nanoseconds(1) : std::chrono::nanoseconds(SPREAD_SLICE));
         auto waited = std::chrono::steady_clock::now() - run.started;
         bool out = done || (run.compute_limit.count() && run.job->total >= run.compute_limit) ||
             (run.wall_limit.count() && waited >= run.wall_limit);
@@ -661,11 +664,14 @@
         return a;
     }
 
-    wf::ipc::method_callback spread_state = [=] (wf::json_t) -> wf::json_t
+    wf::ipc::method_callback spread_state = [=] (wf::json_t data) -> wf::json_t
     {
+        if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("slow") && data["slow"].is_bool())
+            spread_test_slow = data["slow"].as_bool();
         wf::json_t reply = wf::ipc::json_ok();
         reply["last"] = spread_last;
         reply["running"] = spread_run.has_value();
+        reply["running_slices"] = spread_run ? (int64_t)spread_run->job->slices : (int64_t)0;
         reply["solves"] = (int64_t)spread_solves;
         reply["audition"] = audition_state();
         return reply;
@@ -679,6 +685,7 @@
     void fini_spread()
     {
         ipc_repo->unregister_method("scottland/spread-state");
+        audition_end("unloading");  // refused: only the user's drop accepts (P5)
         audition_timer.disconnect();
         audition_tick.disconnect();
         for (const auto& a : audition.actors) set_drag_layout_offset(wf::toplevel_cast(view_by_id(a.id)), 0, 0, 1);

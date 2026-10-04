@@ -6629,6 +6629,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void fini() override
     {
+        fini_spread();  // first: the drop that releasing the drag causes must not accept an offer
         drag->handle_input_released();
         wf::get_core().bindings->rem_binding(&on_move);
         wf::get_core().bindings->rem_binding(&on_move_shift);
@@ -6636,7 +6637,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         installing_model = reloading;  // teardown is also part of the atomic handover
         widget_peek_tick.disconnect();
         goo.stop();
-        fini_spread();
         fini_window_keys();
         key_layers.fini();
 

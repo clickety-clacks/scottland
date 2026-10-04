@@ -355,7 +355,7 @@ try:
         key('LEFTALT', False); time.sleep(.3)
 
     # 10. The focused window's hint acts on key release (WK35, Mike 2026-10-04): a tap moves it
-    # once released; a hold never moves it (the solo hook is empty).
+    # once released; a hold solos it without first moving it (docs/spread.md).
     setup([(C, 480, 300, 640, 420), (B, 1060, 520, 420, 300), (A, 520, 140, 520, 360)], A)
     a_before, b_before, c_before = geometry(A), geometry(B), geometry(C)
     alt(True)
@@ -365,9 +365,13 @@ try:
     check(layout(A)['zone'] != 'center', 'focused tap: it takes its next zone on release', layout(A)['zone'])
     alt(False)
     setup([(C, 480, 300, 640, 420), (B, 1060, 520, 420, 300), (A, 520, 140, 520, 360)], A)
-    alt(True); press_hint(A, hold=.8); time.sleep(.6); settle([A])
-    check(geometry(A) == a_before and layout(A)['zone'] == 'center' and geometry(B) == b_before and geometry(C) == c_before,
-          'focused hold: nothing moves (WK35 solo is an empty hook)', f"{geometry(A)} {layout(A)['zone']}")
+    solves = ipc('scottland/spread-state')['solves']
+    alt(True); press_hint(A, hold=.8); time.sleep(.6); settle([A, B, C])
+    check(geometry(A) == a_before and layout(A)['zone'] == 'center',
+          'focused hold: the focused window does not move first (it is already in the center)', f"{geometry(A)} {layout(A)['zone']}")
+    state = ipc('scottland/spread-state')
+    check(state['solves'] > solves and state['last']['purpose'] == 'solo' and layout(C)['zone'] != 'center',
+          'focused hold: solos it; the other center window goes to the periphery (WK35)', f"{state['last']} {layout(C)['zone']}")
     alt(False)
 
     # 11. A 450 ms near-hold, released, then a quick press is a release-timed double-tap (WK15),
