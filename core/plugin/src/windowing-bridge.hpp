@@ -244,6 +244,42 @@
         return g.x + g.width / 2.0 < view->get_output()->get_relative_geometry().width / 2.0 ?
             Z::left_periphery : Z::right_periphery;
     }
+    // A side spot reads as lower priority than the center once its scale has visibly fallen: by 5%,
+    // or halfway to the rail's scale when the curve has less range than that (WP4, WP8).
+    double periphery_threshold(double screen_width)
+    {
+        double rail = screen_width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        double outer_scale = place_at(rail + 1, screen_width).scale;
+        return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
+    }
+    // Whether a spot at x reads as zone z, shown at `pin` if set, else at its zone scale (WP8): the
+    // center while it still looks full scale (inside the center zone, or just past its edge in the
+    // softness band), a periphery once it is visibly smaller. A pin never applies inside the center
+    // zone (tenet 4). Rails are what they are.
+    bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin, double screen_width)
+    {
+        using Z = scottland::windowing::zone;
+        auto place = place_at(x, screen_width);
+        bool center = place.zone == zone_t::center ||
+            (place.zone == zone_t::continuous && (pin ? *pin : place.scale) > periphery_threshold(screen_width));
+        if (z == Z::center) return center;
+        if (z == Z::left_periphery || z == Z::right_periphery)
+            return place.zone == zone_t::continuous && !center && ((x < screen_width / 2) == (z == Z::left_periphery));
+        return true;
+    }
+    // The zone a window counts as for its zone memories and cycles (WP8): its zone, except that a
+    // side window that still reads as full scale counts as the center, where the user sees it.
+    scottland::windowing::zone memory_zone(wayfire_toplevel_view view)
+    {
+        using Z = scottland::windowing::zone;
+        auto z = window_zone(view);
+        if (z != Z::left_periphery && z != Z::right_periphery) return z;
+        auto g = view->get_geometry();
+        auto found = model.windows.find(view->get_id());
+        auto pin = found == model.windows.end() ? std::nullopt : found->second.pinned_scale;
+        return reads_as(Z::center, g.x + g.width / 2.0, pin, view->get_output()->get_relative_geometry().width) ?
+            Z::center : z;
+    }
     wayfire_toplevel_view represented_view(uint64_t id)
     {
         auto window = wf::toplevel_cast(view_by_id(id));
@@ -318,7 +354,7 @@
         auto link = link_of_widget(view);
         uint64_t id = link ? link->window_id : view->get_id();
         if (!model.windows.count(id)) return;
-        auto z = window_zone(view);
+        auto z = memory_zone(view);
         auto g = view->get_geometry(); auto screen = view->get_output()->get_relative_geometry();
         // The pin goes with the spot (WP1): a later return to this zone restores both.
         scottland::windowing::remember_spot(ensure_window_memory(id), z, {
@@ -340,7 +376,7 @@
             }
             if (!state.placement) { ensure_window_memory(id); remember_window(view); }
             auto link = link_of_window(view);
-            entries.push_back({id, state.placement->hint_slot, window_zone(view), link && link->docked()});
+            entries.push_back({id, state.placement->hint_slot, memory_zone(view), link && link->docked()});
         }
         window_keys.hint_width = model.hint_width;
         window_keys.refresh(entries);
@@ -567,6 +603,9 @@
         auto& memory = ensure_window_memory(window->get_id());
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
+        // A memory counts only while its spot still reads as its zone (WP8).
+        if (remembered && !reads_as(z, remembered->x, scottland::windowing::remembered_pin(memory, z), screen.width))
+            remembered.reset();
         double w = g.width, h = g.height;
         if (z == Z::center)
         {
@@ -599,24 +638,37 @@
                 region.y += WIDGET_INSET; region.height = std::max(h, region.height - 2 * WIDGET_INSET);
             } else
             {
-                // An unremembered side destination must visibly leave center priority.
-                // Find the first center inside the side zone whose natural scale has
-                // fallen by 5% (or halfway to the rail scale when less is available).
-                // Remembered positions remain exact, even inside the soft edge band.
+                // An unremembered side destination must visibly leave center priority (WP4): its
+                // center past where the zone scale has visibly fallen (WP8), and its scaled
+                // footprint clear of the center zone where it fits on screen (WP7), else as far
+                // out as fits. Remembered positions remain exact (WP2).
                 if (!remembered && side.width > 0)
                 {
                     double inner = left ? side.x + side.width : side.x;
                     double outer = left ? side.x : side.x + side.width;
-                    double outer_scale = place_at(outer, screen.width).scale;
-                    double threshold = 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
-                    for (int step = 1; step <= 128; ++step)
+                    double threshold = periphery_threshold(screen.width);
+                    double center_edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
+                    double boundary = left ? center_edge : screen.width - center_edge;
+                    auto area = output->workarea->get_workarea();
+                    std::optional<double> chosen;
+                    for (int step = 0; step <= 512; ++step)
                     {
-                        double trial = inner + (outer - inner) * step / 128;
-                        if (place_at(trial, screen.width).scale > threshold) continue;
-                        if (left) side.width = trial - side.x;
+                        double trial = inner + (outer - inner) * step / 512;
+                        // A pixel inward too, so rounding the landing can't bring it back.
+                        double inward = trial + (left ? 1 : -1);
+                        double scale = place_at(trial, screen.width).scale;
+                        if (std::max(scale, place_at(inward, screen.width).scale) > threshold) continue;
+                        double half = g.width * scale / 2;
+                        auto pa = padded(area, g.width * scale, g.height * scale);
+                        if (left ? trial - half < pa.x : trial + half > pa.x + pa.width) continue;
+                        chosen = trial;
+                        if (left ? trial + half <= boundary : trial - half >= boundary) break;
+                    }
+                    if (chosen)
+                    {
+                        if (left) side.width = *chosen - side.x;
                         else { double right = side.x + side.width;
-                            side.x = trial; side.width = right - trial; }
-                        break;
+                            side.x = *chosen; side.width = right - *chosen; }
                     }
                 }
                 // Re-evaluate the rectangle footprint as its natural zone scale
@@ -691,26 +743,31 @@
         // frame, then its existing widget handoff stops the glide itself.
         if (!rail) stop_glide(window);
         // Explicit zone cycling follows the zone, including center at 100%, unless the user pinned
-        // a scale at this zone's remembered spot (WP1/WP5). A spot that zone settings have since
-        // put inside the center zone is full scale (tenet 4).
-        double screen_width = window->get_output()->get_relative_geometry().width;
-        auto pin = scottland::windowing::remembered_pin(ensure_window_memory(id), z);
-        if (pin && place_at(at.x, screen_width).zone == zone_t::center) pin.reset();
+        // a scale at this zone's remembered spot (WP1/WP5). The pin comes back only with that spot,
+        // and only while it still reads as its zone (WP8; inside the center zone, never: tenet 4).
+        auto screen = window->get_output()->get_relative_geometry();
+        auto& memory = ensure_window_memory(id);
+        auto pin = scottland::windowing::remembered_pin(memory, z);
+        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z, p->x * screen.width, pin, screen.width)))
+            pin.reset();
         pin_scale(window, pin);
+        // Where its center actually lands, after pixel rounding: the drawn scale must be that
+        // spot's zone scale, or it would stay off by the rounding on a steep curve (WP5).
+        wf::pointf_t landed{std::round(at.x - real.width / 2.0) + real.width / 2.0,
+            std::round(at.y - real.height / 2.0) + real.height / 2.0};
         if (destination == D::periphery && link_of_window(window))
             restore_window(*link_of_window(window), at, true);
-        else if (!rail) move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
+        else if (!rail) move_window(window, landed.x - real.width / 2.0, landed.y - real.height / 2.0);
         if (rail)
         {
             model.windows[id].pending_rail = current;
             widgetize(window, false, left ? "left" : "right", "hint-rail");
             if (auto link = link_of_window(window)) link->drop = {at.x, at.y};
             if (!link_of_window(window)) model.windows[id].pending_rail.reset();
-            auto& memory = ensure_window_memory(id);
-            memory.last_side = left ? -1 : 1;
+            ensure_window_memory(id).last_side = left ? -1 : 1;
             publish_model();
         } else { remember_window(window); start_cycle_glide(window, from, from_scale,
-            {at.x, at.y}, destination == D::center ? 1.0 : pin ? *pin : place_at(at.x, screen_width).scale); }
+            landed, pin ? *pin : place_at(landed.x, screen.width).scale); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)

@@ -6,7 +6,7 @@ the center and back with Window-mode hints, and check the remembered position an
 scale both come back, drawn without a jump; the same without a pin; a pin made in one zone never
 reaching another; the pins surviving a reload; every hint-key path out and back (slow presses
 through the widget, a WK15 double tap to the rail); Esc; Shift+arrow pins; and a remembered spot
-that zone settings have moved into the center."""
+that zone settings have moved into the center (no longer used, WP8)."""
 import json
 import math
 import os
@@ -440,16 +440,17 @@ try:
     check(near(center(v), arrow_spot) and arrow_pin is not None and abs(v['applied_scale'] - arrow_pin) < .003,
           'and a cycle away and back restores that Shift+arrow pin', {'now': center(v), 'applied': v['applied_scale']})
 
-    # --- A remembered spot that zone settings have since put inside the center comes back at 100%.
+    # --- A remembered spot that zone settings have since put inside the center no longer counts as
+    # the periphery's (WP8): the cycle places the window in the periphery anew, with no pin.
     presses(c, 'Keys', [])   # periphery -> center; the left memory keeps the pin
     old = ipc('wayfire/get-config-option', {'option': 'scottland/center_width'})['value']
-    ipc('wayfire/set-config-options', {'scottland/center_width': 80.0}); time.sleep(.5)
+    ipc('wayfire/set-config-options', {'scottland/center_width': 60.0}); time.sleep(.5)
     presses(c, 'Keys', [])
     v = view('Keys')
-    check(near(center(v), spot) and v['zone'] == 'center' and v['applied_scale'] > .999 and
-          'pinned_scale' not in model_window(c),
-          'a remembered spot now inside the center zone returns at 100% with no pin (tenet 4)',
-          {'zone': v['zone'], 'applied': v['applied_scale']})
+    check(not near(center(v), spot) and v['zone'] == 'continuous' and 'pinned_scale' not in model_window(c) and
+          abs(v['applied_scale'] - v['scale']) < .003,
+          'a remembered spot now inside the center zone is not used: placed anew in the periphery, no pin (WP8)',
+          {'zone': v['zone'], 'spot': spot, 'now': center(v), 'applied': v['applied_scale'], 'scale': v['scale']})
     ipc('wayfire/set-config-options', {'scottland/center_width': float(old)}); time.sleep(.5)
     close_all()
 except Exception as error:

@@ -155,7 +155,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK34 (window mode: Alt-alone hold, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints)
-and WP1–WP7 (zone memory, side choice and shared rectangle placement). Statuses and verification are recorded there.
+and WP1–WP8 (zone memory, side choice, shared rectangle placement, and which zone a spot reads as). Statuses and verification are recorded there.
 
 L29 regression: `state-model-test.py` re-grabs an ordinary dropped window during the hold
 and cancels with real Esc input; the scene must return to its ordinary layer and the hold ends.
