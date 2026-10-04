@@ -114,11 +114,16 @@ struct picked_t
     double max_clear_scale = 0, max_legal_scale = 0;
 };
 
+// Outward distances closer than this are equal for "least outward, then least travel": a few
+// pixels change the scale invisibly, while travel is what the eye follows (P11: never across the
+// screen when a nearby spot works).
+constexpr double OUTWARD_TIE = HALO;
+
 bool better_clear(const spot_t& a, const spot_t& b)
 {
     if (!b.ok) return a.ok;
     if (!a.ok) return false;
-    if (std::abs(a.outward - b.outward) > 0.5) return a.outward < b.outward;
+    if (std::abs(a.outward - b.outward) > OUTWARD_TIE) return a.outward < b.outward;
     if (std::abs(a.travel - b.travel) > 1e-9) return a.travel < b.travel;
     return false;  // keep the earlier candidate: deterministic
 }
@@ -137,7 +142,7 @@ bool better_least(const spot_t& a, const spot_t& b)
     if (!b.ok) return a.ok;
     if (!a.ok) return false;
     if (std::abs(a.overlap - b.overlap) > 1e-9) return a.overlap < b.overlap;
-    if (std::abs(a.outward - b.outward) > 0.5) return a.outward < b.outward;
+    if (std::abs(a.outward - b.outward) > OUTWARD_TIE) return a.outward < b.outward;
     return a.travel < b.travel - 1e-9;
 }
 
@@ -836,7 +841,7 @@ class solver_t
             if (overlap_reason(pushed_large) && by_recency != by_size)
                 arrange(true, by_recency, "pushed, most recent first");
         }
-        if (best && best->name != "seed" && best->name != "baseline") spacing_pass();
+        if (best) spacing_pass();
     }
 
     void hard_for(size_t i, const layout_t& L, bool privileged, std::vector<box>& hard, std::vector<soft_t>& soft,

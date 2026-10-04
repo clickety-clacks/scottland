@@ -26,6 +26,7 @@ class drag_presentation_t
         uint64_t id = 0;
         double origin_x = 0, origin_y = 0;
         double dx = 0, dy = 0;
+        double scale = 1;  // factor on the actor's own scale (1: translation only)
         double target_x = 0, target_y = 0;
         bool applied = false;
     };
@@ -39,18 +40,19 @@ class drag_presentation_t
         actors.reserve(origins.size());
         for (const auto& origin : origins)
         {
-            actors.push_back({origin.id, origin.x, origin.y, 0, 0, origin.x, origin.y, false});
+            actors.push_back({origin.id, origin.x, origin.y, 0, 0, 1, origin.x, origin.y, false});
         }
         active = true;
         committing = false;
         return true;
     }
 
-    void set_offset(size_t index, double dx, double dy)
+    void set_offset(size_t index, double dx, double dy, double scale = 1)
     {
         if (!active || committing || index >= actors.size()) return;
         actors[index].dx = dx;
         actors[index].dy = dy;
+        actors[index].scale = scale;
     }
 
     void commit()

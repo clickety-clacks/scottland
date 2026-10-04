@@ -863,9 +863,6 @@
         remember_window(window);
         start_cycle_glide(window, from, from_scale, {at.x, at.y}, scale);
     }
-    // WK35 (not built yet): holding the focused window's hint will solo it. Until then the hold
-    // does nothing; its press has already acted as an ordinary tap (WK6).
-    void solo_window(uint64_t) {}
     // One clock for hint timing: presses and releases carry their input event time (WK15), and
     // holds compare it with the same monotonic clock, so a hold is timed from the physical press.
     static uint32_t key_event_time(wlr_keyboard_key_event *event)
@@ -1080,7 +1077,7 @@
                             auto& visual = hint_visuals[id];
                             windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
                                 48 * hints_palette.text_scale, fixed_above,
-                                view == focused || pair_anchored(view),
+                                view == focused || pair_anchored(view) || audition_holds(view),
                                 {double(visual.offset->translation_x),
                                     double(visual.offset->translation_y)},
                                 visual.target, visual.label_offset, visual.clearance});
