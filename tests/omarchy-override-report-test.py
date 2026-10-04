@@ -70,6 +70,7 @@ end
 o.bind("ALT + TAB", "Focus on next window", hl.dsp.window.cycle_next())
 o.bind("SUPER + 1", "Workspace 1", hl.dsp.workspace.focus({workspace = "1"}))
 o.bind("SUPER + 2", "Workspace 2", hl.dsp.workspace.focus({workspace = "2"}), {repeating = true})
+o.bind("SUPER + 3", "Workspace 3", hl.dsp.workspace.focus({workspace = "3"}))
 ''')
 
 
@@ -130,9 +131,16 @@ def main():
         fake_agent_prompt.chmod(0o755)
         hypr = home / ".config/hypr/hyprland.lua"
         hypr.parent.mkdir(parents=True)
-        hypr.write_text('''
+        plugin = home / ".config/omarchy/plugins/ask.lua"
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text('''
 hl.bind("ALT+TAB", hl.dsp.exec_cmd("ask"), {description = "Open Ask"})
 hl.bind("ALT", hl.dsp.exec_cmd("ask-hold"), {description = "Open Ask on Alt hold"})
+hl.bind("SUPER+3", hl.dsp.workspace.focus({workspace = "3"}), {description = "Workspace 3"})
+hl.bind("SUPER+K", function() end, {release = true})
+''')
+        hypr.write_text('''
+package.path = os.getenv("HOME") .. "/.config/?.lua;" .. package.path
 hl.bind("SUPER+COMMA", hl.dsp.exec_cmd("ask-settings"), {description = "Open Ask settings"})
 hl.bind("CTRL+W", hl.dsp.exec_cmd("close-tab"), {description = "Close tab"})
 hl.bind("CTRL+ALT+W", hl.dsp.exec_cmd("close-window"), {description = "Close browser window"})
@@ -147,13 +155,13 @@ hl.bind("SUPER+J", hl.dsp.window.focus({direction = "next"}), {description = "Fo
 hl.bind("SUPER+F", hl.dsp.exec_cmd("hyprctl dispatch movefocus l"))
 hl.bind("SUPER+V", hl.dsp.exec_cmd("hyprctl dispatch layoutmsg togglesplit"))
 hl.bind("SUPER+G", hl.dsp.group.toggle(), {description = "Toggle window group"})
-hl.bind("SUPER+K", hl.dsp.window.tag({tag = "work"}), {description = "Tag window"})
 hl.bind("SHIFT+F4", hl.dsp.exec_cmd("release-action"),
         {description = "Release action with modifier", release = true})
 hl.bind("SUPER+NoSuchKey", hl.dsp.exec_cmd("unsupported-key"),
         {description = "Unsupported key name"})
 hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
         {description = "Unsupported Hyprland action"})
+require("omarchy.plugins.ask")
 ''')
         env = test_env(home, hooks, launch_log, fake_bin)
         env["SCOTTLAND_AGENT_PROMPT_LOG"] = str(agent_log)
@@ -192,6 +200,28 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
             report_path = Path(env["XDG_STATE_HOME"]) / "scottland/omarchy-overrides.txt"
             seen_path = report_path.with_name("omarchy-overrides.seen")
             report = report_path.read_text() if report_path.is_file() else ""
+            live_rows = importer.parse_scan_rows(importer.run_lua_scan().stdout)
+            default_rows = importer.parse_scan_rows(importer.run_lua_scan(baseline=True).stdout)
+            plugin_identity = importer.report_identity("Super+3")
+            live_plugin_row = next(row for row in live_rows if row["identity"] == plugin_identity)
+            default_plugin_row = next(row for row in default_rows if row["identity"] == plugin_identity)
+            plugin_workspace_line = next(line for line in report.splitlines()
+                                         if "Super+3 — Was: Workspace 3." in line)
+            ask_line = next(line for line in report.splitlines()
+                            if "Alt+Tab — Was: Open Ask." in line)
+            check("O20 identifies a user-plugin binding even when its signature matches a shipped default",
+                  live_plugin_row["user_plugin"] and
+                  live_plugin_row["signature"] == default_plugin_row["signature"] and
+                  "[Your custom/changed shortcut]" in plugin_workspace_line and
+                  "[Omarchy default]" not in plugin_workspace_line,
+                  f"live={live_plugin_row}, default={default_plugin_row}, line={plugin_workspace_line}")
+            check("O20 labels Ask from the user plugin as custom and keeps its action wording neutral",
+                  "[Your custom/changed shortcut]" in ask_line and
+                  "[Omarchy default]" not in ask_line and
+                  "Was: Open Ask." in ask_line and "Omarchy Ask" not in report and
+                  "these Omarchy actions" not in report and
+                  "Was: Run an Omarchy shortcut function." not in report,
+                  report)
             check("O20 report records the displaced center-window shortcut and its reason",
                   "## Used by Scottland Window mode" in report and
                   "Alt+Tab — Was: Open Ask. Now:" in report and
@@ -207,7 +237,7 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
                                 if "Super+1 — Was: Workspace 1." in line)
             check("O20 labels an unchanged Omarchy shortcut as a default",
                   "[Omarchy default]" in default_line and
-                  "[Your custom/changed shortcut] differs from shipped defaults" in report,
+                  "[Your custom/changed shortcut] came from your settings or a user-installed plugin" in report,
                   report)
             check("O20 treats a changed shortcut option as a user change",
                   "[Your custom/changed shortcut]" in next(
@@ -216,12 +246,18 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
             configured_omarchy = os.environ["OMARCHY_PATH"]
             os.environ["OMARCHY_PATH"] = str(temp / "missing-omarchy-defaults")
             generate((str(base_source),))
-            check("O20 marks source as unverified when shipped defaults cannot be scanned",
-                  "[Source not verified]" in report_path.read_text(), report_path.read_text())
+            incomplete_report = report_path.read_text()
+            plugin_workspace_line = next(line for line in incomplete_report.splitlines()
+                                         if "Super+3 — Was: Workspace 3." in line)
+            check("O20 marks ordinary sources unverified but still recognizes user-plugin bindings",
+                  "[Source not verified]" in incomplete_report and
+                  "[Your custom/changed shortcut]" in plugin_workspace_line and
+                  "[Omarchy default]" not in plugin_workspace_line,
+                  incomplete_report)
             os.environ["OMARCHY_PATH"] = configured_omarchy
             generate((str(base_source),))
             report = report_path.read_text()
-            check("O20 report explains an Omarchy Alt-only action becoming Window mode",
+            check("O20 report explains the user-plugin Ask Alt-only action becoming Window mode",
                   "Alt — Was: Open Ask on Alt hold. Now:" in report and
                   "Holding Alt now enters Scottland's Window mode" in report and
                   "Window mode uses Alt alone to show hints and these keys to focus center windows" in report,
@@ -266,7 +302,7 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
                   report_group(report, "Scottland has no window groups") and
                   "Super+V — Was: Toggle the window split layout." in
                   report_group(report, "Scottland does its own window layout (no tiling)") and
-                  "Super+K — Was: Tag window." in report_group(report, "Unsupported in Scottland") and
+                  "Super+K — Was: Run a shortcut function." in report_group(report, "Unsupported in Scottland") and
                   "Shift+F4 — Was: Release action with modifier." in
                   report_group(report, "Unsupported in Scottland") and
                   "Super+Nosuchkey — Was: Unsupported key name." in
@@ -294,17 +330,18 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
             check("O20 prompt names the report and gives plain-language, one-group-at-a-time instructions",
                   str(report_path) in prompt and "user may not know what happened and may not be technical" in prompt and
                   "short, plain-words explanation" in prompt and
+                  "shortcuts currently set up on this computer" in prompt and
                   "Avoid jargon unless the user asks" in prompt and
                   "Explain one group at a time" in prompt,
                   prompt)
-            check("O20 prompt covers safe Scottland-only remapping and the relevant docs",
+            check("O20 prompt covers safe Scottland-only remapping and installed guidance",
                   "[Your custom/changed shortcut]" in prompt and
                   "~/.config/scottland/overrides.ini" in prompt and
                   "verify that key is free" in prompt and
                   "Never edit Hyprland or Omarchy files without the user's explicit OK" in prompt and
-                  "core/autostart.d/02-link-agent-skills" in prompt and
-                  "docs/key-layers.md" in prompt and "docs/windowing-keys.md" in prompt and
-                  "docs/widgets.md" in prompt,
+                  "/usr/share/scottland/agents/skills/scottland/SKILL.md" in prompt and
+                  "linked into your agent's skills" in prompt and
+                  "core/autostart.d/" not in prompt and "docs/" not in prompt,
                   prompt)
             generate(("--show-pending",))
             check("O20 does not reopen content already shown", prompt_count(agent_log) == 1)
@@ -412,7 +449,7 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
             install_report = Path(install_env["XDG_STATE_HOME"]) / "scottland/omarchy-overrides.txt"
             check("O20 setup generates and opens the report at install",
                   completed.returncode == 0 and install_report.is_file() and
-                  "This report lists Omarchy shortcuts and mappings" in install_report.read_text() and
+                  "This report lists shortcuts and mappings from the live Omarchy configuration" in install_report.read_text() and
                   wait_prompt_count(install_agent_log, 1) and not install_log.exists(),
                   completed.stdout + completed.stderr)
             subprocess.run([str(setup)], env=install_env, capture_output=True, text=True, timeout=10)

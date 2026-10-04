@@ -26,9 +26,9 @@ and its digest is not marked as shown, so a later install or session can retry i
 ## What it reports
 
 The report groups entries by reason. Each group has one heading and one plain-language explanation;
-each key line says what that shortcut did in Omarchy and what happens in Scottland. It includes
-feature-key conflicts, active app-specific `key_remaps` (including reservations that do not collide
-with an imported shortcut), and omissions (O4): window navigation, tiling/layout, workspace and
+each key line says what the shortcut did in the live Omarchy configuration and what happens in
+Scottland. It includes feature-key conflicts, active app-specific `key_remaps` (including
+reservations that do not collide with an imported shortcut), and omissions (O4): window navigation, tiling/layout, workspace and
 window-group shortcuts, plus any unsupported key or action. Super+W is included because it remains
 unbound so a press cannot immediately close a window (O9). Core metadata and comments provide short,
 generic reasons for Scottland features; the adapter groups them and adds the imported shortcut
@@ -36,10 +36,15 @@ description. Core contains no Omarchy-specific names (C4).
 
 Each key line also gives its source. `[Omarchy default]` means the live shortcut's key, action, and
 relevant options match Omarchy's shipped defaults. `[Your custom/changed shortcut]` means the user
-added that key or changed the action/options. The adapter compares the live Hyprland Lua scan with
+added that key or changed the action/options. Bindings loaded from the user's
+`~/.config/omarchy/plugins/` are always labeled `[Your custom/changed shortcut]`, even if their
+binding signature matches a shipped default. The adapter compares the live Hyprland Lua scan with
 the binding modules under `$OMARCHY_PATH/default/hypr` (normally
-`/usr/share/omarchy/default/hypr`). Descriptions do not determine the match. If either scan is
-unavailable, the line says `[Source not verified]`; a key with no current Omarchy shortcut is labeled
+`/usr/share/omarchy/default/hypr`) and tracks whether a live binding came from the user plugin
+directory. Descriptions do not determine the match; plugin action descriptions are reported as
+written, without presenting plugin features as Omarchy features. If the shipped-default scan is
+unavailable, ordinary shortcuts say `[Source not verified]`, while user-plugin bindings remain
+identified as custom. A key with no current Omarchy shortcut is labeled
 `[No Omarchy shortcut on this key]`, or `[Gooarchy flavoring]` for a flavoring-only entry. A standalone
 Scottland `key_remaps` entry is labeled `[Scottland app remap]` because it is an app mapping rather
 than an Omarchy shortcut.
@@ -69,9 +74,9 @@ Reason: Gooarchy uses this shortcut to open its widget controls.
   Origin: Gooarchy flavoring
 ```
 
-`Was` is the shortcut's Omarchy action; `Now` is its current Scottland or flavoring action. Keep
-group explanations short and generic. Fragments are stable text without timestamps and participate
-in the same report digest and open-once behavior. The earlier four-field form with a per-entry `Why`
+`Was` is the action recorded for that key in the live configuration; `Now` is its current Scottland
+or flavoring action. Keep group explanations short and generic. Fragments are stable text without
+timestamps and participate in the same report digest and open-once behavior. The earlier four-field form with a per-entry `Why`
 is still accepted; those entries are grouped by their `Why` text. `Origin` is optional; when omitted,
 the adapter compares the key with the live Hyprland shortcut and labels a flavoring-only key as
 `[Gooarchy flavoring]`.

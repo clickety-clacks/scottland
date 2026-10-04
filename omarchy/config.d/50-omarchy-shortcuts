@@ -74,6 +74,19 @@ local function option_signature(opts)
   return table.concat(parts, ",")
 end
 
+local function from_user_omarchy_plugin()
+  if baseline then return false end
+  local plugin_root = (os.getenv("HOME") or "") .. "/.config/omarchy/plugins/"
+  for level = 2, 16 do
+    local info = debug.getinfo(level, "S")
+    if not info then break end
+    local source = info.source or ""
+    if source:sub(1, 1) == "@" then source = source:sub(2) end
+    if source:sub(1, #plugin_root) == plugin_root then return true end
+  end
+  return false
+end
+
 local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
 
 local function dsp_proxy(path)
@@ -109,7 +122,8 @@ hl = setmetatable({
     local row = { mods, key, opts.description or "", kind, arg,
                   (opts["repeat"] or opts.repeating) and "1" or "0",
                   opts.release and "1" or "0", opts.locked and "1" or "0",
-                  opts.mouse and "1" or "0", signature, option_signature(opts) }
+                  opts.mouse and "1" or "0", signature, option_signature(opts),
+                  from_user_omarchy_plugin() and "1" or "0" }
     if not binds[id] then order[#order + 1] = id end
     binds[id] = row
     return noop
@@ -229,7 +243,7 @@ REPORT_GROUPS = {
     "super_w": ("Scottland leaves Super+W unbound",
                 "A single press should not close a window; Scottland keeps closing an explicit action."),
     "unsupported": ("Unsupported in Scottland",
-                    "Scottland has no equivalent for these Omarchy actions, so they have no shortcut here."),
+                    "Scottland has no equivalent for these actions, so they have no shortcut here."),
 }
 
 REPORT_GROUP_ORDER = {name: index for index, name in enumerate((
@@ -291,10 +305,11 @@ def report_identity(label):
 def parse_scan_rows(output):
     rows = []
     for line in output.splitlines():
-        fields = (line.split("\t") + [""] * 11)[:11]
-        mods, key, description, kind, arg, repeat, release, locked, mouse, function, options = fields
+        fields = (line.split("\t") + [""] * 12)[:12]
+        mods, key, description, kind, arg, repeat, release, locked, mouse, function, options, _plugin = fields
         rows.append({"identity": scan_identity(mods, key),
-                     "signature": (kind, arg, repeat, release, locked, mouse, function, options)})
+                     "signature": (kind, arg, repeat, release, locked, mouse, function, options),
+                     "user_plugin": fields[11] == "1"})
     return rows
 
 
@@ -302,15 +317,20 @@ def update_binding_origins(live_output, defaults_output, complete):
     global BINDING_ORIGINS, ORIGIN_SCAN_COMPLETE
     ORIGIN_SCAN_COMPLETE = complete
     BINDING_ORIGINS = {}
-    if not complete:
-        return
     default_signatures = {}
-    for row in parse_scan_rows(defaults_output):
-        default_signatures.setdefault(row["identity"], set()).add(row["signature"])
+    if complete:
+        for row in parse_scan_rows(defaults_output):
+            default_signatures.setdefault(row["identity"], set()).add(row["signature"])
     for row in parse_scan_rows(live_output):
         identity = row["identity"]
-        origin = "Omarchy default" if row["signature"] in default_signatures.get(identity, set()) \
-            else "Your custom/changed shortcut"
+        if row["user_plugin"]:
+            # A user plugin remains user-added even when its binding matches Omarchy's default.
+            origin = "Your custom/changed shortcut"
+        elif not complete:
+            continue
+        else:
+            origin = "Omarchy default" if row["signature"] in default_signatures.get(identity, set()) \
+                else "Your custom/changed shortcut"
         BINDING_ORIGINS[identity] = origin
 
 
@@ -559,7 +579,7 @@ def omarchy_action_description(description, kind, action, group):
             return generic_action[group]
         return f"Run command {action}" if action else "Run command"
     if kind == "function":
-        return "Run an Omarchy shortcut function"
+        return "Run a shortcut function"
     if kind == "lua":
         return generic_action.get(group, f"Run action {action}" if action else "Run shortcut action")
     return f"Run {kind or 'shortcut'} action"
@@ -690,10 +710,10 @@ def make_report(overrides):
         "Scottland shortcut changes",
         "===========================",
         "",
-        "This report lists Omarchy shortcuts and mappings Scottland changes or cannot use.",
+        "This report lists shortcuts and mappings from the live Omarchy configuration that Scottland changes or cannot use.",
         "It remains on disk so you can reread it later.",
-        "[Omarchy default] matches a shipped shortcut; [Your custom/changed shortcut] differs from shipped defaults.",
-        "[Source not verified] means the comparison could not be completed; other labels name non-Omarchy mappings.",
+        "[Omarchy default] matches a shipped shortcut; [Your custom/changed shortcut] came from your settings or a user-installed plugin.",
+        "[Source not verified] means the comparison could not be completed; other labels identify the shortcut or mapping source.",
         "",
     ]
     if not ordered_groups:
