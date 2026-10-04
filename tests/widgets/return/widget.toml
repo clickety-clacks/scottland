@@ -1,0 +1,4 @@
+id = "return-test"
+name = "Return test widget"
+apps = ["^scottland-test-return-(plain|text|claim)$"]
+exec = "python3 ./widget.py"

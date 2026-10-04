@@ -17,9 +17,9 @@ screen exercise and the coordinating session's rehearsed live reload remain outs
 
 | ID | Rule | Status |
 |---|---|---|
-| KL1 | A layer claims only its listed chords. Unclaimed keys use the current user bindings, including changes made while the layer is active, imported function shortcuts, release bindings, remaps, and any pre-existing blanket shortcut inhibition. | implemented |
+| KL1 | A layer claims only its listed chords. Unclaimed keys use the current user bindings, including changes made while the layer is active, imported function shortcuts, release bindings, remaps, and any pre-existing blanket shortcut inhibition. Return and keypad Enter on a focused widget are intercepted by WG25 even if claimed; claims work normally on windows. | implemented |
 | KL2 | Each mapped surface may hold one layer. Only actual keyboard focus activates it; several surfaces, even in the same process, may register independently. Registration never changes focus. | implemented |
-| KL3 | Claimed presses and releases follow Wayfire's ordinary delivery to the focused surface, with physical modifiers and client repeat intact; compositor bindings and Scottland remaps/release commands skip them. | implemented |
+| KL3 | Claimed presses and releases follow Wayfire's ordinary delivery to the focused surface, with physical modifiers and client repeat intact; compositor bindings and Scottland remaps/release commands skip them. WG25 consumes Return and keypad Enter on a focused widget before surface delivery, even when a layer claims them. | implemented |
 | KL4 | Both native toplevels and layer-shell surfaces work. A Scottland view ID selects exactly one surface; PID plus layer namespace is a convenience selector and rejects ambiguity. | implemented |
 | KL5 | A surface's unmap, close or Wayland client disconnect removes its layer. Remapping does not resurrect it. Set atomically replaces its keys; clear or an empty set removes it. A failed request preserves the previous set. | implemented |
 | KL6 | Losing focus immediately deactivates claims for new presses. A claimed held key's release finishes the existing pair even after focus loss, clear, replacement or unmap; it cannot unexpectedly fire a release shortcut below. A new claim cannot take over an already pressed unclaimed key's release. | implemented |
@@ -97,7 +97,10 @@ alt_hold.disconnect()`). This keeps a layer's Alt chord from navigating windows 
 unclaimed window mode navigation to work. While hints are active, exact claims reach the focused surface and
 unclaimed keys continue navigating. Tenet 4 decides this limited concession: registering one chord
 does not suppress the rest of window navigation. Drag and lock grabs still take precedence.
-The Alt key tracking runs for claimed presses/releases too, so neither side can leave hints stuck.
+For a focused widget, WG25 intercepts Return and keypad Enter before surface delivery; a widget's
+key-layer claims for those keys are ignored while it is a widget. Other claimed widget keys and all
+window claims keep ordinary layer behavior. The Alt key tracking runs for claimed presses/releases
+too, so neither side can leave hints stuck.
 
 Future cross-window scopes or stacked layers should resolve a winner here before processing an
 event. They should not copy or restore user bindings, change surface identities, or build app

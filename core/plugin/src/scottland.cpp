@@ -1852,12 +1852,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_device_removed_signal> on_minimize_device_removed =
         [=] (wf::input_device_removed_signal *ev)
     {
+        auto device = ev->device->get_wlr_handle();
+        for (auto it = widget_return_keys.begin(); it != widget_return_keys.end();)
+        {
+            it = it->first == device ? widget_return_keys.erase(it) : std::next(it);
+        }
+
         for (auto it = minimize_presses.begin(); it != minimize_presses.end();)
         {
-            if (it->second.devices.erase(ev->device->get_wlr_handle()))
+            if (it->second.devices.erase(device))
             {
                 LOGI("scottland: minimize-key device-removed key=", it->first,
-                    " device=", static_cast<void*>(ev->device->get_wlr_handle()),
+                    " device=", static_cast<void*>(device),
                     " received_msec=", now_msec(), " held_devices=", it->second.devices.size());
             }
 

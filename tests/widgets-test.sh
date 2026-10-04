@@ -40,8 +40,9 @@ headless_dir=${SCOTTLAND_HEADLESS_DIR:-$PWD/build/headless}
 artifacts=$headless_dir.results
 mkdir -p "$artifacts" build
 test_widgets=$(mktemp -d "${TMPDIR:-$PWD/build}/scottland-test-widgets.XXXXXX")
-mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon" "$test_widgets/stubborn"
+mkdir -p "$test_widgets/sleeper" "$test_widgets/sender" "$test_widgets/daemon" "$test_widgets/stubborn" "$test_widgets/return"
 cp -a tests/widgets/gravity "$test_widgets/gravity"
+cp -a tests/widgets/return/. "$test_widgets/return/"
 # Shows a window that refuses to close when asked.
 cat >"$test_widgets/stubborn/widget.toml" <<'TOML'
 id = "stubborn"
