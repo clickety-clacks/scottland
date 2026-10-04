@@ -60,6 +60,7 @@ struct exposure_result
     int branch_sign = 0;
     double retained_clearance = -1; // old target's badge point after this layout change
     point branch_base_offset = {};
+    bool held = false; // a held target/label from an earlier solve; its clearance is re-measured
 };
 struct exposure_progress
 {
@@ -82,7 +83,12 @@ struct exposure_limits
     bool allow_size_upgrades = true;
     bool allow_minimum_patch_zone_overshoot = scottland::windowing::allow_minimum_patch_zone_overshoot;
     bool reconsider_ways_when_idle = false;
+    // Run the end-of-solve pass (WK31 centering, held-label clearance, hint collisions). The
+    // progressive solver runs it once itself, so its inner solves skip it.
+    bool finish = true;
 };
+// Gap between hint circles that the end-of-solve pass keeps apart (after the WK28 pop).
+inline constexpr double hint_collision_gap = 6.0;
 struct exposure_profile
 {
     double initialization_ms = 0;
@@ -94,6 +100,7 @@ struct exposure_profile
     size_t movement_searches = 0;
     size_t truncated_searches = 0;
     size_t last_search_window = 0;
+    size_t finish_work_count = 0; // end-of-solve pass (finish_hints); not charged to inspections
 };
 // In front-to-back order, expose room for each badge with the least visual travel.
 // Fixed rectangles are widget frames already placed in their rail. A foreground
