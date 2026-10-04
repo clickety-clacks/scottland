@@ -33,10 +33,21 @@ enum class status_t { clear, overlap, skipped };
 // split each side is independent: its widgets must stay in order, 1 px apart (or no further
 // into each other than they already are), between a rail end and the item, and as close to
 // home as possible. That is an isotonic regression on gap-adjusted positions with bounds,
-// solved exactly by pool-adjacent-violators in O(n). If a side can't fit at all, the item
-// itself settles toward the side with room by the minimum amount (counted as movement too).
-// Every split is tried and the cheapest wins, so a widget crosses the item only when that
-// is the least movement; the whole solve is O(n²) with n capped at 256.
+// solved exactly by pool-adjacent-violators in O(n). The item itself moves only as much as
+// its split needs: if a side can't fit, it settles toward the side with room by the least
+// amount, and otherwise not at all. So each split's layout is the least total movement *for
+// that split with the item settled the least it must be*, not a joint minimum in which the
+// item shares the move with its neighbors (that would move the dropped card more often).
+// The split with the least total movement, the item's settle included, wins; a widget
+// crosses the item only when that is less movement. The whole solve is O(n²), n ≤ 256.
+//
+// DECISION PENDING (Mike; rail review 2, round 3, finding 1): whether the user's aim decides
+// the order instead of total movement. With `aim_decides_order` set, the split by centers
+// (each widget stays on the side of the item its center is on) is kept whenever the item
+// needs to settle by at most half its own height for it; otherwise the fewest widgets
+// nearest the item cross it so that the settle is at most that leftover; only if no such
+// split exists does total movement decide, as it does by default. Off by default: today total
+// movement decides, so a card dropped onto a card at a rail end usually settles past it.
 class solver_t
 {
   public:
@@ -164,15 +175,40 @@ class solver_t
 
         size_t best = count + 1;
         double best_cost = 0;
-        for (size_t k = 0; k <= count; ++k)
+        if (aim_decides_order)
         {
-            double cost;
-            if (!evaluate(k, drag_lo, drag_hi, top, bottom, 0, cost, false)) continue;
-            if (best > count || cost < best_cost - EPSILON || (cost <= best_cost + EPSILON &&
-                distance(k, natural) < distance(best, natural)))
+            // DECISION PENDING (see the class comment): keep the aimed order, crossing the
+            // fewest widgets nearest the item, with the item settling at most half its height.
+            const double leftover = (drag_hi - drag_lo) * 0.5;
+            for (size_t crossed = 0; crossed <= count && best > count; ++crossed)
             {
-                best = k;
-                best_cost = cost;
+                for (size_t k : {natural - crossed, natural + crossed})  // wraps past 0: skipped
+                {
+                    if (k > count) continue;
+                    double cost, shift;
+                    if (!evaluate(k, drag_lo, drag_hi, top, bottom, 0, cost, false, &shift) ||
+                        std::abs(shift) > leftover + EPSILON) continue;
+                    if (best > count || cost < best_cost - EPSILON)
+                    {
+                        best = k;
+                        best_cost = cost;
+                    }
+                }
+            }
+        }
+
+        if (best > count)
+        {
+            for (size_t k = 0; k <= count; ++k)
+            {
+                double cost;
+                if (!evaluate(k, drag_lo, drag_hi, top, bottom, 0, cost, false)) continue;
+                if (best > count || cost < best_cost - EPSILON || (cost <= best_cost + EPSILON &&
+                    distance(k, natural) < distance(best, natural)))
+                {
+                    best = k;
+                    best_cost = cost;
+                }
             }
         }
 
@@ -247,6 +283,8 @@ class solver_t
     const std::vector<double>& shifts() const { return offsets; }
     // How far the dragged item itself should settle (0 unless a side couldn't fit).
     double item_shift() const { return settle; }
+    // DECISION PENDING (see the class comment). Survives begin(); off by default.
+    void set_aim_decides_order(bool aim) { aim_decides_order = aim; }
     status_t status() const { return result; }
     bool is_ready() const { return ready; }
     bool is_skipped() const { return skipped; }
@@ -266,7 +304,7 @@ class solver_t
     std::vector<block_t> blocks;
     size_t split = std::numeric_limits<size_t>::max();
     double anchor = 0, settle = 0;
-    bool ready = false, skipped = false, valid_input = true;
+    bool ready = false, skipped = false, valid_input = true, aim_decides_order = false;
     status_t result = status_t::skipped;
 
     void clear()
@@ -328,7 +366,7 @@ class solver_t
     // fit; otherwise the total squared movement (widgets and item). `keep` stores the
     // placement and the item's settle.
     bool evaluate(size_t k, double lo, double hi, double top, double bottom, double overlap,
-        double& cost, bool keep)
+        double& cost, bool keep, double *settle_out = nullptr)
     {
         double cards_need, cards_room, rail_need, rail_room;
         settle_terms(k, lo, hi, top, bottom, cards_need, cards_room, rail_need, rail_room);
@@ -340,6 +378,7 @@ class solver_t
         cost += place(0, k, top, lo + shift - CONTACT + overlap * 0.5);
         cost += place(k, original.size(), hi + shift + CONTACT - overlap * 0.5, bottom);
         if (keep) settle = shift;
+        if (settle_out) *settle_out = shift;
         return true;
     }
 

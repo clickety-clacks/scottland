@@ -126,6 +126,11 @@
             <_long>How long a drag must pause within 4 px before rail widgets move aside. A new pause makes another layout; dropping sooner solves once on drop.</_long>
             <default>350</default><min>100</min><max>1500</max>
         </option>
+        <option name="widget_make_room_by_aim" type="bool">
+            <_short>Rail make-room keeps the aimed order (pending decision)</_short>
+            <_long>Pending Mike's decision (WG26): when on, a drop keeps each widget on the side of it its center is on, and the dropped widget settles by at most half its height; when off, the least total movement decides.</_long>
+            <default>false</default>
+        </option>
         <option name="center_opacity_focused" type="double"><_short>Focused center opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="center_opacity_unfocused" type="double"><_short>Unfocused center opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="side_opacity_focused" type="double"><_short>Focused side opacity</_short><default>1</default><min>0</min><max>1</max></option>

@@ -96,6 +96,135 @@ static bool sweep(const std::vector<interval_t>& items, double top, double botto
     return true;
 }
 
+struct fuzz_t
+{
+    long solves = 0, illegal = 0, disordered = 0, pushed_in = 0, unstable = 0, back_forth = 0;
+    long settle_not_least = 0, settle_jumps = 0, settled = 0, settled_over_half = 0;
+    double worst_with_room = -std::numeric_limits<double>::infinity();
+    std::vector<double> settles;
+
+    void report(const char *policy)
+    {
+        std::sort(settles.begin(), settles.end());
+        auto at = [&] (double q) { return settles.empty() ? 0.0 : settles[size_t(q * (settles.size() - 1))]; };
+        std::cout << "INFO  fuzz (" << policy << "): settled in " << settled << " of " << solves
+            << " pauses; median " << at(.5) << " px, 90th " << at(.9) << " px, largest " << at(1)
+            << " px; over half the card " << settled_over_half << "\n";
+    }
+};
+
+// Review 2/3 fuzz (Fable's generator): 20,000 random rails, 30 pauses each, mostly small
+// wobbles around a spot.
+static fuzz_t run_fuzz(bool aim)
+{
+    fuzz_t f;
+    std::mt19937 rng(5);
+    std::uniform_real_distribution<double> u(0, 1);
+    for (int trial = 0; trial < 20000; ++trial)
+    {
+        double top = 24, bottom = 24 + 600 + u(rng) * 800;
+        int n = 1 + int(u(rng) * 7);
+        std::vector<interval_t> w;
+        double y = top + u(rng) * 60;
+        for (int i = 0; i < n; ++i)
+        {
+            double h = u(rng) < .3 ? 48 : 96;
+            double gap = u(rng) < .5 ? 1 + u(rng) * 3 : u(rng) * 160;
+            y += gap;
+            if (y + h > bottom) break;
+            w.push_back({uint64_t(i + 1), y, y + h});
+            y += h;
+        }
+        if (w.empty()) continue;
+        double dh = u(rng) < .3 ? 48 : 96;
+        solver_t solver;
+        solver.set_aim_decides_order(aim);
+        solver.begin(w);
+        // Offset of each card when packed tight (already-overlapping cards stay so).
+        std::vector<double> packed(w.size(), 0);
+        for (size_t i = 1; i < w.size(); ++i)
+            packed[i] = packed[i - 1] + (w[i - 1].hi - w[i - 1].lo) + std::min(1.0, w[i].lo - w[i - 1].hi);
+        auto above_end = [&] (size_t k)
+        {
+            double end = top;
+            for (size_t i = 0; i < k; ++i) end = std::max(end, top + packed[i] + (w[i].hi - w[i].lo));
+            return end;
+        };
+        auto below_span = [&] (size_t k)
+        {
+            double span = 0;
+            for (size_t i = k; i < w.size(); ++i) span = std::max(span, packed[i] - packed[k] + (w[i].hi - w[i].lo));
+            return span;
+        };
+        std::vector<int8_t> previous, two_ago;
+        double previous_lo = 0, previous_settle = 0;
+        double start = top + u(rng) * (bottom - top - dh);
+        for (int step = 0; step < 30; ++step)
+        {
+            double lo = step % 6 == 0 ? top + u(rng) * (bottom - top - dh) : start + (u(rng) - .5) * 6;
+            start = lo;
+            lo = std::max(top, std::min(lo, bottom - dh));
+            double hi = lo + dh;
+            auto status = solver.solve(lo, hi, top, bottom);
+            ++f.solves;
+            auto shifts = solver.shifts();
+            auto sides = solver.latched_directions();
+            const double settle = solver.item_shift();
+            double covered = -std::numeric_limits<double>::infinity();
+            for (size_t i = 0; i < w.size(); ++i)
+            {
+                double a = w[i].lo + shifts[i], b = w[i].hi + shifts[i];
+                if (a < top - 1e-6 || b > bottom + 1e-6) ++f.illegal;
+                covered = std::max(covered, std::min(b, hi + settle) - std::max(a, lo + settle));
+                if (i)
+                {
+                    double a0 = w[i - 1].lo + shifts[i - 1], b0 = w[i - 1].hi + shifts[i - 1];
+                    if (a < a0 - 1e-6) ++f.disordered;
+                    if (a - b0 < std::min(w[i].lo - w[i - 1].hi, 1.0) - 1e-6) ++f.pushed_in;
+                }
+            }
+            // Truly full? Independently: for some split, cards packed tight from the top above
+            // the item and from the bottom below it leave room for the item and its 1 px
+            // clearance on each side.
+            bool room = false;
+            for (size_t k = 0; k <= w.size() && !room; ++k)
+                room |= (bottom - below_span(k) - (k < w.size() ? 1 : 0)) - (above_end(k) + (k ? 1 : 0)) >= dh - 1e-6;
+            if (room) f.worst_with_room = std::max(f.worst_with_room, covered);
+            if (status == status_t::clear)
+            {
+                // Settle size: exactly the least the chosen split needs, computed independently
+                // from that split's tight packing (0 when it fits as dropped).
+                size_t k = std::count(sides.begin(), sides.end(), int8_t(-1));
+                const double inf = std::numeric_limits<double>::infinity();
+                double need = std::max(k ? above_end(k) + 1 - lo : -inf, top - lo);
+                double room_down = std::min(k < w.size() ? bottom - below_span(k) - 1 - hi : inf, bottom - hi);
+                if (std::abs(settle - std::clamp(0.0, need, std::max(need, room_down))) > 1e-6) ++f.settle_not_least;
+            }
+            if (std::abs(settle) > 1e-9)
+            {
+                ++f.settled;
+                f.settles.push_back(std::abs(settle));
+                if (std::abs(settle) > dh * 0.5 + 1e-6) ++f.settled_over_half;
+            }
+            // A small re-pause that keeps every side may move the settle at most as far as the
+            // pointer moved (no jumping hole); a side change is a separate, single crossing.
+            if (step % 6 != 0 && !previous.empty() && sides == previous &&
+                std::abs(settle - previous_settle) > std::abs(lo - previous_lo) + 1e-6) ++f.settle_jumps;
+            solver.solve(lo, hi, top, bottom);
+            for (size_t i = 0; i < w.size(); ++i)
+                if (std::abs(solver.shifts()[i] - shifts[i]) > 1e-9) { ++f.unstable; break; }
+            if (step % 6 >= 2 && !two_ago.empty())
+                for (size_t i = 0; i < w.size(); ++i)
+                    if (two_ago[i] == sides[i] && previous[i] != sides[i] && previous[i] != 0) ++f.back_forth;
+            two_ago = step % 6 == 0 ? std::vector<int8_t>() : previous;
+            previous = solver.latched_directions();
+            previous_lo = lo;
+            previous_settle = settle;
+        }
+    }
+    return f;
+}
+
 int main()
 {
     {
@@ -165,6 +294,15 @@ int main()
             clear &= items[i].lo + solver.shifts()[i] >= items[i - 1].hi + solver.shifts()[i - 1];
         check(clear && std::abs(solver.item_shift() - 89) < 1e-9 && solver.shifts()[0] == 0,
             "packed but not full: the dropped card settles the least and nothing overlaps");
+        // DECISION PENDING (Mike; round 3, finding 1): with the aimed order, settling 89 px is
+        // more than half the card, so the top card crosses instead and the drop lands first.
+        solver_t aimed;
+        aimed.set_aim_decides_order(true);
+        aimed.begin(items);
+        aimed.solve(32, 128, 24, 696);
+        check(aimed.status() == status_t::clear && aimed.item_shift() == 0 &&
+            std::abs(aimed.shifts()[0] - 105) < 1e-9 && aimed.latched_directions()[0] > 0,
+            "aim decides order (switch): a drop at the top of a packed rail goes first");
     }
     {
         // A card merely touching a pinned neighbor, or clipping it by a few pixels, settles
@@ -425,100 +563,30 @@ int main()
     }
 
     {
-        // Review 2 fuzz (Fable): 20,000 random rails, 30 pauses each, mostly small wobbles
-        // around a spot. Every result is legal, ordered and deterministic; no card switches
-        // side and back over three consecutive pauses each within 3 px (P11); and nothing
-        // overlaps the drop unless the rail is truly full (Mike's ruling, 2026-10-04).
-        std::mt19937 rng(5);
-        std::uniform_real_distribution<double> u(0, 1);
-        long solves = 0, illegal = 0, disordered = 0, pushed_in = 0, unstable = 0, back_forth = 0;
-        double worst_with_room = -std::numeric_limits<double>::infinity();
-        for (int trial = 0; trial < 20000; ++trial)
-        {
-            double top = 24, bottom = 24 + 600 + u(rng) * 800;
-            int n = 1 + int(u(rng) * 7);
-            std::vector<interval_t> w;
-            double y = top + u(rng) * 60;
-            for (int i = 0; i < n; ++i)
-            {
-                double h = u(rng) < .3 ? 48 : 96;
-                double gap = u(rng) < .5 ? 1 + u(rng) * 3 : u(rng) * 160;
-                y += gap;
-                if (y + h > bottom) break;
-                w.push_back({uint64_t(i + 1), y, y + h});
-                y += h;
-            }
-            if (w.empty()) continue;
-            double dh = u(rng) < .3 ? 48 : 96;
-            solver_t solver;
-            solver.begin(w);
-            std::vector<int8_t> previous, two_ago;
-            double start = top + u(rng) * (bottom - top - dh);
-            for (int step = 0; step < 30; ++step)
-            {
-                double lo = step % 6 == 0 ? top + u(rng) * (bottom - top - dh) : start + (u(rng) - .5) * 6;
-                start = lo;
-                lo = std::max(top, std::min(lo, bottom - dh));
-                double hi = lo + dh;
-                solver.solve(lo, hi, top, bottom);
-                ++solves;
-                auto shifts = solver.shifts();
-                auto sides = solver.latched_directions();
-                double covered = -std::numeric_limits<double>::infinity();
-                const double slo = lo + solver.item_shift(), shi = hi + solver.item_shift();
-                for (size_t i = 0; i < w.size(); ++i)
-                {
-                    double a = w[i].lo + shifts[i], b = w[i].hi + shifts[i];
-                    if (a < top - 1e-6 || b > bottom + 1e-6) ++illegal;
-                    covered = std::max(covered, std::min(b, shi) - std::max(a, slo));
-                    if (i)
-                    {
-                        double a0 = w[i - 1].lo + shifts[i - 1], b0 = w[i - 1].hi + shifts[i - 1];
-                        if (a < a0 - 1e-6) ++disordered;
-                        if (a - b0 < std::min(w[i].lo - w[i - 1].hi, 1.0) - 1e-6) ++pushed_in;
-                    }
-                }
-                // Truly full? Independently: for some split, cards packed tight from the top
-                // above the item and from the bottom below it leave room for the item and
-                // its 1 px clearance on each side (already-overlapping cards stay so).
-                std::vector<double> packed(w.size(), 0);  // offset of each card when packed tight
-                for (size_t i = 1; i < w.size(); ++i)
-                    packed[i] = packed[i - 1] + (w[i - 1].hi - w[i - 1].lo) + std::min(1.0, w[i].lo - w[i - 1].hi);
-                bool room = false;
-                for (size_t k = 0; k <= w.size() && !room; ++k)
-                {
-                    double above = top, below = 0;
-                    for (size_t i = 0; i < k; ++i)
-                        above = std::max(above, top + packed[i] + (w[i].hi - w[i].lo));
-                    for (size_t i = k; i < w.size(); ++i)
-                        below = std::max(below, packed[i] - packed[k] + (w[i].hi - w[i].lo));
-                    room |= (bottom - below - (k < w.size() ? 1 : 0)) - (above + (k ? 1 : 0)) >= dh - 1e-6;
-                }
-                if (room) worst_with_room = std::max(worst_with_room, covered);
-                if (room && covered > -1 + 1e-6 && std::getenv("FUZZ_WITNESS"))
-                {
-                    std::cout << "WITNESS rail " << top << "," << bottom << " item " << lo << "," << hi
-                        << " settle " << solver.item_shift() << " status " << int(solver.status()) << " cards";
-                    for (size_t i = 0; i < w.size(); ++i)
-                        std::cout << " [" << w[i].lo << "," << w[i].hi << "]" << shifts[i];
-                    std::cout << "\n";
-                }
-                solver.solve(lo, hi, top, bottom);
-                for (size_t i = 0; i < w.size(); ++i)
-                    if (std::abs(solver.shifts()[i] - shifts[i]) > 1e-9) { ++unstable; break; }
-                if (step % 6 >= 2 && !two_ago.empty())
-                    for (size_t i = 0; i < w.size(); ++i)
-                        if (two_ago[i] == sides[i] && previous[i] != sides[i] && previous[i] != 0) ++back_forth;
-                two_ago = step % 6 == 0 ? std::vector<int8_t>() : previous;
-                previous = solver.latched_directions();
-            }
-        }
-        check(solves == 600000 && !illegal && !disordered && !pushed_in && !unstable,
+        // Review 2/3 fuzz (Fable): 20,000 random rails, 30 pauses each, mostly small wobbles
+        // around a spot.
+        auto by_movement = run_fuzz(false);
+        check(by_movement.solves == 600000 && !by_movement.illegal && !by_movement.disordered &&
+            !by_movement.pushed_in && !by_movement.unstable,
             "fuzz: 600,000 pause solves are legal, ordered, never push cards together, deterministic");
-        check(back_forth == 0, "fuzz: no card switches side and back on small re-pauses (P11)");
-        check(worst_with_room <= -1 + 1e-6, "fuzz: whenever the rail has room, nothing overlaps the (settled) drop");
-        std::cout << "INFO  fuzz back-and-forth=" << back_forth << " worst overlap with room="
-            << worst_with_room << " px\n";
+        check(by_movement.back_forth == 0, "fuzz: no card switches side and back on small re-pauses (P11)");
+        check(by_movement.worst_with_room <= -1 + 1e-6,
+            "fuzz: whenever the rail has room, nothing overlaps the (settled) drop");
+        check(by_movement.settle_not_least == 0,
+            "fuzz: the drop settles exactly the least its chosen split needs (0 when it fits)");
+        check(by_movement.settle_jumps == 0,
+            "fuzz: on a small re-pause that keeps every side, the settle moves no more than the pointer");
+        by_movement.report("total movement decides");
+
+        // DECISION PENDING (Mike; round 3, finding 1): the aimed order, behind its switch.
+        auto by_aim = run_fuzz(true);
+        check(by_aim.solves == 600000 && !by_aim.illegal && !by_aim.disordered && !by_aim.pushed_in &&
+            !by_aim.unstable && by_aim.back_forth == 0 && by_aim.worst_with_room <= -1 + 1e-6 &&
+            by_aim.settle_not_least == 0 && by_aim.settle_jumps == 0,
+            "fuzz, aim decides order: same guarantees (legal, calm, overlap only when full, least settle)");
+        check(by_aim.settled_over_half < by_movement.settled_over_half / 10,
+            "fuzz, aim decides order: settles over half the card become rare");
+        by_aim.report("aim decides order");
     }
 
     {

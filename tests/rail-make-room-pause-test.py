@@ -348,30 +348,51 @@ try:
     clear_case()
 
     # Review F2: five cards packed at the top of the left rail, a window dropped at the top.
-    # The top card is pinned at the rail end; with room below it yields downward instead of
-    # being overlapped. Overlap is only for a truly full rail.
+    # Least total movement (for the chosen split): the drop settles just below the pinned top
+    # card, 1 px clear of it, and the four below make room. Overlap is only for a full rail.
+    # A small re-pause doesn't make the hole jump, and after the drop the cards stay exactly
+    # as shown at the last pause: the settle shown is the settle applied (round 3, finding 3).
     packed = tuple(f"packed-{i}" for i in range(5))
     for name, y in zip(packed, (72, 168, 264, 360, 456)):
         t.launch(name, rail="left", y=y)
     packed_before = {n: card_scene(n) for n in packed}
     t.move(screen["width"] / 2, screen["height"] / 2)
     t.launch("packed-arrival", rail=None)
+    reused_before = ipc.call("scottland/layout-state")["rail_settles_reused"]
     x0, y0 = begin_drag(t.app("packed-arrival"))
     glide(x0, y0, 6, 80)
     time.sleep(.9)
+    shown_first = scene_ys(packed)
+    glide(6, 80, 6, 86, steps=2)   # 6 px: past the 4 px wobble, so a second pause solves
+    time.sleep(.9)
+    shown = scene_ys(packed)
+    hole_moved = max(abs(shown[n] - shown_first[n]) for n in packed)
     release_drag(wait=1.5)
     t.wait_for(lambda: t.card("packed-arrival") and not t.card("packed-arrival")["preview"], timeout=5)
     time.sleep(.6)
     landed = card_scene("packed-arrival")
     packed_after = {n: card_scene(n) for n in packed}
+    rearranged = max(abs(packed_after[n]["y"] - shown[n]) for n in packed)
+    settle_state = ipc.call("scottland/layout-state")
+    reused = settle_state["rail_settles_reused"] - reused_before
     in_order = all(packed_after[a]["y"] < packed_after[b]["y"] for a, b in zip(packed, packed[1:]))
     metrics["packed_not_full"] = {"before_y": {n: packed_before[n]["y"] for n in packed},
         "after_y": {n: packed_after[n]["y"] for n in packed}, "landing": landed,
         "overlap": {n: round(overlap(landed, packed_after[n]), 1) for n in packed}}
+    metrics["packed_not_full"].update(hole_moved_on_6px_repause=round(hole_moved, 2),
+        rearranged_after_drop=round(rearranged, 2), settle_reused=reused,
+        settles_resolved_total=settle_state["rail_settles_resolved"], settle_from_pointer_px=round(landed["y"] - (86 - 48), 1))
     check("WG26 a packed but not full rail makes room without overlap",
           max(metrics["packed_not_full"]["overlap"].values()) <= 0 and in_order and
           all(f["y"] + f["height"] <= screen["height"] - 23 for f in packed_after.values()),
           metrics["packed_not_full"])
+    check("WG26 the drop settles exactly the least its split needs (just below the pinned card)",
+          abs(landed["y"] - (packed_after["packed-0"]["y"] + packed_after["packed-0"]["height"] + 1)) <= 1 and
+          abs(packed_after["packed-0"]["y"] - packed_before["packed-0"]["y"]) < .5, metrics["packed_not_full"])
+    check("WG26 a small re-pause moves the hole no more than the pointer moved", hole_moved <= 6.5,
+          metrics["packed_not_full"])
+    check("WG26 after the drop the cards stay as shown at the last pause (no second solve)",
+          rearranged <= .5 and reused == 1, metrics["packed_not_full"])
     clear_case()
 
     # A direct window drop before any pause still solves once on drop. Peers visibly
@@ -557,6 +578,7 @@ try:
     for name, y in (("settle-top", 72), ("settle-moved", 400)):
         t.launch(name, rail="right", y=y)
     top_home = card_scene("settle-top")
+    reused_before = ipc.call("scottland/layout-state")["rail_settles_reused"]
     x0, y0 = begin_drag(t.card("settle-moved"))
     glide(x0, y0, screen["width"] - 6, 80)
     time.sleep(.75)
@@ -564,10 +586,12 @@ try:
     landed = card_scene("settle-moved")
     pinned = card_scene("settle-top")
     metrics["widget_settle"] = {"pinned_before": top_home["y"], "pinned_after": pinned["y"], "landed": landed,
-        "gap": round(vertical_gap(pinned, landed), 2)}
+        "gap": round(vertical_gap(pinned, landed), 2),
+        "settle_reused": ipc.call("scottland/layout-state")["rail_settles_reused"] - reused_before}
     check("WG26 a widget dropped over a pinned card settles beside it with nothing overlapping",
           abs(pinned["y"] - top_home["y"]) < .5 and vertical_gap(pinned, landed) >= .5 and
-          landed["y"] < top_home["y"] + top_home["height"] + 20, metrics["widget_settle"])
+          abs(landed["y"] - (top_home["y"] + top_home["height"] + 1)) <= 1 and
+          metrics["widget_settle"]["settle_reused"] == 1, metrics["widget_settle"])
     clear_case()
 
     # Window avoidance plans against where rail widgets are going, so a make-room ease

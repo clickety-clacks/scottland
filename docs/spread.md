@@ -43,16 +43,35 @@ widgets into those above it and those below it. For one split, each side is inde
 widgets go between a rail end and the item, in order, minimizing the sum of squared displacements
 from home. Subtracting each widget's packed offset turns "in order, apart" into "non-decreasing",
 so a side is an isotonic regression with bounds, solved exactly by pool-adjacent-violators in O(n).
-If a side can't fit between the item and its rail end, the item itself settles toward the side
-with room by the least amount (its displacement counts as movement too); it never settles off the
-rail, and an item hanging off a rail end is laid out where placement will put it, on the rail.
-Every split is tried and the one with the least total movement wins (ties go to the split by
-centers), so a widget crosses the item only when that is less movement, and the item settles
-only when that is less movement than pushing widgets. With n capped at 256 a solve is O(n²).
+The item moves only as much as its split needs: if a side can't fit between the item and its
+rail end, the item settles toward the side with room by the least amount, and otherwise not at
+all. It never settles off the rail, and an item hanging off a rail end is laid out where placement
+will put it, on the rail. So each split's layout is the **least total movement for that split,
+with the item settled the least it must be**. It is not a joint minimum in which the item shares
+the move with its neighbors; that would move the dropped card more often and by more. Every split
+is tried and the one with the least total movement, the item's settle included, wins (ties go to
+the split by centers). A widget therefore crosses the item only when that is less movement, and
+the item settles only when its split needs it and that split is the cheapest. With n capped at 256
+a solve is O(n²); review round 3 measured about 1 ms average, 2.9 ms worst at the cap.
 
 While dragging, the item is under the pointer and can't settle; the audition shows the neighbors
-placed for the settled item. Once it lands, the arrival solve runs against its real card and
-eases it into place along with its neighbors.
+placed for the settled item. On release the drop's solve is committed as shown. If it settles the
+item and the item lands on the interval that solve was for (within the 4 px wobble), exactly that
+settle is applied once it lands, easing it into place; nothing is solved again, so the cards never
+rearrange a second time. Only a different landing (the real card is another size, or placement
+moved it) is solved again for its actual interval.
+
+**Pending Mike's decision (review round 3, finding 1): does the user's aim decide the order?** By
+default total movement decides, so a card dropped onto a card at a rail end usually settles past
+it (in the review-2 fuzz: 10% of pauses settle, median 31 px, up to 119 px), and a card can't be put
+first ahead of a card sitting at a rail end. The prepared alternative, behind the hidden option
+`scottland/widget_make_room_by_aim` (default off, not in the settings app), keeps the split by
+centers (each widget stays on the side of the item its center is on) whenever the item settles at
+most half its own height for it; otherwise the fewest widgets nearest the item cross it so that
+the settle is at most that leftover; only if no such split exists does total movement decide. In
+the same fuzz it settles in 6% of pauses, median 18 px, 90th percentile 40 px, and a drop at the
+top of a packed rail goes first. Every other guarantee (order, legality, P11, overlap only when
+full) holds either way.
 
 When no split fits even with settling, the rail is truly full. The split that needs the least
 overlap is used, and the widgets encroach on the item by exactly that amount, half at each edge;
@@ -110,11 +129,11 @@ actors with nonzero solver offsets receive a real move on drop.
 | ID | Invariant | Status |
 |---|---|---|
 | SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item (whose spot stays open). Any of them may move; they keep their order and never cross sides; total squared movement is least (exact per side by pool-adjacent-violators, all splits tried). | verified (plumbus unit suite incl. brute-force grid search, 2026-10-04) |
-| SM2 | Clearance is 1 px (existing overlaps between widgets are never deepened). The dropped item settles toward the side with room by the least amount when that is needed or less movement. Widgets overlap the item only when the rail is truly full, by exactly the shortfall. | verified (plumbus unit suite, review fuzz: 0 overlaps with room in 600,000 solves; real stipc input, 2026-10-04) |
+| SM2 | Clearance is 1 px (existing overlaps between widgets are never deepened). The dropped item settles toward the side with room by exactly the least its split needs (0 when it fits as dropped); the split with the least total movement for its split wins. Widgets overlap the item only when the rail is truly full, by exactly the shortfall. Whether aim decides the order instead is pending Mike (hidden switch). | verified (plumbus unit suite and review fuzz: 0 overlaps with room, settle equals the split's least need in 600,000 solves; real stipc input, 2026-10-04) |
 | SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry and drawn positions. A drop before any completed pause, or more than 4 px from where the last pause solved, solves once more; otherwise it commits the held layout. | verified (Plumbus real stipc input, 2026-10-04) |
 | SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (Plumbus; bounded unit suite and real stipc input, 2026-10-04) |
 | SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (Plumbus real stipc input, 2026-10-04) |
 | SM6 | Every target change, including large shifts, release-time solves, geometry corrections, the dropped item's settle and returns, eases in and out over 190–360 ms, longer only to stay under the shared 1000 px/s limit; retargets keep their speed and never overshoot; active reduced motion snaps. | verified (Plumbus frame sampling, planned and drawn frame-to-frame compositor speed, reduced-motion palette, 2026-10-04) |
 | SM7 | Direct rail drops, inertial coast arrivals and Window-mode key widgetization run the shared solver at the widget's actual landing spot. | verified (Plumbus real stipc input, 2026-10-04) |
 | SM8 | Window avoidance sees a rail ease's target, so it re-solves once per rail layout change, not per animation frame. | verified (Plumbus real stipc input against a no-move control, 2026-10-04) |
-| SM9 | The split (which widgets are above the item) keeps its value across small re-pauses: no widget switches side and back within its direction margin (P11); within a split every widget moves at most 1 px per pixel of drag. | verified (review fuzz, 600,000 solves: 0 back-and-forth, was 168; 1 px sweep suite, 2026-10-04) |
+| SM9 | The split (which widgets are above the item) keeps its value across small re-pauses: no widget switches side and back within its direction margin (P11); within a split every widget, and the item's settle, moves at most as far as the pointer did. After a drop the cards stay as shown: the drop's settle is applied without solving again. | verified (review fuzz, 600,000 solves: 0 back-and-forth, 0 settle jumps; 1 px sweep suite; real stipc re-pause and drop, 2026-10-04) |
