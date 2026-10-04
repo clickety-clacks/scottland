@@ -90,7 +90,7 @@ struct renderer_t::impl
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p, backdrop_p;
     // GO26: both cache textures of a layer as two attachments of one framebuffer.
-    bool mrt = false, layer_fail_seen = false;
+    bool mrt = false, layer_fail_seen = false, cache_fail_seen = false;
     OpenGL::program_t cache_p;
     GLuint cache_fb[2] = {0, 0}, cache_fb_tex[2][2] = {{0, 0}, {0, 0}};
     GLuint cache_framebuffer(int layer)
@@ -819,12 +819,25 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     };
     // An active simulation already redraws the surface for a new field every
     // step. Keep that path direct; populate the cache once it settles.
+    if (surface_cache_fail != p->cache_fail_seen)
+    {
+        // Tests: lose the surface cache, or try for it again.
+        p->cache_fail_seen = surface_cache_fail;
+        p->intrinsic.release();
+        p->refraction.release();
+        p->intrinsic_b.release();
+        p->refraction_b.release();
+        p->cache_available = true;
+        p->cache_valid = false;
+        p->layer_key[0] = p->layer_key[1] = -1;
+        p->cache_fb_tex[0][0] = p->cache_fb_tex[0][1] = p->cache_fb_tex[1][0] = p->cache_fb_tex[1][1] = 0;
+    }
     if (settled && p->cache_available &&
         (p->intrinsic.width != viewport[2] || p->intrinsic.height != viewport[3]))
     {
         p->cache_valid = false;
-        bool ok = p->intrinsic.allocate(viewport[2], viewport[3], true, p->es3);
-        ok = p->refraction.allocate(viewport[2], viewport[3], true, p->es3) && ok;
+        bool ok = !surface_cache_fail && p->intrinsic.allocate(viewport[2], viewport[3], true, p->es3);
+        ok = !surface_cache_fail && p->refraction.allocate(viewport[2], viewport[3], true, p->es3) && ok;
         // New storage, possibly under a reused texture name: attach it again.
         p->cache_fb_tex[0][0] = p->cache_fb_tex[0][1] = 0;
         if (!ok)
@@ -833,6 +846,18 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             p->refraction.release();
             p->cache_available = false;
             LOGE("scottland goo: surface cache unavailable; using direct draw");
+        }
+    }
+    if (settled && !p->cache_available)
+    {
+        // GO26: the whole goo draws directly; say so where the other exact-path reasons are.
+        breath_keyframes_active = false;
+        std::string reason = (breath_area & area).empty() ? "" : "the surface cache is unavailable";
+        if (reason != breath_exact_reason)
+        {
+            if (!reason.empty())
+                LOGI("scottland goo: breathing uses the exact path: ", reason);
+            breath_exact_reason = reason;
         }
     }
     if (settled && p->cache_available)

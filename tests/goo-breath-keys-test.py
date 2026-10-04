@@ -124,6 +124,13 @@ try:
     time.sleep(2)
     state({'breath_layer_fail': False}); time.sleep(1)
     check('and keyframes return when the layer can be allocated', state()['breath_keyframes_active'], brief(state()))
+    state({'surface_cache_fail': True}); time.sleep(1)
+    s = state()
+    check('an unavailable surface cache is reported as the reason', not s['breath_keyframes_active'] and
+          s['breath_exact_reason'] == 'the surface cache is unavailable', brief(s))
+    state({'surface_cache_fail': False}); time.sleep(1)
+    check('and keyframes return when the surface cache can be allocated', state()['breath_keyframes_active'] and
+          state()['breath_exact_reason'] == '', brief(state()))
 
     # The pictures: a held breath drawn from keys against the exact surface, after the
     # second layer has been released and allocated again (its texture name may be reused).

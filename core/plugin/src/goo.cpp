@@ -1078,6 +1078,11 @@ struct goo_t::impl
                     n->state.breath = n->breath_hold >= 0 ? n->breath_hold : goo::attention_breath(now());
                     test_changed = true;
                 }
+                if (data.has_member("surface_cache_fail") && data["surface_cache_fail"].is_bool())
+                {
+                    n->state.renderer.surface_cache_fail = data["surface_cache_fail"].as_bool();
+                    test_changed = true;
+                }
                 if (data.has_member("breath_layer_fail") && data["breath_layer_fail"].is_bool())
                 {
                     n->state.renderer.breath_layer_fail = data["breath_layer_fail"].as_bool();
