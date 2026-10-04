@@ -10,14 +10,18 @@ and settings apps set on any desktop), or from GNOME's color-scheme setting with
 The accent comes from an integration's provider in accent.d/ (executables printing "#rrggbb";
 with --watch-paths they print the paths to watch for changes), else the portal's accent-color.
 
-It also keeps the session's palette file current ($XDG_RUNTIME_DIR/scottland/<display>.palette.json:
+It also scales the pointer with the desktop's GTK text size, rounding up to an image size in the
+active cursor theme, and keeps the session's palette file current
+($XDG_RUNTIME_DIR/scottland/<display>.palette.json:
 scheme, background, foreground, muted, accent, alert, attention), for widgets and other Scottland
 surfaces, and sets the halo's attention color from it:
 neutral light or dark colors, overlaid by a provider's full palette (accent.d providers that
 print a JSON object of those colors when run with --palette).
 """
+import configparser
 import hashlib
 import json
+import math
 import os
 import re
 import socket
@@ -141,8 +145,7 @@ PALETTE_LOCK = threading.Lock()  # the scheme and accent watchers both write it
 
 
 def text_settings():
-    """The desktop's text scaling factor and interface font family (GTK's standard settings; on
-    Omarchy, `omarchy display text size` sets the factor), else 1.0 and sans-serif."""
+    """The desktop's GTK text scaling factor, interface font family, and motion preference."""
     def get(key):
         try:
             out = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", key],
@@ -157,6 +160,215 @@ def text_settings():
     font = get("font-name").strip("'")
     family = re.sub(r"\s+\d+(\.\d+)?$", "", font).strip() or "sans-serif"
     return scale, family, get("enable-animations") == "false"
+
+
+def _cursor_search_paths():
+    """Search roots used by Xcursor, in lookup order."""
+    if "XCURSOR_PATH" in os.environ:
+        return [os.path.expanduser(path) for path in os.environ["XCURSOR_PATH"].split(":") if path]
+    data_home = os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local/share"))
+    data_dirs = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")
+    return [os.path.join(data_home, "icons"), os.path.expanduser("~/.icons"),
+            *(os.path.join(path, "icons") for path in data_dirs if path), "/usr/share/pixmaps"]
+
+
+def _theme_directory(name, search_paths):
+    for root in search_paths:
+        candidate = os.path.join(root, name)
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def _inherits(directory):
+    try:
+        with open(os.path.join(directory, "index.theme"), encoding="utf-8") as source:
+            in_icon_theme = False
+            for line in source:
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    in_icon_theme = line[1:-1].strip().lower() == "icon theme"
+                elif in_icon_theme and line.lower().startswith("inherits="):
+                    return [name.strip() for name in line.split("=", 1)[1].replace(";", ",").split(",")
+                            if name.strip()]
+    except OSError:
+        pass
+    return []
+
+
+def _xcursor_file_sizes(path):
+    """Read nominal image sizes from an Xcursor file's table of contents."""
+    try:
+        with open(path, "rb") as source:
+            header = source.read(16)
+            if len(header) != 16:
+                return set()
+            magic, header_length, _version, count = struct.unpack("<4I", header)
+            if magic != 0x72756358 or header_length < 16 or count > 4096:
+                return set()
+            file_size = source.seek(0, os.SEEK_END)
+            toc_end = header_length + count * 12
+            if file_size < toc_end:
+                return set()
+            source.seek(header_length)
+            toc = [struct.unpack("<3I", source.read(12)) for _ in range(count)]
+            sizes = set()
+            for chunk_type, size, position in toc:
+                if chunk_type == 0xfffd0002 and size > 0 and position >= toc_end and position + 36 <= file_size:
+                    source.seek(position)
+                    header_length, actual_type, actual_size, _version = struct.unpack("<4I", source.read(16))
+                    if (actual_type == chunk_type and actual_size == size and header_length >= 36
+                            and position + header_length <= file_size):
+                        sizes.add(size)  # XCURSOR_IMAGE_TYPE subtype: the nominal image size
+            return sizes
+    except (OSError, struct.error):
+        return set()
+
+
+def cursor_theme_sizes(theme, search_paths=None, visited=None):
+    """Nominal sizes the selected Xcursor theme and its inherited themes provide."""
+    search_paths = _cursor_search_paths() if search_paths is None else search_paths
+    visited = set() if visited is None else visited
+    if not theme or theme in visited:
+        return set()
+    visited.add(theme)
+    directory = _theme_directory(theme, search_paths)
+    if not directory:
+        return cursor_theme_sizes("default", search_paths, visited) if theme != "default" else set()
+    sizes = set()
+    cursors = os.path.join(directory, "cursors")
+    try:
+        for name in os.listdir(cursors):
+            path = os.path.join(cursors, name)
+            if os.path.isfile(path):
+                sizes.update(_xcursor_file_sizes(path))
+    except OSError:
+        pass
+    for inherited in _inherits(directory):
+        sizes.update(cursor_theme_sizes(inherited, search_paths, visited))
+    if theme != "default":
+        sizes.update(cursor_theme_sizes("default", search_paths, visited))
+    return sizes
+
+
+def cursor_size_for_scale(scale, sizes):
+    """Scale the 24 px base and round upward to a size the cursor theme provides."""
+    wanted = math.ceil(24 * max(0.5, min(3.0, float(scale))))
+    available = sorted(size for size in sizes if isinstance(size, int) and size > 0)
+    return next((size for size in available if size >= wanted), available[-1] if available else wanted)
+
+
+def desktop_cursor_theme():
+    """The theme used by apps, with Xcursor's environment override taking precedence."""
+    theme = os.environ.get("XCURSOR_THEME", "").strip()
+    if theme:
+        return theme
+    try:
+        out = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    return out.strip("'\"") or "default"
+
+
+def current_cursor_theme():
+    """Wayfire's explicit cursor theme, else the desktop's standard cursor theme."""
+    config_file = os.environ.get("WAYFIRE_CONFIG_FILE")
+    if config_file:
+        config = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            config.read(config_file)
+            theme = config.get("input", "cursor_theme", fallback="").strip()
+            if theme:
+                return theme
+        except (OSError, configparser.Error):
+            pass
+    return desktop_cursor_theme()
+
+
+def current_cursor_size():
+    scale, _, _ = text_settings()
+    return cursor_size_for_scale(scale, cursor_theme_sizes(desktop_cursor_theme()))
+
+
+def update_recorded_environment(size):
+    """Keep this session's scottland-exec environment current without changing other sessions."""
+    display = os.environ.get("WAYLAND_DISPLAY")
+    if not display:
+        return
+    path = os.path.join(RUNTIME, "scottland", display + ".env")
+    for _ in range(20):  # autostart records the environment in a sibling hook
+        try:
+            with open(path, "rb") as source:
+                entries = [entry for entry in source.read().split(b"\0")
+                           if entry and not entry.startswith(b"XCURSOR_SIZE=")]
+            entries.append(f"XCURSOR_SIZE={size}".encode())
+            temporary = f"{path}.{os.getpid()}.tmp"
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as target:
+                target.write(b"\0".join(entries) + b"\0")
+            os.replace(temporary, path)
+            return
+        except FileNotFoundError:
+            time.sleep(0.05)
+        except OSError as error:
+            print(f"scottland-color-scheme: {path}: {error}", file=sys.stderr)
+            return
+
+
+def _only_graphical_session():
+    """The user service manager is shared, so only update it when this is its sole GUI session."""
+    session = os.environ.get("XDG_SESSION_ID")
+    if not session:
+        return False
+    try:
+        listed = subprocess.run(["loginctl", "list-sessions", "--no-legend"],
+                                capture_output=True, text=True, timeout=5, check=True).stdout
+        own_user = subprocess.run(["id", "-un"], capture_output=True, text=True,
+                                  timeout=5, check=True).stdout.strip()
+        for line in listed.splitlines():
+            fields = line.split()
+            if len(fields) < 3 or fields[2] != own_user or fields[0] == session:
+                continue
+            details = subprocess.run(["loginctl", "show-session", fields[0], "-p", "Type", "-p", "State", "--value"],
+                                     capture_output=True, text=True, timeout=5, check=True).stdout.splitlines()
+            if len(details) >= 2 and details[0] in ("wayland", "x11") and details[1] != "closing":
+                return False
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def update_activation_environment(size):
+    """Share the current Xcursor size with newly activated apps only for a sole GUI session."""
+    if not _only_graphical_session():
+        return
+    try:
+        result = subprocess.run(["dbus-update-activation-environment", "--systemd", f"XCURSOR_SIZE={size}"],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode:
+            print(f"scottland-color-scheme: {result.stderr.strip()}", file=sys.stderr)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"scottland-color-scheme: could not update the app launch environment: {error}", file=sys.stderr)
+
+
+def set_cursor_size():
+    scale, _, _ = text_settings()
+    compositor_size = cursor_size_for_scale(scale, cursor_theme_sizes(current_cursor_theme()))
+    app_size = cursor_size_for_scale(scale, cursor_theme_sizes(desktop_cursor_theme()))
+    reply = call("wayfire/set-config-options", {"input/cursor_size": compositor_size})
+    if reply.get("error"):
+        print(f"scottland-color-scheme: {reply['error']}", file=sys.stderr)
+    try:
+        current = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "cursor-size"],
+                                 capture_output=True, text=True, timeout=5)
+        if current.returncode or int(current.stdout.strip()) != app_size:
+            subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", str(app_size)],
+                           capture_output=True, text=True, timeout=5, check=True)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"scottland-color-scheme: could not set the app cursor size: {error}", file=sys.stderr)
+    update_recorded_environment(app_size)
+    update_activation_environment(app_size)
 
 
 def write_palette(scheme, accent=None):
@@ -191,6 +403,7 @@ def apply(scheme, accent=None):
     accent = accent or current_accent()
     if accent:
         set_option("accent_color", accent + "ff")
+    set_cursor_size()
     write_palette(scheme, accent)
 PID_FILE = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
 
@@ -264,12 +477,14 @@ def watch():
 
 
 def watch_text():
-    """Follow the desktop's text size and interface font (hints and other text follow them)."""
+    """Follow text size, cursor theme and interface font changes."""
     while True:
         with subprocess.Popen(["gsettings", "monitor", "org.gnome.desktop.interface"],
                               stdout=subprocess.PIPE, text=True) as proc:
             for line in proc.stdout:
-                if line.startswith(("text-scaling-factor", "font-name", "enable-animations")):
+                if any(key in line for key in ("text-scaling-factor", "cursor-theme")):
+                    set_cursor_size()
+                if any(key in line for key in ("text-scaling-factor", "font-name", "enable-animations")):
                     write_palette(current(), current_accent())
         time.sleep(2)
 
@@ -295,7 +510,9 @@ def watch_accent():
 
 if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else "once"
-    if command == "watch":
+    if command == "cursor-size":
+        print(current_cursor_size())
+    elif command == "watch":
         watch()
     elif command == "ensure" and not watcher_running():
         # The watcher applies the scheme as it starts.

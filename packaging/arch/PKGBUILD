@@ -49,6 +49,7 @@ package_scottland() {
   install -Dm644 "$_root/core/widgets/card/shell.qml" "$pkgdir/usr/lib/scottland/widgets/card/shell.qml"
   install -Dm755 "$_root/core/autostart.d/01-record-environment" "$pkgdir/usr/lib/scottland/autostart.d/01-record-environment"
   install -Dm755 "$_root/core/libexec/scottland-color-scheme" "$pkgdir/usr/lib/scottland/libexec/scottland-color-scheme"
+  install -Dm644 "$_root/core/session-env.d/10-cursor-size.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-cursor-size.sh"
   install -Dm755 "$_root/core/autostart.d/07-follow-color-scheme" "$pkgdir/usr/lib/scottland/autostart.d/07-follow-color-scheme"
   install -Dm755 "$_root/core/autostart.d/07-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/07-solar-theme"
   install -Dm755 "$_root/core/libexec/scottland-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-solar-theme"
