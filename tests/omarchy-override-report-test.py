@@ -183,7 +183,7 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
                   "Was: Workspace 1." in report_group(report, "Scottland has no workspaces") and
                   "Was: Workspace 2." in report_group(report, "Scottland has no workspaces") and
                   "Was: Move window to workspace 1." in report_group(report, "Scottland has no workspaces") and
-                  "Super+Shift+3 — Was: Switch or move windows between workspaces." in
+                  "Super+Shift+3 — Was: Switch to workspace 3." in
                   report_group(report, "Scottland has no workspaces") and
                   report.count("## Scottland has no workspaces") == 1 and
                   "Scottland arranges windows spatially by moving and scaling them" in
@@ -192,11 +192,11 @@ hl.bind("SUPER+Y", hl.dsp.exec_cmd("hyprctl dispatch unsupported"),
                   report_group(report, "Scottland does its own window layout (no tiling)") and
                   "Super+J — Was: Focus next window." in
                   report_group(report, "Scottland uses its own window navigation") and
-                  "Super+F — Was: Navigate between windows." in
+                  "Super+F — Was: Focus the window to the left." in
                   report_group(report, "Scottland uses its own window navigation") and
                   "Super+G — Was: Toggle window group." in
                   report_group(report, "Scottland has no window groups") and
-                  "Super+V — Was: Change the window layout." in
+                  "Super+V — Was: Toggle the window split layout." in
                   report_group(report, "Scottland does its own window layout (no tiling)") and
                   "Super+K — Was: Tag window." in report_group(report, "Unsupported in Scottland") and
                   "Shift+F4 — Was: Release action with modifier." in

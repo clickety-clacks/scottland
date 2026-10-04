@@ -435,6 +435,20 @@ def omission_report_group(kind, action, description, note):
 def omarchy_action_description(description, kind, action, group):
     if description and description.strip():
         return description.strip().rstrip(".")
+    if group == "workspaces":
+        target = re.search(r"\bworkspace\s*=\s*[\"']?([^,}\"']+)|\bworkspace\s+([+-]?\w+)",
+                           action, re.IGNORECASE)
+        if target:
+            return f"Switch to workspace {(target.group(1) or target.group(2)).strip()}"
+    if group == "layout" and "togglesplit" in action.casefold():
+        return "Toggle the window split layout"
+    if group == "window_navigation":
+        direction = re.search(r"\bmovefocus\s+(l|r|u|d|left|right|up|down)\b", action,
+                              re.IGNORECASE)
+        if direction:
+            direction_name = {"l": "left", "r": "right", "u": "up", "d": "down"}.get(
+                direction.group(1).casefold(), direction.group(1).casefold())
+            return f"Focus the window to the {direction_name}"
     generic_action = {
         "workspaces": "Switch or move windows between workspaces",
         "layout": "Change the window layout",
