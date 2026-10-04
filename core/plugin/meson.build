@@ -15,7 +15,8 @@ layer_shell_header = custom_target('layer-shell-header',
 
 shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declutter.cpp',
   'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/goo-shape.cpp',
-  'src/key-layers.cpp', 'src/inertia.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp'],
+  'src/key-layers.cpp', 'src/inertia.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp',
+  'src/pairing.cpp'],
   dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo],
 
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become

@@ -56,7 +56,7 @@ assert 'Zero leaves clear glass; one uses the full tint.' in edge_section
 
 inertia = {name for name in options if name in {
     "key_impulse", "key_friction", "resize_impulse", "resize_friction", "key_max_velocity", "cycle_overshoot",
-    "alt_hold_delay", "window_double_tap_delay"}}
+    "alt_hold_delay", "window_double_tap_delay", "window_hold_delay"}}
 motion_section = qml.split("id:motionSettings", 1)[1].split("id:windowOpacitySettings", 1)[0]
 motion_rows = set(re.findall(r'id:\s*"([^"]+)"', motion_section))
 motion_special = set(re.findall(r'setMotion\("([^"]+)"', qml))

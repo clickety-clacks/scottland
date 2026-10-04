@@ -1010,7 +1010,7 @@ int main()
     tap_at('s',2650,120);
     check(moves==std::vector<D>{D::widget},"multi-letter repeat begins within the release gap and acts only on completion");
     mode.end(); mode.refresh({}); moves.clear(); mode.begin(entries,0);
-    mode.letter('a',3000); mode.letter('a',3100);
+    mode.letter('a',3000); mode.letter('a',3100); mode.release('a',3180); // the selected window acts on release (WK35)
     check(moves==std::vector<D>{D::periphery},"no final-key release means no double-tap candidate");
     mode.end(); moves.clear(); mode.begin(entries,0);
     tap_at('a',4000,120); mode.release('s',4400); tap_at('a',4500,120);

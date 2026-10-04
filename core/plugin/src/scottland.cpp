@@ -22,6 +22,7 @@
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/workarea.hpp>
 #include <wayfire/window-manager.hpp>
+#include <wayfire/view-helpers.hpp>
 #include <linux/input-event-codes.h>
 #include <wayfire/util/log.hpp>
 #include <wayfire/util/duration.hpp>
@@ -63,6 +64,7 @@ extern "C" {
 #include "cycle-spring.hpp"
 #include "declutter.hpp"
 #include "alt-mode.hpp"
+#include "pairing.hpp"
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"
@@ -766,12 +768,12 @@ class virtual_pointer_t
   public:
     wlr_pointer pointer;
 
-    virtual_pointer_t()
+    explicit virtual_pointer_t(const char *name = "scottland-touch-pointer")
     {
         auto& core = wf::get_core();
         backend = wlr_headless_backend_create(core.ev_loop);
         wlr_multi_backend_add(core.backend, backend);
-        wlr_pointer_init(&pointer, &impl, "scottland-touch-pointer");
+        wlr_pointer_init(&pointer, &impl, name);
         wl_signal_emit_mutable(&backend->events.new_input, &pointer.base);
         if (core.get_current_state() >= wf::compositor_state_t::RUNNING)
         {
@@ -835,15 +837,50 @@ class virtual_pointer_t
     void click(uint32_t button)
     {
         for (auto state : {WL_POINTER_BUTTON_STATE_PRESSED, WL_POINTER_BUTTON_STATE_RELEASED})
-        {
-            wlr_pointer_button_event ev;
-            ev.pointer   = &pointer;
-            ev.time_msec = now_msec();
-            ev.button    = button;
-            ev.state     = state;
-            wl_signal_emit(&pointer.events.button, &ev);
-            wl_signal_emit(&pointer.events.frame, NULL);
-        }
+            press(button, state == WL_POINTER_BUTTON_STATE_PRESSED);
+    }
+
+    void press(uint32_t button, bool down)
+    {
+        wlr_pointer_button_event ev;
+        ev.pointer   = &pointer;
+        ev.time_msec = now_msec();
+        ev.button    = button;
+        ev.state     = down ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED;
+        wl_signal_emit(&pointer.events.button, &ev);
+        wl_signal_emit(&pointer.events.frame, NULL);
+    }
+
+    // Touchpad gestures as libinput's backend reports them, through the same device signals, so
+    // Wayfire's input path (and every plugin on it) sees them as it would a real touchpad's.
+    void hold_begin(uint32_t fingers)
+    {
+        wlr_pointer_hold_begin_event ev{&pointer, now_msec(), fingers};
+        wl_signal_emit(&pointer.events.hold_begin, &ev);
+    }
+
+    void hold_end(bool cancelled)
+    {
+        wlr_pointer_hold_end_event ev{&pointer, now_msec(), cancelled};
+        wl_signal_emit(&pointer.events.hold_end, &ev);
+    }
+
+    void swipe_begin(uint32_t fingers)
+    {
+        wlr_pointer_swipe_begin_event ev{&pointer, now_msec(), fingers};
+        wl_signal_emit(&pointer.events.swipe_begin, &ev);
+    }
+
+    void swipe_update(uint32_t fingers, double dx, double dy)
+    {
+        wlr_pointer_swipe_update_event ev{&pointer, now_msec(), fingers, dx, dy};
+        wl_signal_emit(&pointer.events.swipe_update, &ev);
+    }
+
+    void swipe_end(bool cancelled)
+    {
+        wlr_pointer_swipe_end_event ev{&pointer, now_msec(), cancelled};
+        wl_signal_emit(&pointer.events.swipe_end, &ev);
     }
 };
 
@@ -959,7 +996,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (state.pinned_scale != scale)
         {
             state.pinned_scale = scale;
-            LOGI("scottland: window ", view->get_id(), scale ? " keeps its scale (Shift)" : " follows its zone again");
+            LOGI("scottland: window ", view->get_id(), scale ? " keeps a pinned scale (Shift or pairing)" : " follows its zone again");
             publish_model();
         }
     }
@@ -4577,7 +4614,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     bool is_touchpad(wlr_input_device *device)
     {
-        if (test_touchpad_pointers)
+        if (test_touchpad_pointers || (test_touchpad && device == &test_touchpad->pointer.base))
         {
             return true;
         }
@@ -4605,6 +4642,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void swipe_begin(uint32_t fingers)
     {
+        cancel_touchpad_hold(); // the fingers moved first: a drag (L23)
         if (!touchpad_gestures || (fingers != 3) || drag->view || swipe_moving)
         {
             return;
@@ -4658,6 +4696,55 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_swipe_end_event>> on_swipe_end =
         [=] (wf::input_event_signal<wlr_pointer_swipe_end_event>*) { swipe_end(); };
 
+    // Three-finger hold (WK35/WK36): fingers down and still for the hint hold delay, before any
+    // click or drag. libinput reports still fingers as a hold gesture and ends it (cancelled) as
+    // soon as they move or click, so a swipe (L23) or click (L24) that starts first keeps its
+    // meaning. On an unfocused window it pairs with the focused one; on the focused window it
+    // reaches the solo hook. The gesture still reaches the app (it stops kinetic scrolling).
+    struct touchpad_hold_t { uint64_t window = 0, partner = 0; };
+    std::optional<touchpad_hold_t> touchpad_hold;
+    wf::wl_timer<false> touchpad_hold_timer;
+    std::unique_ptr<virtual_pointer_t> test_touchpad; // scottland/test-touchpad only
+
+    void cancel_touchpad_hold() { touchpad_hold.reset(); touchpad_hold_timer.disconnect(); }
+
+    void touchpad_hold_begin(wlr_input_device *device, uint32_t fingers, uint32_t time_msec)
+    {
+        cancel_touchpad_hold();
+        if (!touchpad_gestures || (fingers != 3) || !is_touchpad(device) || drag->view || swipe_moving ||
+            middle_pending || middle_resizing) return;
+        auto view = gesture_target();
+        if (!view) return;
+        auto link = link_of_widget(view);
+        uint64_t window = link ? link->window_id : view->get_id();
+        if (!model.windows.count(window)) return;
+        touchpad_hold = touchpad_hold_t{window, window_keys.focused ? window_keys.focused() : 0};
+        // Timed from the fingers' event, on the same clock as hint holds (WK39).
+        uint32_t delay = std::clamp(int(window_hold_delay), 1, 3000);
+        uint32_t now = now_msec(), elapsed = now - time_msec;
+        uint32_t remaining = (elapsed > 1000) ? delay : (elapsed >= delay ? 1 : delay - elapsed);
+        touchpad_hold_timer.set_timeout(remaining, [=] () { touchpad_hold_due(); });
+    }
+
+    void touchpad_hold_due()
+    {
+        if (!touchpad_hold) return;
+        auto hold = *touchpad_hold; touchpad_hold.reset();
+        // Still the window under the fingers, and nothing grabbed it meanwhile.
+        auto view = gesture_target();
+        auto link = view ? link_of_widget(view) : nullptr;
+        if (!view || drag->view || swipe_moving || (link ? link->window_id : view->get_id()) != hold.window) return;
+        LOGI("scottland: three-finger hold on ", hold.window, hold.window == hold.partner ? " (focused)" : "");
+        if (hold.window == hold.partner) solo_window(hold.window);
+        else if (hold.partner) pair_windows(hold.window, hold.partner);
+    }
+
+    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_hold_begin_event>> on_hold_begin =
+        [=] (wf::input_event_signal<wlr_pointer_hold_begin_event> *ev)
+    { touchpad_hold_begin(ev->device, ev->event->fingers, ev->event->time_msec); };
+    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_hold_end_event>> on_hold_end =
+        [=] (wf::input_event_signal<wlr_pointer_hold_end_event>*) { cancel_touchpad_hold(); };
+
     void replay_middle_click()
     {
         auto seat = wf::get_core().get_current_seat();
@@ -4671,6 +4758,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> on_touchpad_button =
         [=] (wf::input_event_signal<wlr_pointer_button_event> *ev)
     {
+        if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED && is_touchpad(ev->device))
+            cancel_touchpad_hold(); // a click came first (L24)
         if (!touchpad_gestures || (ev->event->button != BTN_MIDDLE) || !is_touchpad(ev->device))
         {
             return;
@@ -5233,6 +5322,35 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return true;
         });
     }
+
+    // Isolated test sessions only: a virtual touchpad that emits wlroots' touchpad events
+    // (hold, swipe, button) the way libinput's backend does, so they take Wayfire's real input
+    // path: core input signals, plugins, then the client's gesture protocol.
+    wf::ipc::method_callback test_touchpad_input = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!getenv("SCOTTLAND_TEST_MODEL")) return wf::ipc::json_error("test sessions only");
+        if (!test_touchpad) test_touchpad = std::make_unique<virtual_pointer_t>("scottland-test-touchpad");
+        std::string event = data.has_member("event") && data["event"].is_string() ? data["event"].as_string() : "";
+        uint32_t fingers = data.has_member("fingers") ? uint32_t(data["fingers"].as_int()) : 3;
+        bool cancelled = data.has_member("cancelled") && data["cancelled"].as_bool();
+        if (event == "hold_begin") test_touchpad->hold_begin(fingers);
+        else if (event == "hold_end") test_touchpad->hold_end(cancelled);
+        else if (event == "swipe_begin") test_touchpad->swipe_begin(fingers);
+        else if (event == "swipe_update") test_touchpad->swipe_update(fingers,
+            data.has_member("dx") ? data["dx"].as_double() : 0.0, data.has_member("dy") ? data["dy"].as_double() : 0.0);
+        else if (event == "swipe_end") test_touchpad->swipe_end(cancelled);
+        else if (event == "button") test_touchpad->press(
+            data.has_member("button") && data["button"].as_string() == "left" ? BTN_LEFT : BTN_MIDDLE,
+            data.has_member("pressed") && data["pressed"].as_bool());
+        else if (!event.empty()) return wf::ipc::json_error("unknown touchpad event");
+        auto reply = wf::ipc::json_ok();
+        reply["hold_pending"] = bool(touchpad_hold);
+        reply["swipe_moving"] = swipe_moving;
+        reply["middle_pending"] = middle_pending;
+        reply["middle_resizing"] = middle_resizing;
+        reply["dragging"] = bool(drag->view);
+        return reply;
+    };
 
     // Tests can't produce real touchpad gestures: this feeds the same handlers synthetic ones.
     wf::ipc::method_callback test_input = [=] (wf::json_t data) -> wf::json_t
@@ -6381,6 +6499,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     bool step_glides()
     {
+        // A glide moves only the drawn frame, so its end changes the layout window avoidance
+        // sees without any geometry signal. Ask for one solve on the settled frames then
+        // (WK13/WK36: a window the move left covered must still peek out in this hold).
+        bool settled = false;
         for (auto it = glides.begin(); it != glides.end();)
         {
             auto view  = wf::toplevel_cast(it->second.view.lock());
@@ -6415,6 +6537,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     frame->translation_x = frame->translation_y = 0;
                     frame->scale_x = frame->scale_y = glide.scale_to;
                     it = glides.erase(it);
+                    settled = true;
                 } else ++it;
                 continue;
             }
@@ -6428,6 +6551,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 auto done = std::move(glide.done);
                 it = glides.erase(it);
+                settled = true;
                 if (done)
                 {
                     done();  // (it puts the frame where it's to stay)
@@ -6442,6 +6566,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             ++it;
         }
 
+        if (settled) refresh_layout_avoidance();
         return !glides.empty();
     }
 
@@ -7146,6 +7271,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_swipe_begin);
         wf::get_core().connect(&on_swipe_update);
         wf::get_core().connect(&on_swipe_end);
+        wf::get_core().connect(&on_hold_begin);
+        wf::get_core().connect(&on_hold_end);
         wf::get_core().connect(&on_touchpad_button);
         wf::get_core().connect(&on_touch_down_capture);
         wf::get_core().connect(&on_touch_motion_capture);
@@ -7155,6 +7282,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_touch_up);
         synthesize_pop();
         ipc_repo->register_method("scottland/test-input", test_input);
+        ipc_repo->register_method("scottland/test-touchpad", test_touchpad_input);
         ipc_repo->register_method("scottland/widgets", widgets_state);
         ipc_repo->register_method("scottland/desktop-model", desktop_state);
         ipc_repo->register_method("scottland/subscribe", subscribe_model);
@@ -7300,6 +7428,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         widget_transitions.clear();
         on_swipe_update.disconnect();
         on_swipe_end.disconnect();
+        on_hold_begin.disconnect();
+        on_hold_end.disconnect();
+        cancel_touchpad_hold();
+        test_touchpad.reset();
+        ipc_repo->unregister_method("scottland/test-touchpad");
         on_touchpad_button.disconnect();
         on_touch_down.disconnect();
         on_touch_down_capture.disconnect();
