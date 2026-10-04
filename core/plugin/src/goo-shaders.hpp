@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 namespace scottland::goo
 {
@@ -19,8 +20,17 @@ uniform vec2 uAtlasSize;
 uniform int uCount;
 uniform vec2 uRes, uSize;
 uniform float uTime, uReach, uNoise, uNoiseScale, uNoiseSpeed, uT, uPacked, uThickness;
+#ifdef GOO_FAST
+// The common resting/breathing path: no overlap film, no control proximity, and every source
+// is eligible, so loops end at uCount. Uniform branches alone keep the overlap/hover loop
+// state alive on Xe even when both are absent.
+uniform float uFilm,uCloudiness,uEmissivity,uDyeStrength; const float uOverlap=0.,uControls=0.;
+#define GOO_BOUND(n) uCount
+#else
 uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls,uDyeStrength;
-vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/float(max(uCount,1)))); }
+#define GOO_BOUND(n) int(n)
+#endif
+vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/max(float(uCount),1.))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p) {
   vec2 i=floor(p), f=fract(p), u=f*f*(3.-2.*f);
@@ -101,9 +111,11 @@ vec4 gooField(vec2 p) {
   float F=0.,tinted=0.,cloud=0.,weight=0.,breathing=0.;vec2 back=backdrop(p);
   // Extend the front source under its own content for bilinear reconstruction.
   // Rendering and the flow mask still clip that content analytically.
+#ifndef GOO_FAST
   if(back.x==0.)back=vec2(1.,0.);
+#endif
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);
+    if(i>=GOO_BOUND(back.x))break;vec4 r=source(i,0.),g=source(i,1.);
     // A hint's own halo remains visible over app content even when window film is off.
     if(g.x<=0.||(back.y<0.&&uFilm<=0.&&source(i,5.).w<.5))continue;
     float e=edgeDistance(p,r,g,back,i),fe=fall(e);
@@ -243,9 +255,11 @@ void main(){
   float ksum=1e-4,maxK=0.,nearEdge=1e5;vec3 nearest=vec3(0);vec2 back=backdrop(p);
   // Retain the front source's dye under its own island as well: interpolation
   // at a thin film must not mix its color with black dry texels inside content.
+#ifndef GOO_FAST
   if(back.x==0.)back=vec2(1.,0.);
+#endif
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
+    if(i>=GOO_BOUND(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearEdge=min(nearEdge,e);nearest+=k*source(i,2.).rgb;
   }
   // GO24 watercolor. `wash` is where the liquid carries paper pigment: all of it, thin
@@ -261,7 +275,7 @@ void main(){
   float wash=uSoak>0.?smoothstep(1.,3.,nearEdge)*smoothstep(uT*.5,uT,ksum)*mix(.65,1.,thick):0.;
   float share=uSoak>0.?pow(uSoak,.25):0.;
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
+    if(i>=GOO_BOUND(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e); if(k<maxK-.00001)continue;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
     // At the wall, keep state ink ahead of wallpaper color diffusing inward; out in
@@ -358,7 +372,7 @@ void main(){
   float hintAmount=0.;vec3 hintDye=vec3(0.);
   vec2 hintBack=backdrop(p);
   if(uHints>.5)for(int i=0;i<1024;i++){
-    if(i>=int(hintBack.x))break;if(source(i,5.).x<=0.)continue;
+    if(i>=GOO_BOUND(hintBack.x))break;if(source(i,5.).x<=0.)continue;
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
@@ -368,7 +382,7 @@ void main(){
   float wallBand=uSoak>0.?1.-smoothstep(1.5,4.,d):0.;
   float wallAmount=0.;vec3 wallDye=vec3(0.);
   if(wallBand>0.)for(int i=0;i<1024;i++){
-    if(i>=int(hintBack.x))break;
+    if(i>=GOO_BOUND(hintBack.x))break;
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     wallDye+=source(i,2.).rgb*contribution;wallAmount+=contribution;
   }
@@ -379,7 +393,14 @@ void main(){
   // Keep the shipped one-pixel exclusion around window content.
   vec2 refr=p-clamp(slope,vec2(-2.),vec2(2.))*(film?1.:8.); if(unionSdf(refr)<1.)refr=p;
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
+#ifdef GOO_CACHE
+  // GO24: neither cache holds the backdrop or the dye. The intrinsic cache is the surface with
+  // no dye (hint dye and control milk, which replace or whiten it, stay); the parameter cache
+  // carries the dye's share of the color (below). The composite multiplies the live dye in.
+  vec3 bg=vec3(0.),dye=vec3(0.);
+#else
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
+#endif
   if(hintAmount>0.)dye=hintDye/hintAmount;
   else if(wallBand>0.)dye=mix(dye,wallDye/wallAmount,wallBand);
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);
@@ -403,14 +424,34 @@ void main(){
     dyeBlend=clamp(dyeBlend*stateTint,0.,1.);
   }
   vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95);
-  if(uDyeStrength!=1.)color+=dye*rim*.22*stateTint;
-  else if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;
-  else color+=dye*rim*.22;
+  // One rim tint for the surface and for the cached dye share below (GO23 x GO24).
+  float rimTint=uDyeStrength!=1.?stateTint:uNeutralTint>.5?dyeTint:1.;
+  color+=dye*rim*.22*rimTint;
   // Emission is independent of normal, light and dye release. Zero really is off.
   color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);
   color+=.25*pulse*mix(dye,vec3(1.),.25);
   a*=film?mix(.48,.78,milk):mix(.96,1.,milk);
+#ifdef GOO_CACHE
+  // Every dye term above is the texture dye times a factor; this is that factor, out of the
+  // wall band and the control milk, which do not come from the texture.
+  float dyeShare=hintAmount>0.?0.:(1.-wallBand)*(1.-milk*.8)*
+    (.85*dyeBlend*diff+rim*.22*rimTint+cloud*uEmissivity*.35+.25*pulse*.75);
+  vec4 cacheParams=vec4(clamp((refr-p)/32.+.5,0.,1.),
+    clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),clamp(dyeShare/1.5,0.,1.));
+#endif
+#if defined(GOO_CACHE_BOTH)
+  // GO26: one pass writes both caches (color and coverage; refraction and light).
+  gl_FragColor=vec4(clamp(color,0.,1.),a);
+  goo_params=cacheParams;
+#elif defined(GOO_CACHE_PARAMS)
+  gl_FragColor=cacheParams;
+#elif defined(GOO_CACHE)
+  // The background term is nonnegative, so clamping intrinsic light before compositing
+  // gives the same final clamp.
+  gl_FragColor=vec4(clamp(color,0.,1.),a);
+#else
   gl_FragColor=vec4(clamp(color,0.,1.)*a,a);
+#endif
 }
 )";
 // The settled surface is independent of the scene beneath it. Cache its own
@@ -496,4 +537,71 @@ uniform vec2 uPoint;
 uniform sampler2D uDyeTex;
 void main(){float h=decode(texture2D(uWave,uPoint/uRes)).x;gl_FragColor=vec4(texture2D(uDyeTex,uPoint/uRes).rgb,h/8.+128./255.);}
 )";
+inline const std::string copy_shader =
+    "precision highp float; uniform sampler2D image; void main(){gl_FragColor=texture2D(image,vec2(.5));}";
+
+// Program variants are chosen by #defines written into the sources above (GOO_FAST, GOO_CACHE,
+// GOO_CACHE_PARAMS, GOO_CACHE_BOTH), never by searching and editing shader text: a change to a
+// shader can then only fail to compile, which tests/goo-shader-variants-test.sh checks for
+// every variant in both dialects, not throw at startup or silently stop matching.
+struct program_variant
+{
+    const char *name;
+    const std::string *fragment;
+    const char *defines;
+    bool derivatives = false;
+    bool two_outputs = false;  // GLES 3 only: goo_color and goo_params
+    bool es3_only = false;
+    bool required = true;      // false: the renderer has a fallback when it does not link
+};
+inline const std::vector<program_variant> &program_variants()
+{
+    static const std::vector<program_variant> variants{
+        {"field", &field_shader, ""}, {"mask", &mask_shader, ""}, {"wave", &wave_shader, ""},
+        {"dye", &dye_shader, ""}, {"render", &render_shader, "", true},
+        {"energy", &energy_shader, ""}, {"query", &query_shader, ""},
+        {"field_fast", &field_shader, "#define GOO_FAST\n"}, {"mask_fast", &mask_shader, "#define GOO_FAST\n"},
+        {"wave_fast", &wave_shader, "#define GOO_FAST\n"}, {"dye_fast", &dye_shader, "#define GOO_FAST\n"},
+        {"render_fast", &render_shader, "#define GOO_FAST\n", true},
+        {"intrinsic", &render_shader, "#define GOO_CACHE\n", true},
+        {"refraction", &render_shader, "#define GOO_CACHE\n#define GOO_CACHE_PARAMS\n", true},
+        {"cache_both", &render_shader, "#define GOO_CACHE\n#define GOO_CACHE_BOTH\n", true, true, true, false},
+        {"composite", &cached_composite_shader, ""}, {"composite_mix", &cached_composite_mix_shader, ""},
+        {"backdrop", &backdrop_shader, ""}, {"copy", &copy_shader, ""},
+    };
+    return variants;
+}
+// GLES 2 sources are written in GLSL ES 1.00; GLES 3 gets the same text in 3.00 spelling.
+inline std::string es3_spelling(std::string s, bool fragment)
+{
+    auto replace = [&s] (const std::string &from, const std::string &to)
+    {
+        for (size_t at = 0; (at = s.find(from, at)) != std::string::npos; at += to.size())
+            s.replace(at, from.size(), to);
+    };
+    if (!fragment)
+    {
+        replace("attribute ", "in ");
+        replace("varying ", "out ");
+        return s;
+    }
+    replace("varying ", "in ");
+    replace("texture2D(", "texture(");
+    replace("gl_FragColor", "goo_color");
+    replace("i<1024", "i<uCount");
+    return s;
+}
+inline std::string vertex_source(bool es3)
+{
+    return es3 ? "#version 300 es\n" + es3_spelling(vertex, false) : "#version 100\n" + vertex;
+}
+inline std::string fragment_source(const program_variant &v, bool es3)
+{
+    if (es3)
+        return std::string("#version 300 es\n") + v.defines + "precision highp float; " +
+            (v.two_outputs ? "layout(location=0) out vec4 goo_color; layout(location=1) out vec4 goo_params;\n" :
+                             "out vec4 goo_color;\n") + es3_spelling(*v.fragment, true);
+    return std::string("#version 100\n") +
+        (v.derivatives ? "#extension GL_OES_standard_derivatives : require\n" : "") + v.defines + *v.fragment;
+}
 } // namespace scottland::goo

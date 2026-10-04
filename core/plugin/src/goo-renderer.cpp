@@ -4,6 +4,7 @@
 #include "attention-breath.hpp"
 #include <cmath>
 #include <chrono>
+#include <map>
 #include <cstring>
 #include <wayfire/scene-render.hpp>
 #include <wayfire/util/log.hpp>
@@ -200,33 +201,16 @@ struct renderer_t::impl
         for (auto &t : reduction)
             t.release();
     }
-    void compile(OpenGL::program_t &program, std::string vs, std::string fs, bool derivatives = false,
-                 bool two_outputs = false)
+    // Compiles one program variant (goo-shaders.hpp) and reports, by name, a variant that
+    // does not link.
+    bool build(OpenGL::program_t &program, const program_variant &variant)
     {
-        auto replace = [](std::string &s, const std::string &from, const std::string &to)
-        {
-            size_t at = 0;
-            while ((at = s.find(from, at)) != std::string::npos)
-            {
-                s.replace(at, from.size(), to);
-                at += to.size();
-            }
-        };
-        if (es3)
-        {
-            replace(vs, "attribute ", "in ");
-            replace(vs, "varying ", "out ");
-            replace(fs, "varying ", "in ");
-            replace(fs, "texture2D(", "texture(");
-            replace(fs, "gl_FragColor", "goo_color");
-            replace(fs, "i<1024", "i<uCount");
-            program.compile("#version 300 es\n" + vs, std::string("#version 300 es\nprecision highp float; ") +
-                (two_outputs ? "layout(location=0) out vec4 goo_color; layout(location=1) out vec4 goo_params;\n" :
-                 "out vec4 goo_color;\n") + fs);
-        }
-        else
-            program.compile("#version 100\n" + vs, std::string("#version 100\n") +
-                (derivatives ? "#extension GL_OES_standard_derivatives : require\n" : "") + fs);
+        program.compile(vertex_source(es3), fragment_source(variant, es3));
+        GLint linked = 0;
+        glGetProgramiv(program.get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
+        if (!linked)
+            LOGE("scottland goo: the ", variant.name, " shader did not link");
+        return linked;
     }
     bool support()
     {
@@ -254,110 +238,40 @@ struct renderer_t::impl
         }
         field.release();
         LOGI("scottland goo: ", packed ? "packed RGBA8" : "RGBA16F", " simulation targets");
-        const std::array programs{std::make_pair(&field_p, &field_shader), std::make_pair(&mask_p, &mask_shader), std::make_pair(&wave_p, &wave_shader),
-                          std::make_pair(&dye_p, &dye_shader), std::make_pair(&render_p, &render_shader),
-                          std::make_pair(&energy_p, &energy_shader), std::make_pair(&query_p, &query_shader)};
-        for (auto pair : programs)
+        const std::map<std::string, OpenGL::program_t*> programs{
+            {"field", &field_p}, {"mask", &mask_p}, {"wave", &wave_p}, {"dye", &dye_p}, {"render", &render_p},
+            {"energy", &energy_p}, {"query", &query_p}, {"field_fast", &field_fast}, {"mask_fast", &mask_fast},
+            {"wave_fast", &wave_fast}, {"dye_fast", &dye_fast}, {"render_fast", &render_fast},
+            {"intrinsic", &intrinsic_p}, {"refraction", &refraction_p}, {"cache_both", &cache_p},
+            {"composite", &composite_p}, {"composite_mix", &composite_mix_p},
+            {"backdrop", &backdrop_p}, {"copy", &copy_p}};
+        mrt = false;
+        for (auto &variant : program_variants())
         {
-            compile(*pair.first, vertex, *pair.second, pair.second == &render_shader);
-            GLint linked = 0;
-            glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
-            if (!linked)
-                available = false;
-        }
-        // Specialize the common resting/breathing path. Uniform branches alone
-        // retain the overlap/hover loop state on Xe, even when both are absent.
-        const std::array fast_programs{std::make_pair(&field_fast, &field_shader),
-            std::make_pair(&mask_fast, &mask_shader), std::make_pair(&wave_fast, &wave_shader),
-            std::make_pair(&dye_fast, &dye_shader), std::make_pair(&render_fast, &render_shader)};
-        for (auto pair : fast_programs)
-        {
-            auto shader = *pair.second;
-            const std::string decl = "uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls,uDyeStrength;";
-            auto decl_at = shader.find(decl);
-            if (decl_at == std::string::npos)
+            auto program = programs.find(variant.name);
+            if (program == programs.end())
             {
-                LOGE("scottland goo: fast shader specialization declaration was not found");
+                LOGE("scottland goo: no program for the ", variant.name, " shader");
                 available = false;
-                return false;
+                continue;
             }
-            shader.replace(decl_at, decl.size(),
-                "uniform float uFilm,uCloudiness,uEmissivity,uDyeStrength; const float uOverlap=0.,uControls=0.;");
-            // A float round-trip of uCount keeps a second dynamic loop bound in
-            // some GLES compilers. In this specialization every source is eligible.
-            auto replace = [&](const std::string &from, const std::string &to)
+            if (variant.es3_only && !es3)
+                continue;
+            bool linked = build(*program->second, variant);
+            if (program->second == &cache_p)
             {
-                size_t at = 0;
-                while ((at = shader.find(from, at)) != std::string::npos)
-                {
-                    shader.replace(at, from.size(), to);
-                    at += to.size();
-                }
-            };
-            replace("if(back.x==0.)back=vec2(1.,0.);", "");
-            replace("if(i>=int(back.x))break;", "if(i>=uCount)break;");
-            replace("if(i>=int(hintBack.x))break;", "if(i>=uCount)break;");
-            compile(*pair.first, vertex, shader, pair.second == &render_shader);
-            GLint linked = 0;
-            glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
-            if (!linked) available = false;
+                // GO26: one pass writes both caches; otherwise each refresh takes two passes.
+                mrt = linked;
+                if (!mrt)
+                    LOGI("scottland goo: single-pass cache refresh unavailable; using two passes");
+            } else if (!linked && variant.required)
+                available = false;
         }
-        // GO24: the refraction cache's alpha is the dye's share of the color.
-        const std::string cached_params =
-            "float dyeShare=hintAmount>0.?0.:(1.-wallBand)*(1.-milk*.8)*(.85*dyeBlend*diff+"
-            "rim*.22*(uDyeStrength!=1.?stateTint:uNeutralTint>.5?dyeTint:1.)+cloud*uEmissivity*.35+.25*pulse*.75);"
-            "OUT=vec4(clamp((refr-p)/32.+.5,0.,1.),"
-            "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),clamp(dyeShare/1.5,0.,1.));";
-        auto params_to = [&](const std::string &output)
+        if (programs.size() != program_variants().size())
         {
-            std::string text = cached_params;
-            text.replace(text.find("OUT"), 3, output);
-            return text;
-        };
-        auto cached_shader = [&](bool params)
-        {
-            std::string shader = render_shader;
-            // GO24: neither cache holds the dye. The intrinsic one is the surface with no
-            // dye (hint dye and control milk, which replace or whiten it, stay); the other
-            // carries the dye's share of the color, which is one scalar: every dye term
-            // above is the dye times a factor. The composite multiplies the live dye in.
-            const std::string background = "vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;";
-            shader.replace(shader.find(background), background.size(), "vec3 bg=vec3(0.),dye=vec3(0.);");
-            const std::string result = "gl_FragColor=vec4(clamp(color,0.,1.)*a,a);";
-            shader.replace(shader.find(result), result.size(), params ?
-                params_to("gl_FragColor") :
-                // The background term is nonnegative, so clamping intrinsic
-                // light before compositing gives the same final clamp.
-                "gl_FragColor=vec4(clamp(color,0.,1.),a);");
-            return shader;
-        };
-        if (es3)
-        {
-            // GO26: one pass writes both caches (color and coverage; refraction and light).
-            std::string both = cached_shader(false);
-            const std::string color = "gl_FragColor=vec4(clamp(color,0.,1.),a);";
-            both.replace(both.find(color), color.size(), color + params_to("goo_params"));
-            compile(cache_p, vertex, both, true, true);
-            GLint linked = 0;
-            glGetProgramiv(cache_p.get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
-            mrt = linked;
-            if (!mrt)
-                LOGI("scottland goo: single-pass cache refresh unavailable; using two passes");
+            LOGE("scottland goo: shader table and programs differ");
+            available = false;
         }
-        compile(intrinsic_p, vertex, cached_shader(false), true);
-        compile(refraction_p, vertex, cached_shader(true), true);
-        compile(composite_p, vertex, cached_composite_shader);
-        compile(composite_mix_p, vertex, cached_composite_mix_shader);
-        for (auto p : {&intrinsic_p, &refraction_p, &composite_p, &composite_mix_p})
-        {
-            GLint linked = 0;
-            glGetProgramiv(p->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
-            if (!linked) available = false;
-        }
-        compile(backdrop_p, vertex, backdrop_shader);
-        compile(copy_p, vertex,
-                "precision highp float; uniform sampler2D image; void "
-                "main(){gl_FragColor=texture2D(image,vec2(.5));}");
         if (!available)
             LOGE("scottland goo: shader unavailable; retaining halo");
         return available;

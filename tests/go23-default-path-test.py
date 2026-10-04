@@ -14,7 +14,8 @@ assert re.search(
     r"if\(uDyeStrength==1\.\)\s*\{\s*if\(uNeutralTint>\.5&&dyeTint<\.999999\)dyeBlend\*=dyeTint;",
     shader,
 )
-assert "else if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;" in shader
+assert "float rimTint=uDyeStrength!=1.?stateTint:uNeutralTint>.5?dyeTint:1.;" in shader
+assert "color+=dye*rim*.22*rimTint;" in shader
 assert "tinted+=contribution*(uDyeStrength==1.?source(i,7.).y:source(i,7.).z);" in shader
 assert "stateTint=neutralStrength*(1.-stateMix)+uDyeStrength*stateMix;" in shader
 assert "dyeBlend=clamp(dyeBlend*stateTint,0.,1.);" in shader
