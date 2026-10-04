@@ -1413,8 +1413,7 @@
             remove_hint_outline(visual);
             if (visual.hint) visual.hint->hide(hints_reduced_motion);
         }
-        for (auto& [id, link] : model.widgets)
-            if (link.docked() && in_focus_mode(link.output)) slide_widget(link, true);
+        apply_widget_mode();  // collapsed and hidden widgets go back (WG16), and away in full screen (WK12)
         refresh_layout_avoidance();
     }
     void begin_window_keys()
@@ -1425,8 +1424,7 @@
         auto link = link_of_widget(active);
         window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
         apply_all_opacity();
-        for (auto& [id, widget] : model.widgets)
-            if (widget.docked() && in_focus_mode(widget.output)) slide_widget(widget, false);
+        apply_widget_mode();  // every widget comes back expanded while asking (WG16, WK12)
         palette_read = {}; // always read the current theme on entry
         declutter_signature.clear(); refresh_layout_avoidance(true);
     }

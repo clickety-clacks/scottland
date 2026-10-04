@@ -24,7 +24,7 @@ GOO = ("goo", "goo_breath_keys", "goo_falloff", "goo_thickness", "goo_reach", "g
        "goo_dye_strength", "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance",
        "attention_color_family")
 WIDGETS = ("widget_bounce", "widget_peek_enter_delay", "widget_peek_leave_delay", "widget_attention_peek_duration",
-           "widget_make_room_dwell")
+           "widget_make_room_dwell", "minimize_hold_delay")
 BOOL = ("goo", "goo_breath_keys", "window_avoidance_always")
 OPACITY = ("center_opacity_focused", "center_opacity_unfocused", "side_opacity_focused", "side_opacity_unfocused",
            "widget_opacity_focused", "widget_opacity_unfocused", "window_mode_opacity_focused", "window_mode_opacity_unfocused")

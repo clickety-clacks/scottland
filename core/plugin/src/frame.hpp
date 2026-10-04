@@ -405,6 +405,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     // Generic drag-owned layout audition. Independent of glides, widget morphs and the live
     // transform on the dragged view; committed moves clear this after real geometry applies.
     double drag_layout_x = 0, drag_layout_y = 0;
+    // A widget sliding off or peeking in at its screen edge (FS1, WG16's hidden mode). Owned by
+    // the rail slides alone, so glides and morphs never reset it.
+    double rail_slide_x = 0;
     std::function<bool(wayfire_toplevel_view)> is_widget;
 
     bool can_resize() const
@@ -531,7 +534,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     {
         // The base transformer scales about the center. Cancel its movement of the
         // rail-side edge, without stealing the translation owned by a glide.
-        return translation_x + drag_layout_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
+        return translation_x + drag_layout_x + rail_slide_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
             (window_geometry().width - presentation->width) * 0.5 : 0);
     }
 

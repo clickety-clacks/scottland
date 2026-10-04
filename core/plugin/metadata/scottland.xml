@@ -260,9 +260,16 @@
 			<default></default>
 		</option>
 		<option name="minimize_widget" type="key">
-			<_short>Collapse widgets</_short>
-			<_long>Collapses all widgets to just their icons, or, if they all are, expands them back. This key reduces peripheral detail while keeping every window visible.</_long>
+			<_short>Widget mode (expand, collapse, hide)</_short>
+			<_long>Tapping it cycles the widgets: expanded, collapsed to their icons, hidden off the screen edges (a widget whose app needs attention still peeks in), and expanded again. Holding it is momentary until released: from expanded it hides them, otherwise it expands them.</_long>
 			<default>&lt;super&gt; KEY_M</default>
+		</option>
+		<option name="minimize_hold_delay" type="int">
+			<_short>Widget mode key hold (ms)</_short>
+			<_long>Holding the widget mode key this long makes it momentary until released, instead of a tap that changes the mode.</_long>
+			<default>300</default>
+			<min>100</min>
+			<max>2000</max>
 		</option>
 		<option name="attention_color" type="color">
 			<_short>Attention color</_short>
