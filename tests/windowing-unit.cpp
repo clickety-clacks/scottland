@@ -95,12 +95,19 @@ int main()
         near(deadline_result[0].spot.center,{283,163}),
         "a forced tiny solve budget returns a finite, stable held target");
     auto stale_budget = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
-    std::vector<exposure_window> easing_deadline_case{{{150,100,220,160},72,48,{},false,
+    // A widget overlaps a corner, so the window is covered and keeps its label (WK31).
+    std::vector<exposure_window> easing_deadline_case{{{150,100,220,160},72,48,{{360,250,100,40}},false,
         {23,-17},{80,24},{35,0},90}};
     auto easing_deadline = expose_window_hints(easing_deadline_case, region, {}, stale_budget);
     check(near(easing_deadline[0].offset,{80,24}) &&
         near(easing_deadline[0].spot.center,{375,204}),
         "a deadline holds the prior target for one frame while unfinished work retries");
+    auto uncovered_deadline_case = easing_deadline_case;
+    uncovered_deadline_case[0].fixed_foreground.clear();
+    auto uncovered_deadline = expose_window_hints(uncovered_deadline_case, region, {}, stale_budget);
+    check(near(uncovered_deadline[0].offset,{80,24}) &&
+        near(uncovered_deadline[0].spot.center,{340,204}),
+        "WK31: a deadline holds an uncovered window's target with its hint at its center");
     std::vector<exposure_window> no_room_deadline_case{{{150,100,220,160},72,48,
         {{140,90,240,180}},true}};
     auto no_room_deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(1);
@@ -289,6 +296,7 @@ int main()
     size_t tiny_work = 0, repeat_tiny_work = 0;
     bool tiny_work_hit = false, repeat_tiny_work_hit = false;
     auto tiny_work_case = clear_after_drag;
+    tiny_work_case[0].frame.x = 240; // the covering layout: an uncovered window needs no search (WK31)
     tiny_work_case[1].incumbent_offset = retained_start[1].offset;
     tiny_work_case[1].target_offset = retained_start[1].offset;
     exposure_limits tiny_limits{4, &tiny_work, true};
@@ -984,5 +992,64 @@ int main()
     check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
+    {
+        // WK31: a window nothing covers has its hint at its exact center, with no search
+        // and no avoidance on its behalf; a prior off-center label point is not retained.
+        rectangle screen{0,0,1280,720};
+        auto centered = [] (const exposure_result& r, point c) {
+            return std::abs(r.spot.center.x - c.x) < 1e-6 && std::abs(r.spot.center.y - c.y) < 1e-6; };
+        exposure_window front{{190,60,900,600},132,48,{},true};
+        front.prior_label_offset = {-300,-150}; front.prior_clearance = 75;
+        exposure_window behind{{460,240,480,320},132,48};
+        auto raised = expose_window_hints({front, behind}, screen);
+        check(centered(raised[0], {640,360}) && near(raised[0].offset, {}),
+            "WK31: a raised front window drops its old off-center label for its exact center");
+        auto unanchored = front; unanchored.anchored = false;
+        auto unfocused = expose_window_hints({unanchored, behind}, screen);
+        // Unanchored, it may move to expose the window behind it; its hint stays at the
+        // center of its on-screen part.
+        const double top = std::max(0.0, 60 + unfocused[0].offset.y);
+        const double bottom = std::min(720.0, 660 + unfocused[0].offset.y);
+        check(centered(unfocused[0], {640 + unfocused[0].offset.x, (top + bottom) / 2}),
+            "WK31: an unfocused front window is centered too, even when moved for a window behind");
+        exposure_window small{{600,330,80,60},132,48};
+        small.prior_label_offset = {10,0}; small.prior_clearance = 30;
+        auto tiny = expose_window_hints({small}, screen);
+        check(centered(tiny[0], {640,360}) && near(tiny[0].offset, {}) && tiny[0].diameter == 54,
+            "WK31: no size-upgrade search or move for a front window too small for its wanted size");
+        exposure_window offscreen{{-200,100,600,400},132,48};
+        auto partial = expose_window_hints({offscreen}, screen);
+        check(centered(partial[0], {200,300}),
+            "WK31: a partly off-screen window is centered on its on-screen part");
+        exposure_window side{{1000,500,200,150},132,48};
+        side.prior_label_offset = {-40,-20}; side.prior_clearance = 30;
+        auto apart = expose_window_hints({{{100,100,600,400},132,48,{},true}, side}, screen);
+        check(centered(apart[1], {1100,575}),
+            "WK31: a rear window that nothing overlaps is centered like the frontmost");
+        exposure_window cornered{{100,100,600,400},132,48};
+        cornered.fixed_foreground = {{100,100,120,120}};
+        cornered.prior_label_offset = {-150,80}; cornered.prior_clearance = 60;
+        auto strict = expose_window_hints({cornered}, screen);
+        check(centered(strict[0], {250,380}),
+            "WK31 strict: a widget over one corner keeps the covered window's checked label");
+        bool hit = false;
+        auto expired_deadline = expose_window_hints({front, behind}, screen, {},
+            std::chrono::steady_clock::now() - std::chrono::milliseconds(1), &hit);
+        check(centered(expired_deadline[0], {640,360}),
+            "WK31: an expired solve deadline still centers the front window");
+        // Raising Back over a window that has no legal room: its held hint is the honest
+        // minimum on this layout, not the size it had while it was in front.
+        exposure_window buried{{400,240,480,320},109,48};
+        buried.prior_clearance = 160; buried.center_zone = true; buried.center_zone_half_width = 50;
+        auto held = expose_window_hints({front, buried}, screen);
+        check(held[1].spot.clearance == 0 && held[1].diameter == 48 &&
+            centered(held[1], {640,400}),
+            "a covered window with no room is not reported visible at its pre-raise size");
+        exposure_progress progress;
+        expose_window_hints_progressively({front, behind}, screen, {}, progress,
+            std::chrono::steady_clock::time_point::max());
+        check(progress.has_result[0] && centered(progress.results[0], {640,360}),
+            "WK31: the progressive solver centers the front window");
+    }
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }

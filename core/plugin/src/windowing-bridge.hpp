@@ -1123,6 +1123,39 @@
             }
             ++it;
         }
+        // WK31: hints draw in window stacking order, so a covered window's fallback hint
+        // never draws over the front window's centered one. Only the hints' own slots in the
+        // overlay layer are reordered; other overlay nodes keep their places.
+        if (window_keys.active)
+            for (auto& [output, ids] : by_output)
+            {
+                std::vector<std::pair<size_t, wf::scene::node_ptr>> drawn;
+                for (auto id : ids)
+                {
+                    auto found = hint_visuals.find(id);
+                    if (found == hint_visuals.end() || !found->second.hint) continue;
+                    auto rank = stacking.find(id);
+                    drawn.emplace_back(rank == stacking.end() ? stacking.size() : rank->second,
+                        found->second.hint);
+                }
+                std::stable_sort(drawn.begin(), drawn.end(),
+                    [] (const auto& a, const auto& b) { return a.first < b.first; });
+                auto parent = output->node_for_layer(wf::scene::layer::OVERLAY);
+                auto children = parent->get_children();
+                std::vector<size_t> slots;
+                for (size_t k = 0; k < children.size(); ++k)
+                    if (std::any_of(drawn.begin(), drawn.end(),
+                        [&] (const auto& hint) { return hint.second == children[k]; })) slots.push_back(k);
+                if (slots.size() != drawn.size()) continue;
+                bool reordered = false;
+                for (size_t k = 0; k < slots.size(); ++k)
+                    if (children[slots[k]] != drawn[k].second)
+                    { children[slots[k]] = drawn[k].second; reordered = true; }
+                if (!reordered) continue;
+                parent->set_children_list(children);
+                wf::scene::update(parent, wf::scene::update_flag::CHILDREN_LIST);
+                for (auto& [rank, hint] : drawn) wf::scene::damage_node(hint, hint->get_bounding_box());
+            }
         hint_step_animation = animation_moving;
         hint_step_offset = moving && !animation_moving;
         const bool widget_presentation_moving = window_keys.active && widget_transition_tick.is_connected();

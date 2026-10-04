@@ -29,6 +29,54 @@ bool fully_occluded(rectangle r, const std::vector<rectangle>& foreground)
             cover.y + cover.height >= r.y + r.height;
     });
 }
+rectangle on_screen(rectangle r, rectangle screen)
+{
+    const double right = std::min(r.x + r.width, screen.x + screen.width);
+    const double bottom = std::min(r.y + r.height, screen.y + screen.height);
+    r.x = std::max(r.x, screen.x); r.y = std::max(r.y, screen.y);
+    r.width = right - r.x; r.height = bottom - r.y;
+    return r;
+}
+// WK31: nothing in front (window or widget) overlaps the window's on-screen part. Strict:
+// a cover that leaves the center clear still counts, so that window keeps the search.
+bool uncovered(rectangle r, rectangle screen, const std::vector<rectangle>& foreground)
+{
+    r = on_screen(r, screen);
+    if (r.width <= 0 || r.height <= 0) return false;
+    return std::none_of(foreground.begin(), foreground.end(),
+        [&] (rectangle cover) { return overlap(r, cover) > 0; });
+}
+// An uncovered window's hint goes at the exact center of what is on screen of it,
+// with no search: its clearance is the distance to the nearest window edge.
+label_spot centered_spot(rectangle r, rectangle screen)
+{
+    r = on_screen(r, screen);
+    const point center{r.x + r.width / 2, r.y + r.height / 2};
+    return {center, std::max(0.0, std::min(r.width, r.height) / 2)};
+}
+double badge_diameter(const exposure_window& window, double clearance)
+{
+    return std::max(window.minimum, std::min(std::max(window.wanted, window.minimum),
+        std::floor(std::max(0.0, 2 * (clearance - 1) / pop_scale))));
+}
+// Final WK31 pass over a whole layout: whatever path produced a result (search, held
+// target, deadline fallback, way recheck), a window that nothing covers at its final
+// position has its hint at its center.
+void center_uncovered_hints(const std::vector<exposure_window>& windows, rectangle screen,
+    const std::vector<rectangle>& fixed, std::vector<exposure_result>& results)
+{
+    for (size_t i = 0; i < windows.size() && i < results.size(); ++i)
+    {
+        std::vector<rectangle> foreground = fixed;
+        foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
+            windows[i].fixed_foreground.end());
+        for (size_t j = 0; j < i; ++j) foreground.push_back(moved(windows[j].frame, results[j].offset));
+        const auto frame = moved(windows[i].frame, results[i].offset);
+        if (!uncovered(frame, screen, foreground)) continue;
+        results[i].spot = centered_spot(frame, screen);
+        results[i].diameter = badge_diameter(windows[i], results[i].spot.clearance);
+    }
+}
 int original_side(rectangle frame, rectangle screen)
 {
     const double center = screen.x + screen.width / 2;
@@ -649,6 +697,14 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
         foreground.insert(foreground.end(), active_windows[i].fixed_foreground.begin(),
             active_windows[i].fixed_foreground.end());
         for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
+        if (uncovered(nodes[i], screen, foreground))
+        {
+            // WK31: nothing covers it, so its hint is at its center; a prior label
+            // point from when it was covered is not retained.
+            best_spots[i] = centered_spot(nodes[i], screen);
+            has_spot[i] = true;
+            continue;
+        }
         point center{nodes[i].x + nodes[i].width / 2, nodes[i].y + nodes[i].height / 2};
         // The stored label point is relative to true geometry: the previous target
         // was subtracted when the bridge recorded it. Rechecking it from the true
@@ -708,6 +764,14 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
             foreground.insert(foreground.end(), active_windows[i].fixed_foreground.begin(),
                 active_windows[i].fixed_foreground.end());
             for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
+            if (uncovered(nodes[i], screen, foreground))
+            {
+                // WK31: no search and no avoidance for an uncovered window's own hint.
+                // It may still move to expose a window behind it, unless anchored.
+                best_spots[i] = centered_spot(nodes[i], screen);
+                has_spot[i] = true;
+                continue;
+            }
             // First look for the widget-size minimum in the current visible region.
             // Preferred-size enlargement is a later, separately bounded movement step;
             // asking visible_label to certify the wanted diameter before that check
@@ -1198,7 +1262,27 @@ std::vector<exposure_result> expose_window_hints(const std::vector<exposure_wind
         result.back().retained_clearance = retained_clearances[i];
     }
     for (size_t i = 0; i < result.size(); ++i)
-        if (hold_targets[i] && !moved_this_solve[i]) result[i] = held_result(i);
+        if (hold_targets[i] && !moved_this_solve[i])
+        {
+            result[i] = held_result(i);
+            // A held label keeps its point, but its clearance is measured on this layout:
+            // the previous one's (e.g. before a raise covered the window) would report a
+            // covered hint as visible at its old size.
+            std::vector<rectangle> foreground = fixed;
+            foreground.insert(foreground.end(), windows[i].fixed_foreground.begin(),
+                windows[i].fixed_foreground.end());
+            for (size_t j = 0; j < i; ++j) foreground.push_back(nodes[j]);
+            const auto frame = moved(windows[i].frame, result[i].offset);
+            const double checked = visible_clearance(result[i].spot.center, frame, screen, foreground);
+            if (checked < result[i].spot.clearance)
+            {
+                result[i].spot.clearance = std::max(0.0, checked);
+                if (checked <= 0)
+                    result[i].spot.center = {frame.x + frame.width / 2, frame.y + frame.height / 2};
+                result[i].diameter = badge_diameter(windows[i], result[i].spot.clearance);
+            }
+        }
+    center_uncovered_hints(windows, screen, fixed, result);
     if (profile) profile->finalization_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - finalization_started).count();
     if (profile) profile->work_count = work_count;
@@ -1352,6 +1436,8 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
         }
         if (!adopted && replacements.empty()) ++progress.way_recheck_rejections;
         if (adopted) ++progress.way_recheck_adoptions;
+        // Adopting one window's fresh way can uncover another window.
+        center_uncovered_hints(windows, screen, fixed, proposal);
         progress.results = std::move(proposal);
         if (profile) profile->work_count = work;
         if (limits.inspection_count) *limits.inspection_count = work;
@@ -1444,6 +1530,10 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
         progress.complete[i] = true;
         ++progress.fallback_count;
     }
+    // Results retained from an earlier slice sit beside this slice's results.
+    if (std::all_of(progress.has_result.begin(), progress.has_result.end(),
+        [] (bool value) { return value; }))
+        center_uncovered_hints(windows, screen, fixed, progress.results);
     for (size_t i = 0; i < progress.complete.size(); ++i)
     {
         if (!progress.complete[i])
