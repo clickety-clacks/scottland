@@ -83,7 +83,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
 | GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Ordinary Wayland surfaces whose root buffer bounds extend beyond their xdg window geometry also use the rendered alpha contour, covering client-side decoration insets generically; surfaces with matching bounds retain the analytic rounded box. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary surfaces without inset alpha masks retain analytic rounded boxes and do not sample the widget atlas. (Mike, 2026-10-02; core; CSD contour extension 2026-10-03) | implemented; Plumbus Chromium CSD, server-decoration and GTK/libadwaita captures below; physical-display verification remains open |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and keyframed source-local swell at draw time (about six logical pixels at shipped goo settings). Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
-| GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, too costly for the visual spacing bound, or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
+| GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled, the breath moves the shore more than 12 device pixels (24 keys at half a pixel), or unavailable, draw the breathing strips exactly. The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 | GO20 | Only a change wakes the goo, and only liquid is worked on. (1) Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
 | GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
@@ -2071,3 +2071,54 @@ These five-second GPU samples ran on shared Plumbus while unrelated Chromium and
 agent activity continued; a Chromium renderer briefly reached about 71% CPU and
 the one-minute load average reached 1.34. Treat the readings as observed costs under
 that load, not isolated hardware baselines. The result logs preserve load snapshots.
+
+## GO18 follow-up: keyframes for the restored bulge (2026-10-03)
+
+Core. On `3eea2c5` (what Mike's desktop runs) the keyframed breath had silently stopped:
+live `goo-state` showed `breath_keys` 0 and `breath_refreshes` 0 across 192,000 breath
+ticks with keyframes enabled, so every tick ran the full surface shader over the strips.
+
+**Cause.** `6ca8c4b` (dnd-and-pulse, "Restore visible attention bulging without waking the
+goo") raised the breath's swell from GO17's .12 density multiplier to a .45 excursion.
+The shore now travels 5.9 pt in a breath at shipped settings and 9.6 pt with Mike's
+(thickness 22, reach 33, swell .68). GO18 spaces keys half a device pixel of shore travel
+apart and gave up above 16 keys: shipped needs 12, Mike's needs 20, so his settings (and
+shipped settings at an output scale of 1.5 or more) fell through to the exact path.
+Nothing reported it.
+
+**Fix.** The cap is 24 keys at the same half-pixel spacing, which covers 12 device pixels
+of shore travel: Mike's settings use 20 keys. Beyond that the exact path is still used
+(for example his settings at output scale 2). Widening the spacing to keep 16 keys was
+tried and rejected: at 0.6 px up to 1,188 pixels differed from the exact surface by 16
+levels or more; at half a pixel the worst is 85, inside GO18's bound. The bulge itself is
+unchanged: same excursion, zero simulation steps, same strips, and the backdrop reuse path
+(GO21) is untouched.
+
+**Measured** (RX 580, plumbus, 2560×1600 at 120 Hz, Mike's goo settings, 5 s, window
+breathing, goo asleep):
+
+| | `3eea2c5` | Fixed |
+|---|---:|---:|
+| Keys in use | 0 (exact path) | 20 |
+| Key refreshes in 5 s | 0 | 41 |
+| Full-shader pixels per tick | 243,000 | 153,000 |
+| Goo GPU time per tick (median) | 0.183 ms | 0.115 ms |
+| Compositor GPU | 0.8% | 0.8-0.9% |
+| Widget breathing: full-shader pixels per tick | 110,000 | 69,000 |
+
+So the per-tick shader work falls by 37% and the typical tick by the same; on this GPU the
+busy percentage does not move (it is small either way). The saving is smaller than GO18's
+original 90% because the bulge crosses 40 keys per breath where GO17's swell crossed 12,
+and each crossing refreshes two cache textures. Writing both in one pass (multiple render
+targets) would halve that again; not done here. Intel Xe is not measured.
+
+Fidelity (the idle fixture's `--visual`, 22 held breath values, keys against exact): at
+most 1,689 of 4.1 million pixels differ by 8 levels or more and at most 85 by 16 or more;
+trough and crest are within 2 levels. Tight strips, backdrop reuse and dry content
+comparisons are identical.
+
+Regression on plumbus, normal and packed GLES 2 paths: goo-test 50 / 50, overlap/hover
+28 / 28, breathing (`--verify`) 12 / 12 on both; the GO21 exactness test 27 / 27 at scale
+1, scale 1.5 and rotation 90. Live confirmation of the defect was read-only; the fix has
+not run on Mike's session.
+

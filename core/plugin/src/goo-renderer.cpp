@@ -21,6 +21,7 @@ using gl::state_t;
 using gl::target_t;
 namespace
 {
+constexpr int max_breath_keys = 24;
 int breath_key_count(const settings_t &s, float scale)
 {
     // The approximation is bounded to half a device pixel per interval. Extreme
@@ -28,7 +29,14 @@ int breath_key_count(const settings_t &s, float scale)
     float swell = breath_swell(s.thickness, s.reach, s.swell);
     float travel = s.reach * std::log1p(std::max(swell, 0.f)) * std::max(scale, 1.f);
     int required = std::max(1, int(std::ceil(travel / .5f)));
-    return required <= 16 ? required : 0;
+    // The restored attention bulge (a .45 excursion) moves the shore much farther than
+    // GO17's .12 did: 5.9 pt at shipped settings, 9.6 pt with thicker goo, more at a
+    // higher output scale. Sixteen keys at half a pixel no longer cover that, and falling
+    // back to the exact path ran the full surface shader every tick. 24 keys cover 12
+    // device pixels of travel at the same half-pixel spacing. (Widening the spacing
+    // instead was tried: at 0.6 px, 1,200 pixels differed from the exact surface by 16
+    // levels or more, against 34 at half a pixel.)
+    return required <= max_breath_keys ? required : 0;
 }
 float breath_key_value(int key, int keys, float swell)
 {
