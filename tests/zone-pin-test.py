@@ -3,7 +3,8 @@
 
 Shift-drag a window in the periphery to a scale that isn't that spot's natural one, cycle it to
 the center and back with Window-mode hints, and check the remembered position and the pinned
-scale both come back, drawn without a jump; the same without a pin; a pin made in one zone never
+scale both come back, drawn without a jump; the same for a window kept at full size (a pin above
+WP8's 95% line is still a periphery pin); the same without a pin; a pin made in one zone never
 reaching another; the pins surviving a reload; every hint-key path out and back (slow presses
 through the widget, a WK15 double tap to the rail); Esc; Shift+arrow pins; and a remembered spot
 that zone settings have moved into the center (no longer used, WP8)."""
@@ -300,6 +301,43 @@ try:
           'pinned_scale' not in model_window(a),
           'cycling back to the right periphery uses its zone scale: the left pin does not leak',
           {'spot': right_spot, 'now': center(v), 'applied': v['applied_scale'], 'natural': right_natural})
+
+    # --- A full-size pin at the side (Shift's common use: move it aside, keep it at 100%). A pin
+    # above WP8's 95% line must not make the spot read as the center: it is a periphery spot.
+    f = launch('FullPin', width * .5, height * .5)
+    full_start = center(view('FullPin'))
+    drag('FullPin', width * .15, height * .5, shift=True)
+    v = view('FullPin')
+    full_spot, full_pin = center(v), model_window(f).get('pinned_scale')
+    check(v['zone'] == 'continuous' and v['scale'] < .9 and v['applied_scale'] > .99 and
+          full_pin is not None and full_pin > .99,
+          'a Shift drag aside keeps the window at full size (pin above 95%)',
+          {'zone': v['zone'], 'zone scale': v['scale'], 'applied': v['applied_scale'], 'pin': full_pin})
+    memories = hint(f)['memories']
+    check(memories[1]['set'] and near((memories[1]['x'] * width, memories[1]['y'] * height), full_spot) and
+          memories[1].get('pin') == full_pin and memories[0]['set'] and
+          near((memories[0]['x'] * width, memories[0]['y'] * height), full_start),
+          'it is the left periphery memory, with its pin; the center memory is untouched (WP8)', memories)
+    presses(f, 'FullPin', [])
+    v = view('FullPin')
+    check(near(center(v), full_start) and v['zone'] == 'center' and v['applied_scale'] > .999 and
+          'pinned_scale' not in model_window(f),
+          'its first hint press takes it to its center spot at 100% (not a shrink in place)',
+          {'start': full_start, 'now': center(v), 'zone': v['zone'], 'applied': v['applied_scale']})
+    samples = []
+    presses(f, 'FullPin', [], samples)
+    v = view('FullPin')
+    check(near(center(v), full_spot) and abs(v['applied_scale'] - full_pin) < .003 and
+          model_window(f).get('pinned_scale') == full_pin and lands_on_pin(samples, full_pin),
+          'the next press returns it to the side spot at its full-size pin',
+          {'spot': full_spot, 'now': center(v), 'applied': v['applied_scale'], 'pin': model_window(f).get('pinned_scale')})
+    presses(f, 'FullPin', [.65, .65])   # periphery -> center -> widget -> periphery, one hold
+    v = view('FullPin')
+    check(not v['widgetized'] and near(center(v), full_spot) and abs(v['applied_scale'] - full_pin) < .003 and
+          near((hint(f)['memories'][0]['x'] * width, hint(f)['memories'][0]['y'] * height), full_start),
+          'the whole loop through the widget restores the spot and full-size pin; the center memory survives',
+          {'now': center(v), 'applied': v['applied_scale'], 'memories': hint(f)['memories']})
+    ipc('window-rules/close-view', {'id': f}); time.sleep(.5)
 
     # --- Without a pin: the same round trip restores the spot at the zone's normal scale.
     b = launch('Plain', width * .5, height * .3)

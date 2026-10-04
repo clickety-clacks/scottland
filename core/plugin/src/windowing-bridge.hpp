@@ -271,23 +271,24 @@
         double outer_scale = place_at(rail + 1, screen_width).scale;
         return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
     }
-    // Whether a spot at x reads as zone z, shown at `pin` if set, else at its zone scale (WP8): the
-    // center while it still looks full scale (inside the center zone, or just past its edge in the
-    // softness band), a periphery once it is visibly smaller. A pin never applies inside the center
-    // zone (tenet 4). Rails are what they are.
+    // Whether a spot at x reads as zone z (WP8): the center inside the center zone, and just past its
+    // edge (the softness band) while an unpinned window there still shows its zone's full-looking
+    // scale; a periphery anywhere else in the side zone. A Shift pin makes a side spot a periphery
+    // spot wherever it is: the user put it there at that scale, even at full size (L31). A pin
+    // never applies inside the center zone (tenet 4). Rails are what they are.
     bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin, double screen_width)
     {
         using Z = scottland::windowing::zone;
         auto place = place_at(x, screen_width);
         bool center = place.zone == zone_t::center ||
-            (place.zone == zone_t::continuous && (pin ? *pin : place.scale) > periphery_threshold(screen_width));
+            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(screen_width));
         if (z == Z::center) return center;
         if (z == Z::left_periphery || z == Z::right_periphery)
             return place.zone == zone_t::continuous && !center && ((x < screen_width / 2) == (z == Z::left_periphery));
         return true;
     }
-    // The zone a window counts as for its zone memories and cycles (WP8): its zone, except that a
-    // side window that still reads as full scale counts as the center, where the user sees it.
+    // The zone a window counts as for its zone memories and cycles (WP8): its zone, except that an
+    // unpinned side window that still reads as full scale counts as the center, where the user sees it.
     scottland::windowing::zone memory_zone(wayfire_toplevel_view view)
     {
         using Z = scottland::windowing::zone;

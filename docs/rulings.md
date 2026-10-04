@@ -89,6 +89,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 10-04 | Returning to a zone restores both the remembered position and the Shift-pinned scale, through every return path (cycling by hint taps, Esc, double-tap and back). | WP1, WP5 |
 | 10-04 | The pointer follows the desktop text size. | A17 |
+| 10-04 | A Window-mode cycle to the periphery lands in the periphery, visibly smaller; a window dropped just past the center edge where it still looks full size is in the center (from Mike's report that cycles "rarely land in the periphery"). Reverses the earlier agent-decided edge where a remembered periphery spot that zone settings moved into the center came back there at 100%: such a spot no longer counts, and the cycle places the window afresh in the periphery. How far out a fresh spot goes (now clear of the center zone) and whether "looks full size" should also make a window a center window for Alt+Tab, avoidance, translucency and present wait for Mike. | WP4, WP8 |
 
 ## Goo and appearance
 
