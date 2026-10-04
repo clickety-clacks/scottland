@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S1-S18 via real stipc input in a caller-owned headless session.
+"""S1-S19 via real stipc input in a caller-owned headless session.
 Run with tests/headless.sh run. Requires two outputs; screenshots and logs are retained in
 build/settings-help-evidence. No live config, session or services are used.
 """
@@ -740,14 +740,25 @@ try:
     check("widget expand bounce previews live",option_reaches("widget_bounce",.05))
     click(*control_point("widgetSettings",361,103))
     check("hover intent timing previews live",option("widget_peek_enter_delay")>1000)
+    dwell_before=option("widget_make_room_dwell")
+    # Focus the stack, then use its real keyboard selection so pointer placement does not
+    # itself change the dwell slider's value before the one-step preview assertion.
+    click(*control_point("widgetSettings",361,34))
+    for _ in range(4): key("KEY_DOWN")
+    key("KEY_RIGHT")
+    check("rail make-room pause previews from the Widgets tab",
+          option_reaches("widget_make_room_dwell",min(1500,dwell_before+10)))
     saved_widgets=dict(snapshot()["widgets"])
     close_panel(panel,save=True,via_button=True)
     check("Save persists widget settings",all(k+" =" in layout.read_text() for k in saved_widgets))
     panel=open_panel();tab(4)
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
     check("Widgets Defaults preview shipped bounce",option_reaches("widget_bounce",.04))
+    check("Widgets Defaults preview the rail pause default",option_reaches("widget_make_room_dwell",350))
     close_panel(panel)
     check("Widgets Cancel restores saved bounce",option_reaches("widget_bounce",saved_widgets["widget_bounce"]))
+    check("Widgets Cancel restores saved rail pause",
+          option_reaches("widget_make_room_dwell",saved_widgets["widget_make_room_dwell"]))
 
     panel=open_panel();tab(5)
     check("Sunlight tab selects",snapshot()["tab"]==5)

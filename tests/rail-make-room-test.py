@@ -87,11 +87,15 @@ try:
     during_a, during_b = card_scene("rail-a"), card_scene("rail-b")
     landing = app_scene("rail-arrive")
     moved = abs(during_a["y"] - before_a_scene["y"]) > 0.5 or abs(during_b["y"] - before_b_scene["y"]) > 0.5
+    check("window drag starts an eased reflow after the pause", moved, (during_a, during_b))
+    time.sleep(0.42)  # allow the 190–360 ms rail animation to reach its landing target
+    settled_a, settled_b = card_scene("rail-a"), card_scene("rail-b")
+    landing = app_scene("rail-arrive")
     clear = all(f["y"] + f["height"] <= landing["y"] - 0.5 or
-        f["y"] >= landing["y"] + landing["height"] + 0.5 for f in (during_a, during_b))
-    check("window drag moves only its obstructing rail cards live", moved, (during_a, during_b, landing))
+        f["y"] >= landing["y"] + landing["height"] + 0.5 for f in (settled_a, settled_b))
+    check("window drag moves only its obstructing rail cards live", moved, (settled_a, settled_b, landing))
     check("live window landing keeps one-pixel clearance on both sides", clear,
-          (during_a, during_b, landing))
+          (settled_a, settled_b, landing))
     end_drag()
     t.wait_for(lambda: t.card("rail-arrive") and not t.card("rail-arrive")["preview"])
     after_a, after_b = card_geometry("rail-a"), card_geometry("rail-b")

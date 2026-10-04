@@ -29,6 +29,14 @@ no space to clear the landing interval. In that case each causal chain advances 
 members can fit, stopped by the tightest rail-end limit, and the drop may overlap. The solver reports
 that case as `overlap`; it never publishes an off-rail or reordered result.
 
+Pointer motion updates only the dragged item's latest landing interval and the pause timer; it does
+not solve or move its neighbors. The pointer must stay within a 4 px radius for
+`scottland/widget_make_room_dwell` (default 350 ms, live range 100–1500 ms). Each completed pause
+solves against the latest interval. Movement after a solve keeps that arrangement until another
+pause completes. If the drag ends before its first pause, release runs one solve; otherwise release
+commits the current arrangement. This hold buffer follows P11 (calm movement) and P2 (move only
+what is needed), while cancel and drag-back-out retain P5's exact restoration.
+
 The solver uses the true widget positions captured when the drag enters the rail. For each widget,
 its initial yield direction is chosen by comparing its center with the dragged interval's center.
 That direction stays latched until the dragged center passes the widget's center by
@@ -42,13 +50,22 @@ only after the slack before it has been used. The opposite direction uses the mi
 The final intervals are checked against both rail ends and their original order. Invalid input or a
 failed check produces zero shifts with `overlap` status.
 
-Each solve is synchronous in the drag path. The maximum actor count is 256, checked before any
-sorting or per-actor state allocation. Order and scratch arrays are prepared once for the captured
-rail; pointer updates reuse them and publish a complete result. An over-cap update returns the
-identity/no-shifts result without iterating actors or changing direction latches. The current
-admission check uses the session's total widget count as a constant-time upper bound, so a session
-with more than 256 widgets skips rail making-room even when the active rail itself has fewer actors.
-That conservative check keeps the whole input path bounded.
+Each solve is synchronous but, during a drag, runs only on a completed pause or once on drop, never
+for every pointer event. A non-drag window-to-widget arrival runs one solve after its widget has
+mapped and reached its landing geometry. The maximum actor count is 256, checked before any sorting
+or per-actor state allocation. Order and scratch arrays are prepared once for the captured rail;
+each pause reuses them and publishes a complete result. An over-cap solve returns the identity/no-
+shifts result without iterating actors or changing direction latches. The current admission check
+uses the session's total widget count as a constant-time upper bound, so a session with more than 256
+widgets skips rail making-room even when the active rail itself has fewer actors. That conservative
+check keeps the whole input path bounded.
+
+Every change of rail-layout target uses a 190–360 ms ease, including large shifts, release-time
+solves, geometry-commit corrections and return to zero. The frame translation keeps the visible
+position continuous while target geometry commits. Reduced motion from the active palette applies
+to these shifts too and snaps directly to the target. Direct drag drops use the active drag solve;
+inertial coast arrivals and Window-mode key widgetization solve against the mapped widget's actual
+landing rectangle through the same rail solver.
 
 The behavior follows P1 (stay on the same side), P2 (move only what is in the way), P5 (show the
 proposal, commit it on drop, restore it on cancel), and P8 (bound synchronous work so the pointer
@@ -72,7 +89,10 @@ actors with nonzero solver offsets receive a real move on drop.
 
 | ID | Invariant | Status |
 |---|---|---|
-| SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item. It moves only a causal chain, preserves the rail order and never crosses sides. | verified (plumbus headless, 2026-10-03) |
-| SM2 | Contact clearance is 1 px where room exists. A shortage is clamped by every chain member's rail-end headroom; a drop may overlap when the rail is full. | verified (plumbus headless, 2026-10-03) |
-| SM3 | Shifts are visual for the duration of the drag, become real moves on drop, and return exactly on Esc or when the item leaves the rail. | verified (plumbus headless, 2026-10-03) |
-| SM4 | The synchronous solve checks its 256-actor bound before allocation, reuses its captured order and scratch state, and returns only complete validated results. | verified (plumbus headless, 2026-10-03; bounded unit suite) |
+| SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item. It moves only a causal chain, preserves the rail order and never crosses sides. | verified (plumbus headless, 2026-10-04) |
+| SM2 | Contact clearance is 1 px where room exists. A shortage is clamped by every chain member's rail-end headroom; a drop may overlap when the rail is full. | verified (plumbus headless, 2026-10-04) |
+| SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry. A drop before any completed pause solves once; otherwise it commits the held layout. | verified (Plumbus real stipc input, 2026-10-04) |
+| SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (Plumbus; bounded unit suite and real stipc input, 2026-10-04) |
+| SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (Plumbus real stipc input, 2026-10-04) |
+| SM6 | Every target change, including large shifts, release-time solves, geometry corrections and returns, eases over 190–360 ms; active reduced motion snaps. | verified (Plumbus frame sampling and reduced-motion palette, 2026-10-04) |
+| SM7 | Direct rail drops, inertial coast arrivals and Window-mode key widgetization run the shared solver at the widget's actual landing spot. | verified (Plumbus real stipc input, 2026-10-04) |

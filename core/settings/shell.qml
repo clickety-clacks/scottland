@@ -71,7 +71,7 @@ ShellRoot {
     window_mode_opacity_focused:1,window_mode_opacity_unfocused:1})
   property var opacityValues: Object.assign({},opacityDefaults)
   readonly property var widgetDefaults: ({widget_bounce:0.04,widget_peek_enter_delay:150,
-    widget_peek_leave_delay:100,widget_attention_peek_duration:5000})
+    widget_peek_leave_delay:100,widget_attention_peek_duration:5000,widget_make_room_dwell:350})
   property var widgetValues: Object.assign({},widgetDefaults)
   readonly property var solarDefaults: ({enabled:true,allow_ip:true,location_set:false,latitude:0,longitude:0})
   property var solarValues: Object.assign({},solarDefaults)
@@ -858,7 +858,8 @@ ShellRoot {
             {id:"widget_bounce",label:"Expand / contract bounce",min:0,max:0.1,step:0.005,largeStep:0.02,decimals:3,hint:"Elastic size overshoot when a widget expands or contracts. Higher adds a larger pop; zero removes it."},
             {id:"widget_peek_enter_delay",label:"Hover intent",min:0,max:3000,step:10,largeStep:100,suffix:" ms",hint:"How long the pointer rests on a collapsed widget before it peeks. Higher asks for more intent; lower peeks sooner."},
             {id:"widget_peek_leave_delay",label:"Hover leave",min:0,max:3000,step:10,largeStep:100,suffix:" ms",hint:"How long an expanded hover peek waits before closing after the pointer leaves. Higher gives more time to return."},
-            {id:"widget_attention_peek_duration",label:"Attention peek",min:100,max:30000,step:100,largeStep:1000,suffix:" ms",hint:"How long a collapsed widget stays expanded when it asks for attention. Higher keeps it open longer."}
+            {id:"widget_attention_peek_duration",label:"Attention peek",min:100,max:30000,step:100,largeStep:1000,suffix:" ms",hint:"How long a collapsed widget stays expanded when it asks for attention. Higher keeps it open longer."},
+            {id:"widget_make_room_dwell",label:"Rail make-room pause",min:100,max:1500,step:10,largeStep:100,suffix:" ms",hint:"How long a rail drag must pause within a few pixels before neighboring widgets move. Higher waits for a clearer pause; lower rearranges sooner."}
           ]
           values:root.widgetValues;opening:root.original?.widgets || ({})
           onChanged:(name,value)=>root.setWidget(name,value)
