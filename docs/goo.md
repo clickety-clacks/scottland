@@ -87,6 +87,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 | GO20 | Only a change wakes the goo, and only liquid is worked on. (1) Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
 | GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
+| GO27 | The goo never paints over dry window content: a window's interior that no goo can lie on shows the window, in every frame. A breath that reuses the cached backdrop restores it only on the strips' pixels inside the goo's own drawn area and outside dry content; whatever else merged strips cover stays in the frame's damage and the scene beneath paints it. (Mike's bug report, 2026-10-04; core) | implemented; `tests/goo-strip-test.sh` (forced and natural merging) passing on both GPU paths on plumbus ([below](#go27-no-backdrop-inside-a-window-2026-10-04)); not yet seen on Mike's panel |
 | GO22 | Attention color choice: a Goo setting chooses the attention hue family: **warm** (red/amber) or **cool** (yellow/green), alongside following the theme's own attention color. It applies to the attention breath and bulge on windows and widgets, with goo on and with the fallback halo, live, in light and dark themes. (Mike, 2026-10-03) | not built |
 | GO23 | Dye strength: a Goo setting scales how strongly the state colors (focus accent, attention, Window mode hint dye) show in the goo and the fallback halo, from faint to today's look (default) and somewhat beyond, live. The unfocused edge keeps its own strength (A16); wallpaper soak is separate. (Mike, 2026-10-03) | not built |
 | GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. State colors (focus, attention, hints) stay legible at window walls. It must respect the GPU budget (GO17-GO21): the motion may be slow and keyframed rather than keeping the full simulation awake. (Mike, 2026-10-03) | not built (today's soak is a capped, near-invisible injection that only runs while the simulation is awake) |
@@ -2071,3 +2072,57 @@ These five-second GPU samples ran on shared Plumbus while unrelated Chromium and
 agent activity continued; a Chromium renderer briefly reached about 71% CPU and
 the one-minute load average reached 1.34. Treat the readings as observed costs under
 that load, not isolated hardware baselines. The result logs preserve load snapshots.
+
+## GO27: no backdrop inside a window (2026-10-04)
+
+Core. Mike's live desktop (main `0a1bb2e`) showed a strip of wallpaper about 70 pixels wide
+inside a focused terminal, down its left side, over its text.
+
+**What it was.** A window asking for attention sat behind the terminal, with its left edge
+under the terminal's content. The strip began exactly 30 pixels inside the terminal's left
+and top edges and ended at the attention window's edge: 30 is the dry inset (13) plus the
+backdrop-copy margin (17), and the right end is where that window's breathing strip ends.
+So the picture was the goo's cached backdrop, restored by a reused-backdrop breath (GO19)
+on pixels that are dry window content (GO20).
+
+**Cause.** Three rules met. Dry content is left out of the backdrop copy, so the cache there
+holds whatever was last copied when the place was not dry (wallpaper, earlier windows).
+Breathing strips are merged down to 16 rectangles (GO21), and a merged rectangle can cover
+dry content. GO21 meant to keep the backdrop current under such strips, but the copy was
+still clipped to the goo's own drawn area plus 17 pixels, so deeper inside the window it
+never happened. A reused breath then claimed the whole merged strip, withheld it from the
+windows beneath and put the stale cache there. Once a second the periodic full repaint
+showed the window again for one frame.
+
+**Fix.** The pixels a reused breath restores, and withholds from the scene beneath, are the
+strips' pixels that lie in the goo's own drawn area (the settled liquid, where the backdrop
+is kept current) and outside dry content, in device pixels. Everything else a merged strip
+covers, dry window content or open desktop away from the liquid, stays in the frame's
+damage: the scene beneath paints it and the goo draws nothing there. Reuse continues on the
+liquid itself. The first version of the fix left out only dry content; the whole-screen
+comparison then found 969 stale pixels of open wallpaper in a merged strip's corner, which
+is the same fault outside a window.
+
+**Reproduction and test** (`tests/goo-strip-test.sh`, plumbus, headless 2560x1600, Mike's
+window positions and goo settings): the attention window is shown alone first so the cache
+holds wallpaper beside it, then the stack arrives with a terminal over its left edge. A test
+hook lowers the strip limit to 3 so the strips merge right across the front terminal. Frames
+the compositor renders by itself are compared inside the terminal's interior. Before the
+fix a reused frame differed from the repainted one in 749,844 pixels (stale cache from 30
+pixels inside the edges); after it, none inside the window or anywhere on the screen at
+breath 0, 0.5 and 1, none against the goo-off picture over 30 free-breathing frames, and
+the breath still reuses the backdrop.
+`goo-state` adds `strip_dry_pixels` (dry content the merged strips cover).
+
+Two more sightings the same morning fit the same cause: a narrow strip inside another
+window away from its edges, then several strips in several windows showing other windows'
+content. The cache holds whatever was beneath when a place was last copied, wallpaper or
+windows, and a merged rectangle can lie anywhere inside a window. A read-only sample of the
+live desktop at the second sighting showed exactly 16 strips, among them merged boxes such
+as 176x155 at (1400, 990), inside window interiors and at no attention window's edge.
+
+**At the shipped limit, nothing forced** (`goo-strip-test.sh ARTIFACTS 16 natural`, the
+second sighting's layout: two windows asking for attention and two more over them): on
+unmodified main (`2ab5b1b`) the strips came to 16 after merging, and a reused frame differed
+from the repainted one in 6,513 pixels, a 54-pixel-wide block of wallpaper inside a
+window's text where the merged box 1069x150 at (658, 236) covers it. With the fix: none.

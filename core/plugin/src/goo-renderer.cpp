@@ -564,7 +564,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
 }
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
                       const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
-              bool reuse_backdrop, const wf::regionf_t *dry)
+              bool reuse_backdrop, const wf::regionf_t *dry, const wf::regionf_t *dry_content)
 {
     if (!p->ready)
         return;
@@ -653,8 +653,14 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         bind(program, "uBackground", 5, bg.texture);
         glDisable(GL_BLEND);
         glEnable(GL_SCISSOR_TEST);
-        for (auto &box : data.target.framebuffer_region_from_geometry_region(data.damage) &
-                 data.target.framebuffer_region_from_geometry_region(breath_area))
+        // Only inside the goo's own area and never over dry window content (GO27): no
+        // backdrop is kept elsewhere, and the scene beneath painted it this frame.
+        auto restore = data.target.framebuffer_region_from_geometry_region(data.damage) &
+            data.target.framebuffer_region_from_geometry_region(breath_area) &
+            data.target.framebuffer_region_from_geometry_region(area);
+        if (dry_content)
+            restore ^= data.target.framebuffer_region_from_geometry_region(*dry_content);
+        for (auto &box : restore)
         {
             wf::gles::scissor_render_buffer(data.target, wlr_box_from_pixman_box(box));
             program.attrib_pointer("position", 2, 0, vertices);

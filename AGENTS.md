@@ -4,7 +4,7 @@
 
 Do not run Scottland tests, headless sessions, extra Wayfire/Quickshell instances,
 or test widget services on osanwe. Sync this checkout to its own directory on
-plumbus and run headless tests there with a unique `SCOTTLAND_HEADLESS_DIR`.
+plumbus (or nacelle, the second test host: aarch64, Asahi GPU; spread load across both) and run headless tests there with a unique `SCOTTLAND_HEADLESS_DIR`.
 Keep logs and screenshots under that checkout's `build/`, stop every session,
 and remove only paths created for the test. Do not dev-install or reload the
 shared plumbus session. This host rule supersedes the local-headless default below.
@@ -37,7 +37,7 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
   attention on widgets, and elastic expansion/contraction.
 - [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints and live focused-window-anchored avoidance (WK1–WK31),
   remembered zones and contention-aware placement (WP1–WP7).
-- [docs/goo.md](docs/goo.md): the goo (GO1-GO21): the halo as one liquid for the whole screen,
+- [docs/goo.md](docs/goo.md): the goo (GO1-GO27): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).
 - [docs/settings.md](docs/settings.md): Scottland Settings (S1–S19): zone sliders and overlay with draggable borders, Goo and Window mode tabs, hint popouts, and the planned Widgets tab.
 - [docs/desktop-model.md](docs/desktop-model.md): the single reactive desktop state model and its snapshots.
@@ -77,6 +77,8 @@ tenet: "if I put it on the left I should find it on the left"), record it in the
 P-row in core/INVARIANTS.md "Principles (tenet candidates)", with his words and the date, and cite
 it where it decides an edge. Don't edit docs/tenets.md: it mirrors Mike's own notes; he promotes
 principles himself.
+
+**Rulings log.** Every decision Mike makes goes into [docs/rulings.md](docs/rulings.md) (date, ruling in his terms, where it's specified) in the same change that updates the spec, so behavior can be reviewed against one list.
 
 **No silent overrides (P10, O20).** Anything that replaces or displaces something the user already
 had (an Omarchy shortcut, a mapping, an app setting) must be reported to the user with what it was,

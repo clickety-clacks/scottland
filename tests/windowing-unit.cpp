@@ -4,6 +4,7 @@
 #include "hint-style.hpp"
 #include "widget-spring.hpp"
 #include <array>
+#include <chrono>
 #include <set>
 #include <tuple>
 #include <cmath>
@@ -95,12 +96,19 @@ int main()
         near(deadline_result[0].spot.center,{283,163}),
         "a forced tiny solve budget returns a finite, stable held target");
     auto stale_budget = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
-    std::vector<exposure_window> easing_deadline_case{{{150,100,220,160},72,48,{},false,
+    // A widget overlaps a corner, so the window is covered and keeps its label (WK31).
+    std::vector<exposure_window> easing_deadline_case{{{150,100,220,160},72,48,{{360,250,100,40}},false,
         {23,-17},{80,24},{35,0},90}};
     auto easing_deadline = expose_window_hints(easing_deadline_case, region, {}, stale_budget);
     check(near(easing_deadline[0].offset,{80,24}) &&
         near(easing_deadline[0].spot.center,{375,204}),
         "a deadline holds the prior target for one frame while unfinished work retries");
+    auto uncovered_deadline_case = easing_deadline_case;
+    uncovered_deadline_case[0].fixed_foreground.clear();
+    auto uncovered_deadline = expose_window_hints(uncovered_deadline_case, region, {}, stale_budget);
+    check(near(uncovered_deadline[0].offset,{80,24}) &&
+        near(uncovered_deadline[0].spot.center,{340,204}),
+        "WK31: a deadline holds an uncovered window's target with its hint at its center");
     std::vector<exposure_window> no_room_deadline_case{{{150,100,220,160},72,48,
         {{140,90,240,180}},true}};
     auto no_room_deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(1);
@@ -289,6 +297,7 @@ int main()
     size_t tiny_work = 0, repeat_tiny_work = 0;
     bool tiny_work_hit = false, repeat_tiny_work_hit = false;
     auto tiny_work_case = clear_after_drag;
+    tiny_work_case[0].frame.x = 240; // the covering layout: an uncovered window needs no search (WK31)
     tiny_work_case[1].incumbent_offset = retained_start[1].offset;
     tiny_work_case[1].target_offset = retained_start[1].offset;
     exposure_limits tiny_limits{4, &tiny_work, true};
@@ -807,9 +816,13 @@ int main()
         "an output-sized front window moves to reveal the wholly covered rear window");
     auto anchored = expose_window_hints({{{0,0,1280,720},132,48,{},true},
         {{0,0,1280,720},132,48}},desktop);
+    // The impossible rear hint would land on the front's centered hint (WK31), so the
+    // collision stopgap moves it about one diameter off; it stays at the minimum.
     check(near(anchored[0].offset,{}) && anchored[0].diameter == 132 &&
-        anchored[1].diameter == 48 && near(anchored[1].spot.center,{640,360}),
-        "focused output-covering window stays put; impossible rear hint remains at minimum center");
+        near(anchored[0].spot.center,{640,360}) && anchored[1].diameter == 48 &&
+        std::hypot(anchored[1].spot.center.x - 640, anchored[1].spot.center.y - 360) >=
+            (132 + 48) / 2 * 1.06 + hint_collision_gap - 1e-6,
+        "focused output-covering window stays put; impossible rear hint stays at minimum, off the front hint");
     auto movable_rear = expose_window_hints({{{240,160,700,440},132,48,{},true},
         {{200,160,700,440},132,48}},desktop);
     check(near(movable_rear[0].offset,{}) && movable_rear[1].offset.x < -10 &&
@@ -916,7 +929,10 @@ int main()
     alt_mode mode; std::vector<destination> moves; uint64_t selected=0,closed=0; bool restore=false;
     unsigned selections = 0, widget_hint_selections = 0; uint64_t peeked_widget = 0;
     bool peek_active = false; uint32_t clock = 0;
-    auto press = [&](char letter) { clock += 500; mode.letter(letter, clock); };
+    auto tap_at = [&](char letter, uint32_t at, unsigned dwell = 80) {
+        mode.letter(letter, at); mode.release(letter, at + dwell);
+    };
+    auto press = [&](char letter) { clock += 500; tap_at(letter, clock); };
     mode.select=[&](uint64_t id,bool r){selected=id;restore=r;++selections;};
     mode.hint_select=[&](uint64_t id){peeked_widget=id;peek_active=true;++widget_hint_selections;};
     mode.hint_peek_active=[&](uint64_t id){return peek_active && id==peeked_widget;};
@@ -935,7 +951,7 @@ int main()
     check(moves==std::vector<D>{D::center,D::periphery,D::widget,D::center,D::periphery} &&
         widget_hint_selections==1,"widget next press starts its full center-first loop without starting another peek");
     mode.end(); moves.clear(); mode.double_tap_delay=3000; mode.begin(entries,0); press('d');
-    mode.letter('d', clock + 3000);
+    tap_at('d', clock + 3080);
     check(moves==std::vector<D>{D::center},"a repeated hint during a collapsed-widget peek takes the center step even inside double-tap timing");
     peek_active=false; mode.double_tap_delay=300;
     for (unsigned slot=0; slot<3; ++slot)
@@ -945,21 +961,21 @@ int main()
         check(selections==before && moves.size()==1 && moves[0]==cycle_order(D(slot))[0], "selected window skips redundant select in each start zone");
     }
     mode.end(); moves.clear(); mode.begin(entries,1);
-    press('a'); mode.letter('a',clock+300);
-    check(moves==std::vector<D>{D::periphery,D::widget},"double tap at 300 ms sends to rail immediately");
+    press('a'); tap_at('a',clock+380);
+    check(moves==std::vector<D>{D::periphery,D::widget},"double tap at 300 ms after release sends to rail immediately");
     mode.refresh({{1,0,zone::left_rail,true}});
-    mode.letter('a',clock+400);
+    tap_at('a',clock+500);
     check(moves.size()==2,"double tap on widget issues no move");
-    clock += 400; press('a'); check(moves.back()==D::center,"slow press after rail shortcut resumes original loop");
+    clock += 500; press('a'); check(moves.back()==D::center,"slow press after rail shortcut resumes original loop");
     mode.end(); moves.clear(); mode.begin(entries,3);
-    press('d'); mode.letter('d',clock+301);
+    press('d'); tap_at('d',clock+381);
     check(moves==std::vector<D>{D::center,D::periphery},"press past interval advances ordinary cycle");
     mode.double_tap_delay=50; moves.clear(); mode.end(); mode.begin(entries,2);
-    press('s'); mode.letter('s',clock+51); press('s');
+    press('s'); tap_at('s',clock+131); press('s');
     check(moves==std::vector<D>{D::center,D::widget,D::periphery},"configured interval leaves slow presses in periphery loop");
-    mode.end(); moves.clear(); mode.begin(entries,2); press('s'); mode.letter('s',clock+50);
+    mode.end(); moves.clear(); mode.begin(entries,2); press('s'); tap_at('s',clock+130);
     check(moves==std::vector<D>{D::center,D::widget},"configured interval recognizes its inclusive boundary");
-    mode.end(); moves.clear(); mode.begin(entries,0); press('a'); press('s'); mode.letter('a',clock+1);
+    mode.end(); moves.clear(); mode.begin(entries,0); press('a'); press('s'); tap_at('a',clock+100);
     check(moves.empty() && selected==1,"another hint resets cycle and double-tap identity");
     mode.end(); moves.clear(); mode.begin({{1,0,zone::right_periphery,false}},1); press('a');
     check(moves==std::vector<D>{D::center},"release resets loop but selected window still skips select");
@@ -976,13 +992,185 @@ int main()
     check(mode.label(0)=="aa" && mode.label(26)=="sa","two-letter mode is prefix-free");
     press('s');check(selected==3,"partial two-letter hint does not select");
     press('a');check(selected==27,"complete two-letter hint selects");
-    moves.clear(); mode.letter('s',clock+1);
+    moves.clear(); tap_at('s',clock+81);
     check(moves.empty(), "repeated multi-letter prefix alone does not move");
-    mode.letter('a',clock+2);
+    tap_at('a',clock+221);
     check(moves == std::vector<D>{D::widget}, "repeating complete two-letter hint double-taps to rail");
     mode.refresh({{1,0,zone::center,false},{677,676,zone::center,false}});
     check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
+    mode.double_tap_delay=300; moves.clear(); mode.begin(entries,0);
+    tap_at('a',1000,120); tap_at('a',1370,120);
+    check(moves==std::vector<D>{D::widget},"120 ms dwell plus 250 ms gap double-taps an unselected window to rail");
+    mode.end(); moves.clear(); mode.begin({{1,1,zone::center,false},{27,26,zone::center,false}},0);
+    tap_at('a',2000,120); tap_at('s',2140,120);
+    tap_at('a',2510,120);
+    check(moves.empty(),"human-timed repeated prefix alone cannot move the selection");
+    tap_at('s',2650,120);
+    check(moves==std::vector<D>{D::widget},"multi-letter repeat begins within the release gap and acts only on completion");
+    mode.end(); mode.refresh({}); moves.clear(); mode.begin(entries,0);
+    mode.letter('a',3000); mode.letter('a',3100);
+    check(moves==std::vector<D>{D::periphery},"no final-key release means no double-tap candidate");
+    mode.end(); moves.clear(); mode.begin(entries,0);
+    tap_at('a',4000,120); mode.release('s',4400); tap_at('a',4500,120);
+    check(moves==std::vector<D>{D::periphery},"an unrelated release cannot extend the repeat interval");
+    mode.end(); moves.clear(); mode.begin(entries,0);
+    tap_at('a',UINT32_MAX-40,80); tap_at('a',139,80);
+    check(moves==std::vector<D>{D::widget},"release-based repeat timing survives the monotonic timestamp wrap");
+    {
+        // WP1: each zone memory keeps the Shift scale pin there, or its absence.
+        window_memory memory;
+        remember_spot(memory, zone::left_periphery, {.1,.4}, .62);
+        check(remembered_pin(memory, zone::left_periphery) == .62, "periphery memory keeps its Shift pin");
+        check(memory.last_side == -1, "remembering a pinned spot still records its side");
+        check(!remembered_pin(memory, zone::right_periphery), "a left periphery pin never applies on the right");
+        remember_spot(memory, zone::right_periphery, {.9,.5}, std::nullopt);
+        check(!remembered_pin(memory, zone::right_periphery) && remembered_pin(memory, zone::left_periphery) == .62,
+            "an unpinned spot in one zone leaves another zone's pin alone");
+        remember_spot(memory, zone::left_periphery, {.12,.3}, std::nullopt);
+        check(!remembered_pin(memory, zone::left_periphery) && near(*memory.positions[1], {.12,.3}),
+            "a later unpinned drop in the same zone clears that zone's pin");
+        remember_spot(memory, zone::left_periphery, {.12,.3}, .8);
+        remember_spot(memory, zone::left_periphery, {.12,.3}, .7);
+        check(remembered_pin(memory, zone::left_periphery) == .7, "the newest pin in a zone replaces the older one");
+        remember_spot(memory, zone::center, {.5,.5}, .5);
+        check(!memory.pins[0] && !remembered_pin(memory, zone::center) && memory.positions[0],
+            "center memory never keeps a pin: center is full scale (tenet 4)");
+        check(memory.last_side == -1, "a center memory leaves the last side alone");
+        remember_spot(memory, zone::right_rail, {.97,.2}, .5);
+        check(!memory.pins[4] && !remembered_pin(memory, zone::right_rail) && memory.last_side == 1,
+            "rail memory never keeps a pin: widgets don't scale (WG4)");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, 0.0);
+        check(!remembered_pin(memory, zone::right_periphery), "a zero or negative scale is no pin");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, 7.5);
+        check(remembered_pin(memory, zone::right_periphery) == 1.0, "a pin read back above full scale is clamped to 1");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, .001);
+        check(remembered_pin(memory, zone::right_periphery) == .05, "a pin read back below the minimum scale is clamped");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, std::nan(""));
+        check(!remembered_pin(memory, zone::right_periphery), "a NaN scale is no pin");
+        window_memory empty; empty.pins[1] = .5;
+        check(!remembered_pin(empty, zone::left_periphery), "a pin without a remembered spot is never restored");
+    }
+    // WK37 occlusion share.
+    const rectangle fraction_screen{0,0,1000,800};
+    check(visible_fraction({100,100,400,200},fraction_screen,{})==1,"uncovered window is fully visible");
+    check(std::abs(visible_fraction({100,100,400,200},fraction_screen,{{300,0,600,800}})-.5)<1e-9,
+        "half-covered window is half visible");
+    check(std::abs(visible_fraction({100,100,400,200},fraction_screen,
+        {{100,100,300,200},{200,100,300,100}})-.125)<1e-9,"overlapping covers count once");
+    check(visible_fraction({100,100,400,200},fraction_screen,{{0,0,1000,800}})==0,"fully covered window");
+    check(std::abs(visible_fraction({-200,100,400,200},fraction_screen,{{0,100,100,200}})-.5)<1e-9,
+        "only the on-screen part counts");
+    check(visible_fraction({1200,100,400,200},fraction_screen,{{0,0,1000,800}})==1,
+        "off-screen window never counts as occluded");
+    check(visible_fraction({100,100,400,200},fraction_screen,{{600,0,100,100}})==1,"disjoint cover ignored");
+    check(hint_outline_visible_fraction==.5,"outline threshold is less than half visible");
+    {
+        // A whole front-to-back pass over 50 overlapping windows stays far inside the 2 ms
+        // solve budget the plugin also bounds it by (P8).
+        std::mt19937 rng(37);
+        std::uniform_real_distribution<double> px(0,1600),py(0,900),size(200,900);
+        std::vector<rectangle> stack;
+        for(int i=0;i<50;++i) stack.push_back({px(rng),py(rng),size(rng),size(rng)*.6});
+        const rectangle screen{0,0,1920,1080};
+        auto started=std::chrono::steady_clock::now();
+        double sum=0;
+        for(size_t i=0;i<stack.size();++i)
+            sum+=visible_fraction(stack[i],screen,std::vector<rectangle>(stack.begin(),stack.begin()+i));
+        double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        std::cout<<"occlusion pass, 50 windows: "<<ms<<" ms\n";
+        check(ms<2 && sum>0,"occlusion pass over 50 windows stays under 2 ms");
+    }
+    {
+        // WK31: a window nothing covers has its hint at its exact center, with no search
+        // and no avoidance on its behalf; a prior off-center label point is not retained.
+        rectangle screen{0,0,1280,720};
+        auto centered = [] (const exposure_result& r, point c) {
+            return std::abs(r.spot.center.x - c.x) < 1e-6 && std::abs(r.spot.center.y - c.y) < 1e-6; };
+        exposure_window front{{190,60,900,600},132,48,{},true};
+        front.prior_label_offset = {-300,-150}; front.prior_clearance = 75;
+        exposure_window behind{{460,240,480,320},132,48};
+        auto raised = expose_window_hints({front, behind}, screen);
+        check(centered(raised[0], {640,360}) && near(raised[0].offset, {}),
+            "WK31: a raised front window drops its old off-center label for its exact center");
+        auto unanchored = front; unanchored.anchored = false;
+        auto unfocused = expose_window_hints({unanchored, behind}, screen);
+        // Unanchored, it may move to expose the window behind it; its hint stays at the
+        // center of its on-screen part.
+        const double top = std::max(0.0, 60 + unfocused[0].offset.y);
+        const double bottom = std::min(720.0, 660 + unfocused[0].offset.y);
+        check(centered(unfocused[0], {640 + unfocused[0].offset.x, (top + bottom) / 2}),
+            "WK31: an unfocused front window is centered too, even when moved for a window behind");
+        exposure_window small{{600,330,80,60},132,48};
+        small.prior_label_offset = {10,0}; small.prior_clearance = 30;
+        auto tiny = expose_window_hints({small}, screen);
+        check(centered(tiny[0], {640,360}) && near(tiny[0].offset, {}) && tiny[0].diameter == 54,
+            "WK31: no size-upgrade search or move for a front window too small for its wanted size");
+        exposure_window offscreen{{-200,100,600,400},132,48};
+        auto partial = expose_window_hints({offscreen}, screen);
+        check(centered(partial[0], {200,300}),
+            "WK31: a partly off-screen window is centered on its on-screen part");
+        exposure_window side{{1000,500,200,150},132,48};
+        side.prior_label_offset = {-40,-20}; side.prior_clearance = 30;
+        auto apart = expose_window_hints({{{100,100,600,400},132,48,{},true}, side}, screen);
+        check(centered(apart[1], {1100,575}),
+            "WK31: a rear window that nothing overlaps is centered like the frontmost");
+        exposure_window cornered{{100,100,600,400},132,48};
+        cornered.fixed_foreground = {{100,100,120,120}};
+        cornered.prior_label_offset = {-150,80}; cornered.prior_clearance = 60;
+        auto strict = expose_window_hints({cornered}, screen);
+        check(centered(strict[0], {250,380}),
+            "WK31 strict: a widget over one corner keeps the covered window's checked label");
+        bool hit = false;
+        auto expired_deadline = expose_window_hints({front, behind}, screen, {},
+            std::chrono::steady_clock::now() - std::chrono::milliseconds(1), &hit);
+        check(centered(expired_deadline[0], {640,360}),
+            "WK31: an expired solve deadline still centers the front window");
+        // Raising Back over a window that has no legal room: its held hint is the honest
+        // minimum on this layout, not the size it had while it was in front.
+        exposure_window buried{{400,240,480,320},109,48};
+        buried.prior_clearance = 160; buried.center_zone = true; buried.center_zone_half_width = 50;
+        auto held = expose_window_hints({front, buried}, screen);
+        check(held[1].diameter == 48 && held[1].spot.clearance < 26,
+            "a covered window with no room is not reported visible at its pre-raise size");
+        // Stopgap pending P1/P12: a hint that would land on a hint in front of it moves about
+        // one diameter off it, staying on its own window, so both letters read.
+        auto apart_from = [] (const exposure_result& a, const exposure_result& b) {
+            return std::hypot(a.spot.center.x - b.spot.center.x, a.spot.center.y - b.spot.center.y) >=
+                (a.diameter + b.diameter) / 2 * 1.06 + hint_collision_gap - 1e-6; };
+        auto on_own = [] (const exposure_result& r, rectangle w) {
+            const double e = r.diameter / 2 * 1.06;
+            return r.spot.center.x - e >= w.x && r.spot.center.x + e <= w.x + w.width &&
+                r.spot.center.y - e >= w.y && r.spot.center.y + e <= w.y + w.height; };
+        exposure_window concentric{{400,200,480,320},132,48}; // no legal room in its zone
+        concentric.center_zone = true; concentric.center_zone_half_width = 50;
+        auto stacked = expose_window_hints({front, concentric}, screen);
+        auto stacked_again = expose_window_hints({front, concentric}, screen);
+        check(centered(stacked[0], {640,360}) && near(stacked[1].offset, {}) &&
+            apart_from(stacked[0], stacked[1]) &&
+            on_own(stacked[1], concentric.frame) &&
+            std::hypot(stacked[1].spot.center.x - 640, stacked[1].spot.center.y - 360) < 2 * 132,
+            "a buried hint concentric with the front hint moves about one diameter, onto its own window");
+        check(near(stacked[1].spot.center, stacked_again[1].spot.center),
+            "the collision offset is deterministic");
+        exposure_window concentric2{{420,220,440,280},132,48};
+        concentric2.center_zone = true; concentric2.center_zone_half_width = 50;
+        auto three = expose_window_hints({front, concentric, concentric2}, screen);
+        check(centered(three[0], {640,360}) && apart_from(three[0], three[1]) &&
+            apart_from(three[0], three[2]) && apart_from(three[1], three[2]),
+            "three concentric hints all read: each rear hint clears every hint in front of it");
+        exposure_progress collision_progress;
+        expose_window_hints_progressively({front, concentric, concentric2}, screen, {},
+            collision_progress, std::chrono::steady_clock::time_point::max());
+        const auto& pr = collision_progress.results;
+        check(centered(pr[0], {640,360}) && apart_from(pr[0], pr[1]) && apart_from(pr[0], pr[2]) &&
+            apart_from(pr[1], pr[2]), "the progressive solver keeps concentric hints apart");
+        exposure_progress progress;
+        expose_window_hints_progressively({front, behind}, screen, {}, progress,
+            std::chrono::steady_clock::time_point::max());
+        check(progress.has_result[0] && centered(progress.results[0], {640,360}),
+            "WK31: the progressive solver centers the front window");
+    }
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }

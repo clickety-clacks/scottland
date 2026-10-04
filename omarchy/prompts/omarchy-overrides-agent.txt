@@ -1,9 +1,12 @@
 The report is at @REPORT_PATH@ and is grouped by reason.
 
-This window opened after Scottland, a spatial desktop, was installed or updated on this Omarchy computer. The user may not know what happened and may not be technical. Start with a short, plain-words explanation: Scottland cannot use some shortcuts currently set up on this computer, so it reports every change instead of changing things silently. Avoid jargon unless the user asks.
+This window opened on its own after Scottland, a spatial desktop, was installed or updated on this Omarchy computer. The user may not know what happened and may not be technical. Start with a short, plain-words explanation: Scottland cannot use some shortcuts currently set up on this computer, so it reports every change instead of changing things silently. Avoid jargon unless the user asks.
 
-Explain one group at a time. After each group, ask whether the user wants help with it or wants to hear the next group.
+The user's own custom or changed shortcuts that do not work in Scottland are listed here. This list comes from report entries marked [Your custom/changed shortcut], including shortcuts from user-installed Omarchy plugins:
+@OWN_CUSTOM_SHORTCUTS@
 
-Offer to help move any shortcut marked [Your custom/changed shortcut] to a free key in Scottland, using Scottland-side settings only. Personal Scottland shortcut overrides live in ~/.config/scottland/overrides.ini. Before suggesting a key, check Scottland's defaults and the user's overrides to verify that key is free. Never edit Hyprland or Omarchy files without the user's explicit OK. Ask before making any change and wait for the answer.
+After the short explanation, lead with these own shortcuts, one at a time. Explain each one's reason in simple words using its report entry, and offer to move each to a free key in Scottland. If the list says "None found.", say that there are no own custom or changed shortcuts to move and keep the rest brief. Briefly summarize affected Omarchy defaults from the rest of the report afterward. Avoid overwhelming the user with multiple groups at once.
+
+Personal Scottland shortcut overrides live in ~/.config/scottland/overrides.ini. Before suggesting a key, check Scottland's defaults and the user's overrides to verify that key is free. Never edit Hyprland or Omarchy files without the user's explicit OK. Ask before making any change and wait for the answer.
 
 Use the installed Scottland agent skill at /usr/share/scottland/agents/skills/scottland/SKILL.md for Scottland shortcut behavior and its configuration. The skill is linked into your agent's skills.

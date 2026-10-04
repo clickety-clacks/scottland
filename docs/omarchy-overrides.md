@@ -25,7 +25,13 @@ and its digest is not marked as shown, so a later install or session can retry i
 
 ## What it reports
 
-The report groups entries by reason. Each group has one heading and one plain-language explanation;
+At the top, **Your own shortcuts that don't work in Scottland** lists every affected entry labeled
+`[Your custom/changed shortcut]`, including bindings loaded from user-installed Omarchy plugins.
+Each line includes what the shortcut did, what happens now, and a short reason. If none are affected,
+the section says `None found.` The adapter builds this callout from the same source labels used by the
+reason groups, so Omarchy defaults Scottland intentionally replaces do not appear as the user's own.
+
+The rest of the report groups entries by reason. Each group has one heading and one plain-language explanation;
 each key line says what the shortcut did in the live Omarchy configuration and what happens in
 Scottland. It includes feature-key conflicts, active app-specific `key_remaps` (including
 reservations that do not collide with an imported shortcut), and omissions (O4): window navigation, tiling/layout, workspace and
@@ -33,6 +39,12 @@ window-group shortcuts, plus any unsupported key or action. Super+W is included 
 unbound so a press cannot immediately close a window (O9). Core metadata and comments provide short,
 generic reasons for Scottland features; the adapter groups them and adds the imported shortcut
 description. Core contains no Omarchy-specific names (C4).
+
+The coding-agent prompt includes the custom-only callout directly. It tells the agent to begin with
+those shortcuts after a short plain-language explanation, explain each reason simply, and offer to
+move each one to a free Scottland key. If there are none, it says so and keeps the rest brief; Omarchy
+defaults can be summarized briefly afterward. The prompt does not treat defaults Scottland
+intentionally replaces as the user's own shortcuts.
 
 Each key line also gives its source. `[Omarchy default]` means the live shortcut's key, action, and
 relevant options match Omarchy's shipped defaults. `[Your custom/changed shortcut]` means the user
@@ -48,6 +60,10 @@ identified as custom. A key with no current Omarchy shortcut is labeled
 `[No Omarchy shortcut on this key]`, or `[Gooarchy flavoring]` for a flavoring-only entry. A standalone
 Scottland `key_remaps` entry is labeled `[Scottland app remap]` because it is an app mapping rather
 than an Omarchy shortcut.
+
+A warning from a recoverably skipped live config module does not erase source labels for bindings
+the scan did capture. Those rows are still compared with the shipped defaults; keys absent from an
+incomplete live scan remain `[Source not verified]`.
 
 Scottland-side personal shortcut overrides live in
 `~/.config/scottland/overrides.ini`, in Wayfire INI format. Scottland reads these last and never
