@@ -63,6 +63,11 @@ Importance (Mike, 2026-10-04):
 - Knocks also carry a priority. Scottland does not set it; some other system provides it, and Scottland
   just renders it.
 
+Channels (Mike, 2026-10-04): knocks don't share one channel, so they aren't ranked against each other.
+Every window (every representation of an object) is a channel for that object's knocks. A knock can
+be high priority and not be represented on the desktop at all. Both coexist: there is an entire desktop
+to render them.
+
 ## Open
 
 - How knocks from objects with no representation appear, and how urgency/kind changes the look.
