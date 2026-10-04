@@ -89,6 +89,8 @@ GO14/GO15 add a rounded depth profile and wallpaper dye; see [their design, cont
 headless evidence](../docs/goo.md#go14go15-depth-and-wallpaper-dye-2026-10-02).
 GO16 makes widget and inset CSD goo, fallback halos and their controls follow the visible alpha
 contour, including badges; see [its headless shape and cost checks](../docs/goo.md#go16-widget-alpha-contours-2026-10-02).
+GO27: the goo never paints over dry window content (a reused-backdrop breath restores only outside it); see
+[the bug, cause and test](../docs/goo.md#go27-no-backdrop-inside-a-window-2026-10-04).
 GO21 makes the sleeping goo's cheap paths exact in device pixels at any scale, rotation and layout, and
 fixes backdrop reuse not hearing changes under a strip; see [the test matrix](../docs/goo.md#go21-exact-under-scale-rotation-and-two-outputs-2026-10-03).
 GO20 wakes the goo for a wallpaper only when its pixels change, and leaves dry bands and window

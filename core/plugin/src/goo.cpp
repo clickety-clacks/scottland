@@ -127,8 +127,17 @@ class goo_node_t : public wf::scene::node_t
             auto pixels = target.framebuffer_region_from_geometry_region(damage);
             auto strips = target.framebuffer_region_from_geometry_region(breath_area);
             if ((pixels ^ strips).empty())
-                reuse = target.geometry_region_from_framebuffer_region(pixels);
-            else
+            {
+                // GO27: merged strips can cover dry window content and places outside the
+                // goo's own area, where no backdrop is kept. The goo restores only the
+                // pixels it keeps current: the rest stay in the frame's damage and the
+                // scene beneath paints them.
+                reuse = target.geometry_region_from_framebuffer_region(
+                    (pixels & target.framebuffer_region_from_geometry_region(drawn_area())) ^
+                    target.framebuffer_region_from_geometry_region(dry));
+                if (reuse.empty())
+                    reuse_blocked = "strips outside the goo only";
+            } else
                 reuse_blocked = "damage outside the strips";
         }
         reuse_streak = reuse.empty() ? 0 : reuse_streak + 1;
@@ -316,7 +325,7 @@ class goo_node_t : public wf::scene::node_t
     // backdrop reuse. Keep the strips to a dozen rectangles: merge the pair whose joint box
     // adds the least area until they fit. The strips may then cover a little dry content,
     // so the backdrop is kept current there too (dry_capture).
-    static constexpr size_t max_breath_rects = 16;
+    size_t max_breath_rects = 16;  // tests lower it to force merging
     wf::regionf_t dry_capture;
     void set_breath_area(const wf::regionf_t &exact)
     {
@@ -744,6 +753,20 @@ class goo_node_t : public wf::scene::node_t
             state.time += std::min(.05, t - last_step);
         last_step = t;
     }
+    // Where the goo draws and keeps its backdrop: the settled liquid when asleep, the
+    // bands otherwise, without dry window content.
+    wf::regionf_t drawn_area()
+    {
+        wf::regionf_t area;
+        if (state.sleeping && settled_ready)
+            area = settled_area;
+        else
+            for (auto &b : bands())
+                area |= b;
+        if (dry_enabled)
+            area ^= dry;
+        return area;
+    }
     void render(const wf::scene::render_instruction_t &data, bool reuse_backdrop)
     {
         if (!attached || !goo_enabled() || !wf::get_core().is_gles2() ||
@@ -789,18 +812,11 @@ class goo_node_t : public wf::scene::node_t
                         }
                     }
                 }
-                wf::regionf_t area;
-                if (state.sleeping && settled_ready)
-                    area = settled_area;
-                else
-                    for (auto &b : band)
-                        area |= b;
-                if (dry_enabled)
-                    area ^= dry;
+                auto area = drawn_area();
                 // The backdrop is never copied in dry content, whether or not the test
                 // switch keeps it in the drawn area.
                 state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
-                                    reuse_backdrop, &dry_capture);
+                                    reuse_backdrop, &dry_capture, &dry);
             });
     }
 };
@@ -953,6 +969,14 @@ struct goo_t::impl
                     n->dry_enabled = data["dry_content"].as_bool();
                     test_changed = true;
                 }
+                if (data.has_member("breath_max_rects") && data["breath_max_rects"].is_int())
+                {
+                    n->max_breath_rects = std::clamp<int>(data["breath_max_rects"].as_int(), 1, 16);
+                    n->update_breathing();
+                    if (n->state.sleeping)
+                        n->start_settling();
+                    test_changed = true;
+                }
                 if (data.has_member("reuse_deaf") && data["reuse_deaf"].is_bool())
                     n->deaf = data["reuse_deaf"].as_bool();
                 if (data.has_member("breath_reuse") && data["breath_reuse"].is_bool())
@@ -1005,6 +1029,10 @@ struct goo_t::impl
             double dry_pixels = 0;
             for (auto &b : n->dry) dry_pixels += double(b.x2 - b.x1) * (b.y2 - b.y1);
             s["dry_pixels"] = dry_pixels;
+            // Dry window content the (merged) strips cover: restored from the backdrop on a breath.
+            double strip_dry = 0;
+            for (auto &b : n->breath_area & n->dry) strip_dry += double(b.x2 - b.x1) * (b.y2 - b.y1);
+            s["strip_dry_pixels"] = strip_dry;
             s["band_pixels"] = loose;
             s["settled_pixels"] = n->settled_ready ? settled : 0.;
             s["reuse_blocked"] = n->reuse_blocked;
