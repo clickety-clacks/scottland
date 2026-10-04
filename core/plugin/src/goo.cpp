@@ -331,10 +331,9 @@ class goo_node_t : public wf::scene::node_t
     // GO21: the output's damage ring collapses more than twenty rectangles into their
     // bounding box, which would repaint whole windows on every breath and rule out
     // backdrop reuse. Keep the strips to a dozen rectangles: merge the pair whose joint box
-    // adds the least area until they fit. The strips may then cover a little dry content,
-    // so the backdrop is kept current there too (dry_capture).
+    // adds the least area until they fit. The strips may then cover dry content; a reused
+    // frame never restores there (GO27), so the backdrop is never copied there either.
     size_t max_breath_rects = 16;  // tests lower it to force merging
-    wf::regionf_t dry_capture;
     wf::regionf_t few_rects(const wf::regionf_t &exact) const
     {
         std::vector<wf::geometry_t> rects;
@@ -390,7 +389,6 @@ class goo_node_t : public wf::scene::node_t
         motion_area.clear();
         if (settled_ready && state.sleeping && water_running && watercolor())
             motion_area = few_rects((settled_area ^ dry) | breath_area) & get_bounding_box();
-        dry_capture = dry ^ own_area();
         // Content newly inside the region has no backdrop kept yet: one ordinary repaint
         // there (this damage is not the goo's own tick) copies it before any reuse.
         if (attached)
@@ -934,7 +932,7 @@ class goo_node_t : public wf::scene::node_t
                 // The backdrop is never copied in dry content, whether or not the test
                 // switch keeps it in the drawn area.
                 state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
-                                    reuse_backdrop, &dry_capture, &dry, &own_area());
+                                    reuse_backdrop, &dry, &dry, &own_area());
             });
     }
 };

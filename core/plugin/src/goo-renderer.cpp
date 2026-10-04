@@ -679,7 +679,7 @@ void renderer_t::flow_dye(wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &w
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
                       const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
               bool reuse_backdrop, const wf::regionf_t *dry, const wf::regionf_t *dry_content,
-              const wf::regionf_t *keep)
+              const wf::regionf_t *reuse_area)
 {
     if (!p->ready)
         return;
@@ -697,9 +697,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         capture_area |= wf::geometry_t{double(r.x1) - refract_margin, double(r.y1) - refract_margin,
             double(r.x2 - r.x1) + 2 * refract_margin,
             double(r.y2 - r.y1) + 2 * refract_margin};
-    // The backdrop is also kept wherever the goo may restore it (GO24's motion region).
-    if (keep)
-        capture_area |= *keep;
+    // A reused frame restores only inside `area` (GO27), which this already covers, so the
+    // reuse region (`reuse_area`: the breathing strips or GO24's motion area) needs no copy of its
+    // own: its parts in dry content or open desktop are never restored.
     auto capture = data.damage & capture_area;
     // Window content no goo lies on is never sampled as backdrop either.
     if (dry)
@@ -774,7 +774,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         // Only inside the goo's own area and never over dry window content (GO27): no
         // backdrop is kept elsewhere, and the scene beneath painted it this frame.
         auto restore = data.target.framebuffer_region_from_geometry_region(data.damage) &
-            data.target.framebuffer_region_from_geometry_region(keep ? *keep : breath_area) &
+            data.target.framebuffer_region_from_geometry_region(reuse_area ? *reuse_area : breath_area) &
             data.target.framebuffer_region_from_geometry_region(area);
         if (dry_content)
             restore ^= data.target.framebuffer_region_from_geometry_region(*dry_content);

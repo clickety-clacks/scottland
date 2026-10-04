@@ -28,7 +28,7 @@ class renderer_t
     void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
               const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys = true,
               bool reuse_backdrop = false, const wf::regionf_t *dry = nullptr,
-              const wf::regionf_t *dry_content = nullptr, const wf::regionf_t *keep = nullptr);
+              const wf::regionf_t *dry_content = nullptr, const wf::regionf_t *reuse_area = nullptr);
     // The settled surface and the backdrop under it are cached: a breath can be drawn
     // over the cached backdrop without the scene beneath being repainted first.
     bool backdrop_ready(const wf::render_target_t &target) const;
