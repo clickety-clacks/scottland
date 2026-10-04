@@ -112,6 +112,25 @@ def screenshot(name):
     return GdkPixbuf.Pixbuf.new_from_file(str(path))
 
 
+def hue_shift(warm, cool):
+    """Over the pixels where Warm and Cool differ (the attention color), the mean channel
+    difference warm-minus-cool, and each image's mean red-minus-green there. Red-minus-green
+    is the measure: amber against yellow-green differs little in red once composited."""
+    a, b = warm.get_pixels(), cool.get_pixels()
+    n = warm.get_n_channels()
+    count = dr = dg = rg_warm = rg_cool = 0
+    for i in range(0, min(len(a), len(b)) - n + 1, n):
+        if max(abs(a[i+c] - b[i+c]) for c in range(3)) <= 8:
+            continue
+        count += 1
+        dr += a[i] - b[i]; dg += a[i+1] - b[i+1]
+        rg_warm += a[i] - a[i+1]; rg_cool += b[i] - b[i+1]
+    if not count:
+        return {"pixels": 0}
+    return {"pixels": count, "red": dr / count, "green": dg / count,
+            "warm_red_minus_green": rg_warm / count, "cool_red_minus_green": rg_cool / count}
+
+
 def pixels_changed(left, right):
     a, b = left.get_pixels(), right.get_pixels()
     if len(a) != len(b):
@@ -174,6 +193,14 @@ try:
             assert pixels_changed(theme, warm) > 100, (renderer, scheme, "theme/warm colors rendered the same")
             assert pixels_changed(warm, cool) > 100, (renderer, scheme, "warm/cool colors rendered the same")
             print(f"PASS {renderer} {scheme}: Theme, Warm and Cool render distinct attention colors", flush=True)
+            # Warm is red/amber and Cool olive/yellow-green in both schemes (GO22): where the
+            # two differ, Warm leans red over green, Cool green over red, by a clear margin.
+            shift = hue_shift(warm, cool)
+            print(json.dumps({"renderer": renderer, "scheme": scheme, "warm_vs_cool": shift}), flush=True)
+            assert shift["pixels"] > 100 and shift["warm_red_minus_green"] > 8 and \
+                shift["cool_red_minus_green"] < 0 and \
+                shift["warm_red_minus_green"] - shift["cool_red_minus_green"] > 16, (renderer, scheme, shift)
+            print(f"PASS {renderer} {scheme}: Warm reads warm (red over green) and Cool reads cool (green over red)", flush=True)
 finally:
     try:
         ipc("wayfire/set-config-options", {"scottland/attention_color_family": "theme", "scottland/goo": True})
