@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -169,6 +170,7 @@ require("omarchy.plugins.ask")
         env["OMARCHY_PATH"] = str(defaults)
 
         old_env = os.environ.copy()
+        installed_omarchy_root = Path(old_env.get("OMARCHY_PATH", "/usr/share/omarchy"))
         try:
             os.environ.clear()
             os.environ.update(env)
@@ -235,6 +237,62 @@ require("omarchy.plugins.ask")
                   "[Your custom/changed shortcut]" in plugin_workspace_line and
                   "[Omarchy default]" not in plugin_workspace_line,
                   f"live={live_plugin_row}, default={default_plugin_row}, line={plugin_workspace_line}")
+            installed_version = subprocess.run(["pacman", "-Q", "omarchy"],
+                                               capture_output=True, text=True, check=False)
+            copied_root = temp / "omarchy4-default-copy"
+            actual_hypr_defaults = installed_omarchy_root / "default/hypr"
+            is_omarchy4 = (installed_version.returncode == 0 and
+                           installed_version.stdout.startswith("omarchy 4.") and
+                           (actual_hypr_defaults / "bindings/tiling.lua").is_file())
+            real_defaults_scan = None
+            if is_omarchy4:
+                shutil.copytree(actual_hypr_defaults, copied_root / "default/hypr")
+                saved_omarchy_path = os.environ["OMARCHY_PATH"]
+                try:
+                    os.environ["OMARCHY_PATH"] = str(copied_root)
+                    real_defaults_scan = importer.run_lua_scan(baseline=True)
+                    real_default_rows = importer.parse_scan_rows(real_defaults_scan.stdout)
+
+                    def real_default_line(label):
+                        identity = importer.report_identity(label)
+                        return next(line for line in real_defaults_scan.stdout.splitlines()
+                                    if importer.parse_scan_rows(line)[0]["identity"] == identity)
+
+                    changed_fields = real_default_line("Super+1").split("\t")
+                    changed_fields[2] = "Changed personal action"
+                    changed_fields[3] = "exec"
+                    changed_fields[4] = "personal-command"
+                    plugin_fields = real_default_line("Super+2").split("\t")
+                    plugin_fields[11] = "1"
+                    partial_live_output = "\n".join((
+                        real_defaults_scan.stdout,
+                        "\t".join(changed_fields),
+                        "\t".join(plugin_fields),
+                    ))
+                    saved_origins = importer.BINDING_ORIGINS.copy()
+                    saved_complete = importer.ORIGIN_SCAN_COMPLETE
+                    importer.update_binding_origins(
+                        partial_live_output, real_defaults_scan.stdout,
+                        defaults_complete=(real_defaults_scan.returncode == 0 and
+                                           not real_defaults_scan.stderr.strip()),
+                        live_complete=False)  # an unrelated live module was skipped
+                    check("O20 compares against a copied Omarchy 4 layout and classifies captured rows despite unrelated live warnings",
+                          real_defaults_scan.returncode == 0 and not real_defaults_scan.stderr.strip() and
+                          len(real_default_rows) >= 200 and
+                          importer.source_for_label("Super+1") == "Your custom/changed shortcut" and
+                          importer.source_for_label("Super+2") == "Your custom/changed shortcut" and
+                          importer.source_for_label("Super+3") == "Omarchy default" and
+                          importer.source_for_label("F12") == "Source not verified" and
+                          not importer.ORIGIN_SCAN_COMPLETE,
+                          f"version={installed_version.stdout.strip()}, rows={len(real_default_rows)}, "
+                          f"scan_stderr={real_defaults_scan.stderr!r}")
+                    importer.BINDING_ORIGINS = saved_origins
+                    importer.ORIGIN_SCAN_COMPLETE = saved_complete
+                finally:
+                    os.environ["OMARCHY_PATH"] = saved_omarchy_path
+            else:
+                check("O20 copied Omarchy 4 fixture is available for the source-label regression test",
+                      False, f"version={installed_version.stdout.strip()}, layout={actual_hypr_defaults}")
             check("O20 labels Ask from the user plugin as custom and keeps its action wording neutral",
                   "[Your custom/changed shortcut]" in ask_line and
                   "[Omarchy default]" not in ask_line and

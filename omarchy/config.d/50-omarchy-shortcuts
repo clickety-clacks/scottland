@@ -313,12 +313,13 @@ def parse_scan_rows(output):
     return rows
 
 
-def update_binding_origins(live_output, defaults_output, complete):
+def update_binding_origins(live_output, defaults_output, defaults_complete, live_complete):
+    """Classify captured rows from valid defaults; keep absent rows unverified on partial scans."""
     global BINDING_ORIGINS, ORIGIN_SCAN_COMPLETE
-    ORIGIN_SCAN_COMPLETE = complete
+    ORIGIN_SCAN_COMPLETE = defaults_complete and live_complete
     BINDING_ORIGINS = {}
     default_signatures = {}
-    if complete:
+    if defaults_complete:
         for row in parse_scan_rows(defaults_output):
             default_signatures.setdefault(row["identity"], set()).add(row["signature"])
     for row in parse_scan_rows(live_output):
@@ -326,7 +327,7 @@ def update_binding_origins(live_output, defaults_output, complete):
         if row["user_plugin"]:
             # A user plugin remains user-added even when its binding matches Omarchy's default.
             origin = "Your custom/changed shortcut"
-        elif not complete:
+        elif not defaults_complete:
             continue
         else:
             origin = "Omarchy default" if row["signature"] in default_signatures.get(identity, set()) \
@@ -917,10 +918,12 @@ def main():
         scan = run_lua_scan()
         if scan.returncode == 0:
             defaults_scan = run_lua_scan(baseline=True)
-    update_binding_origins(
-        scan.stdout if scan else "", defaults_scan.stdout if defaults_scan else "",
-        bool(scan and scan.returncode == 0 and not scan.stderr.strip() and
-             defaults_scan and defaults_scan.returncode == 0))
+    defaults_complete = bool(defaults_scan and defaults_scan.returncode == 0 and
+                             not defaults_scan.stderr.strip())
+    live_complete = bool(scan and scan.returncode == 0 and not scan.stderr.strip())
+    update_binding_origins(scan.stdout if scan else "",
+                           defaults_scan.stdout if defaults_scan else "",
+                           defaults_complete, live_complete)
     scan_stdout = scan.stdout if scan else ""
     scan_stderr = scan.stderr if scan else ""
     if defaults_scan and defaults_scan.returncode != 0:

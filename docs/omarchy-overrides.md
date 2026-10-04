@@ -61,6 +61,10 @@ identified as custom. A key with no current Omarchy shortcut is labeled
 Scottland `key_remaps` entry is labeled `[Scottland app remap]` because it is an app mapping rather
 than an Omarchy shortcut.
 
+A warning from a recoverably skipped live config module does not erase source labels for bindings
+the scan did capture. Those rows are still compared with the shipped defaults; keys absent from an
+incomplete live scan remain `[Source not verified]`.
+
 Scottland-side personal shortcut overrides live in
 `~/.config/scottland/overrides.ini`, in Wayfire INI format. Scottland reads these last and never
 writes them. Before suggesting a new key, check the shipped Scottland bindings and this file to make
