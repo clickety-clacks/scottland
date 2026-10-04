@@ -1225,14 +1225,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         for (auto& [view, frame] : frames_on(output))
         {
-            double d = frame->band_distance(p);
+            // Measured where each frame is drawn (a peeking window's offset, a drag).
+            auto local = frame->unpresented(p);
+            double d = frame->band_distance(local);
             if (d < best_distance)
             {
                 best = frame;
                 best_distance = d;
             }
 
-            if (frame->liquid_distance(p) <= 0)
+            if (frame->liquid_distance(local) <= 0)
             {
                 break;  // the cursor is over this window or its halo: those behind are covered
             }
@@ -4894,6 +4896,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         keyboard_motions.erase(drag->view->get_id()); // catch the object at its current position
+        // Grabbed where it's drawn, peeking or not (peek-strip decision 9). The committed move
+        // applies at the next idle, so this start reads placed_geometry().
+        commit_grab_offset(drag->view);
         drag_velocity.clear();
         auto input = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
         drag_velocity.add(now_msec(), input.x, input.y);
@@ -4933,7 +4938,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
         // Use the window's resting box (its scaled width plus the halo margin), not the live
         // bounding box: a just-lifted window is mid-bulge, which inflates the box for a moment.
-        auto geometry = drag->view->get_geometry();
+        auto geometry = placed_geometry(drag->view);
         double drawn  = geometry.width * displayed_scale(drag->view);
         auto frame    = frame_of(drag->view, false);
         model.drag.margin   = frame ? frame->margin() :
@@ -5227,9 +5232,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     /** Where a drag picked a window up: which window, on which screen, where. */
     static constexpr int DRAG_CHAIN_MS = 2500;  // a new drag of the same window within this continues the move
 
-    drag_origin_t origin_of(wayfire_toplevel_view view)
+    /** Its geometry, at the position a move just asked for: Wayfire applies moves at the next
+     *  idle, and a grab may have just committed a peek offset (decision 9). The size stays the
+     *  current one (a pending resize waits for the client). */
+    static wf::geometry_t placed_geometry(wayfire_toplevel_view view)
     {
         auto g = view->get_geometry();
+        auto pending = view->toplevel()->pending().geometry;
+        g.x = pending.x; g.y = pending.y;
+        return g;
+    }
+
+    drag_origin_t origin_of(wayfire_toplevel_view view)
+    {
+        auto g = placed_geometry(view);
         drag_origin_t origin;
         origin.view = origin.first_view = view->get_id();
         origin.output   = view->get_output();

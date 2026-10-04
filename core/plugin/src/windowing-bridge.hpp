@@ -217,6 +217,44 @@
         auto g = view->get_geometry();
         return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
     }
+    // Peek-strip decision 9: a grabbed window stays exactly where it is drawn, and that becomes
+    // its real position. Fold its avoidance offset into its true geometry, so window, goo, halo
+    // and input agree for the whole drag. The drag keeps the grabbed point under the input from
+    // the drawn box, so removing the offset moves nothing on screen. P13: the commit never takes
+    // it into another zone (a peek that hangs its center past the zone edge commits to the edge).
+    void commit_grab_offset(wayfire_toplevel_view view)
+    {
+        auto found = hint_visuals.find(view->get_id());
+        if (found == hint_visuals.end() || !found->second.offset_attached || !view->get_output() ||
+            link_of_widget(view)) return;
+        auto& visual = found->second;
+        double dx = visual.offset->translation_x, dy = visual.offset->translation_y;
+        if (std::abs(dx) < .5 && std::abs(dy) < .5) return;
+        auto g = placed_geometry(view);
+        double width = view->get_output()->get_relative_geometry().width;
+        auto zone_at = [&] (double shift) {
+            double x = g.x + g.width / 2.0 + shift; auto z = place_at(x, width).zone;
+            return z == zone_t::center ? 0 : x < width / 2 ? 1 : 2;
+        };
+        if (zone_at(dx) != zone_at(0))
+        {
+            double inside = 0, outside = dx;
+            for (int i = 0; i < 24; i++)
+            {
+                double mid = (inside + outside) / 2;
+                (zone_at(mid) == zone_at(0) ? inside : outside) = mid;
+            }
+            dx = inside;
+        }
+        LOGI("scottland: grab commits window ", view->get_id(), "'s avoidance offset ", dx, ",", dy,
+            " into its position");
+        view->damage(); view->get_transformed_node()->begin_transform_update();
+        visual.offset->translation_x = visual.offset->translation_y = 0;
+        view->get_transformed_node()->end_transform_update(); view->damage();
+        visual.target = {}; visual.branch_base_offset = {};
+        visual.branch_owner = 0; visual.branch_axis = visual.branch_sign = 0;
+        move_window(view, std::round(g.x + dx), std::round(g.y + dy));
+    }
     double hint_size(wayfire_toplevel_view view)
     {
         // WK31 retains WK30's default widget circle at one consistent size, regardless
@@ -294,7 +332,7 @@
         using Z = scottland::windowing::zone;
         auto z = window_zone(view);
         if (z != Z::left_periphery && z != Z::right_periphery) return z;
-        auto g = view->get_geometry();
+        auto g = placed_geometry(view);
         auto found = model.windows.find(view->get_id());
         auto pin = found == model.windows.end() ? std::nullopt : found->second.pinned_scale;
         return reads_as(Z::center, g.x + g.width / 2.0, pin, view->get_output()->get_relative_geometry().width) ?
@@ -375,7 +413,7 @@
         uint64_t id = link ? link->window_id : view->get_id();
         if (!model.windows.count(id)) return;
         auto z = memory_zone(view);
-        auto g = view->get_geometry(); auto screen = view->get_output()->get_relative_geometry();
+        auto g = placed_geometry(view); auto screen = view->get_output()->get_relative_geometry();
         // The pin goes with the spot (WP1): a later return to this zone restores both.
         scottland::windowing::remember_spot(ensure_window_memory(id), z, {
             (g.x + g.width / 2.0) / screen.width, (g.y + g.height / 2.0) / screen.height},
@@ -1158,7 +1196,9 @@
                 it = hint_visuals.erase(it); continue;
             }
             auto offset = visual.offset;
-            const bool grabbed = drag->view == view;
+            // A touch hold may become a lift: until it resolves, the window stays where it is
+            // drawn, so the lift grabs it there (decision 9); a tap then eases it home as focused.
+            const bool grabbed = drag->view == view || (hold_finger >= 0 && hold_view.lock().get() == view.get());
             auto target = grabbed ? scottland::windowing::point{
                 double(offset->translation_x), double(offset->translation_y)} : visual.target;
             bool offset_changed = false;
