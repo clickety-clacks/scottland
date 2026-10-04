@@ -160,8 +160,8 @@ try:
     reasons = [l.split('exact path: ')[1] for l in lines]
     (out/'exact-log.txt').write_text('\n'.join(lines)+'\n')
     check('the log says why, once per change (one line per switch to the exact path, not one per tick)',
-          len([r for r in reasons if 'test override' not in r]) == 2 and any('test override' in r for r in reasons) and any('switched off' in r for r in reasons)
-          and any('could not be allocated' in r for r in reasons), reasons)
+          len([r for r in reasons if 'test override' not in r]) == 3 and any('test override' in r for r in reasons) and any('switched off' in r for r in reasons)
+          and any('could not be allocated' in r for r in reasons) and any('surface cache is unavailable' in r for r in reasons), reasons)
     failed = [n for n, ok in checks if not ok]
     print(f'RESULT {len(checks)-len(failed)} passed, {len(failed)} failed', flush=True)
     sys.exit(1 if failed else 0)
