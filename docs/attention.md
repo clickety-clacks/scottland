@@ -15,7 +15,8 @@ plugged in by configuration, never by code that names a particular app. Rows say
   `scottland-attention-sources` runs them; a reload picks up new or changed ones. See the
   Scottland skill for the format. Any process can also call IPC `scottland/attention {window,
   attention, source}` directly.
-- Shown as a breathing halo in the palette's attention color, on the window or its widget;
+- Shown as a breathing halo in the selected attention color: the palette's color, warm red/amber,
+  or cool yellow/green. The Goo tab choice applies live to window and widget Goo or fallback halos;
   cleared when the user goes to it. A collapsed widget also peeks expanded for five seconds
   on each raised request (WG19); renewed requests restart the interval. Expiry changes only
   presentation, leaving the attention sources intact.

@@ -31,6 +31,8 @@ struct source_t
     glm::vec4 liquid{1, 10, 1, 1}; // amount, radius, seed, release multiplier
     glm::vec3 dye{};
     float dye_strength = 1; // source contribution to neutral-vs-state tint in the final composite
+    float state_mix = 0; // focused, attention or Window mode hint share of this source
+    float neutral_strength = 1; // A16 neutral tint strength, kept separate from state dye
     glm::vec4 corners{};
     glm::vec4 sides{}; // top, right, bottom, left: eased whole-control proximity
     float control_extent = 26;
@@ -50,6 +52,7 @@ struct settings_t
     float wave_speed = .28, wave_damp = .985, wave_height = .55;
     float spread = .45, swirl = .9, release = .06, shine = .75, relief = 5;
     float depth = 6, profile = .65, soak = .12;
+    float dye_strength = 1;
     float overlap_film = 4, hover_cloudiness = .65, hover_emissivity = .35, hover_distance = 48;
     // Empty means the prototype's exact exponential; custom curves span four reaches.
     std::array<float, 256> falloff{};

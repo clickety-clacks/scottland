@@ -67,6 +67,8 @@ extern "C" {
 #include "hint-overlay.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
+#include "attention-color.hpp"
+#include "state-dye.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -842,11 +844,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
     wf::option_wrapper_t<double> window_mode_tint{"scottland/window_mode_tint"};
     wf::option_wrapper_t<bool> window_avoidance_always{"scottland/window_avoidance_always"};
+    wf::option_wrapper_t<double> goo_dye_strength{"scottland/goo_dye_strength"};
     // Keep parsing the historical key so existing user config still opts in.
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
+    wf::option_wrapper_t<std::string> attention_color_family{"scottland/attention_color_family"};
 
     #include "windowing-bridge.hpp"
 
@@ -857,10 +861,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
         scottland::palette.unfocused_edge_strength = unfocused_edge_strength;
         scottland::palette.hint_tint = window_mode_tint_strength();
+        scottland::palette.dye_strength = std::clamp(float(goo_dye_strength), 0.f, 1.5f);
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
         wf::color_t attention = attention_color;
-        scottland::palette.attention = {attention.r, attention.g, attention.b};
+        const auto selected_attention = scottland::attention_color::select(
+            std::string(attention_color_family), scottland::palette.light,
+            {attention.r, attention.g, attention.b});
+        scottland::palette.attention = {
+            selected_attention.r, selected_attention.g, selected_attention.b};
         for (auto& view : wf::get_core().get_all_views())
         {
             if (auto toplevel = wf::toplevel_cast(view))
@@ -1653,6 +1662,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             s.dye_strength = scottland::edge_style::tint_strength(
                 scottland::palette.unfocused_edge_strength, float(frame->focus_mix),
                 float(frame->attention_mix), s.hinted);
+            s.state_mix = scottland::state_dye::mix(float(frame->focus_mix),
+                float(frame->attention_mix), s.hinted);
+            s.neutral_strength = scottland::palette.unfocused_edge_strength;
             if (frame->can_resize())
                 s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
             s.sides = {frame->side_cloud[0], frame->side_cloud[1], frame->side_cloud[2], frame->side_cloud[3]};
@@ -6445,6 +6457,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_tone_light.set_callback([=] { load_color_scheme(); });
         unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
+        goo_dye_strength.set_callback([=] { load_color_scheme(); });
         window_mode_tint.set_callback([=] { load_color_scheme(); refresh_layout_avoidance(); });
         auto avoidance_setting_changed = [=] {
             declutter_signature.clear();
@@ -6455,6 +6468,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         color_scheme.set_callback([=] { load_color_scheme(); });
         accent_color.set_callback([=] { load_color_scheme(); });
         attention_color.set_callback([=] { load_color_scheme(); });
+        attention_color_family.set_callback([=] { load_color_scheme(); });
         load_color_scheme();
         apply_all();
         update_focus();

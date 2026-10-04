@@ -273,9 +273,16 @@ struct renderer_t::impl
         for (auto pair : fast_programs)
         {
             auto shader = *pair.second;
-            const std::string decl = "uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;";
-            shader.replace(shader.find(decl), decl.size(),
-                "uniform float uFilm,uCloudiness,uEmissivity; const float uOverlap=0.,uControls=0.;");
+            const std::string decl = "uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls,uDyeStrength;";
+            auto decl_at = shader.find(decl);
+            if (decl_at == std::string::npos)
+            {
+                LOGE("scottland goo: fast shader specialization declaration was not found");
+                available = false;
+                return false;
+            }
+            shader.replace(decl_at, decl.size(),
+                "uniform float uFilm,uCloudiness,uEmissivity,uDyeStrength; const float uOverlap=0.,uControls=0.;");
             // A float round-trip of uCount keeps a second dynamic loop bound in
             // some GLES compilers. In this specialization every source is eligible.
             auto replace = [&](const std::string &from, const std::string &to)
@@ -365,6 +372,7 @@ struct renderer_t::impl
         glUniform2f(glGetUniformLocation(id, "uRes"), width, height);
         glUniform2f(glGetUniformLocation(id, "uSize"), w, h);
         one("uTime", time);
+        one("uDyeStrength", settings.dye_strength);
         one("uReach", settings.reach);
         one("uThickness", settings.thickness);
         one("uOverlap", overlap ? 1 : 0);
@@ -475,7 +483,8 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.hinted ? (s.hint_circle ? std::min(s.scale, 1.f) : 1.f) : 0.f, s.control_extent,
                 overlap_film_width(s, settings), s.hint_circle ? 1.f : 0.f});
             data.push_back(s.sides);
-            data.emplace_back(s.attention && s.emitter ? 1.f : 0.f, s.dye_strength, 0, 0);
+            data.emplace_back(s.attention && s.emitter ? 1.f : 0.f, s.dye_strength,
+                s.state_mix, s.neutral_strength);
             data.push_back(shape_tiles[i]);
             data.push_back(s.shape ? s.shape->bounds : glm::vec4{});
             data.push_back(s.shape_body);
