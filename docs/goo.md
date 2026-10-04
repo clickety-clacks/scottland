@@ -2146,7 +2146,7 @@ remaining bands whole.
 
 Headless, 2560×1600 at 120 Hz, the idle bench's wide preset (Mike's settings), one
 attention window breathing, five-second samples. Other load on the shared GPU was low
-(whole GPU 0 to 3% outside these runs, one other agent's idle headless session).
+(whole GPU mostly 0 to 3% with one 10% sample; one other agent's headless session was open).
 
 Cost, compositor GPU and the goo's own draw time (median per tick):
 
