@@ -112,3 +112,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
 | 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
+
+## Knocks (concept in discussion; docs/knocks.md)
+
+| Date | Ruling |
+|---|---|
+| 10-04 | Attention generalizes beyond agents: objects exist whether or not they're on the desktop; windows/widgets are representations of the ones that are forefront; an object asks for the user with a knock (ephemeral, not a window or widget, with a message and optionally an answer UI). |
+| 10-04 | A knock's look is organic to what it is (the attention goo, a vignette), not just another window. |
+| 10-04 | From a knock the user can answer directly with its UI, or invite the object in (find or open its window, bring it center, and tell the object to focus on that knock). |
+| 10-04 | Mapping a knock to its sender's window must be dependable. |
