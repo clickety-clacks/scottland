@@ -25,6 +25,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | Nothing is ever completely hidden; window avoidance exists for this, the hint is the yardstick. | P12 |
 | 10-04 | A peeking window may hang past its zone edge but never moves into another zone; if it still can't peek, only its hint is placed where it can be seen. | P12 |
 | 10-04 | The user puts windows in zones; nothing automatic moves a window into another zone, not even visually. | P13 |
+| 10-04 | The user always wins: what the user places ends up exactly where they put it; everything else flows around it (no settling the dropped item). | P14 |
 
 ## Window avoidance and peeking
 
@@ -50,6 +51,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | Holding a window's hint solos it (keyboard solo), committed, no undo. | WK35 |
 | 10-04 | Hold on the focused window's hint solos; hold on an unfocused window's hint pairs it. | WK35, WK36 |
 | 10-04 | A three-finger hold on an unfocused window pairs it with the focused window (touchpad equivalent of the hint hold). | WK36 |
+| 10-04 | A three-finger hold on the focused window solos it (built with solo). | WK35 |
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
 
@@ -89,6 +91,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 10-04 | Returning to a zone restores both the remembered position and the Shift-pinned scale, through every return path (cycling by hint taps, Esc, double-tap and back). | WP1, WP5 |
 | 10-04 | The pointer follows the desktop text size. | A17 |
+| 10-04 | A window sent to the periphery without a remembered spot goes as close to the center as possible while overlapping the center (zone and its windows) as little as possible: it may hang a little into the center zone where that covers no center window; never just its middle point over the line with half of it still in the center; best effort when space is tight. Whether a few-point full-size sliver past the edge counts as center is secondary. | WP4, WP8 |
 
 ## Goo and appearance
 
