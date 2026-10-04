@@ -984,5 +984,33 @@ int main()
     check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
+    {
+        // WP1: each zone memory keeps the Shift scale pin there, or its absence.
+        window_memory memory;
+        remember_spot(memory, zone::left_periphery, {.1,.4}, .62);
+        check(remembered_pin(memory, zone::left_periphery) == .62, "periphery memory keeps its Shift pin");
+        check(memory.last_side == -1, "remembering a pinned spot still records its side");
+        check(!remembered_pin(memory, zone::right_periphery), "a left periphery pin never applies on the right");
+        remember_spot(memory, zone::right_periphery, {.9,.5}, std::nullopt);
+        check(!remembered_pin(memory, zone::right_periphery) && remembered_pin(memory, zone::left_periphery) == .62,
+            "an unpinned spot in one zone leaves another zone's pin alone");
+        remember_spot(memory, zone::left_periphery, {.12,.3}, std::nullopt);
+        check(!remembered_pin(memory, zone::left_periphery) && near(*memory.positions[1], {.12,.3}),
+            "a later unpinned drop in the same zone clears that zone's pin");
+        remember_spot(memory, zone::left_periphery, {.12,.3}, .8);
+        remember_spot(memory, zone::left_periphery, {.12,.3}, .7);
+        check(remembered_pin(memory, zone::left_periphery) == .7, "the newest pin in a zone replaces the older one");
+        remember_spot(memory, zone::center, {.5,.5}, .5);
+        check(!memory.pins[0] && !remembered_pin(memory, zone::center) && memory.positions[0],
+            "center memory never keeps a pin: center is full scale (tenet 4)");
+        check(memory.last_side == -1, "a center memory leaves the last side alone");
+        remember_spot(memory, zone::right_rail, {.97,.2}, .5);
+        check(!memory.pins[4] && !remembered_pin(memory, zone::right_rail) && memory.last_side == 1,
+            "rail memory never keeps a pin: widgets don't scale (WG4)");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, 0.0);
+        check(!remembered_pin(memory, zone::right_periphery), "a zero or negative scale is no pin");
+        window_memory empty; empty.pins[1] = .5;
+        check(!remembered_pin(empty, zone::left_periphery), "a pin without a remembered spot is never restored");
+    }
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }

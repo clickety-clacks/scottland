@@ -267,21 +267,40 @@
         }
         return *state.placement;
     }
+    static wf::json_t memory_spots(const scottland::windowing::window_memory& memory)
+    {
+        auto spots = wf::json_t::array();
+        for (size_t z = 0; z < memory.positions.size(); ++z)
+        {
+            auto p = memory.positions[z];
+            wf::json_t spot; spot["set"] = bool(p);
+            if (p) { spot["x"] = p->x; spot["y"] = p->y; }
+            if (p && memory.pins[z]) spot["pin"] = *memory.pins[z];
+            spots.append(spot);
+        }
+        return spots;
+    }
     static wf::json_t memory_snapshot(const scottland::windowing::window_memory& memory)
     {
         wf::json_t r; r["slot"] = int(memory.hint_slot); r["side"] = memory.last_side;
-        r["positions"] = wf::json_t::array();
-        for (auto p : memory.positions)
-        { wf::json_t spot; spot["set"] = bool(p); if (p) { spot["x"] = p->x; spot["y"] = p->y; } r["positions"].append(spot); }
+        r["positions"] = memory_spots(memory);
         return r;
     }
     static scottland::windowing::window_memory read_memory(wf::json_t r)
     {
         scottland::windowing::window_memory memory;
-        memory.hint_slot = r["slot"].as_int(); memory.last_side = r["side"].as_int();
+        memory.hint_slot = r["slot"].as_int();
         for (size_t z = 0; z < memory.positions.size(); ++z) if (r["positions"][z]["set"].as_bool())
-            memory.positions[z] = scottland::windowing::point{
-                r["positions"][z]["x"].as_double(), r["positions"][z]["y"].as_double()};
+        {
+            auto spot = r["positions"][z];
+            std::optional<double> pin;
+            if (spot.has_member("pin") && (spot["pin"].is_double() || spot["pin"].is_int()))
+                pin = spot["pin"].is_double() ? spot["pin"].as_double() : double(spot["pin"].as_int());
+            scottland::windowing::remember_spot(memory, scottland::windowing::zone(z),
+                {spot["x"].as_double(), spot["y"].as_double()}, pin);
+        }
+        // remember_spot tracks the side as it goes; the record's own side is authoritative.
+        memory.last_side = r["side"].as_int();
         return memory;
     }
     #include "keyboard-motion.hpp"
@@ -295,17 +314,16 @@
     }
     void remember_window(wayfire_toplevel_view view)
     {
-        using Z = scottland::windowing::zone;
         if (!view || !view->is_mapped() || !view->get_output() || view->pending_fullscreen()) return;
         auto link = link_of_widget(view);
         uint64_t id = link ? link->window_id : view->get_id();
         if (!model.windows.count(id)) return;
         auto z = window_zone(view);
         auto g = view->get_geometry(); auto screen = view->get_output()->get_relative_geometry();
-        auto& memory = ensure_window_memory(id);
-        memory.positions[size_t(z)] = scottland::windowing::point{
-            (g.x + g.width / 2.0) / screen.width, (g.y + g.height / 2.0) / screen.height};
-        if (z != Z::center) memory.last_side = (z == Z::left_periphery || z == Z::left_rail) ? -1 : 1;
+        // The pin goes with the spot (WP1): a later return to this zone restores both.
+        scottland::windowing::remember_spot(ensure_window_memory(id), z, {
+            (g.x + g.width / 2.0) / screen.width, (g.y + g.height / 2.0) / screen.height},
+            model.windows[id].pinned_scale);
         publish_model();
     }
     std::vector<scottland::windowing::hint_entry> window_entries()
@@ -672,7 +690,13 @@
         // Ordinary placement takes over now. Docking first captures the drawn
         // frame, then its existing widget handoff stops the glide itself.
         if (!rail) stop_glide(window);
-        pin_scale(window, std::nullopt); // explicit zone cycling follows the zone, including center at 100%
+        // Explicit zone cycling follows the zone, including center at 100%, unless the user pinned
+        // a scale at this zone's remembered spot (WP1/WP5). A spot that zone settings have since
+        // put inside the center zone is full scale (tenet 4).
+        double screen_width = window->get_output()->get_relative_geometry().width;
+        auto pin = scottland::windowing::remembered_pin(ensure_window_memory(id), z);
+        if (pin && place_at(at.x, screen_width).zone == zone_t::center) pin.reset();
+        pin_scale(window, pin);
         if (destination == D::periphery && link_of_window(window))
             restore_window(*link_of_window(window), at, true);
         else if (!rail) move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
@@ -686,8 +710,7 @@
             memory.last_side = left ? -1 : 1;
             publish_model();
         } else { remember_window(window); start_cycle_glide(window, from, from_scale,
-            {at.x, at.y}, destination == D::center ? 1.0 : place_at(at.x,
-                window->get_output()->get_relative_geometry().width).scale); }
+            {at.x, at.y}, destination == D::center ? 1.0 : pin ? *pin : place_at(at.x, screen_width).scale); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)
@@ -1426,9 +1449,7 @@
             item["edge_label"] = hint_visuals.count(e.id) && hint_visuals[e.id].edge_label;
             item["flash"] = hint_flashes.count(e.id) && hint_flashes[e.id].node ?
                 hint_flashes[e.id].node->alpha : 0.0;
-            item["memories"] = wf::json_t::array();
-            for (auto p : ensure_window_memory(e.id).positions)
-            { wf::json_t spot; spot["set"] = bool(p); if (p) { spot["x"] = p->x; spot["y"] = p->y; } item["memories"].append(spot); }
+            item["memories"] = memory_spots(ensure_window_memory(e.id));
             reply["hints"].append(item);
         }
         return reply;

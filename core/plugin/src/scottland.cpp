@@ -3320,6 +3320,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (!on_rail)
             {
+                // Widget drags never pin (L31): the window follows its new zone, never a pin it
+                // had before it became a widget, which belongs to that zone's memory (WP1).
+                if (auto window = wf::toplevel_cast(link->window.lock())) pin_scale(window, std::nullopt);
                 restore_window(*link, center);
                 return;
             }
