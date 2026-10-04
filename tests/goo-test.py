@@ -81,13 +81,37 @@ def select_goo_tab(panel):
           y+q["viewport"]["y"]-(92 if wrapped else 44))
     time.sleep(.3)
 
-def set_first_goo_row(panel):
+def goo_row_center(q, name):
+    goo = q["goo"]
+    return goo["y"] + goo["rows"].index(name) * (goo["rowHeight"] + 1) + goo["rowHeight"] / 2
+
+def scroll_goo_row_into_view(panel, name):
+    """Drag the Goo tab's scrollbar until the named row sits in the viewport's middle. Rows
+    above the sliders (the attention color choice, GO22) can push a row out of view."""
     q = settings_snapshot(panel)
+    viewport = q["viewport"]
+    row = goo_row_center(q, name)
+    if viewport["y"] + q["goo"]["rowHeight"] <= row <= viewport["y"] + viewport["height"] - q["goo"]["rowHeight"]:
+        return q
+    x, top = panel_origin(q)
+    content_height = q["contentHeight"]
+    max_scroll = max(0, content_height - viewport["height"])
+    target = min(max_scroll, max(0, q["scroll"] + row - (viewport["y"] + viewport["height"] / 2)))
+    thumb = viewport["height"] * viewport["height"] / content_height
+    start = top + viewport["y"] + q["scroll"] / content_height * viewport["height"] + thumb / 2
+    end = top + viewport["y"] + target / content_height * viewport["height"] + thumb / 2
+    drag(x + viewport["x"] + viewport["width"] - 5, start, 0, end - start)
+    time.sleep(.3)
+    q = settings_snapshot(panel)
+    row = goo_row_center(q, name)
+    assert viewport["y"] <= row <= viewport["y"] + viewport["height"], ("row still out of view", name, q["scroll"], row, viewport)
+    return q
+
+def set_first_goo_row(panel):
+    q = scroll_goo_row_into_view(panel, "goo_thickness")
     x, y = panel_origin(q)
     goo = q["goo"]
-    index = goo["rows"].index("goo_thickness")
-    row_y = goo["y"] + index * (goo["rowHeight"] + 1) + goo["rowHeight"] / 2
-    click(x+goo["x"]+goo["width"]*.64, y+row_y)
+    click(x+goo["x"]+goo["width"]*.64, y+goo_row_center(q, "goo_thickness"))
     time.sleep(.4)
 
 
@@ -393,14 +417,22 @@ try:
     time.sleep(.15)
     check("digits enter a Goo row value", abs(float(ipc("wayfire/get-config-option",
           {"option": "scottland/goo_thickness"})["value"])-27) < .01)
-    for row in range(22):
+    # Walk down from thickness by row names, not a fixed count: GO23 added Dye strength after
+    # Control proximity. One step right on the film and hover rows on the way.
+    rows = settings_snapshot(panel)["goo"]["rows"]
+    first, stepped = rows.index("goo_thickness"), {"goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity"}
+    for name in rows[first+1:rows.index("goo_hover_distance")+1]:
         key("KEY_DOWN", True); key("KEY_DOWN", False)
-        if 17 <= row < 20:
+        if name in stepped:
             key("KEY_RIGHT", True); key("KEY_RIGHT", False)
-    time.sleep(.3); shot("07a-panel-keyboard-last-row")
+    time.sleep(.3); shot("07a-panel-keyboard-proximity-row")
     key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
-    check("keyboard navigation reaches the last Goo row", abs(float(ipc("wayfire/get-config-option",
+    check("keyboard navigation reaches the Control proximity row", abs(float(ipc("wayfire/get-config-option",
           {"option": "scottland/goo_hover_distance"})["value"])-49) < .01)
+    key("KEY_DOWN", True); key("KEY_DOWN", False); key("KEY_RIGHT", True); key("KEY_RIGHT", False); time.sleep(.15)
+    check("keyboard navigation reaches the last Goo row (Dye strength)", rows[-1] == "goo_dye_strength" and
+          abs(float(ipc("wayfire/get-config-option", {"option": "scottland/goo_dye_strength"})["value"])-1.01) < .001)
+    ipc("wayfire/set-config-options", {"scottland/goo_dye_strength": 1.0})
     for name, value in {"goo_overlap_film": 4.5, "goo_hover_cloudiness": .66, "goo_hover_emissivity": .36}.items():
         result = subprocess.run([str(repo / "core/libexec/scottland-ctl"), "option", "scottland/"+name],
                                 capture_output=True, text=True)
