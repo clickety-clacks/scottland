@@ -228,6 +228,17 @@ try:
     capture('custom-left-rail')
     release()
     drag(widget(right), 10, 230)
+    # WG26 commits space made during the real rail drop, so this sequence no longer
+    # leaves stacked cards. Recreate a pre-existing overlap with fixture-only
+    # geometry setup to keep exercising hint decluttering for overlapping widgets.
+    left_card, right_card = widget(left), widget(right)
+    left_frame = next(v for v in views() if v['id'] == left_card)['frame']
+    right_frame = next(v for v in views() if v['id'] == right_card)['frame']
+    ipc('window-rules/configure-view', {'id': left_card, 'geometry': {
+        'x': right_frame['x'], 'y': right_frame['y'],
+        'width': left_frame['width'], 'height': left_frame['height']}})
+    wait(lambda: abs(next(v for v in views() if v['id'] == left_card)['frame']['y'] -
+                     right_frame['y']) < .1)
     hold()
     before = capture('stacked-collapsed')
     check(any(abs(h['dy']) > 5 for h in before if h['window'] in (left,right)),
