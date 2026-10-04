@@ -1,0 +1,106 @@
+# Mike's rulings
+
+A dated log of the decisions Mike has made, in his terms, with where each one is specified. Use it to
+review behavior: every ruling here should be true of the desktop, and the linked row says how. When Mike
+rules on something, add it here in the same change that updates the spec. Principles (P-rows) live in
+[core/INVARIANTS.md](../core/INVARIANTS.md); feature rows in the docs named below.
+
+Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the session record.
+
+## Principles
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-03 | Object permanence: a window stays on the side where you put it; automatic layout may shift it within that side, never across. | P1 |
+| 10-03 | Move only what has to move, as little as it has to. | P2 |
+| 10-03 | Temporary moves are temporary; avoidance offsets return. | P3 |
+| 10-03 | Layout changes come only from explicit requests, never as side effects. | P4 |
+| 10-03 | Offer, then commit: a suggested rearrangement shows the real result; finishing accepts, continuing refuses; an outright request (a key) commits with no undo. | P5 |
+| 10-03 | Windows that came from the center outrank the periphery, but push only when they'd otherwise land noticeably smaller. | P6 |
+| 10-03 | Space between windows is for looking good and is the first thing given up. | P7 |
+| 10-03 | Scottland never freezes the pointer; long work goes off the main loop or into bounded slices. | P8 |
+| 10-03 | Scottland defines mechanisms; Gooarchy flavorings curate what ships. | P9 |
+| 10-03 | No silent overrides: replacing anything the user had is reported with what, now and why. | P10 |
+| 10-03 | Automatic movement is calm: small input change, small movement change; no oscillation or cross-screen jumps. | P11 |
+| 10-03 | Nothing is ever completely hidden; window avoidance exists for this, the hint is the yardstick. | P12 |
+| 10-04 | A peeking window may hang past its zone edge but never moves into another zone; if it still can't peek, only its hint is placed where it can be seen. | P12 |
+| 10-04 | The user puts windows in zones; nothing automatic moves a window into another zone, not even visually. | P13 |
+
+## Window avoidance and peeking
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-03 | It's called window avoidance, not hint avoidance. | WK13, Settings |
+| 10-03 | "Look far apart, then go deep" applies only to searching for a hint spot, never to choosing where a window moves; windows never avoid by moving to the other side. | WK13, WK31 |
+| 10-03 | Keep continuous motion during drags (no pause-then-glide). | WK13 |
+| 10-03 | One engine, two tests: always-on peeking needs a strip; on Alt, hints get room. | P12 |
+| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale). | peek-strip design |
+| 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | peek-strip design |
+| 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
+| 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
+| 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
+| 10-04 | Window-mode tint strength is a setting. | WK38 |
+
+## Window mode keys
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-03 | Holding a window's hint solos it (keyboard solo), committed, no undo. | WK35 |
+| 10-04 | Hold on the focused window's hint solos; hold on an unfocused window's hint pairs it. | WK35, WK36 |
+| 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
+| 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
+
+## Pairing (WK36)
+
+| Date | Ruling |
+|---|---|
+| 10-04 | Side by side; sizes preserved, never resized, never scaled up; shrink together only if they don't fit, edge-to-edge only if needed; roughly equal magnification. |
+| 10-04 | Other center windows stay and peek via window avoidance; nothing goes to the periphery. |
+| 10-04 | Keep current left/right order; vertically centered; pair centered; halo gap given up first. |
+| 10-04 | Nothing is locked afterwards. Pairing is an explicit request, so shrinking center windows is a granted exception to tenet 4. |
+
+## Spread and solo (docs/spread.md)
+
+| Date | Ruling |
+|---|---|
+| 10-03 | Spread is conservative: windows that don't have to move don't. |
+| 10-03 | Solo: the soloed window takes the center; other center windows go to the periphery, which spreads; periphery windows move outward only if necessary. |
+| 10-03 | Drag audition: pause 3 s in the center to see the solo; drop accepts, keep dragging refuses and everything returns exactly. |
+| 10-03 | Arrivals may push periphery windows outward to stay larger, only when needed; no side crossing; vertical first; no undo; halo gap given up first; solo only on explicit request. |
+| 10-03 | Audition hotspot up to 50 pt so refusing is clearly intentional. |
+
+## Rails and widgets
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-03 | Rail make-room: only widgets in the way move, ripple only when needed, no retiling, visual during drag, real on drop, exact restore on cancel. | WG26 |
+| 10-04 | Rail make-room waits for a pause (hold buffer), animates every move, and applies to every way into a rail. | WG26 |
+| 10-04 | Return on a focused widget always opens its window; nothing inside the widget gets it. | WG25 |
+| 10-04 | Super+M taps cycle expanded -> collapsed -> hidden; holding is momentary (hide from expanded, expand otherwise). | WG16 |
+
+## Zones and scale
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-04 | Returning to a zone restores both the remembered position and the Shift-pinned scale, through every return path (cycling by hint taps, Esc, double-tap and back). | WP1, WP5 |
+| 10-04 | The pointer follows the desktop text size. | A17 |
+
+## Goo and appearance
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-03 | Unfocused edge: adjustable gray tone and strength. | A16 |
+| 10-03 | Attention color choice: theme, warm (red/amber) or cool (yellow/green). | GO22 |
+| 10-03 | Dye strength setting for state colors. | GO23 |
+| 10-03 | Watercolor wallpaper: local pickup and spread, in all of the goo (stronger where thick), persistent after motion settles. | GO24 |
+| 10-04 | Pre-computed breath frames: a ceiling (about 50) and widen spacing above it; never fall off a cliff to the expensive path silently. | GO26 |
+
+## Omarchy adapter, distro and flavorings
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-03 | Overrides of Omarchy are reported with reasons, grouped by reason, explained by the user's default coding agent in plain words, leading with the user's own custom shortcuts. | O20 |
+| 10-03 | Gooarchy flavorings (curated widgets and defaults) install with the distro and with the Omarchy adapter; they may override Omarchy only where that's better for Gooarchy, always reported. | O21, P9 |
+| 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
+| 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
+| 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
