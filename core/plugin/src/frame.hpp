@@ -723,9 +723,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
     }
 
-    /** The cursor moved to p. Only the frame nearest the cursor gets this; others get leave(). */
-    void track(wf::pointf_t p)
+    /** The cursor moved to `shown` (output coordinates, where things are drawn). Only the frame
+     *  nearest the cursor gets this; others get leave(). */
+    void track(wf::pointf_t shown)
     {
+        auto p = unpresented(shown);  // this frame's own coordinates, as screen_rect()
         last_track = p;
         auto r = screen_rect();
         double t = thickness();
@@ -753,7 +755,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             double d = std::max(0.0, band_distance(p));
             double range = goo_hover_distance();
             double strength = range > 0 ? nearness(d, range) : (d <= 0 ? 1 : 0);
-            if (goo_handle(*this, p) != handle_t::none) strength = 1;
+            if (goo_handle(*this, shown) != handle_t::none) strength = 1;
             if ((top || bottom) && (left || right))
             {
                 if (resizable) cloud_target[(bottom ? 2 : 0) + (right ? 1 : 0)] = strength;
@@ -805,6 +807,30 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
     }
 
+    /** p (in this frame's parent coordinates) where it is shown: through the transforms between
+     *  this frame and the view (window avoidance's peek offset, a live drag), as the goo places
+     *  its islands. A peeking window's halo is grabbed where it is drawn. */
+    wf::pointf_t presented(wf::pointf_t p) const
+    {
+        auto v = toplevel();
+        if (!v) return p;
+        auto top = v->get_transformed_node().get();
+        for (auto n = parent(); n && n != top; n = n->parent()) p = n->to_global(p);
+        return p;
+    }
+
+    /** The reverse: a point where it is shown, in this frame's parent coordinates. */
+    wf::pointf_t unpresented(wf::pointf_t p) const
+    {
+        auto v = toplevel();
+        if (!v) return p;
+        auto top = v->get_transformed_node().get();
+        std::vector<wf::scene::node_t*> chain;
+        for (auto n = parent(); n && n != top; n = n->parent()) chain.push_back(n);
+        for (auto n = chain.rbegin(); n != chain.rend(); ++n) p = (*n)->to_local(p);
+        return p;
+    }
+
     /** What's under p: the close dot, a corner, the halo, or nothing. */
     handle_t handle_at(wf::pointf_t p) const
     {
@@ -814,7 +840,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return handle_t::none;
         }
 
-        if (goo_enabled()) return goo_handle(*this, p);
+        if (goo_enabled()) return goo_handle(*this, presented(p));
 
         auto dot = dot_center();
         if ((dot_glow > 0.2) && (std::hypot(p.x - dot.x, p.y - dot.y) <= DOT_RADIUS + 3))

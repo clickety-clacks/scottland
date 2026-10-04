@@ -1065,6 +1065,21 @@ struct goo_t::impl
             s["overlapping"] = n->state.renderer.overlapping();
             s["highlighting"] = n->state.renderer.highlighting();
             s["sources"] = (int64_t)n->state.sources.size();
+            if (getenv("SCOTTLAND_TEST_MODEL"))
+            {
+                // Where the goo puts each island, for tests comparing it with the drawn window.
+                auto rects = wf::json_t::array();
+                for (auto &source : n->state.sources)
+                {
+                    wf::json_t r;
+                    r["id"] = (int64_t)source.id;
+                    r["x"] = source.rect.x - source.rect.z; r["y"] = source.rect.y - source.rect.w;
+                    r["width"] = 2 * source.rect.z; r["height"] = 2 * source.rect.w;
+                    r["hint_circle"] = source.hint_circle;
+                    rects.append(r);
+                }
+                s["source_rects"] = rects;
+            }
             if (data.has_member("x") && data.has_member("y") &&
                 (data["x"].is_int() || data["x"].is_double()) &&
                 (data["y"].is_int() || data["y"].is_double()))
