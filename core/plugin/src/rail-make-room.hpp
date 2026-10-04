@@ -49,6 +49,8 @@ class solver_t
 
         const size_t count = original.size();
         directions.assign(count, 0);
+        previous.assign(count, 0);
+        fallback.assign(count, 0);
         offsets.assign(count, 0.0);
         slack.resize(count);
         chain.reserve(count);
@@ -93,6 +95,7 @@ class solver_t
         }
 
         const double drag_center = (drag_lo + drag_hi) * 0.5;
+        previous = directions;
         for (size_t i = 0; i < original.size(); ++i)
         {
             const auto& item = original[i];
@@ -116,19 +119,46 @@ class solver_t
             }
         }
 
-        chain.clear();
-        for (size_t i : down_order)
+        push_both(drag_lo, drag_hi, top, bottom);
+        // Falling short only by the contact gap means touching, not overlapping: no card
+        // jumps across for that.
+        auto overlapping = [] (double shortfall) { return shortfall > CONTACT + EPSILON; };
+        if (overlapping(short_down) || overlapping(short_up))
         {
-            if (directions[i] > 0) chain.push_back(i);
-        }
-        push_chain(drag_hi, bottom, 1.0);
+            // A chain pinned against its rail end cannot make room, but the other side may
+            // have space: the cards nearest the drag yield that way instead, one at a time,
+            // until both sides fit. Order among the neighbors is kept. A card yields only
+            // if the drag is on it (its center within the card, so either order matches
+            // where the user put it) or it was already on that side (P11: it keeps its way
+            // while that works). A card the drag merely clips at its far edge stays: it
+            // doesn't fly across the drag for a few pixels. Otherwise overlap is left only
+            // when neither way fits: the rail is truly full.
+            const int8_t from = short_down > short_up ? 1 : -1;
+            fallback = directions;
+            bool fitted = false;
+            const auto& order = from > 0 ? down_order : up_order;
+            for (size_t i : order)
+            {
+                if (directions[i] != from) continue;
+                if (previous[i] != -from &&
+                    (drag_center < original[i].lo || drag_center > original[i].hi)) break;
+                directions[i] = -from;
+                push_both(drag_lo, drag_hi, top, bottom);
+                if (!overlapping(short_down) && !overlapping(short_up))
+                {
+                    fitted = true;
+                    break;
+                }
 
-        chain.clear();
-        for (size_t i : up_order)
-        {
-            if (directions[i] < 0) chain.push_back(i);
+                if (overlapping(from > 0 ? short_up : short_down)) break;  // the other side is full too
+            }
+
+            if (!fitted)
+            {
+                directions = fallback;
+                push_both(drag_lo, drag_hi, top, bottom);
+            }
         }
-        push_chain(-drag_lo, -top, -1.0);
 
         if (!validate(top, bottom))
         {
@@ -148,9 +178,10 @@ class solver_t
   private:
     std::vector<interval_t> original;
     std::vector<size_t> down_order, up_order, chain;
-    std::vector<int8_t> directions;
+    std::vector<int8_t> directions, previous, fallback;
     std::vector<double> offsets, slack;
     bool ready = false, skipped = false;
+    double short_down = 0, short_up = 0;
     status_t result = status_t::skipped;
 
     void clear()
@@ -160,6 +191,8 @@ class solver_t
         up_order.clear();
         chain.clear();
         directions.clear();
+        previous.clear();
+        fallback.clear();
         offsets.clear();
         slack.clear();
         ready = false;
@@ -184,9 +217,29 @@ class solver_t
         return sign > 0 ? original[index].hi : -original[index].lo;
     }
 
-    void push_chain(double drag_end, double wall, double sign)
+    void push_both(double drag_lo, double drag_hi, double top, double bottom)
     {
-        if (chain.empty()) return;
+        std::fill(offsets.begin(), offsets.end(), 0.0);
+        chain.clear();
+        for (size_t i : down_order)
+        {
+            if (directions[i] > 0) chain.push_back(i);
+        }
+        short_down = push_chain(drag_hi, bottom, 1.0);
+
+        chain.clear();
+        for (size_t i : up_order)
+        {
+            if (directions[i] < 0) chain.push_back(i);
+        }
+        short_up = push_chain(-drag_lo, -top, -1.0);
+        result = short_down > 0 || short_up > 0 ? status_t::overlap : status_t::clear;
+    }
+
+    // Returns how far the chain fell short of clearing the drag (0 when it clears).
+    double push_chain(double drag_end, double wall, double sign)
+    {
+        if (chain.empty()) return 0.0;
 
         const double first_lo = mirrored_lo(chain.front(), sign);
         const double requested = std::max(0.0, drag_end + CONTACT - first_lo);
@@ -205,14 +258,11 @@ class solver_t
         }
 
         const double first = std::min(requested, std::max(0.0, capacity));
-        if (first + EPSILON < requested)
-        {
-            result = status_t::overlap;
-        }
         for (size_t k = 0; k < chain.size(); ++k)
         {
             offsets[chain[k]] = sign * std::max(0.0, first - slack[k]);
         }
+        return first + EPSILON < requested ? requested - first : 0.0;
     }
 
     bool validate(double top, double bottom) const

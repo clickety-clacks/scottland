@@ -24,17 +24,27 @@ the dragged item's current visible interval by 1 px. A shift reaches the next wi
 previous shift makes that widget too close. Existing gaps and overlaps are otherwise preserved;
 the rail is not tiled or compacted. A widget never crosses to the other rail.
 
-The hole left by a widget being dragged remains open after a successful drop. A full rail may have
-no space to clear the landing interval. In that case each causal chain advances only as far as its
-members can fit, stopped by the tightest rail-end limit, and the drop may overlap. The solver reports
-that case as `overlap`; it never publishes an off-rail or reordered result.
+The hole left by a widget being dragged remains open after a successful drop. When a chain is pinned
+against its rail end but the other side has room, the widgets nearest the dragged item yield that way
+instead, one at a time, until both sides fit (a drop at the top of a rail packed from the top moves
+the top card down with the rest). Neighbors keep their order. A widget yields only if the dragged
+item's center is on it, so either order matches where the user put it, or if it had already yielded
+on the previous solve (P11: it keeps its way while that works). A drop that only clips a pinned
+widget's far edge, or merely touches it within the 1 px contact gap, does not make it jump across.
+Yielding re-runs the two chain passes at most once per widget, so a solve stays bounded (P8).
+When neither way fits, the rail is full: each causal chain advances only as far as its members can
+fit, stopped by the tightest rail-end limit, and the drop may overlap. The solver reports that case
+as `overlap`; it never publishes an off-rail result.
 
 Pointer motion updates only the dragged item's latest landing interval and the pause timer; it does
 not solve or move its neighbors. The pointer must stay within a 4 px radius for
 `scottland/widget_make_room_dwell` (default 350 ms, live range 100–1500 ms). Each completed pause
 solves against the latest interval. Movement after a solve keeps that arrangement until another
-pause completes. If the drag ends before its first pause, release runs one solve; otherwise release
-commits the current arrangement. This hold buffer follows P11 (calm movement) and P2 (move only
+pause completes. Release commits the arrangement the user saw when it was solved for the landing
+spot, within the 4 px wobble. If the drag ends before its first pause, or the landing spot moved more
+than 4 px since the last solve (pause, move on, drop without pausing again), release runs one more
+solve from the captured positions, so the drop clears its real landing spot and any neighbor that no
+longer needs to move goes home (P2). This hold buffer follows P11 (calm movement) and P2 (move only
 what is needed), while cancel and drag-back-out retain P5's exact restoration.
 
 The solver uses the true widget positions captured when the drag enters the rail. For each widget,
@@ -60,12 +70,18 @@ uses the session's total widget count as a constant-time upper bound, so a sessi
 widgets skips rail making-room even when the active rail itself has fewer actors. That conservative
 check keeps the whole input path bounded.
 
-Every change of rail-layout target uses a 190–360 ms ease, including large shifts, release-time
-solves, geometry-commit corrections and return to zero. The frame translation keeps the visible
+Every change of rail-layout target eases in and out over 190–360 ms (longer with distance), including
+large shifts, release-time solves, geometry-commit corrections and return to zero. No move exceeds
+the 1000 px/s automatic-motion speed limit it shares with window avoidance; a move too long for that
+within 360 ms takes longer. A retarget in mid-move starts from the speed the widget already has,
+so it does not kick, and never overshoots its new target; speed against the new direction is dropped
+and the widget turns there. The frame translation keeps the visible
 position continuous while target geometry commits. Reduced motion from the active palette applies
 to these shifts too and snaps directly to the target. Direct drag drops use the active drag solve;
 inertial coast arrivals and Window-mode key widgetization solve against the mapped widget's actual
-landing rectangle through the same rail solver.
+landing rectangle through the same rail solver. Window avoidance plans against where the rail's
+widgets are going, not where each frame of the ease draws them, so a rail layout change costs one
+avoidance re-solve rather than one per frame.
 
 The behavior follows P1 (stay on the same side), P2 (move only what is in the way), P5 (show the
 proposal, commit it on drop, restore it on cancel), and P8 (bound synchronous work so the pointer
@@ -90,9 +106,10 @@ actors with nonzero solver offsets receive a real move on drop.
 | ID | Invariant | Status |
 |---|---|---|
 | SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item. It moves only a causal chain, preserves the rail order and never crosses sides. | verified (plumbus headless, 2026-10-04) |
-| SM2 | Contact clearance is 1 px where room exists. A shortage is clamped by every chain member's rail-end headroom; a drop may overlap when the rail is full. | verified (plumbus headless, 2026-10-04) |
-| SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry. A drop before any completed pause solves once; otherwise it commits the held layout. | verified (Plumbus real stipc input, 2026-10-04) |
+| SM2 | Contact clearance is 1 px where room exists. A chain pinned at a rail end yields the other way when that side has room (only widgets the drag is on, or that already yielded); a drop may overlap only when the rail is full. | verified (plumbus unit suite and real stipc input, 2026-10-04) |
+| SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry and drawn positions. A drop before any completed pause, or more than 4 px from where the last pause solved, solves once more; otherwise it commits the held layout. | verified (Plumbus real stipc input, 2026-10-04) |
 | SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (Plumbus; bounded unit suite and real stipc input, 2026-10-04) |
 | SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (Plumbus real stipc input, 2026-10-04) |
-| SM6 | Every target change, including large shifts, release-time solves, geometry corrections and returns, eases over 190–360 ms; active reduced motion snaps. | verified (Plumbus frame sampling and reduced-motion palette, 2026-10-04) |
+| SM6 | Every target change, including large shifts, release-time solves, geometry corrections and returns, eases in and out over 190–360 ms, longer only to stay under the shared 1000 px/s limit; retargets keep their speed and never overshoot; active reduced motion snaps. | verified (Plumbus frame sampling, compositor speed metric and reduced-motion palette, 2026-10-04) |
 | SM7 | Direct rail drops, inertial coast arrivals and Window-mode key widgetization run the shared solver at the widget's actual landing spot. | verified (Plumbus real stipc input, 2026-10-04) |
+| SM8 | Window avoidance sees a rail ease's target, so it re-solves once per rail layout change, not per animation frame. | verified (Plumbus real stipc input against a no-move control, 2026-10-04) |

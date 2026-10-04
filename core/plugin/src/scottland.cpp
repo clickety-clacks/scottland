@@ -58,6 +58,7 @@ extern "C" {
 #include "drag-presentation.hpp"
 #include "live-drag.hpp"
 #include "rail-make-room.hpp"
+#include "eased-move.hpp"
 #include "placement.hpp"
 #include "cycle-spring.hpp"
 #include "declutter.hpp"
@@ -1475,7 +1476,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t dragged = 0;
         bool left = false;
         double top = 0, bottom = 0;
-        scottland::rectf_t last_item;
+        scottland::rectf_t last_item, solved_item;  // latest landing; the one the last solve cleared
         wf::pointf_t pause_anchor{0, 0};
         uint32_t pause_deadline = 0;
         bool has_item = false, has_pause_anchor = false, pause_pending = false, solved_once = false;
@@ -1518,10 +1519,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     struct rail_layout_motion_t
     {
         std::weak_ptr<wf::view_interface_t> view;
-        double from_x = 0, from_y = 0, to_x = 0, to_y = 0;
-        uint32_t started = 0, duration = 0;
+        scottland::motion::eased_move_t move;
+        uint32_t started = 0;
     };
     std::map<uint64_t, rail_layout_motion_t> rail_layout_motions;
+    double rail_easing_speed_max = 0;  // px/s, reported for the P11 speed-limit regression
     wf::wl_timer<true> rail_layout_tick;
     wf::wl_timer<false> rail_dwell_tick;
     static constexpr double RAIL_POINTER_WOBBLE = 4.0;
@@ -2999,38 +3001,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         view->damage();
     }
 
-    static uint32_t rail_motion_duration(double distance)
-    {
-        return (uint32_t)std::clamp(190.0 + distance * 0.32, 190.0, 360.0);
-    }
-
     void animate_drag_layout_offset(wayfire_toplevel_view view, double dx, double dy)
     {
         auto frame = view ? frame_of(view, false) : nullptr;
         if (!frame) return;
         refresh_hint_palette();
         auto id = view->get_id();
-        rail_layout_motions.erase(id);
         if (hints_reduced_motion)
         {
+            rail_layout_motions.erase(id);
             set_drag_layout_offset(view, dx, dy);
             return;
         }
 
-        double from_x = frame->drag_layout_x, from_y = frame->drag_layout_y;
-        double distance = std::hypot(dx - from_x, dy - from_y);
-        if (distance < 0.05)
+        // A retarget in mid-move carries on from the speed it already has (no kick).
+        uint32_t now = now_msec();
+        scottland::motion::vec2_t velocity;
+        if (auto running = rail_layout_motions.find(id); running != rail_layout_motions.end())
+        {
+            velocity = running->second.move.velocity(uint32_t(now - running->second.started));
+            rail_layout_motions.erase(running);
+        }
+
+        scottland::motion::vec2_t from{frame->drag_layout_x, frame->drag_layout_y};
+        if (std::hypot(dx - from.x, dy - from.y) < 0.05)
         {
             set_drag_layout_offset(view, dx, dy);
             return;
         }
 
+        // WG26: ease in and out over 190-360 ms, longer only to stay under the automatic
+        // speed limit shared with window avoidance (P11).
         rail_layout_motion_t motion;
         motion.view = view->weak_from_this();
-        motion.from_x = from_x; motion.from_y = from_y;
-        motion.to_x = dx; motion.to_y = dy;
-        motion.started = now_msec();
-        motion.duration = rail_motion_duration(distance);
+        motion.move = scottland::motion::plan_eased_move(from, {dx, dy}, velocity, 190.0, 360.0, 0.32);
+        motion.started = now;
         rail_layout_motions[id] = motion;
         if (!rail_layout_tick.is_connected())
             rail_layout_tick.set_timeout(8, [=] () { return step_rail_layout_motions(); });
@@ -3052,23 +3057,32 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto& motion = it->second;
             if (hints_reduced_motion)
             {
-                set_drag_layout_offset(view, motion.to_x, motion.to_y);
+                set_drag_layout_offset(view, motion.move.to.x, motion.move.to.y);
                 it = rail_layout_motions.erase(it);
                 continue;
             }
 
-            double t = std::clamp(double(uint32_t(now - motion.started)) / motion.duration, 0.0, 1.0);
-            double eased = 1.0 - std::pow(1.0 - t, 3.0);
-            set_drag_layout_offset(view,
-                motion.from_x + (motion.to_x - motion.from_x) * eased,
-                motion.from_y + (motion.to_y - motion.from_y) * eased);
-            if (t >= 1.0)
+            double elapsed = uint32_t(now - motion.started);
+            auto at = motion.move.position(elapsed);
+            auto velocity = motion.move.velocity(elapsed);
+            rail_easing_speed_max = std::max(rail_easing_speed_max, 1000 * std::hypot(velocity.x, velocity.y));
+            set_drag_layout_offset(view, at.x, at.y);
+            if (elapsed >= motion.move.duration)
             {
                 it = rail_layout_motions.erase(it);
             } else ++it;
         }
 
         return !rail_layout_motions.empty();
+    }
+
+    /** How far a widget's rail make-room ease still has to go (0 when settled). */
+    wf::pointf_t rail_layout_remaining(wayfire_toplevel_view view)
+    {
+        auto found = view ? rail_layout_motions.find(view->get_id()) : rail_layout_motions.end();
+        auto frame = view ? frame_of(view, false) : nullptr;
+        if (found == rail_layout_motions.end() || !frame) return {0, 0};
+        return {found->second.move.to.x - frame->drag_layout_x, found->second.move.to.y - frame->drag_layout_y};
     }
 
     wayfire_toplevel_view model_view(uint64_t id)
@@ -3091,7 +3105,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.dragged = 0;
         rail.left = false;
         rail.top = rail.bottom = 0;
-        rail.last_item = {};
+        rail.last_item = rail.solved_item = {};
         rail.pause_anchor = {};
         rail.pause_deadline = 0;
         rail.has_item = rail.has_pause_anchor = rail.pause_pending = rail.solved_once = false;
@@ -3153,6 +3167,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!rail.active || item.height() <= 0) return;
         rail.last_item = item;
         rail.has_item = true;
+        rail.solved_item = item;
         rail.solver.solve(item.y1, item.y2, rail.top, rail.bottom);
         auto& shifts = rail.solver.shifts();
         for (size_t i = 0; i < rail.presentation.size(); ++i)
@@ -3288,7 +3303,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         rail_dwell_tick.disconnect();
-        if (!rail.solved_once && rail.has_item) solve_rail_layout(rail.last_item);
+        // Drop commits the layout the user saw, if it was for this landing spot. Dropped
+        // before any pause, or after moving on from the last one (beyond the pointer
+        // wobble), that layout was for somewhere else: solve once more for where it actually
+        // lands, from the original positions, so neighbors it no longer blocks go home (P2).
+        auto& solved = rail.solved_item;
+        if (rail.has_item && (!rail.solved_once ||
+            std::max(std::abs(rail.last_item.y1 - solved.y1), std::abs(rail.last_item.y2 - solved.y2)) >
+                RAIL_POINTER_WOBBLE))
+            solve_rail_layout(rail.last_item);
 
         rail.presentation.commit();
         std::vector<scottland::drag_actor_position_t> moves;
@@ -6369,6 +6392,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         reply["views"] = views;
+        reply["rail_max_easing_speed_px_s"] = rail_easing_speed_max;
         return reply;
     };
 

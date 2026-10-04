@@ -104,6 +104,7 @@ try:
           {"before": (before_a, before_b), "after": (after_a, after_b)})
 
     stable_before_cancel = {name: card_geometry(name) for name in ("rail-a", "rail-b", "rail-arrive")}
+    drawn_before_cancel = {name: card_scene(name) for name in ("rail-a", "rail-b", "rail-arrive")}
     t.launch("rail-cancel", rail=None)
     home_before = geometry(t.app("rail-cancel")["id"])
     start_drag(t.app("rail-cancel"), edge_right, 230)
@@ -114,9 +115,16 @@ try:
           (stable_before_cancel, during_cancel))
     cancel_drag()
     stable_after_cancel = {name: card_geometry(name) for name in ("rail-a", "rail-b", "rail-arrive")}
+    drawn_after_cancel = {name: card_scene(name) for name in ("rail-a", "rail-b", "rail-arrive")}
     home_after = geometry(t.app("rail-cancel")["id"])
     check("Esc restores every rail widget to its exact committed position",
           stable_before_cancel == stable_after_cancel, (stable_before_cancel, stable_after_cancel))
+    # An audition never changes true geometry, so also check what is drawn: the eased
+    # presentation offsets must be gone, not just the committed positions intact.
+    check("Esc returns every rail widget to its exact drawn position",
+          all(abs(drawn_before_cancel[n]["y"] - drawn_after_cancel[n]["y"]) < 0.01 and
+              abs(drawn_before_cancel[n]["x"] - drawn_after_cancel[n]["x"]) < 0.01 for n in drawn_before_cancel),
+          (drawn_before_cancel, drawn_after_cancel))
     check("Esc returns the dragged window to its exact origin",
           (home_before["x"], home_before["y"]) == (home_after["x"], home_after["y"]),
           (home_before, home_after))
@@ -129,7 +137,7 @@ try:
     stable_after_exit = {name: card_scene(name) for name in ("rail-a", "rail-b", "rail-arrive")}
     restored = all(abs(stable_before_exit[name]["y"] - stable_after_exit[name]["y"]) < 0.01
                    for name in stable_before_exit)
-    check("dragging back out of the rail immediately removes the audition", restored,
+    check("dragging back out of the rail eases the audition away completely", restored,
           (stable_before_exit, stable_after_exit))
     end_drag()
     check("drag back out leaves no widget preview", t.card("rail-back") is None)

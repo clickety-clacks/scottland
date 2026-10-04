@@ -60,14 +60,39 @@ def release_drag(wait=.5):
         time.sleep(wait)
 
 
+def scene_ys(names):
+    """Every named card's drawn y from one layout snapshot, so a row never mixes frames."""
+    views = ipc.call("scottland/layout-state")["views"]
+    row = {}
+    for name in names:
+        card = next((v for v in views if v["widget"] and v["title"].endswith(": " + name)), None)
+        if not card:
+            raise AssertionError(f"no widget card for {name}")
+        row[name] = card.get("scene_frame", card["frame"])["y"]
+    return row
+
+
 def sample_y(names, seconds, interval=.012):
     start = time.monotonic()
     rows = []
     while time.monotonic() - start < seconds:
-        rows.append({"ms": (time.monotonic() - start) * 1000,
-                     **{name: card_scene(name)["y"] for name in names}})
+        rows.append({"ms": (time.monotonic() - start) * 1000, **scene_ys(names)})
         time.sleep(interval)
     return rows
+
+
+def settle(names, quiet=.15, timeout=3):
+    """Wait until the named cards' drawn positions stop changing."""
+    last, still_since = scene_ys(names), time.monotonic()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(.02)
+        now = scene_ys(names)
+        if max(abs(now[n] - last[n]) for n in names) > .01:
+            last, still_since = now, time.monotonic()
+        elif time.monotonic() - still_since >= quiet:
+            break
+    return last
 
 
 def total_delta(before, after, names):
@@ -85,6 +110,77 @@ def vertical_gap(a, b):
     if b["y"] + b["height"] <= a["y"]:
         return a["y"] - (b["y"] + b["height"])
     return -min(a["y"] + a["height"], b["y"] + b["height"]) + max(a["y"], b["y"])
+
+
+def true_y(title):
+    view_id = t.card(title)["id"]
+    return next(v["geometry"]["y"] for v in ipc.call("window-rules/list-views") if v["id"] == view_id)
+
+
+class Sampler:
+    """Scene y of rail cards every ~6 ms on its own IPC connection, so input calls can't
+    hold sampling back while an ease runs."""
+    def __init__(self, names):
+        self.names, self.rows, self.stop = names, [], threading.Event()
+        self.conn = t.Ipc()
+        self.t0 = time.monotonic()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while not self.stop.is_set():
+            state = self.conn.call("scottland/layout-state")
+            row = {"ms": (time.monotonic() - self.t0) * 1000}
+            for v in state["views"]:
+                if v["widget"]:
+                    for n in self.names:
+                        if v["title"].endswith(": " + n):
+                            row[n] = v.get("scene_frame", v["frame"])["y"]
+            if len(row) == len(self.names) + 1:
+                self.rows.append(row)
+            time.sleep(.006)
+
+    def mark(self):
+        return (time.monotonic() - self.t0) * 1000
+
+    def end(self):
+        self.stop.set()
+        self.thread.join(timeout=2)
+        self.conn.sock.close()
+        return self.rows
+
+
+def windowed_speed(rows, names, window_ms=20):
+    """Peak speed in px/s over sample pairs at least window_ms apart (sampling jitter
+    makes single 6 ms steps unreliable under load)."""
+    peak = 0.0
+    for i, a in enumerate(rows):
+        b = next((r for r in rows[i + 1:] if r["ms"] - a["ms"] >= window_ms), None)
+        if b is None:
+            break
+        for n in names:
+            peak = max(peak, abs(b[n] - a[n]) / (b["ms"] - a["ms"]) * 1000)
+    return round(peak, 1)
+
+
+def overshoot(rows, names):
+    """Worst excursion outside each card's start..end span (0 for a monotone ease)."""
+    worst = 0.0
+    for n in names:
+        lo, hi = sorted((rows[0][n], rows[-1][n]))
+        for r in rows:
+            worst = max(worst, lo - r[n], r[n] - hi)
+    return round(worst, 2)
+
+
+def overlap(a, b):
+    return min(a["y"] + a["height"], b["y"] + b["height"]) - max(a["y"], b["y"])
+
+
+def glide(x0, y0, x1, y1, steps=12, dt=.014):
+    for i in range(1, steps + 1):
+        t.move(x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps)
+        time.sleep(dt)
 
 
 def screenshot(name):
@@ -116,6 +212,7 @@ try:
         t.launch(name, rail="right", y=y)
     names = ("pause-b", "pause-c")
     before = {name: card_scene(name)["y"] for name in names}
+    motion = Sampler(names)
     x, y = begin_drag(t.card("pause-a"))
     t.move(screen["width"] - 6, 320)
     started = time.monotonic()
@@ -129,6 +226,7 @@ try:
     first_movement = next((row for row in eased if max(abs(row[name] - before[name]) for name in names) > 1), None)
     first_movement_ms = ((eased_start - started) * 1000 + first_movement["ms"]) if first_movement else None
     after_pause = {name: card_scene(name)["y"] for name in names}
+    first_rows = [r for r in motion.rows if r["ms"] >= (eased_start - motion.t0) * 1000 - 400]
     unique_positions = {tuple(round(row[name], 1) for name in names) for row in eased}
     metrics["large_move"] = {"before": before, "after": after_pause,
         "first_change_ms": round(first_movement_ms, 1) if first_movement else None,
@@ -141,6 +239,13 @@ try:
           max_step(eased, names) < 35,
           {"before": before, "after": after_pause, "first_change_ms": round(first_movement_ms, 1) if first_movement else None,
            "unique_positions": len(unique_positions), "max_12ms_sample_step": round(max_step(eased, names), 2)})
+    first_speed = windowed_speed(first_rows, names)
+    first_overshoot = overshoot(first_rows, names)
+    metrics["large_move"].update(windowed_speed_px_s=first_speed, overshoot_px=first_overshoot)
+    check("WG26 the pause shift stays under the 1000 px/s automatic speed limit",
+          first_speed <= 1150, {"windowed_peak_px_s": first_speed})
+    check("WG26 the pause shift eases without overshoot", first_overshoot <= .5,
+          {"overshoot_px": first_overshoot})
     check("WG26 sub-four-pixel wobble does not restart the dwell", first_movement is not None and
           first_movement_ms <= 470,
           {"first_change_ms": round(first_movement_ms, 1) if first_movement else None,
@@ -165,7 +270,108 @@ try:
           len(second_unique) >= 3 and max_step(second_pause, names) < 35,
           {"before": settled, "after": after_second, "unique_positions": len(second_unique),
            "max_12ms_sample_step": round(max_step(second_pause, names), 2)})
-    release_drag()
+
+    # Esc after a pause: the *drawn* positions come back exactly, eased, without overshoot
+    # (true geometry never changes during an audition, so it alone proves nothing).
+    esc_mark = motion.mark()
+    t.key("ESC", True)
+    t.key("ESC", False)
+    time.sleep(.05)
+    release_drag(wait=.8)
+    rows = motion.end()
+    restore = [r for r in rows if r["ms"] >= esc_mark]
+    restored = {name: card_scene(name)["y"] for name in names}
+    metrics["esc_after_pause"] = {"restored": restored, "before": before,
+        "overshoot_px": overshoot(restore, names), "windowed_speed_px_s": windowed_speed(restore, names),
+        "eased_positions": len({tuple(round(r[n], 1) for n in names) for r in restore})}
+    check("WG26 Esc returns the drawn rail positions exactly", total_delta(before, restored, names) < .01,
+          {"before": before, "after": restored})
+    check("WG26 Esc return eases without overshoot or speeding",
+          overshoot(restore, names) <= .5 and windowed_speed(restore, names) <= 1150 and
+          metrics["esc_after_pause"]["eased_positions"] >= 4, metrics["esc_after_pause"])
+    clear_case()
+
+    # Review B1: pause (neighbors move aside), move on, drop elsewhere before pausing again.
+    # The layout shown at the pause was for a different spot; the drop solves for the real
+    # landing, so neighbors it doesn't block go home (P2) and nothing is left stacked.
+    def stale_drop(label, launch, drop_y, homes_y):
+        names_here = tuple(homes_y)
+        homes = {n: true_y(n) for n in names_here}
+        x0, y0 = begin_drag(launch())
+        glide(x0, y0, screen["width"] - 6, 320)
+        time.sleep(.75)   # one pause: the card at 320 is pushed and settles
+        paused = {n: card_scene(n)["y"] for n in names_here}
+        glide(screen["width"] - 6, 320, screen["width"] - 6, drop_y, steps=16, dt=.012)  # >4 px per update
+        release_drag(wait=1.4)
+        return homes, paused
+
+    for name, y in (("sa", 140), ("sb", 320), ("sc", 500)):
+        t.launch(name, rail="right", y=y)
+    homes, paused = stale_drop("A", lambda: t.card("sa"), 650, ("sb", "sc"))
+    landed = card_scene("sa")
+    final = {n: true_y(n) for n in ("sb", "sc")}
+    metrics["stale_drop_along_rail"] = {"home": homes, "paused": paused, "final": final,
+        "overlap": {n: round(overlap(landed, card_scene(n)), 1) for n in ("sb", "sc")}}
+    check("WG26 drop after moving on returns neighbors the landing doesn't block",
+          abs(paused["sb"] - homes["sb"]) > 40 and all(abs(final[n] - homes[n]) <= 1 for n in final),
+          metrics["stale_drop_along_rail"])
+    check("WG26 drop after moving on leaves nothing stacked",
+          max(metrics["stale_drop_along_rail"]["overlap"].values()) <= 0, metrics["stale_drop_along_rail"])
+    clear_case()
+
+    for name, y in (("qa", 140), ("qb", 320), ("qc", 560)):
+        t.launch(name, rail="right", y=y)
+    homes, paused = stale_drop("A2", lambda: t.card("qa"), 560, ("qb", "qc"))
+    landed = card_scene("qa")
+    metrics["stale_drop_onto_neighbor"] = {"home": homes, "final": {n: true_y(n) for n in ("qb", "qc")},
+        "overlap": {n: round(overlap(landed, card_scene(n)), 1) for n in ("qb", "qc")}}
+    check("WG26 a widget dropped on a neighbor's spot after moving on clears it",
+          max(metrics["stale_drop_onto_neighbor"]["overlap"].values()) <= 0 and
+          abs(metrics["stale_drop_onto_neighbor"]["final"]["qb"] - homes["qb"]) <= 1,
+          metrics["stale_drop_onto_neighbor"])
+    clear_case()
+
+    for name, y in (("wb", 320), ("wc", 560)):
+        t.launch(name, rail="right", y=y)
+    t.move(screen["width"] / 2, screen["height"] / 2)
+    t.launch("ww", rail=None)
+    homes, paused = stale_drop("A3", lambda: t.app("ww"), 560, ("wb", "wc"))
+    t.wait_for(lambda: t.card("ww") and not t.card("ww")["preview"], timeout=5)
+    time.sleep(.6)
+    landed = card_scene("ww")
+    metrics["stale_window_drop_onto_neighbor"] = {"home": homes, "final": {n: true_y(n) for n in ("wb", "wc")},
+        "overlap": {n: round(overlap(landed, card_scene(n)), 1) for n in ("wb", "wc")}}
+    check("WG26 a window dropped on a neighbor's spot after moving on clears it",
+          max(metrics["stale_window_drop_onto_neighbor"]["overlap"].values()) <= 0 and
+          abs(metrics["stale_window_drop_onto_neighbor"]["final"]["wb"] - homes["wb"]) <= 1,
+          metrics["stale_window_drop_onto_neighbor"])
+    clear_case()
+
+    # Review F2: five cards packed at the top of the left rail, a window dropped at the top.
+    # The top card is pinned at the rail end; with room below it yields downward instead of
+    # being overlapped. Overlap is only for a truly full rail.
+    packed = tuple(f"packed-{i}" for i in range(5))
+    for name, y in zip(packed, (72, 168, 264, 360, 456)):
+        t.launch(name, rail="left", y=y)
+    packed_before = {n: card_scene(n) for n in packed}
+    t.move(screen["width"] / 2, screen["height"] / 2)
+    t.launch("packed-arrival", rail=None)
+    x0, y0 = begin_drag(t.app("packed-arrival"))
+    glide(x0, y0, 6, 80)
+    time.sleep(.9)
+    release_drag(wait=1.5)
+    t.wait_for(lambda: t.card("packed-arrival") and not t.card("packed-arrival")["preview"], timeout=5)
+    time.sleep(.6)
+    landed = card_scene("packed-arrival")
+    packed_after = {n: card_scene(n) for n in packed}
+    in_order = all(packed_after[a]["y"] < packed_after[b]["y"] for a, b in zip(packed, packed[1:]))
+    metrics["packed_not_full"] = {"before_y": {n: packed_before[n]["y"] for n in packed},
+        "after_y": {n: packed_after[n]["y"] for n in packed}, "landing": landed,
+        "overlap": {n: round(overlap(landed, packed_after[n]), 1) for n in packed}}
+    check("WG26 a packed but not full rail makes room without overlap",
+          max(metrics["packed_not_full"]["overlap"].values()) <= 0 and in_order and
+          all(f["y"] + f["height"] <= screen["height"] - 23 for f in packed_after.values()),
+          metrics["packed_not_full"])
     clear_case()
 
     # A direct window drop before any pause still solves once on drop. Peers visibly
@@ -323,7 +529,7 @@ try:
         raise AssertionError("Window-mode key did not finish widgetizing: " + json.dumps({
             "app": t.app("key-arrival"), "card": t.card("key-arrival"),
             "widgets": ipc.call("scottland/widgets")}, default=str))
-    key_after = {name: card_scene(name)["y"] for name in key_names}
+    key_after = settle(key_names)
     landed = card_scene("key-arrival")
     landed_side = "left" if landed["x"] + landed["width"] / 2 < screen["width"] / 2 else "right"
     side_names = [name for name, side in blockers.items() if side == landed_side]
@@ -344,6 +550,39 @@ try:
     check("WG26 Window-mode entry easing is visible", len(key_unique) >= 3,
           {"unique_neighbor_positions": len(key_unique)})
     clear_case()
+
+    # Window avoidance plans against where rail widgets are going, so a make-room ease
+    # costs one avoidance re-solve per layout change, not one per animation frame (ce62f1a:
+    # 11 during one ease; a drag with nothing to move: 1). The control drag is the same
+    # gesture onto a spot nothing blocks; both are measured after the dragged morph settles.
+    ipc.call("wayfire/set-config-options", {"scottland/window_avoidance_always": True})
+    try:
+        avoidance = {}
+        for label, ys in (("blocking", (250, 430)), ("control", (560, 660))):
+            names_here = tuple(f"avoid-{label}-{i}" for i in range(len(ys)))
+            for name, y in zip(names_here, ys):
+                t.launch(name, rail="right", y=y)
+            t.move(screen["width"] / 2, screen["height"] / 2)
+            t.launch(f"avoid-{label}-w", rail=None)
+            x0, y0 = begin_drag(t.app(f"avoid-{label}-w"))
+            glide(x0, y0, screen["width"] - 6, 250)
+            time.sleep(.28)   # the dragged morph has settled; the 350 ms pause is still ahead
+            solves_before = ipc.call("scottland/hints")["avoidance_solve_count"]
+            ease = sample_y(names_here, 1.0)
+            solves = ipc.call("scottland/hints")["avoidance_solve_count"] - solves_before
+            avoidance[label] = {"solves": solves,
+                "eased_positions": len({tuple(round(r[n], 1) for n in names_here) for r in ease})}
+            t.key("ESC", True)
+            t.key("ESC", False)
+            time.sleep(.05)
+            release_drag()
+            clear_case()
+        metrics["avoidance_during_rail_ease"] = avoidance
+        check("WG26 a rail make-room ease re-solves window avoidance only for the layout change",
+              avoidance["blocking"]["eased_positions"] >= 5 and avoidance["control"]["eased_positions"] == 1 and
+              avoidance["blocking"]["solves"] <= avoidance["control"]["solves"] + 2, avoidance)
+    finally:
+        ipc.call("wayfire/set-config-options", {"scottland/window_avoidance_always": False})
 
     # Reduced motion takes the same layout target but skips the easing.
     palette_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,6 +610,10 @@ try:
            "final": reduced_after})
     release_drag()
     screenshot("reduced-motion-snap.png")
+    peak = ipc.call("scottland/layout-state").get("rail_max_easing_speed_px_s")
+    metrics["compositor_peak_speed_px_s"] = peak
+    check("WG26 no rail move in this run exceeded the 1000 px/s automatic speed limit",
+          peak is not None and 0 < peak <= 1001, peak)
 finally:
     release_palette()
     try:

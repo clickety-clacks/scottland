@@ -1,5 +1,6 @@
 #include "drag-presentation.hpp"
 #include "rail-make-room.hpp"
+#include "eased-move.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -53,6 +54,8 @@ static bool legal(const std::vector<interval_t>& items, const std::vector<double
             return false;
     return true;
 }
+
+static std::vector<interval_t> top_card_items() { return {{0, 24, 120}}; }
 
 static bool sweep(const std::vector<interval_t>& items, double top, double bottom,
     double drag_height, const std::vector<int>& ys, int& direction_changes,
@@ -132,10 +135,71 @@ int main()
         solver_t solver;
         std::vector<interval_t> items{{0,150,200},{1,201,251},{2,252,292}};
         solver.begin(items);
-        check(solver.solve(100,200,0,300) == status_t::overlap &&
-            solver.shifts() == std::vector<double>({8,8,8}) && legal(items,solver.shifts(),0,300) &&
+        check(solver.solve(100,200,60,300) == status_t::overlap &&
+            solver.shifts() == std::vector<double>({8,8,8}) && legal(items,solver.shifts(),60,300) &&
             items.back().hi + solver.shifts().back() == 300,
-            "a crowded causal chain advances only until its last member reaches the rail end");
+            "a crowded causal chain with no room either way advances only until its last member reaches the rail end");
+    }
+    {
+        // The same chain with room above: the card nearest the drag yields up instead of
+        // overlapping, and the others stay home (P2).
+        solver_t solver;
+        std::vector<interval_t> items{{0,150,200},{1,201,251},{2,252,292}};
+        solver.begin(items);
+        check(solver.solve(100,200,0,300) == status_t::clear &&
+            solver.shifts() == std::vector<double>({-101,0,0}),
+            "a blocked chain yields the other way when that side has room");
+    }
+    {
+        // Review F2: five 96 px cards packed at the top of a 672 px rail, a 96 px card dropped
+        // at the top. The top card is pinned against the rail end, so it moves down with the
+        // rest instead of being overlapped; 192 px stay free below.
+        solver_t solver;
+        std::vector<interval_t> items;
+        for (int i = 0; i < 5; ++i) items.push_back({(uint64_t)i, 24.0 + i * 97, 120.0 + i * 97});
+        solver.begin(items);
+        auto status = solver.solve(32, 128, 24, 696);
+        bool cleared = status == status_t::clear && legal(items, solver.shifts(), 24, 696);
+        for (size_t i = 0; i < items.size(); ++i)
+            cleared &= items[i].lo + solver.shifts()[i] >= 128 + 1 - 1e-9;
+        for (size_t i = 1; i < items.size(); ++i)
+            cleared &= items[i].lo + solver.shifts()[i] >= items[i - 1].hi + solver.shifts()[i - 1];
+        auto again = solver.solve(33, 129, 24, 696);
+        check(cleared, "packed but not full: a card pinned at the rail end yields past the drop");
+        check(again == status_t::clear && solver.latched_directions()[0] > 0,
+            "a yielded card keeps its new side while it still works");
+        // A drop that clips a pinned card's far edge by a few pixels (its center well past
+        // the card) doesn't make that card fly across; a live drag that started on it keeps
+        // it on its yielded side until the other side works again.
+        solver_t clipped;
+        clipped.begin(top_card_items());
+        clipped.solve(117, 213, 24, 696);
+        bool stays = clipped.shifts()[0] == 0;
+        solver_t sliding;
+        sliding.begin(top_card_items());
+        bool kept = true;
+        for (double y = 32; y <= 110; y += 1)
+        {
+            sliding.solve(y, y + 96, 24, 696);
+            kept &= sliding.shifts()[0] >= y + 96 + 1 - 24 - 1e-9;
+        }
+        sliding.solve(121, 217, 24, 696);
+        bool home = sliding.shifts()[0] == 0;
+        check(stays, "a drop clipping a pinned card's far edge leaves it in place");
+        check(kept && home, "a yielded card stays yielded through a slide and goes home once clear");
+        // Touching a pinned card (within the contact gap) is not overlap: it doesn't jump.
+        solver_t touching;
+        std::vector<interval_t> top_card{{0, 24, 120}};
+        touching.begin(top_card);
+        touching.solve(120, 216, 24, 696);
+        check(touching.shifts()[0] == 0, "a card merely touching a pinned neighbor leaves it in place");
+        // Seven cards fill the rail: nothing can make room, so overlap is reported.
+        solver_t full;
+        std::vector<interval_t> seven;
+        for (int i = 0; i < 7; ++i) seven.push_back({(uint64_t)i, 24.0 + i * 96, 120.0 + i * 96});
+        full.begin(seven);
+        check(full.solve(32, 128, 24, 696) == status_t::overlap && legal(seven, full.shifts(), 24, 696),
+            "a truly full rail still reports overlap and stays in bounds");
     }
     {
         solver_t solver;
@@ -279,6 +343,57 @@ int main()
             }
         }
         check(stable, "direction margin absorbs small center and rail-end pointer wobble");
+    }
+
+    {
+        using scottland::motion::plan_eased_move;
+        using scottland::motion::eased_move_t;
+        const double cap = scottland::motion::AUTOMATIC_MAX_SPEED / 1000.0;
+        auto monotone = [] (const eased_move_t& m)
+        {
+            double previous = m.from.y, sign = m.to.y > m.from.y ? 1 : -1;
+            for (double e = 0; e <= m.duration + 1; e += 0.5)
+            {
+                double y = m.position(e).y;
+                if ((y - previous) * sign < -1e-9 || (y - m.to.y) * sign > 1e-9) return false;
+                previous = y;
+            }
+            return true;
+        };
+
+        auto small = plan_eased_move({0,0}, {0,97}, {0,0}, 190, 360, 0.32);
+        check(small.duration >= 190 && small.duration <= 360 && small.velocity(0).y == 0 &&
+            small.velocity(small.duration * 0.999).y < 0.01 && small.peak_speed() <= cap * 1.001 &&
+            monotone(small), "a 97 px rail shift eases in and out under the shared speed cap");
+        bool capped = true;
+        for (double d : {5.0, 50.0, 240.0, 400.0, 900.0})
+        {
+            auto m = plan_eased_move({0,0}, {0,d}, {0,0}, 190, 360, 0.32);
+            capped &= m.peak_speed() <= cap * 1.001 && monotone(m) && m.duration >= 190 &&
+                (d > 240 || m.duration <= 360);
+        }
+        check(capped, "every distance stays under 1000 px/s; only long moves exceed 360 ms");
+
+        // Retarget in mid-move: the new move starts at the old one's speed and never
+        // overshoots its new target, even when that target is close.
+        auto first = plan_eased_move({0,0}, {0,200}, {0,0}, 190, 360, 0.32);
+        bool continuous = true;
+        for (double frac : {0.2, 0.5, 0.8})
+        {
+            double at = first.duration * frac;
+            auto v = first.velocity(at);
+            auto here = first.position(at);
+            for (double target : {here.y + 3, here.y + 60, 260.0})
+            {
+                auto next = plan_eased_move(here, {0, target}, v, 190, 360, 0.32);
+                continuous &= std::abs(next.velocity(0).y - v.y) < 1e-9 && monotone(next) &&
+                    next.peak_speed() <= cap * 1.001;
+            }
+            // Reversal: speed against the new direction is dropped, never carried the wrong way.
+            auto back = plan_eased_move(here, {0, 0}, v, 190, 360, 0.32);
+            continuous &= back.v0.y == 0 && monotone(back);
+        }
+        check(continuous, "retargets keep velocity, stay capped and never overshoot");
     }
 
     std::cout << "rail-make-room unit: " << passed << " passed, " << failed << " failed\n";
