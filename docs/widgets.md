@@ -33,7 +33,7 @@ verification of the stock move path does not verify this new path.
 | WG22 | Every window → widget transition is a continuous compositor morph, like widget → window: the visible app image moves/shrinks into the card’s place and cross-fades into it; no hide/show cut. This includes inertial pushes and drag coasts reaching exposed side rails (WK20), every starting-zone hint cycle, double-tap to rail, collapsed-mode arrivals, rail drops (including release before the preview is ready), Esc returning an undocked app to its original widget, and rail recovery on plugin load. The existing snapshot mixer owns the handoff; shape uses WG23’s 360 ms spring (240 ms circle easing when `widget_bounce` is zero), and contents retain their 180 ms fade. A card’s ordinary Wayfire map animation is suppressed so it cannot zoom/fade the composition a second time. Goo (or the fallback halo) follows the visible rectangle and interpolated scale. The app stays visible during startup; a card disappearing during the handoff restores the app and never closes it (WG5). | implemented (headless); validation below |
 | WG23 | Every widget expansion and contraction (Super+M, peeking on hover or attention, collapsed arrival, any other trigger) settles with a single elastic size/shape bounce, including its goo. `scottland/widget_bounce` sets the amount (default 0.04, range 0–0.1); zero disables the overshoot. S19 provides its Widgets tab control for this setting. (Mike, 2026-10-02) | implemented (headless); Settings control implemented; validation below |
 | WG24 | Repeated window/widget transitions, including attention, interrupted entry, re-grabs and cancellation, keep the compositor responsive. Hint avoidance alone never changes a window's real zone or widget lifecycle. | repeat/race and large-window probes pass on plumbus headless; October 2 live hangs unresolved; see [compositor-hangs.md](compositor-hangs.md) |
-| WG25 | Return on a focused widget opens its window like a click (WG17: to its remembered center spot, else the nearest least-overlapping full-size center spot, raised and focused), unless a text field inside the widget has keyboard focus, in which case Return goes to that field. Works for the default card and custom widgets. A custom widget retains Return for a focused control by claiming it through a key layer (K1). (Mike, 2026-10-03) | implemented (headless) |
+| WG25 | Return or keypad Enter on a focused widget always opens its window like a click (WG17: to its remembered center spot, else the nearest least-overlapping full-size center spot, raised and focused). Scottland consumes the key before the widget receives it, including when a text field has focus or the widget claims it through a key layer (K1). Other keys still reach the widget normally; windows are unaffected. (Mike, 2026-10-03) | implemented (headless) |
 | WG26 | Making room on a rail: while a window is dragged onto a widget rail, or a widget is dragged along a rail, the widgets in the way move aside live during the drag, only as far as needed (P2): only those that overlap the dragged item's landing spot move, and a push ripples to neighbors only when they in turn are in the way. No retiling of the rail. Widgets stay on their rail (P1). The shifts are visual during the drag and become real on drop; cancelling the drag (Esc, or dragging back out of the rail) returns every widget exactly (P5). The solve is bounded and never blocks the pointer (P8). (Mike, 2026-10-03) | not built |
 | WG6 | Choosing a widget, in order: the user's assignment (`~/.config/scottland/widgets.ini`, app-id → widget), else the app's own widget (named by its `.desktop` entry, `X-Scottland-Widget=`, or installed for its app-id), else a Scottland built-in for that kind of app, else the default card (WG10). Any widget can be assigned to any app. | implemented (unit test) |
 | WG7 | A widget package is a directory with a `widget.toml` manifest (`id`, `name`, `apps` = app-id regexes it suits, `exec` = the command) and whatever the command needs. Packages are found in `$SCOTTLAND_WIDGET_PATH` (colon-separated, if set; relative entries are taken from the current directory), `~/.local/share/scottland/widgets/` (the user's), `/usr/share/scottland/widgets/` (installed with apps, removed with them) and Scottland's built-ins (`/usr/lib/scottland/widgets/`); the first package with an id wins. | implemented (unit test) |
@@ -54,15 +54,14 @@ verification of the stock move path does not verify this new path.
 ## Focused widget Return (WG25)
 
 Return and keypad Enter use the same `open_widget()` action as clicking the card, so WG17's
-remembered-center and least-overlapping placement, raise and focus stay shared. Focused-surface
-key-layer claims run first. A custom widget that wants Return to stay in a control, including a
-text field, claims Return through its key layer while that control has focus; this uses the
-widget's own focus knowledge without enabling a compositor-wide input-method protocol. The
-press and matching release are consumed together when Scottland opens the window, so the new app
-does not receive an orphan release.
+remembered-center and least-overlapping placement, raise and focus stay shared. Scottland consumes
+both the press and its matching release before the widget receives either one. A text field inside
+the widget cannot keep Return, and a widget's key-layer claim of Return is ignored while it is a
+widget. Other keys keep their usual delivery and key-layer behavior; windows are unaffected.
 
 `tests/widget-input-test.py return` uses real `stipc` key input for the built-in card, a custom
-widget with a focused GTK text entry and Return claim, and a custom widget with a Return claim.
+widget, a focused GTK text entry that does not receive Return, and a custom widget whose Return
+and keypad Enter claims are ignored. It also checks that an unclaimed Space still reaches the widget.
 
 ## Window-to-widget handoff (WG22)
 

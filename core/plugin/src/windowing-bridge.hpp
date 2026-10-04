@@ -6,8 +6,8 @@
     wf::option_wrapper_t<wf::keybinding_t> center_switcher_next{"scottland/center_switcher_next"};
     wf::option_wrapper_t<wf::keybinding_t> center_switcher_previous{"scottland/center_switcher_previous"};
     std::set<uint32_t> swallowed_keys, alt_keys, held_keys;
-    // Return opens a focused widget once per physical press. Keep its release from reaching the
-    // app window that just replaced the widget, even if focus changes during the press.
+    // Return opens a focused widget once per physical press, before the widget or its key layer
+    // can receive it. Keep its release from reaching the app window that replaced the widget.
     std::set<std::pair<wlr_input_device*, uint32_t>> widget_return_keys;
     wf::wl_timer<false> alt_hold;
     bool capture_chord = false;
@@ -973,6 +973,23 @@
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // finish our own pair; this is not a new compositor grab
         }
+        // WG25 owns Return on a focused widget outright. This check precedes key-layer handling,
+        // so even a widget's Return claim cannot deliver either half of the key to the client.
+        if (down && ev->mode == wf::input_event_processing_mode_t::FULL &&
+            (code == KEY_ENTER || code == KEY_KPENTER))
+        {
+            auto active = wf::get_core().seat->get_active_view();
+            auto widget = wf::toplevel_cast(active);
+            auto link = link_of_widget(active);
+            if (widget && link && link->docked() &&
+                !wlr_seat_keyboard_has_grab(wf::get_core().get_current_seat()))
+            {
+                open_widget(*link);
+                widget_return_keys.insert(return_token);
+                ev->mode = wf::input_event_processing_mode_t::IGNORE;
+                return;
+            }
+        }
         bool claimed = key_layers.handles(ev);
         if (claimed && down) { alt_bypassed = true; alt_hold.disconnect(); }
         if (ev->mode == wf::input_event_processing_mode_t::IGNORE)
@@ -980,22 +997,6 @@
             if (alt) { if (down) alt_keys.insert(code); else alt_keys.erase(code); }
             bypass_window_keys();
             return;
-        }
-        if (!claimed && down && ev->mode == wf::input_event_processing_mode_t::FULL &&
-            (code == KEY_ENTER || code == KEY_KPENTER))
-        {
-            auto active = wf::get_core().seat->get_active_view();
-            auto widget = wf::toplevel_cast(active);
-            auto link = link_of_widget(active);
-            if (widget && link && link->docked() && keyboard &&
-                !(keyboard->modifiers.depressed & modifier_mask(keyboard->keymap, "CTRL SHIFT ALT SUPER")) &&
-                !wlr_seat_keyboard_has_grab(wf::get_core().get_current_seat()) &&
-                open_widget(*link))
-            {
-                widget_return_keys.insert(return_token);
-                ev->mode = wf::input_event_processing_mode_t::IGNORE;
-                return;
-            }
         }
         if (alt)
         {

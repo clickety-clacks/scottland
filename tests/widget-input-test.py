@@ -107,7 +107,8 @@ def return_behavior():
     marker_root = Path(os.environ["SCOTTLAND_TEST_STATE"])
     text_marker = marker_root / "wg25-return-text"
     claim_marker = marker_root / "wg25-return-claim"
-    for marker in (text_marker, claim_marker):
+    claim_other_marker = marker_root / "wg25-return-claim-other"
+    for marker in (text_marker, claim_marker, claim_other_marker):
         marker.unlink(missing_ok=True)
 
     title = "return-default"
@@ -161,17 +162,13 @@ def return_behavior():
     time.sleep(.1)
     ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "full"})
     time.sleep(.4)  # let GTK process the pointer click and focus the entry
-    text_widget = next(w for w in widgets() if w["title"] == title)
-    ipc.call("scottland/key-layer", {"action": "set", "window": text_widget["widget_view"],
-                                     "keys": ["0:Return"]})
     key("ENTER", True)
     key("ENTER", False)
-    time.sleep(.35)
-    check("WG25 a focused custom-widget text field keeps Return via its layer claim",
-          card(title) is not None and app(title)["widgetized"],
-          {"card_present": card(title) is not None, "widgetized": app(title)["widgetized"]})
-    check("WG25 Return activates the focused text field", text_marker.exists(), text_marker)
-    ipc.call("scottland/key-layer", {"action": "clear", "window": text_widget["widget_view"]})
+    wait_for(lambda: app(title) and not app(title)["widgetized"])
+    check("WG25 a focused text field does not receive Return and its window opens",
+          card(title) is None and not app(title)["widgetized"] and not text_marker.exists(),
+          {"card_present": card(title) is not None, "widgetized": app(title)["widgetized"],
+           "text_field_activated": text_marker.exists()})
 
     title = "return-claim"
     launch(title, app_id="scottland-test-return-claim")
@@ -182,14 +179,38 @@ def return_behavior():
                                      "keys": ["0:Return"]})
     layer = wait_for(lambda: next((s for s in ipc.call("scottland/key-layer", {"action": "list"})["surfaces"]
                                    if s["window"] == row["widget_view"] and s["active"]), None))
+    key("SPACE", True)
+    key("SPACE", False)
+    wait_for(lambda: claim_other_marker.exists())
+    check("WG25 other unclaimed keys still reach a widget with a Return claim",
+          card(title) is not None and app(title)["widgetized"] and claim_other_marker.exists(),
+          {"card_present": card(title) is not None, "widgetized": app(title)["widgetized"],
+           "received_space": claim_other_marker.exists()})
     key("ENTER", True)
     key("ENTER", False)
-    time.sleep(.35)
-    check("WG25 a custom widget's key layer can claim Return", card(title) is not None and
-          app(title)["widgetized"] and claim_marker.exists(),
+    wait_for(lambda: app(title) and not app(title)["widgetized"])
+    check("WG25 a widget's Return key-layer claim is ignored and the window opens",
+          card(title) is None and not app(title)["widgetized"] and not claim_marker.exists(),
           {"layer_active": layer["active"], "card_present": card(title) is not None,
-           "widgetized": app(title)["widgetized"], "received": claim_marker.exists()})
-    ipc.call("scottland/key-layer", {"action": "clear", "window": row["widget_view"]})
+           "widgetized": app(title)["widgetized"], "received_return": claim_marker.exists()})
+
+    # The keypad key is intercepted too, including when the widget explicitly claims it.
+    drag_begin(app(title), screen["width"] - 6, 340)
+    drag_end()
+    wait_for(lambda: card(title) and not card(title)["preview"])
+    row = wait_for(lambda: next((w for w in widgets() if w["title"] == title and
+                                 w["widget_view"] >= 0), None))
+    ipc.call("scottland/key-layer", {"action": "set", "window": row["widget_view"],
+                                     "keys": ["0:KP_Enter"]})
+    layer = wait_for(lambda: next((s for s in ipc.call("scottland/key-layer", {"action": "list"})["surfaces"]
+                                   if s["window"] == row["widget_view"] and s["active"]), None))
+    key("KPENTER", True)
+    key("KPENTER", False)
+    wait_for(lambda: app(title) and not app(title)["widgetized"])
+    check("WG25 a widget's keypad Enter claim is ignored and the window opens",
+          card(title) is None and not app(title)["widgetized"] and not claim_marker.exists(),
+          {"layer_active": layer["active"], "card_present": card(title) is not None,
+           "widgetized": app(title)["widgetized"], "received_keypad_enter": claim_marker.exists()})
 
 
 def toggle():
