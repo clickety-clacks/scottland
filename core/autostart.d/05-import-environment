@@ -15,7 +15,7 @@ done
 # Integrations add their own variables through SCOTTLAND_IMPORT_ENV (see session-env.d).
 dbus-update-activation-environment --systemd \
   WAYLAND_DISPLAY DISPLAY XAUTHORITY WAYFIRE_SOCKET \
-  XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP $SCOTTLAND_IMPORT_ENV
+  XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP XCURSOR_SIZE $SCOTTLAND_IMPORT_ENV
 
 # Start the user's graphical-session services with Scottland. The watcher stops them again when
 # this session's launcher goes away, however the session ends.
