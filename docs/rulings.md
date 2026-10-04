@@ -25,6 +25,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | Nothing is ever completely hidden; window avoidance exists for this, the hint is the yardstick. | P12 |
 | 10-04 | A peeking window may hang past its zone edge but never moves into another zone; if it still can't peek, only its hint is placed where it can be seen. | P12 |
 | 10-04 | The user puts windows in zones; nothing automatic moves a window into another zone, not even visually. | P13 |
+| 10-04 | The user always wins: what the user places ends up exactly where they put it; everything else flows around it (no settling the dropped item). | P14 |
 
 ## Window avoidance and peeking
 
