@@ -59,7 +59,7 @@ on a physical session. This change is not tested on either machine's live displa
 | WK34 | In window mode, the hint press that first selects an unselected collapsed widget also expands it for a five-second peek; collapsed intent and placement stay unchanged, and it collapses again at expiry unless another peek trigger is active. A further hint press during the peek follows WK30's center-first cycle and restores the app window to center, even within WK15's double-tap interval; this ends the peek. Tab selection keeps WK10 behavior; hint circles remain click-through (WK4). Tenets 2 and 3 make a minimized widget recognizable briefly while preserving its stored place. | implemented (plumbus headless, 2026-10-03) |
 | WK35 | Holding the hint of the focused window (past a hold delay, proposed 500 ms, a setting) solos it: it goes to the center and the other center windows go to the periphery, which spreads (docs/spread.md; spread's keyboard solo). It commits outright, no undo (P5). A tap keeps today's behavior (WK15 double-tap, WK6 slow repeats); key auto-repeat never counts as a hold or a repeat (WK16). (Mike, 2026-10-03; focused-window condition 2026-10-04) | not built |
 | WK36 | Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side, scaled only if needed to fit the screen's width together. Space is divided so both end up at roughly the same magnification (the larger window gets the larger share), best effort, rather than 50/50. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Open points: what happens to the other center windows (presumably as in solo), and whether the pair spans the whole screen or the center zone. Note: tenet 4 says center windows aren't scaled for side-by-side; pairing is an explicit request that grants that concession. (Mike, 2026-10-04) | not built |
-| WK37 | In Window mode, a window that is mostly occluded (less than half of its on-screen area visible: `hint_outline_visible_fraction` = 0.5 in `hint-style.hpp`) also gets an opaque outline in its hint color, 2 logical px (`hint_outline_width`), following its drawn rounded frame. The outlines draw in the overlay layer above all windows, like the hint overlay, so nothing occludes them: they sit in front of every window and of overlay surfaces already shown (e.g. Scottland Settings), with only the hint circles and press flashes above them. Its full extent and identity show through what covers it; only the ring is drawn, so front windows' content shows inside it. Occlusion is measured once per avoidance solve (only on layout changes, WK27), from the solver's own front-to-back frames at their settled avoidance targets, with widgets in front counting as cover: an exact sweep over the covering rectangles, no per-frame work (P8). Only the on-screen part counts; widgets and fullscreen windows get none. Alt release and Esc clear the outlines with the hints. (Mike, 2026-10-04; overlay layer above all windows, same day) | implemented (plumbus headless real input + screenshots, 2026-10-04) |
+| WK37 | In Window mode, a window that is mostly occluded (less than half of its on-screen area visible: `hint_outline_visible_fraction` = 0.5 in `hint-style.hpp`) also gets an opaque outline in its hint color, 2 logical px (`hint_outline_width`), following its drawn rounded frame, antialiased at the output's device pixels (also on scaled outputs). The outlines draw in the overlay layer above all windows, like the hint overlay, so nothing occludes them: they sit in front of every window and of overlay surfaces already shown (e.g. Scottland Settings), with only the hint circles and press flashes above them. Its full extent and identity show through what covers it; only the ring is drawn, so front windows' content shows inside it. Occlusion is measured only in Window mode (not for always-on avoidance outside it), after each avoidance solve has finished an output (only on layout changes, WK27), from the solver's own front-to-back frames at their settled avoidance targets, with widgets in front counting as cover: an exact sweep over the covering rectangles, no per-frame work. The pass shares the solve's 2 ms deadline (P8): if the deadline is reached it stops and resumes on the next tick (until then the previous measurements stand); a layout change restarts it. Only the on-screen part counts; widgets and fullscreen windows get none. Alt release and Esc clear the outlines with the hints. (Mike, 2026-10-04; overlay layer above all windows, same day) | implemented (plumbus headless real input + screenshots, 2026-10-04) |
 | WK38 | The Window mode hint-color overlay on windows and cards (WK14) has a strength setting, `scottland/window_mode_tint` (percent, 0–30, default 7), with a live slider ("Hint color overlay") in the Window mode Settings tab; 0 turns the overlay off. It applies to the frame tint and fullscreen tint, live including while hints are showing. Hint circles, borders, outlines, goo dye and press flashes are unaffected, and hint colors keep the 7% default as their contrast basis, so moving the slider never recolors hints. Also in plugin metadata and `scottland-ctl`. (Mike, 2026-10-04) | implemented (plumbus headless real input + screenshots, 2026-10-04) |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. Each zone memory also keeps the window's scale pin there, if the user set one (Shift-drag, L31): returning to that zone by cycling restores both the remembered position and that pinned scale; with no pin the zone's normal scale applies. (Mike, 2026-10-04) | implemented (headless) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
@@ -1030,15 +1030,29 @@ logic changed. Logs and screenshots are under
 
 ## WK37/WK38 validation (plumbus headless, 2026-10-04)
 
-`tests/hint-outline-test.sh` in an isolated headless session on plumbus, real stipc Alt holds and
-pointer input on Scottland Settings, grim screenshots kept under `build/hint-outline-evidence`:
-a 380×260 window under a 620×470 front window is 20% visible (the plugin's figure matches an
-independent measure of the displayed layout within 0.03) and gets the outline. 44/44 edge samples
-inside the front window show the rear window's opaque hint color; none did before Window mode or
-after release. The front window and an uncovered window get none. Pixels 8 px inside the ring are
-front content. With Settings open, 32/32 outline samples under the panel show the hint color
-(the outline is above that overlay surface). The slider set 0, 7 and 20% live, before Save; against
-the same pixel just before each hold, 0% left it unchanged, 7% tinted it and 20% gave the 7% tint
-scaled by 20/7 within 4/255 per channel. Moving the slider to 30% while hints showed retinted at
-once. `tests/windowing-unit.sh` covers the occlusion measure (188 checks).
+`tests/hint-outline-test.sh` builds this checkout's plugin and test helpers (`make test-hooks`),
+refuses to run without them, and runs three isolated headless sessions on plumbus with real stipc
+Alt holds, arrows, hint keys, drags and pointer input on Scottland Settings; grim screenshots
+and state stay under `build/hint-outline-evidence`. All 48 checks pass (40 + 3 + 5):
 
+- A 380×260 window under a 620×470 front window is 20% visible (the plugin's figure matches an
+  independent measure of the displayed layout within 0.03) and gets the outline; 44/44 edge
+  samples inside the front window show its opaque hint color, none before Window mode or after
+  release. Front and uncovered windows get none; pixels 8 px inside the ring are front content.
+- Corners are antialiased: blended pixels between the hint color and the content at the corner
+  (26 at 1×; 53 device pixels at 2× scale, where the ring is 4 device px thick).
+- During a hold: raising the rear window with its hint removes the outline, raising the front one
+  restores it; arrow pushes that move the cover off clear it live. Esc with Alt still held clears it.
+- A scaled (0.65) periphery window is outlined on all four edges of its drawn frame.
+- With a fullscreen window in front, the windows under it are outlined over it; it is not.
+- Always-on avoidance outside Window mode computes no occlusion (fraction stays 1) and draws nothing.
+- A widget card counts as cover: a window wholly under a rail card measures 0 and is outlined.
+- On the second, offset output of a two-output session the ring lands on its window.
+- With Settings open, 32/32 outline samples under the panel show the hint color.
+- The pass's longest run was well under 1 ms; one pass hit the shared deadline and resumed with
+  the right result. Unit: a whole pass over 50 overlapping windows takes about 0.1 ms (asserted < 2 ms).
+- WK38: the slider set 0, 7 and 20% live, before Save; against the same pixel just before each
+  hold, 0% left it unchanged, 7% tinted it and 20% gave the 7% tint scaled by 20/7 within 4/255
+  per channel. Moving the slider to 30% while hints showed retinted at once.
+
+`tests/windowing-unit.sh` covers the occlusion measure (189 checks).

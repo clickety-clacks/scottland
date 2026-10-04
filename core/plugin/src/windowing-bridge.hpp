@@ -69,6 +69,11 @@
     bool hint_step_animation = false, hint_step_offset = false;
     std::string exposure_progress_signature;
     std::map<std::string, scottland::windowing::exposure_progress> exposure_progress_by_output;
+    // WK37 occlusion pass, resumable per output like the solve it follows: the next window (in
+    // front-to-back order) still to measure; absent means start over, SIZE_MAX means done.
+    std::map<std::string, size_t> occlusion_next_by_output;
+    double occlusion_pass_ms = 0, occlusion_pass_max_ms = 0;
+    uint64_t occlusion_deferrals = 0;
     int hint_palette_watch_fd = -1;
     wl_event_source *hint_palette_watch = nullptr;
     std::string hint_palette_watch_name;
@@ -825,6 +830,7 @@
             // A changed true layout invalidates every cached placement. Within an
             // unchanged signature, validated front windows carry into later slices.
             exposure_progress_by_output.clear();
+            occlusion_next_by_output.clear();
             exposure_progress_signature = current_signature;
         }
         if (solve_requested && (!avoidance_active || force_solve || !within_tick_budget))
@@ -840,6 +846,7 @@
                 for (auto& [id, visual] : hint_visuals) visual.target = {};
                 exposure_solve_pending = false;
                 exposure_progress_by_output.clear();
+                occlusion_next_by_output.clear();
                 for (auto& [id, visual] : hint_visuals)
                 { visual.branch_owner = 0; visual.branch_axis = visual.branch_sign = 0; }
                 for (auto& [id, visual] : hint_visuals)
@@ -986,23 +993,52 @@
                         visual.label_offset = {exposed.spot.center.x - visual.target.x - anchor.x,
                             exposed.spot.center.y - visual.target.y - anchor.y};
                     }
-                    // WK37 occlusion from the frames and targets this solve just settled,
-                    // front to back: once per layout change, never per frame (P8).
-                    std::vector<rectangle> in_front;
                     for (auto id : ordered)
                     {
                         auto view = represented_view(id);
-                        auto& visual = hint_visuals[id];
-                        auto r = hint_rectangle(view, true);
-                        rectangle drawn{r.x1 + visual.target.x, r.y1 + visual.target.y, r.width(), r.height()};
                         if (link_of_widget(view))
                         {
+                            auto& visual = hint_visuals[id];
                             visual.label_offset = {}; visual.label_size = hint_size(view);
                             visual.edge_label = false; visual.clearance = 0;
-                            visual.visible_fraction = 1;
-                        } else
-                            visual.visible_fraction = scottland::windowing::visible_fraction(drawn, bounds, in_front);
-                        in_front.push_back(drawn);
+                        }
+                    }
+                    // WK37 occlusion, front to back, from the frames and targets this solve
+                    // settled. Only in Window mode (outlines draw nowhere else), only once the
+                    // output's solve is complete, and within the same deadline as the solve (P8):
+                    // an unfinished pass resumes on the next tick; a layout change restarts it.
+                    if (!window_keys.active)
+                    {
+                        for (auto id : ordered) hint_visuals[id].visible_fraction = 1;
+                    } else if (output_complete)
+                    {
+                        auto pass_started = std::chrono::steady_clock::now();
+                        auto& next = occlusion_next_by_output[output->to_string()];
+                        std::vector<rectangle> in_front;
+                        for (size_t i = 0; i < ordered.size() && next != SIZE_MAX; ++i)
+                        {
+                            auto view = represented_view(ordered[i]);
+                            auto& visual = hint_visuals[ordered[i]];
+                            auto r = hint_rectangle(view, true);
+                            rectangle drawn{r.x1 + visual.target.x, r.y1 + visual.target.y,
+                                r.width(), r.height()};
+                            if (i >= next)
+                            {
+                                if (std::chrono::steady_clock::now() >= exposure_deadline)
+                                {
+                                    next = i; exposure_solve_pending = true; ++occlusion_deferrals;
+                                    break;
+                                }
+                                visual.visible_fraction = link_of_widget(view) ? 1 :
+                                    scottland::windowing::visible_fraction(drawn, bounds, in_front);
+                            }
+                            in_front.push_back(drawn);
+                            if (i + 1 == ordered.size()) next = SIZE_MAX;
+                        }
+                        if (ordered.empty()) next = SIZE_MAX;
+                        occlusion_pass_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - pass_started).count();
+                        occlusion_pass_max_ms = std::max(occlusion_pass_max_ms, occlusion_pass_ms);
                     }
                 }
                 exposure_solve_ms = std::chrono::duration<double, std::milli>(
@@ -1142,8 +1178,7 @@
                     }
                     auto r = scene_rectangle(view, output);
                     auto frame = frame_of(view, false);
-                    visual.outline->update({std::floor(r.x1), std::floor(r.y1),
-                        std::ceil(r.width()), std::ceil(r.height())},
+                    visual.outline->update(r.x1, r.y1, r.width(), r.height(),
                         frame ? frame->screen_radius() : 0.0, color,
                         scottland::windowing::hint_outline_width);
                 } else remove_hint_outline(visual);
@@ -1364,6 +1399,11 @@
         reply["avoidance_solve_count"] = int64_t(exposure_solve_count);
         reply["avoidance_solve_deadline_count"] = int64_t(exposure_solve_deadline_count);
         reply["avoidance_solve_pending"] = exposure_solve_pending;
+        reply["occlusion_pass_ms"] = occlusion_pass_ms;
+        reply["occlusion_pass_max_ms"] = occlusion_pass_max_ms;
+        reply["occlusion_deferrals"] = int64_t(occlusion_deferrals);
+        reply["occlusion_pending"] = std::any_of(occlusion_next_by_output.begin(),
+            occlusion_next_by_output.end(), [] (const auto& item) { return item.second != SIZE_MAX; });
         reply["hint_step_count"] = int64_t(hint_step_count);
         reply["hint_step_animation"] = hint_step_animation;
         reply["hint_step_offset"] = hint_step_offset;
@@ -1477,6 +1517,14 @@
             item["edge_label"] = hint_visuals.count(e.id) && hint_visuals[e.id].edge_label;
             item["visible_fraction"] = hint_visuals.count(e.id) ? hint_visuals[e.id].visible_fraction : 1.0;
             item["outline"] = hint_visuals.count(e.id) && hint_visuals[e.id].outline;
+            item["outline_frame"] = wf::json_t();
+            if (hint_visuals.count(e.id) && hint_visuals[e.id].outline)
+            {
+                auto& o = *hint_visuals[e.id].outline;
+                item["outline_frame"]["x"] = o.x; item["outline_frame"]["y"] = o.y;
+                item["outline_frame"]["width"] = o.width; item["outline_frame"]["height"] = o.height;
+                item["outline_frame"]["radius"] = o.radius;
+            }
             item["flash"] = hint_flashes.count(e.id) && hint_flashes[e.id].node ?
                 hint_flashes[e.id].node->alpha : 0.0;
             item["memories"] = wf::json_t::array();

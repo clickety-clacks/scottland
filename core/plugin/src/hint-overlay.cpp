@@ -1,6 +1,8 @@
 #include "hint-overlay.hpp"
 #include <cairo.h>
+#include <array>
 #include <cmath>
+#include <wayfire/opengl.hpp>
 #include <sstream>
 #include <drm_fourcc.h>
 extern "C" {
@@ -294,13 +296,66 @@ void hint_flash_node::gen_render_instances(std::vector<wf::scene::render_instanc
     instances.push_back(std::make_unique<hint_flash_render>(this, damage, output));
 }
 
-void hint_outline_node::update(wf::geometry_t geometry, double corner_radius, hint_rgb dye, double width)
+namespace
+{
+const char *outline_vertex_source = R"(#version 100
+attribute highp vec2 position;
+varying highp vec2 pos;
+uniform mat4 MVP;
+void main() {
+    gl_Position = MVP * vec4(position, 0.0, 1.0);
+    pos = position;
+})";
+// Coverage of the band between the rounded rectangle's edge and `line` inside it, from its
+// signed distance, antialiased over one device pixel (`aa` logical px).
+const char *outline_fragment_source = R"(#version 100
+varying highp vec2 pos;
+uniform highp vec4 rect;
+uniform highp float radius;
+uniform highp float line;
+uniform highp float aa;
+uniform highp vec4 color;
+void main() {
+    highp vec2 half_size = rect.zw * 0.5;
+    highp vec2 q = abs(pos - rect.xy - half_size) - half_size + radius;
+    highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    highp float outer = clamp(0.5 - d / aa, 0.0, 1.0);
+    highp float inner = clamp(0.5 - (d + line) / aa, 0.0, 1.0);
+    gl_FragColor = color * (outer - inner);
+})";
+struct outline_program_t
+{
+    OpenGL::program_t program;
+    bool ready = false;
+};
+outline_program_t& outline_program()
+{
+    static outline_program_t program;  // per loaded plugin copy (see meson.build)
+    return program;
+}
+}
+
+void release_hint_gl()
+{
+    auto& p = outline_program();
+    if (!p.ready) return;
+    wf::gles::run_in_context_if_gles([&] { p.program.free_resources(); });
+    p.ready = false;
+}
+
+void hint_outline_node::update(double nx, double ny, double nwidth, double nheight, double corner_radius,
+    hint_rgb dye, double line_width)
 {
     corner_radius = std::max(0.0, corner_radius);
-    if (geometry == box && corner_radius == radius && width == line &&
-        dye.r == color.r && dye.g == color.g && dye.b == color.b) return;
+    line_width = std::max(1.0, line_width);
+    if (nx == x && ny == y && nwidth == width && nheight == height && corner_radius == radius &&
+        line_width == line && dye.r == color.r && dye.g == color.g && dye.b == color.b) return;
     wf::scene::damage_node(this, box);
-    box = geometry; radius = corner_radius; color = dye; line = std::max(1.0, width);
+    x = nx; y = ny; width = std::max(0.0, nwidth); height = std::max(0.0, nheight);
+    radius = corner_radius; color = dye; line = line_width;
+    // One logical px of margin holds the antialiased outer edge.
+    double x1 = std::floor(x) - 1, y1 = std::floor(y) - 1;
+    box = {x1, y1, std::ceil(x + width) + 1 - x1, std::ceil(y + height) + 1 - y1};
     wf::scene::damage_node(this, box);
     wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
 }
@@ -311,17 +366,55 @@ class hint_outline_render : public wf::scene::simple_render_instance_t<hint_outl
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
-        auto b = self->box;
-        if (b.width <= 0 || b.height <= 0) return;
-        double line = std::min({std::round(self->line), b.width / 2.0, b.height / 2.0});
-        double r = std::min({self->radius, b.width / 2.0, b.height / 2.0});
-        double inner = std::max(0.0, r - line);
-        wf::color_t rim{self->color.r, self->color.g, self->color.b, 1};
-        auto strip = [&] (double x, double y, double w, double h)
+        double x = self->x, y = self->y, w = self->width, h = self->height;
+        if (w <= 0 || h <= 0) return;
+        double line = std::min({self->line, w / 2, h / 2});
+        double r = std::min({self->radius, w / 2, h / 2});
+        auto c = self->color;
+        bool drawn = data.pass->custom_gles_subpass([&]
         {
-            if (w > 0 && h > 0) data.pass->add_rect(rim, data.target, {x, y, w, h}, data.damage);
+            auto& p = outline_program();
+            if (!p.ready) { p.program.compile(outline_vertex_source, outline_fragment_source); p.ready = true; }
+            wf::gles::bind_render_buffer(data.target);
+            p.program.use(wf::TEXTURE_TYPE_RGBA);
+            p.program.uniformMatrix4f("MVP", wf::gles::render_target_orthographic_projection(data.target));
+            p.program.uniform4f("rect", glm::vec4{x, y, w, h});
+            p.program.uniform1f("radius", r);
+            p.program.uniform1f("line", line);
+            p.program.uniform1f("aa", 1.0f / std::max(0.01f, float(data.target.scale)));
+            p.program.uniform4f("color", glm::vec4{c.r, c.g, c.b, 1.0});
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            // Only the ring's bands: top and bottom across the corners, then the sides between,
+            // so no fragment is covered twice.
+            double band = std::min({std::max(r, line) + 1, h / 2, w / 2});
+            std::vector<std::array<float, 4>> quads{
+                {float(x - 1), float(y - 1), float(x + w + 1), float(y + band)},
+                {float(x - 1), float(y + h - band), float(x + w + 1), float(y + h + 1)},
+                {float(x - 1), float(y + band), float(x + band), float(y + h - band)},
+                {float(x + w - band), float(y + band), float(x + w + 1), float(y + h - band)}};
+            wf::gles::for_each_scissor_rect(data.target, data.damage, [&]
+            {
+                for (auto [x1, y1, x2, y2] : quads)
+                {
+                    if (x2 <= x1 || y2 <= y1) continue;
+                    GLfloat vertices[] = {x1, y2, x2, y2, x2, y1, x1, y1};
+                    p.program.attrib_pointer("position", 2, 0, vertices);
+                    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+                }
+            });
+            p.program.deactivate();
+        });
+        if (drawn) return;
+        // Without GLES: whole-pixel rows (corners stair-stepped).
+        wf::geometry_t b{std::round(x), std::round(y), std::round(w), std::round(h)};
+        line = std::round(line);
+        double inner = std::max(0.0, r - line);
+        wf::color_t rim{c.r, c.g, c.b, 1};
+        auto strip = [&] (double sx, double sy, double sw, double sh)
+        {
+            if (sw > 0 && sh > 0) data.pass->add_rect(rim, data.target, {sx, sy, sw, sh}, data.damage);
         };
-        // Horizontal inset of a rounded rectangle's edge at pixel row `row` from its top.
         auto inset = [] (double radius, double row)
         {
             if (row >= radius) return 0.0;
@@ -331,14 +424,13 @@ class hint_outline_render : public wf::scene::simple_render_instance_t<hint_outl
         int rows = int(std::ceil(std::max(r, line)));
         for (int row = 0; row < rows; ++row)
         {
-            double outer = inset(r, row);
-            double k = row - line;  // row within the inner (inset) rounded rectangle
-            for (double y : {double(b.y + row), double(b.y + b.height - row - 1)})
+            double outer = inset(r, row), k = row - line;
+            for (double ry : {double(b.y + row), double(b.y + b.height - row - 1)})
             {
-                if (k < 0) { strip(b.x + outer, y, b.width - 2 * outer, 1); continue; }
+                if (k < 0) { strip(b.x + outer, ry, b.width - 2 * outer, 1); continue; }
                 double in = line + inset(inner, k);
-                strip(b.x + outer, y, in - outer, 1);
-                strip(b.x + b.width - in, y, in - outer, 1);
+                strip(b.x + outer, ry, in - outer, 1);
+                strip(b.x + b.width - in, ry, in - outer, 1);
             }
         }
         strip(b.x, b.y + rows, line, b.height - 2 * rows);

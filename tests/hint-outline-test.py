@@ -9,6 +9,7 @@ from pathlib import Path
 import socket
 import struct
 import subprocess
+import sys
 import time
 
 import gi
@@ -100,15 +101,19 @@ def hints():
 
 
 class Shot:
-    def __init__(self, name):
+    def __init__(self, name, scale=1):
         self.path = art / (name + ".png")
+        self.scale = scale
         subprocess.run(["grim", str(self.path)], check=True)
         self.img = GdkPixbuf.Pixbuf.new_from_file(str(self.path))
         self.data, self.stride, self.channels = self.img.get_pixels(), self.img.get_rowstride(), self.img.get_n_channels()
 
-    def pixel(self, x, y):
+    def device(self, x, y):
         offset = round(y) * self.stride + round(x) * self.channels
         return tuple(self.data[offset:offset + 3])
+
+    def pixel(self, x, y):
+        return self.device(x * self.scale, y * self.scale)
 
 
 def near(a, b, tolerance=4):
@@ -158,6 +163,105 @@ def release():
     time.sleep(.8)
 
 
+def tap(code):
+    key(code, True)
+    key(code, False)
+
+
+def press_hint(identifier):
+    for letter in hints()[identifier]["hint"]:
+        tap(letter.upper())
+
+
+def st(identifier):
+    h = hints()[identifier]
+    return round(h["visible_fraction"], 3), h["outline"]
+
+
+def badges(state):
+    return [h["badge"] for h in state.values() if h.get("badge")]
+
+
+def off_badges(state, x, y, margin=6):
+    return all((x - c["x"] - c["size"] / 2) ** 2 + (y - c["y"] - c["size"] / 2) ** 2 >
+               (c["size"] / 2 + margin) ** 2 for c in badges(state))
+
+
+def ring_edges(shot, state, identifier, origin=(0, 0)):
+    """Which of the outline's four edges show its hint color (sampled at quarter points)."""
+    o, color = state[identifier]["outline_frame"], tuple(round(c * 255) for c in state[identifier]["color"])
+    ox, oy = origin
+    def hit(x, y):
+        return any(near(shot.pixel(ox + x + dx, oy + y + dy), color, 8) for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+    edges = {}
+    for name, points in (
+            ("top", [(o["x"] + o["width"] * t, o["y"] + 1) for t in (.25, .5, .75)]),
+            ("bottom", [(o["x"] + o["width"] * t, o["y"] + o["height"] - 1.5) for t in (.25, .5, .75)]),
+            ("left", [(o["x"] + 1, o["y"] + o["height"] * t) for t in (.25, .5, .75)]),
+            ("right", [(o["x"] + o["width"] - 1.5, o["y"] + o["height"] * t) for t in (.25, .5, .75)])):
+        usable = [(x, y) for x, y in points if off_badges(state, x, y)]
+        edges[name] = bool(usable) and any(hit(x, y) for x, y in usable)
+    return edges
+
+
+def corner_blend(shot, state, identifier, cover):
+    """Antialiased corner: device pixels between the hint color and the content under the ring,
+    at a corner that lies inside `cover` (so the content on both sides of the ring is the same)."""
+    o, color = state[identifier]["outline_frame"], tuple(round(c * 255) for c in state[identifier]["color"])
+    r = max(2, o["radius"])
+    k = shot.scale
+    for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+        cx = o["x"] if sx > 0 else o["x"] + o["width"]
+        cy = o["y"] if sy > 0 else o["y"] + o["height"]
+        inside = (cover[0] + r + 10 < cx < cover[0] + cover[2] - r - 10 and
+                  cover[1] + r + 10 < cy < cover[1] + cover[3] - r - 10)
+        if not inside or not off_badges(state, cx + sx * r / 2, cy + sy * r / 2, 12):
+            continue
+        content = shot.pixel(cx + sx * (r + 6), cy + sy * (r + 6))
+        def gap(a, b):
+            return max(abs(x - y) for x, y in zip(a, b))
+        if gap(content, color) < 60:
+            continue
+        blends = 0
+        for i in range(-1, round((r + 2) * k)):
+            for j in range(-1, round((r + 2) * k)):
+                p = shot.device(cx * k + sx * i - (sx < 0), cy * k + sy * j - (sy < 0))
+                blends += gap(p, color) > 16 and gap(p, content) > 16
+        return blends
+    return None
+
+
+def hidpi():
+    ipc("wayfire/set-config-options", {"output:HEADLESS-1/mode": "2560x1440@60000", "output:HEADLESS-1/scale": 2})
+    time.sleep(1.5)
+    back2 = open_window("Back", (450, 200, 380, 260))
+    front2 = open_window("Front", (330, 110, 620, 470))
+    ipc("window-rules/focus-view", dict(id=front2))
+    time.sleep(.6)
+    hold()
+    state = hints()
+    image = Shot("11-hidpi", 2)
+    check("HiDPI: screenshot is at device resolution", image.img.get_width() == 2560)
+    check("HiDPI: the covered window is outlined", state[back2]["outline"])
+    edges = ring_edges(image, state, back2)
+    print("HiDPI edges", edges, flush=True)
+    check("HiDPI: all four edges show the ring", all(edges.values()))
+    o, color = state[back2]["outline_frame"], tuple(round(c * 255) for c in state[back2]["color"])
+    # 2 logical px are 4 device px: solid in the middle of the band, absent beyond it.
+    mid_x = o["x"] + o["width"] / 2
+    mid_x = next(x for x in (mid_x, o["x"] + o["width"] * .3, o["x"] + o["width"] * .7)
+                 if off_badges(state, x, o["y"] + o["height"] - 2))
+    bottom = (o["y"] + o["height"]) * 2
+    column = [image.device(mid_x * 2, bottom - d) for d in range(1, 9)]
+    print("HiDPI bottom-edge column (device px up from the edge)", column, flush=True)
+    solid = sum(near(p, color, 10) for p in column[:4])
+    check("HiDPI: the ring is about 4 device px thick", solid >= 2 and not near(column[6], color, 30))
+    blends = corner_blend(image, state, back2, drawn(front2))
+    print("HiDPI corner blend device pixels", blends, flush=True)
+    check("HiDPI: the corner is antialiased at device pixels", blends is not None and blends >= 4)
+    release()
+
+
 def settings_quickshell_pid(wrapper_pid):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -180,6 +284,190 @@ def settings_quickshell_pid(wrapper_pid):
     raise RuntimeError("settings QuickShell not found")
 
 
+def section(function):
+    try:
+        function()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        check(function.__name__ + " ran", False)
+
+
+def reset_layout():
+    for identifier, g in ((back, (450, 200, 380, 260)), (front, (330, 110, 620, 470)), (side, (20, 60, 380, 420))):
+        ipc("window-rules/configure-view", dict(id=identifier, geometry=dict(x=g[0], y=g[1], width=g[2], height=g[3])))
+    time.sleep(.8)
+    ipc("window-rules/focus-view", dict(id=front))
+    time.sleep(.5)
+
+
+def restack_during_hold():
+    reset_layout()
+    hold()
+    first = st(back)
+    press_hint(back)  # selects, focuses and raises the rear window
+    raised = wait(lambda: (lambda v: v if not v[1] else None)(st(back)), 4)
+    press_hint(front)
+    covered = wait(lambda: (lambda v: v if v[1] else None)(st(back)), 4)
+    release()
+    print("restack", first, raised, covered, flush=True)
+    check("hold: outline goes when the rear window is raised", first[1] and not raised[1] and raised[0] == 1)
+    check("hold: outline returns when the rear window is covered again", covered[1])
+
+
+def cover_moves_away():
+    reset_layout()
+    hold()
+    first = st(back)
+    # Downward: the bottom edge stops a window (WK20), a side would widgetize it.
+    for _ in range(4):
+        tap("DOWN")
+        time.sleep(.15)
+    moved = wait(lambda: (lambda v: v if not v[1] else None)(st(back)), 6)
+    release()
+    check("arrow pushes left the cover an ordinary window", not any(
+        v["widget"] for v in views().values()))
+    print("cover moved", first, moved, flush=True)
+    check("hold: outline clears live when arrow pushes move the cover off", first[1] and not moved[1] and moved[0] >= .5)
+
+
+def escape_clears():
+    reset_layout()
+    hold()
+    first = st(back)
+    tap("ESC")
+    cleared = wait(lambda: not hints()[back]["outline"], 3)
+    image = Shot("06-after-esc")
+    key("LEFTALT", False)
+    time.sleep(.6)
+    check("Esc with Alt still held clears the outline", first[1] and cleared)
+
+
+def scaled_window():
+    for identifier, g in ((back, (40, 200, 380, 260)), (front, (-60, 110, 620, 470)), (side, (700, 60, 380, 420))):
+        ipc("window-rules/configure-view", dict(id=identifier, geometry=dict(x=g[0], y=g[1], width=g[2], height=g[3])))
+    time.sleep(1)
+    ipc("window-rules/focus-view", dict(id=front))
+    time.sleep(.5)
+    hold()
+    state, v = hints(), views()
+    image = Shot("07-scaled")
+    (art / "07-state.json").write_text(json.dumps({"hints": state, "views": v}, indent=2))
+    b, o = drawn(back), state[back]["outline_frame"]
+    print("scaled", v[back]["applied_scale"], st(back), "drawn", [round(x, 1) for x in b], "outline", o, flush=True)
+    check("scaled: the covered window is scaled down", v[back]["applied_scale"] < .9)
+    check("scaled: it is outlined", state[back]["outline"])
+    check("scaled: the outline follows its drawn (scaled) frame",
+          all(abs(a - b_) < 1.5 for a, b_ in zip((o["x"], o["y"], o["width"], o["height"]), b)))
+    edges = ring_edges(image, state, back)
+    print("scaled edges", edges, flush=True)
+    check("scaled: all four edges show the ring", all(edges.values()))
+    blends = corner_blend(image, state, back, drawn(front))
+    print("scaled corner blend pixels", blends, flush=True)
+    check("scaled: the ring's corner is antialiased", blends is not None and blends >= 3)
+    release()
+
+
+def fullscreen_in_front():
+    reset_layout()
+    ipc("wm-actions/set-fullscreen", dict(view_id=front, state=True))
+    time.sleep(1.2)
+    ipc("window-rules/focus-view", dict(id=front))
+    time.sleep(.5)
+    hold()
+    image = Shot("08-fullscreen")
+    covered, top, other = st(back), st(front), st(side)
+    edges = ring_edges(image, hints(), back)
+    release()
+    ipc("wm-actions/set-fullscreen", dict(view_id=front, state=False))
+    time.sleep(1.2)
+    print("fullscreen", covered, top, other, edges, flush=True)
+    check("fullscreen in front: windows under it are outlined, it is not",
+          covered[1] and other[1] and not top[1])
+    check("fullscreen in front: the outline is drawn over the fullscreen window", all(edges.values()))
+
+
+def always_avoidance():
+    reset_layout()
+    ipc("wayfire/set-config-options", {"scottland/window_avoidance_always": True})
+    time.sleep(1)
+    ipc("window-rules/configure-view", dict(id=front, geometry=dict(x=340, y=110, width=620, height=470)))
+    time.sleep(1)
+    solved = ipc("scottland/hints")["avoidance_solve_count"]
+    state = st(back)
+    ipc("wayfire/set-config-options", {"scottland/window_avoidance_always": False})
+    time.sleep(.8)
+    print("always-on avoidance", state, "solves", solved, flush=True)
+    check("always-on avoidance: no occlusion pass or outline outside Window mode",
+          state == (1, False))
+
+
+def widget_cover():
+    reset_layout()
+    card = open_window("Card", (800, 300, 320, 180))
+    v = views()[card]
+    f = v["frame"]
+    cx, cy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
+    pointer(cx, cy); time.sleep(.1)
+    key("LEFTMETA", True)
+    ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="press"))
+    for i in range(1, 13):
+        pointer(cx + (1272 - cx) * i / 12, cy)
+        time.sleep(.03)
+    ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="release"))
+    key("LEFTMETA", False)
+    pointer(640, 5)
+    widget = wait(lambda: next((w for w in views().values() if w["widget"]), None), 10)
+    time.sleep(1)
+    widget = next(w for w in views().values() if w["widget"])
+    wf_ = widget["frame"]
+    small = open_window("Under", (round(wf_["x"] + wf_["width"] / 2 - 60), round(wf_["y"] + wf_["height"] / 2 - 40), 120, 80))
+    ipc("window-rules/focus-view", dict(id=front))
+    time.sleep(.6)
+    hold()
+    state = hints()
+    links = {int(w["id"]): w["widget_view"] for w in ipc("scottland/widgets")["widgets"]}
+    widget_hint = next(h for h in state.values() if links.get(h["window"]) == widget["id"])
+    w_frame = widget["frame"]
+    cover = (w_frame["x"] + widget_hint["dx"], w_frame["y"] + widget_hint["dy"], w_frame["width"], w_frame["height"])
+    u = drawn(small)
+    expected = union_visible(u, [cover])
+    image = Shot("09-widget-cover")
+    got = st(small)
+    release()
+    print("widget cover", got, "expected", round(expected, 3), "under", [round(x, 1) for x in u],
+          "card", [round(x, 1) for x in cover], flush=True)
+    check("widget as cover: the card counts toward the window's occlusion",
+          got[0] < 1 and abs(got[0] - expected) < .05)
+    check("widget as cover: outlined exactly when less than half visible", got[1] == (got[0] < .5))
+
+
+def second_output():
+    outputs = ipc("window-rules/list-outputs")
+    target = next(o for o in outputs if o["geometry"]["x"] > 0)
+    origin = (target["geometry"]["x"], target["geometry"]["y"])
+    back2 = open_window("Back", (450, 200, 380, 260))
+    front2 = open_window("Front", (330, 110, 620, 470))
+    for identifier, g in ((back2, (450, 200, 380, 260)), (front2, (330, 110, 620, 470))):
+        ipc("window-rules/configure-view", dict(id=identifier, output_id=target["id"],
+            geometry=dict(x=g[0], y=g[1], width=g[2], height=g[3])))
+        time.sleep(.6)
+    ipc("window-rules/focus-view", dict(id=front2))
+    time.sleep(.6)
+    placed = {v["id"]: v["output-id"] for v in ipc("window-rules/list-views")}
+    check("second output: both windows are on the offset output",
+          placed.get(back2) == target["id"] and placed.get(front2) == target["id"])
+    hold()
+    state = hints()
+    image = Shot("10-second-output")
+    print("second output", target["name"], origin, st(back2), state[back2]["outline_frame"], flush=True)
+    check("second output: the covered window is outlined", state[back2]["outline"])
+    edges = ring_edges(image, state, back2, origin)
+    print("second output edges", edges, flush=True)
+    check("second output: the ring is drawn on its window there, at the output's offset", all(edges.values()))
+    release()
+
+
 try:
     assert os.environ["WAYLAND_DISPLAY"] != "wayland-1", "isolated headless session required"
     palette_path = art / "palette.json"
@@ -192,6 +480,12 @@ try:
     ipc("wayfire/set-config-options", {"scottland/color_scheme": "dark", "scottland/accent_color": "#81a1c1ff",
                                        "scottland/sounds": False})
     pointer(640, 10)
+    if "--second-output" in sys.argv:
+        section(second_output)
+        raise SystemExit
+    if "--hidpi" in sys.argv:
+        section(hidpi)
+        raise SystemExit
 
     # --- WK37: a rear window almost wholly covered by a front one -------------------------
     back = open_window("Back", (450, 200, 380, 260))
@@ -246,6 +540,16 @@ try:
     check("outline clears with the hints", not any(h["outline"] for h in hints().values()))
     check("released screen shows no outline pixels",
           sum(edge_hit(after, x, y) for x, y in covered) == 0)
+    corner = corner_blend(shot, state, back, f)
+    print("corner blend pixels", corner, flush=True)
+    check("the ring's corner is antialiased", corner is not None and corner >= 3)
+    for function in (restack_during_hold, cover_moves_away, escape_clears, scaled_window,
+                     fullscreen_in_front, always_avoidance, widget_cover):
+        section(function)
+    reset_layout()
+    timing = ipc("scottland/hints")
+    print("occlusion pass max ms", timing["occlusion_pass_max_ms"], "deferrals", timing["occlusion_deferrals"], flush=True)
+    check("occlusion pass stays within the 2 ms solve budget", timing["occlusion_pass_max_ms"] < 2)
 
     # --- WK38: overlay strength slider, live ------------------------------------------------
     probe = "0"

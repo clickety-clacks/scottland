@@ -6600,6 +6600,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         scottland::gl_programs().release();
+        scottland::windowing::release_hint_gl();
         fini_widget_spawn();
         fini_hint_palette_watch();
         LOGI("scottland: plugin unloaded");
