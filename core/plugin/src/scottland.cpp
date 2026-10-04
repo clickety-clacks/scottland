@@ -84,6 +84,7 @@ extern "C" {
 #include <sys/socket.h>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/inotify.h>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -6325,6 +6326,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (getenv("SCOTTLAND_TEST_MODEL"))
             wf::get_core().connect(&on_test_render_end);
         init_output_tracking();
+        init_hint_palette_watch();
         init_widget_spawn();
         if (!getenv("SCOTTLAND_INTERNAL_MODEL_SESSION"))
         {
@@ -6596,6 +6598,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         scottland::gl_programs().release();
         fini_widget_spawn();
+        fini_hint_palette_watch();
         LOGI("scottland: plugin unloaded");
     }
 };

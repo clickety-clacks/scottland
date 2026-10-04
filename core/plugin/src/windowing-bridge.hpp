@@ -66,6 +66,9 @@
     bool hint_step_animation = false, hint_step_offset = false;
     std::string exposure_progress_signature;
     std::map<std::string, scottland::windowing::exposure_progress> exposure_progress_by_output;
+    int hint_palette_watch_fd = -1;
+    wl_event_source *hint_palette_watch = nullptr;
+    std::string hint_palette_watch_name;
     wf::wl_idle_call hint_registration;
 
     scottland::windowing::hint_palette hints_palette;
@@ -115,6 +118,70 @@
         if (colors.has_member("font_family") && colors["font_family"].is_string() &&
             !colors["font_family"].as_string().empty())
             hints_palette.font_family = colors["font_family"].as_string();
+    }
+    void init_hint_palette_watch()
+    {
+        // Settled Window mode no longer has a frame tick. Wake the existing palette and hint
+        // refresh path only when its atomic-replaced runtime file changes.
+        if (getenv("SCOTTLAND_PALETTE")) return;
+        auto path = runtime_file(".palette.json");
+        auto slash = path.rfind('/');
+        if (slash == std::string::npos) return;
+        auto directory = path.substr(0, slash);
+        hint_palette_watch_name = path.substr(slash + 1);
+        hint_palette_watch_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (hint_palette_watch_fd < 0) return;
+        if (inotify_add_watch(hint_palette_watch_fd, directory.c_str(),
+            IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE) < 0)
+        {
+            close(hint_palette_watch_fd);
+            hint_palette_watch_fd = -1;
+            return;
+        }
+        hint_palette_watch = wl_event_loop_add_fd(wf::get_core().ev_loop, hint_palette_watch_fd,
+            WL_EVENT_READABLE, [] (int, uint32_t mask, void *data)
+        {
+            auto self = static_cast<scottland_plugin_t*>(data);
+            if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))
+            {
+                self->fini_hint_palette_watch();
+                return 0;
+            }
+            char buffer[4096];
+            bool changed = false;
+            ssize_t size;
+            while ((size = read(self->hint_palette_watch_fd, buffer, sizeof(buffer))) > 0)
+            {
+                for (size_t offset = 0; offset < static_cast<size_t>(size);)
+                {
+                    auto event = reinterpret_cast<const inotify_event*>(buffer + offset);
+                    if (event->len && self->hint_palette_watch_name == event->name &&
+                        (event->mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE)))
+                        changed = true;
+                    offset += sizeof(inotify_event) + event->len;
+                }
+            }
+            if (changed)
+            {
+                self->palette_read = {};
+                if (self->window_keys.active || self->window_avoidance_always ||
+                    self->hint_avoidance_always)
+                    self->refresh_layout_avoidance();
+            }
+            return 0;
+        }, this);
+        if (!hint_palette_watch)
+        {
+            close(hint_palette_watch_fd);
+            hint_palette_watch_fd = -1;
+        }
+    }
+    void fini_hint_palette_watch()
+    {
+        if (hint_palette_watch) wl_event_source_remove(hint_palette_watch);
+        hint_palette_watch = nullptr;
+        if (hint_palette_watch_fd >= 0) close(hint_palette_watch_fd);
+        hint_palette_watch_fd = -1;
     }
     scottland::rectf_t hint_rectangle(wayfire_toplevel_view view, bool for_avoidance_solve = false)
     {
@@ -1058,8 +1125,9 @@
         }
         hint_step_animation = animation_moving;
         hint_step_offset = moving && !animation_moving;
+        const bool widget_presentation_moving = window_keys.active && widget_transition_tick.is_connected();
         return moving || bool(drag->view) || inertia_active() || deferred_solve ||
-            exposure_solve_pending;
+            exposure_solve_pending || widget_presentation_moving;
     }
     void refresh_layout_avoidance(bool immediate = false)
     {
