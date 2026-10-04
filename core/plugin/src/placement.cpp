@@ -13,6 +13,43 @@ double overlap(rectangle a, rectangle b)
     return std::max(0.0, std::min(a.x + a.width, b.x + b.width) - std::max(a.x, b.x)) *
         std::max(0.0, std::min(a.y + a.height, b.y + b.height) - std::max(a.y, b.y));
 }
+double visible_fraction(rectangle window, rectangle screen, const std::vector<rectangle>& foreground)
+{
+    double x1 = std::max(window.x, screen.x), y1 = std::max(window.y, screen.y);
+    double x2 = std::min(window.x + window.width, screen.x + screen.width);
+    double y2 = std::min(window.y + window.height, screen.y + screen.height);
+    if (x2 <= x1 || y2 <= y1) return 1;
+    std::vector<rectangle> covers;
+    std::vector<double> xs{x1, x2};
+    for (auto f : foreground)
+    {
+        double a = std::max(f.x, x1), b = std::max(f.y, y1);
+        double c = std::min(f.x + f.width, x2), d = std::min(f.y + f.height, y2);
+        if (c <= a || d <= b) continue;
+        covers.push_back({a, b, c - a, d - b});
+        xs.insert(xs.end(), {a, c});
+    }
+    std::sort(xs.begin(), xs.end()); xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+    double covered = 0;
+    std::vector<std::pair<double, double>> spans;
+    for (size_t i = 0; i + 1 < xs.size(); ++i)
+    {
+        // Union of the covers' vertical spans across this strip.
+        spans.clear();
+        for (auto f : covers)
+            if (f.x <= xs[i] && f.x + f.width >= xs[i + 1]) spans.emplace_back(f.y, f.y + f.height);
+        std::sort(spans.begin(), spans.end());
+        double length = 0, top = 0, bottom = -std::numeric_limits<double>::infinity();
+        for (auto [a, b] : spans)
+        {
+            if (a > bottom) { length += std::max(0.0, bottom - top); top = a; bottom = b; }
+            else bottom = std::max(bottom, b);
+        }
+        if (!spans.empty()) length += bottom - top;
+        covered += length * (xs[i + 1] - xs[i]);
+    }
+    return std::clamp(1 - covered / ((x2 - x1) * (y2 - y1)), 0.0, 1.0);
+}
 point place_rectangle(double width, double height, rectangle r,
     const std::vector<rectangle>& obstacles, point preferred, std::optional<point> memory,
     double tolerance)

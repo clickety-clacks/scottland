@@ -36,8 +36,10 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | One engine, two tests: always-on peeking needs a strip; on Alt, hints get room. | P12 |
 | 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | peek-strip design |
 | 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | peek-strip design |
+| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | peek-strip design |
 | 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
+| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | peek-strip design |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 
@@ -47,6 +49,8 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 10-03 | Holding a window's hint solos it (keyboard solo), committed, no undo. | WK35 |
 | 10-04 | Hold on the focused window's hint solos; hold on an unfocused window's hint pairs it. | WK35, WK36 |
+| 10-04 | A three-finger hold on an unfocused window pairs it with the focused window (touchpad equivalent of the hint hold). | WK36 |
+| 10-04 | A three-finger hold on the focused window solos it (built with solo). | WK35 |
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
 
@@ -75,6 +79,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 10-03 | Rail make-room: only widgets in the way move, ripple only when needed, no retiling, visual during drag, real on drop, exact restore on cancel. | WG26 |
 | 10-04 | Rail make-room waits for a pause (hold buffer), animates every move, and applies to every way into a rail. | WG26 |
+| 10-04 | The rail is a spread: the whole rail may re-lay out when needed. "Don't touch what doesn't need touching" is a preference (least total movement), not a prohibition; overlap only when the rail is truly full. | WG26 |
 | 10-04 | Return on a focused widget always opens its window; nothing inside the widget gets it. | WG25 |
 | 10-04 | Super+M taps cycle expanded -> collapsed -> hidden; holding is momentary (hide from expanded, expand otherwise). | WG16 |
 | 10-04 | Entering Window mode temporarily expands collapsed and hidden widgets until Alt is released; hidden widgets still show attention. | WG16 |

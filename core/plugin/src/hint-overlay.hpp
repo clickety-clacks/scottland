@@ -44,13 +44,34 @@ class fullscreen_hint_node : public wf::scene::node_t
 {
   public:
     fullscreen_hint_node() : node_t(false) {}
-    void update(wf::geometry_t geometry, hint_rgb dye);
+    void update(wf::geometry_t geometry, hint_rgb dye, double tint);
     wf::geometry_t get_bounding_box() override { return box; }
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
         wf::scene::damage_callback damage, wf::output_t *output) override;
     wf::geometry_t box{0, 0, 0, 0};
     hint_rgb color{0, 0, 0};
+    double alpha = hint_window_opacity;
 };
+
+// WK37: an opaque rounded outline of a mostly occluded window's drawn frame, at the front of
+// the overlay layer (above all windows, below the hint circles). Only the ring is drawn, by a
+// small shader that antialiases it at the output's device pixels (strips without GLES).
+class hint_outline_node : public wf::scene::node_t
+{
+  public:
+    hint_outline_node() : node_t(false) {}
+    void update(double x, double y, double width, double height, double corner_radius,
+        hint_rgb dye, double line_width);
+    wf::geometry_t get_bounding_box() override { return box; }
+    void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+        wf::scene::damage_callback damage, wf::output_t *output) override;
+    wf::geometry_t box{0, 0, 0, 0};
+    double x = 0, y = 0, width = 0, height = 0;
+    hint_rgb color{0, 0, 0};
+    double radius = 0, line = hint_outline_width;
+};
+// Frees the outline shader; call with the plugin's other GL resources on unload.
+void release_hint_gl();
 
 // A small, click-through name plate while a quick Alt+Tab chord previews a center window.
 class center_switcher_node : public wf::scene::node_t

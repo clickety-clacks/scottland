@@ -70,6 +70,11 @@ for name, label, step in (("goo_depth", "Liquid depth", 0.1),
     assert f"step: {step}" in row
 
 assert 'id:"cycle_overshoot"' in motion_section
+tint_section = qml.split("id:windowTintSettings", 1)[1].split("id:holdTiming", 1)[0]
+assert 'id:"window_mode_tint"' in tint_section and "root.setMotion(name,value)" in tint_section
+assert "window_mode_tint:7" in qml and options["window_mode_tint"].findtext("default") == "7"
+assert options["window_mode_tint"].findtext("min") == "0"
+assert '"window_mode_tint"' in (root / "core/libexec/scottland-ctl").read_text()
 assert 'id:"widget_bounce"' in qml
 print(f"PASS Settings covers {len(expected_goo)} Goo, {len(edge_options)} unfocused-edge and "
       f"{len(inertia)} inertial options; GO14/GO15 hints and ranges match metadata")
