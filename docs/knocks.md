@@ -53,6 +53,11 @@ makes it swell (A7; the swell is a fixed on-screen size however small the window
 full-size windows, scaled windows and widgets alike). A swollen border that carries a knock is where
 its message and answer UI come from.
 
+Constraints and directions added by Mike (2026-10-04):
+- A swollen border can't simply be clicked: it is the drag handle (and its corners resize). A click
+  meaning has to live on a designated portion of it, the way the close dot does (A11).
+- A knock whose sender has no window or widget may look like free-floating goo with no window in it.
+
 ## Open
 
 - How knocks from objects with no representation appear, and how urgency/kind changes the look.
