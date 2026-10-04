@@ -37,8 +37,8 @@ on a physical session. This change is not tested on either machine's live displa
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
 | WK13 | By default, window avoidance exists only while Window mode is active; Alt release or Esc returns temporary offsets to zero unless the user moved the window meanwhile. `scottland/window_avoidance_always` (default off; Settings label “Window avoidance”) keeps visual avoidance active outside that mode; `scottland/hint_avoidance_always` remains a compatibility alias. The focused or grabbed window is anchored. Periphery windows stay on their original horizontal side; center-zone windows stay inside their configured center-zone bounds. Vertically, a top/bottom window stays on its side, while one in the middle 50% of the screen stays in that central band. Each moved window retains a way: which hint it exposes, the moved window, axis and direction. Every layout solve starts from true frames, never transformed frames. Along its retained way, the solver chooses the smallest true-frame offset that works and returns it to zero when the obstruction clears. A zero target is released only after a 4 px clearance margin, so a one-pixel layout change cannot toggle a window between zero and its retained way. A replacement way starts from the current displayed offset, stays on the same displacement side, and advances no more than 64 px in one solve; a deadline or a missing checked patch holds the prior target. Once a layout settles, one bounded full-layout check may adopt a clearly smaller fresh arrangement, only if all previously visible patches remain and no window needs a greater offset; ties retain the current ways. Wanted-size and intermediate-size upgrades move at most `max(12 px, 20% of the wanted diameter)` and wait until drag and inertia end. Window-move search is nearest-travel first; opposite/far-apart probing belongs only inside `visible_label`'s hint-placement search (WK31). True layout changes request solves, at most once every 16 ms during sustained changes; animation ticks only ease toward targets, with a 1000 px/s cap (reduced motion snaps). Entry may request an immediate initial solve. Each refresh has a shared 2 ms deadline and each visible-label search has a 250 μs cap. An unchanged layout gets at most two bounded front-to-back passes; each pass re-solves the stack from the front, so rear windows can repeatedly receive only leftover budget. This limits work but does not guarantee convergence. Current fallback results do not reliably distinguish an exhausted time budget from a complete no-room search; see open items below. A changed layout resets the attempt bound. A settled layout stops requesting avoidance ticks. Every ordinary window hint remains rendered at or above the 48 px × text-scale widget-hint size; if no placement was checked, the minimum hint is centered on the window. If a complete search proves that no patch fits inside the legal side/zone, the single `allow_minimum_patch_zone_overshoot` policy seam currently preserves P1's zone boundary pending Mike's P1/P12 choice. Offsets remain scene-only: they never alter geometry, zone, scale, memory or widget state, and never widgetize a window. Explicit user moves and cycles remain real. | verified on Plumbus (180 solver checks, bounded 16-window fixture, real-input calm regression; dense-stack convergence remains open; 2026-10-04) |
 | WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`; an atomic palette-file change wakes the hint refresh, and reads are rate-limited to 250 ms while a step is running. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a 7% hint-color overlay, a 2 logical px full-color rounded border even at the supported 5% window scale, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. With the screen-wide goo (on by default), window mode simply tints the goo with the hint color as dye (GO6): the window/card overlay stays, and there is no separate rim. The 2 logical px border applies to the fallback halo (goo off); with the goo on, the hint shows only as the window/card tint and the goo dye. | implemented (headless) |
-| WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing unless a WK34 hint peek is active, where the repeat takes WK30's center step. The first press acts immediately. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, release or cancellation resets double-tap recognition. | implemented (headless) |
-| WK16 | Double-taps use physical presses, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; repeating a prefix alone does not move a window. | implemented (headless) |
+| WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing unless a WK34 hint peek is active, where the repeat takes WK30's center step. The interval starts at the first hint's final key release and ends at the repeated hint's first physical key press; holding a key or typing the rest of the repeated hint does not spend that interval. The first complete hint still acts immediately on press. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, Alt release or cancellation resets double-tap recognition. | verified on plumbus with human timing, 2026-10-04 |
+| WK16 | Double-taps use physical presses and a final-key release between complete hints, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; timing is latched at its first letter, but repeating a prefix alone does not move a window. | verified on plumbus with human timing, 2026-10-04 |
 | WK17 | In entered Alt window mode, each unclaimed arrow press (including auto-repeat) adds a fixed impulse to its axis's surviving velocity, clamped independently to a maximum. Movement and resize each use their own constant deceleration (S14), integrated until zero including the final partial tick, with no restarted position animation. One default impulse travels v²/(2a) = 92.29 logical px. Hints/cycles retain physical-press-only behavior. | implemented (headless) |
 | WK18 | Arrows target the hint/Tab-selected window if selected this hold, otherwise the currently focused window (a focused widget represents its app). Different windows retain independent coasts. Left/Right change x, Up/Down change y; diagonals combine independent axes. An arrow on fullscreen explicitly exits it and waits for restored geometry before applying queued impulses. A later explicit cycle stops that window's coast before its lifecycle/placement action. Closing/unmapping or having no output discards its motion safely. | implemented (headless) |
 | WK19 | Ordinary arrow pushes follow their center's zone and scale live (L5/L8), and clear an old pin. Holding Shift for an arrow push keeps the window's displayed scale through that push and its coast, including boundary calculations (L31); releasing Shift does not end that coast's pin. The next ordinary push or drag clears it. Ctrl+arrows still resize (WK21), including with Shift held. Geometry/scale targets enter the desktop model; hints' visual declutter never enters motion coordinates. | implemented (headless) |
@@ -298,11 +298,55 @@ checks text proportion and displacement; contrast targets theme-following surfac
 above, rather than arbitrary application colors. All isolated sessions and task tmux runners
 were stopped; no Wayfire remained using this test directory. Physical verification remains
 pending. No live session on osanwe or real screen on plumbus was installed into, reloaded or used.
+## Human double-tap timing regression (2026-10-04)
+
+Mike reported that hints on live build `0a1bb2e` did not double-tap to the rail.
+Read-only inspection of osanwe's generated config and saved layout confirmed
+`window_double_tap_delay = 300`; the last override enabled always-on window
+avoidance. No test or compositor connection was made on osanwe.
+
+The original recognizer, introduced by `8cdae8d`, compared the key-down timestamps
+that completed each hint. On an unfocused window, the first hint selects under
+WK6. A 120 ms key hold followed by a 250 ms gap therefore became a 370 ms repeat,
+missed the interval, and took the ordinary periphery step instead of the rail
+shortcut. Two-letter hints also charged the rest of the repeat's typing against
+that interval: 80 ms dwell, a 150 ms gap, and 100 ms to type the remaining letter
+became about 330 ms. Focused windows can mask the missed recognition because two
+ordinary cycle steps also reach the rail. Instant press/release tests missed
+these human-timing failures. Avoidance did not cause them.
+
+The interval now runs from release of the first complete hint's final key to
+the first physical press of the repeat. The repeat is recognized only on full
+completion. Original input timestamps avoid charging compositor processing
+delays. The first action remains immediate, the value/range remain unchanged,
+and physical-repeat filtering and key-layer ownership retain their existing
+paths. Tenet 2 chooses equal time to repeat a recognized hint regardless of its
+length, rather than making users memorize a faster rhythm for longer labels.
+
+All checks used fresh isolated plumbus sessions started after the build, with
+the checkout's shipped config, real stipc input and inspected screenshots:
+
+| Check | Result |
+|---|---|
+| Exact `0a1bb2e` baseline, unfocused `a`/`aa`, both avoidance settings | Six human-gap cases fail; two faster controls pass |
+| `tests/window-double-tap-test.sh`, corrected recognizer | 48 human-timing cases pass: `a`, `aa`, `sa`, focused/unfocused, avoidance on/off, 180–250 ms press intervals or 150–250 ms release gaps, 60–120 ms key dwell |
+| Same test with `--guards-only` | Nine checks pass: slower cycling, held-key repeats, Tab resets, prefix-only non-action and focused-widget human repeats |
+| `tests/windowing-unit.sh` | 186 passed, 0 failed, including inclusive timing boundaries, unrelated releases and timestamp wrap |
+| `tests/windowing-test.sh` | 102 passed, 0 failed, including immediate first actions, cycles, slow repeats, fullscreen, memories and isolated reload |
+| `tests/key-layers-test.sh` | 59 passed, 0 failed |
+| `tests/widget-hints-test.sh` | 228 passed, 0 failed, including WK34 first-select peek, expiry and the repeat's center step |
+
+The reproducer retains actual press/release times, the first selection and
+geometry check, final rail state, logs and screenshots under `build/`. `--quick`
+runs the eight baseline cases and intentionally fails on the old recognizer.
+Physical hardware timing was not driven. Nothing was installed, neither live
+desktop was reloaded, and every owned test session was stopped.
+
 ## Window mode cycles validation (2026-10-01)
 
 Code and test commit `8cdae8d` implements WK3, WK6–WK9 and WK15–WK16 above. The setting is
 `scottland/window_double_tap_delay` (300 ms default). Cycle order has a standalone pure function;
-the controller receives monotonic press timestamps, so timing boundaries are deterministic in units.
+the controller receives monotonic input press/release timestamps, so timing boundaries are deterministic in units.
 
 | Suite on plumbus | Result |
 |---|---|

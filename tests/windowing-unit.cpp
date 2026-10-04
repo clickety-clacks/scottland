@@ -916,7 +916,10 @@ int main()
     alt_mode mode; std::vector<destination> moves; uint64_t selected=0,closed=0; bool restore=false;
     unsigned selections = 0, widget_hint_selections = 0; uint64_t peeked_widget = 0;
     bool peek_active = false; uint32_t clock = 0;
-    auto press = [&](char letter) { clock += 500; mode.letter(letter, clock); };
+    auto tap_at = [&](char letter, uint32_t at, unsigned dwell = 80) {
+        mode.letter(letter, at); mode.release(letter, at + dwell);
+    };
+    auto press = [&](char letter) { clock += 500; tap_at(letter, clock); };
     mode.select=[&](uint64_t id,bool r){selected=id;restore=r;++selections;};
     mode.hint_select=[&](uint64_t id){peeked_widget=id;peek_active=true;++widget_hint_selections;};
     mode.hint_peek_active=[&](uint64_t id){return peek_active && id==peeked_widget;};
@@ -935,7 +938,7 @@ int main()
     check(moves==std::vector<D>{D::center,D::periphery,D::widget,D::center,D::periphery} &&
         widget_hint_selections==1,"widget next press starts its full center-first loop without starting another peek");
     mode.end(); moves.clear(); mode.double_tap_delay=3000; mode.begin(entries,0); press('d');
-    mode.letter('d', clock + 3000);
+    tap_at('d', clock + 3080);
     check(moves==std::vector<D>{D::center},"a repeated hint during a collapsed-widget peek takes the center step even inside double-tap timing");
     peek_active=false; mode.double_tap_delay=300;
     for (unsigned slot=0; slot<3; ++slot)
@@ -945,21 +948,21 @@ int main()
         check(selections==before && moves.size()==1 && moves[0]==cycle_order(D(slot))[0], "selected window skips redundant select in each start zone");
     }
     mode.end(); moves.clear(); mode.begin(entries,1);
-    press('a'); mode.letter('a',clock+300);
-    check(moves==std::vector<D>{D::periphery,D::widget},"double tap at 300 ms sends to rail immediately");
+    press('a'); tap_at('a',clock+380);
+    check(moves==std::vector<D>{D::periphery,D::widget},"double tap at 300 ms after release sends to rail immediately");
     mode.refresh({{1,0,zone::left_rail,true}});
-    mode.letter('a',clock+400);
+    tap_at('a',clock+500);
     check(moves.size()==2,"double tap on widget issues no move");
-    clock += 400; press('a'); check(moves.back()==D::center,"slow press after rail shortcut resumes original loop");
+    clock += 500; press('a'); check(moves.back()==D::center,"slow press after rail shortcut resumes original loop");
     mode.end(); moves.clear(); mode.begin(entries,3);
-    press('d'); mode.letter('d',clock+301);
+    press('d'); tap_at('d',clock+381);
     check(moves==std::vector<D>{D::center,D::periphery},"press past interval advances ordinary cycle");
     mode.double_tap_delay=50; moves.clear(); mode.end(); mode.begin(entries,2);
-    press('s'); mode.letter('s',clock+51); press('s');
+    press('s'); tap_at('s',clock+131); press('s');
     check(moves==std::vector<D>{D::center,D::widget,D::periphery},"configured interval leaves slow presses in periphery loop");
-    mode.end(); moves.clear(); mode.begin(entries,2); press('s'); mode.letter('s',clock+50);
+    mode.end(); moves.clear(); mode.begin(entries,2); press('s'); tap_at('s',clock+130);
     check(moves==std::vector<D>{D::center,D::widget},"configured interval recognizes its inclusive boundary");
-    mode.end(); moves.clear(); mode.begin(entries,0); press('a'); press('s'); mode.letter('a',clock+1);
+    mode.end(); moves.clear(); mode.begin(entries,0); press('a'); press('s'); tap_at('a',clock+100);
     check(moves.empty() && selected==1,"another hint resets cycle and double-tap identity");
     mode.end(); moves.clear(); mode.begin({{1,0,zone::right_periphery,false}},1); press('a');
     check(moves==std::vector<D>{D::center},"release resets loop but selected window still skips select");
@@ -976,13 +979,31 @@ int main()
     check(mode.label(0)=="aa" && mode.label(26)=="sa","two-letter mode is prefix-free");
     press('s');check(selected==3,"partial two-letter hint does not select");
     press('a');check(selected==27,"complete two-letter hint selects");
-    moves.clear(); mode.letter('s',clock+1);
+    moves.clear(); tap_at('s',clock+81);
     check(moves.empty(), "repeated multi-letter prefix alone does not move");
-    mode.letter('a',clock+2);
+    tap_at('a',clock+221);
     check(moves == std::vector<D>{D::widget}, "repeating complete two-letter hint double-taps to rail");
     mode.refresh({{1,0,zone::center,false},{677,676,zone::center,false}});
     check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
+    mode.double_tap_delay=300; moves.clear(); mode.begin(entries,0);
+    tap_at('a',1000,120); tap_at('a',1370,120);
+    check(moves==std::vector<D>{D::widget},"120 ms dwell plus 250 ms gap double-taps an unselected window to rail");
+    mode.end(); moves.clear(); mode.begin({{1,1,zone::center,false},{27,26,zone::center,false}},0);
+    tap_at('a',2000,120); tap_at('s',2140,120);
+    tap_at('a',2510,120);
+    check(moves.empty(),"human-timed repeated prefix alone cannot move the selection");
+    tap_at('s',2650,120);
+    check(moves==std::vector<D>{D::widget},"multi-letter repeat begins within the release gap and acts only on completion");
+    mode.end(); mode.refresh({}); moves.clear(); mode.begin(entries,0);
+    mode.letter('a',3000); mode.letter('a',3100);
+    check(moves==std::vector<D>{D::periphery},"no final-key release means no double-tap candidate");
+    mode.end(); moves.clear(); mode.begin(entries,0);
+    tap_at('a',4000,120); mode.release('s',4400); tap_at('a',4500,120);
+    check(moves==std::vector<D>{D::periphery},"an unrelated release cannot extend the repeat interval");
+    mode.end(); moves.clear(); mode.begin(entries,0);
+    tap_at('a',UINT32_MAX-40,80); tap_at('a',139,80);
+    check(moves==std::vector<D>{D::widget},"release-based repeat timing survives the monotonic timestamp wrap");
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }
