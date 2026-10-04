@@ -828,3 +828,14 @@ stationary samples kept the solve count fixed at 37 after the final pointer
 position. A 1 ns-budget unit case confirms the fallback remains finite and
 stable. Logs and screenshots are under
 `build/ship-merged5-evidence/avoidance-{animation,hang,visible}/`.
+
+### ship-merged6 recheck (optimized Plumbus build)
+
+The hang-stress rerun completed **10/10** checks with the 2 ms search budget,
+38 drag solves, a largest solve of **2.041 ms**, and a slowest IPC request of
+**2.400 ms**; the fixture's total-solve ceiling is 4 ms. Stationary samples kept
+the solve count stable after the last pointer position. An earlier run failed only
+the timing assertion at 5.808 ms while another headless compositor and a widget
+process were consuming CPU; neither process was stopped. After that activity ended,
+the rerun passed. Logs and timing samples are under
+`build/ship-merged6-evidence/avoidance-hang/`.

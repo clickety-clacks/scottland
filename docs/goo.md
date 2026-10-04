@@ -1762,7 +1762,7 @@ suites were run on unmodified main in a scratch copy where a failure appeared.
 | goo-breath-bench `--verify` (GO17) | 12 / 12 on both paths |
 | goo-depth-soak | 26 / 26 on both paths |
 | goo-flow (connected/gapped waves, fullscreen) | 9 / 9 |
-| goo-shape | 123 pass, 7 fail on both paths: the same seven fail on main (round-widget contour checks) |
+| goo-shape | 123 pass, 7 fail on both paths in the original GO19 branch comparison; those seven round-widget contour checks also failed on that branch's main baseline. This predates the merged GO16 contour fixes; current ship-merged6 passes 133 / 133 on both paths. |
 | widget morph | 270 / 270 |
 | widgets, goo on / goo off | 194 / 194 each |
 | unsupported-GPU halo fallback | 4 / 4 |
@@ -1899,10 +1899,11 @@ repainted ones (identical); GO17's checks and the fallback halo check pass. The
 suite's wallpaper checks (a replaced wallpaper wakes the simulation, its color enters
 the dye, removal returns it) cover real changes.
 
-Regression on plumbus, normal and packed GLES 2 paths: goo-test 50/50, overlap/hover
-28/28, breathing 12/12, depth/soak 26/26 on both; flow on two outputs 12/12; widget
-morph 270/270; widgets 194/194. goo-shape is 123 pass, 7 fail on both paths, the same
-seven round-widget checks that fail on main.
+Regression on plumbus, normal and packed GLES 2 paths at the GO20 development point:
+goo-test 50/50, overlap/hover 28/28, breathing 12/12, depth/soak 26/26 on both;
+flow on two outputs 12/12; widget morph 270/270; widgets 194/194. The goo-shape
+123/7 result above is historical to that branch's pre-GO16 contour baseline; current
+ship-merged6 passes 133/133 on both paths.
 
 Not covered: fractional scale, two outputs, rotated outputs, a video wallpaper (it
 would be read back and wake on every frame, as it woke before), physical display.
@@ -1982,10 +1983,11 @@ exact modes with 127 of 132 frames reusing the backdrop; a front window redrawin
 120 Hz copies 99,000 px and composites 89,000 px per frame; identical wallpaper
 recommits wake nothing.
 
-Regression on plumbus, normal and packed GLES 2 paths: goo-test 50/50, overlap/hover
-28/28, breathing 12/12, depth/soak 26/26 on both; flow on two outputs 12/12; widget morph
-270/270; widgets 194/194; the idle fixture's `--verify --visual` run passes. goo-shape is
-123 pass, 7 fail on both paths, the same round-widget checks as on main.
+Regression on plumbus, normal and packed GLES 2 paths at the GO21 development point:
+goo-test 50/50, overlap/hover 28/28, breathing 12/12, depth/soak 26/26 on both;
+flow on two outputs 12/12; widget morph 270/270; widgets 194/194; the idle fixture's
+`--verify --visual` run passes. The goo-shape 123/7 result was on the original
+pre-GO16 contour baseline; current ship-merged6 passes 133/133 on both paths.
 
 Not covered: a physical display, 10-bit or HDR outputs (reuse is refused there by the
 format check, which no test exercises), widgets' alpha-shaped sources in the exactness
@@ -2040,3 +2042,29 @@ The rendered-shore test also passes on an isolated combination of **ship-merged5
 and **goo-wallpaper-wake (GO20)**, including cached/exact window and widget
 shores, zero simulation steps while breathing, backdrop reuse, and fallback
 geometry. No live reload, installation or osanwe test session was used.
+
+## ship-merged6 merged validation (2026-10-03, plumbus)
+
+The merged build keeps GO20's wallpaper recommit behavior, GO21's exact backdrop
+reuse, and the GO17/18 attention bulge together. The idle fixture ran with
+`--verify --visual --wallpaper-recommit 1` and passed on normal and packed GLES 2.
+Identical
+wallpaper commits produced 5–6 background damage callbacks in each five-second
+sample, but zero changed captures and zero simulation wakes. Dry-content exclusion,
+settled strips, and reused backdrop shots were pixel-identical to their conservative
+or repainted controls. Both keyframe and exact-strip windows measured about 1.2–1.3%
+compositor GPU; widgets measured 0.9%. The fallback halo visibly breathed with goo
+off. Attention moved the rendered shore about 5 px on windows, 6 px on widgets, and
+5 px on the fallback halo, with zero goo simulation steps in the breathing checks.
+
+`tests/goo-exact-test.sh` passed all **408 checks across 15 configurations**: nine
+normal scale/rotation cases, three packed GLES 2 cases, and three two-output cases.
+The merged goo regression passed **50/50** on both GPU paths; GO16 shape/contour
+passed **133/133** on both; overlap/hover passed **28/28** on both; breathing and
+the rendered attention-bulge checks passed on both. The matrix artifacts and
+representative screenshots are under `build/ship-merged6-evidence/`.
+
+These five-second GPU samples ran on shared Plumbus while unrelated Chromium and
+agent activity continued; a Chromium renderer briefly reached about 71% CPU and
+the one-minute load average reached 1.34. Treat the readings as observed costs under
+that load, not isolated hardware baselines. The result logs preserve load snapshots.
