@@ -58,6 +58,7 @@ extern "C" {
 #include "drag-presentation.hpp"
 #include "live-drag.hpp"
 #include "rail-make-room.hpp"
+#include "eased-move.hpp"
 #include "placement.hpp"
 #include "cycle-spring.hpp"
 #include "declutter.hpp"
@@ -869,6 +870,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> unfocused_edge_tone_light{"scottland/unfocused_edge_tone_light"};
     wf::option_wrapper_t<double> unfocused_edge_tone_dark{"scottland/unfocused_edge_tone_dark"};
     wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
+    wf::option_wrapper_t<int> widget_make_room_dwell{"scottland/widget_make_room_dwell"};
     wf::option_wrapper_t<double> window_mode_tint{"scottland/window_mode_tint"};
     wf::option_wrapper_t<bool> window_avoidance_always{"scottland/window_avoidance_always"};
     // Keep parsing the historical key so existing user config still opts in.
@@ -1446,6 +1448,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::optional<uint32_t> peek_hover_due, peek_attention_due, peek_hint_due;
         bool minimized() const { return collapsed && !peek; }
         bool away = false;                           // slid off its screen for full-screen focus (FS1)
+        bool make_room_pending = false;              // non-drag arrivals wait for their mapped rail spot
+        // A drag's drop already laid the rail out for this landing interval (shown during the
+        // drag); if it lands there, nothing is solved again.
+        bool drop_solved = false;
+        double drop_lo = 0, drop_hi = 0;
 
         bool previewing() const { return lifecycle == lifecycle_t::previewing; }
         bool docked() const { return lifecycle == lifecycle_t::docked; }
@@ -1507,6 +1514,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t dragged = 0;
         bool left = false;
         double top = 0, bottom = 0;
+        scottland::rectf_t last_item, solved_item;  // latest landing; the one the last solve cleared
+        wf::pointf_t pause_anchor{0, 0};
+        uint32_t pause_deadline = 0;
+        bool has_item = false, has_pause_anchor = false, pause_pending = false, solved_once = false;
         bool active = false;
     };
     // One drag session owns the Esc origin, re-grab chain, morph and temporarily raised view.
@@ -1543,6 +1554,26 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
+    struct rail_layout_motion_t
+    {
+        std::weak_ptr<wf::view_interface_t> view;
+        scottland::motion::eased_move_t move;
+        uint32_t started = 0;
+    };
+    std::map<uint64_t, rail_layout_motion_t> rail_layout_motions;
+    double rail_easing_speed_max = 0;  // px/s, planned; reported for the P11 speed-limit regression
+    // Measured from what is drawn, independent of the planned curve: each tick's change in
+    // a widget's drawn position along the rail (geometry plus rail offset) over the time
+    // since the previous tick, the largest such step, and the longest gap between ticks.
+    // Only y: a card's x changes with its width (rail gravity), which is not rail motion.
+    struct rail_drawn_sample_t { double y = 0; uint32_t at = 0; double geometry_y = 0, offset = 0; };
+    std::map<uint64_t, rail_drawn_sample_t> rail_drawn_samples;
+    double rail_drawn_speed_max = 0, rail_drawn_step_max = 0;
+    uint64_t rail_drop_layouts_kept = 0;  // landings that kept the drop's layout (no second solve)
+    uint32_t rail_tick_gap_max = 0;
+    wf::wl_timer<true> rail_layout_tick;
+    wf::wl_timer<false> rail_dwell_tick;
+    static constexpr double RAIL_POINTER_WOBBLE = 4.0;
     // A committed audition keeps its visual offsets until each Wayfire geometry transaction
     // applies. Only one small, capped commit can be outstanding; a later drag can still proceed.
     std::optional<scottland::drag_presentation_t> pending_drag_layout;
@@ -2491,6 +2522,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.window_id = view->get_id();
         link.window = view->weak_from_this();
         link.output = output;
+        link.make_room_pending = !preview;
         link.drop   = {geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
         link.rail   = rail ? *rail : (link.drop.x < width / 2 ? "left" : "right");
         link.launched_at = now_msec();
@@ -2619,6 +2651,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             keep_above(view);
             place_cycled_widget(view, link.window_id, link.rail);
             place_widget(view, output, link);
+            auto pending_geometry = view->toplevel()->pending().geometry;
+            if (view->get_geometry() == pending_geometry && link.make_room_pending)
+                make_room_for_arrival(view, link);
             set_scale(view, 1.0);
             show_attention(link.window_id);  // asked before its widget appeared
             return true;
@@ -3020,6 +3055,121 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         view->damage();
     }
 
+    void animate_drag_layout_offset(wayfire_toplevel_view view, double dx, double dy)
+    {
+        auto frame = view ? frame_of(view, false) : nullptr;
+        if (!frame) return;
+        refresh_hint_palette();
+        auto id = view->get_id();
+        if (hints_reduced_motion)
+        {
+            rail_layout_motions.erase(id);
+            set_drag_layout_offset(view, dx, dy);
+            return;
+        }
+
+        // A retarget in mid-move carries on from the speed it already has (no kick).
+        uint32_t now = now_msec();
+        scottland::motion::vec2_t velocity;
+        if (auto running = rail_layout_motions.find(id); running != rail_layout_motions.end())
+        {
+            velocity = running->second.move.velocity(uint32_t(now - running->second.started));
+            rail_layout_motions.erase(running);
+        }
+
+        scottland::motion::vec2_t from{frame->drag_layout_x, frame->drag_layout_y};
+        if (std::hypot(dx - from.x, dy - from.y) < 0.05)
+        {
+            set_drag_layout_offset(view, dx, dy);
+            return;
+        }
+
+        // WG26: ease in and out over 190-360 ms, longer only to stay under the automatic
+        // speed limit shared with window avoidance (P11).
+        rail_layout_motion_t motion;
+        motion.view = view->weak_from_this();
+        motion.move = scottland::motion::plan_eased_move(from, {dx, dy}, velocity, 190.0, 360.0, 0.32);
+        motion.started = now;
+        rail_layout_motions[id] = motion;
+        if (!rail_drawn_samples.count(id)) note_rail_drawn(view, id, now);  // measure from the first frame
+        if (!rail_layout_tick.is_connected())
+            rail_layout_tick.set_timeout(8, [=] () { return step_rail_layout_motions(); });
+    }
+
+    bool step_rail_layout_motions()
+    {
+        refresh_hint_palette();
+        uint32_t now = now_msec();
+        for (auto it = rail_layout_motions.begin(); it != rail_layout_motions.end();)
+        {
+            auto view = wf::toplevel_cast(it->second.view.lock());
+            if (!view || !view->is_mapped())
+            {
+                rail_drawn_samples.erase(it->first);
+                it = rail_layout_motions.erase(it);
+                continue;
+            }
+
+            auto& motion = it->second;
+            if (hints_reduced_motion)
+            {
+                set_drag_layout_offset(view, motion.move.to.x, motion.move.to.y);
+                rail_drawn_samples.erase(it->first);
+                it = rail_layout_motions.erase(it);
+                continue;
+            }
+
+            double elapsed = uint32_t(now - motion.started);
+            auto at = motion.move.position(elapsed);
+            auto velocity = motion.move.velocity(elapsed);
+            rail_easing_speed_max = std::max(rail_easing_speed_max, 1000 * std::hypot(velocity.x, velocity.y));
+            set_drag_layout_offset(view, at.x, at.y);
+            note_rail_drawn(view, it->first, now);
+            if (elapsed >= motion.move.duration)
+            {
+                rail_drawn_samples.erase(it->first);
+                it = rail_layout_motions.erase(it);
+            } else ++it;
+        }
+
+        return !rail_layout_motions.empty();
+    }
+
+    void note_rail_drawn(wayfire_toplevel_view view, uint64_t id, uint32_t now)
+    {
+        auto frame = frame_of(view, false);
+        if (!frame) return;
+        auto g = view->get_geometry();
+        rail_drawn_sample_t sample{g.y + frame->drag_layout_y, now, g.y, frame->drag_layout_y};
+        auto previous = rail_drawn_samples.find(id);
+        if (previous != rail_drawn_samples.end())
+        {
+            uint32_t gap = now - previous->second.at;
+            // A sample from an earlier, finished motion is not a frame of this one.
+            if (gap > 0 && gap < 250)
+            {
+                double step = std::abs(sample.y - previous->second.y);
+                if (step > 30)  // a visible jump: geometry and rail offset out of step
+                    LOGI("scottland: rail drawn step ", step, " px in ", gap, " ms for view ", id, ": geometry y ",
+                        previous->second.geometry_y, " -> ", sample.geometry_y, ", offset ",
+                        previous->second.offset, " -> ", sample.offset);
+                rail_drawn_step_max = std::max(rail_drawn_step_max, step);
+                rail_drawn_speed_max = std::max(rail_drawn_speed_max, 1000 * step / gap);
+                rail_tick_gap_max = std::max(rail_tick_gap_max, gap);
+            }
+        }
+        rail_drawn_samples[id] = sample;
+    }
+
+    /** How far a widget's rail make-room ease still has to go (0 when settled). */
+    wf::pointf_t rail_layout_remaining(wayfire_toplevel_view view)
+    {
+        auto found = view ? rail_layout_motions.find(view->get_id()) : rail_layout_motions.end();
+        auto frame = view ? frame_of(view, false) : nullptr;
+        if (found == rail_layout_motions.end() || !frame) return {0, 0};
+        return {found->second.move.to.x - frame->drag_layout_x, found->second.move.to.y - frame->drag_layout_y};
+    }
+
     wayfire_toplevel_view model_view(uint64_t id)
     {
         auto found = model.windows.find(id);
@@ -3029,9 +3179,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void clear_rail_drag()
     {
         auto& rail = model.drag.rail;
+        rail_dwell_tick.disconnect();
         for (size_t i = 0; i < rail.presentation.size(); ++i)
         {
-            set_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, 0);
+            animate_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, 0);
         }
         rail.presentation.clear();
         rail.solver = {};
@@ -3039,6 +3190,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.dragged = 0;
         rail.left = false;
         rail.top = rail.bottom = 0;
+        rail.last_item = rail.solved_item = {};
+        rail.pause_anchor = {};
+        rail.pause_deadline = 0;
+        rail.has_item = rail.has_pause_anchor = rail.pause_pending = rail.solved_once = false;
         rail.active = false;
     }
 
@@ -3063,6 +3218,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (!widget || !widget->is_mapped() || widget->get_output() != output) continue;
             auto rect = scene_rectangle(widget, output);
             if (rect.height() <= 0) continue;
+            // A previous rail audition may still be easing its temporary presentation
+            // offset away. It is not part of the widget's true interval or a new geometry.
+            if (auto frame = frame_of(widget, false))
+            {
+                rect.y1 -= frame->drag_layout_y;
+                rect.y2 -= frame->drag_layout_y;
+            }
             auto geometry = widget->get_geometry();
             intervals.push_back({widget->get_id(), rect.y1, rect.y2});
             origins.push_back({widget->get_id(), (double)geometry.x, (double)geometry.y});
@@ -3084,7 +3246,74 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return true;
     }
 
-    void update_rail_drag(wayfire_toplevel_view dragged, wf::output_t *output)
+    void solve_rail_layout(const scottland::rectf_t& item)
+    {
+        auto& rail = model.drag.rail;
+        if (!rail.active || item.height() <= 0) return;
+        rail.last_item = item;
+        rail.has_item = true;
+        rail.solved_item = item;
+        rail.solver.solve(item.y1, item.y2, rail.top, rail.bottom);
+        auto& shifts = rail.solver.shifts();
+        for (size_t i = 0; i < rail.presentation.size(); ++i)
+        {
+            double dy = i < shifts.size() ? shifts[i] : 0;
+            rail.presentation.set_offset(i, 0, dy);
+            animate_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, dy);
+        }
+
+        rail.solved_once = true;
+        rail.pause_pending = false;
+    }
+
+    void on_rail_dwell_tick()
+    {
+        auto& rail = model.drag.rail;
+        if (!rail.active || !rail.pause_pending || !rail.has_item) return;
+
+        // Wayfire timers can fire on a millisecond boundary just before their requested
+        // deadline. Re-arm the remaining fraction instead of losing this pause entirely.
+        uint32_t remaining = rail.pause_deadline - now_msec();
+        if (remaining && remaining < 0x80000000u)
+        {
+            rail_dwell_tick.set_timeout(remaining, [=] () { on_rail_dwell_tick(); });
+            return;
+        }
+
+        solve_rail_layout(rail.last_item);
+    }
+
+    void schedule_rail_dwell(const wf::pointf_t& pointer)
+    {
+        auto& rail = model.drag.rail;
+        uint32_t now = now_msec();
+        bool new_pause = false;
+        if (!rail.has_pause_anchor)
+        {
+            rail.pause_anchor = pointer;
+            rail.has_pause_anchor = true;
+            rail.pause_pending = true;
+            new_pause = true;
+        } else if (std::hypot(pointer.x - rail.pause_anchor.x, pointer.y - rail.pause_anchor.y) >
+            RAIL_POINTER_WOBBLE)
+        {
+            rail.pause_anchor = pointer;
+            rail.pause_pending = true;
+            new_pause = true;
+        }
+
+        // Input noise within the wobble radius belongs to the current pause and must not
+        // keep extending its deadline. A new timer starts only at the initial landing or
+        // after the pointer travels outside that radius from the pause anchor.
+        if (!rail.pause_pending || !new_pause) return;
+        uint32_t dwell = (uint32_t)std::clamp(int(widget_make_room_dwell), 100, 1500);
+        rail.pause_deadline = now + dwell;
+        rail_dwell_tick.disconnect();
+        rail_dwell_tick.set_timeout(dwell, [=] () { on_rail_dwell_tick(); });
+    }
+
+    void update_rail_drag(wayfire_toplevel_view dragged, wf::output_t *output,
+        std::optional<wf::pointf_t> pointer = {})
     {
         if (!dragged || !output || !model.drag.morph || !morph_widget_shaped() ||
             !dragged->is_mapped() || (pending_drag_layout && pending_drag_layout->is_committing()))
@@ -3105,13 +3334,63 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         auto item = scene_rectangle(dragged, output);
         if (item.height() <= 0) return;
-        rail.solver.solve(item.y1, item.y2, rail.top, rail.bottom);
-        auto& shifts = rail.solver.shifts();
-        for (size_t i = 0; i < rail.presentation.size(); ++i)
+        rail.last_item = item;
+        rail.has_item = true;
+        if (pointer) schedule_rail_dwell(*pointer);
+    }
+
+    bool make_room_for_arrival(wayfire_toplevel_view widget, widget_link_t& link)
+    {
+        auto output = output_alive(link.output) ? link.output : (widget ? widget->get_output() : nullptr);
+        if (!widget || !widget->is_mapped() || !output || !link.docked() ||
+            model.drag.rail.active || (pending_drag_layout && pending_drag_layout->is_committing()))
+            return false;
+
+        // Where it has landed: without a landing glide still under way or an earlier rail
+        // ease, both of which are presentation, not its place on the rail.
+        auto item = scene_rectangle(widget, output);
+        if (auto frame = frame_of(widget, false))
         {
-            double dy = i < shifts.size() ? shifts[i] : 0;
-            rail.presentation.set_offset(i, 0, dy);
-            set_drag_layout_offset(model_view(rail.presentation.actor(i).id), 0, dy);
+            item.y1 -= frame->translation_y + frame->drag_layout_y;
+            item.y2 -= frame->translation_y + frame->drag_layout_y;
+        }
+        // P14: it stays exactly there. If the drop already laid the rail out for this
+        // interval (what was shown during the drag), that layout stands as committed;
+        // solving again from it could only disagree with what was shown.
+        const bool kept = link.drop_solved && std::abs(item.y1 - link.drop_lo) <= RAIL_POINTER_WOBBLE &&
+            std::abs(item.y2 - link.drop_hi) <= RAIL_POINTER_WOBBLE;
+        link.drop_solved = false;
+        if (kept)
+        {
+            link.make_room_pending = false;
+            ++rail_drop_layouts_kept;
+            return true;
+        }
+        // A different landing (the real card is another size, or placement moved it).
+        if (item.height() <= 0 || !begin_rail_drag(output, link.rail == "left", link.window_id))
+            return false;
+        auto& rail = model.drag.rail;
+        rail.last_item = item;
+        rail.has_item = true;
+        solve_rail_layout(item);
+        // Clear this before committing: view->move() may synchronously acknowledge geometry
+        // and retry pending arrivals. Leaving the flag set would re-enter this solve against
+        // the just-committed layout and restart the same presentation animation at zero.
+        link.make_room_pending = false;
+        commit_rail_drag();
+        link.drop_solved = false;  // an arrival, not a drag's drop
+        return true;
+    }
+
+    void retry_widget_arrivals()
+    {
+        if (model.drag.rail.active || (pending_drag_layout && pending_drag_layout->is_committing())) return;
+        for (auto& [id, link] : model.widgets)
+        {
+            if (!link.make_room_pending || !link.docked()) continue;
+            if (auto widget = wf::toplevel_cast(link.widget.lock()); widget && widget->is_mapped())
+                make_room_for_arrival(widget, link);
+            if (model.drag.rail.active || (pending_drag_layout && pending_drag_layout->is_committing())) return;
         }
     }
 
@@ -3127,6 +3406,24 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             clear_rail_drag();
             return;
+        }
+
+        rail_dwell_tick.disconnect();
+        // Drop commits the layout the user saw, if it was for this landing spot. Dropped
+        // before any pause, or after moving on from the last one (beyond the pointer
+        // wobble), that layout was for somewhere else: solve once more for where it actually
+        // lands, from the original positions, so neighbors it no longer blocks go home (P2).
+        auto& solved = rail.solved_item;
+        if (rail.has_item && (!rail.solved_once ||
+            std::max(std::abs(rail.last_item.y1 - solved.y1), std::abs(rail.last_item.y2 - solved.y2)) >
+                RAIL_POINTER_WOBBLE))
+            solve_rail_layout(rail.last_item);
+        // Remember the interval this layout was solved for, so the landing doesn't solve again.
+        if (auto dropped = model.widgets.find(rail.dragged); dropped != model.widgets.end())
+        {
+            dropped->second.drop_solved = rail.has_item;
+            dropped->second.drop_lo = rail.solved_item.y1;
+            dropped->second.drop_hi = rail.solved_item.y2;
         }
 
         rail.presentation.commit();
@@ -3147,7 +3444,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;
             }
 
-            set_drag_layout_offset(view, actor.dx, actor.dy);
             if (actor.applied) continue;
             if (auto link = link_of_widget(view)) link->drop.y += actor.dy;
             moves.push_back({actor.id, (double)x, (double)y});
@@ -3164,6 +3460,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.output = nullptr;
         rail.dragged = 0;
         rail.active = false;
+        rail.has_item = rail.has_pause_anchor = rail.pause_pending = rail.solved_once = false;
         for (const auto& move : moves)
         {
             auto view = model_view(move.id);
@@ -3202,10 +3499,30 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (!pending_drag_layout || !view) return;
         auto geometry = view->get_geometry();
-        if (pending_drag_layout->acknowledge(view->get_id(), geometry.x, geometry.y))
+        double moved_x = 0, moved_y = 0;
+        bool found = false;
+        for (size_t i = 0; i < pending_drag_layout->size(); ++i)
         {
-            set_drag_layout_offset(view, 0, 0);
+            const auto& actor = pending_drag_layout->actor(i);
+            if (actor.id == view->get_id())
+            {
+                moved_x = actor.target_x - actor.origin_x;
+                moved_y = actor.target_y - actor.origin_y;
+                found = true;
+                break;
+            }
+        }
+
+        if (found && pending_drag_layout->acknowledge(view->get_id(), geometry.x, geometry.y))
+        {
+            if (auto frame = frame_of(view, false))
+            {
+                set_drag_layout_offset(view, frame->drag_layout_x - moved_x, frame->drag_layout_y - moved_y);
+                animate_drag_layout_offset(view, 0, 0);
+            }
+
             if (pending_drag_layout->empty()) pending_drag_layout.reset();
+            retry_widget_arrivals();
         }
     }
 
@@ -3216,6 +3533,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         begin_window_widget_transition(window);
         set_widget_presentation(link, model.collapsed);
         transition_widget(link, widget_link_t::lifecycle_t::docked);
+        // The live drag solves against its morphing footprint. Once the real widget is
+        // docked, solve once more against its actual card geometry so a small preview
+        // cannot leave the larger landing card overlapping its neighbors.
+        link.make_room_pending = true;
         link.drop    = at;
         if (window && window->get_output())
         {
@@ -3234,6 +3555,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             keep_above(widget);
             place_widget(widget, output, link);
+            auto pending = widget->toplevel()->pending().geometry;
+            if (widget->get_geometry() == pending && link.make_room_pending)
+                make_room_for_arrival(widget, link);
             set_scale(widget, 1.0);
             // It was let go at `at` (the dragged window was drawn there as the widget): glide to
             // its place against the screen edge rather than jump.
@@ -5743,7 +6067,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (view && output && !view->pending_fullscreen())
         {
             update_drag_morph(view, output, ev->current_position);
-            update_rail_drag(view, output);
+            update_rail_drag(view, output, ev->current_position);
             publish_model();  // morph direction/center changes even when widget scale stays 1
         } else
         {
@@ -5884,6 +6208,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.last_drop = {};  // the move is over
             model.drag.widget = 0;
             model.drag.started = false;
+            retry_widget_arrivals();
             publish_model();
             return;
         }
@@ -6001,6 +6326,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         model.drag.widget = 0;
         model.drag.started = false;
+        retry_widget_arrivals();
         publish_model();
         refresh_layout_avoidance();
     };
@@ -6036,6 +6362,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 finish_drag_layout(view);
                 frame->damage();
             }
+
+            if (auto link = link_of_widget(view); link && link->make_room_pending && link->docked())
+                make_room_for_arrival(view, *link);
 
             // Widget placement during map is pending until its transaction commits. Save the
             // committed center, not the provisional center reported in view-mapped.
@@ -6205,6 +6534,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         reply["views"] = views;
+        reply["rail_max_easing_speed_px_s"] = rail_easing_speed_max;
+        reply["rail_max_drawn_speed_px_s"] = rail_drawn_speed_max;
+        reply["rail_max_drawn_step_px"] = rail_drawn_step_max;
+        reply["rail_max_tick_gap_ms"] = int64_t(rail_tick_gap_max);
+        reply["rail_drop_layouts_kept"] = int64_t(rail_drop_layouts_kept);
         return reply;
     };
 
@@ -6554,6 +6888,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_swipe_begin.disconnect();
         on_cancel_key.disconnect();
         glide_tick.disconnect();
+        rail_dwell_tick.disconnect();
+        rail_layout_tick.disconnect();
+        for (auto& [id, motion] : rail_layout_motions)
+            set_drag_layout_offset(model_view(id), 0, 0);
+        rail_layout_motions.clear();
+        rail_drawn_samples.clear();
         glides.clear();
         widget_transition_tick.disconnect();
         for (auto& [id, transition] : widget_transitions)

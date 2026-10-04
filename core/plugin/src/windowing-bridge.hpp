@@ -213,7 +213,20 @@
             }
             return r;
         }
-        if (auto frame = frame_of(view, false)) return frame->screen_rect();
+        if (auto frame = frame_of(view, false))
+        {
+            auto r = frame->screen_rect();
+            // A rail make-room ease (WG26) runs for a few hundred ms. Avoidance plans against
+            // where those widgets are going, so it re-solves when that target changes rather
+            // than on every frame of the ease.
+            if (for_avoidance_solve)
+            {
+                auto remaining = rail_layout_remaining(view);
+                r.x1 += remaining.x; r.x2 += remaining.x;
+                r.y1 += remaining.y; r.y2 += remaining.y;
+            }
+            return r;
+        }
         auto g = view->get_geometry();
         return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
     }
@@ -1221,7 +1234,7 @@
                     dt = std::clamp(dt, 0.0, 1.0 / 60.0);
                     double dx = (target.x - offset->translation_x) * .18;
                     double dy = (target.y - offset->translation_y) * .18;
-                    const double step = std::hypot(dx, dy), cap = 1000 * dt;
+                    const double step = std::hypot(dx, dy), cap = scottland::motion::AUTOMATIC_MAX_SPEED * dt;
                     if (step > cap && step > .001) { dx *= cap / step; dy *= cap / step; }
                     exposure_easing_speed_max = std::max(exposure_easing_speed_max,
                         std::hypot(dx, dy) / std::max(dt, .0001));

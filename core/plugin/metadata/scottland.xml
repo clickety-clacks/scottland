@@ -121,6 +121,11 @@
         <option name="widget_attention_peek_duration" type="int">
             <_short>Widget attention peek duration (ms)</_short><default>5000</default><min>100</min><max>30000</max>
         </option>
+        <option name="widget_make_room_dwell" type="int">
+            <_short>Rail make-room pause (ms)</_short>
+            <_long>How long a drag must pause within 4 px before rail widgets move aside. A new pause makes another layout; dropping sooner solves once on drop.</_long>
+            <default>350</default><min>100</min><max>1500</max>
+        </option>
         <option name="center_opacity_focused" type="double"><_short>Focused center opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="center_opacity_unfocused" type="double"><_short>Unfocused center opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="side_opacity_focused" type="double"><_short>Focused side opacity</_short><default>1</default><min>0</min><max>1</max></option>
