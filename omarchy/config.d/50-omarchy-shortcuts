@@ -679,6 +679,43 @@ def read_report_fragment(fragment):
                      "order": len(REPORT_GROUP_ORDER) + 1}]
 
 
+OWN_SHORTCUTS_HEADING = "Your own shortcuts that don't work in Scottland"
+
+
+def report_item_line(item, include_reason=False):
+    was = item["was"].rstrip(".!? ") + "."
+    now = item["now"].rstrip(".!? ") + "."
+    origin = item.get("origin") or source_for_label(item["keys"])
+    line = f"- {item['keys']} — Was: {was} Now: {now} [{origin}]"
+    if include_reason:
+        line += f" Why: {item['why'].rstrip('.!? ')}."
+    return line
+
+
+def own_shortcuts_for_prompt(report_content):
+    """Copy the custom-only callout into the agent prompt from the stable report."""
+    lines = report_content.splitlines()
+    try:
+        start = lines.index(f"## {OWN_SHORTCUTS_HEADING}") + 1
+    except ValueError:
+        return "None found."
+    bullets = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        if line.startswith("- ") and "[Your custom/changed shortcut]" in line:
+            bullets.append(line)
+    return "\n".join(bullets) if bullets else "None found."
+
+
+def render_override_prompt(report, report_content=None):
+    template_path = Path(__file__).resolve().parents[1] / "prompts/omarchy-overrides-agent.txt"
+    content = report_content if report_content is not None else report.read_text()
+    return (template_path.read_text()
+            .replace("@REPORT_PATH@", str(report))
+            .replace("@OWN_CUSTOM_SHORTCUTS@", own_shortcuts_for_prompt(content)))
+
+
 def make_report(overrides):
     """Render a stable, diffable report with no timestamps or session-specific data."""
     hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
@@ -706,16 +743,30 @@ def make_report(overrides):
         grouped[key]["items"].append(item)
     ordered_groups = sorted(grouped.items(), key=lambda row: (
         row[1]["order"], row[0][0].casefold(), row[0][1].casefold()))
+    own_shortcuts = sorted(
+        (item for item in unique.values()
+         if (item.get("origin") or source_for_label(item["keys"])) == "Your custom/changed shortcut"),
+        key=lambda item: (item.get("order", len(REPORT_GROUP_ORDER) + 1),
+                          item["heading"].casefold(), item["keys"].casefold(), item["was"].casefold()))
     lines = [
         "Scottland shortcut changes",
         "===========================",
+        "",
+        f"## {OWN_SHORTCUTS_HEADING}",
+        "These were added or changed in your settings or a user-installed Omarchy plugin.",
+    ]
+    if own_shortcuts:
+        lines.extend(report_item_line(item, include_reason=True) for item in own_shortcuts)
+    else:
+        lines.append("None found.")
+    lines.extend([
         "",
         "This report lists shortcuts and mappings from the live Omarchy configuration that Scottland changes or cannot use.",
         "It remains on disk so you can reread it later.",
         "[Omarchy default] matches a shipped shortcut; [Your custom/changed shortcut] came from your settings or a user-installed plugin.",
         "[Source not verified] means the comparison could not be completed; other labels identify the shortcut or mapping source.",
         "",
-    ]
+    ])
     if not ordered_groups:
         lines.append("No Omarchy shortcuts or mappings were changed.")
     else:
@@ -723,10 +774,7 @@ def make_report(overrides):
             lines.extend((f"## {heading}", explanation, ""))
             for item in sorted(group["items"], key=lambda value: (
                     value["keys"].casefold(), value["was"].casefold(), value["now"].casefold())):
-                was = item["was"].rstrip(".!? ") + "."
-                now = item["now"].rstrip(".!? ") + "."
-                origin = item.get("origin") or source_for_label(item["keys"])
-                lines.append(f"- {item['keys']} — Was: {was} Now: {now} [{origin}]")
+                lines.append(report_item_line(item))
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -813,8 +861,7 @@ def launch_override_report(report):
             selected = subprocess.run([selector], stdin=subprocess.DEVNULL,
                                       capture_output=True, text=True, timeout=3, check=False)
             if selected.returncode == 0 and selected.stdout.strip():
-                template_path = Path(__file__).resolve().parents[1] / "prompts/omarchy-overrides-agent.txt"
-                prompt = template_path.read_text().replace("@REPORT_PATH@", str(report))
+                prompt = render_override_prompt(report)
                 subprocess.Popen([agent_launcher, prompt], stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True, close_fds=True)

@@ -200,6 +200,7 @@ require("omarchy.plugins.ask")
             report_path = Path(env["XDG_STATE_HOME"]) / "scottland/omarchy-overrides.txt"
             seen_path = report_path.with_name("omarchy-overrides.seen")
             report = report_path.read_text() if report_path.is_file() else ""
+            sample_report = report
             live_rows = importer.parse_scan_rows(importer.run_lua_scan().stdout)
             default_rows = importer.parse_scan_rows(importer.run_lua_scan(baseline=True).stdout)
             plugin_identity = importer.report_identity("Super+3")
@@ -207,6 +208,25 @@ require("omarchy.plugins.ask")
             default_plugin_row = next(row for row in default_rows if row["identity"] == plugin_identity)
             plugin_workspace_line = next(line for line in report.splitlines()
                                          if "Super+3 — Was: Workspace 3." in line)
+            own_heading = "## Your own shortcuts that don't work in Scottland"
+            own_start = report.index(own_heading) + len(own_heading)
+            own_end = report.index("This report lists shortcuts", own_start)
+            own_section = report[own_start:own_end]
+            own_lines = [line for line in own_section.splitlines()
+                         if line.startswith("- ") and "[Your custom/changed shortcut]" in line]
+            group_report = report.split("This report lists shortcuts", 1)[-1]
+            all_custom_lines = [line for line in group_report.splitlines()
+                                if line.startswith("- ") and "[Your custom/changed shortcut]" in line]
+            own_entries = sorted(line.rsplit(" Why:", 1)[0] for line in own_lines)
+            all_custom_entries = sorted(all_custom_lines)
+            check("O20 puts every custom or plugin shortcut in the report callout, with its reason",
+                  report.index("## Your own shortcuts that don't work in Scottland") <
+                  report.index("This report lists shortcuts") and own_entries == all_custom_entries and
+                  any(line.startswith("- Super+3 —") for line in own_lines) and
+                  any(line.startswith("- Alt+Tab —") for line in own_lines) and
+                  "[Omarchy default]" not in own_section and
+                  "Why: Scottland keeps every window on one spatial desktop" in own_section,
+                  f"callout={own_entries!r}; grouped={all_custom_entries!r}; section={own_section}")
             ask_line = next(line for line in report.splitlines()
                             if "Alt+Tab — Was: Open Ask." in line)
             check("O20 identifies a user-plugin binding even when its signature matches a shipped default",
@@ -243,6 +263,18 @@ require("omarchy.plugins.ask")
                   "[Your custom/changed shortcut]" in next(
                       line for line in report.splitlines() if "Super+2 — Was: Workspace 2." in line),
                   report)
+            default_only_report = importer.make_report([{
+                "heading": "Scottland has no workspaces",
+                "why": "Scottland has no workspaces, so workspace shortcuts are unavailable.",
+                "keys": "Super+1", "was": "Workspace 1", "now": "No shortcut in Scottland",
+                "origin": "Omarchy default", "order": 1,
+            }])
+            default_only_prompt = importer.render_override_prompt(report_path, default_only_report)
+            check("O20 says no own shortcuts were found when only defaults are affected",
+                  "## Your own shortcuts that don't work in Scottland" in default_only_report and
+                  "None found." in default_only_prompt and
+                  "Super+1 — Was: Workspace 1." not in default_only_prompt,
+                  default_only_prompt)
             configured_omarchy = os.environ["OMARCHY_PATH"]
             os.environ["OMARCHY_PATH"] = str(temp / "missing-omarchy-defaults")
             generate((str(base_source),))
@@ -327,12 +359,24 @@ require("omarchy.plugins.ask")
                   not launch_log.exists(),
                   agent_log.read_text() if agent_log.exists() else "no agent prompt")
             prompt = agent_log.read_text().split("__PROMPT_END__", 1)[0]
-            check("O20 prompt names the report and gives plain-language, one-group-at-a-time instructions",
+            rendered_prompt = prompt
+            check("O20 prompt names the report and gives the plain-language opening",
                   str(report_path) in prompt and "user may not know what happened and may not be technical" in prompt and
                   "short, plain-words explanation" in prompt and
+                  "opened on its own" in prompt and
                   "shortcuts currently set up on this computer" in prompt and
                   "Avoid jargon unless the user asks" in prompt and
-                  "Explain one group at a time" in prompt,
+                  "Avoid overwhelming the user with multiple groups at once" in prompt,
+                  prompt)
+            check("O20 prompt embeds custom shortcuts first, explains them, and keeps defaults brief",
+                  "The user's own custom or changed shortcuts" in prompt and
+                  "lead with these own shortcuts, one at a time" in prompt and
+                  "Super+3 — Was: Workspace 3." in prompt and
+                  "Alt+Tab — Was: Open Ask." in prompt and
+                  "Why: Scottland keeps every window on one spatial desktop" in prompt and
+                  "Explain each one's reason in simple words" in prompt and
+                  "Briefly summarize affected Omarchy defaults from the rest of the report afterward" in prompt and
+                  "Super+1 — Was: Workspace 1." not in prompt,
                   prompt)
             check("O20 prompt covers safe Scottland-only remapping and installed guidance",
                   "[Your custom/changed shortcut]" in prompt and
@@ -456,8 +500,16 @@ require("omarchy.plugins.ask")
             check("O20 repeated setup does not reopen the same report",
                   prompt_count(install_agent_log) == 1,
                   install_agent_log.read_text() if install_agent_log.exists() else "no agent prompt")
-            print("\n--- sample O20 report ---", flush=True)
-            print(report_path.read_text(), end="", flush=True)
+            print("\n--- rendered O20 agent prompt ---", flush=True)
+            print(rendered_prompt, end="", flush=True)
+            sample_top = sample_report.splitlines()
+            next_group = next((index for index, line in enumerate(sample_top)
+                               if line.startswith("## ") and
+                               line != "## Your own shortcuts that don't work in Scottland" and
+                               index > sample_top.index("## Your own shortcuts that don't work in Scottland")),
+                              len(sample_top))
+            print("\n--- sample O20 report top ---", flush=True)
+            print("\n".join(sample_top[:next_group]), flush=True)
         finally:
             os.environ.clear()
             os.environ.update(old_env)
