@@ -15,6 +15,11 @@ things that have their attention, and it is organized as **attention regimes**:
 4. **The ether**: everything not represented on the desktop. Objects there still exist; at some point
    they want the user's attention and can be promoted to a higher regime.
 
+The ether is a mental place, not a location on screen (Mike): a website the user closes isn't gone; it is
+still there, can keep running, and can be opened again. Because a sender can be on the desktop in any
+form, **a way to see and act on its knocks must exist in every form: a full-size window, a scaled
+window, and a widget** (and for a sender with no form at all).
+
 Objects move between regimes: the user promotes and demotes them; an object asks to be promoted with a
 knock. This is the frame for everything below, and for how Scottland models and visualizes the bigger
 picture of what is trying to get the user's attention.
