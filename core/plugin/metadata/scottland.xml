@@ -159,7 +159,7 @@
         </option>
         <option name="window_double_tap_delay" type="int">
             <_short>Window mode hint double-tap interval (ms)</_short>
-            <_long>Repeating a window hint within this interval sends it to its rail widget. A window already on the rail stays put. Slower presses follow the starting-zone cycle.</_long>
+            <_long>After releasing a complete hint, begin typing it again within this interval to send the window to its rail widget. The repeat must be completed; key hold time and typing the remaining letters do not spend the interval. A window already on the rail stays put unless its collapsed-widget hint peek is active. Slower presses follow the starting-zone cycle.</_long>
             <default>300</default>
             <min>1</min>
             <max>3000</max>

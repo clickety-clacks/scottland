@@ -158,6 +158,12 @@ See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK39 (window mode
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints)
 and WP1–WP7 (zone memory, side choice and shared rectangle placement). Statuses and verification are recorded there.
 
+WK15–WK16 double-taps use the gap from the final key release to the first key press of
+the repeated complete hint. The 300 ms default therefore leaves the same repeat gap
+for single- and multi-letter hints. Real human-timing validation on plumbus covers
+focused/unfocused windows, both avoidance settings, physical-repeat filtering and
+the immediate WK6/WK34 first-press behavior; see the report in that design document.
+
 L29 regression: `state-model-test.py` re-grabs an ordinary dropped window during the hold
 and cancels with real Esc input; the scene must return to its ordinary layer and the hold ends.
 

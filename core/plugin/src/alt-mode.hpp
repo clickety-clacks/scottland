@@ -51,7 +51,10 @@ class alt_mode
     std::array<destination, 3> order;
     unsigned step = 0;
     uint64_t last_hint = 0;
-    uint32_t last_press = 0;
+    uint32_t last_release = 0;
+    char last_key = 0;
+    bool awaiting_release = false;
+    bool repeat_candidate = false;
     struct pending_hold { uint64_t id; char key; uint32_t pressed; uint64_t partner; };
     std::optional<pending_hold> hold;
     void activate(uint64_t id, bool double_tap);

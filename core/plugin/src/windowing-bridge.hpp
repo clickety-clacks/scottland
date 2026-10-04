@@ -1420,7 +1420,7 @@
             {
                 window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
                 window_keys.refresh(window_entries());
-                window_keys.letter(*letter, now_msec());
+                window_keys.letter(*letter, ev->event->time_msec);
                 if (window_keys.hold_waiting()) arm_hint_hold();
             }
         }
