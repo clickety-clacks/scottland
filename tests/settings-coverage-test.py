@@ -32,9 +32,17 @@ assert "root.edgeControls.concat(root.gooControls)" in qml
 assert 'unfocused_edge_tone_light: 0.08' in qml
 assert 'unfocused_edge_tone_dark: 0.92' in qml
 assert 'unfocused_edge_strength: 1' in qml
+assert 'attention_color_family: "theme"' in qml
+assert 'attention_color_family:"Attention color family"' in qml
+assert 'text: "Theme follows your palette. Warm shifts from red to amber; Cool shifts from olive to yellow-green."' in qml
+assert all(f'id: attention{name}' in qml for name in ("Theme", "Warm", "Cool"))
+assert options["attention_color_family"].attrib["type"] == "string"
+assert options["attention_color_family"].findtext("default") == "theme"
 assert 'root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark"' in edge_section
 ctl = (root / "core/libexec/scottland-ctl").read_text()
 assert "UNFOCUSED_EDGE = (" in ctl
+assert '"attention_color_family"' in ctl.split("GOO = (", 1)[1].split("WIDGETS =", 1)[0]
+assert '"attention_color_family"' in ctl.split("TEXT = (", 1)[1].split("\n", 1)[0]
 assert all(f'"{name}"' in ctl for name in edge_options)
 assert "NAMES += GOO + UNFOCUSED_EDGE" in ctl
 for name in edge_options:

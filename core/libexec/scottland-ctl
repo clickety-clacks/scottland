@@ -21,7 +21,8 @@ NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", 
 GOO = ("goo", "goo_breath_keys", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak",
-       "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance")
+       "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance",
+       "attention_color_family")
 WIDGETS = ("widget_bounce", "widget_peek_enter_delay", "widget_peek_leave_delay", "widget_attention_peek_duration")
 BOOL = ("goo", "goo_breath_keys", "hint_avoidance_always")
 OPACITY = ("center_opacity_focused", "center_opacity_unfocused", "side_opacity_focused", "side_opacity_unfocused",
@@ -29,7 +30,7 @@ OPACITY = ("center_opacity_focused", "center_opacity_unfocused", "side_opacity_f
 UNFOCUSED_EDGE = ("unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfocused_edge_strength")
 NAMES += GOO + UNFOCUSED_EDGE + ("cycle_overshoot", "key_impulse", "key_friction", "resize_impulse", "resize_friction",
                 "key_max_velocity", "alt_hold_delay", "window_double_tap_delay") + WIDGETS + OPACITY + ("hint_avoidance_always",)
-TEXT = ("scale_curve", "goo_falloff")
+TEXT = ("scale_curve", "goo_falloff", "attention_color_family")
 
 
 def connect():

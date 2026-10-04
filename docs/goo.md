@@ -34,6 +34,12 @@ remains available.
   only within goo: where goo connects two windows their colors bleed across the bridge; apart, they
   stay separate. A new state blooms from the window's edge outward; an answered one fades as the
   window's neutral color replaces it.
+- **Attention color family (GO22).** `theme` follows the active desktop palette, unchanged from
+  today's behavior. `warm` uses brick red `#B83F36` in light themes and amber `#FF9E57` in dark
+  themes. `cool` uses olive green `#707C28` in light themes and yellow-green `#C9DD61` in dark
+  themes. These colors keep clear contrast against their matching light or dark desktop surface.
+  The Goo tab previews and saves the choice; changing the color scheme or family updates attention
+  dye and the fallback halo live for windows and widgets.
 - **Unfocused edge appearance (A16).** Neutral gray level is stored separately for light and dark
   schemes. Strength scales only neutral dye in the final composite; focus, attention and Window mode
   hint dye keep their full color. Strength zero leaves refraction and glass highlights without
@@ -53,8 +59,8 @@ remains available.
 
 ## Tuning
 
-Every goo constant is a Scottland setting with a live control in the settings app (beside the zone
-sliders and scale curve): unfocused edge tone and strength, reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
+Every goo constant and the attention color family have a live control in the settings app (beside the
+zone sliders and scale curve): unfocused edge tone and strength, reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
 wave persistence, wave height, dye spread, dye swirl, dye release, shine, relief, liquid depth, wall wetting, wallpaper soak, overlap film,
 control cloudiness, control glow, control proximity, and the falloff
 curve (how density drops away from an edge) in the curve editor. Changes apply live, as the zone
@@ -87,7 +93,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 | GO20 | Only a change wakes the goo, and only liquid is worked on. (1) Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
 | GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
-| GO22 | Attention color choice: a Goo setting chooses the attention hue family: **warm** (red/amber) or **cool** (yellow/green), alongside following the theme's own attention color. It applies to the attention breath and bulge on windows and widgets, with goo on and with the fallback halo, live, in light and dark themes. (Mike, 2026-10-03) | not built |
+| GO22 | Attention color choice: the Goo setting chooses Theme (the active palette attention color, today's behavior), Warm (light `#B83F36`, dark `#FF9E57`), or Cool (light `#707C28`, dark `#C9DD61`). The selected color applies live to attention breath and bulge on windows and widgets, in Goo and fallback halos, and follows light/dark scheme changes. Settings previews the choice; Save, Cancel and Defaults include it. | implemented; Plumbus headless Settings input, six Goo and six fallback screenshots across light/dark, window and widget attention (2026-10-03) |
 
 ## Halo jobs with goo enabled
 
@@ -95,7 +101,7 @@ The initial defaults are the prototype’s Scottland preset.
   Resting thickness scales with the window; the Scottland preset starts at 13 pt at full scale.
   Refraction samples the real wallpaper, with relief, rim light and specular highlights.
 - **A4/A8:** neutral dye follows light/dark, focused dye uses the live palette accent, and attention
-  dye uses the palette attention color. Existing focus transitions and attention breathing feed
+  dye uses the selected GO22 attention color family (Theme follows the active palette). Existing focus transitions and attention breathing feed
   the liquid. Theme integration continues through the existing palette file; core adds no adapter
   dependency. Tenets 1 and 5: asking for attention colors/pulses the goo without moving or raising
   the window.

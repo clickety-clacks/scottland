@@ -250,6 +250,11 @@
 			<_long>The secondary highlight a widget's halo takes while its app needs attention (it also breathes). Set by scottland-color-scheme from the desktop's palette, or by an integration.</_long>
 			<default>#EBCB8BFF</default>
 		</option>
+		<option name="attention_color_family" type="string">
+			<_short>Attention color family</_short>
+			<_long>Choose the desktop palette's attention color (theme), or scheme-aware warm red/amber or cool yellow/green colors. The Goo Settings tab applies changes live to window and widget attention.</_long>
+			<default>theme</default>
+		</option>
 		<option name="resize_alt" type="button">
 			<_short>Resize around center (second binding)</_short>
 			<_long>Another binding for the center-anchored resize, for trackpads without a comfortable right-drag.</_long>
