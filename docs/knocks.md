@@ -58,6 +58,11 @@ Constraints and directions added by Mike (2026-10-04):
   meaning has to live on a designated portion of it, the way the close dot does (A11).
 - A knock whose sender has no window or widget may look like free-floating goo with no window in it.
 
+Importance (Mike, 2026-10-04):
+- Knocks from objects on the desktop matter most: they are there because the user elected them to be there.
+- Knocks also carry a priority. Scottland does not set it; some other system provides it, and Scottland
+  just renders it.
+
 ## Open
 
 - How knocks from objects with no representation appear, and how urgency/kind changes the look.
