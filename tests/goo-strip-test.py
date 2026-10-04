@@ -145,6 +145,12 @@ try:
     print(json.dumps({'strip_count': len(s['breath_damage']), 'strips': s['breath_damage'], 'box': boxes, 'dry_pixels': s.get('dry_pixels'),
                       'strip_dry_pixels': s.get('strip_dry_pixels'), 'views': [(v['title'], {k: round(v['frame'][k]) for k in ('x', 'y', 'width', 'height')}) for v in views() if v['title'].startswith('strip-')]}), flush=True)
     subprocess.run(['grim', str(out/'scene.png')])
+    # GO24: the watercolor keeps coasting for a while after the goo sleeps. Hold the dye still
+    # (it still ticks and reuses the backdrop over its whole motion area) so the frames compared
+    # below differ only in what the backdrop reuse paints, as goo-exact-test does.
+    s = state({'water_freeze': True, 'water_coast': 3600})
+    print(json.dumps({'water_running': s.get('water_running'), 'motion_pixels': s.get('motion_pixels'),
+                      'motion_rects': s.get('motion_rects')}), flush=True)
     for hold in (0., .5, 1.):
         state({'breath_hold': hold, 'breath_reuse': False}); time.sleep(.4)
         repainted = frame(f'repainted-{hold}', reused=False)
