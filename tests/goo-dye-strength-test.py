@@ -129,6 +129,52 @@ def changed(left, right):
     return len(a) != len(b) or sum(x != y for x, y in zip(a, b))
 
 
+def goo_sleeping():
+    return all(screen["sleeping"] for screen in ipc("scottland/goo-state")["screens"])
+
+
+def differing(left, right, threshold=3):
+    a, b = left.get_pixels(), right.get_pixels()
+    if len(a) != len(b):
+        return len(a), 255
+    count = largest = 0
+    n = left.get_n_channels()
+    for i in range(0, len(a) - n + 1, n):
+        d = max(abs(a[i+c] - b[i+c]) for c in range(3))
+        largest = max(largest, d)
+        count += d > threshold
+    return count, largest
+
+
+rest = {}  # (scheme, strength, state) -> awake/asleep comparison, goo renderer only
+
+
+def compare_at_rest(scheme, strength, state, name, awake_image, awake):
+    """GO23 must hold on the sleeping goo's cached path too (GO24 keeps the dye out of the
+    cache and multiplies it back in): the same scene asleep looks as it did awake."""
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not goo_sleeping():
+        time.sleep(.1)
+    asleep = goo_sleeping()
+    time.sleep(1)
+    image = screenshot(name + "-asleep")
+    # Wake it with a setting that changes nothing on screen here (the pointer is far from
+    # every control), so this awake picture shows the same settled scene as the asleep one.
+    distance = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_hover_distance"})["value"])
+    set_options({"goo_hover_distance": distance + 1})
+    time.sleep(.35)
+    woke = not goo_sleeping()
+    again = screenshot(name + "-awake-again")
+    set_options({"goo_hover_distance": distance})
+    count, largest = differing(again, image)
+    rest[(scheme, strength, state)] = {"awake_shot_awake": awake and woke, "slept": asleep,
+                                       "differing": count, "largest": largest, "image": image,
+                                       "first_shot_differing": differing(awake_image, image)}
+    print(json.dumps({"rest": name, "awake_shot_awake": awake, "woke_again": woke, "slept": asleep,
+                      "differing_px": count, "largest": largest,
+                      "first_awake_shot_differing": rest[(scheme, strength, state)]["first_shot_differing"]}), flush=True)
+
+
 def wait_hints(window_ids):
     deadline = time.monotonic() + 4
     while time.monotonic() < deadline:
@@ -189,7 +235,10 @@ try:
                 wait_option("goo_dye_strength", strength)
                 time.sleep(.45)
                 name = f"{renderer}-{scheme}-{strength:.2f}-focus"
+                awake = goo and not goo_sleeping()
                 images[(renderer, scheme, strength, "focus")] = screenshot(name)
+                if goo and not baseline_mode:
+                    compare_at_rest(scheme, strength, "focus", name, images[(renderer, scheme, strength, "focus")], awake)
                 print(json.dumps({"screenshot": str(art / (name + ".png")), "renderer": renderer,
                                   "scheme": scheme, "strength": strength, "state": "focus accent"}), flush=True)
 
@@ -208,7 +257,10 @@ try:
                 wait_option("goo_dye_strength", strength)
                 time.sleep(.55)
                 name = f"{renderer}-{scheme}-{strength:.2f}-attention"
+                awake = goo and not goo_sleeping()
                 images[(renderer, scheme, strength, "attention")] = screenshot(name)
+                if goo and not baseline_mode:
+                    compare_at_rest(scheme, strength, "attention", name, images[(renderer, scheme, strength, "attention")], awake)
                 print(json.dumps({"screenshot": str(art / (name + ".png")), "renderer": renderer,
                                   "scheme": scheme, "strength": strength, "state": "attention"}), flush=True)
         # Isolate real Window mode hint dye in both renderers as well.
@@ -243,6 +295,16 @@ try:
                     strong = images[(renderer, scheme, 1.5, state)]
                     assert changed(faint, current) and changed(current, strong), (renderer, scheme, state, "strength did not change pixels")
                     print(f"PASS {renderer} {scheme} {state}: 0.25, 1 and 1.5 produce distinct pixels", flush=True)
+
+        for scheme in ("light", "dark"):
+            for state in ("focus", "attention"):
+                for strength in strengths:
+                    r = rest[(scheme, strength, state)]
+                    assert r["awake_shot_awake"] and r["slept"] and r["differing"] <= 50 and r["largest"] <= 6, \
+                        (scheme, strength, state, {k: v for k, v in r.items() if k != "image"})
+                faint, current, strong = (rest[(scheme, v, state)]["image"] for v in (.25, 1.0, 1.5))
+                assert changed(faint, current) and changed(current, strong), (scheme, state, "strength did not change the sleeping goo")
+                print(f"PASS goo {scheme} {state}: 0.25, 1 and 1.5 look the same asleep as awake, and stay distinct at rest", flush=True)
 
         # A16's separate neutral term is unit-checked in state-dye-test.cpp. Pixel identity is not
         # a valid integration assertion here: GO1's connected field may carry nearby state dye
