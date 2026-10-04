@@ -295,15 +295,30 @@ struct renderer_t::impl
             glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
             if (!linked) available = false;
         }
+        // GO24: the refraction cache's alpha is the dye's share of the color.
+        const std::string cached_params =
+            "float dyeShare=hintAmount>0.?0.:(1.-wallBand)*(1.-milk*.8)*(.85*dyeBlend*diff+"
+            "rim*.22*(uNeutralTint>.5?dyeTint:1.)+cloud*uEmissivity*.35+.25*pulse*.75);"
+            "OUT=vec4(clamp((refr-p)/32.+.5,0.,1.),"
+            "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),clamp(dyeShare/1.5,0.,1.));";
+        auto params_to = [&](const std::string &output)
+        {
+            std::string text = cached_params;
+            text.replace(text.find("OUT"), 3, output);
+            return text;
+        };
         auto cached_shader = [&](bool params)
         {
             std::string shader = render_shader;
-            const std::string background = "vec3 bg=texture2D(uBackground,bgUV).rgb,dye=";
-            shader.replace(shader.find(background), background.size(), "vec3 bg=vec3(0.),dye=");
+            // GO24: neither cache holds the dye. The intrinsic one is the surface with no
+            // dye (hint dye and control milk, which replace or whiten it, stay); the other
+            // carries the dye's share of the color, which is one scalar: every dye term
+            // above is the dye times a factor. The composite multiplies the live dye in.
+            const std::string background = "vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;";
+            shader.replace(shader.find(background), background.size(), "vec3 bg=vec3(0.),dye=vec3(0.);");
             const std::string result = "gl_FragColor=vec4(clamp(color,0.,1.)*a,a);";
             shader.replace(shader.find(result), result.size(), params ?
-                "gl_FragColor=vec4(clamp((refr-p)/32.+.5,0.,1.),"
-                "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),1.);" :
+                params_to("gl_FragColor") :
                 // The background term is nonnegative, so clamping intrinsic
                 // light before compositing gives the same final clamp.
                 "gl_FragColor=vec4(clamp(color,0.,1.),a);");
@@ -314,9 +329,7 @@ struct renderer_t::impl
             // GO26: one pass writes both caches (color and coverage; refraction and light).
             std::string both = cached_shader(false);
             const std::string color = "gl_FragColor=vec4(clamp(color,0.,1.),a);";
-            both.replace(both.find(color), color.size(), color +
-                "goo_params=vec4(clamp((refr-p)/32.+.5,0.,1.),"
-                "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),1.);");
+            both.replace(both.find(color), color.size(), color + params_to("goo_params"));
             compile(cache_p, vertex, both, true, true);
             GLint linked = 0;
             glGetProgramiv(cache_p.get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
@@ -490,6 +503,23 @@ struct renderer_t::impl
         }
         return true;
     }
+    // One pass of the dye: advection, spread, state release and wallpaper pickup.
+    void dye_pass(OpenGL::program_t &dye_program, wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map,
+                  float flow, float step, bool wet_only)
+    {
+        common(dye_program, dye[1].width, dye[1].height);
+        dye_program.uniform1f("uSpread", settings.spread);
+        dye_program.uniform1f("uSwirl", settings.swirl);
+        dye_program.uniform1f("uRelease", settings.release);
+        dye_program.uniform1f("uSoak", wallpaper ? settings.soak : 0);
+        dye_program.uniform1f("uFlow", flow);
+        dye_program.uniform1f("uStep", step);
+        dye_program.uniform1f("uWetOnly", wet_only ? 1 : 0);
+        dye_program.uniformMatrix4f("uWallpaperMap", wallpaper_map);
+        bind(dye_program, "uWallpaper", 5, wallpaper ? wf::gles_texture_t::from_aux(*wallpaper).tex_id : 0);
+        draw_to(dye_program, dye[1]);
+        std::swap(dye[0], dye[1]);
+    }
     float measure(float &wave_energy, float &dye_energy)
     {
         GLuint input = 0;
@@ -544,7 +574,7 @@ bool renderer_t::supported()
 }
 bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &s, int w, int h, float time,
                         const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area,
-                        wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map)
+                        wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map, float flow)
 {
     state_t guard;
     if (!p->support())
@@ -613,15 +643,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         p->simulate(wave_program, p->wave[1], wave_area);
         std::swap(p->wave[0], p->wave[1]);
     }
-    p->common(dye_program, p->dye[1].width, p->dye[1].height);
-    dye_program.uniform1f("uSpread", s.spread);
-    dye_program.uniform1f("uSwirl", s.swirl);
-    dye_program.uniform1f("uRelease", s.release);
-    dye_program.uniform1f("uSoak", wallpaper ? s.soak : 0);
-    dye_program.uniformMatrix4f("uWallpaperMap", wallpaper_map);
-    bind(dye_program, "uWallpaper", 5, wallpaper ? wf::gles_texture_t::from_aux(*wallpaper).tex_id : 0);
-    p->draw_to(dye_program, p->dye[1]);
-    std::swap(p->dye[0], p->dye[1]);
+    p->dye_pass(dye_program, wallpaper, wallpaper_map, flow, 1, false);
     packed = p->packed;
     steps++;
     if (steps % 30 == 0)
@@ -631,9 +653,23 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return true;
 }
+void renderer_t::flow_dye(wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map, float flow,
+                          float step, int passes)
+{
+    if (!p->ready)
+        return;
+    state_t guard;
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    p->has_wallpaper = wallpaper && p->settings.soak > 0;
+    for (int i = 0; i < passes; i++)
+        p->dye_pass(p->fast ? p->dye_fast : p->dye_p, wallpaper, wallpaper_map, flow, step, true);
+    p->sampled_step = UINT64_MAX;  // a dye readback is stale now
+    ++dye_flows;
+}
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
                       const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
-              bool reuse_backdrop, const wf::regionf_t *dry)
+              bool reuse_backdrop, const wf::regionf_t *dry, const wf::regionf_t *keep)
 {
     if (!p->ready)
         return;
@@ -651,6 +687,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         capture_area |= wf::geometry_t{double(r.x1) - refract_margin, double(r.y1) - refract_margin,
             double(r.x2 - r.x1) + 2 * refract_margin,
             double(r.y2 - r.y1) + 2 * refract_margin};
+    // The backdrop is also kept wherever the goo may restore it (GO24's motion region).
+    if (keep)
+        capture_area |= *keep;
     auto capture = data.damage & capture_area;
     // Window content no goo lies on is never sampled as backdrop either.
     if (dry)
@@ -722,8 +761,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         bind(program, "uBackground", 5, bg.texture);
         glDisable(GL_BLEND);
         glEnable(GL_SCISSOR_TEST);
-        for (auto &box : data.target.framebuffer_region_from_geometry_region(data.damage) &
-                 data.target.framebuffer_region_from_geometry_region(breath_area))
+        for (auto &box : data.target.framebuffer_region_from_geometry_region(data.damage))
         {
             wf::gles::scissor_render_buffer(data.target, wlr_box_from_pixman_box(box));
             program.attrib_pointer("position", 2, 0, vertices);
@@ -971,6 +1009,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             bind(program, "uIntrinsic", 0, p->intrinsic.texture);
             bind(program, "uRefraction", 1, p->refraction.texture);
             bind(program, "uBackground", 5, bg.texture);
+            bind(program, "uDyeTex", 4, p->dye[0].texture);
+            program.uniform2f("uRes", p->width, p->height);
             if (&program == &p->composite_mix_p)
             {
                 bind(program, "uIntrinsicB", 2, p->intrinsic_b.texture);

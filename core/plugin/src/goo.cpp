@@ -86,6 +86,11 @@ class goo_node_t : public wf::scene::node_t
     // left unpainted.
     bool foreign_damage = true, own_damage = false, reuse_enabled = true, dry_enabled = true;
     int reuse_streak = 0;
+    // GO24: the dye's own clock and the sleeping watercolor tick.
+    double flow_time = 0, last_flow = 0;
+    bool water_due = false;
+    uint64_t water_ticks = 0;
+    wf::wl_timer<true> water_tick;
     bool deaf = false;  // tests only: ignore other damage, to prove the exactness test can fail
     std::string reuse_blocked;
     std::unique_ptr<wf::scene::render_instance_manager_t> scene_observer;
@@ -118,14 +123,14 @@ class goo_node_t : public wf::scene::node_t
         wf::regionf_t reuse;
         // Why the last frame took the normal path (goo-state, for tests and live reading).
         reuse_blocked = foreign ? "other damage" : !scene_observer || !reuse_enabled ? "off" :
-            !state.sleeping || whole || breath_area.empty() ? "not a sleeping breath" :
+            !state.sleeping || whole || own_area().empty() ? "not a sleeping breath" :
             reuse_streak >= 25 ? "periodic refresh" :
             !state.renderer.backdrop_ready(target) ? "backdrop not ready for this target" : "";
         if (reuse_blocked.empty() && attached && goo_enabled() && wf::get_core().is_gles2() &&
             !(state.sources.size() == 1 && !state.sources[0].emitter))
         {
             auto pixels = target.framebuffer_region_from_geometry_region(damage);
-            auto strips = target.framebuffer_region_from_geometry_region(breath_area);
+            auto strips = target.framebuffer_region_from_geometry_region(own_area());
             if ((pixels ^ strips).empty())
                 reuse = target.geometry_region_from_framebuffer_region(pixels);
             else
@@ -161,6 +166,7 @@ class goo_node_t : public wf::scene::node_t
         tick.disconnect();
         breath_tick.disconnect();
         settle_tick.disconnect();
+        water_tick.disconnect();
         observe_scene(false);
         auto it = goo::screens.find(state.output);
         if (it != goo::screens.end() && it->second == &state)
@@ -318,7 +324,7 @@ class goo_node_t : public wf::scene::node_t
     // so the backdrop is kept current there too (dry_capture).
     static constexpr size_t max_breath_rects = 16;
     wf::regionf_t dry_capture;
-    void set_breath_area(const wf::regionf_t &exact)
+    static wf::regionf_t few_rects(const wf::regionf_t &exact)
     {
         std::vector<wf::geometry_t> rects;
         for (auto &b : exact)
@@ -331,10 +337,10 @@ class goo_node_t : public wf::scene::node_t
             return wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
         };
         auto count = [] (const wf::regionf_t &region) { size_t n = 0; for (auto &b : region) { (void)b; n++; } return n; };
-        breath_area = exact;
+        auto result = exact;
         // Joining boxes can make the union band into more rectangles than were joined,
         // so aim lower until the banded result fits. One box always does.
-        for (size_t target = max_breath_rects; count(breath_area) > max_breath_rects && target >= 1; target--)
+        for (size_t target = max_breath_rects; count(result) > max_breath_rects && target >= 1; target--)
         {
             while (rects.size() > target)
             {
@@ -351,11 +357,36 @@ class goo_node_t : public wf::scene::node_t
                 rects[first] = joined(rects[first], rects[second]);
                 rects.erase(rects.begin() + second);  // one fewer each round: always ends
             }
-            breath_area.clear();
-            for (auto &r : rects) breath_area |= r;
+            result.clear();
+            for (auto &r : rects) result |= r;
         }
-        breath_area &= get_bounding_box();
-        dry_capture = dry ^ breath_area;
+        return result;
+    }
+    // GO24: where the sleeping goo's watercolor moves: the settled liquid, as few
+    // rectangles (the breathing strips lie inside it, so the two kinds of tick add up to
+    // the same damage shape). Empty until the settled region is known, or with no soak.
+    wf::regionf_t motion_area;
+    bool water_enabled = true;
+    bool water_frozen = false;  // tests: tick and repaint, but leave the dye as it is
+    bool watercolor()
+    {
+        return water_enabled && state.settings.soak > 0 && !wallpaper_nodes.empty() && wallpaper.get_buffer();
+    }
+    const wf::regionf_t &own_area() const { return motion_area.empty() ? breath_area : motion_area; }
+    void set_breath_area(const wf::regionf_t &exact)
+    {
+        breath_area = few_rects(exact) & get_bounding_box();
+        motion_area.clear();
+        if (settled_ready && state.sleeping && water_running && watercolor())
+            motion_area = few_rects((settled_area ^ dry) | breath_area) & get_bounding_box();
+        dry_capture = dry ^ own_area();
+        // Content newly inside the region has no backdrop kept yet: one ordinary repaint
+        // there (this damage is not the goo's own tick) copies it before any reuse.
+        if (attached)
+            for (auto &b : own_area())
+                wf::scene::damage_node(shared_from_this(), wf::geometry_t{
+                    double(b.x1), double(b.y1), double(b.x2-b.x1), double(b.y2-b.y1)});
+        foreign_damage = true;
     }
     void update_breathing()
     {
@@ -443,6 +474,52 @@ class goo_node_t : public wf::scene::node_t
     wf::regionf_t settled_area, breath_support;
     bool settled_ready = false;
     wf::wl_timer<true> settle_tick;
+    // GO24: when the goo falls asleep the watercolor coasts to a stop. For a while a
+    // dye-only pass runs at a slow tick, drawn by the cheap composite over the settled
+    // liquid (no simulation, no surface shading), each pass standing for less and less
+    // until it stands for nothing. Then the tick ends and the dye stays exactly as it lies:
+    // the picked-up, smeared color is kept, costs nothing, and changes only when the goo
+    // is stirred awake again or the wallpaper changes (Mike, 2026-10-03).
+    static constexpr double water_coast = 14;
+    double water_started = 0, water_length = 0;
+    bool water_running = false;
+    double water_pace() const
+    {
+        double left = 1 - (now() - water_started) / std::max(water_length, .001);
+        return std::clamp(left, 0., 1.);
+    }
+    void start_water(double seconds)
+    {
+        water_tick.disconnect();
+        water_started = now();
+        water_length = seconds;
+        water_running = seconds > 0;
+        water_tick.set_timeout(200, [this]
+        {
+            if (!state.sleeping || !attached)
+            {
+                water_running = false;
+                return false;
+            }
+            if (water_pace() <= 0)
+            {
+                // Came to rest: back to the breathing strips alone (or to no damage at all).
+                water_running = false;
+                set_breath_area(settled_ready ? whole_pixels(breath_support & settled_area) : breath_support);
+                return false;
+            }
+            if (motion_area.empty())
+                return true;
+            water_due = true;
+            ++water_ticks;
+            own_damage = true;
+            for (auto &b : motion_area)
+                wf::scene::damage_node(shared_from_this(), wf::geometry_t{
+                    double(b.x1), double(b.y1), double(b.x2-b.x1), double(b.y2-b.y1)});
+            own_damage = false;
+            return true;
+        });
+    }
     void start_settling()
     {
         settled_ready = false;
@@ -450,6 +527,7 @@ class goo_node_t : public wf::scene::node_t
         settle_tick.disconnect();
         if (!breath_tight || !attached)
             return;
+        start_water(water_coast);
         settle_tick.set_timeout(20, [this]
         {
             if (!state.sleeping || !breath_tight)
@@ -564,6 +642,9 @@ class goo_node_t : public wf::scene::node_t
             settled_ready = false;
             tightening.reset();
             settle_tick.disconnect();
+            water_tick.disconnect();
+            water_due = false;
+            water_running = false;
             set_breath_area(breath_support);
             breath_loose = true;
             }
@@ -739,7 +820,7 @@ class goo_node_t : public wf::scene::node_t
                 last_change = now();
             wake(changed);
         }
-        observe_scene(reuse_enabled && !breath_area.empty());
+        observe_scene(reuse_enabled && (!breath_area.empty() || watercolor()));
         if (state.sources.empty() || (state.sources.size() == 1 && !state.sources[0].emitter))
         {
             state.sleeping = true;
@@ -769,9 +850,15 @@ class goo_node_t : public wf::scene::node_t
                 if (!state.sleeping)
                 {
                     goo::amounts(state.sources, state.settings);
+                    double flow_now = now();
+                    flow_time += std::clamp(flow_now - last_flow, 0., .05);
+                    last_flow = flow_now;
                     bool ok = state.renderer.update(state.sources, state.settings, g.width, g.height,
                                                     state.time, state.impulses, sim_tiles(band),
-                                                    !wallpaper_nodes.empty() && wallpaper.get_buffer() ? &wallpaper : nullptr, wallpaper_map);
+                                                    !wallpaper_nodes.empty() && wallpaper.get_buffer() ? &wallpaper : nullptr, wallpaper_map,
+                                                    // Without watercolor the swirl stops with the drift, as
+                                                    // it always has, so the dye can come to rest.
+                                                    watercolor() ? flow_time : state.time);
                     state.impulses.clear();
 
                     if (!ok)
@@ -792,7 +879,10 @@ class goo_node_t : public wf::scene::node_t
                         const float sleep_energy = state.renderer.packed ? 16.f / 255.f + .0001f : .012f;
                         // The energy is read every 30 steps; one full interval after a wake
                         // makes the reading describe the response to it.
-                        if (now() - last_change > 3 && state.renderer.energy <= sleep_energy &&
+                        // GO24: watercolor dye never comes to rest, and need not: it goes on
+                        // moving in the sleeping goo. Then only the waves decide sleep.
+                        float energy = watercolor() ? state.renderer.wave_energy : state.renderer.energy;
+                        if (now() - last_change > 3 && energy <= sleep_energy &&
                             state.renderer.steps - wake_step >= 30)
                         {
                             state.sleeping = true;
@@ -800,6 +890,20 @@ class goo_node_t : public wf::scene::node_t
                             start_settling();
                         }
                     }
+                }
+                if (state.sleeping && water_due)
+                {
+                    // About nine ordinary steps a second at first (a slow drift, well under
+                    // the awake liquid's pace), easing to none. Flow, pickup and release
+                    // all scale with the step, so the smear is kept as it slows, not
+                    // pulled back to the paper under it.
+                    water_due = false;
+                    double flow_now = now(), dt = std::clamp(flow_now - last_flow, 0., .5);
+                    last_flow = flow_now;
+                    double pace = water_pace();
+                    flow_time += dt * pace;
+                    if (!water_frozen && pace > 0)
+                        state.renderer.flow_dye(&wallpaper, wallpaper_map, flow_time, dt * 9. * pace);
                 }
                 wf::regionf_t area;
                 if (state.sleeping && settled_ready)
@@ -812,7 +916,7 @@ class goo_node_t : public wf::scene::node_t
                 // The backdrop is never copied in dry content, whether or not the test
                 // switch keeps it in the drawn area.
                 state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
-                                    reuse_backdrop, &dry_capture);
+                                    reuse_backdrop, &dry_capture, &own_area());
             });
     }
 };
@@ -970,6 +1074,20 @@ struct goo_t::impl
                     n->dry_enabled = data["dry_content"].as_bool();
                     test_changed = true;
                 }
+                if (data.has_member("water_motion") && data["water_motion"].is_bool())
+                {
+                    n->water_enabled = data["water_motion"].as_bool();
+                    n->set_breath_area(n->settled_ready ? n->whole_pixels(n->breath_support & n->settled_area) : n->breath_support);
+                }
+                if (data.has_member("water_coast") && (data["water_coast"].is_int() || data["water_coast"].is_double()) &&
+                    n->state.sleeping)
+                {
+                    // Tests restart (or lengthen, or end) the coast in a sleeping goo.
+                    n->start_water(data["water_coast"].as_double());
+                    n->set_breath_area(n->settled_ready ? n->whole_pixels(n->breath_support & n->settled_area) : n->breath_support);
+                }
+                if (data.has_member("water_freeze") && data["water_freeze"].is_bool())
+                    n->water_frozen = data["water_freeze"].as_bool();
                 if (data.has_member("reuse_deaf") && data["reuse_deaf"].is_bool())
                     n->deaf = data["reuse_deaf"].as_bool();
                 if (data.has_member("breath_reuse") && data["breath_reuse"].is_bool())
@@ -1025,6 +1143,13 @@ struct goo_t::impl
             s["band_pixels"] = loose;
             s["settled_pixels"] = n->settled_ready ? settled : 0.;
             s["reuse_blocked"] = n->reuse_blocked;
+            s["water_ticks"] = (int64_t)n->water_ticks;
+            s["water_running"] = n->water_running;
+            s["dye_flows"] = (int64_t)n->state.renderer.dye_flows;
+            double motion = 0; int motion_rects = 0;
+            for (auto &b : n->motion_area) { motion += double(b.x2 - b.x1) * (b.y2 - b.y1); motion_rects++; }
+            s["motion_pixels"] = motion;
+            s["motion_rects"] = motion_rects;
             s["backdrop_reuses"] = (int64_t)n->state.renderer.backdrop_reuses;
             s["surface_pixels"] = (int64_t)n->state.renderer.surface_pixels;
             s["capture_pixels"] = (int64_t)n->state.renderer.capture_pixels;

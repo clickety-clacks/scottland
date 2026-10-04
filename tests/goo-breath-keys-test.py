@@ -42,7 +42,7 @@ def settle(what):
     time.sleep(1)
     for _ in range(600):
         s = state()
-        if s['sleeping'] and not s.get('breath_loose') and s['breath_damage']: break
+        if s['sleeping'] and not s.get('breath_loose') and s['breath_damage'] and not s.get('water_running'): break
         time.sleep(.1)
     else: raise AssertionError('goo did not settle with a breathing strip: ' + what + ' ' + json.dumps(
         {k: state().get(k) for k in ('sleeping', 'breath_loose', 'energy', 'wave_energy', 'dye_energy', 'last_wake', 'wakes', 'tighten_ms')} |

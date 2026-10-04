@@ -91,6 +91,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO23 | Dye strength: a Goo setting scales how strongly the state colors (focus accent, attention, Window mode hint dye) show in the goo and the fallback halo, from faint to today's look (default) and somewhat beyond, live. The unfocused edge keeps its own strength (A16); wallpaper soak is separate. (Mike, 2026-10-03) | not built |
 | GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. State colors (focus, attention, hints) stay legible at window walls. It must respect the GPU budget (GO17-GO21): the motion may be slow and keyframed rather than keeping the full simulation awake. (Mike, 2026-10-03) | not built (today's soak is a capped, near-invisible injection that only runs while the simulation is awake) |
 | GO26 | Breath keyframes follow a ceiling-and-scale rule. A breath uses only as many keys as its swing needs at half a device pixel of shore travel per key (10 if that is all it needs). The count never exceeds a ceiling (48 where both cache textures are written in one pass, 24 where each refresh takes two); a swing that needs more keeps the ceiling and widens the spacing just enough to cover the swing. The key count never sends the breath to the exact path: that path remains only for real failures (the second cache layer cannot be allocated, the surface cache is unavailable), for keyframes switched off, and for the test override, and whenever it is in use `goo-state` says why (`breath_exact_reason`) and the log says so once. (Mike, 2026-10-04; core) | implemented; `tests/goo-breath-keys-test.py` 13 / 13 on both GPU paths, measurements [below](#go26-ceiling-and-scale-keys-2026-10-04). Intel Xe not measured |
+| GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; plumbus headless checks and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured |
 
 ## Halo jobs with goo enabled
 
@@ -2192,3 +2193,110 @@ Tests: `goo-breath-keys-test.py` 13 / 13 on both paths (ceiling 48: 94 refreshes
 Regression on both paths: goo 50, overlap 28, breath 12, depth 26, all passing; shape
 123 with the same 7 round-widget failures as before this change; `goo-exact-test` 27 / 27
 at scale 1, scale 1.5 and rotated 90; GO17 verifier 9 / 9; no GL errors in the logs.
+## GO24: watercolor (2026-10-03)
+
+Core. Mike: "wallpaper soak doesn't seem to do anything." It did almost nothing: the old
+pickup was capped at 0.4% a step against a state release several times stronger across
+the whole band, faded to nothing near window walls (so thin bands got none), and ran only
+while the simulation was awake, which since GO17 is rare. The dye stayed the window's
+neutral color and the goo showed the wallpaper only by refraction.
+
+### What it does now
+
+- **Pickup everywhere, graded by thickness.** In the dye pass every wet texel takes the
+  color of the wallpaper beneath it (made a little richer, as wet pigment is). Thin goo
+  takes about two thirds of what thick or pooled liquid does; none is excluded. The
+  pigment's share of the band follows the soak: `soak^0.25`, about 0.59 at the shipped
+  0.12, 0.84 at 0.5, 0.97 at 0.9. State ink gives way by that share out in the band, and
+  the pickup rate follows the dye release setting, so the share holds whatever the release.
+- **Local smear.** Most of the dye's flow now runs along the band (across the field's
+  gradient) with short, slowly turning currents, so a color travels a few tens of points
+  along an edge from the paper it was lifted from and no farther. Each part of the goo
+  keeps the colors of the wallpaper beneath and near it; there is no screen-wide wash.
+- **State colors at the wall.** The surface shader draws the window's state color
+  (focus, attention, neutral; hint dye as before) in a band 1.5 to 4 points wide at the
+  wall, exact to the pixel whatever the goo's thickness. The dye grid (a quarter of the
+  output's resolution) is too coarse to hold a band that thin, so it is not left to the dye.
+- **It coasts, rests and stays.** With soak on, only the waves decide when the simulation
+  sleeps. For 14 seconds after that, a dye-only pass runs five times a second, each pass
+  standing for less until it stands for nothing; flow, pickup and release all scale with
+  it, so the smear is kept as it slows. Then the tick stops. The dye is never touched
+  again until something wakes the goo or the wallpaper's pixels change (GO20), so the
+  picture stays exactly as it lies and costs nothing.
+- **Cheap while it moves.** The cached surface no longer contains the dye: the caches hold
+  the surface's own light and the dye's share of the color, and the composite multiplies
+  the live dye in. So the dye moves without the surface shader running. The coasting
+  ticks damage the settled liquid as at most 16 rectangles, and reuse the cached backdrop
+  like a breath does (GO19/GO21), so nothing beneath is repainted.
+- With soak 0 or no background-layer client, nothing changes from GO21: the swirl stops
+  with the drift and the dye rests.
+
+`goo-state` adds `water_running`, `water_ticks`, `dye_flows`, `motion_pixels`,
+`motion_rects`. Test sessions can hold the dye still while it ticks (`water_freeze`),
+restart or lengthen the coast (`water_coast`) and switch the motion off (`water_motion`).
+
+### Pictures
+
+`tests/goo-watercolor-shots.py` (1600×1000, a wallpaper of strong color patches, shipped
+settings): `build/go24/sheet-dark.png` and `sheet-light.png` show the same corner before
+(main, soak 0.12 and 0.9: the same pale band both times) and after at soak 0, 0.12, 0.5
+and 0.9, at rest. `sequence-{dark,light}-{0.12,0.9}.png` are six frames two seconds apart
+while it coasts; `sequence-wide-0.9.png` is the same with Mike's thicker goo and swirl.
+At the shipped soak the band is clearly tinted with the colors beside it (red by the red
+patch, blue by the blue, teal by the teal) behind a pale wall line; at 0.9 it is nearly
+all pigment. The motion in the sequences is slow and small at the shipped swirl; it is
+easier to see with Mike's swirl of 3. Whether it reads as "wet watercolor" in motion
+needs his eyes on a real screen: these are stills.
+
+### Checks
+
+`tests/goo-watercolor-test.py` (real input for the drag and focus), on both GPU paths:
+14 / 14 on each. No pigment in the dye at soak 0; pigment in the full-size band at
+the shipped soak; pigment in the thin band of a window the layout has scaled to 0.32, at a
+fair part of the thick band's strength; on screen the wall row is one color along the edge
+while the band row follows the wallpaper's patches; then **a minute idle: zero simulation
+steps, zero watercolor ticks, zero dye passes, no goo draws, the dye samples exactly equal
+and the screen pixel-identical**; the pigment still there; a real window drag wakes the
+goo, leaves pigment, and it comes to rest again.
+
+`tests/goo-exact-test.sh` holds the dye still while the watercolor ticks, so its
+natural-frame comparisons (reuse, dry content, settled region, a cell and a text update
+under the film) now also cover reuse over the whole motion region; it adds that the ticks
+reuse the backdrop and that the dye moves while the goo sleeps:
+29 / 29 at scale 1, scale 1.5, rotation 90 at scale 1.25, and packed GLES 2 at
+scale 1; 28 / 28 on two outputs at scale 1.5 (the wallpaper client is on the other
+output there, so the two watercolor checks do not apply).
+
+Regression on plumbus, normal and packed paths:
+goo-test 50 / 50, overlap/hover 28 / 28, breathing 12 / 12, depth/soak 26 / 26
+on both; flow on two outputs 12 / 12; widget morph 270 / 270; widgets 196 / 196; the idle
+fixture's `--verify --visual` run passes. goo-shape is 123 pass, 7 fail on both paths, the
+same round-widget checks as on main.
+
+Three older checks assumed a goo that is still while it sleeps (pixels outside the
+breathing strips unchanged; film dye unchanged over two seconds); they now hold the
+watercolor still for that measurement, assertions unchanged. One was rewritten: the
+depth suite's "focus dye stays dominant at the red-paper window border" read the dye grid
+at the wall, which now may carry pigment; it reads the screen instead (the wall pixel is
+more focus-colored than the band beside it).
+
+### Cost (RX 580, plumbus, 2560×1600 at 120 Hz, Mike's goo settings preset, soak 0.9)
+
+| Case | main `3eea2c5` | This branch, coasting (first 14 s asleep) | This branch, at rest |
+|---|---:|---:|---:|
+| Nothing breathing | 0.0% | 0.6% | 0.0% (no ticks, no draws in a minute) |
+| Window breathing | 0.7-0.8% | 1.6% | as main |
+| Widget breathing | 0.4% | 1.1-1.2% | as main |
+
+Coasting frames composite 1.1 Mpx five times a second and reuse the backdrop (25 of 26).
+In the 1600×1000 screenshot scene the same holds: 0.5-0.6% coasting against 0.3% at rest
+and at soak 0 (one window breathing throughout). Intel Xe is not measured; by the ratio
+seen for breathing, coasting would be a point or two there for those 14 seconds after
+each wake, and nothing at rest.
+
+While measuring, the keyframed breath (GO18) turned out to be switched off on `3eea2c5`
+by the restored bulge; that is fixed separately (the GO18 follow-up above), and this
+branch sits on that fix.
+
+Not covered: a physical display; the look in motion; a video or animated wallpaper (it
+would keep waking the goo, as GO20 notes); fractional scale and rotation for the wall band.

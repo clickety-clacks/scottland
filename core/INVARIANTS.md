@@ -92,6 +92,8 @@ contour, including badges; see [its headless shape and cost checks](../docs/goo.
 GO26 gives breath keyframes a ceiling-and-scale rule (only the keys the swing needs; above the ceiling the
 spacing widens; the exact path only for real failures, with the reason reported); see [the rule and
 measurements](../docs/goo.md#go26-ceiling-and-scale-keys-2026-10-04).
+GO24 makes wallpaper soak a watercolor: local pigment in all of the goo, graded by thickness, state colors in a
+narrow wall band, coasting to rest and staying; see [the design, pictures and checks](../docs/goo.md#go24-watercolor-2026-10-03).
 GO21 makes the sleeping goo's cheap paths exact in device pixels at any scale, rotation and layout, and
 fixes backdrop reuse not hearing changes under a strip; see [the test matrix](../docs/goo.md#go21-exact-under-scale-rotation-and-two-outputs-2026-10-03).
 GO20 wakes the goo for a wallpaper only when its pixels change, and leaves dry bands and window

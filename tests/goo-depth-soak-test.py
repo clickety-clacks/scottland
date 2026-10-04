@@ -105,7 +105,11 @@ try:
           (red_dye[0]-red_dye[2])-(neutral[0]-neutral[2])>.08
           and red_dye[1]<neutral[1]-.04)
     red_border=dye(400,238); red_mid=dye(400,230)
-    check('focus dye stays dominant at the red-paper window border',red_border[2]>red_border[0]+.04)
+    # GO24: the wall's state color is drawn by the surface in a narrow band, not held in
+    # the coarse dye grid (which may carry pigment right up to the wall), so look at the screen.
+    wall_pixel=pixel('02-red-soak',400,238); band_pixel=pixel('02-red-soak',400,230)
+    check('focus dye stays dominant at the red-paper window border',
+          wall_pixel[2]-wall_pixel[0]>band_pixel[2]-band_pixel[0]+10)
     border_shift=sum(abs(a-b) for a,b in zip(red_border,neutral_border))
     mid_shift=sum(abs(a-b) for a,b in zip(red_mid,neutral_mid))
     (art/'watercolor-shore.json').write_text(json.dumps({'border':border_shift,'midband':mid_shift},indent=2))
@@ -128,8 +132,11 @@ try:
     for mode in ('press','release'): ipc('stipc/feed_button',{'combo':'BTN_LEFT','mode':mode})
     ipc('stipc/move_cursor',{'x':20,'y':20})
     check('animated window contents do not prevent sleep',settle())
+    # (GO24: the watercolor itself keeps moving; hold it so only the content could change the dye.)
+    ipc('scottland/goo-state',{'water_freeze':True})
     before=state()['steps']; film_before=dye(590,380); time.sleep(2)
     film_after=dye(590,380)
+    ipc('scottland/goo-state',{'water_freeze':False})
     check('window redraws do not step the wallpaper dye simulation',state()['steps']==before)
     check('film dye absorbs blue wallpaper through animated window',film_after[2]>film_after[0]+.1)
     check('animated content never enters film dye',sum(abs(a-b) for a,b in zip(film_before,film_after))<.015)
