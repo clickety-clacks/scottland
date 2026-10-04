@@ -106,16 +106,31 @@ Double-tap requests the widget step directly.
     "center destinations are always at 100%" decide it, even though L31 lets a Shift drop leave a
     window scaled in the center for as long as it stays there. Card opens and presenting go only
     to the center, so they restore 100%.
-  - Rails: no pin. Widgets are always at 100% (WG4). A widget dragged off its rail follows its new
-    zone (widget drags never pin, L31), never a pin its window had before it became a widget; that
-    pin stays in its own zone's memory.
+  - Rails: no pin. Widgets are always at 100% (WG4), so a window's pin is cleared the moment it
+    becomes a widget (any way: rail drop, hint cycle, double tap, keyboard push). The zone it left
+    already has the pin in its memory (drag starts and cycles record it first), so every way off
+    the rail starts clean: a hint cycle back to the periphery restores that zone's pin, a card
+    opens at 100%, and a widget dragged off its rail follows its new zone (widget drags never pin).
+  - Returns versus moves (Mike, 2026-10-04: every path by which a window leaves a periphery zone
+    and returns to it restores that zone's pin). Returns put the window back on a remembered spot:
+    hint presses in Window mode (WK6/WK7 slow presses, the WK15 double tap to the rail and back),
+    cycles through the widget, and Esc. Esc returns the window in its original form (L27), pin
+    included, and leaves the zone memory holding it; a Shift drag of an unpinned window, cancelled,
+    leaves no pin. Drags and arrow pushes are moves to a new place, where L31 applies as before:
+    Shift keeps the scale, otherwise the window follows the zone (tenet 3: moving it is how you
+    change its priority).
   - Left and right periphery keep separate pins; a pin comes back only with its own zone's
     remembered spot and never reaches another zone. If zone settings have since put that spot
     inside the center zone, the window comes back there at 100% (tenet 4).
   - Screens: the pin is the window's own scale factor, the same logical size on any screen, so it
     is applied unchanged on a screen of another size or output scale, like its normalized spot.
   - Persistence: pins travel in the desktop model's placement record (`positions[z].pin`), so a
-    marked reload keeps them; closing the window forgets them with the rest of its memory.
+    marked reload keeps them; closing the window forgets them with the rest of its memory. A pin
+    read back (a zone pin or the current `pinned_scale`) is clamped to the scale range, 0.05 to 1;
+    zero, negative or non-numeric values read as no pin.
+  - Known edge: when zone settings have moved a remembered spot into the center, the window comes
+    back there at 100% and the memory still holds the pin until the window next leaves that spot
+    (which records it with no pin). Only reachable by changing zone settings between cycles.
 
 
 - WK29, tenets 2 and 4: animate only the drawn position and scale, preserving the destination,
@@ -1045,25 +1060,34 @@ logic changed. Logs and screenshots are under
 
 ## WP1/WP5 zone scale pins (2026-10-04, plumbus headless)
 
-`tests/zone-pin-test.sh` (needs `SCOTTLAND_HEADLESS_DIR`; starts its own widget session) drives
-real stipc Super/Shift drags and Alt hint presses. It Shift-drags a window from far out in the
-left periphery (scale 0.48) inward to a spot whose zone scale is 0.85, cycles it to the center
-(100%, no pin) and back, then checks the exact spot, the 0.48 pin, a drawn cycle target equal to the
-pin from its first sampled frame, and no scale change in the 0.6 s after landing. It also checks:
-a window with no pin returns at the zone scale; a plain drag to the right periphery records no pin
-there and cycling back doesn't take the left pin; pins survive a marked reload and are still
-restored afterward; and a window Shift-dragged onto the rail, then dragged off as a widget
-without Shift, follows its zone. `tests/windowing-unit.sh` covers the pure memory rules
-(`remember_spot`/`remembered_pin` in `window-memory.hpp`).
+`tests/zone-pin-test.sh` (needs `SCOTTLAND_HEADLESS_DIR`) first builds this checkout's plugin and
+test helpers (`make test-hooks`) and refuses to run without them, so it never falls back to a
+machine's dev-installed helpers; then it starts its own widget session and drives real stipc
+Super/Shift drags, Esc, Shift+arrows and Alt hint presses. It covers: a Shift pin in the left
+periphery (0.48, where the zone scale is 0.85) restored with its spot after a cycle to the center,
+drawn toward the pin from the first frame with no change after landing; the same without a pin;
+no leak to the right periphery; pins kept across a marked reload; the pin cleared on becoming a
+widget and a widget dragged off its rail following its zone; hint keys periphery -> center ->
+widget -> periphery in one hold, periphery -> center -> periphery, and a WK15 double tap to the
+rail then rail -> center -> periphery, each restoring the spot and pin; Esc on a plain drag of a
+pinned window (spot and pin back, and still restored by a later cycle), Esc on a Shift drag over
+the rail (the window, not a widget, with its pin), Esc on a Shift drag of an unpinned window (no
+pin); a Shift+arrow pin recorded and restored; and a remembered spot moved into the center by a
+wider center zone returning at 100%. `tests/windowing-unit.sh` covers the pure memory rules
+(`remember_spot`, `remembered_pin`, `valid_pin` in `window-memory.hpp`), including the clamp.
 
-| Suite (plumbus, isolated checkout, final build) | Branch | origin/main `afa8309` |
+| Suite (plumbus, isolated checkouts) | Branch | Before |
 |---|---|---|
-| Windowing unit | 191 passed | — |
-| Zone pin real input | 17 passed | 9 passed, 8 failed (the pin returns at the zone scale; it is never stored or reloaded; a stale pin comes off the rail) |
-| Windowing end-to-end | 102 passed | 102 passed |
-| Present (L30) | 0 failed | 0 failed |
-| Drag coast | 25 passed, 2 failed | the same 2 hint-avoidance failures |
-| State regressions | stops at the late-widget fixture | stops at the same point |
+| Windowing unit | 194 passed | — |
+| Zone pin real input | 32 passed (twice, from a checkout with no prebuilt helpers) | `bc71c66`: 27 passed, 5 failed (all Esc checks and the widget pin clear); origin/main fails the pin restore itself |
+| Windowing end-to-end | 102 passed | origin/main 102 passed |
+| Widgets | all passed | — |
+| Present (L30) | 0 failed | origin/main 0 failed |
+| Drag coast | 25 passed, 2 failed | origin/main: the same 2 hint-avoidance failures |
+| State regressions | stops at the late-widget fixture | origin/main: stops at the same point |
+| Widget morph | 262–269 of 270, timing checks vary by run | origin/main 266–270 of 270, run side by side under the same load |
 
-The drag-coast and state-regression failures are identical on origin/main and don't involve zone
-memory. No live session on osanwe or plumbus was installed into, reloaded or used.
+Plumbus carried a load average of 11–16 from other agents' sessions during the widget-morph runs;
+its failures are timing samples that differ from run to run on both builds, and no pins occur in
+it. No live session on osanwe or plumbus was installed into, reloaded or used; nothing ran on
+osanwe.

@@ -1009,6 +1009,12 @@ int main()
             "rail memory never keeps a pin: widgets don't scale (WG4)");
         remember_spot(memory, zone::right_periphery, {.85,.6}, 0.0);
         check(!remembered_pin(memory, zone::right_periphery), "a zero or negative scale is no pin");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, 7.5);
+        check(remembered_pin(memory, zone::right_periphery) == 1.0, "a pin read back above full scale is clamped to 1");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, .001);
+        check(remembered_pin(memory, zone::right_periphery) == .05, "a pin read back below the minimum scale is clamped");
+        remember_spot(memory, zone::right_periphery, {.85,.6}, std::nan(""));
+        check(!remembered_pin(memory, zone::right_periphery), "a NaN scale is no pin");
         window_memory empty; empty.pins[1] = .5;
         check(!remembered_pin(empty, zone::left_periphery), "a pin without a remembered spot is never restored");
     }
