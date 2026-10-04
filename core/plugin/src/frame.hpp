@@ -399,6 +399,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     std::function<void(wayfire_toplevel_view, handle_t, int touch_id)> on_press;
     std::function<void(wayfire_toplevel_view)> on_close;  // the close dot (default: close the view)
     std::shared_ptr<widget_morph_t> presentation;
+    // Generic drag-owned layout audition. Independent of glides, widget morphs and the live
+    // transform on the dragged view; committed moves clear this after real geometry applies.
+    double drag_layout_x = 0, drag_layout_y = 0;
     std::function<bool(wayfire_toplevel_view)> is_widget;
 
     bool can_resize() const
@@ -525,13 +528,13 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     {
         // The base transformer scales about the center. Cancel its movement of the
         // rail-side edge, without stealing the translation owned by a glide.
-        return translation_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
+        return translation_x + drag_layout_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
             (window_geometry().width - presentation->width) * 0.5 : 0);
     }
 
     float get_translation_y() const override
     {
-        return translation_y + (presentation ? presentation->dy : 0);
+        return translation_y + drag_layout_y + (presentation ? presentation->dy : 0);
     }
 
     float get_alpha() const override

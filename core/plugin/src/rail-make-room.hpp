@@ -1,0 +1,251 @@
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+namespace scottland::rail
+{
+// WG26's rail solve is deliberately small and synchronous. The cap is checked before
+// copying, sorting, or allocating any per-actor state.
+static constexpr size_t MAX_ACTORS = 256;
+static constexpr double CONTACT = 1.0;
+static constexpr double DIRECTION_MARGIN = 6.0;
+static constexpr double EPSILON = 1e-9;
+
+struct interval_t
+{
+    uint64_t id = 0;
+    double lo = 0, hi = 0;
+};
+
+enum class status_t { clear, overlap, skipped };
+
+class solver_t
+{
+  public:
+    template<class Range>
+    bool begin(const Range& source)
+    {
+        // Do not even ask for an iterator on the over-cap path. A caller may provide a
+        // cheap count-only range when the desktop contains more actors than WG26 considers.
+        if (source.size() > MAX_ACTORS)
+        {
+            ready = false;
+            skipped = true;
+            result = status_t::skipped;
+            return false;
+        }
+
+        clear();
+        original.reserve(source.size());
+        for (const auto& item : source)
+        {
+            original.push_back(item);
+        }
+
+        const size_t count = original.size();
+        directions.assign(count, 0);
+        offsets.assign(count, 0.0);
+        slack.resize(count);
+        chain.reserve(count);
+        down_order.reserve(count);
+        up_order.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+        {
+            down_order.push_back(i);
+            up_order.push_back(i);
+        }
+        std::stable_sort(down_order.begin(), down_order.end(), [&] (size_t a, size_t b)
+        {
+            return original[a].lo < original[b].lo ||
+                (original[a].lo == original[b].lo && original[a].id < original[b].id);
+        });
+        std::stable_sort(up_order.begin(), up_order.end(), [&] (size_t a, size_t b)
+        {
+            return original[a].hi > original[b].hi ||
+                (original[a].hi == original[b].hi && original[a].id < original[b].id);
+        });
+        ready = true;
+        skipped = false;
+        result = status_t::clear;
+        return true;
+    }
+
+    status_t solve(double drag_lo, double drag_hi, double top, double bottom,
+        double direction_margin = DIRECTION_MARGIN)
+    {
+        if (!ready || skipped)
+        {
+            result = status_t::skipped;
+            return result;
+        }
+
+        std::fill(offsets.begin(), offsets.end(), 0.0);
+        result = status_t::clear;
+        if (!std::isfinite(drag_lo) || !std::isfinite(drag_hi) || !std::isfinite(top) ||
+            !std::isfinite(bottom) || drag_hi < drag_lo || bottom < top)
+        {
+            return invalid_result();
+        }
+
+        const double drag_center = (drag_lo + drag_hi) * 0.5;
+        for (size_t i = 0; i < original.size(); ++i)
+        {
+            const auto& item = original[i];
+            if (!std::isfinite(item.lo) || !std::isfinite(item.hi) || item.hi < item.lo)
+            {
+                return invalid_result();
+            }
+
+            const double center = (item.lo + item.hi) * 0.5;
+            const double margin = std::max(direction_margin, 0.10 * (item.hi - item.lo));
+            int8_t& side = directions[i];
+            if (!side)
+            {
+                side = center >= drag_center ? 1 : -1;
+            } else if (side < 0 && drag_center < center - margin)
+            {
+                side = 1;
+            } else if (side > 0 && drag_center > center + margin)
+            {
+                side = -1;
+            }
+        }
+
+        chain.clear();
+        for (size_t i : down_order)
+        {
+            if (directions[i] > 0) chain.push_back(i);
+        }
+        push_chain(drag_hi, bottom, 1.0);
+
+        chain.clear();
+        for (size_t i : up_order)
+        {
+            if (directions[i] < 0) chain.push_back(i);
+        }
+        push_chain(-drag_lo, -top, -1.0);
+
+        if (!validate(top, bottom))
+        {
+            std::fill(offsets.begin(), offsets.end(), 0.0);
+            result = status_t::overlap;
+        }
+        return result;
+    }
+
+    const std::vector<interval_t>& actors() const { return original; }
+    const std::vector<int8_t>& latched_directions() const { return directions; }
+    const std::vector<double>& shifts() const { return offsets; }
+    status_t status() const { return result; }
+    bool is_ready() const { return ready; }
+    bool is_skipped() const { return skipped; }
+
+  private:
+    std::vector<interval_t> original;
+    std::vector<size_t> down_order, up_order, chain;
+    std::vector<int8_t> directions;
+    std::vector<double> offsets, slack;
+    bool ready = false, skipped = false;
+    status_t result = status_t::skipped;
+
+    void clear()
+    {
+        original.clear();
+        down_order.clear();
+        up_order.clear();
+        chain.clear();
+        directions.clear();
+        offsets.clear();
+        slack.clear();
+        ready = false;
+        skipped = false;
+        result = status_t::skipped;
+    }
+
+    status_t invalid_result()
+    {
+        std::fill(offsets.begin(), offsets.end(), 0.0);
+        result = status_t::overlap;
+        return result;
+    }
+
+    double mirrored_lo(size_t index, double sign) const
+    {
+        return sign > 0 ? original[index].lo : -original[index].hi;
+    }
+
+    double mirrored_hi(size_t index, double sign) const
+    {
+        return sign > 0 ? original[index].hi : -original[index].lo;
+    }
+
+    void push_chain(double drag_end, double wall, double sign)
+    {
+        if (chain.empty()) return;
+
+        const double first_lo = mirrored_lo(chain.front(), sign);
+        const double requested = std::max(0.0, drag_end + CONTACT - first_lo);
+        double accumulated_slack = 0.0;
+        double capacity = std::numeric_limits<double>::infinity();
+        for (size_t k = 0; k < chain.size(); ++k)
+        {
+            const size_t index = chain[k];
+            if (k)
+            {
+                const double gap = mirrored_lo(index, sign) - mirrored_hi(chain[k - 1], sign);
+                accumulated_slack += gap - std::min(CONTACT, gap);
+            }
+            slack[k] = accumulated_slack;
+            capacity = std::min(capacity, wall - mirrored_hi(index, sign) + accumulated_slack);
+        }
+
+        const double first = std::min(requested, std::max(0.0, capacity));
+        if (first + EPSILON < requested)
+        {
+            result = status_t::overlap;
+        }
+        for (size_t k = 0; k < chain.size(); ++k)
+        {
+            offsets[chain[k]] = sign * std::max(0.0, first - slack[k]);
+        }
+    }
+
+    bool validate(double top, double bottom) const
+    {
+        for (size_t i = 0; i < original.size(); ++i)
+        {
+            const double lo = original[i].lo + offsets[i];
+            const double hi = original[i].hi + offsets[i];
+            if (!std::isfinite(offsets[i]) || lo < top - EPSILON || hi > bottom + EPSILON)
+            {
+                return false;
+            }
+        }
+
+        for (size_t k = 1; k < down_order.size(); ++k)
+        {
+            const size_t a = down_order[k - 1], b = down_order[k];
+            if (directions[a] > 0 && directions[b] > 0 &&
+                original[b].lo + offsets[b] < original[a].lo + offsets[a] - EPSILON)
+            {
+                return false;
+            }
+        }
+        for (size_t k = 1; k < up_order.size(); ++k)
+        {
+            const size_t a = up_order[k - 1], b = up_order[k];
+            if (directions[a] < 0 && directions[b] < 0 &&
+                original[b].hi + offsets[b] > original[a].hi + offsets[a] + EPSILON)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+}
