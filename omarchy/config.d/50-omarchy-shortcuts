@@ -5,14 +5,15 @@ Called by start-scottland with the base Wayfire config as its argument; prints a
 that start-scottland appends. Runs every session start, so Hyprland shortcut changes carry over.
 
   - Shortcuts that run commands (menus, apps, media keys, screenshots, toggles) are kept.
-  - Shortcuts that only make sense in Hyprland (workspaces, tiling, hyprctl scripts) are skipped
-    and listed in the fragment's comments and the user's override report.
+  - Shortcuts that Scottland does not use (window navigation, layout, workspaces, groups) or
+    cannot translate are skipped and listed in the fragment's comments and grouped report.
   - Where one clashes with another default, the Omarchy shortcut usually wins; Scottland feature
     keys and key_remaps combos are reserved for Scottland and listed as displaced.
 
 The report is saved at ~/.local/state/scottland/omarchy-overrides.txt and opened only when its
 content has not been shown before. Setup opens it once; startup defers a pending report until the
-compositor and shim are running.
+compositor and shim are running. Omarchy's default coding agent is preferred, with the editor as
+fallback.
 
 The Lua scan follows omarchy-menu-keybindings: the config runs against a stand-in `hl` that
 records binds instead of applying them. This one also honours hl.unbind.
@@ -34,6 +35,7 @@ HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
 
 LUA_SCAN = r'''
 local order, binds = {}, {}
+local baseline = os.getenv("SCOTTLAND_OMARCHY_BASELINE_SCAN") == "1"
 
 local function normalize(keys)
   local mods, key = {}, ""
@@ -63,6 +65,28 @@ local function literal(value)
   return "nil"
 end
 
+local function option_signature(opts)
+  local parts = {}
+  for key, value in pairs(opts) do
+    if key ~= "description" then parts[#parts + 1] = tostring(key) .. "=" .. literal(value) end
+  end
+  table.sort(parts)
+  return table.concat(parts, ",")
+end
+
+local function from_user_omarchy_plugin()
+  if baseline then return false end
+  local plugin_root = (os.getenv("HOME") or "") .. "/.config/omarchy/plugins/"
+  for level = 2, 16 do
+    local info = debug.getinfo(level, "S")
+    if not info then break end
+    local source = info.source or ""
+    if source:sub(1, 1) == "@" then source = source:sub(2) end
+    if source:sub(1, #plugin_root) == plugin_root then return true end
+  end
+  return false
+end
+
 local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
 
 local function dsp_proxy(path)
@@ -87,13 +111,21 @@ hl = setmetatable({
     opts = opts or {}
     local mods, key = normalize(keys)
     local id = mods .. "+" .. key
-    local kind, arg = "", ""
+    local kind, arg, signature = "", "", ""
     if type(action) == "table" and action.__scottland then kind, arg = action.kind, action.arg
     elseif type(action) == "string" then kind, arg = "exec", action
-    elseif type(action) == "function" then kind, arg = "function", "" end
+    elseif type(action) == "function" then
+      kind = "function"
+      local info = debug.getinfo(action, "S")
+      signature = info.source .. ":" .. tostring(info.linedefined) .. ":" .. tostring(info.lastlinedefined)
+    end
+    local row = { mods, key, opts.description or "", kind, arg,
+                  (opts["repeat"] or opts.repeating) and "1" or "0",
+                  opts.release and "1" or "0", opts.locked and "1" or "0",
+                  opts.mouse and "1" or "0", signature, option_signature(opts),
+                  from_user_omarchy_plugin() and "1" or "0" }
     if not binds[id] then order[#order + 1] = id end
-    binds[id] = { mods, key, opts.description or "", kind, arg, opts["repeat"] and "1" or "0",
-                  opts.release and "1" or "0" }
+    binds[id] = row
     return noop
   end,
   unbind = function(keys)
@@ -104,18 +136,42 @@ hl = setmetatable({
   get_config = function() return nil end,
 }, { __index = function() return noop end })
 
--- A module that fails against the stand-in must not stop the scan of everything after it.
 local real_require = require
-require = function(name)
-  local ok, result = pcall(real_require, name)
-  if ok then return result end
-  io.stderr:write("skipped module " .. tostring(name) .. ": " .. tostring(result) .. "\n")
-  package.loaded[name] = noop
-  return noop
+if baseline then
+  local root = os.getenv("OMARCHY_PATH") or "/usr/share/omarchy"
+  package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
+  _G.omarchy_preinstalled_bindings = true
+  _G.omarchy_default_bindings = true
+  local ok, err = pcall(function()
+    real_require("default.hypr.helpers")
+    local loaded = 0
+    for _, module in ipairs({ "media", "clipboard", "tiling", "utilities", "voxtype", "applications" }) do
+      local path = root .. "/default/hypr/bindings/" .. module .. ".lua"
+      local file = io.open(path, "r")
+      if file then
+        file:close()
+        real_require("default.hypr.bindings." .. module)
+        loaded = loaded + 1
+      end
+    end
+    if loaded == 0 then error("no shipped binding modules found under " .. root) end
+  end)
+  if not ok then
+    io.stderr:write("baseline scan failed: " .. tostring(err) .. "\n")
+    os.exit(2)
+  end
+else
+  -- A user module that fails against the stand-in must not stop the rest of the live scan.
+  require = function(name)
+    local ok, result = pcall(real_require, name)
+    if ok then return result end
+    io.stderr:write("skipped module " .. tostring(name) .. ": " .. tostring(result) .. "\n")
+    package.loaded[name] = noop
+    return noop
+  end
+  local ok, err = pcall(dofile, os.getenv("HOME") .. "/.config/hypr/hyprland.lua")
+  if not ok then io.stderr:write("scan failed: " .. tostring(err) .. "\n") end
 end
-
-local ok, err = pcall(dofile, os.getenv("HOME") .. "/.config/hypr/hyprland.lua")
-if not ok then io.stderr:write("scan failed: " .. tostring(err) .. "\n") end
 local printed = {}
 for _, id in ipairs(order) do
   local b = binds[id]
@@ -159,6 +215,42 @@ DISPATCHERS = {
     "hl.dsp.window.fullscreen": ("wm-actions", "toggle_fullscreen"),
 }
 
+# The report groups shortcuts by why Scottland changes or omits them. Keep explanations concise
+# and generic so the same report works with any Omarchy configuration.
+REPORT_GROUPS = {
+    "workspaces": ("Scottland has no workspaces",
+                   "Scottland keeps every window on one spatial desktop; it does not switch or move windows between workspaces."),
+    "layout": ("Scottland does its own window layout (no tiling)",
+               "Scottland arranges windows spatially by moving and scaling them; it does not tile them."),
+    "window_navigation": ("Scottland uses its own window navigation",
+                          "Window mode helps you focus visible windows without hiding the others."),
+    "groups": ("Scottland has no window groups",
+               "Scottland treats windows individually and does not provide grouped-window actions."),
+    "window_mode": ("Used by Scottland Window mode",
+                    "Window mode uses Alt alone to show hints and these keys to focus center windows while keeping the others visible."),
+    "widget_controls": ("Used by Scottland widget controls",
+                        "Scottland uses these keys to collapse and expand its widget cards."),
+    "window_controls": ("Used by Scottland window controls",
+                        "Scottland uses these bindings to move or resize windows through its spatial layout."),
+    "settings": ("Used by Scottland Settings",
+                 "Opens the desktop controls for spatial layout, Goo, and Window mode."),
+    "reload": ("Used by Scottland's reload action",
+               "This key reloads Scottland without closing its windows."),
+    "other_feature": ("Used by a Scottland feature",
+                      "Scottland keeps this key for one of its own desktop features."),
+    "app_remaps": ("App-specific remaps",
+                   "Scottland translates keys before bindings and the app see them, preserving their intended editing effect in matching apps."),
+    "super_w": ("Scottland leaves Super+W unbound",
+                "A single press should not close a window; Scottland keeps closing an explicit action."),
+    "unsupported": ("Unsupported in Scottland",
+                    "Scottland has no equivalent for these actions, so they have no shortcut here."),
+}
+
+REPORT_GROUP_ORDER = {name: index for index, name in enumerate((
+    "workspaces", "layout", "window_navigation", "groups", "window_mode",
+    "widget_controls", "window_controls", "settings", "reload", "other_feature",
+    "app_remaps", "super_w", "unsupported"))}
+
 
 def evdev_names():
     names = {}
@@ -174,6 +266,8 @@ def evdev_names():
 
 
 EVDEV = evdev_names()
+BINDING_ORIGINS = {}
+ORIGIN_SCAN_COMPLETE = False
 
 
 def wayfire_key(key):
@@ -186,6 +280,65 @@ def wayfire_key(key):
         return f"KEY_{key.upper()}"
     name = KEYSYMS.get(key.lower())
     return f"KEY_{name}" if name else None
+
+
+def scan_identity(mods, key):
+    aliases = {"CONTROL": "CTRL"}
+    modifiers = tuple(sorted({aliases.get(part.upper(), part.upper()).lower()
+                              for part in mods.split()}))
+    normalized_key = wayfire_key(key) or key.strip().upper()
+    return modifiers, normalized_key.upper()
+
+
+def report_identity(label):
+    aliases = {"CONTROL": "CTRL"}
+    modifiers, keys = [], []
+    for part in label.split("+"):
+        upper = part.strip().upper()
+        if upper in ("SUPER", "SHIFT", "CTRL", "CONTROL", "ALT"):
+            modifiers.append(aliases.get(upper, upper))
+        elif part.strip():
+            keys.append(part.strip())
+    return scan_identity(" ".join(modifiers), "+".join(keys))
+
+
+def parse_scan_rows(output):
+    rows = []
+    for line in output.splitlines():
+        fields = (line.split("\t") + [""] * 12)[:12]
+        mods, key, description, kind, arg, repeat, release, locked, mouse, function, options, _plugin = fields
+        rows.append({"identity": scan_identity(mods, key),
+                     "signature": (kind, arg, repeat, release, locked, mouse, function, options),
+                     "user_plugin": fields[11] == "1"})
+    return rows
+
+
+def update_binding_origins(live_output, defaults_output, complete):
+    global BINDING_ORIGINS, ORIGIN_SCAN_COMPLETE
+    ORIGIN_SCAN_COMPLETE = complete
+    BINDING_ORIGINS = {}
+    default_signatures = {}
+    if complete:
+        for row in parse_scan_rows(defaults_output):
+            default_signatures.setdefault(row["identity"], set()).add(row["signature"])
+    for row in parse_scan_rows(live_output):
+        identity = row["identity"]
+        if row["user_plugin"]:
+            # A user plugin remains user-added even when its binding matches Omarchy's default.
+            origin = "Your custom/changed shortcut"
+        elif not complete:
+            continue
+        else:
+            origin = "Omarchy default" if row["signature"] in default_signatures.get(identity, set()) \
+                else "Your custom/changed shortcut"
+        BINDING_ORIGINS[identity] = origin
+
+
+def source_for_label(label):
+    identity = report_identity(label)
+    if identity is not None and identity in BINDING_ORIGINS:
+        return BINDING_ORIGINS[identity]
+    return "Source not verified" if not ORIGIN_SCAN_COMPLETE else "No Omarchy shortcut on this key"
 
 
 def combo(mods, key):
@@ -325,10 +478,14 @@ def pretty_keys(value):
              "TAB": "Tab", "SPACE": "Space", "ENTER": "Enter", "ESC": "Escape",
              "BACKSPACE": "Backspace", "DELETE": "Delete", "COMMA": ",",
              "DOT": ".", "LEFT": "Left", "RIGHT": "Right", "UP": "Up", "DOWN": "Down"}
+    modifier_order = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
     parts = re.split(r"[+\s]+", value.strip())
-    pretty = []
+    modifiers, pretty = [], []
     for part in parts:
         if not part:
+            continue
+        if part.upper() in modifier_order:
+            modifiers.append(part.upper())
             continue
         code = re.fullmatch(r"code:(\d+)", part, re.IGNORECASE)
         if code:
@@ -336,45 +493,241 @@ def pretty_keys(value):
             if evdev and evdev.startswith("KEY_"):
                 part = evdev[4:]
         pretty.append(names.get(part.upper(), part.upper() if len(part) == 1 else part.title()))
-    return "+".join(pretty)
+    return "+".join([names[mod] for mod in sorted(set(modifiers), key=modifier_order.get)] + pretty)
+
+
+def report_entry(group, label, description, now, origin=None):
+    heading, explanation = REPORT_GROUPS[group]
+    keys = pretty_keys(label)
+    was = (description or f"Shortcut on {keys}").strip().rstrip(".")
+    return {"heading": heading, "why": explanation, "keys": keys,
+            "was": was, "now": now, "origin": origin or source_for_label(label),
+            "order": REPORT_GROUP_ORDER[group]}
+
+
+def feature_report_group(section, option):
+    if section == "scottland-key-remap":
+        return "app_remaps"
+    if section == "scottland":
+        if option in ("center_switcher_next", "center_switcher_previous"):
+            return "window_mode"
+        if option == "minimize_widget":
+            return "widget_controls"
+        if option in ("move", "move_shift", "resize", "resize_alt"):
+            return "window_controls"
+        return "other_feature"
+    option = option.split("binding_", 1)[-1]
+    if option == "scottland_settings":
+        return "settings"
+    if option == "scottland_reload":
+        return "reload"
+    return "other_feature"
+
+
+def omission_report_group(kind, action, description, note):
+    text = f"{description} {action} {note}".casefold()
+    path = action.casefold().split("(", 1)[0].rstrip(".")
+    if "group" in text:
+        return "groups"
+    if ("workspace layout" in text or path.startswith("hl.dsp.layout") or
+            re.search(r"\b(layout|tiling|tiler|tile|dwindle|master|splitratio|floating)\b", text)):
+        return "layout"
+    if "workspace" in text:
+        return "workspaces"
+    if path.startswith("hl.dsp.window."):
+        operation = path.rsplit(".", 1)[-1]
+        if operation in {"move", "resize", "swap", "toggle_floating", "togglefloating"}:
+            return "layout"
+        if operation in {"focus", "switch", "next", "previous", "prev", "cycle", "movefocus"}:
+            return "window_navigation"
+    if re.search(r"\b(movefocus|focuswindow|cyclenext|cycleprev|focuscurrentorlast)\b", text):
+        return "window_navigation"
+    if re.search(r"\b(layoutmsg|togglesplit|swapwindow|movewindow|resizeactive|moveactive)\b", text):
+        return "layout"
+    if re.search(r"\b(window|windows)\b", text) and re.search(
+            r"\b(focus|switch|next|previous|prev|cycle|navigate)\b", text):
+        return "window_navigation"
+    return "unsupported"
+
+
+def omarchy_action_description(description, kind, action, group):
+    if description and description.strip():
+        return description.strip().rstrip(".")
+    if group == "workspaces":
+        target = re.search(r"\bworkspace\s*=\s*[\"']?([^,}\"']+)|\bworkspace\s+([+-]?\w+)",
+                           action, re.IGNORECASE)
+        if target:
+            return f"Switch to workspace {(target.group(1) or target.group(2)).strip()}"
+    if group == "layout" and "togglesplit" in action.casefold():
+        return "Toggle the window split layout"
+    if group == "window_navigation":
+        direction = re.search(r"\bmovefocus\s+(l|r|u|d|left|right|up|down)\b", action,
+                              re.IGNORECASE)
+        if direction:
+            direction_name = {"l": "left", "r": "right", "u": "up", "d": "down"}.get(
+                direction.group(1).casefold(), direction.group(1).casefold())
+            return f"Focus the window to the {direction_name}"
+    generic_action = {
+        "workspaces": "Switch or move windows between workspaces",
+        "layout": "Change the window layout",
+        "window_navigation": "Navigate between windows",
+        "groups": "Change the window group",
+        "unsupported": f"Run unsupported action {action}" if action else "Run an unsupported action",
+    }
+    if kind == "exec":
+        if group in generic_action and group != "unsupported":
+            return generic_action[group]
+        return f"Run command {action}" if action else "Run command"
+    if kind == "function":
+        return "Run a shortcut function"
+    if kind == "lua":
+        return generic_action.get(group, f"Run action {action}" if action else "Run shortcut action")
+    return f"Run {kind or 'shortcut'} action"
+
+
+def parse_grouped_fragment(fragment):
+    """Read grouped flavoring entries while keeping their reason headings mergeable."""
+    entries = []
+    heading = explanation = None
+    current = None
+
+    def finish():
+        nonlocal current
+        if current is None:
+            return
+        if not heading or not explanation or not all(current.get(k) for k in ("keys", "was", "now")):
+            raise ValueError(f"incomplete grouped entry in {fragment}")
+        entries.append({"heading": heading, "why": explanation,
+                        "keys": current["keys"], "was": current["was"],
+                        "now": current["now"], "origin": current.get("origin"),
+                        "order": len(REPORT_GROUP_ORDER) + 1})
+        current = None
+
+    for line in fragment.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("## "):
+            finish()
+            heading = stripped[3:].strip()
+            explanation = None
+        elif stripped.startswith("Reason:"):
+            explanation = stripped[len("Reason:"):].strip()
+        elif stripped.startswith("- Keys:") or stripped.startswith("Keys:"):
+            finish()
+            current = {"keys": stripped.split(":", 1)[1].strip()}
+        elif current is not None and stripped.startswith("Was:"):
+            current["was"] = stripped[len("Was:"):].strip()
+        elif current is not None and stripped.startswith("Now:"):
+            current["now"] = stripped[len("Now:"):].strip()
+        elif current is not None and stripped.startswith("Origin:"):
+            current["origin"] = stripped[len("Origin:"):].strip()
+        else:
+            raise ValueError(f"unrecognized grouped entry line in {fragment}: {stripped}")
+    finish()
+    return entries
+
+
+def parse_legacy_fragment(fragment):
+    """Keep the earlier four-field flavoring format readable, grouped by its Why text."""
+    entries = []
+    current = None
+
+    def finish():
+        nonlocal current
+        if current is None:
+            return
+        if not all(current.get(k) for k in ("keys", "was", "now", "why")):
+            raise ValueError(f"incomplete legacy entry in {fragment}")
+        reason = current["why"].strip()
+        entries.append({"heading": f"Flavoring: {reason.rstrip('.')}.", "why": reason,
+                        "keys": current["keys"], "was": current["was"],
+                        "now": current["now"], "origin": current.get("origin"),
+                        "order": len(REPORT_GROUP_ORDER) + 1})
+        current = None
+
+    for line in fragment.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- Keys:"):
+            finish()
+            current = {"keys": stripped[len("- Keys:"):].strip()}
+        elif current is not None and stripped.startswith(("Was:", "Now:", "Why:", "Origin:")):
+            key, value = (part.strip() for part in stripped.split(":", 1))
+            current[key.casefold()] = value
+        elif stripped:
+            raise ValueError(f"unrecognized legacy entry line in {fragment}: {stripped}")
+    finish()
+    return entries
+
+
+def read_report_fragment(fragment):
+    try:
+        return parse_grouped_fragment(fragment)
+    except ValueError as grouped_error:
+        try:
+            return parse_legacy_fragment(fragment)
+        except ValueError:
+            content = fragment.read_text().strip().replace("\n", " / ")
+            print(f"50-omarchy-shortcuts: malformed override fragment {fragment}: {grouped_error}",
+                  file=sys.stderr)
+            if not content:
+                return []
+            return [{"heading": f"Flavoring note: {fragment.stem}",
+                     "why": "This flavoring supplied a note that could not be grouped as shortcut entries.",
+                     "keys": "See flavoring note", "was": "Flavoring report fragment",
+                     "now": content, "origin": "Gooarchy flavoring",
+                     "order": len(REPORT_GROUP_ORDER) + 1}]
 
 
 def make_report(overrides):
     """Render a stable, diffable report with no timestamps or session-specific data."""
-    unique = {(o["keys"], o["was"], o["now"], o["why"]): o for o in overrides}
-    ordered = [unique[key] for key in sorted(unique, key=lambda item: tuple(v.casefold() for v in item))]
     hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
     directories = (hooks / "override-report.d",
                    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) /
                    "scottland" / "override-report.d")
     fragments = sorted(fragment for directory in directories if directory.is_dir()
                        for fragment in directory.glob("*.txt"))
+    entries = [dict(item) for item in overrides]
+    for fragment in fragments:
+        for item in read_report_fragment(fragment):
+            if not item.get("origin"):
+                item["origin"] = source_for_label(item["keys"])
+                if item["origin"] == "No Omarchy shortcut on this key":
+                    item["origin"] = "Gooarchy flavoring"
+            entries.append(item)
+    unique = {(o["heading"], o["why"], o["keys"], o["was"], o["now"], o.get("origin")): o
+              for o in entries}
+    grouped = {}
+    for item in unique.values():
+        key = (item["heading"], item["why"])
+        if key not in grouped:
+            grouped[key] = {"order": item.get("order", len(REPORT_GROUP_ORDER) + 1), "items": []}
+        grouped[key]["order"] = min(grouped[key]["order"], item.get("order", len(REPORT_GROUP_ORDER) + 1))
+        grouped[key]["items"].append(item)
+    ordered_groups = sorted(grouped.items(), key=lambda row: (
+        row[1]["order"], row[0][0].casefold(), row[0][1].casefold()))
     lines = [
         "Scottland shortcut changes",
         "===========================",
         "",
-        "This report lists Omarchy shortcuts and mappings changed in Scottland.",
+        "This report lists shortcuts and mappings from the live Omarchy configuration that Scottland changes or cannot use.",
         "It remains on disk so you can reread it later.",
-        "",
-        "Overrides",
-        "---------",
+        "[Omarchy default] matches a shipped shortcut; [Your custom/changed shortcut] came from your settings or a user-installed plugin.",
+        "[Source not verified] means the comparison could not be completed; other labels identify the shortcut or mapping source.",
         "",
     ]
-    if not ordered and not fragments:
+    if not ordered_groups:
         lines.append("No Omarchy shortcuts or mappings were changed.")
-    elif not ordered:
-        lines.append("No shortcut conflicts were detected in the current Hyprland configuration.")
     else:
-        for item in ordered:
-            lines.extend((f"- Keys: {item['keys']}", f"  Was: {item['was']}",
-                          f"  Now: {item['now']}", f"  Why: {item['why']}", ""))
-    if fragments:
-        lines.extend(("Additional overrides", "--------------------", ""))
-        for fragment in fragments:
-            content = fragment.read_text().strip()
-            if content:
-                lines.extend(content.splitlines())
-                lines.append("")
+        for (heading, explanation), group in ordered_groups:
+            lines.extend((f"## {heading}", explanation, ""))
+            for item in sorted(group["items"], key=lambda value: (
+                    value["keys"].casefold(), value["was"].casefold(), value["now"].casefold())):
+                was = item["was"].rstrip(".!? ") + "."
+                now = item["now"].rstrip(".!? ") + "."
+                origin = item.get("origin") or source_for_label(item["keys"])
+                lines.append(f"- {item['keys']} — Was: {was} Now: {now} [{origin}]")
+            lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -407,8 +760,21 @@ def write_report(content):
         return digest
 
 
+def run_lua_scan(baseline=False):
+    env = {**os.environ, "HOME": os.path.expanduser("~")}
+    if baseline:
+        env["SCOTTLAND_OMARCHY_BASELINE_SCAN"] = "1"
+    else:
+        env.pop("SCOTTLAND_OMARCHY_BASELINE_SCAN", None)
+    try:
+        return subprocess.run(["lua", "-"], input=LUA_SCAN, capture_output=True, text=True,
+                              env=env, timeout=15)
+    except (OSError, subprocess.SubprocessError) as error:
+        return subprocess.CompletedProcess(["lua", "-"], 127, "", str(error))
+
+
 def show_pending_report():
-    """Open unseen report content using Omarchy's editor launcher without blocking."""
+    """Open unseen content in Omarchy's default coding agent or editor without blocking."""
     if os.environ.get("SCOTTLAND_TEST_MODEL") == "1":
         return False
     report, seen_path, lock_path = report_paths()
@@ -422,16 +788,7 @@ def show_pending_report():
         digest = hashlib.sha256(content.encode()).hexdigest()
         if seen_path.is_file() and seen_path.read_text().strip() == digest:
             return False
-        launcher = shutil.which("omarchy-launch-editor")
-        if not launcher:
-            print("50-omarchy-shortcuts: omarchy-launch-editor is unavailable; report remains on disk", file=sys.stderr)
-            return False
-        try:
-            subprocess.Popen([launcher, str(report)], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True, close_fds=True)
-        except OSError as error:
-            print(f"50-omarchy-shortcuts: could not open override report: {error}", file=sys.stderr)
+        if not launch_override_report(report):
             return False
         fd, temporary = tempfile.mkstemp(prefix=f".{seen_path.name}.", dir=report.parent)
         try:
@@ -445,6 +802,39 @@ def show_pending_report():
             if os.path.exists(temporary):
                 os.unlink(temporary)
         return True
+
+
+def launch_override_report(report):
+    """Prefer Omarchy's selected coding agent; use its editor launcher as fallback."""
+    selector = shutil.which("omarchy-default-agent")
+    agent_launcher = shutil.which("omarchy-agent-prompt")
+    if selector and agent_launcher:
+        try:
+            selected = subprocess.run([selector], stdin=subprocess.DEVNULL,
+                                      capture_output=True, text=True, timeout=3, check=False)
+            if selected.returncode == 0 and selected.stdout.strip():
+                template_path = Path(__file__).resolve().parents[1] / "prompts/omarchy-overrides-agent.txt"
+                prompt = template_path.read_text().replace("@REPORT_PATH@", str(report))
+                subprocess.Popen([agent_launcher, prompt], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True, close_fds=True)
+                return True
+        except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+            print(f"50-omarchy-shortcuts: default agent unavailable ({error}); trying editor", file=sys.stderr)
+
+    editor = shutil.which("omarchy-launch-editor")
+    if not editor:
+        print("50-omarchy-shortcuts: no default agent or editor launcher is available; report remains on disk",
+              file=sys.stderr)
+        return False
+    try:
+        subprocess.Popen([editor, str(report)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+    except OSError as error:
+        print(f"50-omarchy-shortcuts: could not open override report: {error}", file=sys.stderr)
+        return False
+    return True
 
 
 def main():
@@ -475,13 +865,21 @@ def main():
         base = str(Path(__file__).resolve().parents[2] / "core/config/scottland.ini")
 
     scan = None
+    defaults_scan = None
     if os.path.exists(HYPR_CONFIG):
-        scan = subprocess.run(["lua", "-"], input=LUA_SCAN, capture_output=True, text=True,
-                              env={**os.environ, "HOME": os.path.expanduser("~")})
+        scan = run_lua_scan()
+        if scan.returncode == 0:
+            defaults_scan = run_lua_scan(baseline=True)
+    update_binding_origins(
+        scan.stdout if scan else "", defaults_scan.stdout if defaults_scan else "",
+        bool(scan and scan.returncode == 0 and not scan.stderr.strip() and
+             defaults_scan and defaults_scan.returncode == 0))
     scan_stdout = scan.stdout if scan else ""
     scan_stderr = scan.stderr if scan else ""
-    used, remaps, command_reasons = parse_base(base)
-    descriptions, remap_reason, alt_hold_reason = metadata_reasons()
+    if defaults_scan and defaults_scan.returncode != 0:
+        scan_stderr += "\nOmarchy default shortcut scan unavailable: " + defaults_scan.stderr
+    used, remaps, _command_reasons = parse_base(base)
+    descriptions, _remap_reason, _alt_hold_reason = metadata_reasons()
 
     command_overrides, disabled, sections, skipped, kept = [], {}, {}, [], 0
     report_overrides = []
@@ -489,35 +887,29 @@ def main():
     activators = {}  # (section, option) -> [(description, combo)]; one option can take several keys
     releases = []  # (description, keysym, command) for key-release shortcuts
 
-    def omitted(label, description, why, note, now="No shortcut in Scottland"):
+    def omitted(label, description, note, group="unsupported", now="No shortcut in Scottland",
+                kind="", action=""):
         skipped.append(f"{label}  {description}  ({note})")
-        report_overrides.append({
-            "keys": pretty_keys(label),
-            "was": f"{description} ({pretty_keys(label)})" if description else pretty_keys(label),
-            "now": now,
-            "why": why,
-        })
+        was = omarchy_action_description(description, kind, action, group)
+        report_overrides.append(report_entry(group, label, was, now))
 
     for line in scan_stdout.splitlines():
         mods, key, description, kind, arg, repeat, release = (line.split("\t") + [""] * 7)[:7]
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
         if mods == "ALT" and not key:
-            omitted(label, description,
-                    alt_hold_reason or "Window mode uses Alt alone to show hints and focus center windows.",
-                    "Scottland Window mode Alt hold",
+            omitted(label, description, "Scottland Window mode Alt hold", "window_mode",
                     now="Holding Alt now enters Scottland's Window mode and shows window hints.")
             continue
         if release == "1" and kind in ("exec", "function"):
             # The Scottland plugin runs these when the key is let go (Hyprland release binds).
             if kind == "exec" and HYPRLAND_ONLY.search(arg):
-                omitted(label, description,
-                        "This command depends on another compositor or session and has no Scottland equivalent.",
-                        f"Hyprland-only: {arg[:60]}")
+                omitted(label, description, f"Hyprland-only: {arg[:60]}",
+                        omission_report_group(kind, arg, description, "Hyprland-only command"),
+                        kind=kind, action=arg)
                 continue
             if mods:
-                omitted(label, description,
-                        "Scottland's shortcut importer cannot run a key-release action with modifiers yet.",
-                        "release with modifiers not supported yet")
+                omitted(label, description, "release with modifiers not supported yet",
+                        kind=kind, action=arg)
                 continue
             command = arg if kind == "exec" else (
                 '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call ' + shlex.quote(f"{mods}+{key}"))
@@ -526,17 +918,15 @@ def main():
             continue
         wanted = combo(mods, key)
         if not wanted:
-            omitted(label, description,
-                    "Wayfire has no key name Scottland can use for this shortcut.",
-                    "key has no Wayfire name")
+            omitted(label, description, "key has no Wayfire name", kind=kind, action=arg)
             continue
 
         target = None
         if kind == "exec":
             if HYPRLAND_ONLY.search(arg):
-                omitted(label, description,
-                        "This command depends on another compositor or session and has no Scottland equivalent.",
-                        f"Hyprland-only: {arg[:60]}")
+                omitted(label, description, f"Hyprland-only: {arg[:60]}",
+                        omission_report_group(kind, arg, description, "Hyprland-only command"),
+                        kind=kind, action=arg)
                 continue
             target = ("command", arg)
         elif kind == "lua":
@@ -545,22 +935,22 @@ def main():
                     target = (section, option)
                     break
             if not target:
-                omitted(label, description,
-                        "Scottland has one spatial desktop and uses its own window navigation and placement.",
-                        f"window/workspace action: {arg[:60]}")
+                omitted(label, description, f"window/workspace action: {arg[:60]}",
+                        omission_report_group(kind, arg, description, "untranslated dispatcher"),
+                        kind=kind, action=arg)
                 continue
         elif kind == "function":
             # scottland-luahost keeps the function (and its state) and runs it on demand.
             target = ("command", '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
                       + shlex.quote(f"{mods}+{key}"))
         else:
-            omitted(label, description,
-                    "Scottland cannot translate this shortcut action.", "unrecognized action")
+            omitted(label, description, "unrecognized action", kind=kind, action=arg)
             continue
 
         if target == ("core", "close_top_view") and normalized_combo(wanted) == (("super",), "KEY_W"):
-            why = "Scottland leaves Super+W unbound so a press cannot close a window immediately."
-            omitted(label, description, why, "O9: close remains unbound")
+            omitted(label, description, "O9: close remains unbound", "super_w",
+                    now="Super+W is left unbound; closing remains an explicit action.",
+                    kind=kind, action=arg)
             continue
 
         # Scottland keeps the Omarchy setup as far as it can, and overrides it only where Scottland's
@@ -584,16 +974,14 @@ def main():
                     app_scope = f" in apps matching {remap['apps']}" if remap.get("apps") else " in matching apps"
                     feature = f"key_remaps/{option} ({value})"
                     feature_labels.append(feature)
-                    report_overrides.append({
-                        "keys": pretty_keys(label),
-                        "was": f"{description} ({pretty_keys(label)})" if description else pretty_keys(label),
-                        "now": (f"Scottland omits this imported shortcut globally; {remap_from} sends "
-                                f"{remap_to}{app_scope}."),
-                        "why": remap_reason or "Scottland translates this key before the matching app receives it.",
-                    })
+                    report_overrides.append(report_entry(
+                        "app_remaps", label,
+                        omarchy_action_description(description, kind, arg, "app_remaps"),
+                        (f"Scottland omits this imported shortcut globally; {remap_from} sends "
+                         f"{remap_to}{app_scope}.")))
                     continue
                 if section == "scottland":
-                    short, why = descriptions.get(option, (option.replace("_", " "), ""))
+                    short, _why = descriptions.get(option, (option.replace("_", " "), ""))
                     title = short or option.replace("_", " ").title()
                     feature = f"scottland/{option}"
                     feature_labels.append(feature)
@@ -605,12 +993,9 @@ def main():
                         now = f"{pretty_keys(label)} now collapses or expands Scottland's widget icons."
                     else:
                         now = f"Scottland's {title.lower()} action uses this key."
-                    report_overrides.append({
-                        "keys": pretty_keys(label),
-                        "was": f"{description} ({pretty_keys(label)})" if description else pretty_keys(label),
-                        "now": now,
-                        "why": why or "This key activates a Scottland desktop feature.",
-                    })
+                    group = feature_report_group(section, option)
+                    report_overrides.append(report_entry(
+                        group, label, omarchy_action_description(description, kind, arg, group), now))
                     continue
                 base_option = option.split("binding_", 1)[-1]
                 title = {"scottland_settings": "Scottland Settings",
@@ -620,12 +1005,9 @@ def main():
                 feature_labels.append(feature)
                 now = f"Opens {title}." if base_option == "scottland_settings" \
                     else f"Runs {title}."
-                report_overrides.append({
-                    "keys": pretty_keys(label),
-                    "was": f"{description} ({pretty_keys(label)})" if description else pretty_keys(label),
-                    "now": now,
-                    "why": command_reasons.get((section, option), "This key gives direct access to a Scottland feature."),
-                })
+                group = feature_report_group(section, option)
+                report_overrides.append(report_entry(
+                    group, label, omarchy_action_description(description, kind, arg, group), now))
             skipped.append(f"{label}  {description}  (displaced: Scottland uses these keys for {', '.join(feature_labels)})")
             continue
 
@@ -665,12 +1047,9 @@ def main():
         remap_from = pretty_keys(remap["from"])
         remap_to = pretty_keys(remap["to"])
         app_scope = f" in apps matching {remap['apps']}" if remap["apps"] else " in matching apps"
-        report_overrides.append({
-            "keys": remap_from,
-            "was": f"{remap_from} reached its matching apps unchanged",
-            "now": f"{remap_from} sends {remap_to}{app_scope}.",
-            "why": remap_reason or "Scottland translates this key before the matching app receives it.",
-        })
+        report_overrides.append(report_entry(
+            "app_remaps", remap_from, f"{remap_from} reached its matching apps unchanged",
+            f"{remap_from} sends {remap_to}{app_scope}.", origin="Scottland app remap"))
 
     if not os.path.exists(HYPR_CONFIG):
         skipped.append("no ~/.config/hypr/hyprland.lua  (nothing to import)")
