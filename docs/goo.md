@@ -98,12 +98,12 @@ The initial defaults are the prototype’s Scottland preset.
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 | GO20 | Only a change wakes the goo, and only liquid is worked on. (1) Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
 | GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
-| GO22 | Attention color choice: the Goo setting chooses Theme (the active palette attention color, today's behavior), Warm (light `#B83F36`, dark `#FF9E57`), or Cool (light `#707C28`, dark `#C9DD61`). The selected color applies live to attention breath and bulge on windows and widgets, in Goo and fallback halos, and follows light/dark scheme changes. Settings previews the choice; Save, Cancel and Defaults include it. | implemented; Plumbus headless Settings input, six Goo and six fallback screenshots across light/dark, window and widget attention (2026-10-03) |
-| GO23 | Dye strength: a Goo setting from 0 to 1.5 (default 1) scales the state share of dye weight for focus accent, attention and Window mode hint dye in the goo, plus those colors in the fallback halo. At 1 the goo follows its original shader path exactly; greater weights clamp the final dye blend at full opacity. A16's neutral edge contribution remains separate and unchanged by this slider. Changes apply live. Wallpaper soak stays independent. (Mike, 2026-10-03) | implemented; Plumbus unit and live Settings input, plus light/dark Goo and fallback screenshots at 0.25, 1 and 1.5; state/neutral separation and default-path formula tests passed (2026-10-03) |
-| GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; plumbus headless checks and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured |
+| GO22 | Attention color choice: the Goo setting chooses Theme (the active palette attention color, today's behavior), Warm (light `#B83F36`, dark `#FF9E57`), or Cool (light `#707C28`, dark `#C9DD61`). The selected color applies live to attention breath and bulge on windows and widgets, in Goo and fallback halos, and follows light/dark scheme changes. Settings previews the choice; Save, Cancel and Defaults include it. | implemented; Plumbus headless Settings input, six Goo and six fallback screenshots across light/dark, window and widget attention (2026-10-03); integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO23 | Dye strength: a Goo setting from 0 to 1.5 (default 1) scales the state share of dye weight for focus accent, attention and Window mode hint dye in the goo, plus those colors in the fallback halo. At 1 the goo follows its original shader path exactly; greater weights clamp the final dye blend at full opacity. A16's neutral edge contribution remains separate and unchanged by this slider. Changes apply live. Wallpaper soak stays independent. (Mike, 2026-10-03) | implemented; Plumbus unit and live Settings input, plus light/dark Goo and fallback screenshots at 0.25, 1 and 1.5; state/neutral separation and default-path formula tests passed (2026-10-03); integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; plumbus headless checks and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO25 | The restored attention bulge keeps the keyframed breath (GO18): a breath whose swing grew with the bulge (6ca8c4b) must not fall silently to the exact path, which had stopped the keys on every desktop with Mike's settings (`breath_keys` 0 over 192,000 ticks). (Mike's report, 2026-10-03; core) | implemented (`5429f3f`, cap raised to 24 keys); its mechanism is superseded by GO26's ceiling-and-scale rule, and the exact path now always says why ([below](#go25-keyframes-for-the-restored-bulge-2026-10-03)) |
-| GO26 | Breath keyframes follow a ceiling-and-scale rule. A breath uses only as many keys as its swing needs at half a device pixel of shore travel per key (10 if that is all it needs). The count never exceeds a ceiling (48 where both cache textures are written in one pass, 24 where each refresh takes two); a swing that needs more keeps the ceiling and widens the spacing just enough to cover the swing. The key count never sends the breath to the exact path: that path remains only for real failures (the second cache layer cannot be allocated, the surface cache is unavailable), for keyframes switched off, and for the test override, and whenever it is in use `goo-state` says why (`breath_exact_reason`) and the log says so once. (Mike, 2026-10-04; core) | implemented; `tests/goo-breath-keys-test.py` 13 / 13 on both GPU paths, measurements [below](#go26-ceiling-and-scale-keys-2026-10-04). Intel Xe not measured |
-| GO27 | The goo never paints over dry window content: a window's interior that no goo can lie on shows the window, in every frame. A breath that reuses the cached backdrop restores it only on the strips' pixels inside the goo's own drawn area and outside dry content; whatever else merged strips cover stays in the frame's damage and the scene beneath paints it. (Mike's bug report, 2026-10-04; core) | implemented; `tests/goo-strip-test.sh` (forced and natural merging) passing on both GPU paths on plumbus ([below](#go27-no-backdrop-inside-a-window-2026-10-04)); not yet seen on Mike's panel |
+| GO26 | Breath keyframes follow a ceiling-and-scale rule. A breath uses only as many keys as its swing needs at half a device pixel of shore travel per key (10 if that is all it needs). The count never exceeds a ceiling (48 where both cache textures are written in one pass, 24 where each refresh takes two); a swing that needs more keeps the ceiling and widens the spacing just enough to cover the swing. The key count never sends the breath to the exact path: that path remains only for real failures (the second cache layer cannot be allocated, the surface cache is unavailable), for keyframes switched off, and for the test override, and whenever it is in use `goo-state` says why (`breath_exact_reason`) and the log says so once. (Mike, 2026-10-04; core) | implemented; `tests/goo-breath-keys-test.py` 13 / 13 on both GPU paths, measurements [below](#go26-ceiling-and-scale-keys-2026-10-04). Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO27 | The goo never paints over dry window content: a window's interior that no goo can lie on shows the window, in every frame. A breath that reuses the cached backdrop restores it only on the strips' pixels inside the goo's own drawn area and outside dry content; whatever else merged strips cover stays in the frame's damage and the scene beneath paints it. (Mike's bug report, 2026-10-04; core) | implemented; `tests/goo-strip-test.sh` (forced and natural merging) passing on both GPU paths on plumbus ([below](#go27-no-backdrop-inside-a-window-2026-10-04)); not yet seen on Mike's panel; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 
 ## Halo jobs with goo enabled
 
@@ -2370,3 +2370,82 @@ branch sits on that fix.
 
 Not covered: a physical display; the look in motion; a video or animated wallpaper (it
 would keep waking the goo, as GO20 notes); fractional scale and rotation for the wall band.
+
+## Goo release integration (2026-10-04)
+
+Core. Branch `goo-release`: main `2bf738e` plus `goo-watercolor` (GO24, GO25, GO26) and
+`attention-color-go22` (GO22, GO23). Neither branch had GO27; neither merged cleanly. A review
+of the two branches (Claude, 2026-10-04) found four things the integration itself had to do
+and several follow-ups; all are in this branch, one commit each.
+
+**Integration fixes.**
+
+- **GO27 governs the watercolor.** GO24 reuses the cached backdrop over its motion area (the
+  settled liquid merged into at most 16 rectangles, which cover window interiors and open
+  desktop) and its branch restored the backdrop over the whole of the frame's damage. Here a
+  reused frame restores only the reuse region's pixels inside the goo's drawn area and outside
+  dry content, whether the reuse region is the breathing strips or the motion area.
+- **GO23 in GO24's cached dye share.** GO24 multiplies the live dye by a share written into the
+  refraction cache; its rim term still used the pre-GO23 tint. At dye strength 0.25 a focused
+  window's goo changed by up to 31 levels over 17,966 pixels when it fell asleep. The share now
+  uses the surface's own rim tint (and, since the shader-variant change below, the same
+  variable).
+- **goo-test.** GO22's attention color choice sits above the Goo sliders and pushed the thickness
+  row out of view; six panel checks clicked where it used to be. Rows are now scrolled into view
+  and reached by name, and the new last row (Dye strength) is checked.
+- **goo-strip-test** holds the watercolor dye still (and the coast running) while it compares
+  reused and repainted frames, as goo-exact-test does; otherwise the moving dye alone made them
+  differ.
+
+**Follow-ups done here.**
+
+- GO26: `goo-state` reports `breath_exact_reason` "the surface cache is unavailable" (a test
+  hook, `surface_cache_fail`, drops the cache; goo-breath-keys-test checks it).
+- The backdrop is copied only where a reused frame may restore it: the drawn area and its
+  refraction margin, never dry content. Before, merged strips (and GO24's motion area) also
+  copied it under window interiors, for nothing once GO27 never restores there.
+- docs: one GO24 row; GO25 named (the keyframe-restore fix, `5429f3f`).
+- Tests: GO22 checks that Warm leans red and Cool green where they differ; GO23 checks that each
+  strength looks the same asleep (cached path) as awake and stays distinct at rest.
+- **Shader variants by `#define`.** The renderer used to build its fast, cached and one-pass
+  programs by finding and replacing text in the shader source: a miss threw at startup, a
+  match that meant something else diverged silently (the GO23 rim term above). The sources now
+  carry `GOO_FAST`, `GOO_CACHE`, `GOO_CACHE_PARAMS` and `GOO_CACHE_BOTH`; one table lists every
+  program variant and one function assembles its GLES 2 or 3 source, for the renderer and for
+  `tests/goo-shader-variants-test.sh`, which compiles all of them with glslangValidator in both
+  dialects and checks what each switch changes. Strict GLSL ES 1.00 found `max(uCount,1)` on
+  ints (Mesa accepts it); it is `max(float(uCount),1.)`.
+
+**Checks** (plumbus, headless, main `2bf738e` and this branch run alternately suite by suite,
+load average 3 to 9 from other sessions; `~/goo-sbs/summary*.txt` there):
+
+| Suite | main | goo-release |
+|---|---|---|
+| goo-test, GLES 3 / packed GLES 2 | 50 / 50, 50 / 50 | 51 / 51, 51 / 51 (one more check: Dye strength) |
+| goo-strip-test forced (limit 3) and natural (16), both paths | 10 / 10 in all four | 10 / 10 in all four (dye held still, watercolor coasting) |
+| goo-exact: scale 1, 1.5, rotated 90 at 1.25, two outputs at 1.5; packed at 1 | 27, 27, 27, 28; 27 | 29, 29, 29, 28; 29 |
+| goo-depth-soak, goo-overlap-hover, both paths | 26, 28 | 26, 28 |
+| settings-help | 181 / 184 (three timing/border flakes) | 198 / 198 |
+| goo-watercolor, goo-breath-keys, both paths | (not on main) | 14 / 14, 15 / 15 |
+| goo-dye-strength, attention-color-family | (not on main) | 16 / 16, 8 / 8 |
+| goo-shader-variants, attention-color, state-dye, go23-default-path | (not on main) | 76 / 76, pass, pass, pass |
+
+The first goo-exact run at scale 1.5 on this branch had one pixel one level apart (green 152
+against 151) between the tight and loose settled pictures; three more runs on each build were
+clean. Two of this branch's new checks needed fixing during the run (the Dye strength row read
+too soon on a loaded machine; the breath-keys log check now counts the surface-cache reason).
+
+**Cost** (RX 580, plumbus, the idle bench's wide preset: Mike's settings, soak 0.9, keyframes
+on; compositor GPU over 5 s, two runs each):
+
+| Case | main | goo-release coasting (first 14 s asleep) | goo-release at rest |
+|---|---:|---:|---:|
+| Nothing breathing | 0.0% | 0.5-0.6% | 0.0% |
+| Window breathing | 0.5-0.6% | 0.9-1.1% | 0.6% |
+| Widget breathing | 0.3% | 0.7-0.8% | 0.3% |
+
+At rest the release costs what main does. While the watercolor coasts it adds about half a point,
+less than the watercolor branch measured on its own (1.6% for a breathing window), as expected
+with the backdrop no longer copied under windows. Intel Xe is not measured.
+
+Not covered: a physical display; Intel Xe; the watercolor in motion seen by Mike.
