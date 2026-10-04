@@ -951,32 +951,6 @@
         declutter_signature.clear(); refresh_layout_avoidance(true);
     }
 
-    bool widget_text_input_focused(wf::view_interface_t *widget)
-    {
-        auto seat = wf::get_core().get_current_seat();
-        auto focus = seat ? seat->keyboard_state.focused_surface : nullptr;
-        auto manager = wf::get_core().protocols.text_input;
-        auto widget_surface = widget ? widget->get_keyboard_focus_surface() : nullptr;
-        if (!widget || !focus || !manager || widget_surface != focus)
-        {
-            return false;
-        }
-
-        // Wayland text-input-v3 is the compositor-visible signal that a text field inside this
-        // surface owns keyboard input. Apps which don't expose text input keep the widget's
-        // ordinary Return-to-window behavior.
-        wlr_text_input_v3 *input;
-        wl_list_for_each(input, &manager->text_inputs, link)
-        {
-            if (input->current_enabled && input->focused_surface == focus)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_window_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
@@ -1016,7 +990,6 @@
             if (widget && link && link->docked() && keyboard &&
                 !(keyboard->modifiers.depressed & modifier_mask(keyboard->keymap, "CTRL SHIFT ALT SUPER")) &&
                 !wlr_seat_keyboard_has_grab(wf::get_core().get_current_seat()) &&
-                !widget_text_input_focused(widget.get()) &&
                 open_widget(*link))
             {
                 widget_return_keys.insert(return_token);

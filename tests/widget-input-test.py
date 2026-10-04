@@ -160,14 +160,18 @@ def return_behavior():
     move(f["x"] + f["width"] / 2, f["y"] + f["height"] / 2)
     time.sleep(.1)
     ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "full"})
-    time.sleep(.4)  # let GTK report its clicked entry through text-input-v3
+    time.sleep(.4)  # let GTK process the pointer click and focus the entry
+    text_widget = next(w for w in widgets() if w["title"] == title)
+    ipc.call("scottland/key-layer", {"action": "set", "window": text_widget["widget_view"],
+                                     "keys": ["0:Return"]})
     key("ENTER", True)
     key("ENTER", False)
     time.sleep(.35)
-    check("WG25 Return in a focused custom-widget text field stays in the widget",
+    check("WG25 a focused custom-widget text field keeps Return via its layer claim",
           card(title) is not None and app(title)["widgetized"],
           {"card_present": card(title) is not None, "widgetized": app(title)["widgetized"]})
     check("WG25 Return activates the focused text field", text_marker.exists(), text_marker)
+    ipc.call("scottland/key-layer", {"action": "clear", "window": text_widget["widget_view"]})
 
     title = "return-claim"
     launch(title, app_id="scottland-test-return-claim")
