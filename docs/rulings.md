@@ -36,6 +36,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | One engine, two tests: always-on peeking needs a strip; on Alt, hints get room. | P12 |
 | 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | peek-strip design |
 | 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | peek-strip design |
+| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | peek-strip design |
 | 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
