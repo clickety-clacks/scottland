@@ -121,3 +121,4 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | A knock's look is organic to what it is (the attention goo, a vignette), not just another window. |
 | 10-04 | From a knock the user can answer directly with its UI, or invite the object in (find or open its window, bring it center, and tell the object to focus on that knock). |
 | 10-04 | Mapping a knock to its sender's window must be dependable. |
+| 10-04 | The bigger frame is attention regimes: center, periphery, widgets, and the ether (objects not on the desktop that still exist and can be promoted). Scottland models and visualizes all of it. | P15 |

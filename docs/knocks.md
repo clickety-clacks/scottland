@@ -4,6 +4,21 @@ Status: mental model being formalized; nothing designed or built. Supersedes the
 "agentd as an attention source" framing; agentd, Yoohoo's bell menu, notifications, bells and
 Tightbeam decision requests are all expected to become cases of this.
 
+## The bigger picture: attention regimes (Mike, 2026-10-04)
+
+Scottland and Gooarchy are about attention. The desktop is a small window the user uses to pull in the
+things that have their attention, and it is organized as **attention regimes**:
+
+1. **Center**: forefront in the user's mind.
+2. **Periphery**: less so.
+3. **Widgets (rails)**: less still.
+4. **The ether**: everything not represented on the desktop. Objects there still exist; at some point
+   they want the user's attention and can be promoted to a higher regime.
+
+Objects move between regimes: the user promotes and demotes them; an object asks to be promoted with a
+knock. This is the frame for everything below, and for how Scottland models and visualizes the bigger
+picture of what is trying to get the user's attention.
+
 ## The model so far (Mike's words, organized)
 
 - **Objects** exist whether or not they are on the desktop: an agent session on some host, the
