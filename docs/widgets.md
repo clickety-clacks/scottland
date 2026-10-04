@@ -552,7 +552,8 @@ through the unchanged widget launcher and transfers an open pidfd back through
 its private socket. Cancellation before the reply, timeout, scope stop and
 reload keep the existing ownership rules. The broker reaps its children and
 exits when its compositor socket closes; it drains queued cancellations during
-unload. A failed broker retains the synchronous scope-stop recovery path.
+unload, including when unload left a launch reply unread (the socket then reports
+a reset before end-of-file; a launch with no queued stop keeps running). A failed broker retains the synchronous scope-stop recovery path.
 
 The mixer shader compiles at plugin startup. Simple surfaces retain their
 applied texture; complex app surfaces transfer the last composed frame buffer
