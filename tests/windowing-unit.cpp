@@ -4,6 +4,7 @@
 #include "hint-style.hpp"
 #include "widget-spring.hpp"
 #include <array>
+#include <chrono>
 #include <set>
 #include <tuple>
 #include <cmath>
@@ -1038,6 +1039,36 @@ int main()
         check(!remembered_pin(memory, zone::right_periphery), "a NaN scale is no pin");
         window_memory empty; empty.pins[1] = .5;
         check(!remembered_pin(empty, zone::left_periphery), "a pin without a remembered spot is never restored");
+    }
+    // WK37 occlusion share.
+    const rectangle fraction_screen{0,0,1000,800};
+    check(visible_fraction({100,100,400,200},fraction_screen,{})==1,"uncovered window is fully visible");
+    check(std::abs(visible_fraction({100,100,400,200},fraction_screen,{{300,0,600,800}})-.5)<1e-9,
+        "half-covered window is half visible");
+    check(std::abs(visible_fraction({100,100,400,200},fraction_screen,
+        {{100,100,300,200},{200,100,300,100}})-.125)<1e-9,"overlapping covers count once");
+    check(visible_fraction({100,100,400,200},fraction_screen,{{0,0,1000,800}})==0,"fully covered window");
+    check(std::abs(visible_fraction({-200,100,400,200},fraction_screen,{{0,100,100,200}})-.5)<1e-9,
+        "only the on-screen part counts");
+    check(visible_fraction({1200,100,400,200},fraction_screen,{{0,0,1000,800}})==1,
+        "off-screen window never counts as occluded");
+    check(visible_fraction({100,100,400,200},fraction_screen,{{600,0,100,100}})==1,"disjoint cover ignored");
+    check(hint_outline_visible_fraction==.5,"outline threshold is less than half visible");
+    {
+        // A whole front-to-back pass over 50 overlapping windows stays far inside the 2 ms
+        // solve budget the plugin also bounds it by (P8).
+        std::mt19937 rng(37);
+        std::uniform_real_distribution<double> px(0,1600),py(0,900),size(200,900);
+        std::vector<rectangle> stack;
+        for(int i=0;i<50;++i) stack.push_back({px(rng),py(rng),size(rng),size(rng)*.6});
+        const rectangle screen{0,0,1920,1080};
+        auto started=std::chrono::steady_clock::now();
+        double sum=0;
+        for(size_t i=0;i<stack.size();++i)
+            sum+=visible_fraction(stack[i],screen,std::vector<rectangle>(stack.begin(),stack.begin()+i));
+        double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        std::cout<<"occlusion pass, 50 windows: "<<ms<<" ms\n";
+        check(ms<2 && sum>0,"occlusion pass over 50 windows stays under 2 ms");
     }
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }
