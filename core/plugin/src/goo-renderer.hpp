@@ -39,6 +39,12 @@ class renderer_t
     std::vector<float> breath_key_values;
     bool breath_keyframes_active = false;
     bool breath_exact = false; // test-only exact-path override, gated by SCOTTLAND_TEST_MODEL
+    bool breath_layer_fail = false; // test-only: the second cache layer fails to allocate
+    // GO26: why breathing is on the exact path ("" when keyframes are in use or nothing
+    // breathes), the spacing of the keys in device pixels, and the ceiling in force.
+    std::string breath_exact_reason;
+    float breath_key_spacing = 0;
+    int breath_key_ceiling = 0;
     bool packed = false;
 
   private:

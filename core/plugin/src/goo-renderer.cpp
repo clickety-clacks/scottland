@@ -21,22 +21,32 @@ using gl::state_t;
 using gl::target_t;
 namespace
 {
-constexpr int max_breath_keys = 24;
-int breath_key_count(const settings_t &s, float scale)
+// GO26: how many keys of the breath to cache. Only as many as the swing needs at half a
+// device pixel of shore travel per interval; never more than the ceiling. A swing that
+// needs more keeps the ceiling and widens the interval just enough to cover it: the key
+// count alone never sends the breath to the exact path.
+//
+// The ceiling is not a memory limit. Whatever the count, only the two keys around the
+// current breath are held, in two layers of two RGBA8 output-sized textures (127 MiB in
+// all for a 3840x2160 framebuffer, 4K at any scale; 63 MiB of that is the second layer).
+// What grows with the count is work: each key the breath crosses re-renders one layer
+// over the strips, and a breath crosses every key twice, against 125 exact renders in
+// the same five seconds. With both cache textures written in one pass (GLES 3), 48 keys
+// cost at most 96 renders a breath; where each refresh takes two passes (GLES 2), 24 do.
+constexpr int breath_key_ceiling_one_pass = 48, breath_key_ceiling_two_pass = 24;
+struct breath_plan_t
 {
-    // The approximation is bounded to half a device pixel per interval. Extreme
-    // settings use the exact direct strip path instead of silently widening it.
+    int keys = 1;
+    float spacing = 0;  // device pixels of shore travel per interval
+};
+breath_plan_t breath_key_plan(const settings_t &s, float scale, int ceiling)
+{
     float swell = breath_swell(s.thickness, s.reach, s.swell);
     float travel = s.reach * std::log1p(std::max(swell, 0.f)) * std::max(scale, 1.f);
-    int required = std::max(1, int(std::ceil(travel / .5f)));
-    // The restored attention bulge (a .45 excursion) moves the shore much farther than
-    // GO17's .12 did: 5.9 pt at shipped settings, 9.6 pt with thicker goo, more at a
-    // higher output scale. Sixteen keys at half a pixel no longer cover that, and falling
-    // back to the exact path ran the full surface shader every tick. 24 keys cover 12
-    // device pixels of travel at the same half-pixel spacing. (Widening the spacing
-    // instead was tried: at 0.6 px, 1,200 pixels differed from the exact surface by 16
-    // levels or more, against 34 at half a pixel.)
-    return required <= max_breath_keys ? required : 0;
+    breath_plan_t plan;
+    plan.keys = std::clamp(int(std::ceil(travel / .5f)), 1, std::max(ceiling, 1));
+    plan.spacing = travel / plan.keys;
+    return plan;
 }
 float breath_key_value(int key, int keys, float swell)
 {
@@ -79,6 +89,34 @@ struct renderer_t::impl
     bool layer_b_available = true, requested_keyframes = false, use_keyframes = false;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p, backdrop_p;
+    // GO26: both cache textures of a layer as two attachments of one framebuffer.
+    bool mrt = false, layer_fail_seen = false;
+    OpenGL::program_t cache_p;
+    GLuint cache_fb[2] = {0, 0}, cache_fb_tex[2][2] = {{0, 0}, {0, 0}};
+    GLuint cache_framebuffer(int layer)
+    {
+        if (!mrt)
+            return 0;
+        GLuint color = (layer ? intrinsic_b : intrinsic).texture, params = (layer ? refraction_b : refraction).texture;
+        if (!color || !params)
+            return 0;
+        if (cache_fb[layer] && cache_fb_tex[layer][0] == color && cache_fb_tex[layer][1] == params)
+            return cache_fb[layer];
+        if (!cache_fb[layer])
+            glGenFramebuffers(1, &cache_fb[layer]);
+        glBindFramebuffer(GL_FRAMEBUFFER, cache_fb[layer]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, params, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        {
+            LOGI("scottland goo: single-pass cache refresh unavailable; using two passes");
+            mrt = false;
+            return 0;
+        }
+        cache_fb_tex[layer][0] = color;
+        cache_fb_tex[layer][1] = params;
+        return cache_fb[layer];
+    }
     OpenGL::program_t intrinsic_p, refraction_p, composite_p, composite_mix_p;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query, atlas;
@@ -146,8 +184,14 @@ struct renderer_t::impl
     {
         if (timer)
             glDeleteQueries(1, &timer);
+        for (auto &fb : cache_fb)
+        {
+            if (fb)
+                glDeleteFramebuffers(1, &fb);
+            fb = 0;
+        }
         for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p, &backdrop_p,
-                       &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p,
+                       &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p, &cache_p,
                        &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
         for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query,
@@ -156,7 +200,8 @@ struct renderer_t::impl
         for (auto &t : reduction)
             t.release();
     }
-    void compile(OpenGL::program_t &program, std::string vs, std::string fs, bool derivatives = false)
+    void compile(OpenGL::program_t &program, std::string vs, std::string fs, bool derivatives = false,
+                 bool two_outputs = false)
     {
         auto replace = [](std::string &s, const std::string &from, const std::string &to)
         {
@@ -175,8 +220,9 @@ struct renderer_t::impl
             replace(fs, "texture2D(", "texture(");
             replace(fs, "gl_FragColor", "goo_color");
             replace(fs, "i<1024", "i<uCount");
-            program.compile("#version 300 es\n" + vs,
-                            "#version 300 es\nprecision highp float; out vec4 goo_color;\n" + fs);
+            program.compile("#version 300 es\n" + vs, std::string("#version 300 es\nprecision highp float; ") +
+                (two_outputs ? "layout(location=0) out vec4 goo_color; layout(location=1) out vec4 goo_params;\n" :
+                 "out vec4 goo_color;\n") + fs);
         }
         else
             program.compile("#version 100\n" + vs, std::string("#version 100\n") +
@@ -263,6 +309,21 @@ struct renderer_t::impl
                 "gl_FragColor=vec4(clamp(color,0.,1.),a);");
             return shader;
         };
+        if (es3)
+        {
+            // GO26: one pass writes both caches (color and coverage; refraction and light).
+            std::string both = cached_shader(false);
+            const std::string color = "gl_FragColor=vec4(clamp(color,0.,1.),a);";
+            both.replace(both.find(color), color.size(), color +
+                "goo_params=vec4(clamp((refr-p)/32.+.5,0.,1.),"
+                "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),1.);");
+            compile(cache_p, vertex, both, true, true);
+            GLint linked = 0;
+            glGetProgramiv(cache_p.get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
+            mrt = linked;
+            if (!mrt)
+                LOGI("scottland goo: single-pass cache refresh unavailable; using two passes");
+        }
         compile(intrinsic_p, vertex, cached_shader(false), true);
         compile(refraction_p, vertex, cached_shader(true), true);
         compile(composite_p, vertex, cached_composite_shader);
@@ -709,6 +770,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         p->cache_valid = false;
         bool ok = p->intrinsic.allocate(viewport[2], viewport[3], true, p->es3);
         ok = p->refraction.allocate(viewport[2], viewport[3], true, p->es3) && ok;
+        // New storage, possibly under a reused texture name: attach it again.
+        p->cache_fb_tex[0][0] = p->cache_fb_tex[0][1] = 0;
         if (!ok)
         {
             p->intrinsic.release();
@@ -720,8 +783,20 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     if (settled && p->cache_available)
     {
         auto strips = breath_area & area;
-        int key_intervals = strips.empty() ? 0 : breath_key_count(p->settings, data.target.scale);
+        breath_key_ceiling = p->mrt ? breath_key_ceiling_one_pass : breath_key_ceiling_two_pass;
+        auto plan = breath_key_plan(p->settings, data.target.scale, breath_key_ceiling);
+        int key_intervals = strips.empty() ? 0 : plan.keys;
+        breath_key_spacing = strips.empty() ? 0 : plan.spacing;
         bool requested_keys = breath_keys && !breath_exact && key_intervals > 0;
+        if (breath_layer_fail != p->layer_fail_seen)
+        {
+            // Tests: lose the second layer, or try for it again.
+            p->layer_fail_seen = breath_layer_fail;
+            p->intrinsic_b.release();
+            p->refraction_b.release();
+            p->layer_b_available = true;
+            p->layer_key[0] = p->layer_key[1] = -1;
+        }
         if (requested_keys != p->requested_keyframes)
         {
             p->requested_keyframes = requested_keys;
@@ -736,18 +811,34 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         if (requested_keys && p->layer_b_available &&
             (p->intrinsic_b.width != viewport[2] || p->intrinsic_b.height != viewport[3]))
         {
-            bool a_ok = p->intrinsic_b.allocate(viewport[2], viewport[3], true, p->es3);
-            bool b_ok = p->refraction_b.allocate(viewport[2], viewport[3], true, p->es3);
+            bool a_ok = !breath_layer_fail && p->intrinsic_b.allocate(viewport[2], viewport[3], true, p->es3);
+            bool b_ok = !breath_layer_fail && p->refraction_b.allocate(viewport[2], viewport[3], true, p->es3);
+            p->cache_fb_tex[1][0] = p->cache_fb_tex[1][1] = 0;
             if (!a_ok || !b_ok)
             {
                 p->intrinsic_b.release();
                 p->refraction_b.release();
                 p->layer_b_available = false;
-                LOGE("scottland goo: breathing keyframe layer unavailable; using exact strips");
             }
         }
         int keys = requested_keys && p->layer_b_available ? key_intervals : 0;
         breath_keyframes_active = keys > 0;
+        // The exact path (the full surface shader over the strips on every tick) is for
+        // these cases only, never for the number of keys. Say which, in goo-state always
+        // and in the log once each time it changes.
+        std::string reason = strips.empty() || keys > 0 ? "" :
+            breath_exact ? "test override" :
+            !breath_keys ? "keyframes are switched off (scottland/goo_breath_keys)" :
+            !p->layer_b_available ? "the second cache layer could not be allocated" : "unknown";
+        if (reason != breath_exact_reason)
+        {
+            if (!reason.empty())
+                LOGI("scottland goo: breathing uses the exact path: ", reason);
+            else if (!strips.empty())
+                LOGI("scottland goo: breathing uses ", keys, " keyframes, ", breath_key_spacing,
+                     " device pixels apart (ceiling ", breath_key_ceiling, ")");
+            breath_exact_reason = reason;
+        }
         if ((keys > 0) != p->use_keyframes)
         {
             p->layer_key[0] = p->layer_key[1] = -1;
@@ -782,6 +873,30 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         {
             if (region.empty()) return;
             glDisable(GL_BLEND);
+            if (GLuint fb = p->cache_framebuffer(layer))
+            {
+                // Both cache textures in one pass of the surface shader.
+                const GLenum both[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+                const GLfloat clear_color[] = {0, 0, 0, 0}, clear_params[] = {.5f, .5f, 0, 0};
+                auto &target = layer ? p->intrinsic_b : p->intrinsic;
+                glBindFramebuffer(GL_FRAMEBUFFER, fb);
+                glDrawBuffers(2, both);
+                glViewport(0, 0, target.width, target.height);
+                setup_surface(p->cache_p, value);
+                each_pixel_rect(region, [&]
+                {
+                    GLint box[4];
+                    glGetIntegerv(GL_SCISSOR_BOX, box);
+                    surface_pixels += uint64_t(box[2]) * box[3];
+                    glScissor(box[0] - viewport[0], box[1] - viewport[1], box[2], box[3]);
+                    glClearBufferfv(GL_COLOR, 0, clear_color);
+                    glClearBufferfv(GL_COLOR, 1, clear_params);
+                    p->cache_p.attrib_pointer("position", 2, 0, vertices);
+                    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+                });
+                p->cache_p.deactivate();
+                return;
+            }
             const std::array passes{
                 std::make_pair(layer ? &p->intrinsic_b : &p->intrinsic, &p->intrinsic_p),
                 std::make_pair(layer ? &p->refraction_b : &p->refraction, &p->refraction_p)};

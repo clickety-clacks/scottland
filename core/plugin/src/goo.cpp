@@ -431,7 +431,7 @@ class goo_node_t : public wf::scene::node_t
     {
         std::vector<wf::geometry_t> rects;
         size_t index = 0;
-        double y = 0, x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+        double x = 0, y = 0, x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
         bool row_started = false;
         wf::regionf_t tight;
     };
@@ -493,19 +493,31 @@ class goo_node_t : public wf::scene::node_t
             if (!job.row_started)
             {
                 job.y = b.y;
+                job.x = b.x;
                 job.x1 = job.y1 = 1e9;
                 job.x2 = job.y2 = -1e9;
                 job.row_started = true;
             }
-            for (; job.y < by2 + step_y; job.y += step_y)
+            // GO26: with very thick goo the bands are most of the screen and this sampling
+            // ran to a minute of compositor time (slider maxima: 59 s). Past a quarter of a
+            // second in all, stop refining and keep the remaining bands whole.
+            if (tighten_ms > 250)
             {
-                if ((now() - tighten_start) * 1000 > budget_ms)
+                for (; job.index < job.rects.size(); job.index++)
+                    job.tight |= job.rects[job.index];
+                break;
+            }
+            for (; job.y < by2 + step_y; job.y += step_y, job.x = b.x)
+            {
+                int sampled = 0;
+                for (double &x = job.x; x < bx2 + step_x; x += step_x)
                 {
-                    tighten_ms += (now() - tighten_start) * 1000;
-                    return;  // resume at this row on the next tick
-                }
-                for (double x = b.x; x < bx2 + step_x; x += step_x)
-                {
+                    // The budget holds within a row too: resume at this sample next tick.
+                    if (++sampled % 32 == 0 && (now() - tighten_start) * 1000 > budget_ms)
+                    {
+                        tighten_ms += (now() - tighten_start) * 1000;
+                        return;
+                    }
                     glm::vec2 point{std::min<double>(x, bx2), std::min<double>(job.y, by2)};
                     if (goo::density(point, state.sources, state.settings, state.time, 1) < wet)
                         continue;
@@ -943,6 +955,11 @@ struct goo_t::impl
                     n->state.breath = n->breath_hold >= 0 ? n->breath_hold : goo::attention_breath(now());
                     test_changed = true;
                 }
+                if (data.has_member("breath_layer_fail") && data["breath_layer_fail"].is_bool())
+                {
+                    n->state.renderer.breath_layer_fail = data["breath_layer_fail"].as_bool();
+                    test_changed = true;
+                }
                 if (data.has_member("breath_exact") && data["breath_exact"].is_bool())
                 {
                     n->state.renderer.breath_exact = data["breath_exact"].as_bool();
@@ -1015,6 +1032,9 @@ struct goo_t::impl
             s["breath_refreshes"] = (int64_t)n->state.renderer.breath_refreshes;
             s["breath_keys"] = (int64_t)n->state.renderer.breath_key_values.size();
             s["breath_keyframes_active"] = n->state.renderer.breath_keyframes_active;
+            s["breath_exact_reason"] = n->state.renderer.breath_exact_reason;
+            s["breath_key_spacing"] = n->state.renderer.breath_key_spacing;
+            s["breath_key_ceiling"] = (int64_t)n->state.renderer.breath_key_ceiling;
             auto key_values = wf::json_t::array();
             for (float value : n->state.renderer.breath_key_values)
                 key_values.append((double)value);
