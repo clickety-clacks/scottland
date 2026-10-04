@@ -19,7 +19,7 @@ uniform vec2 uAtlasSize;
 uniform int uCount;
 uniform vec2 uRes, uSize;
 uniform float uTime, uReach, uNoise, uNoiseScale, uNoiseSpeed, uT, uPacked, uThickness;
-uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;
+uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls,uDyeStrength;
 vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/float(max(uCount,1)))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p) {
@@ -117,7 +117,9 @@ vec4 gooField(vec2 p) {
     if(back.x<float(uCount)&&back.y<0.)a/=max(g.x,.0001);
     float contribution=max(a,0.)*fe;
     F+=contribution;
-    tinted+=contribution*source(i,7.).y;
+    // Preserve A16's original field channel exactly at GO23's default. Other
+    // values carry the state share separately so neutral dye keeps its own strength.
+    tinted+=contribution*(uDyeStrength==1.?source(i,7.).y:source(i,7.).z);
     // Finite support applies only to the decorative modulation, never field/dye tails.
     float shore=g.y<0.?sourceSdf(p,i):sdBox(p-r.xy,r.zw,g.y);
     float local=1.-smoothstep(3.*uReach,4.*uReach,max(shore,0.));
@@ -336,9 +338,18 @@ void main(){
   // supplies the color so saturated wallpaper cannot repaint a focused edge.
   float dyeBlend=.55+milk*.25;
   if(uSoak>0.)dyeBlend=mix(dyeBlend,1.,1.-smoothstep(0.,uThickness*.9,d));
-  if(uNeutralTint>.5&&dyeTint<.999999)dyeBlend*=dyeTint;
+  float stateTint=dyeTint;
+  if(uDyeStrength==1.){
+    if(uNeutralTint>.5&&dyeTint<.999999)dyeBlend*=dyeTint;
+  }else{
+    float stateMix=clamp(value.g,0.,1.);
+    float neutralStrength=clamp(source(0,7.).w,0.,1.);
+    stateTint=neutralStrength*(1.-stateMix)+uDyeStrength*stateMix;
+    dyeBlend=clamp(dyeBlend*stateTint,0.,1.);
+  }
   vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95);
-  if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;
+  if(uDyeStrength!=1.)color+=dye*rim*.22*stateTint;
+  else if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;
   else color+=dye*rim*.22;
   // Emission is independent of normal, light and dye release. Zero really is off.
   color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);

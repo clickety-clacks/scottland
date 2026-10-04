@@ -38,6 +38,10 @@ assert 'text: "Theme follows your palette. Warm shifts from red to amber; Cool s
 assert all(f'id: attention{name}' in qml for name in ("Theme", "Warm", "Cool"))
 assert options["attention_color_family"].attrib["type"] == "string"
 assert options["attention_color_family"].findtext("default") == "theme"
+assert 'goo_dye_strength:"Dye strength"' in qml
+assert options["goo_dye_strength"].findtext("default") == "1"
+assert options["goo_dye_strength"].findtext("min") == "0"
+assert options["goo_dye_strength"].findtext("max") == "1.5"
 assert 'root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark"' in edge_section
 ctl = (root / "core/libexec/scottland-ctl").read_text()
 assert "UNFOCUSED_EDGE = (" in ctl
@@ -65,7 +69,8 @@ assert qml.count("CoastGraph {") == 2
 
 for name, label, step in (("goo_depth", "Liquid depth", 0.1),
                           ("goo_profile", "Wall wetting", 0.01),
-                          ("goo_soak", "Wallpaper soak", 0.01)):
+                          ("goo_soak", "Wallpaper soak", 0.01),
+                          ("goo_dye_strength", "Dye strength", 0.01)):
     match = re.search(r'\{\s*name:\s*"' + name + r'"[^}]+\}', goo_section)
     assert match, f"No row for {name}"
     row = match.group()
@@ -79,5 +84,5 @@ for name, label, step in (("goo_depth", "Liquid depth", 0.1),
 
 assert 'id:"cycle_overshoot"' in motion_section
 assert 'id:"widget_bounce"' in qml
-print(f"PASS Settings covers {len(expected_goo)} Goo, {len(edge_options)} unfocused-edge and "
-      f"{len(inertia)} inertial options; GO14/GO15 hints and ranges match metadata")
+print(f"PASS Settings covers {len(goo_rows)} numeric Goo, {len(edge_options)} unfocused-edge and "
+      f"{len(inertia)} inertial options; GO14/GO15/GO23 hints and ranges match metadata")

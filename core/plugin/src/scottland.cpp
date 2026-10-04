@@ -66,6 +66,7 @@ extern "C" {
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
 #include "attention-color.hpp"
+#include "state-dye.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -838,6 +839,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> unfocused_edge_tone_light{"scottland/unfocused_edge_tone_light"};
     wf::option_wrapper_t<double> unfocused_edge_tone_dark{"scottland/unfocused_edge_tone_dark"};
     wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
+    wf::option_wrapper_t<double> goo_dye_strength{"scottland/goo_dye_strength"};
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
@@ -852,6 +854,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scottland::palette.unfocused_edge_tone_light = unfocused_edge_tone_light;
         scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
         scottland::palette.unfocused_edge_strength = unfocused_edge_strength;
+        scottland::palette.dye_strength = std::clamp(float(goo_dye_strength), 0.f, 1.5f);
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
         wf::color_t attention = attention_color;
@@ -1627,6 +1630,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             s.dye_strength = scottland::edge_style::tint_strength(
                 scottland::palette.unfocused_edge_strength, float(frame->focus_mix),
                 float(frame->attention_mix), s.hinted);
+            s.state_mix = scottland::state_dye::mix(float(frame->focus_mix),
+                float(frame->attention_mix), s.hinted);
+            s.neutral_strength = scottland::palette.unfocused_edge_strength;
             if (frame->can_resize())
                 s.corners = {frame->cloud[0], frame->cloud[1], frame->cloud[2], frame->cloud[3]};
             s.sides = {frame->side_cloud[0], frame->side_cloud[1], frame->side_cloud[2], frame->side_cloud[3]};
@@ -6170,6 +6176,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_tone_light.set_callback([=] { load_color_scheme(); });
         unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
+        goo_dye_strength.set_callback([=] { load_color_scheme(); });
         hint_avoidance_always.set_callback([=] {
             declutter_signature.clear();
             refresh_layout_avoidance();

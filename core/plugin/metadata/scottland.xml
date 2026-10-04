@@ -89,6 +89,10 @@
             <_short>Wallpaper soak</_short><_long>Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.</_long>
             <default>0.12</default><min>0</min><max>1</max>
         </option>
+        <option name="goo_dye_strength" type="double">
+            <_short>Dye strength</_short><_long>Scales focus, attention and Window mode hint colors in goo and fallback halos. One keeps today's look; higher values strengthen state colors, capped at full opacity. The unfocused neutral edge keeps its separate strength.</_long>
+            <default>1</default><min>0</min><max>1.5</max>
+        </option>
 
         <option name="goo_overlap_film" type="double">
             <_short>Overlap film</_short><_long>Width of goo over windows behind. Higher covers a wider strip; zero hides the film.</_long>

@@ -33,7 +33,9 @@ const char *difference(const std::vector<goo::source_t> &a, const std::vector<go
     {
         if (a[i].id != b[i].id) return "stacking";
         if (glm::length(a[i].dye - b[i].dye) > .001f ||
-            std::abs(a[i].dye_strength - b[i].dye_strength) > .001f || a[i].light != b[i].light)
+            std::abs(a[i].dye_strength - b[i].dye_strength) > .001f ||
+            std::abs(a[i].state_mix - b[i].state_mix) > .001f ||
+            std::abs(a[i].neutral_strength - b[i].neutral_strength) > .001f || a[i].light != b[i].light)
             return "color";
         if (glm::length(a[i].corners - b[i].corners) > .001f || glm::length(a[i].sides - b[i].sides) > .001f ||
             std::abs(a[i].dot.z - b[i].dot.z) > .001f || std::abs(a[i].dot.w - b[i].dot.w) > .001f)
@@ -842,6 +844,7 @@ struct goo_t::impl
     };
     const std::vector<option_t> fields = {
         {"thickness", &goo::settings_t::thickness}, {"reach", &goo::settings_t::reach},
+        {"dye_strength", &goo::settings_t::dye_strength},
         {"thinning", &goo::settings_t::thinning},   {"swell", &goo::settings_t::swell},
         {"noise", &goo::settings_t::noise},         {"lump", &goo::settings_t::lump},
         {"drift", &goo::settings_t::drift},         {"wave_speed", &goo::settings_t::wave_speed},

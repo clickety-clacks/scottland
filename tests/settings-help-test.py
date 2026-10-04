@@ -464,14 +464,14 @@ try:
     key("KEY_BACKSPACE")
     check("edge strength Backspace restores opening value",option_reaches("unfocused_edge_strength",initial_edge["unfocused_edge_strength"]))
     click(*reveal("goo",240,2*69+34));key("KEY_BACKSPACE");pointer(10,690)
-    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper soak","Overlap film","Control cloudiness","Control glow","Control proximity"]
+    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper soak","Overlap film","Control cloudiness","Control glow","Control proximity","Dye strength"]
     for i,label in enumerate(labels):
         if i:key("KEY_DOWN")
         for _ in range(20):
             if snapshot()["goo"]["hint"]==label:break
             time.sleep(.025)
         check(label+" keyboard hint and automatic reveal",snapshot()["goo"]["hint"]==label)
-    key("KEY_RIGHT");check("Goo last row live",option_reaches("goo_hover_distance",49))
+    key("KEY_RIGHT");check("GO23 Dye strength previews live",option_reaches("goo_dye_strength",1.01))
     shot("04-goo-keyboard")
     tab(0);tab(1)
     # A discrete wheel burst ends before the position samples; the coast must continue,
