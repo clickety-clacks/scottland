@@ -34,7 +34,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | "Look far apart, then go deep" applies only to searching for a hint spot, never to choosing where a window moves; windows never avoid by moving to the other side. | WK13, WK31 |
 | 10-03 | Keep continuous motion during drags (no pause-then-glide). | WK13 |
 | 10-03 | One engine, two tests: always-on peeking needs a strip; on Alt, hints get room. | P12 |
-| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale). | peek-strip design |
+| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | peek-strip design |
 | 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | peek-strip design |
 | 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
@@ -77,7 +77,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Rail make-room waits for a pause (hold buffer), animates every move, and applies to every way into a rail. | WG26 |
 | 10-04 | Return on a focused widget always opens its window; nothing inside the widget gets it. | WG25 |
 | 10-04 | Super+M taps cycle expanded -> collapsed -> hidden; holding is momentary (hide from expanded, expand otherwise). | WG16 |
-| 10-04 | Hidden widgets come back for Window mode (temporarily expanded while Alt is held) and still show attention. | WG16 |
+| 10-04 | Entering Window mode temporarily expands collapsed and hidden widgets until Alt is released; hidden widgets still show attention. | WG16 |
 
 ## Zones and scale
 
