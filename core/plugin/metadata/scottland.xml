@@ -164,6 +164,13 @@
             <min>1</min>
             <max>3000</max>
         </option>
+        <option name="window_hold_delay" type="int">
+            <_short>Window mode hint hold time (ms)</_short>
+            <_long>Holding an unfocused window's hint this long, without releasing it, places it side by side with the focused window. A shorter press stays a tap. Key auto-repeat never counts.</_long>
+            <default>500</default>
+            <min>1</min>
+            <max>3000</max>
+        </option>
         <option name="cycle_overshoot" type="double">
             <_short>Hint cycle overshoot (%)</_short>
             <_long>Elastic settlement of position and scale when a keyboard hint moves a window. Higher gives a larger overshoot; zero keeps the original motion. Screen edges limit the overshoot. Drags, coasts and widget morphs are unaffected.</_long>

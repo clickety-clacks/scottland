@@ -63,7 +63,7 @@ ShellRoot {
   readonly property bool gooTab: tab === 1
   readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
     resize_impulse:335, resize_friction:608, key_max_velocity:6000,
-    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300,
+    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300, window_hold_delay:500,
     window_avoidance_always:false})
   property var motionValues: Object.assign({}, motionDefaults)
   readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
@@ -126,7 +126,7 @@ ShellRoot {
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
     resize_impulse:"Resize strength",resize_friction:"Resize deceleration",
     key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", alt_hold_delay:"Alt hold timing",
-    window_double_tap_delay:"Double-tap timing", unfocused_edge_tone_light:"Unfocused edge tone (light)",
+    window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing", unfocused_edge_tone_light:"Unfocused edge tone (light)",
     unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength" })
 
   // The session palette carries theme colors and the desktop's interface font/text scale.
@@ -375,7 +375,7 @@ ShellRoot {
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
-      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),
       alwaysAvoidance:root.testRect(alwaysAvoidance),
       opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
       widgetSettings:root.testRect(widgetSettings),solarSettings:root.testRect(solarSettings),
@@ -824,6 +824,12 @@ ShellRoot {
             Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Double-tap a hint";doubleTap:true
             value:root.motionValues.window_double_tap_delay;opening:root.original?.motion?.window_double_tap_delay || 300
             onEdited:value=>root.setMotion("window_double_tap_delay",value)
+          }
+          TimingRow {
+            id:hintHoldTiming
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Hold a hint";hintHold:true
+            value:root.motionValues.window_hold_delay;opening:root.original?.motion?.window_hold_delay || 500
+            onEdited:value=>root.setMotion("window_hold_delay",value)
           }
         }
         ParameterStack {

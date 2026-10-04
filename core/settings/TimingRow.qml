@@ -9,11 +9,12 @@ FocusScope {
   property real value:300
   property real opening:300
   property bool doubleTap:false
+  property bool hintHold:false
   signal edited(real value)
   HoverHandler { id:helpHover }
   ControlHint {
     control:row;design:row.design;title:row.title
-    explanation:row.doubleTap ? "The first hint press acts immediately. A second within this interval sends the window to its rail. Higher gives you more time; lower makes accidental double taps less likely." : "How long Alt alone must be held before window hints appear. Higher waits longer; lower enters sooner. Quick app shortcuts stay immediate."
+    explanation:row.hintHold ? "How long a hint must be held, without letting go, to place an unfocused window side by side with the focused one. A shorter press stays a tap. Higher makes accidental holds less likely; lower pairs sooner." : row.doubleTap ? "The first hint press acts immediately. A second within this interval sends the window to its rail. Higher gives you more time; lower makes accidental double taps less likely." : "How long Alt alone must be held before window hints appear. Higher waits longer; lower enters sooner. Quick app shortcuts stay immediate."
     showing:helpHover.hovered || row.activeFocus
     viewport:row.viewport;scrollOffset:row.scrollOffset
   }
@@ -33,7 +34,7 @@ FocusScope {
   Rectangle{x:24;y:60;width:(parent.width-48)*row.value/3000;height:4;radius:2;color:design.accent}
   Rectangle{x:18;y:55;width:12;height:12;radius:row.doubleTap?6:2;color:design.foreground}
   Rectangle{x:18+(parent.width-48)*row.value/3000;y:55;width:12;height:12;radius:row.doubleTap?6:2;color:design.accent}
-  Text{x:24;y:80;text:row.doubleTap?"first tap → second tap sends to rail":"Alt down → window hints appear";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale}
+  Text{x:24;y:80;text:row.hintHold?"hint down → pairs with the focused window":row.doubleTap?"first tap → second tap sends to rail":"Alt down → window hints appear";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale}
   Text{anchors.right:parent.right;anchors.rightMargin:24;y:80;text:"3 s";color:design.muted;font.family:design.family;font.pixelSize:12*design.textScale}
   MouseArea{id:hit;anchors.fill:parent;hoverEnabled:true;preventStealing:true;cursorShape:Qt.SizeHorCursor;onPressed:mouse=>{row.forceActiveFocus();row.set(mouse.x)};onPositionChanged:mouse=>{if(pressed)row.set(mouse.x)};onDoubleClicked:row.edited(row.opening)}
 }

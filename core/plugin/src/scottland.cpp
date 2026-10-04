@@ -22,6 +22,7 @@
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/workarea.hpp>
 #include <wayfire/window-manager.hpp>
+#include <wayfire/view-helpers.hpp>
 #include <linux/input-event-codes.h>
 #include <wayfire/util/log.hpp>
 #include <wayfire/util/duration.hpp>
@@ -62,6 +63,7 @@ extern "C" {
 #include "cycle-spring.hpp"
 #include "declutter.hpp"
 #include "alt-mode.hpp"
+#include "pairing.hpp"
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"

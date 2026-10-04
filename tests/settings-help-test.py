@@ -581,6 +581,8 @@ try:
     check("hold timeline edits live timing",option("alt_hold_delay")>300)
     click(*control_point("doubleTiming",180,60));key("KEY_RIGHT")
     check("double-tap timeline edits live timing",option("window_double_tap_delay")>300)
+    click(*control_point("hintHoldTiming",180,60));key("KEY_RIGHT")
+    check("hint hold timeline edits live timing",option("window_hold_delay")>500)
     shot("06a-window-timelines")
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);time.sleep(.2)
     check("Window Defaults restores original feel",option("key_impulse")==335 and option("key_friction")==608
