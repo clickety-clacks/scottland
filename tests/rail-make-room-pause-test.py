@@ -551,6 +551,25 @@ try:
           {"unique_neighbor_positions": len(key_unique)})
     clear_case()
 
+    # A widget dragged along its rail and dropped over a card pinned at the rail top: least
+    # total movement settles the dropped card just below it (89 px) rather than sending the
+    # pinned card below the drop (105 px). It lands, then eases into place; nothing overlaps.
+    for name, y in (("settle-top", 72), ("settle-moved", 400)):
+        t.launch(name, rail="right", y=y)
+    top_home = card_scene("settle-top")
+    x0, y0 = begin_drag(t.card("settle-moved"))
+    glide(x0, y0, screen["width"] - 6, 80)
+    time.sleep(.75)
+    release_drag(wait=1.6)
+    landed = card_scene("settle-moved")
+    pinned = card_scene("settle-top")
+    metrics["widget_settle"] = {"pinned_before": top_home["y"], "pinned_after": pinned["y"], "landed": landed,
+        "gap": round(vertical_gap(pinned, landed), 2)}
+    check("WG26 a widget dropped over a pinned card settles beside it with nothing overlapping",
+          abs(pinned["y"] - top_home["y"]) < .5 and vertical_gap(pinned, landed) >= .5 and
+          landed["y"] < top_home["y"] + top_home["height"] + 20, metrics["widget_settle"])
+    clear_case()
+
     # Window avoidance plans against where rail widgets are going, so a make-room ease
     # costs one avoidance re-solve per layout change, not one per animation frame (ce62f1a:
     # 11 during one ease; a drag with nothing to move: 1). The control drag is the same
@@ -610,10 +629,19 @@ try:
            "final": reduced_after})
     release_drag()
     screenshot("reduced-motion-snap.png")
-    peak = ipc.call("scottland/layout-state").get("rail_max_easing_speed_px_s")
+    state = ipc.call("scottland/layout-state")
+    peak = state.get("rail_max_easing_speed_px_s")
+    drawn = {"speed_px_s": state.get("rail_max_drawn_speed_px_s"),
+             "step_px": state.get("rail_max_drawn_step_px"), "tick_gap_ms": state.get("rail_max_tick_gap_ms")}
     metrics["compositor_peak_speed_px_s"] = peak
-    check("WG26 no rail move in this run exceeded the 1000 px/s automatic speed limit",
+    metrics["drawn_frame_to_frame"] = drawn
+    check("WG26 no rail move in this run was planned faster than the 1000 px/s automatic speed limit",
           peak is not None and 0 < peak <= 1001, peak)
+    # The drawn check reads what each tick actually put on screen (geometry plus rail offset,
+    # through retargets and geometry commits) over the real time between ticks, so a jump at
+    # a retarget or commit would show; a late tick draws a bigger step but over a longer gap.
+    check("WG26 drawn rail motion, frame to frame, never exceeded the 1000 px/s limit",
+          drawn["speed_px_s"] is not None and 0 < drawn["speed_px_s"] <= 1010, drawn)
 finally:
     release_palette()
     try:

@@ -19,22 +19,11 @@ hint inside its window.
 
 While a window is shown as a widget during a drag, or a widget is dragged along a rail, only
 widgets on that output and rail take part. The dragged item stays under the pointer and keeps its
-existing WG1/WG13 morph. Other widgets shift along the rail by the least distance needed to clear
-the dragged item's current visible interval by 1 px. A shift reaches the next widget only when the
-previous shift makes that widget too close. Existing gaps and overlaps are otherwise preserved;
-the rail is not tiled or compacted. A widget never crosses to the other rail.
-
-The hole left by a widget being dragged remains open after a successful drop. When a chain is pinned
-against its rail end but the other side has room, the widgets nearest the dragged item yield that way
-instead, one at a time, until both sides fit (a drop at the top of a rail packed from the top moves
-the top card down with the rest). Neighbors keep their order. A widget yields only if the dragged
-item's center is on it, so either order matches where the user put it, or if it had already yielded
-on the previous solve (P11: it keeps its way while that works). A drop that only clips a pinned
-widget's far edge, or merely touches it within the 1 px contact gap, does not make it jump across.
-Yielding re-runs the two chain passes at most once per widget, so a solve stays bounded (P8).
-When neither way fits, the rail is full: each causal chain advances only as far as its members can
-fit, stopped by the tightest rail-end limit, and the drop may overlap. The solver reports that case
-as `overlap`; it never publishes an off-rail result.
+existing WG1/WG13 morph. The rail spreads to make room for the item's landing interval (Mike,
+2026-10-04): any widget may move when that's what it takes, widgets keep their order, total
+movement is the least it can be, and widgets overlap the item only when the rail is truly full.
+Touching as little as possible is the preference that falls out of least movement, not a rule.
+A widget never crosses to the other rail, and the hole left by a widget being dragged stays open.
 
 Pointer motion updates only the dragged item's latest landing interval and the pause timer; it does
 not solve or move its neighbors. The pointer must stay within a 4 px radius for
@@ -47,18 +36,33 @@ solve from the captured positions, so the drop clears its real landing spot and 
 longer needs to move goes home (P2). This hold buffer follows P11 (calm movement) and P2 (move only
 what is needed), while cancel and drag-back-out retain P5's exact restoration.
 
-The solver uses the true widget positions captured when the drag enters the rail. For each widget,
-its initial yield direction is chosen by comparing its center with the dragged interval's center.
-That direction stays latched until the dragged center passes the widget's center by
-`max(6 px, 10% of the widget height)`. This prevents small pointer wobble from reversing a chain.
+The solver uses the true widget positions captured when the drag enters the rail, in rail order.
+Neighbors must end at least 1 px apart, or no further into each other than they already are (an
+earlier full rail), and the item needs 1 px of clearance on each side. The item splits the
+widgets into those above it and those below it. For one split, each side is independent: its
+widgets go between a rail end and the item, in order, minimizing the sum of squared displacements
+from home. Subtracting each widget's packed offset turns "in order, apart" into "non-decreasing",
+so a side is an isotonic regression with bounds, solved exactly by pool-adjacent-violators in O(n).
+If a side can't fit between the item and its rail end, the item itself settles toward the side
+with room by the least amount (its displacement counts as movement too); it never settles off the
+rail, and an item hanging off a rail end is laid out where placement will put it, on the rail.
+Every split is tried and the one with the least total movement wins (ties go to the split by
+centers), so a widget crosses the item only when that is less movement, and the item settles
+only when that is less movement than pushing widgets. With n capped at 256 a solve is O(n²).
 
-For one direction, the solver visits widgets in their captured rail order. It requests only the
-CONTACT displacement needed by the first widget, then propagates it through neighbors. For each
-pair it preserves any existing overlap and keeps any gap larger than 1 px. The first displacement
-is clamped by the available rail-end space of **every** member of the chain; each later member moves
-only after the slack before it has been used. The opposite direction uses the mirrored calculation.
-The final intervals are checked against both rail ends and their original order. Invalid input or a
-failed check produces zero shifts with `overlap` status.
+While dragging, the item is under the pointer and can't settle; the audition shows the neighbors
+placed for the settled item. Once it lands, the arrival solve runs against its real card and
+eases it into place along with its neighbors.
+
+When no split fits even with settling, the rail is truly full. The split that needs the least
+overlap is used, and the widgets encroach on the item by exactly that amount, half at each edge;
+it grows continuously from zero as a rail fills. The status is `overlap`. Results never leave the
+rail or change the widgets' order; a failed check produces zero shifts with `overlap` status.
+
+P11 hysteresis applies to the split: it keeps its previous value until the item's center has moved
+`max(6 px, 10% of the height of a widget that would change side)` from where it last changed, as
+long as it still fits as well. A widget therefore never switches side and back across small
+re-pauses. Within one split every widget moves at most 1 px per pixel of drag.
 
 Each solve is synchronous but, during a drag, runs only on a completed pause or once on drop, never
 for every pointer event. A non-drag window-to-widget arrival runs one solve after its widget has
@@ -105,11 +109,12 @@ actors with nonzero solver offsets receive a real move on drop.
 
 | ID | Invariant | Status |
 |---|---|---|
-| SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item. It moves only a causal chain, preserves the rail order and never crosses sides. | verified (plumbus headless, 2026-10-04) |
-| SM2 | Contact clearance is 1 px where room exists. A chain pinned at a rail end yields the other way when that side has room (only widgets the drag is on, or that already yielded); a drop may overlap only when the rail is full. | verified (plumbus unit suite and real stipc input, 2026-10-04) |
+| SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item (whose spot stays open). Any of them may move; they keep their order and never cross sides; total squared movement is least (exact per side by pool-adjacent-violators, all splits tried). | verified (plumbus unit suite incl. brute-force grid search, 2026-10-04) |
+| SM2 | Clearance is 1 px (existing overlaps between widgets are never deepened). The dropped item settles toward the side with room by the least amount when that is needed or less movement. Widgets overlap the item only when the rail is truly full, by exactly the shortfall. | verified (plumbus unit suite, review fuzz: 0 overlaps with room in 600,000 solves; real stipc input, 2026-10-04) |
 | SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry and drawn positions. A drop before any completed pause, or more than 4 px from where the last pause solved, solves once more; otherwise it commits the held layout. | verified (Plumbus real stipc input, 2026-10-04) |
 | SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (Plumbus; bounded unit suite and real stipc input, 2026-10-04) |
 | SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (Plumbus real stipc input, 2026-10-04) |
-| SM6 | Every target change, including large shifts, release-time solves, geometry corrections and returns, eases in and out over 190–360 ms, longer only to stay under the shared 1000 px/s limit; retargets keep their speed and never overshoot; active reduced motion snaps. | verified (Plumbus frame sampling, compositor speed metric and reduced-motion palette, 2026-10-04) |
+| SM6 | Every target change, including large shifts, release-time solves, geometry corrections, the dropped item's settle and returns, eases in and out over 190–360 ms, longer only to stay under the shared 1000 px/s limit; retargets keep their speed and never overshoot; active reduced motion snaps. | verified (Plumbus frame sampling, planned and drawn frame-to-frame compositor speed, reduced-motion palette, 2026-10-04) |
 | SM7 | Direct rail drops, inertial coast arrivals and Window-mode key widgetization run the shared solver at the widget's actual landing spot. | verified (Plumbus real stipc input, 2026-10-04) |
 | SM8 | Window avoidance sees a rail ease's target, so it re-solves once per rail layout change, not per animation frame. | verified (Plumbus real stipc input against a no-move control, 2026-10-04) |
+| SM9 | The split (which widgets are above the item) keeps its value across small re-pauses: no widget switches side and back within its direction margin (P11); within a split every widget moves at most 1 px per pixel of drag. | verified (review fuzz, 600,000 solves: 0 back-and-forth, was 168; 1 px sweep suite, 2026-10-04) |

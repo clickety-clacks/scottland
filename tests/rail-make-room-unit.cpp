@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <random>
@@ -124,97 +126,173 @@ int main()
             sides == solver.latched_directions(), "required contact ripple moves continuously by one pixel");
     }
     {
+        // Mike's ruling (2026-10-04): the rail spreads with the least total movement. Two
+        // cards a dropped card lands between both move a little, rather than one a lot.
         solver_t solver;
-        std::vector<interval_t> items{{0,0,60},{1,20,80},{2,40,100}};
+        std::vector<interval_t> items{{0,100,196},{1,250,346}};
         solver.begin(items);
-        check(solver.solve(50,60,0,100) == status_t::overlap &&
-            solver.shifts() == std::vector<double>({0,0,0}) && legal(items, solver.shifts(),0,100),
-            "a full rail retains a legal ordered overlap when no chain space remains");
+        solver.solve(180,276,0,600);  // covers the first card's bottom and the second's top
+        auto& s = solver.shifts();
+        check(solver.status() == status_t::clear && solver.item_shift() == 0 &&
+            std::abs(s[0] - (179 - 196)) < 1e-9 && std::abs(s[1] - (277 - 250)) < 1e-9,
+            "cards on both sides of the drop each move just clear of it");
     }
     {
+        // A tight run below the drop: all of it moves together the least that fits, and a
+        // card far away that nothing pushes stays home.
         solver_t solver;
-        std::vector<interval_t> items{{0,150,200},{1,201,251},{2,252,292}};
+        std::vector<interval_t> items{{0,200,296},{1,297,393},{2,394,490},{3,700,796}};
         solver.begin(items);
-        check(solver.solve(100,200,60,300) == status_t::overlap &&
-            solver.shifts() == std::vector<double>({8,8,8}) && legal(items,solver.shifts(),60,300) &&
-            items.back().hi + solver.shifts().back() == 300,
-            "a crowded causal chain with no room either way advances only until its last member reaches the rail end");
-    }
-    {
-        // The same chain with room above: the card nearest the drag yields up instead of
-        // overlapping, and the others stay home (P2).
-        solver_t solver;
-        std::vector<interval_t> items{{0,150,200},{1,201,251},{2,252,292}};
-        solver.begin(items);
-        check(solver.solve(100,200,0,300) == status_t::clear &&
-            solver.shifts() == std::vector<double>({-101,0,0}),
-            "a blocked chain yields the other way when that side has room");
+        solver.solve(150,246,0,900);
+        auto& s = solver.shifts();
+        check(std::abs(s[0] - 47) < 1e-9 && std::abs(s[1] - 47) < 1e-9 && std::abs(s[2] - 47) < 1e-9 &&
+            s[3] == 0, "a packed run moves as a unit; an untouched card stays home");
     }
     {
         // Review F2: five 96 px cards packed at the top of a 672 px rail, a 96 px card dropped
-        // at the top. The top card is pinned against the rail end, so it moves down with the
-        // rest instead of being overlapped; 192 px stay free below.
+        // at the top. Least total movement: the dropped card settles just below the top card
+        // (89 px) and the four below it make room, instead of all five moving 105 px.
         solver_t solver;
         std::vector<interval_t> items;
         for (int i = 0; i < 5; ++i) items.push_back({(uint64_t)i, 24.0 + i * 97, 120.0 + i * 97});
         solver.begin(items);
         auto status = solver.solve(32, 128, 24, 696);
-        bool cleared = status == status_t::clear && legal(items, solver.shifts(), 24, 696);
+        const double lo = 32 + solver.item_shift(), hi = 128 + solver.item_shift();
+        bool clear = status == status_t::clear && legal(items, solver.shifts(), 24, 696);
         for (size_t i = 0; i < items.size(); ++i)
-            cleared &= items[i].lo + solver.shifts()[i] >= 128 + 1 - 1e-9;
+            clear &= items[i].hi + solver.shifts()[i] <= lo - 1 + 1e-9 || items[i].lo + solver.shifts()[i] >= hi + 1 - 1e-9;
         for (size_t i = 1; i < items.size(); ++i)
-            cleared &= items[i].lo + solver.shifts()[i] >= items[i - 1].hi + solver.shifts()[i - 1];
-        auto again = solver.solve(33, 129, 24, 696);
-        check(cleared, "packed but not full: a card pinned at the rail end yields past the drop");
-        check(again == status_t::clear && solver.latched_directions()[0] > 0,
-            "a yielded card keeps its new side while it still works");
-        // A drop that clips a pinned card's far edge by a few pixels (its center well past
-        // the card) doesn't make that card fly across; a live drag that started on it keeps
-        // it on its yielded side until the other side works again.
+            clear &= items[i].lo + solver.shifts()[i] >= items[i - 1].hi + solver.shifts()[i - 1];
+        check(clear && std::abs(solver.item_shift() - 89) < 1e-9 && solver.shifts()[0] == 0,
+            "packed but not full: the dropped card settles the least and nothing overlaps");
+    }
+    {
+        // A card merely touching a pinned neighbor, or clipping it by a few pixels, settles
+        // by those pixels; the pinned card stays.
+        solver_t touching;
+        touching.begin(top_card_items());
+        touching.solve(120, 216, 24, 696);
         solver_t clipped;
         clipped.begin(top_card_items());
         clipped.solve(117, 213, 24, 696);
-        bool stays = clipped.shifts()[0] == 0;
-        solver_t sliding;
-        sliding.begin(top_card_items());
-        bool kept = true;
-        for (double y = 32; y <= 110; y += 1)
-        {
-            sliding.solve(y, y + 96, 24, 696);
-            kept &= sliding.shifts()[0] >= y + 96 + 1 - 24 - 1e-9;
-        }
-        sliding.solve(121, 217, 24, 696);
-        bool home = sliding.shifts()[0] == 0;
-        check(stays, "a drop clipping a pinned card's far edge leaves it in place");
-        check(kept && home, "a yielded card stays yielded through a slide and goes home once clear");
-        // Touching a pinned card (within the contact gap) is not overlap: it doesn't jump.
-        solver_t touching;
-        std::vector<interval_t> top_card{{0, 24, 120}};
-        touching.begin(top_card);
-        touching.solve(120, 216, 24, 696);
-        check(touching.shifts()[0] == 0, "a card merely touching a pinned neighbor leaves it in place");
-        // Seven cards fill the rail: nothing can make room, so overlap is reported.
+        check(touching.shifts()[0] == 0 && std::abs(touching.item_shift() - 1) < 1e-9 &&
+            clipped.shifts()[0] == 0 && std::abs(clipped.item_shift() - 4) < 1e-9,
+            "a drop touching or clipping a pinned card settles by the leftover");
+    }
+    {
+        // Exactly full: seven cards 1 px apart plus the drop and its clearance fit; one more
+        // pixel of card does not, and only then is overlap reported, staying on the rail.
+        solver_t exact;
+        std::vector<interval_t> six;
+        for (int i = 0; i < 6; ++i) six.push_back({(uint64_t)i, 24.0 + i * 97, 120.0 + i * 97});
+        exact.begin(six);
+        const double room = 696 - (24 + 6 * 97);   // what the drop can have, clearance included
+        auto fits = exact.solve(300, 300 + room - 1, 24, 696);
         solver_t full;
         std::vector<interval_t> seven;
         for (int i = 0; i < 7; ++i) seven.push_back({(uint64_t)i, 24.0 + i * 96, 120.0 + i * 96});
         full.begin(seven);
-        check(full.solve(32, 128, 24, 696) == status_t::overlap && legal(seven, full.shifts(), 24, 696),
-            "a truly full rail still reports overlap and stays in bounds");
+        check(fits == status_t::clear && full.solve(32, 128, 24, 696) == status_t::overlap &&
+            legal(seven, full.shifts(), 24, 696), "overlap only when the rail is truly full");
     }
     {
+        // Cards that already overlap (an earlier full rail) are never pulled further apart
+        // than needed, and a full rail stays legal and ordered.
+        solver_t solver;
+        std::vector<interval_t> items{{0,0,60},{1,20,80},{2,40,100}};
+        solver.begin(items);
+        check(solver.solve(50,60,0,100) == status_t::overlap && legal(items, solver.shifts(),0,100),
+            "a full rail of already overlapping cards stays legal");
+    }
+    {
+        // Nested cards with a one-pixel wobble at the rail end: positions are continuous and
+        // the drop settles by the pixel it can't have.
         solver_t solver;
         std::vector<interval_t> items{{0,20,90},{1,40,50}};
         solver.begin(items);
-        std::vector<status_t> statuses;
         std::vector<std::vector<double>> offsets;
+        std::vector<double> settles;
         for (auto d : {std::pair<double,double>{19,29}, {20,30}, {19,29}})
         {
-            statuses.push_back(solver.solve(d.first,d.second,0,100));
+            solver.solve(d.first,d.second,0,100);
             offsets.push_back(solver.shifts());
+            settles.push_back(solver.item_shift());
         }
         check(offsets == std::vector<std::vector<double>>({{10,10},{10,10},{10,10}}) &&
-            statuses == std::vector<status_t>({status_t::clear,status_t::overlap,status_t::clear}),
-            "nested different-height end clamp is continuous across a one-pixel wobble");
+            settles == std::vector<double>({0,-1,0}),
+            "nested end clamp is continuous across a one-pixel wobble");
+    }
+    {
+        // Brute force on small integer rails: no in-order placement on the pixel grid (with
+        // the item's settle rule) moves less than the solver.
+        std::mt19937 random(17);
+        bool optimal = true;
+        int cases = 0;
+        for (int trial = 0; trial < 3000 && optimal; ++trial)
+        {
+            const int length = 30 + int(random() % 20), n = 1 + int(random() % 3);
+            std::vector<interval_t> items;
+            int y = int(random() % 6);
+            for (int i = 0; i < n; ++i)
+            {
+                int h = 3 + int(random() % 8);
+                if (y + h > length) break;
+                items.push_back({uint64_t(i), double(y), double(y + h)});
+                y += h + int(random() % 6);
+            }
+            if (items.empty()) continue;
+            int dh = 3 + int(random() % 8), dlo = int(random() % (length - dh + 1));
+            solver_t solver;
+            solver.begin(items);
+            if (solver.solve(dlo, dlo + dh, 0, length) != status_t::clear) continue;
+            ++cases;
+            double cost = solver.item_shift() * solver.item_shift();
+            for (double s : solver.shifts()) cost += s * s;
+            // Grid search: for each split, the item settles the least that lets any in-order
+            // placement exist (WG26's rule), then every in-order placement at that settle.
+            const int m = int(items.size());
+            double brute = std::numeric_limits<double>::infinity();
+            for (int k = 0; k <= m; ++k)
+            {
+                for (int step = 0; step <= 2 * length; ++step)
+                {
+                    const int d = (step % 2 ? -1 : 1) * ((step + 1) / 2);
+                    const int lo = dlo + d, hi = dlo + dh + d;
+                    std::vector<int> pos(m, 0);
+                    double here = std::numeric_limits<double>::infinity();
+                    std::function<void(int, int)> go = [&] (int i, int from)
+                    {
+                        if (i == m)
+                        {
+                            double c = double(d) * d;
+                            for (int j = 0; j < m; ++j) c += std::pow(pos[j] - items[j].lo, 2);
+                            here = std::min(here, c);
+                            return;
+                        }
+                        const int h = int(items[i].hi - items[i].lo);
+                        const int gap = i ? std::min(1, int(items[i].lo - items[i - 1].hi)) : 0;
+                        for (int p = i ? from + gap : 0; p + h <= length; ++p)
+                        {
+                            if (i < k ? p + h > lo - 1 : p < hi + 1) continue;
+                            pos[i] = p;
+                            go(i + 1, p + h);
+                        }
+                    };
+                    go(0, 0);
+                    if (std::isfinite(here))
+                    {
+                        // The feasible settles form one interval, so the least is unique.
+                        brute = std::min(brute, here);
+                        break;
+                    }
+                }
+            }
+            optimal &= cost <= brute + 1e-6;
+            if (!(cost <= brute + 1e-6))
+                std::cout << "INFO  brute mismatch trial " << trial << " cost " << cost << " grid " << brute << "\n";
+        }
+        check(optimal && cases > 1000, "least total movement matches a brute-force grid search");
+        std::cout << "INFO  brute-force cases=" << cases << "\n";
     }
     {
         solver_t solver;
@@ -311,8 +389,9 @@ int main()
         bool crowded_ok = sweep(crowded,24,1420,90,ys,flips,jumps,worst) && jumps == 0;
 
         solver_t far_solver;
-        far_solver.begin(ordinary);
-        auto far = far_solver.solve(-500,-410,24,1416);
+        std::vector<interval_t> near_top{{0,40,136},{1,140,236},{2,300,396}};
+        far_solver.begin(near_top);
+        auto far = far_solver.solve(1300,1390,24,1416);  // on the rail, far below every card
         bool no_remote_push = far == status_t::clear && std::all_of(far_solver.shifts().begin(),
             far_solver.shifts().end(), [] (double shift) { return shift == 0; });
 
@@ -343,6 +422,103 @@ int main()
             }
         }
         check(stable, "direction margin absorbs small center and rail-end pointer wobble");
+    }
+
+    {
+        // Review 2 fuzz (Fable): 20,000 random rails, 30 pauses each, mostly small wobbles
+        // around a spot. Every result is legal, ordered and deterministic; no card switches
+        // side and back over three consecutive pauses each within 3 px (P11); and nothing
+        // overlaps the drop unless the rail is truly full (Mike's ruling, 2026-10-04).
+        std::mt19937 rng(5);
+        std::uniform_real_distribution<double> u(0, 1);
+        long solves = 0, illegal = 0, disordered = 0, pushed_in = 0, unstable = 0, back_forth = 0;
+        double worst_with_room = -std::numeric_limits<double>::infinity();
+        for (int trial = 0; trial < 20000; ++trial)
+        {
+            double top = 24, bottom = 24 + 600 + u(rng) * 800;
+            int n = 1 + int(u(rng) * 7);
+            std::vector<interval_t> w;
+            double y = top + u(rng) * 60;
+            for (int i = 0; i < n; ++i)
+            {
+                double h = u(rng) < .3 ? 48 : 96;
+                double gap = u(rng) < .5 ? 1 + u(rng) * 3 : u(rng) * 160;
+                y += gap;
+                if (y + h > bottom) break;
+                w.push_back({uint64_t(i + 1), y, y + h});
+                y += h;
+            }
+            if (w.empty()) continue;
+            double dh = u(rng) < .3 ? 48 : 96;
+            solver_t solver;
+            solver.begin(w);
+            std::vector<int8_t> previous, two_ago;
+            double start = top + u(rng) * (bottom - top - dh);
+            for (int step = 0; step < 30; ++step)
+            {
+                double lo = step % 6 == 0 ? top + u(rng) * (bottom - top - dh) : start + (u(rng) - .5) * 6;
+                start = lo;
+                lo = std::max(top, std::min(lo, bottom - dh));
+                double hi = lo + dh;
+                solver.solve(lo, hi, top, bottom);
+                ++solves;
+                auto shifts = solver.shifts();
+                auto sides = solver.latched_directions();
+                double covered = -std::numeric_limits<double>::infinity();
+                const double slo = lo + solver.item_shift(), shi = hi + solver.item_shift();
+                for (size_t i = 0; i < w.size(); ++i)
+                {
+                    double a = w[i].lo + shifts[i], b = w[i].hi + shifts[i];
+                    if (a < top - 1e-6 || b > bottom + 1e-6) ++illegal;
+                    covered = std::max(covered, std::min(b, shi) - std::max(a, slo));
+                    if (i)
+                    {
+                        double a0 = w[i - 1].lo + shifts[i - 1], b0 = w[i - 1].hi + shifts[i - 1];
+                        if (a < a0 - 1e-6) ++disordered;
+                        if (a - b0 < std::min(w[i].lo - w[i - 1].hi, 1.0) - 1e-6) ++pushed_in;
+                    }
+                }
+                // Truly full? Independently: for some split, cards packed tight from the top
+                // above the item and from the bottom below it leave room for the item and
+                // its 1 px clearance on each side (already-overlapping cards stay so).
+                std::vector<double> packed(w.size(), 0);  // offset of each card when packed tight
+                for (size_t i = 1; i < w.size(); ++i)
+                    packed[i] = packed[i - 1] + (w[i - 1].hi - w[i - 1].lo) + std::min(1.0, w[i].lo - w[i - 1].hi);
+                bool room = false;
+                for (size_t k = 0; k <= w.size() && !room; ++k)
+                {
+                    double above = top, below = 0;
+                    for (size_t i = 0; i < k; ++i)
+                        above = std::max(above, top + packed[i] + (w[i].hi - w[i].lo));
+                    for (size_t i = k; i < w.size(); ++i)
+                        below = std::max(below, packed[i] - packed[k] + (w[i].hi - w[i].lo));
+                    room |= (bottom - below - (k < w.size() ? 1 : 0)) - (above + (k ? 1 : 0)) >= dh - 1e-6;
+                }
+                if (room) worst_with_room = std::max(worst_with_room, covered);
+                if (room && covered > -1 + 1e-6 && std::getenv("FUZZ_WITNESS"))
+                {
+                    std::cout << "WITNESS rail " << top << "," << bottom << " item " << lo << "," << hi
+                        << " settle " << solver.item_shift() << " status " << int(solver.status()) << " cards";
+                    for (size_t i = 0; i < w.size(); ++i)
+                        std::cout << " [" << w[i].lo << "," << w[i].hi << "]" << shifts[i];
+                    std::cout << "\n";
+                }
+                solver.solve(lo, hi, top, bottom);
+                for (size_t i = 0; i < w.size(); ++i)
+                    if (std::abs(solver.shifts()[i] - shifts[i]) > 1e-9) { ++unstable; break; }
+                if (step % 6 >= 2 && !two_ago.empty())
+                    for (size_t i = 0; i < w.size(); ++i)
+                        if (two_ago[i] == sides[i] && previous[i] != sides[i] && previous[i] != 0) ++back_forth;
+                two_ago = step % 6 == 0 ? std::vector<int8_t>() : previous;
+                previous = solver.latched_directions();
+            }
+        }
+        check(solves == 600000 && !illegal && !disordered && !pushed_in && !unstable,
+            "fuzz: 600,000 pause solves are legal, ordered, never push cards together, deterministic");
+        check(back_forth == 0, "fuzz: no card switches side and back on small re-pauses (P11)");
+        check(worst_with_room <= -1 + 1e-6, "fuzz: whenever the rail has room, nothing overlaps the (settled) drop");
+        std::cout << "INFO  fuzz back-and-forth=" << back_forth << " worst overlap with room="
+            << worst_with_room << " px\n";
     }
 
     {
