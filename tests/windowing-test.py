@@ -274,7 +274,15 @@ try:
     focus(a)
     memories_before = {h['window']: h['memories'] for h in hints()['hints']}
     hold()
+    # A rear window's hint appears once the offsets it depends on settle (WK31); entering Window
+    # mode may first nudge it to give its hint full room (WK13).
+    started = time.monotonic()
+    try:
+        wait_for(lambda: all(h['visible'] for h in hints()['hints']), 3)
+    except RuntimeError:
+        pass
     check(all(h['visible'] for h in hints()['hints']), 'Alt-alone hold shows every window hint')
+    print(f'      every hint shown {time.monotonic()-started+.4:.2f} s after Alt reached Window mode', flush=True)
     saved = center(view('Alpha')), center(view('Beta'))
     offsets = [(hint(i)['dx'], hint(i)['dy']) for i in (a,b)]
     check(any(math.hypot(*p) > 10 for p in offsets), 'coincident windows visually displace')

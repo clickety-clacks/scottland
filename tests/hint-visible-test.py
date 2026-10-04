@@ -36,9 +36,9 @@ def ipc(method, data=None):
         return json.loads(read(struct.unpack('<I', read(4))[0]))
 
 
-def check(ok, name):
+def check(ok, name, detail=''):
     global passed, failed
-    print(('PASS  ' if ok else 'FAIL  ')+name, flush=True)
+    print(('PASS  ' if ok else 'FAIL  ')+name+(f'  [{detail}]' if detail else ''), flush=True)
     passed += bool(ok)
     failed += not ok
 
@@ -144,8 +144,14 @@ def capture(name, order):
         desired = max(72, min(132, min(r[2:])*.34))
         fit = math.floor(max(0, 2*(h['clearance']-1)/1.06))
         minimum = 48
-        check(b['size'] == max(minimum, round(min(desired, fit))),
-              name+': '+v['title']+' size respects the 48px minimum and available clearance')
+        # WK31: a window with hint room shows as large a hint as its room holds, up to its full
+        # size; on a strip or with no room, the minimum.
+        if h.get('rung') in ('full', 'minimum') or h.get('outcome') == 'visible':
+            sized = minimum <= b['size'] <= round(desired)+1 and b['size'] <= max(minimum, fit)+1
+        else:
+            sized = abs(b['size']-minimum) < 1
+        check(sized, name+': '+v['title']+' size respects the 48px minimum and available clearance',
+              f"{h.get('outcome')}/{h.get('rung')} size {b['size']} fit {fit} desired {desired:.0f}")
         if fit >= minimum:
             check(inside and outside and not h['edge_label'],
                   name+': '+v['title']+' minimum-sized circle stays in its exposed window')
@@ -300,8 +306,8 @@ try:
     clients.clear()
     wait(lambda: not views())
     # Mike's layout: a large front window covers almost all of a back window, leaving
-    # an 80px left strip. The rear window should stay put and use the largest circle
-    # that fits there, never smaller than its 48px minimum.
+    # an 80px left strip. Entering Window mode, the rear window is nudged so its hint gets full
+    # room where its zone allows (peek-strip decision 5); the focused front window stays put.
     peeking = []
     for name, x in [('PeekingBack', 640), ('CoveringFront', 720)]:
         clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
@@ -316,12 +322,13 @@ try:
     drawn, state = capture('mike-left-strip', list(reversed(peeking)))
     back, front = peeking
     check(abs(state[front]['dx']) + abs(state[front]['dy']) < 1 and
-          abs(state[back]['dx']) + abs(state[back]['dy']) < 1 and
-          48 <= state[back]['badge']['size'] < 132,
-          'left-strip case keeps both windows still and shrinks the rear hint into the strip')
+          state[back]['rung'] == 'full' and state[back]['badge']['size'] > 48,
+          'left-strip case: the front stays; the rear window is nudged to give its hint full room',
+          f"rear {state[back]['outcome']}/{state[back]['rung']} offset ({state[back]['dx']:.1f},{state[back]['dy']:.1f}) "
+          f"badge {state[back]['badge']['size']:.0f}")
     check(state[back]['badge']['x']+state[back]['badge']['size'] <= rect(drawn[front],state[front])[0]+1 and
           state[back]['badge']['size'] >= 48 and state[front]['badge']['size'] >= 48,
-          'rear minimum-fit hint sits wholly in its left strip while the front hint stays visible')
+          'rear hint sits wholly in its left strip while the front hint stays visible')
     check(all(rect(drawn[i]) == rect(before_peek[i]) for i in peeking),
           'left-strip declutter changes neither real window geometry nor scale')
     release()
@@ -345,9 +352,13 @@ try:
     check(all(state[i]['visible'] and not state[i]['edge_label'] and
               48 <= state[i]['badge']['size'] <= 132 for i in huge),
           'all three formerly covered windows retain visible interior hints at the 48px minimum')
+    # The front leaves 140 px of screen on each side and 60 px above and below: no full hint
+    # room anywhere, so each rear window moves the least that gives a minimum hint room (P2).
     check(abs(state[huge[-1]]['dx'])+abs(state[huge[-1]]['dy']) < 1 and
-          any(math.hypot(state[i]['dx'],state[i]['dy']) > 100 for i in huge[:-1]),
-          'focused front stays at true geometry while fully covered rear windows emerge')
+          all(state[i]['rung'] in ('full', 'minimum') and math.hypot(state[i]['dx'], state[i]['dy']) > 40
+              for i in huge[:-1]),
+          'focused front stays at true geometry while fully covered rear windows emerge with hint room',
+          str([(state[i]['rung'], round(state[i]['dx'], 1), round(state[i]['dy'], 1)) for i in huge[:-1]]))
     (artifacts/'fully-hidden.json').write_text(json.dumps({'views': views(), 'hints': state}, indent=2))
     before_select = rect(views()[huge[0]])
     key('A', True); key('A', False)

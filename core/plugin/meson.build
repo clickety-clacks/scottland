@@ -13,7 +13,7 @@ layer_shell_header = custom_target('layer-shell-header',
   output: 'wlr-layer-shell-unstable-v1-protocol.h',
   command: [find_program('wayland-scanner'), 'server-header', '@INPUT@', '@OUTPUT@'])
 
-shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declutter.cpp',
+shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declutter.cpp', 'src/peek.cpp',
   'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/goo-shape.cpp',
   'src/key-layers.cpp', 'src/inertia.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp'],
   dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo],

@@ -35,12 +35,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | "Look far apart, then go deep" applies only to searching for a hint spot, never to choosing where a window moves; windows never avoid by moving to the other side. | WK13, WK31 |
 | 10-03 | Keep continuous motion during drags (no pause-then-glide). | WK13 |
 | 10-03 | One engine, two tests: always-on peeking needs a strip; on Alt, hints get room. | P12 |
-| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | peek-strip design |
-| 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | peek-strip design |
-| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | peek-strip design |
-| 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
+| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | WK13 |
+| 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | WK13 |
+| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | WK13 |
+| 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | WK13 |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
-| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | peek-strip design |
+| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13; being built on branch grab-peeking-window |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 

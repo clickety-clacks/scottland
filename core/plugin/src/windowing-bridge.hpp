@@ -43,13 +43,14 @@
         std::shared_ptr<wf::scene::view_2d_transformer_t> offset;
         bool offset_attached = false;
         scottland::windowing::point target;
-        scottland::windowing::point branch_base_offset;
-        uint64_t branch_owner = 0;
-        int branch_axis = 0, branch_sign = 0;
         scottland::windowing::point label_offset;
         double label_size = 72, clearance = 0;
-        double retained_clearance = -1;
         bool edge_label = false;
+        // WK13 telemetry: how the last pass decided this window.
+        scottland::windowing::peek_outcome outcome = scottland::windowing::peek_outcome::pending;
+        scottland::windowing::peek_rung rung = scottland::windowing::peek_rung::none;
+        char rule = '-';
+        scottland::windowing::rectangle room{0, 0, 0, 0};
         std::chrono::steady_clock::time_point last_offset_step{};
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
@@ -62,15 +63,24 @@
     double exposure_search_ms = 0;
     double exposure_search_max_ms = 0;
     double exposure_easing_speed_max = 0;
-    scottland::windowing::exposure_profile exposure_last_profile;
-    std::vector<uint64_t> exposure_last_order;
     uint64_t exposure_solve_count = 0;
     uint64_t exposure_solve_deadline_count = 0;
     bool exposure_solve_pending = false;
     uint64_t hint_step_count = 0;
     bool hint_step_animation = false, hint_step_offset = false;
-    std::string exposure_progress_signature;
-    std::map<std::string, scottland::windowing::exposure_progress> exposure_progress_by_output;
+    // WK13: one resumable peek pass per output. `newer`: the layout changed while it ran; the
+    // next pass starts from the newest layout as soon as this one completes.
+    struct peek_output_t
+    {
+        std::optional<scottland::windowing::peek_pass> pass;
+        std::string order;
+        std::vector<uint64_t> ids;
+        bool newer = false;
+    };
+    std::map<std::string, peek_output_t> peek_by_output;
+    uint64_t avoidance_pass_count = 0;
+    size_t avoidance_pass_units = 0, avoidance_pass_slices = 0, avoidance_pass_slices_max = 0;
+    size_t avoidance_slice_units = 0, avoidance_slice_units_max = 0;
     // WK37 occlusion pass, resumable per output like the solve it follows: the next window (in
     // front-to-back order) still to measure; absent means start over, SIZE_MAX means done.
     std::map<std::string, size_t> occlusion_next_by_output;
@@ -840,8 +850,12 @@
             }
         bool avoidance_active = window_keys.active || bool(window_avoidance_always) ||
             bool(hint_avoidance_always);
+        // Live: something is moving under the user's hand or by inertia. The calm rules differ
+        // (WK13), so live to rest is a layout change that requests one rest pass.
+        const bool live = bool(drag->view) || inertia_active() || !glides.empty();
         signature << "active:" << window_keys.active << ";avoidance:" << avoidance_active
-            << ";anchor:" << (focused ? focused->get_id() : 0);
+            << ";anchor:" << (focused ? focused->get_id() : 0) << ";live:" << live
+            << ";text:" << hints_palette.text_scale;
         auto current_signature = signature.str();
         auto solve_now = std::chrono::steady_clock::now();
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
@@ -851,13 +865,13 @@
         bool retry_pending = exposure_solve_pending && !signature_changed && avoidance_active;
         bool solve_requested = signature_changed || retry_pending;
         bool deferred_solve = solve_requested && avoidance_active && !force_solve && within_tick_budget;
-        if (signature_changed || exposure_progress_signature != current_signature)
+        if (signature_changed)
         {
-            // A changed true layout invalidates every cached placement. Within an
-            // unchanged signature, validated front windows carry into later slices.
-            exposure_progress_by_output.clear();
+            // A pass in progress finishes on its snapshot; the newest layout gets the next one
+            // (WK13: rear windows lag a moving front window by at most one pass). The WK37
+            // occlusion measurement restarts.
+            for (auto& [name, state] : peek_by_output) state.newer = true;
             occlusion_next_by_output.clear();
-            exposure_progress_signature = current_signature;
         }
         if (solve_requested && (!avoidance_active || force_solve || !within_tick_budget))
         {
@@ -869,32 +883,29 @@
             {
                 // End of the hint request: the true geometry is the only target.
                 // Offsets remain attached until the animation reaches this target.
-                for (auto& [id, visual] : hint_visuals) visual.target = {};
                 exposure_solve_pending = false;
-                exposure_progress_by_output.clear();
+                peek_by_output.clear();
                 occlusion_next_by_output.clear();
                 for (auto& [id, visual] : hint_visuals)
-                { visual.branch_owner = 0; visual.branch_axis = visual.branch_sign = 0; }
-                for (auto& [id, visual] : hint_visuals)
                 {
+                    visual.target = {};
                     visual.label_offset = {};
                     visual.visible_fraction = 1;
                     visual.clearance = 0;
-                    visual.retained_clearance = -1;
                     visual.edge_label = false;
+                    visual.outcome = scottland::windowing::peek_outcome::pending;
+                    visual.rung = scottland::windowing::peek_rung::none;
+                    visual.rule = '-'; visual.room = {0, 0, 0, 0};
                 }
         } else
         {
             auto exposure_started = std::chrono::steady_clock::now();
+                // P8: the wall clock only pauses a pass; results never depend on it.
                 auto exposure_deadline = exposure_started + std::chrono::microseconds(
                     scottland::windowing::avoidance_solve_budget_us);
-                bool exposure_deadline_hit = false;
                 exposure_solve_pending = false;
-                exposure_last_profile = {};
-                exposure_last_order.clear();
                 for (auto& [output, ids] : by_output)
                 {
-                    bool output_deadline_hit = false;
                     std::vector<scottland::windowing::point> anchors;
                     std::vector<double> diameters;
                     std::vector<scottland::windowing::hint_constraint> constraints;
@@ -905,15 +916,13 @@
                             view == focused});
                         diameters.push_back(std::round(hint_size(view))); }
                     auto screen = output->get_relative_geometry();
-                    auto displaced = avoidance_active && std::any_of(constraints.begin(), constraints.end(),
+                    auto displaced = std::any_of(constraints.begin(), constraints.end(),
                         [] (auto constraint) { return constraint.vertical_only; }) ?
                         scottland::windowing::declutter(anchors,
                             {0, 0, double(screen.width), double(screen.height)}, 6, diameters, constraints) : anchors;
                     for (size_t i = 0; i < ids.size(); ++i)
                     {
-                        // Widget circles use the vertical-only declutter pass. Preserve
-                        // each window's last avoidance target for the exposure solver;
-                        // resetting it to its undisturbed anchor here defeated hysteresis.
+                        // Widget circles use the vertical-only declutter pass.
                         if (constraints[i].vertical_only)
                             hint_visuals[ids[i]].target = {
                                 displaced[i].x - anchors[i].x, displaced[i].y - anchors[i].y};
@@ -921,7 +930,16 @@
 
                     using rectangle = scottland::windowing::rectangle;
                     rectangle bounds{0, 0, double(screen.width), double(screen.height)};
-                    std::vector<scottland::windowing::exposure_window> windows;
+                    auto area = output->workarea->get_workarea();
+                    const double text = hints_palette.text_scale;
+                    // WK13: the peek test's rectangle must lie where a window can be seen: the
+                    // work area, not under a panel.
+                    scottland::windowing::peek_request request;
+                    request.screen = {double(area.x), double(area.y), double(area.width), double(area.height)};
+                    request.strip_depth = scottland::windowing::peek_strip_depth * text;
+                    request.strip_length = scottland::windowing::peek_strip_length * text;
+                    request.window_mode = window_keys.active;
+                    request.live = live;
                     std::vector<uint64_t> window_ids;
                     auto ordered = ids;
                     std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
@@ -929,97 +947,90 @@
                             return found == stacking.end() ? stacking.size() : found->second; };
                         return rank(a) < rank(b);
                     });
+                    // P13: a displayed center stays in its own zone. Zone extents as the layout
+                    // model draws them (center_width, rail_width); a periphery excludes its rail.
+                    const double width = screen.width;
+                    const double center_half = width * std::clamp(double(center_width), 0.0, 100.0) / 200.0;
+                    const double rail = width * std::clamp(double(rail_width), 0.0, 50.0) / 100.0;
                     std::vector<rectangle> fixed_above;
+                    std::ostringstream order;
                     for (auto id : ordered)
                     {
                         auto view = represented_view(id);
                         auto r = hint_rectangle(view, true);
+                        auto& visual = hint_visuals[id];
                         if (link_of_widget(view))
                         {
-                            auto& visual = hint_visuals[id];
                             auto anchor = hint_anchor(view, true); double radius = hint_size(view) / 2;
                             fixed_above.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y,
                                 r.width(), r.height()});
-                            if (avoidance_active)
-                                fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
-                                    anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
-                        } else
-                        {
-                            auto& visual = hint_visuals[id];
-                            windows.push_back({{r.x1, r.y1, r.width(), r.height()}, hint_size(view),
-                                48 * hints_palette.text_scale, fixed_above,
-                                view == focused,
-                                {double(visual.offset->translation_x),
-                                    double(visual.offset->translation_y)},
-                                visual.target, visual.label_offset, visual.clearance});
-                            window_ids.push_back(id);
-                            auto& input = windows.back();
-                            input.center_zone = window_zone(view) == scottland::windowing::zone::center;
-                            input.center_zone_half_width = double(screen.width) *
-                                std::clamp(double(center_width), 0.0, 100.0) / 200.0;
-                            input.branch_axis = visual.branch_axis;
-                            input.branch_sign = visual.branch_sign;
-                            input.branch_base_offset = visual.branch_base_offset;
-                            exposure_last_order.push_back(id);
+                            fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
+                                anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
+                            continue;
                         }
+                        scottland::windowing::peek_window input;
+                        input.frame = {r.x1, r.y1, r.width(), r.height()};
+                        using Z = scottland::windowing::zone;
+                        auto z = window_zone(view);
+                        if (z == Z::center) { input.zone_x1 = width / 2 - center_half; input.zone_x2 = width / 2 + center_half; }
+                        else if (z == Z::left_periphery) { input.zone_x1 = rail; input.zone_x2 = width / 2 - center_half - .5; }
+                        else { input.zone_x1 = width / 2 + center_half + .5; input.zone_x2 = width - rail; }
+                        input.center_y1 = area.y; input.center_y2 = area.y + area.height;
+                        input.anchored = view == focused;
+                        input.full_hint = hint_size(view);
+                        input.minimum_hint = 48 * text;
+                        input.target = visual.target;
+                        input.displayed = {double(visual.offset->translation_x), double(visual.offset->translation_y)};
+                        input.fixed_foreground = fixed_above;
+                        request.windows.push_back(std::move(input));
+                        window_ids.push_back(id);
+                        order << id << ';';
                     }
-                    for (size_t i = 0; i < window_ids.size(); ++i)
+                    auto& state = peek_by_output[output->to_string()];
+                    // A new pass when none is running, or when the windows or their stacking
+                    // changed: its indices would be stale (previous targets hold meanwhile).
+                    if (!state.pass || state.order != order.str() ||
+                        (state.pass->complete() && state.newer))
                     {
-                        auto owner = hint_visuals[window_ids[i]].branch_owner;
-                        if (!owner) continue;
-                        auto found = std::find(window_ids.begin(), window_ids.end(), owner);
-                        windows[i].branch_owner = found == window_ids.end() ? -1 :
-                            int(found - window_ids.begin());
+                        state.pass.emplace(std::move(request));
+                        state.order = order.str(); state.ids = window_ids; state.newer = false;
+                        occlusion_next_by_output.erase(output->to_string());
+                        ++avoidance_pass_count;
                     }
-                    auto search_started = std::chrono::steady_clock::now();
-                    scottland::windowing::exposure_limits exposure_limits;
-                    // Outside window mode no badge is being drawn, so reserve its
-                    // guaranteed widget-size minimum only. Visible window mode may
-                    // spend the remaining bounded work to enlarge a readable badge.
-                    exposure_limits.allow_size_upgrades = window_keys.active && !drag->view &&
-                        !inertia_active();
-                    exposure_limits.reconsider_ways_when_idle = !drag->view && !inertia_active();
-                    auto& progress = exposure_progress_by_output[output->to_string()];
-                    scottland::windowing::exposure_profile output_profile;
-                    const bool output_complete =
-                        scottland::windowing::expose_window_hints_progressively(windows, bounds, {},
-                            progress, exposure_deadline, &output_deadline_hit, &output_profile,
-                            exposure_limits);
-                    exposure_solve_pending |= !output_complete;
-                    exposure_last_profile.initialization_ms += output_profile.initialization_ms;
-                    exposure_last_profile.placement_ms += output_profile.placement_ms;
-                    exposure_last_profile.finalization_ms += output_profile.finalization_ms;
-                    exposure_last_profile.work_count += output_profile.work_count;
-                    exposure_last_profile.label_work_count += output_profile.label_work_count;
-                    exposure_last_profile.movement_work_count += output_profile.movement_work_count;
-                    exposure_last_profile.movement_searches += output_profile.movement_searches;
-                    exposure_last_profile.truncated_searches += output_profile.truncated_searches;
-                    exposure_last_profile.last_search_window = output_profile.last_search_window;
-                    exposure_last_profile.finish_work_count += output_profile.finish_work_count;
+                    auto& pass = *state.pass;
+                    const size_t before = pass.units;
+                    auto slice_started = std::chrono::steady_clock::now();
+                    bool output_complete = scottland::windowing::peek_step(pass,
+                        scottland::windowing::peek_slice_units, exposure_deadline);
                     exposure_search_ms = std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - search_started).count();
+                        std::chrono::steady_clock::now() - slice_started).count();
                     exposure_search_max_ms = std::max(exposure_search_max_ms, exposure_search_ms);
-                    exposure_deadline_hit |= output_deadline_hit;
-                    for (size_t i = 0; i < window_ids.size(); ++i)
+                    avoidance_slice_units = pass.units - before;
+                    avoidance_slice_units_max = std::max(avoidance_slice_units_max, avoidance_slice_units);
+                    if (output_complete)
                     {
-                        if (i >= progress.complete.size() || !progress.complete[i]) continue;
-                        const auto& exposed = progress.results[i];
-                        auto& visual = hint_visuals[window_ids[i]];
-                        visual.target = exposed.offset;
-                        visual.branch_owner = exposed.branch_owner >= 0 &&
-                            size_t(exposed.branch_owner) < window_ids.size() ?
-                                window_ids.at(exposed.branch_owner) : 0;
-                        visual.branch_axis = exposed.branch_axis;
-                        visual.branch_sign = exposed.branch_sign;
-                        visual.branch_base_offset = exposed.branch_base_offset;
-                        visual.label_size = exposed.diameter;
-                        visual.clearance = exposed.spot.clearance;
-                        visual.retained_clearance = exposed.retained_clearance;
-                        visual.edge_label = false;
-                        auto anchor = hint_anchor(represented_view(window_ids[i]), true);
-                        visual.label_offset = {exposed.spot.center.x - visual.target.x - anchor.x,
-                            exposed.spot.center.y - visual.target.y - anchor.y};
+                        avoidance_pass_units = pass.units; avoidance_pass_slices = pass.slices;
+                        avoidance_pass_slices_max = std::max(avoidance_pass_slices_max, pass.slices);
                     }
+                    // Each window's result is final once the pass has reached it.
+                    for (size_t i = 0; i < pass.next && i < state.ids.size(); ++i)
+                    {
+                        auto found = hint_visuals.find(state.ids[i]);
+                        auto view = represented_view(state.ids[i]);
+                        if (found == hint_visuals.end() || !view) continue;
+                        const auto& result = pass.results[i];
+                        auto& visual = found->second;
+                        visual.target = result.target;
+                        visual.outcome = result.outcome; visual.rung = result.rung;
+                        visual.rule = result.rule; visual.room = result.room;
+                        visual.label_size = result.hint_diameter;
+                        visual.clearance = result.hint.clearance;
+                        visual.edge_label = false;
+                        auto anchor = hint_anchor(view, true);
+                        visual.label_offset = {result.hint.center.x - result.target.x - anchor.x,
+                            result.hint.center.y - result.target.y - anchor.y};
+                    }
+                    if (!output_complete || state.newer) exposure_solve_pending = true;
                     for (auto id : ordered)
                     {
                         auto view = represented_view(id);
@@ -1032,7 +1043,7 @@
                     }
                     // WK37 occlusion, front to back, from the frames and targets this solve
                     // settled. Only in Window mode (outlines draw nowhere else), only once the
-                    // output's solve is complete, and within the same deadline as the solve (P8):
+                    // output's pass is complete, and within the same deadline as the solve (P8):
                     // an unfinished pass resumes on the next tick; a layout change restarts it.
                     if (!window_keys.active)
                     {
@@ -1068,11 +1079,18 @@
                         occlusion_pass_max_ms = std::max(occlusion_pass_max_ms, occlusion_pass_ms);
                     }
                 }
+                // Drop passes of outputs that no longer have windows.
+                for (auto it = peek_by_output.begin(); it != peek_by_output.end();)
+                {
+                    bool present = std::any_of(by_output.begin(), by_output.end(),
+                        [&] (const auto& item) { return item.first->to_string() == it->first; });
+                    it = present ? std::next(it) : peek_by_output.erase(it);
+                }
                 exposure_solve_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - exposure_started).count();
                 exposure_solve_max_ms = std::max(exposure_solve_max_ms, exposure_solve_ms);
                 ++exposure_solve_count;
-                exposure_solve_deadline_count += exposure_deadline_hit;
+                exposure_solve_deadline_count += std::chrono::steady_clock::now() >= exposure_deadline;
             }
             for (auto& [id, visual] : hint_visuals)
             {
@@ -1458,18 +1476,23 @@
         reply["avoidance_search_ms"] = exposure_search_ms;
         reply["avoidance_search_max_ms"] = exposure_search_max_ms;
         reply["avoidance_max_easing_speed_px_s"] = exposure_easing_speed_max;
-        reply["avoidance_init_ms"] = exposure_last_profile.initialization_ms;
-        reply["avoidance_placement_ms"] = exposure_last_profile.placement_ms;
-        reply["avoidance_finalization_ms"] = exposure_last_profile.finalization_ms;
-        reply["avoidance_work_count"] = int64_t(exposure_last_profile.work_count);
-        reply["avoidance_label_work_count"] = int64_t(exposure_last_profile.label_work_count);
-        reply["avoidance_movement_work_count"] = int64_t(exposure_last_profile.movement_work_count);
-        reply["avoidance_movement_searches"] = int64_t(exposure_last_profile.movement_searches);
-        reply["avoidance_truncated_searches"] = int64_t(exposure_last_profile.truncated_searches);
-        reply["avoidance_last_search_window"] = int64_t(exposure_last_profile.last_search_window);
-        reply["avoidance_finish_work_count"] = int64_t(exposure_last_profile.finish_work_count);
         reply["avoidance_solve_budget_ms"] =
             scottland::windowing::avoidance_solve_budget_us / 1000.0;
+        // WK13 peek passes: work units of the last slice and the last completed pass.
+        reply["avoidance_slice_budget_units"] = int64_t(scottland::windowing::peek_slice_units);
+        reply["avoidance_slice_units"] = int64_t(avoidance_slice_units);
+        reply["avoidance_slice_units_max"] = int64_t(avoidance_slice_units_max);
+        reply["avoidance_pass_units"] = int64_t(avoidance_pass_units);
+        reply["avoidance_pass_slices"] = int64_t(avoidance_pass_slices);
+        reply["avoidance_pass_slices_max"] = int64_t(avoidance_pass_slices_max);
+        reply["avoidance_pass_count"] = int64_t(avoidance_pass_count);
+        reply["avoidance_windows_pending"] = int64_t([&] () {
+            size_t total = 0;
+            for (const auto& [output, state] : peek_by_output)
+                if (state.pass) total += state.pass->request.windows.size() - std::min(state.pass->next,
+                    state.pass->request.windows.size());
+            return total;
+        }());
         reply["avoidance_solve_count"] = int64_t(exposure_solve_count);
         reply["avoidance_solve_deadline_count"] = int64_t(exposure_solve_deadline_count);
         reply["avoidance_solve_pending"] = exposure_solve_pending;
@@ -1481,48 +1504,6 @@
         reply["hint_step_count"] = int64_t(hint_step_count);
         reply["hint_step_animation"] = hint_step_animation;
         reply["hint_step_offset"] = hint_step_offset;
-        reply["avoidance_fallback_count"] = int64_t([&] () {
-            size_t total = 0;
-            for (const auto& [output, progress] : exposure_progress_by_output)
-                total += progress.fallback_count;
-            return total;
-        }());
-        reply["avoidance_progress_attempts"] = int64_t([&] () {
-            size_t total = 0;
-            for (const auto& [output, progress] : exposure_progress_by_output)
-                for (auto count : progress.attempts) total += count;
-            return total;
-        }());
-        reply["avoidance_progress_windows"] = int64_t([&] () {
-            size_t total = 0;
-            for (const auto& [output, progress] : exposure_progress_by_output)
-                total += progress.complete.size();
-            return total;
-        }());
-        reply["avoidance_way_recheck_pending"] = std::any_of(
-            exposure_progress_by_output.begin(), exposure_progress_by_output.end(),
-            [] (const auto& item) { return item.second.way_recheck_pending; });
-        reply["avoidance_way_recheck_done"] = std::any_of(
-            exposure_progress_by_output.begin(), exposure_progress_by_output.end(),
-            [] (const auto& item) { return item.second.way_recheck_done; });
-        reply["avoidance_way_recheck_attempts"] = int64_t([&] () {
-            size_t total = 0;
-            for (const auto& [output, progress] : exposure_progress_by_output)
-                total += progress.way_recheck_attempts;
-            return total;
-        }());
-        reply["avoidance_way_recheck_adoptions"] = int64_t([&] () {
-            size_t total = 0;
-            for (const auto& [output, progress] : exposure_progress_by_output)
-                total += progress.way_recheck_adoptions;
-            return total;
-        }());
-        reply["avoidance_way_recheck_rejections"] = int64_t([&] () {
-            size_t total = 0;
-            for (const auto& [output, progress] : exposure_progress_by_output)
-                total += progress.way_recheck_rejections;
-            return total;
-        }());
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
         window_keys.refresh(window_entries());
         for (auto e : window_keys.entries)
@@ -1551,6 +1532,13 @@
                 item["solve_frame"]["y"] = solve_frame.y1;
                 item["solve_frame"]["width"] = solve_frame.width();
                 item["solve_frame"]["height"] = solve_frame.height();
+                // Where it is drawn: the true frame plus the avoidance offset.
+                double dx = 0, dy = 0;
+                if (auto found = hint_visuals.find(e.id); found != hint_visuals.end() && found->second.offset_attached)
+                { dx = found->second.offset->translation_x; dy = found->second.offset->translation_y; }
+                item["drawn"] = wf::json_t();
+                item["drawn"]["x"] = solve_frame.x1 + dx; item["drawn"]["y"] = solve_frame.y1 + dy;
+                item["drawn"]["width"] = solve_frame.width(); item["drawn"]["height"] = solve_frame.height();
                 if (item["visible"].as_bool())
                 {
                     auto& badge = hint_visuals[e.id].hint->circle;
@@ -1565,29 +1553,25 @@
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
             item["target_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.x : 0.0;
             item["target_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.y : 0.0;
-            item["branch_owner"] = hint_visuals.count(e.id) ?
-                int64_t(hint_visuals[e.id].branch_owner) : int64_t(0);
-            item["branch_axis"] = hint_visuals.count(e.id) ? hint_visuals[e.id].branch_axis : 0;
-            item["branch_sign"] = hint_visuals.count(e.id) ? hint_visuals[e.id].branch_sign : 0;
-            item["branch_base_dx"] = hint_visuals.count(e.id) ?
-                hint_visuals[e.id].branch_base_offset.x : 0.0;
-            item["branch_base_dy"] = hint_visuals.count(e.id) ?
-                hint_visuals[e.id].branch_base_offset.y : 0.0;
             item["label_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.x : 0.0;
             item["label_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.y : 0.0;
             item["clearance"] = hint_visuals.count(e.id) ? hint_visuals[e.id].clearance : 0.0;
-            item["minimum_patch_clearance"] = hint_visuals.count(e.id) ?
-                hint_visuals[e.id].clearance : 0.0;
-            item["surface_patch_size"] = hint_visuals.count(e.id) ?
-                std::max(0.0, 2 * (hint_visuals[e.id].clearance - 1) / 1.06) : 0.0;
-            item["minimum_patch_visible"] = hint_visuals.count(e.id) &&
-                hint_visuals[e.id].clearance + .25 >=
-                    (48 * hints_palette.text_scale * 1.06 / 2 + 1);
-            item["incumbent_clearance"] = hint_visuals.count(e.id) ?
-                hint_visuals[e.id].retained_clearance : -1.0;
-            auto order = std::find(exposure_last_order.begin(), exposure_last_order.end(), e.id);
-            item["avoidance_order"] = order == exposure_last_order.end() ? -1 :
-                int64_t(order - exposure_last_order.begin());
+            if (hint_visuals.count(e.id))
+            {
+                const auto& visual = hint_visuals[e.id];
+                item["outcome"] = scottland::windowing::to_string(visual.outcome);
+                item["rung"] = scottland::windowing::to_string(visual.rung);
+                item["rule"] = std::string(1, visual.rule);
+                item["room"] = wf::json_t();
+                item["room"]["x"] = visual.room.x; item["room"]["y"] = visual.room.y;
+                item["room"]["width"] = visual.room.width; item["room"]["height"] = visual.room.height;
+                item["hint_size"] = visual.label_size;
+            }
+            int64_t avoidance_order = -1;
+            for (const auto& [output, state] : peek_by_output)
+                if (auto at = std::find(state.ids.begin(), state.ids.end(), e.id); at != state.ids.end())
+                    avoidance_order = at - state.ids.begin();
+            item["avoidance_order"] = avoidance_order;
             item["edge_label"] = hint_visuals.count(e.id) && hint_visuals[e.id].edge_label;
             item["visible_fraction"] = hint_visuals.count(e.id) ? hint_visuals[e.id].visible_fraction : 1.0;
             item["outline"] = hint_visuals.count(e.id) && hint_visuals[e.id].outline;

@@ -61,6 +61,7 @@ extern "C" {
 #include "placement.hpp"
 #include "cycle-spring.hpp"
 #include "declutter.hpp"
+#include "peek.hpp"
 #include "alt-mode.hpp"
 #include "inertia.hpp"
 #include <chrono>
