@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A16: cursor-theme image sizes, upward rounding, and session environment updates."""
+"""A17: cursor-theme image sizes, upward rounding, and session environment updates."""
 from importlib.machinery import SourceFileLoader
 import os
 from pathlib import Path

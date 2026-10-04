@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A16: verify live text-scale changes reach Wayfire and app launch settings."""
+"""A17: verify live text-scale changes reach Wayfire and app launch settings."""
 import json
 import os
 from pathlib import Path
@@ -82,9 +82,9 @@ try:
                    check=True, capture_output=True, text=True)
     watcher = subprocess.Popen([str(helper), "watch"], env=os.environ.copy(), start_new_session=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    check("A16 initial 24 px size is applied to the compositor", wait_until(lambda: option("input/cursor_size") == 24))
-    check("A16 initial size is applied to GTK", wait_until(lambda: settings("cursor-size").split()[-1] == "24"))
-    check("A16 initial size is recorded for new session launches", wait_until(lambda: recorded_size() == 24))
+    check("A17 initial 24 px size is applied to the compositor", wait_until(lambda: option("input/cursor_size") == 24))
+    check("A17 initial size is applied to GTK", wait_until(lambda: settings("cursor-size").split()[-1] == "24"))
+    check("A17 initial size is recorded for new session launches", wait_until(lambda: recorded_size() == 24))
     time.sleep(0.5)  # let the gsettings monitor subscribe before changing the factor
 
     # Drive an actual Wayfire input event through stipc while the isolated session is running.
@@ -92,7 +92,7 @@ try:
     set_scale(1.6364)
     live = wait_until(lambda: option("input/cursor_size") == 48 and recorded_size() == 48
                       and settings("cursor-size").split()[-1] == "48")
-    check("A16 text scale change updates the compositor and apps live", live,
+    check("A17 text scale change updates the compositor and apps live", live,
           {"wayfire": option("input/cursor_size"), "gsettings": settings("cursor-size"),
            "XCURSOR_SIZE": recorded_size()})
     child_size = subprocess.check_output([str(exec_helper), "--", "python3", "-c",
