@@ -129,6 +129,27 @@ halos meet across it, so the pair reads as one liquid unit; the padding is WP7's
   release-timed double-tap fix (`double-tap-fix` branch), and a hold clears double-tap
   recognition, so that fix's release-to-press timing cannot turn a hold's release into a repeat.
 
+**Verification (plumbus, isolated headless sessions, 2026-10-04, commit `96c5c0c`).**
+`tests/pairing-unit.sh`: 42 passed (the fit's four regimes, centering, edge-to-edge, height,
+offset areas, 5% floor, 20,000 random pairs for order/centering/containment/minimal scale/gap
+rule; holds: delay, tap, focused hook, cancellations by another key, Tab, Esc/Alt release and
+closing, nothing focused, double-tap interplay, widgets, two-letter hints).
+`tests/pairing-test.sh` (real stipc keys; fixtures placed over IPC): 35 passed on one
+1600×1000 output and 4 on two outputs (1600×1000 + 1280×800). It covers 100% with the halo
+gap from a scaled periphery start, kept order, a pair scaled to 0.844 edge to edge, a later
+arrow push clearing the pin, a tap, a hold with key auto-repeat, Esc and Alt release mid-hold,
+the focused hold, a widget restored into the pair, a window taller than the output, and a
+held window joining the focused window's other output. Screenshots show the covered center
+window peeking above or below the anchored pair, and the pair's halos meeting across the gap.
+Regression suites on the same build: windowing end-to-end 102, key layers 59, widget hints
+228, settings coverage passed, Settings help 185 (its timeline clicks now scroll each row into
+view: three timing rows no longer fit the viewport together). The same Settings suite on
+unmodified main failed 9 unrelated border-drag/Escape checks on the loaded test machine.
+Fullscreen members are not exercised by these tests.
+A trial merge with `double-tap-fix` (`7f6c3e5`) conflicts only textually (alt-mode, the
+bridge's letter call, TimingRow, WK15/16 rows); resolved by keeping both, it builds and passes
+pairing unit 42 and that branch's windowing unit 186.
+
 ## Cycle rule (WK7)
 
 An unselected window or widget first selects without moving. Already selected windows and
