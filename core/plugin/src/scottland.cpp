@@ -1414,7 +1414,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool peek_pointer = false, peek_hover = false;
         std::optional<uint32_t> peek_hover_due, peek_attention_due, peek_hint_due;
         bool minimized() const { return collapsed && !peek; }
-        bool away = false;                           // slid off its screen for full-screen focus (FS1)
+        bool away = false;                           // slid off its screen edge and hidden (FS1, hidden mode)
 
         bool previewing() const { return lifecycle == lifecycle_t::previewing; }
         bool docked() const { return lifecycle == lifecycle_t::docked; }
@@ -1499,13 +1499,29 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail_drag_t rail;
     };
 
+    // Super+M's widget mode (WG16). Hidden widgets slide off their screen edges and come back expanded.
+    enum class widget_mode_t { expanded, collapsed, hidden };
+    static const char *widget_mode_name(widget_mode_t mode)
+    {
+        return mode == widget_mode_t::collapsed ? "collapsed" : mode == widget_mode_t::hidden ? "hidden" : "expanded";
+    }
+
+    static std::optional<widget_mode_t> parse_widget_mode(const std::string& name)
+    {
+        if (name == "expanded") return widget_mode_t::expanded;
+        if (name == "collapsed") return widget_mode_t::collapsed;
+        if (name == "hidden") return widget_mode_t::hidden;
+        return std::nullopt;
+    }
+
     struct desktop_model_t
     {
         uint64_t version = 0;
         std::string session;
         std::map<uint64_t, window_state_t> windows;
         std::map<uint64_t, widget_link_t> widgets;    // keyed by the app window
-        bool collapsed = false;
+        widget_mode_t widget_mode = widget_mode_t::expanded;  // the mode taps choose; survives a reload
+        std::optional<widget_mode_t> widget_mode_held;        // Super+M held: momentary until released
         unsigned hint_width = 1; // stable prefix-free labels until all represented windows close
         drag_session_t drag;
         std::set<wf::output_t*> goo_outputs;          // screens with an available goo surface
@@ -1759,7 +1775,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (link != model.widgets.end())
         {
-            if (raised && link->second.collapsed && link->second.docked())
+            // A collapsed widget shows expanded for a while; a hidden one comes in from its edge.
+            if (raised && link->second.docked() &&
+                (link->second.collapsed || (shown_widget_mode() == widget_mode_t::hidden)))
             {
                 link->second.peek_attention_due = now_msec() + uint32_t(widget_attention_peek_duration);
                 update_widget_peeks();
@@ -1792,10 +1810,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    // Super+M (WG16): all widgets collapse to just their icons, or (if they all are) expand back.
-    // Widgets learn it from the widget service (Minimized, and the state file); the default card
-    // shrinks to its icon. It's a mode: a widget made while widgets are collapsed starts collapsed.
+    // Super+M (WG16): a tap cycles the widgets expanded -> collapsed (icons) -> hidden (slid off
+    // their screen edges) -> expanded. Holding it is momentary until it's released: from
+    // expanded it hides them, from collapsed or hidden it expands them; the release returns to
+    // the mode they were in. Widgets learn their presentation from the widget service
+    // (Minimized, and the state file). It's a mode: a widget made in it starts in it.
     wf::option_wrapper_t<wf::keybinding_t> minimize_key{"scottland/minimize_widget"};
+    wf::option_wrapper_t<int> minimize_hold_delay{"scottland/minimize_hold_delay"};
     // One activation per held key, across devices. A duplicate down (including one from
     // another device) is not a new press. Only the last device's release rearms it; no timer
     // filters intentional press-release-press sequences. Keep old keys until release if the
@@ -1810,6 +1831,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     uint64_t minimize_edge = 0;
     uint32_t minimize_event_time = 0;
     std::string minimize_device;
+    // The press being judged: released before the hold delay it's a tap, else a hold.
+    uint32_t minimize_gesture = 0;
+    wf::wl_timer<false> minimize_hold;
 
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_minimize_edge =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
@@ -1848,10 +1872,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             " time_msec=", minimize_event_time, " received_msec=", now_msec(), " key=", code,
             " state=", down ? "press" : "release", " duplicate_down=", duplicate,
             " held_devices=", press.devices.size(), " activated=", press.activated,
-            " collapsed=", model.collapsed, " processing=", (int)ev->mode);
+            " mode=", widget_mode_name(model.widget_mode), " processing=", (int)ev->mode);
         if (press.devices.empty())
         {
             minimize_presses.erase(code);
+            if (code == minimize_gesture)
+            {
+                end_minimize_gesture();
+            }
         }
     };
 
@@ -1873,7 +1901,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     " received_msec=", now_msec(), " held_devices=", it->second.devices.size());
             }
 
-            it = it->second.devices.empty() ? minimize_presses.erase(it) : std::next(it);
+            if (it->second.devices.empty())
+            {
+                bool gesture = it->first == minimize_gesture;
+                it = minimize_presses.erase(it);
+                if (gesture) end_minimize_gesture();
+            } else
+            {
+                ++it;
+            }
         }
     };
 
@@ -1885,20 +1921,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             LOGI("scottland: minimize-key ignored-duplicate edge=", minimize_edge,
                 " device=", minimize_device, " time_msec=", minimize_event_time,
                 " key=", key.get_key(), " modifiers=", key.get_modifiers(),
-                " collapsed=", model.collapsed);
+                " mode=", widget_mode_name(model.widget_mode));
             return press.consumed;
         }
 
         // Modifier-only bindings are invoked on release by Wayfire, with keycode zero.
         press.activated = key.get_key() != 0;
-        bool all_minimized = true, any = false;
+        bool any = false;
         for (auto& [id, link] : model.widgets)
         {
-            if (link.docked())
-            {
-                any = true;
-                all_minimized &= link.collapsed;
-            }
+            any |= link.docked();
         }
 
         if (!any)
@@ -1908,21 +1940,101 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return false;  // no widgets: the key goes on to the app
         }
 
-        for (auto& [id, link] : model.widgets)
-        {
-            reset_widget_peek(link);
-            set_widget_presentation(link, !all_minimized); // snapshot before publication, previews too
-        }
-
-        model.collapsed = !all_minimized;
-
         press.consumed = true;
         LOGI("scottland: minimize-key activation edge=", minimize_edge, " device=", minimize_device,
             " time_msec=", minimize_event_time, " key=", key.get_key(),
-            " modifiers=", key.get_modifiers(), " collapsed=", model.collapsed);
-        announce_widgets();
+            " modifiers=", key.get_modifiers(), " mode=", widget_mode_name(model.widget_mode));
+        if (!key.get_key())
+        {
+            cycle_widget_mode();  // already released: a tap
+            return true;
+        }
+
+        // A press of another binding key while one is judged ends that one first.
+        if (minimize_gesture) end_minimize_gesture();
+        minimize_gesture = key.get_key();
+        minimize_hold.set_timeout(std::max(1, int(minimize_hold_delay)), [=] ()
+        {
+            model.widget_mode_held = model.widget_mode == widget_mode_t::expanded ?
+                widget_mode_t::hidden : widget_mode_t::expanded;
+            LOGI("scottland: minimize-key hold mode=", widget_mode_name(model.widget_mode),
+                " shown=", widget_mode_name(*model.widget_mode_held));
+            apply_widget_mode();
+        });
         return true;
     };
+
+    /** The judged Super+M press was released: before the hold delay it was a tap; after it, the
+     *  momentary mode ends and the mode it was in comes back. */
+    void end_minimize_gesture()
+    {
+        minimize_gesture = 0;
+        if (minimize_hold.is_connected())
+        {
+            minimize_hold.disconnect();
+            cycle_widget_mode();
+        } else if (model.widget_mode_held)
+        {
+            model.widget_mode_held.reset();
+            LOGI("scottland: minimize-key hold-release mode=", widget_mode_name(model.widget_mode));
+            apply_widget_mode();
+        }
+    }
+
+    void cycle_widget_mode()
+    {
+        auto next = model.widget_mode == widget_mode_t::expanded ? widget_mode_t::collapsed :
+            model.widget_mode == widget_mode_t::collapsed ? widget_mode_t::hidden : widget_mode_t::expanded;
+        LOGI("scottland: minimize-key tap mode=", widget_mode_name(next));
+        set_widget_mode(next);
+    }
+
+    void set_widget_mode(widget_mode_t mode)
+    {
+        model.widget_mode = mode;
+        model.widget_mode_held.reset();
+        apply_widget_mode(true);
+    }
+
+    /** The mode shown now: a held Super+M's, else the chosen one (Window mode expands on top). */
+    widget_mode_t shown_widget_mode() const
+    {
+        return model.widget_mode_held.value_or(model.widget_mode);
+    }
+
+    /** Window mode (Alt) and holding Super+M from collapsed or hidden show every widget
+     *  expanded, until released. Temporary presentation: the mode itself never changes. */
+    bool widgets_revealed() const
+    {
+        return window_keys.active || (model.widget_mode_held == widget_mode_t::expanded);
+    }
+
+    bool widget_revealed(const widget_link_t& link) const
+    {
+        return (link.docked() || link.previewing()) && widgets_revealed() &&
+            (link.collapsed || (shown_widget_mode() == widget_mode_t::hidden));
+    }
+
+    /** Bring every widget's presentation and place in line with the mode. A mode change
+     *  (`ending_peeks`) also ends hover and attention peeks, as Super+M always has. */
+    void apply_widget_mode(bool ending_peeks = false)
+    {
+        for (auto& [id, link] : model.widgets)
+        {
+            if (ending_peeks) reset_widget_peek(link);
+            // Hidden widgets keep their look while they slide off, then become expanded there
+            // (finish_rail_slide); previews show what a drop will show.
+            bool collapsed = model.widget_mode == widget_mode_t::collapsed ||
+                ((model.widget_mode == widget_mode_t::hidden) && link.docked() && link.collapsed);
+            bool peek = widget_revealed(link) || (!ending_peeks && link.peek);
+            if (wanted_place(link, peek) != rail_place_t::away) return_from_away(link);
+            set_widget_presentation(link, collapsed, peek);  // snapshot before publication
+        }
+
+        update_widget_peeks();
+        reconcile_rail_slides();
+        announce_widgets();
+    }
 
     // Apps asking to be focused (xdg-activation: a terminal's bell, a finished task). Scottland
     // implements the protocol itself (Wayfire's plugin drops requests not made from input, so a
@@ -2474,8 +2586,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         context["title"]  = view->get_title();
         context["pid"]    = (int64_t)view_pid(view);
         context["rail"]   = link.rail;
-        context["minimized"] = model.collapsed;  // so it starts in the mode, even as a preview
-        link.collapsed = model.collapsed;
+        // So it starts in the mode, even as a preview (expanded while Window mode shows them so).
+        link.collapsed = model.widget_mode == widget_mode_t::collapsed;
+        link.peek = widget_revealed(link);
+        context["minimized"] = link.minimized();
         auto process = std::make_shared<widget_process_t>();
         const char *display = getenv("WAYLAND_DISPLAY");
         process->unit = "scottland-widget-" + std::string(display ? display : "wayland") + "-" +
@@ -2691,7 +2805,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void take_handover()
     {
         auto collapsed = runtime_file(".widgets-collapsed");
-        model.collapsed = access(collapsed.c_str(), F_OK) == 0;
+        model.widget_mode = access(collapsed.c_str(), F_OK) == 0 ? widget_mode_t::collapsed : widget_mode_t::expanded;
         std::remove(collapsed.c_str());
         auto path = runtime_file(".widget-handover.json");
         std::ifstream in(path);
@@ -2713,7 +2827,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!entries.is_array())
         {
             model.version = std::max(model.version, (uint64_t)entries["version"].as_int64());
-            model.collapsed = entries["collapsed"].as_bool();
+            auto mode = entries.has_member("widget_mode") ?
+                parse_widget_mode(entries["widget_mode"].as_string()) : std::nullopt;
+            model.widget_mode = mode ? *mode :
+                entries["collapsed"].as_bool() ? widget_mode_t::collapsed : widget_mode_t::expanded;
             if (entries.has_member("hint_width")) model.hint_width = std::clamp(entries["hint_width"].as_int(), 1, 7);
             auto windows = entries["windows"];
             for (size_t i = 0; i < windows.size(); i++)
@@ -2766,6 +2883,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             link.output = widget->get_output();
             link.away = !link.output->node_for_layer(wf::scene::layer::TOP)->is_enabled();
             transition_widget(link, widget_link_t::lifecycle_t::docked);
+            rail_slides[link.window_id].snap = true;  // in its place for the mode, without sliding
             link.rail   = entry["rail"].as_string();
             link.drop   = {entry["x"].as_double(), entry["y"].as_double()};
             link.collapsed   = entry["minimized"].as_bool();
@@ -3026,8 +3144,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         origins.reserve(model.widgets.size());
         for (auto& [window_id, link] : model.widgets)
         {
+            // Widgets hidden by Super+M keep their places (they come back); full screen's don't count.
             if (window_id == dragged || !link.docked() || link.output != output ||
-                link.rail != (left ? "left" : "right") || link.away) continue;
+                link.rail != (left ? "left" : "right") || (link.away && in_focus_mode(output))) continue;
             auto widget = wf::toplevel_cast(link.widget.lock());
             if (!widget || !widget->is_mapped() || widget->get_output() != output) continue;
             auto rect = scene_rectangle(widget, output);
@@ -3183,7 +3302,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto window = wf::toplevel_cast(link.window.lock());
         begin_window_widget_transition(window);
-        set_widget_presentation(link, model.collapsed);
+        set_widget_presentation(link, model.widget_mode == widget_mode_t::collapsed, widget_revealed(link));
         transition_widget(link, widget_link_t::lifecycle_t::docked);
         link.drop    = at;
         if (window && window->get_output())
@@ -3405,6 +3524,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             entry["minimized"] = link.minimized();
             entry["collapsed"] = link.collapsed;
             entry["peek"] = link.peek;
+            entry["place"] = rail_place_name(rail_place(link));
+            entry["away"] = link.away;
             entry["urgent"] = needs_attention(id);
             entry["lifecycle"] = lifecycle_name(link.lifecycle);
             entry["touch_drag"] = link.touch_drag;
@@ -3426,7 +3547,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::json_t model_snapshot(const std::string& slice)
     {
         auto reply = wf::ipc::json_ok();
-        reply["collapsed"] = model.collapsed;
+        reply["collapsed"] = model.widget_mode == widget_mode_t::collapsed;
+        reply["widget_mode"] = widget_mode_name(model.widget_mode);
+        reply["widget_mode_shown"] = widgets_revealed() ? "expanded" : widget_mode_name(shown_widget_mode());
         reply["session"] = model.session;
         auto focus = wf::json_t::array();
         for (auto output : model.focused_outputs)
@@ -3545,6 +3668,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             return;
         }
+
+        reconcile_rail_slides();  // attention, focus and lifecycle all decide where widgets are
 
         auto full = model_snapshot("desktop");
         auto text = full.serialize();
@@ -3711,7 +3836,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
                 // Independent FS1 check: asking for hints explicitly reveals widgets (WK12).
                 if (!window_keys.active && !widget->get_output()->node_for_layer(wf::scene::layer::TOP)->is_enabled() &&
-                    !glides.count(widget->get_id()) && widget->get_root_node()->is_enabled())
+                    !(rail_slides.count(id) && rail_slides[id].running) && widget->get_root_node()->is_enabled())
                 {
                     fail("widget interrupts promoted fullscreen: " + label);
                 }
@@ -3944,6 +4069,32 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         wf::get_core().default_wm->focus_raise_view(view);
+        return reply;
+    };
+
+    // The widget mode (WG16) for menus and scripts: {"mode": "expanded" | "collapsed" | "hidden" |
+    // "next"} sets it as a Super+M tap would; with no mode it only reports.
+    wf::ipc::method_callback widget_mode_ipc = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (data.has_member("mode"))
+        {
+            auto name = data["mode"].is_string() ? data["mode"].as_string() : "";
+            auto mode = parse_widget_mode(name);
+            if (name == "next")
+            {
+                cycle_widget_mode();
+            } else if (!mode)
+            {
+                return wf::ipc::json_error("mode is expanded, collapsed, hidden or next");
+            } else
+            {
+                set_widget_mode(*mode);
+            }
+        }
+
+        auto reply = wf::ipc::json_ok();
+        reply["mode"] = widget_mode_name(model.widget_mode);
+        reply["shown"] = widgets_revealed() ? "expanded" : widget_mode_name(shown_widget_mode());
         return reply;
     };
 
@@ -5145,7 +5296,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!model.drag.morph->from_widget)
         {
             size_t chars = std::max(dragged->get_title().size(), dragged->get_app_id().size());
-            w = model.collapsed ? h : std::clamp(102.0 + 7.6 * chars, h, 320.0);
+            bool icon = (model.widget_mode == widget_mode_t::collapsed) && !widgets_revealed();
+            w = icon ? h : std::clamp(102.0 + 7.6 * chars, h, 320.0);
         }
 
         if (model.drag.morph->from_widget && other)
@@ -5350,57 +5502,249 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         LOGI("scottland: full screen on ", output->to_string(), on ? ": focus (widgets away)" : ": widgets back");
-        for (auto& [id, link] : model.widgets)
-        {
-            if ((link.output == output) && !link.previewing())
-            {
-                slide_widget(link, on);
-            }
-        }
-
+        update_widget_peeks();
+        reconcile_rail_slides();
         run_focus_hooks();
         publish_model();
     }
 
-    /** A widget slides off its screen edge (focus) or back to its place. */
-    void slide_widget(widget_link_t& link, bool away)
+    // Where a widget is drawn at its screen edge (FS1, and WG16's hidden mode): in its place,
+    // away (slid off the edge, then hidden), or peeking in: while widgets are hidden and its app
+    // needs the user, a strip of it shows at the edge, its halo breathing the attention color.
+    // Each change slides from where it's drawn now, so reversals never jump.
+    enum class rail_place_t { in, away, peeking };
+    static const char *rail_place_name(rail_place_t place)
     {
-        auto widget = wf::toplevel_cast(link.widget.lock());
-        if (!widget || !widget->get_output())
+        return place == rail_place_t::away ? "away" : place == rail_place_t::peeking ? "peeking" : "in";
+    }
+
+    static constexpr double PEEK_STRIP = 24;  // pt (the peek-strip depth), grows with text size
+    struct rail_slide_t
+    {
+        rail_place_t to = rail_place_t::in;
+        double from = 0;
+        bool running = false;
+        bool snap = false;  // take the place without sliding (a reload's takeover)
+        wf::animation::simple_animation_t progress{wf::create_option<int>(GLIDE_MS)};
+    };
+    std::map<uint64_t, rail_slide_t> rail_slides;  // keyed by the app window, like model.widgets
+    wf::wl_timer<true> rail_slide_tick;
+
+    rail_place_t wanted_place(const widget_link_t& link)
+    {
+        return wanted_place(link, link.peek);
+    }
+
+    rail_place_t wanted_place(const widget_link_t& link, bool peek)
+    {
+        if (!link.docked() || window_keys.active)
         {
-            link.away = away;  // logical visibility also applies to a widget still launching
+            return rail_place_t::in;  // asking for hints brings them back (WK12)
+        }
+
+        if (!link.away && widget_held(link))
+        {
+            return rail_place(link);  // never slides from under a grab
+        }
+
+        if (in_focus_mode(link.output))
+        {
+            return rail_place_t::away;  // full screen: attention waits (tenet 6)
+        }
+
+        if ((shown_widget_mode() != widget_mode_t::hidden) || peek)
+        {
+            return rail_place_t::in;
+        }
+
+        return needs_attention(link.window_id) ? rail_place_t::peeking : rail_place_t::away;
+    }
+
+    rail_place_t rail_place(const widget_link_t& link) const
+    {
+        auto found = rail_slides.find(link.window_id);
+        return found == rail_slides.end() ? (link.away ? rail_place_t::away : rail_place_t::in) : found->second.to;
+    }
+
+    /** The slide offset for `place`, relative to where the widget is drawn in its place. */
+    double place_offset(wayfire_toplevel_view widget, scottland::frame_t& frame, const widget_link_t& link,
+        rail_place_t place)
+    {
+        if ((place == rail_place_t::in) || !widget->get_output())
+        {
+            return 0;
+        }
+
+        auto r = frame.screen_rect();
+        double x1 = r.x1 - frame.rail_slide_x, x2 = r.x2 - frame.rail_slide_x;
+        double width = widget->get_output()->get_relative_geometry().width;
+        bool left = link.rail == "left";
+        if (place == rail_place_t::away)
+        {
+            return left ? -(x2 + frame.margin()) : (width - x1 + frame.margin());
+        }
+
+        double strip = PEEK_STRIP * hints_palette.text_scale;
+        return left ? std::min(0.0, strip - x2) : std::max(0.0, width - strip - x1);
+    }
+
+    void set_rail_slide(scottland::frame_t& frame, double x)
+    {
+        if (std::abs(frame.rail_slide_x - x) < 0.01)
+        {
             return;
         }
 
-        away = away && !window_keys.active;
-        auto g = widget->get_geometry();
-        double width = widget->get_output()->get_relative_geometry().width;
-        double margin = frame_of(widget, false) ? frame_of(widget, false)->margin() : 0;
-        double off = (link.rail == "left") ? -(g.x + g.width + margin) : (width - g.x + margin);
-        uint64_t window_id = link.window_id;
-        if (away)
+        frame.damage();
+        frame.rail_slide_x = x;
+        frame.damage();
+    }
+
+    /** Show a widget that's away again, just off its edge, so it can slide in. Done before it
+     *  changes presentation: its client draws (and the change animates) only while shown. */
+    void return_from_away(widget_link_t& link)
+    {
+        if (!link.away)
         {
-            start_glide_out(widget, off, 0, [=] ()
+            return;
+        }
+
+        auto widget = wf::toplevel_cast(link.widget.lock());
+        auto frame = (widget && widget->is_mapped() && widget->get_output()) ? frame_of(widget, false) : nullptr;
+        if (!frame)
+        {
+            return;
+        }
+
+        set_rail_slide(*frame, place_offset(widget, *frame, link, rail_place_t::away));
+        rail_slides[link.window_id].to = rail_place_t::away;
+        link.away = false;
+        transition_widget(link, link.lifecycle);
+    }
+
+    /** Start (or keep) every widget sliding toward the place it should be in. */
+    void reconcile_rail_slides()
+    {
+        bool pending = false;
+        for (auto& [id, link] : model.widgets)
+        {
+            auto place = wanted_place(link);
+            auto found = rail_slides.find(id);
+            pending |= (found == rail_slides.end()) ? (place != rail_place_t::in) || link.away :
+                (found->second.to != place) || found->second.running || found->second.snap ||
+                (place == rail_place_t::peeking);
+        }
+
+        if (pending && !rail_slide_tick.is_connected())
+        {
+            rail_slide_tick.set_timeout(8, [=] () { return step_rail_slides(); });
+        }
+    }
+
+    bool step_rail_slides()
+    {
+        for (auto it = rail_slides.begin(); it != rail_slides.end();)
+        {
+            it = model.widgets.count(it->first) ? std::next(it) : rail_slides.erase(it);
+        }
+
+        bool active = false, changed = false;
+        for (auto& [id, link] : model.widgets)
+        {
+            auto widget = wf::toplevel_cast(link.widget.lock());
+            auto frame = (widget && widget->is_mapped() && widget->get_output()) ? frame_of(widget, false) : nullptr;
+            if (!frame)
             {
-                auto found = model.widgets.find(window_id);
-                if ((found != model.widgets.end()) && in_focus_mode(found->second.output))
+                continue;  // logical visibility (link.away) still applies to a widget launching
+            }
+
+            auto [found, created] = rail_slides.try_emplace(id);
+            auto& slide = found->second;
+            if (created)
+            {
+                slide.to = link.away ? rail_place_t::away : rail_place_t::in;
+                set_rail_slide(*frame, place_offset(widget, *frame, link, slide.to));
+            }
+
+            auto place = wanted_place(link);
+            // A widget arriving (its window's image still turning into it) or settling against
+            // the edge after a drop finishes that first, then slides away.
+            bool busy = widget_transitions.count(id) || glides.count(widget->get_id());
+            if (slide.snap)
+            {
+                slide.snap = false;
+                slide.to = place;
+                slide.running = false;
+                set_rail_slide(*frame, place_offset(widget, *frame, link, place));
+                if ((place == rail_place_t::away) != link.away)
                 {
-                    found->second.away = true;
-                    transition_widget(found->second, found->second.lifecycle);
+                    link.away = place == rail_place_t::away;
+                    transition_widget(link, link.lifecycle);
                 }
 
-                if (auto frame = frame_of(widget, false))
+                changed = true;
+                continue;
+            }
+
+            if ((place != slide.to) && (place != rail_place_t::in) && busy && !link.away)
+            {
+                active = true;
+                continue;
+            }
+
+            if (place != slide.to)
+            {
+                if (link.away)
                 {
-                    frame->translation_x = frame->translation_y = 0;
+                    // Coming back: from just off the edge, at its current size.
+                    set_rail_slide(*frame, place_offset(widget, *frame, link, rail_place_t::away));
+                    link.away = false;
+                    transition_widget(link, link.lifecycle);
                 }
-            });
-        } else
-        {
-            stop_glide(widget);
-            link.away = false;
-            transition_widget(link, link.lifecycle);
-            start_glide(widget, off, 0);
+
+                LOGI("scottland: widget ", id, " slides ", rail_place_name(slide.to), " -> ", rail_place_name(place));
+                slide.from = frame->rail_slide_x;
+                slide.to = place;
+                slide.running = true;
+                slide.progress.animate(0.0, 1.0);
+                changed = true;
+            }
+
+            double target = place_offset(widget, *frame, link, slide.to);
+            if (!slide.running)
+            {
+                set_rail_slide(*frame, target);  // a peeking widget follows its own size,
+                active |= (slide.to == rail_place_t::peeking) && widget_transitions.count(widget->get_id());
+                continue;                        // also while it expands or collapses
+            }
+
+            double t = slide.progress;
+            set_rail_slide(*frame, slide.from + (target - slide.from) * t);
+            widget->damage();
+            if (slide.progress.running())
+            {
+                active = true;
+                continue;
+            }
+
+            slide.running = false;
+            set_rail_slide(*frame, target);
+            active |= (slide.to == rail_place_t::peeking) && widget_transitions.count(widget->get_id());
+            if (slide.to == rail_place_t::away)
+            {
+                link.away = true;
+                transition_widget(link, link.lifecycle);
+            }
+
+            changed = true;
         }
+
+        if (changed)
+        {
+            announce_widgets();
+        }
+
+        return active;
     }
 
     void run_focus_hooks()
@@ -6393,6 +6737,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_app_id);
         wf::get_core().connect(&on_hints);
         ipc_repo->register_method("scottland/widget-action", widget_action);
+        ipc_repo->register_method("scottland/widget-mode", widget_mode_ipc);
         ipc_repo->register_method("scottland/present", present_method);
         ipc_repo->register_method("scottland/widget-traits", widget_traits);
         ipc_repo->register_method("scottland/attention", attention_method);
@@ -6508,6 +6853,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_cancel_key.disconnect();
         glide_tick.disconnect();
         glides.clear();
+        minimize_hold.disconnect();
+        rail_slide_tick.disconnect();
+        rail_slides.clear();
         widget_transition_tick.disconnect();
         for (auto& [id, transition] : widget_transitions)
             if (auto view = wf::toplevel_cast(transition->view.lock()))
@@ -6535,6 +6883,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_above.disconnect();
         on_hints.disconnect();
         ipc_repo->unregister_method("scottland/widget-action");
+        ipc_repo->unregister_method("scottland/widget-mode");
         ipc_repo->unregister_method("scottland/present");
         ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");

@@ -581,16 +581,19 @@ try:
 
     # A held widget drag and its drop glide retain their own lifecycle and position resources.
     title = "Morph right with a title long enough for maximum width"
+    t.set_widget_mode("expanded")  # the real tap below goes expanded -> collapsed (WG16)
+    settle()
     t.drag_begin(t.card(title), t.screen["width"] - 10, 350)
     t.key("M", True); t.key("M", False)
     time.sleep(.12)
     t.ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
     t.key("LEFTMETA", False)
     time.sleep(.04)
-    t.toggle()
+    t.toggle()  # collapsed -> expanded during the drop glide
     sample("drag-glide")
     t.check("toggle during held drag and glide keeps widget docked", t.card(title) and not t.card(title)["hidden"] and
-            not t.card(title)["preview"] and abs(t.card(title)["frame"]["width"] - 96) < .001)
+            not t.card(title)["preview"] and abs(t.card(title)["frame"]["width"] - 320) < .001)
+    t.toggle(); settle()  # collapsed, as the sequence below expects
 
     # Focus mode is entered with real input; the toggles may finish while widgets are hidden.
     t.launch("Morph fullscreen focus", rail=None)
