@@ -26,6 +26,7 @@ class alt_mode
     void end();
     void refresh(std::vector<hint_entry> windows);
     void letter(char key, uint32_t time_ms);
+    void release(char key, uint32_t time_ms);
     unsigned double_tap_delay = 300;
     void tab(bool backwards);
     void close_selected();
@@ -37,7 +38,10 @@ class alt_mode
     std::array<destination, 3> order;
     unsigned step = 0;
     uint64_t last_hint = 0;
-    uint32_t last_press = 0;
+    uint32_t last_release = 0;
+    char last_key = 0;
+    bool awaiting_release = false;
+    bool repeat_candidate = false;
     void activate(uint64_t id, bool double_tap);
 };
 }

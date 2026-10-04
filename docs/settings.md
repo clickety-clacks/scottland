@@ -177,8 +177,8 @@ partial stopping frame. The speed cap and hint timings remain Settings controls,
 
 The playground uses those same equations: flick its sample or press arrows, with Ctrl for
 resize. It draws the travelled path, vertical stops and the side-contact widget morph, and reports
-travelled and stopping distance. Drag the velocity arrow to set movement push strength. Timelines show Alt-down to hint appearance and first-to-second
-hint tap; their markers change the existing hold and double-tap intervals. All changes preview
+travelled and stopping distance. Drag the velocity arrow to set movement push strength. Timelines show Alt-down to hint appearance and hint release to the start of the repeated
+hint; their markers change the existing hold and double-tap intervals. All changes preview
 live and participate in the opening-value transaction. The speed limit uses a row.
 
 The scroll viewport applies touchpad pixel deltas directly after compensating the shipped 0.2 compositor speed, and wheel notches move 96 pt. Both then coast at constant deceleration; touch uses native Flickable inertia. A vertical finger gesture on a parameter row belongs to scrolling;

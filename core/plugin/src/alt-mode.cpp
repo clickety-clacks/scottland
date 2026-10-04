@@ -34,9 +34,10 @@ void alt_mode::refresh(std::vector<hint_entry> windows)
 }
 void alt_mode::begin(std::vector<hint_entry> windows, uint64_t focused)
 {
-    active = true; selected = focused; cycling = 0; last_hint = 0; prefix.clear(); refresh(std::move(windows));
+    active = true; selected = focused; cycling = 0; last_hint = 0;
+    awaiting_release = repeat_candidate = false; prefix.clear(); refresh(std::move(windows));
 }
-void alt_mode::end() { active = false; cycling = 0; last_hint = 0; prefix.clear(); }
+void alt_mode::end() { active = false; cycling = 0; last_hint = 0; awaiting_release = repeat_candidate = false; prefix.clear(); }
 void alt_mode::activate(uint64_t id, bool double_tap)
 {
     auto it = std::find_if(entries.begin(), entries.end(), [&] (auto e) { return e.id == id; });
@@ -85,6 +86,12 @@ void alt_mode::activate(uint64_t id, bool double_tap)
 void alt_mode::letter(char key, uint32_t time_ms)
 {
     if (!active || keys.find(key) == std::string::npos) return;
+    // Dwell on the previous key and typing the rest of a multi-letter repeat
+    // do not consume the user's inter-hint gap. Latch at its first physical
+    // press, but act only after the same complete hint has been entered.
+    if (prefix.empty())
+        repeat_candidate = last_hint && !awaiting_release &&
+            uint32_t(time_ms - last_release) <= double_tap_delay;
     prefix += key;
     bool partial = false;
     for (auto e : entries)
@@ -93,13 +100,22 @@ void alt_mode::letter(char key, uint32_t time_ms)
         if (hint == prefix)
         {
             prefix.clear();
-            bool double_tap = last_hint == e.id && uint32_t(time_ms - last_press) <= double_tap_delay;
-            last_hint = e.id; last_press = time_ms;
+            bool double_tap = repeat_candidate && last_hint == e.id;
+            last_hint = e.id; last_key = key; awaiting_release = true;
+            repeat_candidate = false;
             activate(e.id, double_tap); return;
         }
         partial |= hint.compare(0, prefix.size(), prefix) == 0;
     }
     if (!partial) { prefix.clear(); last_hint = 0; }
+}
+void alt_mode::release(char key, uint32_t time_ms)
+{
+    if (active && last_hint && awaiting_release && key == last_key)
+    {
+        last_release = time_ms;
+        awaiting_release = false;
+    }
 }
 void alt_mode::tab(bool backwards)
 {

@@ -1167,6 +1167,16 @@
         declutter_signature.clear(); refresh_layout_avoidance(true);
     }
 
+    static std::optional<char> window_hint_letter(wlr_keyboard *keyboard, uint32_t code)
+    {
+        const xkb_keysym_t *syms = nullptr;
+        auto layout = xkb_state_key_get_layout(keyboard->xkb_state, code + 8);
+        if (xkb_keymap_key_get_syms_by_level(keyboard->keymap, code + 8, layout, 0, &syms) == 1 &&
+            syms[0] >= XKB_KEY_a && syms[0] <= XKB_KEY_z)
+            return char('a' + syms[0] - XKB_KEY_a);
+        return std::nullopt;
+    }
+
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_window_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
@@ -1186,6 +1196,8 @@
         }
         if (!down && swallowed_keys.erase(code))
         {
+            if (auto letter = window_hint_letter(keyboard, code))
+                window_keys.release(*letter, ev->event->time_msec);
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // finish our own pair; this is not a new compositor grab
         }
@@ -1277,14 +1289,11 @@
         else if (code == KEY_F4) window_keys.close_selected();
         else
         {
-            const xkb_keysym_t *syms = nullptr;
-            auto layout = xkb_state_key_get_layout(keyboard->xkb_state, code + 8);
-            if (xkb_keymap_key_get_syms_by_level(keyboard->keymap, code + 8, layout, 0, &syms) == 1 &&
-                syms[0] >= XKB_KEY_a && syms[0] <= XKB_KEY_z)
+            if (auto letter = window_hint_letter(keyboard, code))
             {
                 window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
                 window_keys.refresh(window_entries());
-                window_keys.letter(char('a' + syms[0] - XKB_KEY_a), now_msec());
+                window_keys.letter(*letter, ev->event->time_msec);
             }
         }
     };
