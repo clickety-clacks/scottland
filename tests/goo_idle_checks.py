@@ -12,6 +12,8 @@ def verify(ipc, art, scale):
 
     def state():
         return ipc('scottland/goo-state')['screens'][0]
+    # GO24: hold the watercolor so these checks see the breath alone.
+    ipc('scottland/goo-state', {'water_freeze': True})
 
     before = state()
     damage = before['breath_damage']
@@ -69,6 +71,7 @@ def verify(ipc, art, scale):
         (art / 'pixels.json').write_text(json.dumps({'inside': inside, 'outside': outside, 'rate': rate}))
     (art / 'breath-samples.json').write_text(json.dumps(samples, indent=2))
     (art / 'checks.json').write_text(json.dumps(checks, indent=2))
+    ipc('scottland/goo-state', {'water_freeze': False})
     assert all(ok for _, ok in checks), checks
 
 

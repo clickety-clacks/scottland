@@ -198,6 +198,11 @@ while True:
                                                 'views': views(), 'state': s}, indent=2))
     subprocess.run(['grim', str(out/'scene.png')])   # for looking at; not compared
 
+    # GO24: the watercolor keeps repainting the settled liquid but with the dye held
+    # still, so frames taken moments apart can be compared; reuse then covers all of it.
+    def keep_watercolor_ticking():
+        state({'water_freeze': True, 'water_coast': 3600})
+    keep_watercolor_ticking()
     if args.negative_control:
         state({'reuse_deaf': True})
     b, u = breather['frame'], view('exact-under')['frame']
@@ -211,6 +216,7 @@ while True:
             tag = f'{mode}-{hold}'
             state({'breath_hold': hold, 'breath_reuse': False, 'dry_content': True, 'breath_tight': True})
             settle(tag)
+            keep_watercolor_ticking(); time.sleep(.3)
             fresh = frame(f'{tag}-repainted', reused=False)
             state({'breath_reuse': True}); time.sleep(.2)
             same(f'reuse {tag}', fresh, frame(f'{tag}-reused', reused=True))
@@ -221,6 +227,7 @@ while True:
             same(f'settled {tag}', fresh, loose)
             state({'breath_tight': True})
             settle(tag + ' tight again')
+            keep_watercolor_ticking()
         # Content changing under the strips while breaths reuse the backdrop.
         state({'breath_hold': .37, 'breath_reuse': True})
         for mark in ('#', '.'):
@@ -241,6 +248,27 @@ while True:
         draws, reuses = after['draws']-before['draws'], after['backdrop_reuses']-before['backdrop_reuses']
         check('the other output redrawing does not stop backdrop reuse here', reuses >= .8*draws > 0,
               {'draws': draws, 'reuses': reuses})
+    s = state()
+    keep_watercolor_ticking(); time.sleep(.5)
+    s = state()
+    if s.get('motion_pixels'):   # a wallpaper on this output and soak on
+        before = s; reasons = {}
+        for _ in range(40):
+            r = state()['reuse_blocked']; reasons[r] = reasons.get(r, 0)+1; time.sleep(.05)
+        after = state()
+        check('watercolor ticks repaint the settled liquid from the reused backdrop',
+              after['water_ticks'] > before['water_ticks'] and
+              after['backdrop_reuses']-before['backdrop_reuses'] >= .7*(after['draws']-before['draws']),
+              {k: after[k]-before[k] for k in ('water_ticks', 'draws', 'backdrop_reuses')} | {'blocked': reasons})
+        state({'water_freeze': False, 'water_coast': 30}); time.sleep(.5)
+        # The breather's right edge lies over open wallpaper, above the front window.
+        points = [(b['x']+b['width']+6, b['y']+20+k*25) for k in range(6)]
+        a = [state({'x': x, 'y': y}) for x, y in points]
+        time.sleep(4)
+        c = [state({'x': x, 'y': y}) for x, y in points]
+        moved = max(abs(x[ch]-y[ch]) for x, y in zip(a, c) for ch in ('red', 'green', 'blue'))
+        check('the dye moves while the goo sleeps', moved > .005 and state()['sleeping'] and
+              state()['steps'] == a[0]['steps'], {'largest change': moved})
     state({'breath_hold': -1, 'breath_reuse': True, 'dry_content': True, 'breath_tight': True})
     (out/'checks.json').write_text(json.dumps(checks, indent=2))
     failed = [c for c in checks if not c['ok']]

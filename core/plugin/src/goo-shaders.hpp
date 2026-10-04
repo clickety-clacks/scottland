@@ -196,16 +196,40 @@ void main(){
 inline const std::string dye_shader = common + mask + R"(
 uniform sampler2D uDyeTex;
 uniform float uSpread,uSwirl,uRelease,uSoak;
+// GO24: uFlow is the swirl's own clock (it runs while the simulation sleeps); uStep is
+// how many ordinary steps this pass stands for (1 awake, more for a sleeping tick), and
+// uWetOnly leaves dry texels as they are on those ticks.
+uniform float uFlow,uStep,uWetOnly;
 uniform sampler2D uWallpaper;
 uniform mat4 uWallpaperMap;
+float often(float rate){return 1.-pow(1.-clamp(rate,0.,.999),uStep);}
 void main(){
   vec2 uv=gl_FragCoord.xy/uSize,px=1./uSize,p=uv*uRes;
   float m=gooMask(uv);
   vec3 c=texture2D(uDyeTex,uv).rgb;
+  if(m<=0.&&uWetOnly>.5){gl_FragColor=vec4(c,1);return;}
   if(m>0.){ // the swirl only moves dye that is in goo
-    vec2 q=p*.004+vec2(0.,uTime*.03);float h=.01;
+    vec2 q=p*.004+vec2(0.,uFlow*.03);float h=.01;
     float gx=(fbm(q+vec2(h,0))-fbm(q-vec2(h,0)))/(2.*h),gy=(fbm(q+vec2(0,h))-fbm(q-vec2(0,h)))/(2.*h);
-    vec2 vel=vec2(gy,-gx)*uSwirl,adv=uv-vel/uRes;
+    vec2 vel=vec2(gy,-gx)*uSwirl;
+    // Watercolor runs along the liquid: most of the flow follows the band (across the
+    // field's gradient), so pigment travels down an edge instead of stalling at its sides.
+    if(uSoak>0.){
+      vec2 fp=1./uRes*4.;
+      vec2 grad=vec2(field(uv+vec2(fp.x,0.))-field(uv-vec2(fp.x,0.)),field(uv+vec2(0.,fp.y))-field(uv-vec2(0.,fp.y)));
+      float gl=length(grad);
+      if(gl>1e-5){vec2 n=grad/gl,along=vec2(-n.y,n.x);
+        // A slow current along the band, eddying with the noise, plus a little cross flow.
+        // It turns over every several seconds, so streaks of pigment lengthen, slacken
+        // and reverse: a still flow would paint a still picture.
+        // Short currents: a color smears a few tens of points along the band from the
+        // paper it was lifted from and no farther, so each part of the goo keeps the
+        // colors of the wallpaper beneath and near it (Mike, 2026-10-03: local, never a
+        // screen-wide wash).
+        float current=(fbm(q*1.2+vec2(11.3,uFlow*.05))-.5)*20.;
+        vel=mix(vel,along*(dot(vel,along)+current*sqrt(uSwirl)),.85);}
+    }
+    vec2 adv=uv-vel*uStep/uRes;
     // Both ends must contain goo: backtracing cannot pull color across a dry gap.
     c=texture2D(uDyeTex,mix(uv,adv,gooMask(adv)*m)).rgb;
   }
@@ -222,14 +246,26 @@ void main(){
     if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearEdge=min(nearEdge,e);nearest+=k*source(i,2.).rgb;
   }
+  // GO24 watercolor. `wash` is where the liquid carries paper pigment: all of it, thin
+  // bands around small or scaled windows included ("in watercolors it spreads
+  // everywhere"), except a narrow band at each window wall, a point to three points
+  // wide whatever the goo's thickness, which the state colors keep. `share` is how much of the wet band the pigment takes over: clearly
+  // present at the shipped soak, nearly all of it at full soak.
+  float pool=clamp((ksum-maxK)/max(maxK,1e-4),0.,1.);
+  // Graded by thickness, never zero: thin goo carries about two thirds of what thick
+  // or pooled liquid does (Mike, 2026-10-03: stronger in the thick parts, still clearly
+  // present in the thin).
+  float thick=max(pool,smoothstep(3.,uThickness,nearEdge));
+  float wash=uSoak>0.?smoothstep(1.,3.,nearEdge)*smoothstep(uT*.5,uT,ksum)*mix(.65,1.,thick):0.;
+  float share=uSoak>0.?pow(uSoak,.25):0.;
   for(int i=0;i<1024;i++){
     if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e); if(k<maxK-.00001)continue;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
-    // At the wall, keep state ink ahead of wallpaper color diffusing inward.
-    // The extra anchoring follows the user's release setting and vanishes in
-    // the open band; without a wallpaper source uSoak is zero.
-    if(uSoak>0.)w*=1.+3.*uSoak*(1.-smoothstep(0.,uThickness*.7,e));
+    // At the wall, keep state ink ahead of wallpaper color diffusing inward; out in
+    // the wet band the state ink gives way to the pigment by the soak's share.
+    if(uSoak>0.)w*=(1.+2.*(1.-smoothstep(0.,3.,e)))*mix(1.,(1.-share)*(1.-share),wash);
+    w=often(w);
     vec3 tint=source(i,2.).rgb;
     // State marks are released dye, Gaussian deposits, never overlay geometry.
     float cloud=controlCloud(p,i)*uCloudiness;
@@ -243,15 +279,21 @@ void main(){
   // advects and diffuses. The shore distance vanishes at every window wall;
   // summed source density and bridge contributions favor thick pooled liquid.
   // State release above remains stronger, and hint dye still wins at draw time.
-  if(m>0.&&uSoak>0.){
-    float pool=clamp((ksum-maxK)/max(maxK,1e-4),0.,1.);
-    float wash=sqrt(smoothstep(0.,uThickness*.7,nearEdge))*
-      smoothstep(uT*.7,uT*1.4,ksum)*mix(.65,1.3,pool);
+  vec3 rest=nearest/ksum;
+  if(uSoak>0.){
     vec2 wallpaperUV=(uWallpaperMap*vec4(p,0,1)).xy*.5+.5;
-    c=mix(c,texture2D(uWallpaper,wallpaperUV).rgb,
-      uSoak*min(.03,uRelease*.5)*wash*m);
+    // Wet pigment is richer than the paper it lifted from.
+    vec3 paper=texture2D(uWallpaper,wallpaperUV).rgb;
+    paper=clamp(mix(vec3(dot(paper,vec3(.299,.587,.114))),paper,1.+.7*share),0.,1.);
+    // A slow pickup against the flow: the color travels and smears before it is replaced.
+    // The pickup keeps pace with the dye release setting, so the pigment's share of the
+    // band is the soak's, whatever the release.
+    if(m>0.)c=mix(c,paper,often(.5*uRelease)*share*wash*m);
+    // Texels at and beyond the shore rest at the paper's color, not the window's: they
+    // are what a thin band's dye mixes with, and state ink there would wash the pigment out.
+    rest=mix(rest,paper,share*smoothstep(1.,3.,nearEdge));
   }
-  c=mix(c,nearest/ksum,(1.-m)*.25);
+  c=mix(c,rest,(1.-m)*.25);
   gl_FragColor=vec4(c,1);
 }
 )";
@@ -318,6 +360,17 @@ void main(){
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
+  // GO24: with soak on, the wet band is paper pigment, so the state color (focus,
+  // attention, neutral) is drawn in a narrow band at the window wall, exact to the pixel
+  // whatever the goo's thickness: the dye grid is too coarse to hold a band that thin.
+  float wallBand=uSoak>0.?1.-smoothstep(1.5,4.,d):0.;
+  float wallAmount=0.;vec3 wallDye=vec3(0.);
+  if(wallBand>0.)for(int i=0;i<1024;i++){
+    if(i>=int(hintBack.x))break;
+    vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
+    wallDye+=source(i,2.).rgb*contribution;wallAmount+=contribution;
+  }
+  if(wallAmount<=0.)wallBand=0.;
   float dyeTint=clamp(value.g,0.,1.);
   float cloud=uControls>.5?value.b:0.;
   vec3 n=normalize(vec3(-slope,1.));
@@ -326,6 +379,7 @@ void main(){
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
   if(hintAmount>0.)dye=hintDye/hintAmount;
+  else if(wallBand>0.)dye=mix(dye,wallDye/wallAmount,wallBand);
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);
   float spec=pow(max(dot(reflect(-L,n),vec3(0,0,1)),0.),48.)*uShine;
   float rim=1.-smoothstep(0.,.5,max(log(max(Fe,1e-4)/uT),0.));
@@ -335,7 +389,8 @@ void main(){
   // The wet outer band can show refracted paper. At the wall, state dye
   // supplies the color so saturated wallpaper cannot repaint a focused edge.
   float dyeBlend=.55+milk*.25;
-  if(uSoak>0.)dyeBlend=mix(dyeBlend,1.,1.-smoothstep(0.,uThickness*.9,d));
+  // GO24: soaked liquid is more pigment and less clear lens, by the soak's share.
+  if(uSoak>0.)dyeBlend=mix(dyeBlend+.22*pow(uSoak,.25),1.,1.-smoothstep(0.,uThickness*.9,d));
   if(uNeutralTint>.5&&dyeTint<.999999)dyeBlend*=dyeTint;
   vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95);
   if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;
@@ -353,8 +408,12 @@ void main(){
 inline const std::string cached_composite_shader = R"(
 precision highp float;
 varying vec2 pos;
-uniform sampler2D uIntrinsic,uRefraction,uBackground;
+uniform sampler2D uIntrinsic,uRefraction,uBackground,uDyeTex;
 uniform mat4 uBackgroundMap;
+uniform vec2 uRes;
+// GO24: the surface's color is its own light plus a share of the dye. The cache keeps
+// the two apart (refraction alpha is the dye's share), and the dye is read here, so
+// the dye can move without the surface being rendered again.
 void main(){
   vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
   vec4 intrinsic=texture2D(uIntrinsic,uv);
@@ -363,7 +422,7 @@ void main(){
   vec2 shifted=pos+(refr.rg-.5)*32.;
   vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb;
-  vec3 color=clamp(intrinsic.rgb+refr.b*1.5*bg,0.,1.);
+  vec3 color=clamp(intrinsic.rgb+refr.a*1.5*texture2D(uDyeTex,pos/uRes).rgb+refr.b*1.5*bg,0.,1.);
   gl_FragColor=vec4(color*intrinsic.a,intrinsic.a);
 }
 )";
@@ -373,17 +432,20 @@ void main(){
 inline const std::string cached_composite_mix_shader = R"(
 precision highp float;
 varying vec2 pos;
-uniform sampler2D uIntrinsic,uRefraction,uIntrinsicB,uRefractionB,uBackground;
+uniform sampler2D uIntrinsic,uRefraction,uIntrinsicB,uRefractionB,uBackground,uDyeTex;
 uniform mat4 uBackgroundMap;
+uniform vec2 uRes;
 uniform float uMix;
+vec3 dye;
 vec4 layer(vec4 intrinsic,vec4 refr){
   if(intrinsic.a<=0.)return vec4(0.);
   vec2 shifted=pos+(refr.rg-.5)*32.;
   vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
-  vec3 color=clamp(intrinsic.rgb+refr.b*1.5*texture2D(uBackground,bgUV).rgb,0.,1.);
+  vec3 color=clamp(intrinsic.rgb+refr.a*1.5*dye+refr.b*1.5*texture2D(uBackground,bgUV).rgb,0.,1.);
   return vec4(color*intrinsic.a,intrinsic.a);
 }
 void main(){
+  dye=texture2D(uDyeTex,pos/uRes).rgb;
   vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
   vec4 a=texture2D(uIntrinsic,uv),b=texture2D(uIntrinsicB,uv);
   if(a.a<=0.&&b.a<=0.)discard;
