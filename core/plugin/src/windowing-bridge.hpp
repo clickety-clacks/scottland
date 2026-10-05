@@ -84,6 +84,9 @@
     uint64_t avoidance_pass_count = 0;
     size_t avoidance_pass_units = 0, avoidance_pass_slices = 0, avoidance_pass_slices_max = 0;
     size_t avoidance_slice_units = 0, avoidance_slice_units_max = 0;
+    // Test sessions only (SCOTTLAND_TEST_MODEL): a smaller slice budget, so a pass spreads over
+    // several ticks as it does on a loaded machine. 0 keeps peek_slice_units.
+    size_t avoidance_test_slice_units = 0;
     // WK37 occlusion pass, resumable per output like the solve it follows: the next window (in
     // front-to-back order) still to measure; absent means start over, SIZE_MAX means done.
     std::map<std::string, size_t> occlusion_next_by_output;
@@ -1249,7 +1252,8 @@
                     const size_t before = pass.units;
                     auto slice_started = std::chrono::steady_clock::now();
                     bool output_complete = scottland::windowing::peek_step(pass,
-                        scottland::windowing::peek_slice_units, std::min(exposure_deadline, exposure_started +
+                        avoidance_test_slice_units ? avoidance_test_slice_units : scottland::windowing::peek_slice_units,
+                        std::min(exposure_deadline, exposure_started +
                             std::chrono::microseconds(scottland::windowing::peek_pause_us)));
                     exposure_search_ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - slice_started).count();
@@ -1349,6 +1353,21 @@
             }
             if (avoidance_active) last_exposure_solve = std::chrono::steady_clock::now();
         }
+        // WK40: a hint appears only once its placement has settled. This layout's avoidance
+        // passes have reached every window, no newer layout or deferred solve is waiting, and
+        // nothing that feeds the solve is still animating (widgets changing form on entry, rail
+        // slides, glides, make-room eases). Otherwise a hint drawn from the previous targets, or
+        // before collapsed widgets finish expanding, is removed by the next result and drawn
+        // again once that has eased. Removal below is unchanged.
+        const bool placement_settled = !deferred_solve && !exposure_solve_pending &&
+            widget_transitions.empty() && glides.empty() && rail_layout_motions.empty() &&
+            std::none_of(rail_slides.begin(), rail_slides.end(),
+                [] (const auto& item) { return item.second.running; }) &&
+            std::all_of(peek_by_output.begin(), peek_by_output.end(), [] (const auto& item) {
+                return !item.second.pass || (item.second.pass->complete() && !item.second.newer); });
+        // Keep stepping until waiting hints can appear: a glide or a make-room ease ends on its
+        // own timer, without a layout change to wake this one.
+        const bool awaiting_settle = window_keys.active && !placement_settled;
         bool moving = false, animation_moving = false;
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
         {
@@ -1428,7 +1447,9 @@
                 }
                 if (!badge_ready && visual.hint)
                 { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-                if (badge_ready && !visual.hint)
+                // A widget's circle rides its widget, so it is never removed for motion; it
+                // appears once the widget itself is at rest.
+                if (badge_ready && placement_settled && (!widget || !unsettled) && !visual.hint)
                 {
                     visual.hint_output = view->get_output();
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
@@ -1459,7 +1480,10 @@
                 {
                     auto output = view->get_output();
                     if (visual.outline && visual.outline_output != output) remove_hint_outline(visual);
-                    if (!visual.outline)
+                    // Like the circles, it appears only from a settled layout's measurement.
+                    auto measured = occlusion_next_by_output.find(output->to_string());
+                    if (!visual.outline && placement_settled && measured != occlusion_next_by_output.end() &&
+                        measured->second == SIZE_MAX)
                     {
                         // Like the hint circles, at the front of the overlay layer: above every
                         // window and every surface already shown there, so nothing occludes it.
@@ -1474,11 +1498,14 @@
                             if (flash.node && flash.output == output) wf::scene::readd_front(overlay, flash.node);
                         hint_order_dirty = true; // WK31: put the re-added circles back in stacking order
                     }
-                    auto r = scene_rectangle(view, output);
-                    auto frame = frame_of(view, false);
-                    visual.outline->update(r.x1, r.y1, r.width(), r.height(),
-                        frame ? frame->screen_radius() : 0.0, color,
-                        scottland::windowing::hint_outline_width);
+                    if (visual.outline)
+                    {
+                        auto r = scene_rectangle(view, output);
+                        auto frame = frame_of(view, false);
+                        visual.outline->update(r.x1, r.y1, r.width(), r.height(),
+                            frame ? frame->screen_radius() : 0.0, color,
+                            scottland::windowing::hint_outline_width);
+                    }
                 } else remove_hint_outline(visual);
                 if (visual.hint)
                 {
@@ -1545,7 +1572,7 @@
         hint_step_offset = moving && !animation_moving;
         const bool widget_presentation_moving = window_keys.active && widget_transition_tick.is_connected();
         return moving || bool(drag->view) || inertia_active() || deferred_solve ||
-            exposure_solve_pending || widget_presentation_moving;
+            exposure_solve_pending || widget_presentation_moving || awaiting_settle;
     }
     void refresh_layout_avoidance(bool immediate = false)
     {
@@ -1720,8 +1747,10 @@
             }
         }
     };
-    wf::ipc::method_callback hints_state = [=] (wf::json_t) -> wf::json_t
+    wf::ipc::method_callback hints_state = [=] (wf::json_t data) -> wf::json_t
     {
+        if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("slice_units") && data["slice_units"].is_int())
+            avoidance_test_slice_units = std::max(0, data["slice_units"].as_int());
         auto reply = wf::ipc::json_ok(); reply["active"] = window_keys.active;
         reply["hint_text_scale"] = hints_palette.text_scale;
         reply["minimum_window_hint_size"] = 48 * hints_palette.text_scale;
@@ -1734,7 +1763,8 @@
         reply["avoidance_solve_budget_ms"] =
             scottland::windowing::avoidance_solve_budget_us / 1000.0;
         // WK13 peek passes: work units of the last slice and the last completed pass.
-        reply["avoidance_slice_budget_units"] = int64_t(scottland::windowing::peek_slice_units);
+        reply["avoidance_slice_budget_units"] = int64_t(avoidance_test_slice_units ?
+            avoidance_test_slice_units : scottland::windowing::peek_slice_units);
         reply["avoidance_slice_units"] = int64_t(avoidance_slice_units);
         reply["avoidance_slice_units_max"] = int64_t(avoidance_slice_units_max);
         reply["avoidance_pass_units"] = int64_t(avoidance_pass_units);
