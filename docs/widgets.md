@@ -301,7 +301,7 @@ GLES software rendering; no physical screen or live session reload):
 | `tests/build-config-test.sh` | **5 rounds passed**, 20 concurrent builds each |
 | `tests/omarchy-focus-test.sh` | **3 passed** |
 | `tests/upgrade-test.sh` against an archived `ea1d0f4` build | **2 passed** |
-| `tests/present-test.sh` | **6 passed** |
+| `tests/present-test.sh` | **6 passed** (removed 2026-10-04: it required the screen middle, which L30 no longer promises; [tests-todo.md](tests-todo.md)) |
 
 The goo integration merge at main `50e563e` rechecked WG16 on plumbus: widgets passed
 146 checks with goo off and on, morphs passed 76 with goo off and 86 with goo on, and the

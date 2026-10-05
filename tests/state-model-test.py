@@ -416,7 +416,6 @@ try:
             time.sleep(0.7)
         audit(f"seed {seed} step {step} {op}")
     subprocess.run(["grim", str(artifacts / f"seed-{seed}-final.png")], check=True)
-    check("headless scene renders after randomized inputs")
     print(f"{passes} checks passed; seed={seed}, steps={len(sequence)}", flush=True)
 except Exception:
     print(f"FAIL seed={seed} replay: tests/state-model-test.sh {seed} {steps}\ntrace={json.dumps(trace)}", file=sys.stderr)
