@@ -1,5 +1,6 @@
 #include "goo.hpp"
 #include "loop.hpp"
+#include "pure/shrink.hpp"
 #include "attention-breath.hpp"
 #include "frame.hpp"
 #include "goo-runtime.hpp"
@@ -171,7 +172,8 @@ class goo_node_t : public wf::scene::node_t
         attached = false;
         tick.disconnect();
         breath_tick.disconnect();
-        settle_tick.disconnect();
+        shrink_lane.reset();  // closed: nothing of it is delivered to a detached node
+        shrink_pending = false;
         observe_scene(false);
         auto it = goo::screens.find(state.output);
         if (it != goo::screens.end() && it->second == &state)
@@ -371,6 +373,7 @@ class goo_node_t : public wf::scene::node_t
     }
     void update_breathing()
     {
+        if (shrink_lane) shrink_lane->bump_epoch();  // sources, shapes, settings or strips changed
         breath_area.clear();
         breath_loose = !settled_ready;
         // The cached influence is exactly zero past four reaches. Include cubic
@@ -431,125 +434,83 @@ class goo_node_t : public wf::scene::node_t
             return true;
         });
     }
-    // The conservative GO17 support includes dry liquid reach. Once the field
-    // is asleep, shrink each rectangle to its widest-breath wet density plus a
-    // reconstruction margin. Masked alpha contours use a denser lattice so a
-    // thin lobe is covered by the same margin rather than disabling tightening.
+    // The conservative GO17 support includes dry liquid reach. Once the field is asleep, each
+    // band rectangle shrinks to its widest-breath wet density plus a reconstruction margin
+    // (masked alpha contours use a denser lattice so a thin lobe keeps the same margin). The
+    // sampling is slow, so it runs as a job on the shrink worker (main-loop Phase 4): the
+    // conservative strips stay in use until a result arrives that still describes the current
+    // sources, settings and output. A capped job tightens only the rectangles it finished; a
+    // rectangle is never partly shrunk.
     //
-    // Sampling the field is slow (about a second for one large window in a debug build),
-    // so it runs in slices of a couple of milliseconds per breath tick; the conservative
-    // strips stay in use until it finishes. A long strip is sampled coarsely along its
-    // length: the shore there changes over the liquid's reach, not from pixel to pixel.
-    struct tighten_t
-    {
-        std::vector<wf::geometry_t> rects;
-        size_t index = 0;
-        double y = 0, x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-        bool row_started = false;
-        wf::regionf_t tight;
-    };
-    std::optional<tighten_t> tightening;
     // GO20: the same shrinking for every band, not only the breathing strips. While the
     // goo sleeps, drawing, the backdrop copy and the composite use this region, so an app
     // frame that touches the goo works on the liquid, not on the dry reach around it.
     // Any wake returns to the conservative bands (waves can push the shore out).
     wf::regionf_t settled_area, breath_support;
     bool settled_ready = false;
-    wf::wl_timer<true> settle_tick;
+    std::unique_ptr<work::lane_handle_t> shrink_lane;
+    bool shrink_pending = false;
+    uint64_t shrink_incarnation() const
+    {
+        // Mode, scale or transform of the output: a result for another incarnation is dropped.
+        auto g = state.output->get_relative_geometry();
+        double scale = state.output->handle->scale;
+        uint64_t h = uint64_t(g.width) * 1000003ull + uint64_t(g.height);
+        h = h * 1000003ull + uint64_t(scale * 1000) + uint64_t(state.output->handle->transform) * 7;
+        return h;
+    }
+    void open_shrink_lane(work::worker_t *worker)
+    {
+        if (!worker) return;
+        shrink_lane = worker->open_lane("shrink:" + state.output->to_string(), work::policy_t::exact);
+        shrink_lane->accept = [this] (const work::done_t &done)
+        {
+            auto result = dynamic_cast<const work::shrink_result_t *>(done.result.get());
+            // Exactly the current sources (ticket and epoch), still asleep, same output.
+            return result && done.outcome != work::outcome_t::failed && done.ticket == shrink_lane->ticket() &&
+                done.epoch == shrink_lane->epoch() && state.sleeping && breath_tight && attached &&
+                result->incarnation == shrink_incarnation();
+        };
+        shrink_lane->deliver = [this] (work::done_t &done)
+        {
+            SCOTTLAND_LOOP_SCOPE(shrink_install);
+            shrink_pending = false;
+            auto &result = static_cast<work::shrink_result_t &>(*done.result);
+            tighten_ms += double(done.finish_ns - done.start_ns) / 1e6;
+            if (!result.refined)
+                return;  // capped before any rectangle finished: no change, the loose strips stay
+            wf::regionf_t tight;
+            for (auto &r : result.rects)
+                tight |= wf::geometry_t{r.x, r.y, r.width, r.height};
+            breath_loose = false;
+            ++breath_tightens;
+            settled_area = whole_pixels(tight);
+            settled_ready = true;
+            set_breath_area(whole_pixels(breath_support & settled_area));
+        };
+    }
     void start_settling()
     {
         settled_ready = false;
-        tightening.reset();
-        settle_tick.disconnect();
-        if (!breath_tight || !attached)
-            return;
-        settle_tick.set_timeout(20, [this]
-        {
-            SCOTTLAND_LOOP_SCOPE(goo_settle_tick);
-            if (!state.sleeping || !breath_tight)
-                return false;
-            tighten_breathing();
-            return !settled_ready;
-        });
-    }
-    void tighten_breathing(double budget_ms = 2)
-    {
-        SCOTTLAND_LOOP_SCOPE(tighten_breathing);
-        double tighten_start = now();
-        if (!tightening)
-        {
-            tightening.emplace();
-            tightening->rects = bands();
-            tighten_ms = 0;
-        }
-        auto &job = *tightening;
-        const float wet = .5f * state.settings.threshold();
-        const double support_padding = 5 + 1. / state.output->handle->scale;
-        const double reach = 4 * state.settings.reach + support_padding;
-        while (job.index < job.rects.size())
-        {
-            auto &b = job.rects[job.index];
-            double bx2 = b.x + b.width, by2 = b.y + b.height;
-            bool masked = false;
-            for (auto &source : state.sources)
-            {
-                if (!source.shape) continue;
-                auto body = source.shape_body.z > 0 && source.shape_body.w > 0 ? source.shape_body : source.rect;
-                if (body.x - body.z - reach < bx2 && body.x + body.z + reach > b.x &&
-                    body.y - body.w - reach < by2 && body.y + body.w + reach > b.y)
-                {
-                    masked = true;
-                    break;
-                }
-            }
-            const double fine = masked ? 2 : 4, coarse = 4 * fine;
-            const double step_x = b.width > 2 * b.height ? coarse : fine;
-            const double step_y = b.height > 2 * b.width ? coarse : fine;
-            if (!job.row_started)
-            {
-                job.y = b.y;
-                job.x1 = job.y1 = 1e9;
-                job.x2 = job.y2 = -1e9;
-                job.row_started = true;
-            }
-            for (; job.y < by2 + step_y; job.y += step_y)
-            {
-                if ((now() - tighten_start) * 1000 > budget_ms)
-                {
-                    tighten_ms += (now() - tighten_start) * 1000;
-                    return;  // resume at this row on the next tick
-                }
-                for (double x = b.x; x < bx2 + step_x; x += step_x)
-                {
-                    glm::vec2 point{std::min<double>(x, bx2), std::min<double>(job.y, by2)};
-                    if (goo::density(point, state.sources, state.settings, state.time, 1) < wet)
-                        continue;
-                    job.x1 = std::min<double>(job.x1, point.x);
-                    job.y1 = std::min<double>(job.y1, point.y);
-                    job.x2 = std::max<double>(job.x2, point.x);
-                    job.y2 = std::max<double>(job.y2, point.y);
-                }
-            }
-            if (job.x2 >= job.x1)
-            {
-                const double pad = 5 + 1. / state.output->handle->scale;
-                double x1 = std::max<double>(std::floor(job.x1 - step_x - pad), b.x);
-                double y1 = std::max<double>(std::floor(job.y1 - step_y - pad), b.y);
-                double x2 = std::min<double>(std::ceil(job.x2 + step_x + pad), bx2);
-                double y2 = std::min<double>(std::ceil(job.y2 + step_y + pad), by2);
-                job.tight |= wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
-            } else
-                job.tight |= b;  // nothing sampled wet: keep the whole band, never drop goo
-            job.index++;
-            job.row_started = false;
-        }
-        breath_loose = false;
-        ++breath_tightens;
-        settled_area = whole_pixels(job.tight);
-        settled_ready = true;
-        set_breath_area(whole_pixels(breath_support & settled_area));
-        tighten_ms += (now() - tighten_start) * 1000;
-        tightening.reset();
+        shrink_pending = false;
+        if (shrink_lane) shrink_lane->bump_epoch();  // whatever runs now is for older sources
+        if (!breath_tight || !attached || !shrink_lane)
+            return;  // no worker: the loose strips (correct, more damage per breath)
+        SCOTTLAND_LOOP_SCOPE(shrink_snapshot);
+        if (state.sources.size() > 256)
+            return;  // past the snapshot limit (design 3.2): the loose strips stay
+        work::shrink_snapshot_t snapshot;
+        snapshot.sources = state.sources;
+        snapshot.settings = state.settings;
+        snapshot.time = state.time;
+        for (auto &b : bands())
+            snapshot.rects.push_back({double(b.x), double(b.y), double(b.width), double(b.height)});
+        snapshot.output_scale = state.output->handle->scale;
+        snapshot.incarnation = shrink_incarnation();
+        shrink_pending = shrink_lane->submit(std::make_unique<work::shrink_job_t>(std::move(snapshot)),
+            work::now_ns());
+        if (!shrink_pending)
+            loop::note(loop::note_id::worker_unavailable, 0, 3);
     }
     // Wakes of a sleeping simulation by cause, for goo-state: each one runs the full
     // simulation and redraws every band for at least three seconds.
@@ -565,8 +526,8 @@ class goo_node_t : public wf::scene::node_t
             last_wake = reason;
             wake_step = state.renderer.steps;
             settled_ready = false;
-            tightening.reset();
-            settle_tick.disconnect();
+            shrink_pending = false;
+            if (shrink_lane) shrink_lane->bump_epoch();
             set_breath_area(breath_support);
             breath_loose = true;
             }
@@ -849,6 +810,7 @@ void goo_instance_t::schedule_instructions(std::vector<wf::scene::render_instruc
 } // namespace
 struct goo_t::impl
 {
+    work::worker_t *worker = nullptr;
     wf::wl_idle_call fallback;
     goo_t::source_provider_t snapshot;
     std::function<void(wf::output_t *, bool)> screen_changed;
@@ -919,6 +881,7 @@ struct goo_t::impl
         if (!goo::enabled || nodes.count(o))
             return;
         auto n = std::make_shared<goo_node_t>(o, snapshot);
+        n->open_shrink_lane(worker);
         n->breath_keys = breath_keys;
         n->failed = [this]
         {
@@ -1033,8 +996,7 @@ struct goo_t::impl
             s["tick_ms"] = n->tick_ms;
             s["tighten_ms"] = n->tighten_ms;
             // The settled (tight) region is still being worked out; conservative bands in use.
-            s["breath_loose"] = n->state.sleeping && n->breath_tight && !n->settled_ready &&
-                n->settle_tick.is_connected();
+            s["breath_loose"] = n->state.sleeping && n->breath_tight && !n->settled_ready && n->shrink_pending;
             double settled = 0, loose = 0;
             for (auto &b : n->settled_area) settled += double(b.x2 - b.x1) * (b.y2 - b.y1);
             wf::regionf_t all;
@@ -1101,6 +1063,7 @@ struct goo_t::impl
 };
 goo_t::goo_t() : p(std::make_unique<impl>()) {}
 goo_t::~goo_t() = default;
+void goo_t::set_worker(work::worker_t *worker) { p->worker = worker; }
 void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed)
 {
     goo::shape_cache_t::prepare();

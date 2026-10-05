@@ -70,6 +70,7 @@ extern "C" {
 #include "key-layers.hpp"
 #include "loop.hpp"
 #include "handover.hpp"
+#include "pure/shrink.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -6785,6 +6786,49 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
     // Main-loop timing, diagnostic ring and watchdog (docs/main-loop.md). Started first in init()
     // and stopped last in fini().
     scottland::loop::monitor_t loop_monitor;
+    // The breathing shrink's worker (main-loop Phase 4): stopped first in fini().
+    scottland::work::worker_t shrink_worker{"shrink", scottland::work::shrink_step_units};
+    wl_event_source *shrink_source = nullptr;
+    bool worker_reported = false;
+    struct { bool eventfd = false, thread = false, source = false; } worker_faults;
+    void start_shrink_worker()
+    {
+        if (!shrink_worker.start({worker_faults.eventfd, worker_faults.thread}))
+        {
+            scottland::loop::note(scottland::loop::note_id::worker_unavailable, 0, worker_faults.eventfd ? 0 : 2);
+            shrink_worker.stop();
+            return;
+        }
+        shrink_source = worker_faults.source ? nullptr : wl_event_loop_add_fd(wf::get_core().ev_loop,
+            shrink_worker.event_fd(), WL_EVENT_READABLE, [] (int, uint32_t, void *data)
+        {
+            SCOTTLAND_LOOP_SCOPE(worker_deliver);
+            static_cast<scottland_plugin_t*>(data)->shrink_worker.deliver();
+            return 0;
+        }, this);
+        if (!shrink_source)
+        {
+            scottland::loop::note(scottland::loop::note_id::worker_unavailable, 0, 1);
+            shrink_worker.stop();
+            return;
+        }
+        goo.set_worker(&shrink_worker);
+        loop_monitor.heartbeat_hook = [this]
+        {
+            if (shrink_worker.is_broken() && !worker_reported)
+            {
+                worker_reported = true;
+                scottland::loop::note(scottland::loop::note_id::worker_unavailable, 0, 3);
+            }
+        };
+    }
+    void stop_shrink_worker()
+    {
+        loop_monitor.heartbeat_hook = nullptr;
+        if (shrink_source) wl_event_source_remove(shrink_source);
+        shrink_source = nullptr;
+        shrink_worker.stop();  // joins; undelivered results are destroyed here
+    }
     wf::wl_idle_call test_loop_idle;
     wf::ipc::method_callback loop_stats = [=] (wf::json_t data) -> wf::json_t
     {
@@ -6799,6 +6843,8 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         reply["reload"]["nonce"] = reload_nonce;
         reply["reload"]["outcome"] = handover_outcome;
         reply["proc_reads"] = (int64_t)proc_reads;
+        wf::json_t workers;
+        if (!wf::json_t::parse_string(shrink_worker.stats_json(), workers)) reply["workers"]["shrink"] = workers;
         return reply;
     };
     uint64_t plugin_load = 0;  // which plugin load in this compositor process this copy is
@@ -6863,12 +6909,18 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         if (getenv("SCOTTLAND_TEST_MODEL"))
             if (const char *list = getenv("SCOTTLAND_TEST_LOOP_FAULTS"))
             {
-                std::string text = list;
-                faults.ring = text.find("ring") != std::string::npos;
-                faults.mlock = text.find("mlock") != std::string::npos;
-                faults.eventfd = text.find("eventfd") != std::string::npos;
-                faults.event_source = text.find("source") != std::string::npos;
-                faults.thread = text.find("thread") != std::string::npos;
+                std::stringstream tokens(list);
+                for (std::string token; std::getline(tokens, token, ',');)
+                {
+                    faults.ring |= token == "ring";
+                    faults.mlock |= token == "mlock";
+                    faults.eventfd |= token == "eventfd";
+                    faults.event_source |= token == "source";
+                    faults.thread |= token == "thread";
+                    worker_faults.eventfd |= token == "worker-eventfd";
+                    worker_faults.thread |= token == "worker-thread";
+                    worker_faults.source |= token == "worker-source";
+                }
             }
         auto ring = runtime_file(".loop");
         mkdir(ring.substr(0, ring.rfind('/')).c_str(), 0700);
@@ -7034,6 +7086,7 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
                 show_attention(id);
             }
         }
+        start_shrink_worker();
         goo.start([this](wf::output_t *output) { return goo_sources(output); },
             [this](wf::output_t *output, bool on)
             {
@@ -7055,6 +7108,7 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         // Only a copy whose init() completed hands over (a failed one never does), and only
         // during a reload: scottland-reload's marker.
         handover_faults_read = false;  // tests may change them between this copy's init() and fini()
+        stop_shrink_worker();  // the worker stops first, the watchdog last (ML6)
         flush_model();  // subscribers and the handover snapshot carry the last change
         publish_timer.disconnect();
         bool reloading = init_completed && access(runtime_file(".reloading").c_str(), F_OK) == 0;

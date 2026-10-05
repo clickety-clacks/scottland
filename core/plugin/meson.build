@@ -13,10 +13,15 @@ layer_shell_header = custom_target('layer-shell-header',
   output: 'wlr-layer-shell-unstable-v1-protocol.h',
   command: [find_program('wayland-scanner'), 'server-header', '@INPUT@', '@OUTPUT@'])
 
+# Pure computation for worker threads: no Wayfire, wlroots or GL (main-loop design 3.2).
+pure = static_library('scottland-pure', ['src/pure/worker.cpp', 'src/pure/shrink.cpp', 'src/goo-model.cpp'],
+  dependencies: [dependency('glm', required: false)], pic: true, cpp_args: ['-fno-gnu-unique'])
+
 shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declutter.cpp',
-  'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/loop.cpp', 'src/goo-shape.cpp',
+  'src/goo.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/loop.cpp', 'src/goo-shape.cpp',
   'src/key-layers.cpp', 'src/inertia.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp'],
   dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo],
+  link_with: pure,
 
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become
   # process-wide "unique" symbols, so a plugin reloaded in place (scottland-reload) would share

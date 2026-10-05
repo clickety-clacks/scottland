@@ -369,6 +369,7 @@ void monitor_t::heartbeat()
     abi::word(ring, abi::w_hb_acked).store(requested);
     abi::word(ring, abi::w_hb_ack_ns).store(now_ns());
     sample_end();
+    if (heartbeat_hook) heartbeat_hook();
 }
 
 void monitor_t::watch()

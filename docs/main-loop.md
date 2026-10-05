@@ -120,6 +120,39 @@ ownership is established outside the handover file.
 | 2.7 | The switcher's title: at most 256 codepoints and a binary search for the fitting prefix (at most 9 measurements); badge rasters capped at 512x512; `mkdir(2)` instead of `system("mkdir -p")`. | a 4,096-character title: switcher update 0.37 ms |
 | ML8 | The hint font is loaded at `init()`. | first Window mode entry: badge raster 0.87 ms (13.9 ms on Phase 1); entry 5.5 ms first and 2.5 ms after at 6 windows (41-53 ms first on Phase 1) |
 
+## Phase 4: the shrink worker
+
+`core/plugin/src/pure/`: a static library with no Wayfire, wlroots or GL in it. `worker_t` runs
+jobs in steps of at most one allowance of work units, charged before each unit operation, with
+cancellation checked at every charge; each consumer owns a lane (one pending, one running, one
+finished slot) with a ticket (every submit and cancel), an epoch (the consumer's invalidating
+events) and a policy (`exact`: a newer ticket or epoch cancels; `latest_completed`: only a newer
+epoch). Results come back through an eventfd on the main loop, at most 1 ms of deliveries per
+dispatch, each checked against the consumer's acceptance rule. A failed eventfd write marks the
+worker broken; the heartbeat handler and every submit observe it. The thread blocks every signal
+and runs only the library's code, its mutex, condition variable and eventfd. `fini()` stops it
+first (the watchdog last): stop, notify, join, then destroy every pending, running and finished
+job and result on the main thread.
+
+The goo's breathing shrink (GO19/GO20) is its first job: when the goo falls asleep, the goo node
+snapshots its sources (shapes are shared and immutable), settings, time, band rectangles and output
+incarnation and submits; any change of sources, shapes, settings, strips, a wake or a new output
+mode bumps the lane's epoch. A result is installed only if its ticket and epoch are current, the
+goo still sleeps and the output is the same incarnation. A job capped at the whole-job limit
+tightens only the rectangles it finished; none finished means no change. Work units (one per
+density term) are calibrated by `tests/worker-unit.sh`: 29-36 ns each on nacelle, so a step of
+60,000 units is about 2 ms and the cap of 9,000,000 about 300 ms; the slowest single operation (a
+256-source density call) is 9-10 µs at p99.
+
+Verified (nacelle): `tests/worker-unit.sh` (ThreadSanitizer, no suppressions: forced interleavings
+of submit, finish, deliver, cancel, epoch bump, close and stop for both policies; `broken` without
+the eventfd; 16-lane limit; stop with running, pending and undelivered jobs; identical results at
+a 1-unit and an unlimited allowance; caps at the first unit, mid-row and the last unit; equality
+with GO19's main-thread algorithm; an 8 MB snapshot bound) and `tests/shrink-worker-test.py`
+(settling through the worker with no shrink step on the main loop and a 0.06 ms install; source
+change, wake and output scale change mid-job; reload with a shrink in flight: one worker thread,
+descriptors back to baseline; worker thread and eventfd failures leave the loose strips).
+
 ## Window mode entry (ML8)
 
 Attribution on nacelle (aarch64, Asahi GPU, 10 windows, Phase 1 scopes): the first Alt hold of a
@@ -167,8 +200,8 @@ font family other than the one warmed at `init()` (D4); pathological user regexe
 | `option_layout` | 19.2 ms | 46.9 ms | a layout option callback (apply_all per option) | Phase 2.6 |
 | `publish_model` | 12.3 ms | 2.2 ms | model publication (2,806 per settings-slider run before coalescing) | Phase 2.1 |
 | `goo_prepare` | 9.8 ms | 15.4 ms | per-frame goo sources and bands | Phase 2.5 (sources cache); bands stay exact |
-| `goo_settle_tick` | 6.1 ms | 12.4 ms | GO19 breathing shrink slice (2.5 ms on plumbus, slower on nacelle) | Phase 4 |
-| `tighten_breathing` | 6.1 ms | 12.4 ms | inside goo_settle_tick | Phase 4 |
+| `goo_settle_tick` | 6.1 ms | 12.4 ms | GO19 breathing shrink slice (2.5 ms on plumbus, slower on nacelle) | Phase 4: closed (the scope no longer exists) |
+| `tighten_breathing` | 6.1 ms | 12.4 ms | inside goo_settle_tick | Phase 4: closed |
 | `on_mapped` | 4.4 ms | 12.3 ms | widget adoption procfs gather and placement | Phase 2.2, D6 |
 | `on_move` | 4.6 ms | 10.4 ms | drag start: /proc reads and publishes | Phase 2.1, 2.2 |
 | `live_drag_pointer_button` | 8.1 ms | 8.8 ms | drop handling | Phase 2.1, 2.2 |

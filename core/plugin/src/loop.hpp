@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -86,6 +87,9 @@ class monitor_t
 
     uint32_t depth = 0;
     uint64_t build_id = 0;
+    // Main thread, from the heartbeat handler: a periodic check that runs whatever the loop is
+    // doing (the worker's `broken` flag is observed here as well as on submit).
+    std::function<void()> heartbeat_hook;
     bool ring_on() const { return ring != nullptr; }
     bool watchdog_on() const { return watchdog.joinable(); }
 
