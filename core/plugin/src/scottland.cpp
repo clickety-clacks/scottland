@@ -1389,7 +1389,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
     {
-        audition_invalidate(ev->view);
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             auto disappearing_card = link_of_widget(toplevel);
@@ -1647,7 +1646,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<true> rail_layout_tick;
     wf::wl_timer<false> rail_dwell_tick;
     static constexpr double RAIL_POINTER_WOBBLE = 4.0;
-    // A committed audition keeps its visual offsets until each Wayfire geometry transaction
+    // A committed rail audition keeps its visual offsets until each Wayfire geometry transaction
     // applies. Only one small, capped commit can be outstanding; a later drag can still proceed.
     std::optional<scottland::drag_presentation_t> pending_drag_layout;
 
@@ -3235,15 +3234,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    void set_drag_layout_offset(wayfire_toplevel_view view, double dx, double dy, double scale = 1)
+    void set_drag_layout_offset(wayfire_toplevel_view view, double dx, double dy)
     {
         auto frame = view ? frame_of(view, false) : nullptr;
         if (!frame || (std::abs(frame->drag_layout_x - dx) < 0.0001 &&
-            std::abs(frame->drag_layout_y - dy) < 0.0001 && std::abs(frame->drag_layout_scale - scale) < 0.00001)) return;
+            std::abs(frame->drag_layout_y - dy) < 0.0001)) return;
         frame->damage();
         frame->drag_layout_x = dx;
         frame->drag_layout_y = dy;
-        frame->drag_layout_scale = scale;
         frame->damage();
         view->damage();
     }
@@ -5943,7 +5941,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<true> glide_tick;
     wf::option_wrapper_t<double> cycle_overshoot{"scottland/cycle_overshoot"};
     static constexpr double CYCLE_MS = 300;
-    #include "spread-bridge.hpp"  // after glide_t: an audition suspends running glides
+    #include "spread-bridge.hpp"  // after glide_t
 
     void start_cycle_glide(wayfire_toplevel_view view, wf::pointf_t from, double from_scale,
         wf::pointf_t to, double to_scale)
@@ -6619,12 +6617,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             update_drag_morph(view, output, ev->current_position);
             update_rail_drag(view, output, ev->current_position);
-            audition_motion(view, output, {(double)ev->current_position.x, (double)ev->current_position.y});
             publish_model();  // morph direction/center changes even when widget scale stays 1
         } else
         {
             cancel_rail_drag();
-            audition_end("no drag");
         }
 
         if (!view || !output || view->pending_fullscreen() || is_widget(view))
@@ -6753,7 +6749,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.cancelled = false;
             model.drag.input_override.reset();
             cancel_rail_drag();
-            audition_end("Esc");  // L27: Esc cancels the drag and the audition together
             if (main && main->is_mapped())
             {
                 cancel_drop(main);
@@ -6773,10 +6768,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             update_rail_drag(main, main->get_output());  // validate the final landing footprint
             commit_rail_drag();
         }
-        // A drop inside the offered solo's hotspot accepts it; the dropped window stays exactly
-        // where it was dropped (P14), so it does not coast either.
-        bool solo_accepted = audition_drop(main, {(double)ev->grab_position.x, (double)ev->grab_position.y});
-
         if (main)
         {
             model.drag.last_drop    = origin_for(main);
@@ -6857,7 +6848,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             handle_widget_drop(main, widget_shaped, released_at);
             auto dropped = represented_view(was_widget ? app_window : main->get_id());
             if (dropped) remember_window(dropped);
-            if (!was_widget && dropped == main && !widget_shaped.value_or(false) && !solo_accepted &&
+            if (!was_widget && dropped == main && !widget_shaped.value_or(false) &&
                 std::hypot(released_at.x - model.drag.start_cursor.x,
                     released_at.y - model.drag.start_cursor.y) >= CLICK_SLOP)
                 start_drag_coast(dropped);
@@ -6891,7 +6882,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
-        audition_invalidate(ev->view);
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             observe_view(toplevel);
@@ -6909,8 +6899,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
         [=] (wf::view_geometry_changed_signal *ev)
     {
-        audition_invalidate(ev->view, ev->old_geometry.width != ev->view->get_geometry().width ||
-            ev->old_geometry.height != ev->view->get_geometry().height);
         if (auto view = wf::toplevel_cast(ev->view))
         {
             recenter_keyboard_resize(view);
