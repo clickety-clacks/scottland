@@ -108,8 +108,8 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | Date | Ruling | Where |
 |---|---|---|
 | 10-03 | Keep the compositor's main loop as fast as possible and offload anything that doesn't need to be there; the pointer must never freeze because of Scottland. | P8, ML1-ML7 |
-| 10-03 | While waves pass over a halo, its grab edge follows the resting outline (no GPU wait on pointer motion). | main-loop Phase 3 (not built yet) |
-| 10-03 | Where the goo's settle check can't be read without waiting (a GPU allocation or sync failure, GLES 2), the goo sleeps 6 s after the last change. | main-loop Phase 3, GO10 (not built yet) |
+| 10-03 | While waves pass over a halo, its grab edge follows the resting outline (no GPU wait on pointer motion). | GO5, main-loop Phase 3 |
+| 10-03 | Where the goo's settle check can't be read without waiting (a GPU allocation or sync failure, GLES 2), the goo sleeps 6 s after the last change. | GO10, main-loop Phase 3 |
 
 ## Omarchy adapter, distro and flavorings
 

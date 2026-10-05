@@ -1,5 +1,6 @@
 #include "goo.hpp"
 #include "loop.hpp"
+#include "goo-gl.hpp"
 #include "pure/shrink.hpp"
 #include "attention-breath.hpp"
 #include "frame.hpp"
@@ -152,6 +153,7 @@ class goo_node_t : public wf::scene::node_t
     std::map<uint64_t, double> motion_pulse;
     bool attached = true, above_windows = false;
     std::function<void()> failed;
+    std::function<void()> readback_issued;  // arms the shared collection timer
     goo_t::source_provider_t snapshot;
     goo_node_t(wf::output_t *o, goo_t::source_provider_t provider) : node_t(false), snapshot(std::move(provider))
     {
@@ -538,6 +540,7 @@ class goo_node_t : public wf::scene::node_t
             return;
         if (state.sleeping || !state.impulses.empty())
             state.renderer.energy = 1; // an old settled readback cannot swallow a new impulse
+        state.renderer.invalidate();   // and no reading issued before this change applies
         state.sleeping = false;
         if (!attached)
             return;
@@ -774,8 +777,15 @@ class goo_node_t : public wf::scene::node_t
                         const float sleep_energy = state.renderer.packed ? 16.f / 255.f + .0001f : .012f;
                         // The energy is read every 30 steps; one full interval after a wake
                         // makes the reading describe the response to it.
-                        if (now() - last_change > 3 && state.renderer.energy <= sleep_energy &&
-                            state.renderer.steps - wake_step >= 30)
+                        // Where the settle check can't be read without waiting (GLES 2, a readback
+                        // failure, the test switch), sleep on time alone: 6 s after the last change
+                        // (Mike, 2026-10-03; GO10).
+                        bool settled_now = state.renderer.timed_sleep() ? now() - last_change > 6 :
+                            now() - last_change > 3 && state.renderer.energy <= sleep_energy &&
+                            state.renderer.steps - wake_step >= 30;
+                        if (state.renderer.readback_pending() && readback_issued)
+                            readback_issued();
+                        if (settled_now)
                         {
                             state.sleeping = true;
                             tick.disconnect();
@@ -811,6 +821,29 @@ void goo_instance_t::schedule_instructions(std::vector<wf::scene::render_instruc
 struct goo_t::impl
 {
     work::worker_t *worker = nullptr;
+    // Energy readings are collected inside each output's render pass and otherwise by this one
+    // timer for all outputs, armed only while some reading is in flight; at most two slots are
+    // examined per run across all outputs (main-loop Phase 3).
+    wf::wl_timer<true> collect_tick;
+    void arm_collect()
+    {
+        if (collect_tick.is_connected()) return;
+        collect_tick.set_timeout(16, [this]
+        {
+            SCOTTLAND_LOOP_SCOPE(goo_collect_tick);
+            bool pending = false;
+            wf::gles::run_in_context_if_gles([&]
+            {
+                goo::gl::state_t guard(true);
+                int budget = 2;
+                for (auto &[o, n] : nodes)
+                    n->state.renderer.collect(budget);
+                for (auto &[o, n] : nodes)
+                    pending |= n->state.renderer.readback_pending();
+            });
+            return pending;
+        });
+    }
     wf::wl_idle_call fallback;
     goo_t::source_provider_t snapshot;
     std::function<void(wf::output_t *, bool)> screen_changed;
@@ -866,6 +899,7 @@ struct goo_t::impl
         {
             n->breath_keys = breath_keys;
             n->state.settings = goo::current_settings;
+            n->state.renderer.invalidate();
             n->state.revision++;
             n->band_cache.reset();
             n->update_breathing();
@@ -882,6 +916,7 @@ struct goo_t::impl
             return;
         auto n = std::make_shared<goo_node_t>(o, snapshot);
         n->open_shrink_lane(worker);
+        n->readback_issued = [this] { arm_collect(); };
         n->breath_keys = breath_keys;
         n->failed = [this]
         {
@@ -954,6 +989,11 @@ struct goo_t::impl
                         n->start_settling();
                     test_changed = true;
                 }
+                if (data.has_member("timed_sleep") && data["timed_sleep"].is_bool())
+                {
+                    n->state.renderer.force_timed_sleep = data["timed_sleep"].as_bool();
+                    test_changed = true;
+                }
                 if (data.has_member("reuse_deaf") && data["reuse_deaf"].is_bool())
                     n->deaf = data["reuse_deaf"].as_bool();
                 if (data.has_member("breath_reuse") && data["breath_reuse"].is_bool())
@@ -993,6 +1033,12 @@ struct goo_t::impl
             s["draw_gpu_ms"] = n->state.renderer.last_draw_gpu_ms;
             s["draws"] = (int64_t)n->state.renderer.draws;
             s["breath_tightens"] = (int64_t)n->breath_tightens;
+            s["readback"] = n->state.renderer.readback_mode();
+            s["readback_pending"] = n->state.renderer.readback_pending();
+            s["readings_issued"] = (int64_t)n->state.renderer.readings_issued;
+            s["readings_applied"] = (int64_t)n->state.renderer.readings_applied;
+            s["readings_stale"] = (int64_t)n->state.renderer.readings_stale;
+            s["readings_skipped"] = (int64_t)n->state.renderer.readings_skipped;
             s["tick_ms"] = n->tick_ms;
             s["tighten_ms"] = n->tighten_ms;
             // The settled (tight) region is still being worked out; conservative bands in use.
@@ -1093,6 +1139,7 @@ void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *,
 void goo_t::stop()
 {
     p->fallback.disconnect();
+    p->collect_tick.disconnect();
     p->added.disconnect();
     p->removed.disconnect();
     p->ipc->unregister_method("scottland/goo-state");

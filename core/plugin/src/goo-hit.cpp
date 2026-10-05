@@ -56,14 +56,11 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     if (back < sources.size() && screen.settings.overlap_film <= 0) return handle_t::none;
     float f = goo::density(p, sources, screen.settings, screen.time, screen.breath);
     float threshold = screen.settings.threshold();
-    float wave = 0;
-    // Read the retained surface too: sleeping preserves its tiny residual height. Derive
-    // the possible boundary from the live wave-height control, including its maximum.
-    if (screen.settings.wave_height > 0 &&
-        f > threshold / (1 + screen.settings.wave_height * 3.9f))
-        wave = screen.renderer.wave_at(p);
+    // The grab edge is the resting outline: passing waves move the drawn edge a few pixels,
+    // never the hit test, which reads nothing back from the GPU (Mike, 2026-10-03; main-loop
+    // Phase 3). A5's minimum target and every other part of the predicate are unchanged.
     glm::vec2 probe = p;
-    if (f * (1 + screen.settings.wave_height * wave) < threshold)
+    if (f < threshold)
     {
         // A5's 12 pt target is a dilation of the same field, not a second handle shape.
         float edge = goo::distance({point.x, point.y}, *source);

@@ -51,10 +51,15 @@ struct state_t
     GLint viewport[4], scissor_box[4], program, active, binding[8], blend_src, blend_dst;
     GLfloat clear_color[4];
     GLboolean scissor, blend;
+    GLint pack_alignment = 4, pack_buffer = 0;
     bool separate_read;
+    // separate_read: a GLES 3 context (read framebuffer, read buffer and pixel-pack buffer).
     explicit state_t(bool separate_read = false) : separate_read(separate_read)
     {
         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+        glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment);
+        if (separate_read)
+            glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
         if (separate_read)
         {
             glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fb);
@@ -79,10 +84,12 @@ struct state_t
     ~state_t()
     {
         glBindFramebuffer(GL_FRAMEBUFFER, fb);
+        glPixelStorei(GL_PACK_ALIGNMENT, pack_alignment);
         if (separate_read)
         {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fb);
             glReadBuffer(read_buffer);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, pack_buffer);
         }
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         glScissor(scissor_box[0], scissor_box[1], scissor_box[2], scissor_box[3]);

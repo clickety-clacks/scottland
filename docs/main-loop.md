@@ -153,6 +153,33 @@ with GO19's main-thread algorithm; an 8 MB snapshot bound) and `tests/shrink-wor
 change, wake and output scale change mid-job; reload with a shrink in flight: one worker thread,
 descriptors back to baseline; worker thread and eventfd failures leave the loose strips).
 
+## Phase 3: no GPU wait
+
+- **Hit test.** `goo_handle` uses the resting outline (no wave term) and never calls
+  `goo_sample_at`, which remains only as the test probe in `goo-state` (GO5, Mike 2026-10-03).
+  A5's minimum target and the rest of the predicate are unchanged.
+- **Energy.** Every 30th simulation step issues the reduction into one of four pixel buffers per
+  renderer with a fence and a tag (step, invalidation counter, renderer size), then `glFlush()`;
+  with every slot busy it skips. Readings are collected without waiting (`glClientWaitSync`
+  with a zero timeout) inside the render pass and otherwise by one 16 ms timer shared by all
+  outputs, armed only while a reading is in flight, at most two slots per run across outputs,
+  in a GL context with Wayfire's pixel-pack state restored. A reading applies only if no
+  impulse, source or settings change or wake happened since it was issued (the invalidation
+  counter), the size is the same and it is newer than the last applied one. A failed wait or map,
+  a missing fence or buffer, or a reading unsignalled after 1 s retires the slot and puts the
+  renderer on the timed fallback; a missing value is never read as zero energy.
+- **Fallback.** GLES 2, any readback failure, or the `goo-state` test switch: the simulation
+  sleeps 6 s after the last change (GO10, Mike 2026-10-03), until the renderer is re-created.
+
+Measured (nacelle, Asahi): collection at most 0.03-0.05 ms; issue 0.7 ms at 12 windows and
+2.1 ms at 30, of which the fence and flush cost 0.001 ms and the reduction passes' submission
+0.6-1.6 ms. The design's issue target (0.5 ms) is **not met on nacelle**, so Phase 3 stays open
+with that number in the exception table; plumbus (busy with a VM build) and an Intel test host
+are not measured yet. `tests/goo-readback-test.py`: no GPU read on pointer motion; the goo
+sleeps on asynchronous readings (3.5 s after the last change); nothing stays in flight once
+asleep; readings across a change don't apply; the timed fallback sleeps at 6.1 s and wakes on
+change; a reload with readings in flight.
+
 ## Window mode entry (ML8)
 
 Attribution on nacelle (aarch64, Asahi GPU, 10 windows, Phase 1 scopes): the first Alt hold of a

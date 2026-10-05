@@ -390,6 +390,24 @@
    },
    "owner": "D1 (Phase 0: bounded at 2 ms + overshoot)",
    "what": "Luna's bounded avoidance solve"
+  },
+  "goo_energy_issue": {
+   "ceiling_ms": 4,
+   "measured_ms": {
+    "nacelle_12": 0.73,
+    "nacelle_30": 2.08
+   },
+   "owner": "Phase 3 (open: target 0.5 ms)",
+   "what": "energy reduction passes' submission, fence and flush (no wait)"
+  },
+  "goo_energy_reduce": {
+   "ceiling_ms": 3,
+   "measured_ms": {
+    "nacelle_12": 0.57,
+    "nacelle_30": 1.64
+   },
+   "owner": "Phase 3 (open)",
+   "what": "the reduction passes inside goo_energy_issue"
   }
  },
  "measured": "nacelle (aarch64, Asahi GPU), 2026-10-04, Phase 1 build, optimized, headless 2560x1600, real stipc input; ceilings are 1.5x the larger measurement + 1 ms"

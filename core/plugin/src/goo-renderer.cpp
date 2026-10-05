@@ -3,6 +3,8 @@
 #include "goo-shaders.hpp"
 #include "goo-gl.hpp"
 #include "attention-breath.hpp"
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <chrono>
 #include <cstring>
@@ -137,6 +139,7 @@ struct renderer_t::impl
     }
     void release()
     {
+        release_readback();
         if (timer)
             glDeleteQueries(1, &timer);
         for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p, &backdrop_p,
@@ -422,9 +425,41 @@ struct renderer_t::impl
         }
         return true;
     }
-    float measure(float &wave_energy, float &dye_energy)
+    // Asynchronous energy readings (main-loop Phase 3): a ring of four pixel buffers with fences.
+    struct energy_slot_t
     {
-        SCOTTLAND_LOOP_SCOPE(goo_energy_readback);
+        GLuint pbo = 0;
+        GLsync fence = nullptr;
+        bool busy = false;
+        uint64_t issued_ns = 0, step = 0, invalidation = 0;
+        int w = 0, h = 0;
+    };
+    std::array<energy_slot_t, 4> energy_slots;
+    bool readback_failed = false;
+    struct reading_t { unsigned char value[4]; uint64_t step, invalidation; int w, h; };
+    static uint64_t mono_ns()
+    {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    void retire(energy_slot_t &slot)
+    {
+        if (slot.fence) glDeleteSync(slot.fence);
+        slot.fence = nullptr;
+        slot.busy = false;
+    }
+    void release_readback()
+    {
+        for (auto &slot : energy_slots)
+        {
+            retire(slot);
+            if (slot.pbo) glDeleteBuffers(1, &slot.pbo);
+            slot.pbo = 0;
+        }
+    }
+    void reduce()
+    {
+        SCOTTLAND_LOOP_SCOPE(goo_energy_reduce);
         GLuint input = 0;
         int iw = wave[0].width, ih = wave[0].height;
         for (size_t i = 0; i < reduction.size(); i++)
@@ -446,16 +481,87 @@ struct renderer_t::impl
             iw = t.width;
             ih = t.height;
         }
-        // Read via an RGBA8 target (GLES 2 guarantees this read format).
+        // Into an RGBA8 target: the read format GLES guarantees.
         copy_p.use(wf::TEXTURE_TYPE_RGBA);
         copy_p.uniformMatrix4f("MVP", glm::ortho(0.f, 1.f, 0.f, 1.f, -1.f, 1.f));
         bind(copy_p, "image", 0, input);
         draw_to(copy_p, query);
-        unsigned char value[4];
-        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, value);
-        wave_energy = value[1] / 255.f;
-        dye_energy = value[2] / 255.f;
-        return value[0] / 255.f;
+    }
+    /** Issue a reading into a free slot (else skip: false). Never waits. */
+    bool issue(uint64_t step, uint64_t invalidation)
+    {
+        SCOTTLAND_LOOP_SCOPE(goo_energy_issue);
+        auto free = std::find_if(energy_slots.begin(), energy_slots.end(), [](auto &s) { return !s.busy; });
+        if (free == energy_slots.end()) return false;
+        reduce();
+        auto &slot = *free;
+        // Wayfire's own pack state is restored whatever happens here.
+        GLint previous_buffer = 0, previous_alignment = 4;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous_buffer);
+        glGetIntegerv(GL_PACK_ALIGNMENT, &previous_alignment);
+        struct restore_t { GLint b, a; ~restore_t() { glBindBuffer(GL_PIXEL_PACK_BUFFER, b); glPixelStorei(GL_PACK_ALIGNMENT, a); } }
+            restore{previous_buffer, previous_alignment};
+        if (!slot.pbo)
+        {
+            glGenBuffers(1, &slot.pbo);
+            if (!slot.pbo) { readback_failed = true; return false; }
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
+            glBufferData(GL_PIXEL_PACK_BUFFER, 4, nullptr, GL_STREAM_READ);
+        } else
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        slot.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!slot.fence) { readback_failed = true; return false; }
+        // Submitted now, even if no further frame is drawn.
+        {
+            SCOTTLAND_LOOP_SCOPE(goo_energy_flush);
+            glFlush();
+        }
+        slot.busy = true;
+        slot.issued_ns = mono_ns();
+        slot.step = step;
+        slot.invalidation = invalidation;
+        slot.w = width;
+        slot.h = height;
+        return true;
+    }
+    /** Examine at most `budget` busy slots, oldest first, without waiting. */
+    void collect(int &budget, std::vector<reading_t> &out)
+    {
+        SCOTTLAND_LOOP_SCOPE(goo_energy_collect);
+        GLint previous_buffer = 0;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous_buffer);
+        struct restore_t { GLint b; ~restore_t() { glBindBuffer(GL_PIXEL_PACK_BUFFER, b); } } restore{previous_buffer};
+        std::array<energy_slot_t *, 4> order{};
+        int n = 0;
+        for (auto &slot : energy_slots) if (slot.busy) order[n++] = &slot;
+        std::sort(order.begin(), order.begin() + n, [](auto a, auto b) { return a->step < b->step; });
+        for (int i = 0; i < n && budget > 0; i++)
+        {
+            auto &slot = *order[i];
+            budget--;
+            GLenum status = glClientWaitSync(slot.fence, 0, 0);
+            if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED)
+            {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
+                auto mapped = static_cast<const unsigned char *>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4, GL_MAP_READ_BIT));
+                if (!mapped)
+                {
+                    retire(slot);
+                    readback_failed = true;  // a missing value is never read as zero energy
+                    continue;
+                }
+                reading_t r{{mapped[0], mapped[1], mapped[2], mapped[3]}, slot.step, slot.invalidation, slot.w, slot.h};
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                retire(slot);
+                out.push_back(r);
+            } else if (status == GL_WAIT_FAILED || mono_ns() - slot.issued_ns > 1000000000ull)
+            {
+                retire(slot);  // an idle desktop never keeps the collection timer
+                readback_failed = true;
+            }
+        }
     }
 };
 renderer_t::renderer_t() : p(std::make_unique<impl>()) {}
@@ -557,8 +663,17 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     std::swap(p->dye[0], p->dye[1]);
     packed = p->packed;
     steps++;
-    if (steps % 30 == 0)
-        energy = p->measure(wave_energy, dye_energy);
+    if (!impulses.empty()) invalidation++;
+    if (!timed_sleep())
+    {
+        int budget = 2;
+        collect(budget);
+        if (steps % 30 == 0)
+        {
+            if (p->issue(steps, invalidation)) readings_issued++;
+            else if (!p->readback_failed) readings_skipped++;  // every slot busy: skip, never wait
+        }
+    }
     p->timer_open = measure_gpu;
     last_step_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -914,6 +1029,38 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         p->timer_pending = true;
     }
 }
+bool renderer_t::timed_sleep() const
+{
+    return force_timed_sleep || !p->es3 || p->readback_failed;
+}
+bool renderer_t::readback_pending() const
+{
+    return std::any_of(p->energy_slots.begin(), p->energy_slots.end(), [](auto &s) { return s.busy; });
+}
+std::string renderer_t::readback_mode() const
+{
+    return force_timed_sleep ? "timed (test)" : !p->es3 ? "timed (GLES 2)" : p->readback_failed ? "timed (readback failed)" : "async";
+}
+void renderer_t::collect(int &budget)
+{
+    std::vector<impl::reading_t> readings;
+    p->collect(budget, readings);
+    if (p->readback_failed) return;
+    for (auto &r : readings)
+    {
+        // Applied only if nothing changed since it was issued, in step order.
+        if (r.invalidation != invalidation || r.w != p->width || r.h != p->height || r.step <= last_applied_step)
+        {
+            readings_stale++;
+            continue;
+        }
+        last_applied_step = r.step;
+        energy = r.value[0] / 255.f;
+        wave_energy = r.value[1] / 255.f;
+        dye_energy = r.value[2] / 255.f;
+        readings_applied++;
+    }
+}
 glm::vec4 renderer_t::sample_at(glm::vec2 point)
 {
     SCOTTLAND_LOOP_SCOPE(goo_sample_at);
@@ -961,5 +1108,5 @@ bool renderer_t::backdrop_ready(const wf::render_target_t &target) const
         p->backdrop_transform == target.wl_transform;
 }
 bool renderer_t::highlighting() const { return p->controls; }
-float renderer_t::wave_at(glm::vec2 point) { return sample_at(point).w; }
+
 } // namespace scottland::goo

@@ -28,9 +28,25 @@ class renderer_t
     bool backdrop_ready(const wf::render_target_t &target) const;
     bool overlapping() const;
     bool highlighting() const;
-    float wave_at(glm::vec2 point);
+    // Test probe only (goo-state): a waiting GPU read. Input never calls it (main-loop Phase 3).
     glm::vec4 sample_at(glm::vec2 point);
     float energy = 1, wave_energy = 1, dye_energy = 1;
+    // The settle check (GO10) without waiting (main-loop Phase 3): every 30th step issues the
+    // energy reduction into a pixel buffer with a fence; readings are collected later, without
+    // waiting, inside a render pass or from the goo's collection timer. A reading applies only
+    // if nothing changed since it was issued (invalidation counter, size) and it is newer than
+    // the last applied one. Without pixel buffers and fences (GLES 2), after any readback
+    // failure, or with the test switch, the simulation sleeps on time alone (timed_sleep()).
+    uint64_t invalidation = 0;
+    void invalidate() { invalidation++; }
+    bool timed_sleep() const;
+    bool force_timed_sleep = false;  // tests (goo-state), SCOTTLAND_TEST_MODEL only
+    bool readback_pending() const;
+    /** Examine at most `budget` busy slots (shared across outputs). In a GL context. */
+    void collect(int &budget);
+    std::string readback_mode() const;
+    uint64_t readings_issued = 0, readings_applied = 0, readings_stale = 0, readings_skipped = 0;
+    uint64_t last_applied_step = 0;
     double last_step_ms = 0, last_gpu_ms = 0, last_draw_gpu_ms = 0;
     uint64_t steps = 0;
     // Submitted device-pixel work and GO18 breathing cache diagnostics.
