@@ -22,8 +22,10 @@ hint inside its window.
 **Triggers (P4).** Only explicit requests solo: holding the focused window's hint in Window mode
 or a three-finger hold on the focused window (WK35, committed outright, no undo, P5). Present, card
 clicks, zone cycling and ordinary drops never spread, and neither does pausing during a drag: the
-drag audition that offered a solo there is removed, with its pause and hotspot settings (ruling
-10-05: the three-finger hold does the job).
+drag audition that offered a solo there is removed, with its pause setting (ruling 10-05: the
+three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (50 pt), stays: moving
+the pointer beyond it is what counts as starting to drag, which cancels a pointer hold's audition
+(ruling 10-05; WK39).
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
@@ -93,7 +95,7 @@ measure under 40 µs of CPU; longer wall-clock slices seen on the x86 test machi
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
 | SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on the x86 test machine and the ARM test machine); real-GPU latency not yet measured |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (headless on both test machines) |
-| SP7 | Pausing during a drag does nothing: held still in the center zone for any time, no other window is drawn anywhere but where it is, and dropping there moves no other window. A `solo_audition_delay` or `solo_audition_hotspot` left in an older config is ignored (ruling 10-05: the drag audition is removed). | verified (the ARM test machine, headless, real stipc drags judged from pixels: 9 checks in 2 scenarios, shipped config and a stale 300 ms `solo_audition_delay`; the build before the removal fails 7 of them, 2026-10-05) |
+| SP7 | Pausing during a drag does nothing: held still in the center zone for any time, no other window is drawn anywhere but where it is, and dropping there moves no other window. A `solo_audition_delay` left in an older config is ignored (ruling 10-05: the drag audition is removed). | verified (the ARM test machine, headless, real stipc drags judged from pixels: 9 checks in 2 scenarios, shipped config and a stale 300 ms `solo_audition_delay`; the build before the removal fails 7 of them, 2026-10-05) |
 | SP8 | A reload with a solve in flight survives, applies nothing half-done and leaves no window displaced; a reload from the previous main build keeps every window, widget and peek. | verified (headless reload rehearsals on both test machines, 2026-10-04; re-run on the ARM test machine, from main into the build without the audition, 2026-10-05) |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared test session was not

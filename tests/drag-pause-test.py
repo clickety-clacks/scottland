@@ -4,8 +4,8 @@
 A window dragged into the center zone and held still there for longer than the removed audition's
 pause (3 s by default) offers nothing: no other window is drawn anywhere but where it truly is,
 and dropping it there moves nothing else. Checked with the shipped config, then again after a
-stale `solo_audition_delay` (and `solo_audition_hotspot`) from an older config is written into the
-running session's config file, which Wayfire re-reads: an old value is ignored harmlessly.
+stale `solo_audition_delay` from an older config is written into the running session's config
+file, which Wayfire re-reads: an old value is ignored harmlessly.
 
 Every drag, pause and drop is real stipc pointer and key input; fixture geometry and focus are set
 over IPC. What is drawn is judged from captured pixels: the windows have solid colors, and a probe
@@ -169,11 +169,11 @@ try:
 
     scenario('shipped')
 
-    # An older config still names the removed settings (a 300 ms pause would have offered fast).
+    # An older config still names the removed pause (300 ms would have offered fast).
     # Written with a marker value into [scottland] of the running session's config file.
     text = ini.read_text()
     assert '\n[scottland]\n' in text
-    stale = ('solo_audition_delay = 300\nsolo_audition_hotspot = 120\nsounds = false\n'
+    stale = ('solo_audition_delay = 300\nsounds = false\n'
              'window_avoidance_always = false\nhint_avoidance_always = false\ncycle_overshoot = 7\n')
     lines = [l for l in text.split('\n') if not l.startswith(('sounds =', 'window_avoidance_always =',
              'hint_avoidance_always =', 'cycle_overshoot ='))]
@@ -183,9 +183,9 @@ try:
     try:
         wait(lambda: float(ipc('wayfire/get-config-option', {'option': 'scottland/cycle_overshoot'})['value']) == 7, 10,
              'config re-read')
-        check(True, 'stale: the session re-reads a config naming the removed settings')
+        check(True, 'stale: the session re-reads a config naming the removed pause setting')
     except RuntimeError as e:
-        check(False, 'stale: the session re-reads a config naming the removed settings', str(e))
+        check(False, 'stale: the session re-reads a config naming the removed pause setting', str(e))
     try: print(f"  stale: solo_audition_delay reads back {ipc('wayfire/get-config-option', {'option': 'scottland/solo_audition_delay'})} (diagnostic)", flush=True)
     except RuntimeError as e: print(f'  stale: solo_audition_delay reads back an error: {e} (diagnostic)', flush=True)
     wait(lambda: ipc('window-rules/list-outputs')[0]['geometry']['width'] == 2560, 5, 'output mode')
