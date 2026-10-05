@@ -171,6 +171,26 @@
             <_long>Preview the previous center-zone window by recent use. Releasing Alt focuses and raises it. Window mode uses this key so you can focus a center window while keeping the others visible.</_long>
             <default>&lt;alt&gt; &lt;shift&gt; KEY_TAB</default>
         </option>
+        <option name="navigate_left" type="key">
+            <_short>Focus the window or widget to the left</_short>
+            <_long>Focus and raise the nearest window or widget to the left of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_LEFT</default>
+        </option>
+        <option name="navigate_right" type="key">
+            <_short>Focus the window or widget to the right</_short>
+            <_long>Focus and raise the nearest window or widget to the right of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_RIGHT</default>
+        </option>
+        <option name="navigate_up" type="key">
+            <_short>Focus the window or widget above</_short>
+            <_long>Focus and raise the nearest window or widget above of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_UP</default>
+        </option>
+        <option name="navigate_down" type="key">
+            <_short>Focus the window or widget below</_short>
+            <_long>Focus and raise the nearest window or widget below of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_DOWN</default>
+        </option>
         <option name="window_double_tap_delay" type="int">
             <_short>Window mode hint double-tap interval (ms)</_short>
             <_long>After releasing a complete hint, begin typing it again within this interval to send the window to its rail widget. The repeat must be completed; key hold time and typing the remaining letters do not spend the interval. A window already on the rail stays put unless its collapsed-widget hint peek is active. Slower presses follow the starting-zone cycle.</_long>

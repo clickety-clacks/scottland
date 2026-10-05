@@ -68,6 +68,7 @@ extern "C" {
 #include "peek.hpp"
 #include "alt-mode.hpp"
 #include "pairing.hpp"
+#include "navigation.hpp"
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"
@@ -7365,6 +7366,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
+        wf::get_core().bindings->add_key(navigate_left, &on_navigate_left);
+        wf::get_core().bindings->add_key(navigate_right, &on_navigate_right);
+        wf::get_core().bindings->add_key(navigate_up, &on_navigate_up);
+        wf::get_core().bindings->add_key(navigate_down, &on_navigate_down);
         wf::get_core().connect(&on_focus_request);
         start_activation();
         installing_model = false;
@@ -7506,6 +7511,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);
+        wf::get_core().bindings->rem_binding(&on_navigate_left);
+        wf::get_core().bindings->rem_binding(&on_navigate_right);
+        wf::get_core().bindings->rem_binding(&on_navigate_up);
+        wf::get_core().bindings->rem_binding(&on_navigate_down);
         on_focus_request.disconnect();
         on_new_transaction.disconnect();
         on_activate.disconnect();
