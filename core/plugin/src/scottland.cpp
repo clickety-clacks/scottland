@@ -6889,6 +6889,19 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         refresh_layout_avoidance();
     };
 
+    // P12: what covers what can change without any of the signals above, e.g. a dropped window's
+    // hold above the widgets ending (L29) or the widget layer coming back. Any change to the scene's
+    // stacking or to what is enabled asks window avoidance to look again; it re-solves only if its
+    // layout signature changed, and requests are coalesced onto one tick.
+    wf::signal::connection_t<wf::scene::root_node_update_signal> on_scene_structure =
+        [=] (wf::scene::root_node_update_signal *ev)
+    {
+        // Without avoidance there are no offsets to keep honest.
+        if (!window_keys.active && !window_avoidance_always && !hint_avoidance_always) return;
+        if (ev->flags & (wf::scene::update_flag::CHILDREN_LIST | wf::scene::update_flag::ENABLED))
+            refresh_layout_avoidance();
+    };
+
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
         audition_invalidate(ev->view);
@@ -7309,6 +7322,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_mapped);
+        wf::get_core().scene()->connect(&on_scene_structure);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
         wf::get_core().connect(&on_focus);

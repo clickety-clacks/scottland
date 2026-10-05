@@ -881,25 +881,6 @@
     static constexpr double PAIR_GAP = scottland::HALO; // a halo-sized gap (P7)
     wf::wl_timer<false> deferred_pair;
     wf::wl_idle_call deferred_pair_ready;
-    // The pair holds still for window avoidance, so the windows behind it peek out instead,
-    // until either member moves or is resized. Nothing else about the pair is kept.
-    std::vector<std::pair<uint64_t, wf::geometry_t>> pair_anchors;
-    bool pair_anchored(wayfire_toplevel_view view)
-    {
-        if (!view) return false;
-        uint64_t id = view->get_id();
-        if (auto link = link_of_widget(view)) id = link->window_id;
-        bool member = false;
-        for (auto [window, geometry] : pair_anchors)
-        {
-            auto shown = represented_view(window);
-            if (!shown || link_of_window(wf::toplevel_cast(view_by_id(window))) ||
-                shown->toplevel()->pending().geometry != geometry)
-            { pair_anchors.clear(); return false; }
-            member |= window == id;
-        }
-        return member;
-    }
     void pair_windows(uint64_t held_id, uint64_t partner_id, int attempts = 0)
     {
         auto held = wf::toplevel_cast(view_by_id(held_id));
@@ -939,9 +920,6 @@
             "%, gap ", fit.gap, ", margin ", fit.margin);
         place_paired(left, fit.left, fit.scale, output);
         place_paired(right, fit.right, fit.scale, output);
-        pair_anchors.clear();
-        for (auto window : {left, right})
-            pair_anchors.emplace_back(window->get_id(), window->toplevel()->pending().geometry);
         // Both in front of the other center windows, which stay put and peek out (avoidance);
         // the held window was selected and focused by its press (WK6) and stays so.
         wf::view_bring_to_front(partner);
@@ -1097,10 +1075,6 @@
         signature << "active:" << window_keys.active << ";avoidance:" << avoidance_active
             << ";anchor:" << (focused ? focused->get_id() : 0) << ";live:" << live
             << ";text:" << hints_palette.text_scale;
-        for (auto [id, geometry] : pair_anchors) signature << ";pair:" << id;
-        // Spread holds still for peeking too: the solo window, and the windows an audition shows.
-        if (solo_anchor) signature << ";solo:" << solo_anchor->first;
-        for (const auto& actor : audition.actors) signature << ";audition:" << actor.id;
         auto current_signature = signature.str();
         auto solve_now = std::chrono::steady_clock::now();
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
@@ -1221,10 +1195,10 @@
                         else if (z == Z::left_periphery) { input.zone_x1 = rail; input.zone_x2 = width / 2 - center_half - .5; }
                         else { input.zone_x1 = width / 2 + center_half + .5; input.zone_x2 = width - rail; }
                         input.center_y1 = area.y; input.center_y2 = area.y + area.height;
-                        // Focused and paired windows (WK36) are fixed: others peek around them. So
-                        // are the solo window and the windows a solo audition shows (docs/spread.md).
-                        input.anchored = view == focused || pair_anchored(view) || solo_anchored(view) ||
-                            audition_holds(view);
+                        // Only the window under the user's hand never moves. Peeking is temporary and
+                        // never moves a window's true location, so every other window that is covered
+                        // peeks, whatever it is (Mike, 2026-10-05; WK13).
+                        input.anchored = drag->view == view;
                         input.full_hint = hint_size(view);
                         input.minimum_hint = 48 * text;
                         input.target = visual.target;
@@ -1806,13 +1780,6 @@
             }
             item["dx"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_x) : 0.0;
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
-            // Whether the window holds still for avoidance as a pair member (WK36).
-            item["pair_anchored"] = std::any_of(pair_anchors.begin(), pair_anchors.end(),
-                [&] (auto& anchor) { return anchor.first == e.id; });
-            // ... or as the solo window, or as a window a solo audition shows (docs/spread.md).
-            item["solo_anchored"] = solo_anchor && solo_anchor->first == e.id;
-            item["audition_held"] = std::any_of(audition.actors.begin(), audition.actors.end(),
-                [&] (auto& actor) { return actor.id == e.id; });
             item["target_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.x : 0.0;
             item["target_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.y : 0.0;
             item["label_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.x : 0.0;

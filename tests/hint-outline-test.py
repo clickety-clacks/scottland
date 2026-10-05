@@ -421,10 +421,14 @@ def widget_cover():
     time.sleep(1)
     widget = next(w for w in views().values() if w["widget"])
     wf_ = widget["frame"]
-    small = open_window("Under", (round(wf_["x"] + wf_["width"] / 2 - 60), round(wf_["y"] + wf_["height"] / 2 - 40), 120, 80))
-    # Focused, so window avoidance leaves it under the card (WK13: an unfocused window this
-    # small would be nudged wholly clear of it to give its hint room).
-    ipc("window-rules/focus-view", dict(id=small))
+    # Right of the other windows, its top 100 px above the card: room for its hint there, so window
+    # avoidance leaves it where it is (WK13), and the card is the only thing covering it.
+    small = open_window("Under", (1100 - 150, round(wf_["y"]) - 110, 300, 220))
+    shown = wait(lambda: (lambda v: v if "frame" in v else None)(views()[small]))["frame"]
+    ipc("window-rules/configure-view", dict(id=small, geometry=dict(
+        x=1100 - 150, y=round(wf_["y"] - 100 + shown["height"] / 2 - 110), width=300, height=220)))
+    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 100)) < 2)
+    ipc("window-rules/focus-view", dict(id=front))
     time.sleep(.6)
     hold()
     state = hints()
