@@ -139,7 +139,7 @@ def wait_sleep(limit=45):
         time.sleep(.1)
     return False
 def has_stats():
-    try: control.call('scottland/loop-stats', {'reset': True}); return True
+    try: control.call('scottland/loop-stats', {'reset': True, 'brief': True}); return True
     except RuntimeError: return False
 stats_available = has_stats()
 def loadavg(): return float(Path('/proc/loadavg').read_text().split()[0])
@@ -149,7 +149,7 @@ def scenario(name):
     def wrap(fn):
         if only and name not in only: return fn
         time.sleep(.5); drain()
-        if stats_available: control.call('scottland/loop-stats', {'reset': True})
+        if stats_available: control.call('scottland/loop-stats', {'reset': True, 'brief': True})
         pings_before, inputs_before = pings.sent, inputs.sent
         load0, t0 = loadavg(), time.monotonic()
         try: note = fn()

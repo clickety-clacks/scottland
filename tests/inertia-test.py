@@ -219,7 +219,8 @@ try:
         check(not state('InertiaA')['widgetized'],'precise pointer drop may already overlap the rail')
         hold(); tap('LEFT'); wait_for(lambda:state('InertiaA')['widgetized'])
         contact=state('InertiaA'); f=contact.get('scene_frame',contact['frame'])
-        check(abs(f['x']+f['width']/2-origin[0])<2,'outward push from an overlapping drop morphs without snapping inward')
+        check(abs(f['x']+f['width']/2-origin[0])<2,'outward push from an overlapping drop morphs without snapping inward'
+              f" (center {f['x']+f['width']/2:.1f}, dropped at {origin[0]:.1f})")
         tap('ESC'); coast(.8); release()
         # Esc stops the coast, while the explicit push's widget landing remains.
         drag('InertiaA',w/2,h/2); origin=center(state('InertiaA')); hold(); tap('LEFT'); coast(1.5); tap('ESC'); coast(.8); release()

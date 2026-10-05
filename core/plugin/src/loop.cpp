@@ -535,7 +535,7 @@ void monitor_t::watch()
     }
 }
 
-std::string monitor_t::stats_json(bool reset)
+std::string monitor_t::stats_json(bool reset, bool brief)
 {
     std::ostringstream out;
     auto msf = [] (uint64_t ns) { return (double)ns / 1e6; };
@@ -553,7 +553,7 @@ std::string monitor_t::stats_json(bool reset)
     out << "},\"ml2_max_ms\":" << msf(ml2_max) << ",\"ml2_max_at_ns\":" << ml2_max_at << ",\"ml2_episodes\":[";
     {
         // Closed episodes, and one still open, each with the scopes in its worst window.
-        auto shown = std::min<uint64_t>(episode_count, episodes.size());
+        auto shown = brief ? 0 : std::min<uint64_t>(episode_count, episodes.size());
         bool any = false;
         auto emit = [&] (const ml2_episode_t& e)
         {
@@ -570,11 +570,11 @@ std::string monitor_t::stats_json(bool reset)
             any = true;
         };
         for (uint64_t i = 0; i < shown; i++) emit(episodes[(episode_count - shown + i) % episodes.size()]);
-        if (ml2_over) emit(episode);
+        if (ml2_over && !brief) emit(episode);
     }
     out << "],\"ml2_episodes_dropped\":" << (episode_count > episodes.size() ? episode_count - episodes.size() : 0)
         << ",\"history\":[";
-    auto count = std::min<uint64_t>(history_count, history.size());
+    auto count = brief ? 0 : std::min<uint64_t>(history_count, history.size());
     for (uint64_t i = 0; i < count; i++)
     {
         auto& h = history[(history_count - count + i) % history.size()];

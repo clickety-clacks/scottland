@@ -7776,8 +7776,17 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
     {
         SCOTTLAND_LOOP_SCOPE(loop_stats);
         wf::json_t reply;
+        if (data.has_member("reload_only") && data["reload_only"].is_bool() && data["reload_only"].as_bool())
+        {
+            // scottland-reload's probe: only what resolves an attempt, without the diagnostics.
+            reply["reload"]["load"] = (int64_t)plugin_load;
+            reply["reload"]["nonce"] = reload_nonce;
+            reply["reload"]["outcome"] = handover_outcome;
+            return reply;
+        }
         bool reset = data.has_member("reset") && data["reset"].is_bool() && data["reset"].as_bool();
-        if (wf::json_t::parse_string(loop_monitor.stats_json(reset), reply))
+        bool brief = data.has_member("brief") && data["brief"].is_bool() && data["brief"].as_bool();
+        if (wf::json_t::parse_string(loop_monitor.stats_json(reset, brief), reply))
             return wf::ipc::json_error("loop statistics unavailable");
         // What scottland-reload needs to resolve an attempt by evidence: which load of the plugin
         // in this process answers, and the receipt it consumed.

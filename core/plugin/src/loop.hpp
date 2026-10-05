@@ -84,7 +84,8 @@ class monitor_t
     void enter(scope_id id, uint64_t at);
     void exit(scope_id id, uint64_t at, uint64_t started);
     void note(note_id id, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
-    std::string stats_json(bool reset);
+    // brief: counters only, without the history and the ML2 episodes (a caller that resets and discards).
+    std::string stats_json(bool reset, bool brief = false);
 
     uint32_t depth = 0;
     uint64_t build_id = 0;

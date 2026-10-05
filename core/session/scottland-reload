@@ -57,9 +57,20 @@ def reexec():
 
 class Ipc:
     def __init__(self, path, timeout=5):
-        self.sock = socket.socket(socket.AF_UNIX)
-        self.sock.settimeout(timeout)
-        self.sock.connect(path)
+        # A busy compositor can have its accept queue full for a moment: retry the connection
+        # for a few seconds before calling it unanswered.
+        deadline = time.monotonic() + 3
+        while True:
+            self.sock = socket.socket(socket.AF_UNIX)
+            self.sock.settimeout(timeout)
+            try:
+                self.sock.connect(path)
+                return
+            except (BlockingIOError, InterruptedError):
+                self.sock.close()
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(.05)
 
     def peer_pid(self):
         pid, _, _ = struct.unpack("3i", self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
@@ -147,13 +158,14 @@ def main():
         compositor answers without one, ('unknown', None) when it doesn't answer: never read as
         'no plugin'. Load info is {load, nonce} from builds that report it, else load 0."""
         try:
-            peer = Ipc(socket_path, timeout=5)
+            peer = Ipc(socket_path, timeout=10)
             reply = peer.call("scottland/desktop-model")
             if isinstance(reply, dict) and "error" in reply:
                 missing = "method" in str(reply["error"]).lower() or "no such" in str(reply["error"]).lower()
                 return ("absent" if missing else "unknown"), None
-            stats = peer.call("scottland/loop-stats")
-        except (OSError, EOFError, ValueError):
+            stats = peer.call("scottland/loop-stats", {"reload_only": True})
+        except (OSError, EOFError, ValueError) as error:
+            probe.error = f"{type(error).__name__}: {error}"
             return "unknown", None
         info = stats.get("reload", {}) if isinstance(stats, dict) and "error" not in stats else {}
         return "answering", {"load": int(info.get("load", 0)), "nonce": info.get("nonce", ""),
@@ -334,7 +346,7 @@ def main():
     state, info = probe()
     if state == "unknown":
         target.unlink(missing_ok=True)
-        print("scottland-reload: the compositor did not answer; nothing changed", file=sys.stderr)
+        print(f"scottland-reload: the compositor did not answer ({getattr(probe, 'error', '')}); nothing changed", file=sys.stderr)
         return UNRESOLVED
     attempt = {"nonce": secrets.token_hex(16), "pid": compositor, "start_time": started, "target": str(target),
                "source": str(source), "session": info["session"] if info else "", "created": time.time(),
