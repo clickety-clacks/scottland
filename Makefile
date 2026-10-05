@@ -2,6 +2,8 @@
 DEV := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/dev
 CONF := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/scottland
 RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
+# Portal selection for Scottland sessions (xdg-desktop-portal also reads $XDG_DATA_HOME).
+PORTALS := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/xdg-desktop-portal
 
 .PHONY: plugin dev-install link-dev test-hooks hooks dev-uninstall package clean
 
@@ -30,6 +32,7 @@ link-dev:
 	ln -sf $(CURDIR)/build/libscottland.so $(DEV)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
 	ln -sf $(CURDIR)/core/config/scottland.ini $(CONF)/scottland.ini
+	mkdir -p $(PORTALS) && ln -sf $(CURDIR)/core/config/scottland-portals.conf $(PORTALS)/scottland-portals.conf
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
 	ln -sf $(CURDIR)/omarchy/bin/scottland-omarchy-setup $(HOME)/.local/bin/scottland-omarchy-setup
 	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/override-report.d $(DEV)/prompts
@@ -95,7 +98,8 @@ test-hooks: plugin
 
 dev-uninstall:
 	rm -rf $(DEV)
-	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup
+	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup \
+	  $(PORTALS)/scottland-portals.conf
 
 package:
 	cd packaging/arch && makepkg -sif

@@ -18,11 +18,14 @@ build() {
 
 package_scottland() {
   # quickshell: the default widget (card) and the layout settings app
-  depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell')
+  # xdg-desktop-portal-wlr: screen sharing and screenshots (scottland-portals.conf); gtk: the rest
+  depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell'
+           'wayland' 'xdg-desktop-portal' 'xdg-desktop-portal-wlr' 'xdg-desktop-portal-gtk')
   optdepends=('geoclue: automatic location for Sunlight')
 
   meson install -C build --destdir "$pkgdir"
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
+  install -Dm644 "$_root/core/config/scottland-portals.conf" "$pkgdir/usr/share/xdg-desktop-portal/scottland-portals.conf"
   install -Dm755 "$_root/core/session/start-scottland" "$pkgdir/usr/bin/start-scottland"
   install -Dm644 "$_root/core/systemd/scottland-session.target" "$pkgdir/usr/lib/systemd/user/scottland-session.target"
   install -Dm644 "$_root/core/systemd/scottland-session-watch@.service" "$pkgdir/usr/lib/systemd/user/scottland-session-watch@.service"

@@ -201,3 +201,46 @@ def screenshot(session, name):
     # Bounded: on an output that is powered off, screencopy may wait for a frame that never comes.
     result = session.run("timeout", "5", "grim", "-t", "ppm", str(path))
     return read_ppm(path) if result.returncode == 0 and path.exists() else None
+
+
+def read_png(path):
+    """(width, height, rgb bytes) of an 8-bit RGB/RGBA, non-interlaced PNG (grim's output)."""
+    import struct
+    import zlib
+    data = Path(path).read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    pos, chunks, header = 8, [], None
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if kind == b"IHDR":
+            header = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            chunks.append(body)
+        pos += 12 + length
+    width, height, depth, color, _c, _f, interlace = header
+    assert depth == 8 and color in (2, 6) and not interlace, header
+    channels = 3 if color == 2 else 4
+    raw, stride = zlib.decompress(b"".join(chunks)), width * channels
+    rows, previous = [], bytearray(stride)
+    for y in range(height):
+        kind, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - channels] if i >= channels else 0
+            b = previous[i]
+            c = previous[i - channels] if i >= channels else 0
+            if kind == 1:
+                line[i] = (line[i] + a) & 255
+            elif kind == 2:
+                line[i] = (line[i] + b) & 255
+            elif kind == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(bytes(line))
+        previous = line
+    rgb = b"".join(bytes(v for i, v in enumerate(row) if i % channels < 3) for row in rows) \
+        if channels == 4 else b"".join(rows)
+    return width, height, rgb
