@@ -9,7 +9,7 @@ If xdg-desktop-portal-wlr is not installed, XDPW_ROOT names an extracted package
 An app's view, through tests/portal-client.py: a non-interactive Screenshot, and a ScreenCast of
 a monitor, picked in xdg-desktop-portal-wlr's own chooser (slurp) with a stipc pointer click.
 Oracle: the pixels the app received (the PNG, and a frame read from the PipeWire stream) show
-the window filled with #E0A030 where Wayfire placed it.
+the window filled with #E0A030 where Wayfire placed it (a corner counter in it keeps frames coming).
 
   [XDPW_ROOT=...] [GST_PLUGIN_PATH=...] tests/portal-test.py
 """
@@ -73,7 +73,7 @@ with Session(fixture, "hl-portal") as session:
     check("shim answers", session.wait_shim()[0])
     session.run("dbus-update-activation-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP")
     if xdpw != system_xdpw:
-        background(session, str(xdpw), build / "portal-xdpw.log")
+        background(session, f"{xdpw} {os.environ.get('XDPW_ARGS', '')}", build / "portal-xdpw.log")
         check("xdg-desktop-portal-wlr is on the bus",
               session.wait(lambda: owned(session, "org.freedesktop.impl.portal.desktop.wlr"))[0])
     background(session, f"env {portal_dir}XDG_DATA_HOME={data_home} "
@@ -82,7 +82,7 @@ with Session(fixture, "hl-portal") as session:
     check("portal frontend is on the bus",
           session.wait(lambda: owned(session, "org.freedesktop.portal.Desktop"))[0])
 
-    session.run("sh", "-c", f"python3 {REPO}/tests/solid-color-app.py portal '#E0A030' "
+    session.run("sh", "-c", f"python3 {REPO}/tests/solid-color-app.py portal '#E0A030' --tick "
                             ">/dev/null 2>&1 </dev/null &")
     ok, found = session.wait(lambda: [v for v in views(session)
                                       if v.get("app-id") == "org.scottland.SolidColor.portal"
@@ -123,6 +123,8 @@ with Session(fixture, "hl-portal") as session:
     time.sleep(0.2)  # paces the gesture: motion, then the click
     session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
     session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+    # Frames come when something on screen changes (a static screen sends one): the window's
+    # corner counter ticks, away from the sampled point.
     ok, _ = session.wait(out.exists, timeout=60)
     result = json.loads(out.read_text()) if ok else {}
     check("ScreenCast portal starts a stream for the picked monitor",
@@ -131,7 +133,8 @@ with Session(fixture, "hl-portal") as session:
     if frame.exists() and result.get("streams"):
         width, height = result["streams"][0][1]["size"]
         stride = (width * 3 + 3) // 4 * 4
-        data = frame.read_bytes()
+        # The newest frame: the stream's first buffer can predate the first completed capture.
+        data = frame.read_bytes()[-stride * height:]
         offset = sample[1] * stride + sample[0] * 3
         check("the shared stream shows the window's color where Wayfire placed it",
               tuple(data[offset:offset + 3]) == COLOR,

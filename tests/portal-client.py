@@ -3,8 +3,9 @@
 
   portal-client.py screenshot OUT.json        org.freedesktop.portal.Screenshot (non-interactive)
   portal-client.py screencast OUT.json FRAME  org.freedesktop.portal.ScreenCast: share a monitor,
-                                              then read one frame of the stream from PipeWire
-                                              (gst-launch-1.0 pipewiresrc) into FRAME as raw RGB
+                                              then read three frames of the stream from PipeWire
+                                              (gst-launch-1.0 pipewiresrc) into FRAME as raw RGB,
+                                              one after another (the first may predate any capture)
 
 OUT.json gets {"response": code, "results": {...}} (and the frame's width/height for screencast).
 Runs inside the session (its D-Bus session bus and PipeWire).
@@ -92,7 +93,7 @@ def screencast(out, frame):
     node = streams[0][0]
     fd = cast.OpenPipeWireRemote(session, dbus.Dictionary({}, signature="sv")).take()
     caps = subprocess.run(
-        ["gst-launch-1.0", "-q", "pipewiresrc", f"fd={fd}", f"path={node}", "num-buffers=1",
+        ["gst-launch-1.0", "-q", "pipewiresrc", f"fd={fd}", f"path={node}", "num-buffers=3",
          "!", "videoconvert", "!", "video/x-raw,format=RGB", "!", "filesink", f"location={frame}"],
         pass_fds=[fd], capture_output=True, text=True, timeout=30)
     write(out, {"response": 0, "streams": streams, "gst": caps.returncode,
