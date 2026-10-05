@@ -77,11 +77,12 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_PATH|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
-      export PATH=/usr/local/bin:/usr/bin:/bin
+      # SCOTTLAND_TEST_PATH: a test's stand-in commands, found before the system's.
+      export PATH=${SCOTTLAND_TEST_PATH:+$SCOTTLAND_TEST_PATH:}/usr/local/bin:/usr/bin:/bin
       export SCOTTLAND_TEST_MODEL=1
       # Isolate every child's settings and logs, not just config generation. Keep the real
       # runtime so Wayland display names (and systemd widget scopes) remain unique.
@@ -107,19 +108,24 @@ WRAPPER
       # config or the machine's personal settings (layout.ini, overrides.ini).
       mkdir -p "$dir/config/scottland"
       cp "$repo/core/config/scottland.ini" "$dir/config/scottland/scottland.ini"
-      "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
+      # The test's own edits to the built config, as a sed script that every rebuild inside this
+      # session applies too (a shim `hyprctl reload`), so a rebuild never writes the machine's
+      # live config and never drops the test plugin or hook list.
       hook_list=${started[*]}
-      sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
-        -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
-        "$dir/wayfire.ini"
-      # A protocol control: same clients/config/stock Wayfire, without Scottland's
-      # scene transforms or input handlers. Autostart still records its environment.
-      if ((stock)); then sed -i '/^  scottland \\/d' "$dir/wayfire.ini"; fi
-      # No override exercises shipped defaults; 0 explicitly tests the fallback halo.
-      if [[ $test_goo == 1 || $test_goo == 0 ]]; then
-        goo_value=false; [[ $test_goo == 1 ]] && goo_value=true
-        sed -i "/^goo =/d; /^\[scottland\]/a goo = $goo_value" "$dir/wayfire.ini"
-      fi
+      {
+        printf '%s\n' 's/^plugins = \\$/plugins = stipc \\/'
+        printf '%s\n' "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \\& done; wait'#"
+        # A protocol control: same clients/config/stock Wayfire, without Scottland's
+        # scene transforms or input handlers. Autostart still records its environment.
+        if ((stock)); then printf '%s\n' '/^  scottland \\$/d'; fi
+        # No override exercises shipped defaults; 0 explicitly tests the fallback halo.
+        if [[ $test_goo == 1 || $test_goo == 0 ]]; then
+          goo_value=false; [[ $test_goo == 1 ]] && goo_value=true
+          printf '%s\n' '/^goo =/d' "/^\[scottland\]/a goo = $goo_value"
+        fi
+      } >"$dir/config-edit.sed"
+      export SCOTTLAND_CONFIG_OUTPUT=$dir/wayfire.ini SCOTTLAND_CONFIG_EDIT=$dir/config-edit.sed
+      "$hooks/libexec/scottland-build-config" >/dev/null
       if [[ $test_gles == 2 || $test_gles == unsupported || $test_gles == no-derivatives ]]; then
         export MESA_GLES_VERSION_OVERRIDE=2.0
         export MESA_EXTENSION_OVERRIDE="-GL_EXT_color_buffer_float -GL_EXT_color_buffer_half_float -GL_OES_texture_half_float -GL_OES_texture_half_float_linear"
