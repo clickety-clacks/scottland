@@ -89,6 +89,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Entering Window mode temporarily expands collapsed and hidden widgets until Alt is released; hidden widgets still show attention. | WG16 |
 | 10-04 | Attention while widgets are hidden: the widget slides in for the usual attention peek, then leaves a 24 pt strip at the screen edge breathing the attention color until the user goes to it; hovering the strip brings it in. | WG16 |
 | 10-04 | The Super+M hold delay is 300 ms (same as the Alt hold), adjustable in Settings. | WG16 |
+| 10-05 | Dragging a widget from the rail into the center and pressing Esc while still holding it re-widgetizes it: it goes back to its rail spot as a widget, even when a window was dropped on the rail to become that widget a moment before. (Reported as a bug; under P14 the drop placed it. A re-grab continues a move through a form change only as a finger reset, within 1 s; the 1 s is the implementer's choice from measured resets, 0.25-0.4 s, for Mike to confirm.) | L27, WG14 |
 
 ## Zones and scale
 

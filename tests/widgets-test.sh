@@ -721,17 +721,24 @@ h window-rules/close-view "{\"id\": $(view_field grace-app "v['id']")}"
 sleep 1
 
 # WG14: Esc after a re-grab that crossed a form change: a window dropped on the rail (now a
-# widget), picked up again within 2 s and moved: Esc brings the window back where it began.
+# widget), picked up again at once (a finger reset, within 1 s) and moved: Esc brings the window
+# back where it began. (Picked up later it is a new move: tests/esc-return-test.sh.)
 (tests/headless.sh run foot -T form-app -W 40x8 sh -c 'exec sleep 3600' >/dev/null 2>&1 &)
 sleep 1.5
 fx0=$(ipc window-rules/list-views | python3 -c "import json,sys; g=[v['geometry'] for v in json.load(sys.stdin) if v['title']=='form-app'][0]; print(round(g['x']), round(g['y']))")
 read -r ax ay aw ah <<<"$(view_field form-app "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
-sleep 0.8
-read -r wx wy ww wh <<<"$(views | python3 -c "
+# Wait for the widget it became (state, bounded), then grab it at once.
+widget_frame=""
+for i in $(seq 1 60); do
+  widget_frame=$(views | python3 -c "
 import json,sys
-v=[v for v in json.load(sys.stdin)['views'] if v['widget']][0]; f=v['frame']
-print(round(f['x']), round(f['y']), round(f['width']), round(f['height']))")"
+w=[v for v in json.load(sys.stdin)['views'] if v['widget'] and not v.get('preview')]
+print('%d %d %d %d' % tuple(round(w[0]['frame'][k]) for k in ('x','y','width','height')) if w else '')")
+  [[ -n $widget_frame ]] && break
+  sleep 0.05
+done
+read -r wx wy ww wh <<<"$widget_frame"
 h stipc/move_cursor "{\"x\":$((wx + ww / 2)),\"y\":$((wy + wh / 2))}"; sleep 0.1
 h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_button '{"combo":"BTN_LEFT","mode":"press"}'
 for i in 1 2 3 4 5 6; do h stipc/move_cursor "{\"x\":$((wx + ww / 2)),\"y\":$((wy + wh / 2 + i * 15))}"; sleep 0.02; done

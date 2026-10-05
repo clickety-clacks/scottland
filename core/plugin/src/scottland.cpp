@@ -61,6 +61,7 @@ extern "C" {
 #include "spread-job.hpp"
 #include "live-drag.hpp"
 #include "rail-make-room.hpp"
+#include "drag-chain.hpp"
 #include "eased-move.hpp"
 #include "placement.hpp"
 #include "cycle-spring.hpp"
@@ -5521,7 +5522,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.held_above = view->weak_from_this();
         }
 
-        held_above_timer.set_timeout(DRAG_CHAIN_MS, [=] () { release_above(); });
+        // For as long as a re-grab would continue the move (L29): shorter after a form change.
+        held_above_timer.set_timeout(scottland::drag_chain::window_ms(last_drop_changed_form()),
+            [=] () { release_above(); });
     }
 
     void release_above()
@@ -5608,8 +5611,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.drag.relative_x = box > 0 ? (local_x - left) / box : 0.5;
         // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
         // reset on the touchpad, out of room), it's the same move: keep the first origin.
-        bool continued = (model.drag.last_drop.became == drag->view->get_id()) &&
-            ((int32_t)(now_msec() - model.drag.last_drop_at) < DRAG_CHAIN_MS);
+        // Through a drop that changed its form, only an immediate re-grab (a finger reset) does:
+        // picking up the widget a window just became, later, is a new move (P14).
+        bool continued = scottland::drag_chain::continues(drag->view->get_id(), model.drag.last_drop.became,
+            uint32_t(now_msec() - model.drag.last_drop_at), last_drop_changed_form());
         stop_glide(drag->view);  // picked up again mid-glide: it's where it's drawn
         model.drag.widget = is_widget(drag->view) ? drag->view->get_id() : 0;
         model.drag.origin = origin_of(drag->view);
@@ -5884,7 +5889,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Esc cancels a drag (WG14): the window goes back where it was picked up, gliding from where
     // it was let go, and a drag that changed it into its other form (window/widget) morphs back.
     /** Where a drag picked a window up: which window, on which screen, where. */
-    static constexpr int DRAG_CHAIN_MS = 2500;  // a new drag of the same window within this continues the move
+    /** Did the last drop change the form (window to widget or back)? What stands for it now
+     *  is then another view than the one let go. */
+    bool last_drop_changed_form() const
+    {
+        return model.drag.last_drop.became != 0 && model.drag.last_drop.became != model.drag.last_drop.view;
+    }
 
     /** Its geometry, at the position a move just asked for: Wayfire applies moves at the next
      *  idle, and a grab may have just committed a peek offset (decision 9). The size stays the
