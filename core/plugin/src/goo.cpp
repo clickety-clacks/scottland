@@ -86,7 +86,7 @@ class goo_node_t : public wf::scene::node_t
     // rotation reach past the logical strips. The pixels the goo claims are exactly the
     // pixels it restores, so none is repainted beneath and reused as well, and none is
     // left unpainted.
-    bool foreign_damage = true, own_damage = false, reuse_enabled = true, dry_enabled = true;
+    bool foreign_damage = true, own_damage = false, reuse_enabled = true, dry_enabled = true, frame_foreign = false;
     int reuse_streak = 0;
     // GO24: the dye's own clock and the sleeping watercolor tick.
     double flow_time = 0, last_flow = 0;
@@ -122,6 +122,7 @@ class goo_node_t : public wf::scene::node_t
     wf::regionf_t breath_only_frame(const wf::render_target_t &target, const wf::regionf_t &damage)
     {
         bool foreign = std::exchange(foreign_damage, false);
+        frame_foreign = foreign;
         wf::regionf_t reuse;
         // Why the last frame took the normal path (goo-state, for tests and live reading).
         reuse_blocked = foreign ? "other damage" : !scene_observer || !reuse_enabled ? "off" :
@@ -709,18 +710,38 @@ class goo_node_t : public wf::scene::node_t
         }
     }
     // GO28: a change beneath sleeping liquid restarts only the dye's coast, never the waves or
-    // field, and at most once per cool-down: 20 s, doubling while changes keep arriving (to 5
-    // minutes), back to 20 s after a cool-down passes with none. A change inside a cool-down
-    // waits for its end. Checks run at most twice a second, after frames that copied backdrop
-    // under the liquid, and not while one is already waiting.
+    // field, and at most once per cool-down: 20 s, doubling each time a change has waited out a
+    // cool-down (to 5 minutes), back to 20 s (and over at once) when nothing else has repainted
+    // under the liquid for 20 s. A change inside a cool-down waits for its end. Checks run at
+    // most twice a second, after frames that copied backdrop under the liquid, and not while
+    // one is already waiting.
     static constexpr double pickup_coast = 6, pickup_gap_first = 20, pickup_gap_most = 300;
     static constexpr int pickup_tolerated = 16;
-    double pickup_next = 0, pickup_gap = pickup_gap_first, last_check = 0, last_pickup_change = -1e9;
+    double pickup_next = 0, pickup_gap = pickup_gap_first, last_check = 0, last_activity = -1e9;
     bool pickup_pending = false, check_wanted = false, seen_due = false;
     uint64_t pickup_coasts = 0, pickup_deferred = 0, backdrop_changes = 0;
     wf::wl_timer<false> pickup_timer, check_timer;
-    void backdrop_copied()
+    // `repainted`: something other than the goo repainted under the liquid this frame.
+    void backdrop_copied(bool repainted = false)
     {
+        if (repainted)
+        {
+            double t = now();
+            if (t - last_activity > pickup_gap_first && (pickup_gap > pickup_gap_first || t < pickup_next))
+            {
+                // A still backdrop for a while: the backoff is over.
+                pickup_gap = pickup_gap_first;
+                pickup_next = std::min(pickup_next, t);
+                if (pickup_pending)
+                {
+                    pickup_pending = false;
+                    pickup_timer.disconnect();
+                    if (state.sleeping && watercolor() && !water_running)
+                        start_pickup();
+                }
+            }
+            last_activity = t;
+        }
         if (!state.sleeping || !watercolor() || water_running || pickup_pending)
             return;
         if (now() - last_check < .5)
@@ -738,10 +759,6 @@ class goo_node_t : public wf::scene::node_t
     {
         ++backdrop_changes;
         double t = now();
-        // A quiet cool-down resets the backoff.
-        if (t - last_pickup_change > pickup_gap_first && t >= pickup_next)
-            pickup_gap = pickup_gap_first;
-        last_pickup_change = t;
         if (t < pickup_next)
         {
             pickup_pending = true;
@@ -928,7 +945,7 @@ class goo_node_t : public wf::scene::node_t
                     seen_due = false;
                     state.renderer.backdrop_seen();
                 } else if (state.renderer.under_pixels != copied)
-                    backdrop_copied();
+                    backdrop_copied(frame_foreign);
             });
     }
 };
