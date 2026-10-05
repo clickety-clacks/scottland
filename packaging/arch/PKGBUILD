@@ -97,6 +97,7 @@ package_scottland-omarchy() {
   cp -a "$o/themes/." "$pkgdir/usr/share/scottland-omarchy/themes/"
   install -Dm755 "$o/reload.d/30-lua-host" "$pkgdir/usr/lib/scottland/reload.d/30-lua-host"
   install -Dm755 "$o/autostart.d/40-handover" "$pkgdir/usr/lib/scottland/autostart.d/40-handover"
+  install -Dm755 "$o/autostart.d/45-hyprland-start" "$pkgdir/usr/lib/scottland/autostart.d/45-hyprland-start"
   install -Dm755 "$o/libexec/scottland-handover" "$pkgdir/usr/lib/scottland/libexec/scottland-handover"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
   install -Dm644 "$o/prompts/omarchy-overrides-agent.txt" "$pkgdir/usr/lib/scottland/prompts/omarchy-overrides-agent.txt"

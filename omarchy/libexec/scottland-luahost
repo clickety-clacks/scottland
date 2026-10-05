@@ -77,7 +77,16 @@ noop = setmetatable({}, { __index = function() return noop end, __call = functio
 
 local binds = {}
 local handlers = {}  -- hl.on(event, fn); only HANDLED_EVENTS ever run
-local HANDLED_EVENTS = { ["window.active"] = true }
+local HANDLED_EVENTS = { ["window.active"] = true, ["hyprland.start"] = true }
+
+-- Startup commands the adapter's own session hooks already perform, Scottland's way: the
+-- session environment (core 05-import-environment) and the Omarchy shell (20-omarchy-shell).
+local ADAPTER_OWNED_STARTUP = {
+  "^%s*systemctl%s+%-%-user%s+import%-environment",
+  "^%s*dbus%-update%-activation%-environment",
+  "^%s*omarchy%-launch%-shell%s*$",
+}
+local starting = false
 local envs = {}      -- hl.env(name, value), in order: the session environment Hyprland would get
 
 local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
@@ -194,7 +203,18 @@ local function stand_in()
       binds[normalize(keys, true)] = nil
       return noop
     end,
-    exec_cmd = function(command) spawn(command) end,
+    exec_cmd = function(command)
+      if starting then
+        for _, pattern in ipairs(ADAPTER_OWNED_STARTUP) do
+          if tostring(command):match(pattern) then
+            log("hyprland.start: skipped (Scottland's session does this): " .. tostring(command))
+            return
+          end
+        end
+        log("hyprland.start: " .. tostring(command))
+      end
+      spawn(command)
+    end,
     env = function(name, value)
       if type(name) == "string" and value ~= nil then envs[#envs + 1] = { name, tostring(value) } end
       return noop
@@ -294,6 +314,14 @@ while true do
     for line in pipe:lines() do
       if line == "reload" then
         load_config()
+      elseif line == "@hyprland.start" then
+        -- Once per session, sent by autostart.d/45-hyprland-start (never on reload).
+        starting = true
+        for _, callback in ipairs(handlers["hyprland.start"] or {}) do
+          local ok, err = pcall(callback)
+          if not ok then log("hyprland.start handler failed: " .. tostring(err)) end
+        end
+        starting = false
       elseif line ~= "" then
         local bind = binds[line]
         if bind then

@@ -6,7 +6,8 @@
 # config (would rewrite the live session's config), 20-omarchy-shell or 40-handover.
 #
 #   tests/headless.sh start [--omarchy] [--widgets]   start; --omarchy adds the Hyprland shim and
-#                                         Lua host; --widgets adds the widget service, on a private
+#                                         Lua host (--hyprland-start also runs the config's
+#                                         startup handlers: fixture HOMEs only); --widgets adds the widget service, on a private
 #                                         D-Bus session bus (all headless sessions have a private bus)
 #                                         (SCOTTLAND_WIDGET_PATH and SCOTTLAND_WIDGET_SCOPE pass through)
 #                                         --gdb runs Wayfire under gdb; SIGINT to that gdb prints
@@ -53,6 +54,9 @@ case ${1:-} in
       case $option in
         --stock) stock=1 ;;
         --omarchy) started+=(10-hyprshim 25-omarchy-override-report 30-lua-host) ;;
+        # Runs the Hyprland config's startup handlers: only for a fixture HOME (the machine's
+        # own config would start its real autostart apps inside the test session).
+        --hyprland-start) started+=(45-hyprland-start) ;;
         --widgets) started+=(08-widget-bus); private_bus=1 ;;
         --gdb)
           [[ $(realpath -m "$dir") == "$repo"/build/* ]] || {
@@ -224,7 +228,8 @@ PY
     kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs
     [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
     [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
-    rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo"
+    rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo" \
+      "$runtime/scottland/$name.hyprland-started"
     rm -rf "$dir"
     echo "stopped headless Scottland on $name"
     ;;
