@@ -77,3 +77,10 @@ Gooarchy will have its own bar and its own notification system (see docs/knocks.
 App-compatibility knowledge that every Scottland install needs stays in Scottland's shipped config
 (for example, which apps take touchscreen scrolling as wheel steps), and the Omarchy adapter stays an
 integration package (it could become its own repository).
+
+## Kernel (Mike, 2026-10-05)
+
+Gooarchy builds its own kernel from Omarchy's linux-omarchy patch set, tracking Omarchy's
+releases, plus Gooarchy's own fixes on top (first: Cirrus Logic's spi-cs42l43 speaker-ID
+workaround, which fixes silent speakers on the Dell XPS 13 DX13260). It becomes the default once
+it passes the VM test and real hardware. Gooarchy does not depend on Omarchy's package repository.
