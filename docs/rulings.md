@@ -114,6 +114,8 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
 | 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
+| 10-04 | Gooarchy patterns after Omarchy but starts clean: nothing is borrowed to fill a gap (no bar yet means no bar), so the distro's deficit is clearly defined once it is built. | distro-notes |
+| 10-04 | Gooarchy will have its own custom bar and its own notification system; until they exist it ships neither. | distro-notes |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 
@@ -127,3 +129,4 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | The ether is a mental place, not a spot on screen: closed things still exist and can keep running. Knocks must be reachable and actionable in every form a sender takes on the desktop: window, scaled window, widget. | docs/knocks.md |
 | 10-04 | The breathing border is the direct representation of a knock; the hover swell of a border is the interaction to reach it. | docs/knocks.md |
 | 10-04 | Knocks from objects on the desktop matter most (the user elected them to be there). Knock priority comes from another system; Scottland only renders it. | docs/knocks.md |
+| 10-04 | Knocks have many channels, not one: every window is a channel for its object's knocks, and knocks from objects not on the desktop coexist with them; nothing is ranked against anything else. | docs/knocks.md |
