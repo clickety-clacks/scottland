@@ -86,7 +86,7 @@
             <default>0.65</default><min>0</min><max>1</max>
         </option>
         <option name="goo_soak" type="double">
-            <_short>Wallpaper soak</_short><_long>Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.</_long>
+            <_short>Wallpaper soak</_short><_long>How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off.</_long>
             <default>0.12</default><min>0</min><max>1</max>
         </option>
         <option name="goo_dye_strength" type="double">
