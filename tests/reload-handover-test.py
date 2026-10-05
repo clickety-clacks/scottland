@@ -21,6 +21,9 @@ args = sys.argv[1:]
 origin = repo
 if '--from' in args:
     i = args.index('--from'); origin = Path(args[i + 1]).resolve(); del args[i:i + 2]
+older = None  # --older CHECKOUT: a build before this reload protocol, for the rollback case
+if '--older' in args:
+    i = args.index('--older'); older = Path(args[i + 1]).resolve(); del args[i:i + 2]
 only = set(args)
 runtime = Path(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}') / 'scottland'
 work = repo / 'build/reload-test'; work.mkdir(parents=True, exist_ok=True)
@@ -449,10 +452,14 @@ def upgrade():
         x, y = hold_gestures(s, held)
         code, out = s.reload()
         new_build = sha(repo / 'build/libscottland.so')
-        live = [(p, h) for p, h in plugin_identity(s) if h != 'deleted']
+        mapped = plugin_identity(s)
+        # Wayfire keeps an unloaded plugin's image mapped (seen with the installed build alone too);
+        # what counts is that the attempt's copy, this build, is mapped and answering.
+        copies = [(p, h) for p, h in mapped if '/plugins/libscottland-' in p]
         t.check(f'reload from the starting build succeeds and carries every widget (now {new_build})',
                 code == 0 and 'imported 3 of 3' in out, out)
-        t.check('the compositor now maps exactly one live plugin copy, this build', [h for _, h in live] == [new_build], live)
+        t.check("the compositor maps this attempt's copy, this build", bool(copies) and copies[-1][1] == new_build and
+                s.ipc('scottland/loop-stats').get('reload', {}).get('load', 0) >= 1, mapped)
         release_gestures(s, x, y)
         t.check('the held drag and touch end normally after the swap: the compositor answers', s.loaded() is True)
         f0 = next(v for v in s.views() if v['id'] == held)['frame']
@@ -492,6 +499,32 @@ def upgrade():
         threads = [Path(f'/proc/{s.compositor()}/task/{x}/comm').read_text().strip() for x in os.listdir(f'/proc/{s.compositor()}/task')]
         t.check('still one shrink worker and one watchdog thread',
                 threads.count('scottland-shrin') == 1 and threads.count('scottland-wd') == 1, threads)
+        finish_balance(t, s, ids)
+    finally:
+        s.stop()
+    return t
+
+
+@case
+def rollback():
+    """This build to an older one (a rollback through this scottland-reload) and back. The older
+    build acknowledges nothing: the helper resolves the attempt by its own copy being listed and
+    mapped, not by elapsed time; going back to this build imports what the older one handed over."""
+    t = Case('rollback')
+    if not older:
+        t.check('skipped: no --older checkout given', True)
+        return t
+    s = Session('rollback')
+    try:
+        ids = standard(s, launch_daemon=False)
+        code, out = s.reload(source=older / 'build/libscottland.so', timeout=10)
+        t.check('reloading into the older build completes without waiting out the timeout',
+                code == 0 and 'older build that does not report reloads' in out, out)
+        t.check('no reload records are left', not s.records(), s.records())
+        t.check('the older build answers', s.loaded() is True)
+        code, out = s.reload()
+        t.check('and back to this build: the older build\'s handover is imported', code == 0 and 'imported' in out, out)
+        check_balance(t, s, ids, True, 'after the round trip')
         finish_balance(t, s, ids)
     finally:
         s.stop()

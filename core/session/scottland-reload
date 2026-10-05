@@ -161,10 +161,18 @@ def main():
 
     def wait(attempt):
         deadline = time.monotonic() + timeout
+        checked = time.monotonic()
         while time.monotonic() < deadline:
             result = outcome(attempt)
             if result:
                 return result
+            if time.monotonic() - checked > .5:
+                # An older build that loaded this copy writes no acknowledgment: its own evidence.
+                checked = time.monotonic()
+                state, info = probe()
+                if state == "answering" and not info["load"] and target_loaded(attempt):
+                    return ("ack", "the plugin loaded is an older build that does not report reloads: "
+                            "nothing was carried over by receipt")
             time.sleep(.05)
         return None
 
@@ -176,6 +184,9 @@ def main():
             print("scottland-reload: the compositor this reload was for has exited", file=sys.stderr)
             return 1
         (ack if kind == "ack" else failed).unlink(missing_ok=True)
+        # Resolved: a receipt an older build never consumed authorizes nothing any more.
+        receipt.unlink(missing_ok=True)
+        importing.unlink(missing_ok=True)
         if kind == "failed":
             print(f"scottland-reload: the new plugin failed to start ({detail}); Scottland is not loaded. "
                   "Fix the build and run scottland-reload again.", file=sys.stderr)
@@ -204,6 +215,17 @@ def main():
         plugins = match.group(1).replace("\\\n", " ").split() if match else \
             str(ipc.call("wayfire/get-config-option", {"option": "core/plugins"}).get("value", "")).split()
         return [str(target) if p == "scottland" or "/libscottland-" in p else p for p in plugins]
+
+    def target_loaded(attempt):
+        """Evidence that the attempt's own copy was loaded: Wayfire lists it and the compositor maps
+        it. Only consulted for a copy that doesn't report reloads (a build before this protocol)."""
+        try:
+            configured = str(ipc.call("wayfire/get-config-option", {"option": "core/plugins"}).get("value", "")).split()
+            maps = Path(f"/proc/{compositor}/maps").read_text()
+        except (OSError, EOFError, ValueError):
+            return False
+        return attempt["target"] in configured and any(
+            line.split(None, 5)[5:] == [attempt["target"]] for line in maps.splitlines())
 
     def recoverable(attempt):
         """The attempt can be driven again: its receipt is still unconsumed and names it, its
@@ -263,6 +285,10 @@ def main():
                     result = ("ack", info["outcome"])
                 elif info["load"] > attempt.get("answering_load", 0):
                     result = ("ack", "the new plugin loaded without this reload's receipt: nothing was carried over")
+                elif not info["load"] and target_loaded(attempt):
+                    # A build before this protocol (it reports no loads) loaded this attempt's copy.
+                    result = ("ack", "the plugin loaded is an older build that does not report reloads: "
+                              "nothing was carried over by receipt")
                 elif age <= attempt.get("timeout", 30):
                     print(f"scottland-reload: an earlier reload ({attempt['nonce']}) has no outcome yet and Scottland is "
                           "answering: the swap may still be in progress. Nothing changed; try again shortly.", file=sys.stderr)

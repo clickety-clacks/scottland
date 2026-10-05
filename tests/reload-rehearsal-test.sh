@@ -19,7 +19,7 @@ cleanup() {
   cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$artifacts/wayfire.log" 2>/dev/null || true
   (cd "$old" && tests/headless.sh stop) || true
   cp "$artifacts/scottland.xml.old" "$session_xml"
-  rm -rf "$SCOTTLAND_HEADLESS_DIR" "$artifacts"/libscottland-rehearsal-*.so
+  rm -rf "$SCOTTLAND_HEADLESS_DIR" "$artifacts"/plugins
 }
 trap cleanup EXIT
 (cd "$old" && SCOTTLAND_TEST_OUTPUTS=1 tests/headless.sh start --widgets)

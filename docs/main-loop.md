@@ -27,7 +27,7 @@ Phases 0, 1, 2 and 4 on 2026-10-03; Mike decided the two Phase 3 questions the s
 render hooks and render instances, hit tests and input interactions, event-loop fd sources,
 option callbacks). Scopes nest: per name the monitor keeps calls, total, maximum and calls over
 2 ms; only the outermost scope counts toward ML2 and the history. Nested scopes inside entry points
-attribute known costs (`hint_solve`, `hint_raster`, `goo_energy_readback`, `goo_sample_at`,
+attribute known costs (`peek_step`, `hint_raster`, `goo_energy_readback`, `goo_sample_at`,
 `goo_shape_update`, `goo_wallpaper_capture`, `widget_capture`, `core_run`, `publish_model`, ...).
 Pure accessors Wayfire calls per node (bounding boxes, transformer getters) are not scoped.
 
@@ -315,10 +315,11 @@ font family other than the one warmed at `init()` (D4); pathological user regexe
 | `goo_prepare` | 4-35 ms at 30 windows (settings slider) | open (Phase 2.5 source cache not done) |
 
 Not over 2 ms in any scenario: widget and morph captures (`widget_capture`, the retained-pixel
-path), the wallpaper capture, `core_run` (not exercised), the broker reply. The design's capture
-exception therefore leaves the table for the paths measured here.
+path), the wallpaper capture, the broker reply. That is not closure: the uncached capture fallback
+and `core_run` were not exercised, so both stay open exceptions (Astra, implementation review 7).
 
-Phase 0 (Luna's bounded avoidance, on main since `b6955db`): the solve itself (`hint_solve`) is at
+Phase 0 (Luna's bounded avoidance, on main from `b6955db` until the peek-strip engine replaced it;
+history: since the join with main its per-output slice is `peek_step`): the solve itself was at
 most 2.2 ms at 30 windows and 3.6 ms at 10 (first entry). Window mode as a whole is not: its ticks
 reach 287 ms at 30 windows on nacelle, and the cost is not the solve. Each badge, outline or offset
 it creates changes the scene, Wayfire refocuses the pointer, and the halo hit test waits for a GPU

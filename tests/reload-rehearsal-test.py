@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Reload rehearsal (AGENTS.md testing step 4): a headless session started on an older build, with
 widgets and peeking windows present, reloaded in place into this checkout's plugin the way
-scottland-reload does it (fresh copy, widget hand-over mark). Checks that it survives, keeps every
+this checkout's scottland-reload does it (receipt, fresh copy, widget hand-over mark). Checks that it survives, keeps every
 window and widget, renders, and that the new build's solo works afterwards.
 
 Runs inside the OLD build's headless session (tests/reload-rehearsal-test.sh starts it).
 argv: ARTIFACTS NEW_PLUGIN_SO SESSION_METADATA_XML NEW_METADATA_XML"""
-import json, os, shutil, sys, time
+import json, os, shutil, subprocess, sys, time
 from pathlib import Path
 
 art = Path(sys.argv[1]).resolve(); art.mkdir(parents=True, exist_ok=True)
@@ -74,19 +74,18 @@ try:
     check(len(peeking) >= 1, f'before: windows peek out under the old build ({len(peeking)} displaced)')
     h['shot']('before-reload.png')
 
-    # The reload, as scottland-reload does it: the new build's settings metadata (new options)
-    # registered first, a fresh copy of the plugin, and the hand-over mark for widgets.
+    # The reload through this checkout's scottland-reload, as dev-install installs them together: the
+    # new build's settings metadata (new options) is in place first, as an install puts it; the
+    # helper registers it, writes the reload receipt and the hand-over mark, swaps in a fresh copy
+    # and waits for the new copy's acknowledgment.
     shutil.copy(new_xml, session_xml)
-    ipc('wayfire/reload-config-metadata')
-    mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.reloading')
-    mark.parent.mkdir(parents=True, exist_ok=True); mark.touch()
-    fresh = art / f'libscottland-rehearsal-{time.time_ns()}.so'
-    shutil.copy(plugin, fresh)
-    plugins = ipc('wayfire/get-config-option', {'option': 'core/plugins'})['value']
-    ipc('wayfire/set-config-options', {'core/plugins': ' '.join(str(fresh) if p == 'scottland' or '/libscottland' in p
-                                                               else p for p in plugins.split())})
-    time.sleep(3)
-    mark.unlink(missing_ok=True)
+    helper = plugin.parents[1] / 'core/session/scottland-reload'
+    done = subprocess.run([str(helper)], env=dict(os.environ, SCOTTLAND_TEST_RELOAD_DIR=str(art),
+                          SCOTTLAND_RELOAD_SOURCE=str(plugin)), capture_output=True, text=True, timeout=120)
+    print(f'scottland-reload -> {done.returncode}: {(done.stdout + done.stderr).strip()[-300:]}', flush=True)
+    check(done.returncode == 0 and 'imported 2 of 2' in done.stdout, 'reload: the helper reports both widgets carried over',
+          done.stdout + done.stderr)
+    time.sleep(1)
 
     check('solves' in ipc('scottland/spread-state'), 'after: the new build answers (spread-state exists)')
     check({v['id'] for v in h['views']()} == before_views, 'after: every window and widget view is still there')
