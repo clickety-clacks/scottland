@@ -145,3 +145,4 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-05 | Dye release is the rate at which dye enters the goo. The setting called dye strength is dye density, and is named that. | GO23, GO28 |
 | 10-05 | Remove the drag audition (pausing during a drag to solo) altogether, with its timeout setting in Settings: the three-finger hold does the job. (Supersedes the two 10-05 re-arm entries.) | SP7 |
 | 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. | WK13, WK36, spread |
+| 10-05 | Entering Window mode, a hint appears only once it has settled: never drawn, removed, then drawn again while placement and window avoidance run. | WK |
