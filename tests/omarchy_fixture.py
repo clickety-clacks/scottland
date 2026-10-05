@@ -78,9 +78,12 @@ require("default.hypr.helpers")
 
 
 class Session:
-    def __init__(self, fixture, name, extra_args=(), env=None):
+    def __init__(self, fixture, name, extra_args=(), env=None, repo=REPO):
+        """repo: the checkout whose tests/headless.sh (and build) runs the session; an older
+        checkout for reload rehearsals."""
         self.fixture = fixture
-        self.dir = REPO / "build" / name
+        self.repo = Path(repo)
+        self.dir = self.repo / "build" / name
         self.env = {**os.environ, "HOME": str(fixture.home),
                     "SCOTTLAND_HEADLESS_DIR": str(self.dir),
                     "SCOTTLAND_TEST_PATH": str(fixture.bin),
@@ -97,7 +100,7 @@ class Session:
         self.stop()
 
     def harness(self, *args, check=True, timeout=60, input=None):
-        return subprocess.run([str(REPO / "tests/headless.sh"), *args], env=self.env, text=True,
+        return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=self.env, text=True,
                               capture_output=True, check=check, timeout=timeout, input=input)
 
     def start(self):
