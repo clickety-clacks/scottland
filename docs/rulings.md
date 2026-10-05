@@ -52,6 +52,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Hold on the focused window's hint solos; hold on an unfocused window's hint pairs it. | WK35, WK36 |
 | 10-04 | A three-finger hold on an unfocused window pairs it with the focused window (touchpad equivalent of the hint hold). | WK36 |
 | 10-04 | A three-finger hold on the focused window solos it (built with solo). | WK35 |
+| 10-04 | Super + double-tap-and-hold on the touchpad (the same start as Super + double-tap-drag, which drags a window, but held still instead of dragged) solos the focused window or pairs an unfocused one. | WK35, WK36 |
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
 
