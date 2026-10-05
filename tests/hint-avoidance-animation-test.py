@@ -286,11 +286,15 @@ try:
     mode_window_steps = [largest_window_step(after, before) for before, after in zip(mode_values, mode_values[1:])]
     (artifacts / "always-on-window-mode-roundtrip.json").write_text(
         json.dumps(mode_trace, indent=2) + "\n")
+    # The compositor measures its own easing speed per tick (IPC sample times only approximate
+    # frame times, so a late sample sees more than one frame's step).
+    eased = t.ipc.call("scottland/hints")["avoidance_max_easing_speed_px_s"]
     check("always-on offsets ease across both Window mode toggles without a snap",
-          len(mode_switch_steps) == 2 and mode_change_samples >= 4 and
-          max(mode_window_steps, default=0) < 20,
-          f"{mode_change_samples} intermediate transform changes; largest one-window sample step "
-          f"{max(mode_window_steps, default=0):.2f}px (all windows {max(mode_steps, default=0):.2f}px); "
+          len(mode_switch_steps) == 2 and mode_change_samples >= 4 and eased <= 1000.5 and
+          max(mode_window_steps, default=0) < 40,
+          f"{mode_change_samples} intermediate transform changes; compositor max {eased:.0f} px/s; "
+          f"largest one-window sample step {max(mode_window_steps, default=0):.2f}px "
+          f"(all windows {max(mode_steps, default=0):.2f}px); "
           f"toggle-frame steps {[round(step, 2) for step in mode_switch_steps]}")
 
     # Turning the setting off is the other inactive-target path: it must ease back to zero.
