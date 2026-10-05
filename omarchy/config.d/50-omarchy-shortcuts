@@ -504,9 +504,14 @@ def pretty_keys(value):
     return "+".join([names[mod] for mod in sorted(set(modifiers), key=modifier_order.get)] + pretty)
 
 
+SWITCH_KEY = re.compile(r"switch:(?:(on|off):)?(.+)", re.IGNORECASE)
+
+
 def report_entry(group, label, description, now, origin=None):
     heading, explanation = REPORT_GROUPS[group]
-    keys = pretty_keys(label)
+    switch = SWITCH_KEY.fullmatch(label)
+    keys = (f"{switch.group(2).strip()} ({(switch.group(1) or 'either way').lower()})" if switch
+            else pretty_keys(label))
     was = (description or f"Shortcut on {keys}").strip().rstrip(".")
     return {"heading": heading, "why": explanation, "keys": keys,
             "was": was, "now": now, "origin": origin or source_for_label(label),
@@ -943,6 +948,7 @@ def main():
     reported_remaps = set()
     activators = {}  # (section, option) -> [(description, combo)]; one option can take several keys
     releases = []  # (description, keysym, command) for key-release shortcuts
+    switches = []  # (description, device, on|off|toggle, command) for hardware switches (lid)
 
     def omitted(label, description, note, group="unsupported", now="No shortcut in Scottland",
                 kind="", action=""):
@@ -996,6 +1002,24 @@ def main():
                  f"command_{name} = {command}"))
             kept += 1
             continue
+        switch = SWITCH_KEY.fullmatch(key) if not mods else None
+        if switch:
+            # Hyprland's switch:on:<device> / switch:off:<device> / switch:<device> (either way),
+            # e.g. the laptop lid; core's switch bindings run them (also on the lock screen).
+            if kind == "exec" and HYPRLAND_ONLY.search(arg):
+                omitted(label, description, f"Hyprland-only: {arg[:60]}", kind=kind, action=arg)
+                continue
+            if kind not in ("exec", "function"):
+                omitted(label, description, "untranslated switch action", kind=kind, action=arg)
+                continue
+            command = arg if kind == "exec" else (
+                '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
+                + shlex.quote(f"{mods}+{key}"))
+            switches.append((description or label, switch.group(2).strip(),
+                             (switch.group(1) or "toggle").lower(), command))
+            kept += 1
+            continue
+
         wanted = combo(mods, key)
         if not wanted:
             omitted(label, description, "key has no Wayfire name", kind=kind, action=arg)
@@ -1164,12 +1188,17 @@ def main():
     for (section, option), entries in activators.items():
         print(f"\n[{section}]\n# {', '.join(d for d, _ in entries)}")
         print(f"{option} = {' | '.join(c for _, c in entries)}")
-    if releases:
+    if releases or switches:
         print("\n[scottland]")
         for index, (description, key, command) in enumerate(releases):
             print(f"# {description} (on release)")
             print(f"release_key_omarchy_{index} = {key}")
             print(f"release_command_omarchy_{index} = {command}")
+        for index, (description, device, state, command) in enumerate(switches):
+            print(f"# {description} ({device} {state})")
+            print(f"switch_device_omarchy_{index} = {device}")
+            print(f"switch_state_omarchy_{index} = {state}")
+            print(f"switch_command_omarchy_{index} = {command}")
     if command_overrides:
         print("\n[command]")
         for option, command, description in command_overrides:
