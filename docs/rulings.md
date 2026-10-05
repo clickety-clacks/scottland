@@ -130,3 +130,9 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | The breathing border is the direct representation of a knock; the hover swell of a border is the interaction to reach it. | docs/knocks.md |
 | 10-04 | Knocks from objects on the desktop matter most (the user elected them to be there). Knock priority comes from another system; Scottland only renders it. | docs/knocks.md |
 | 10-04 | Knocks have many channels, not one: every window is a channel for its object's knocks, and knocks from objects not on the desktop coexist with them; nothing is ranked against anything else. | docs/knocks.md |
+
+## Testing
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-04 | Testing standard: real input and an independently observable result; wait on state, not sleeps; check the screen for rendering claims; no wall-clock budgets in functional gates (benchmarks separate); count checks honestly; own your session and clean up exactly what you create; no source-text assertions; no retrying the action under test. Ineffective tests are deleted, not kept as gates; what still needs a real test is listed. | AGENTS.md "Testing standard"; docs/tests-todo.md |

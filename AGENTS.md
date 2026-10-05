@@ -173,3 +173,33 @@ Useful tools: `tests/headless.sh`, `tests/deploy.sh`, `tests/shell-probe.sh` (st
 against the shim, headless and sandboxed), `tests/nested.sh` (Scottland in a window on
 Hyprland), `scottland-ctl`, `scottland-exec`, and the logs in `~/.local/state/scottland/`
 (`wayfire.log`, `hyprshim.log`, `handover.log`, `luahost.log`, `watch-config.log`).
+
+## Testing standard (Mike, 2026-10-04)
+
+Every new or changed test meets these. Existing tests that don't yet are listed, with what each
+still needs, in [docs/tests-todo.md](docs/tests-todo.md).
+
+- **Real input and an independently observable result.** Drive the behavior through the path a
+  user's input takes (stipc keys, buttons, pointer, touch), and judge it by something the code
+  under test does not merely report about itself: what the client received, the mapped geometry,
+  the pixels. A flag, counter or the solver's own verdict is a diagnostic, not proof. Test hooks
+  are fine for setup and fault injection; say which input layers they bypass.
+- **Wait on state, not sleeps.** After one action, poll a bounded predicate for the newer state,
+  event or frame; a deadline that expires is a failure, reported with the last observation. Sleeps
+  may pace a gesture or make an intended hold, never stand in for readiness.
+- **Check what is on screen for rendering claims.** Visible, hidden, tinted or drawn is checked
+  against captured pixels. A saved screenshot is evidence to inspect, not an assertion.
+- **No wall-clock budgets in functional gates; benchmarks are separate.** Exact timing boundaries
+  are unit-tested with supplied timestamps. Performance contracts (P8's 2 ms and the like) live in
+  benchmarks that record machine, renderer, load and sample count. A generous hang deadline is fine.
+- **Count checks honestly.** Report named scenarios and properties apart from iterations,
+  generated cases and assertion evaluations. A check that cannot fail (`check(True)`, a count of
+  the test's own loop) is not a check. Fuzz volume, soaks and calibration stay out of default runs.
+- **Own your session and clean up exactly what you create.** A unique directory under the
+  checkout's `build/`, the session's recorded environment, checkout-built helpers. Never attach to
+  the newest socket or to a session you did not start. On success, failure or interrupt, release
+  held input, stop and reap your processes, and remove only the paths you created.
+- **No source-text assertions.** Don't grep code, shaders, QML or help prose to claim a behavior;
+  test what it does. Checking metadata or schema membership is fine.
+- **No retrying the action under test.** Send it once and wait for its result; a retry hides the
+  miss the test exists to catch.

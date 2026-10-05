@@ -514,31 +514,6 @@ int main()
                 std::to_string(big_slices) + " slices)");
         }
     }
-    // Calibration: work units per millisecond on this machine, over dense passes in both modes.
-    {
-        const rectangle wide{0, 0, 1920, 1080};
-        std::mt19937 rng(9);
-        std::uniform_real_distribution<double> x(0, 1500), y(0, 700), s(300, 900);
-        size_t units = 0;
-        auto started = std::chrono::steady_clock::now();
-        for (int round = 0; round < 40; ++round)
-        {
-            peek_request r; r.screen = wide; r.window_mode = round % 2;
-            for (int i = 0; i < 30; ++i)
-            {
-                auto w = window({x(rng), y(rng), s(rng), s(rng) * .6}, 0, 1920, i == 0);
-                w.center_y1 = 0; w.center_y2 = 1080; w.full_hint = 120;
-                r.windows.push_back(w);
-            }
-            size_t u = 0;
-            solve(r, SIZE_MAX, nullptr, &u);
-            units += u;
-        }
-        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-        std::cout << "      calibration: " << units << " units in " << ms << " ms = " << units / ms <<
-            " units/ms; the shipped slice of " << peek_slice_units << " units = " << peek_slice_units / (units / ms) <<
-            " ms here\n";
-    }
     // 11. Sustained change: one front frame changes every slice; every window keeps getting results.
     {
         const rectangle wide{0, 0, 1920, 1080};

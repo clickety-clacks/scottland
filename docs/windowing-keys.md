@@ -1371,7 +1371,7 @@ and state stay under `build/hint-outline-evidence`. All 48 checks pass (40 + 3 +
 - On the second, offset output of a two-output session the ring lands on its window.
 - With Settings open, 32/32 outline samples under the panel show the hint color.
 - The pass's longest run was well under 1 ms; one pass hit the shared deadline and resumed with
-  the right result. Unit: a whole pass over 50 overlapping windows takes about 0.1 ms (asserted < 2 ms).
+  the right result. Unit: a whole pass over 50 overlapping windows took about 0.1 ms (the < 2 ms unit assertion was removed 2026-10-04: timing belongs in a performance lane, [tests-todo.md](tests-todo.md)).
 - WK38: the slider set 0, 7 and 20% live, before Save; against the same pixel just before each
   hold, 0% left it unchanged, 7% tinted it and 20% gave the 7% tint scaled by 20/7 within 4/255
   per channel. Moving the slider to 30% while hints showed retinted at once.
@@ -1395,7 +1395,7 @@ exact (F-D). The shifted-window grab (F-C, decision 9) is WK27, verified in the 
 | Other suites (ARM test machine, merged with origin/main and grab-peeking-window) | `grab-peek` 299, `hint-front-center` 28, `hint-visible` 85, `hint-avoidance-animation` 15, `hint-avoidance-always` 42, `hint-outline` all parts, `hint-style` 53, `windowing` 102, `hint-avoidance-hang` 10, `widget-hints` 228: all passed. Expectations that described the replaced solver were updated to the decided behavior (Window mode nudges for full hint room; hint sizes follow the room's rung; easing judged by the compositor's own 1000 px/s cap) |
 | Settled CPU (`hint-avoidance-always`, attention breathing on) | 17.3–20.0% of one core on this branch vs 12.0–15.3% on origin/main, the ARM test machine shared with another agent's tests. Instrumented: 0 avoidance solves during the 3 s sample on both, and fewer hint ticks on this branch (11–22 vs 34–35), so the gap is not avoidance work; its cause (likely the goo drawing a different peek layout) is not yet established |
 | P8 | worst avoidance refresh 0.99 ms on the ARM test machine and 1.63 ms on the x86 test machine across the real-input suite; a 16-window pass is 8,934 units, one slice; 30 random windows 46,477 units (0.45 ms on the ARM test machine) |
-| Slice calibration | 117,600 units/ms on the x86 test machine (loaded), 138,600 on the ARM test machine: `peek_slice_units` = 170,000 |
+| Slice calibration | 117,600 units/ms on the x86 test machine (loaded), 138,600 on the ARM test machine: `peek_slice_units` = 170,000 (the calibration block was removed from `tests/peek-unit.cpp` 2026-10-04; it returns as a benchmark, [tests-todo.md](tests-todo.md)) |
 
 Measurement notes: strips are measured from screenshots with the goo's shine, relief and overlap
 film at zero (their light bands change a 24 px strip's color); the shipped look is checked for
