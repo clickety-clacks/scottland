@@ -97,6 +97,7 @@ GO27: the goo never paints over dry window content (a reused-backdrop breath res
 GO26 gives breath keyframes a ceiling-and-scale rule (only the keys the swing needs; above the ceiling the
 spacing widens; the exact path only for real failures, with the reason reported); see [the rule and
 measurements](../docs/goo.md#go26-ceiling-and-scale-keys-2026-10-04).
+GO28 makes the goo one dye: focus and attention fill all of a window's goo, the goo picks up whatever lies beneath it (wallpaper or windows under its film) and mixes it in like watercolor pigment, with bounded wakes; see [the design and results](../docs/goo.md#go28-one-dye-2026-10-05).
 GO24 makes wallpaper soak a watercolor: local pigment in all of the goo, graded by thickness, state colors in a
 narrow wall band, coasting to rest and staying; see [the design, pictures and checks](../docs/goo.md#go24-watercolor-2026-10-03).
 GO21 makes the sleeping goo's cheap paths exact in device pixels at any scale, rotation and layout, and
