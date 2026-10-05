@@ -57,16 +57,23 @@ cut delivers the progress made. Measured in the real build (nacelle headless,
 1.53, 2.00 and 2.00 ms; the 40-window solve was cut at 10 ms of solving with 10 of 13 arrivals
 placed, delivered after 78 ms because one event-loop turn spent 64 ms drawing 40 windows in
 software between two slices (the solve itself never held the loop longer than a slice). Work is
-charged before it runs, item by item, except sorts of at most 256 intervals (the obstacle cap),
-which run as one batch charged by their length in advance: the longest CPU time between two
-charges was 13.5 µs over 40 scenes of 50 windows on nacelle (Astra measured 35.7 µs at 50 windows
+charged before it runs, item by item, except a few batches bounded by the caps that run whole
+between two charges: sorts of at most 256 intervals and of the least-overlap sweep's events (four
+per obstacle, at most 4 × 256), charged by their length in advance; the arrival and resident order
+sorts (at most 128 windows, once per solve); and setup and copy loops over at most 256 obstacles
+(building obstacle lists, copying layouts). This is the measured main-thread alternative of final.md
+section 4, not the main-loop design's literal per-item cancellation everywhere: the longest CPU time
+between two charges was 13.5 µs over 40 scenes of 50 windows on nacelle (Astra measured 35.7 µs at 50 windows
 and 19.8 µs at the 128-window cap). Each checkpoint's result is built inside the budget when it
 becomes the best, so a stopped or cancelled solve delivers it without further work; the input caps
 are checked before anything is collected. Outside the slices, delivering a solo (the result copy,
 the record, freeing the job and the commit) took 1.2, 8.1 and 8.9 ms of compositor CPU for 12, 24
-and 40 windows (`deliver_cpu_ms`; wall-clock figures on a shared host add preemption), nearly all of
-it Wayfire moving each window (about 0.4 ms per moved window); the model is published once per
-commit, not per window. The job's `step(allowance)` is not yet the worker's `step(cancel_t)`: the
+and 40 windows (`deliver_cpu_ms`; wall-clock figures on a shared host add preemption; Fable measured
+13.6 ms at 40), nearly all of it Wayfire moving each window (about 0.4 ms per moved window); the
+model is published once per commit, not per window. **The commit is outside the 2 ms slice bound:**
+it is one block on the event loop, under a 60 Hz frame at 40 windows, but would be about 50 ms at
+the 128-window cap. None of these figures is an end-to-end latency bound; they still need measuring
+on a real GPU session. The job's `step(allowance)` is not yet the worker's `step(cancel_t)`: the
 worker will wrap it with a cancellation adapter, and a job stays on the thread that started it
 (destroying an unfinished one resumes it there to unwind). Inside that
 session the kernel did about 31 units/µs against 112 in the unit suite on the same host, so its
@@ -95,7 +102,7 @@ plugin refuses an offer before it releases the drag.
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
 | SP3 | A resident moves only if the solo target covers it or an arrival would otherwise land below its band (P6); it stays on its side (P1), never grows, never moves inward, ends clear when pushed, and returns when its spot is free again (P2). | verified (unit fuzz and fixtures; headless) |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
-| SP5 | Every unit operation is charged; the solve runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. | verified (unit suite; real-build slices measured on plumbus) |
+| SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on plumbus and nacelle); real-GPU latency not yet measured |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (plumbus and nacelle headless) |
 | SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots over running glides (and once avoidance offsets have settled), refuses on a change of the hotspot setting, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (nacelle headless, real stipc drags, 59 checks, 2026-10-04) |
 | SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (plumbus and nacelle headless reload rehearsal) |
