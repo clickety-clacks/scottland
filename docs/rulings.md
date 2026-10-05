@@ -114,6 +114,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
 | 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
+| 10-04 | Gooarchy patterns after Omarchy but starts clean: nothing is borrowed to fill a gap (no bar yet means no bar), so the distro's deficit is clearly defined once it is built. | distro-notes |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 

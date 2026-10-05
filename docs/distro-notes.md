@@ -27,6 +27,10 @@ without it Scottland on Omarchy is incomplete. On Omarchy, flavorings add what O
 Each app widget is its own component built on Scottland's public widget interface (WG1-WG23), which
 therefore has to stay stable enough for outside packages.
 
+## Starting clean (Mike, 2026-10-04)
+
+Gooarchy is patterned after Omarchy (installer structure, packaging, updates) but starts clean on plain Arch: it does not carry Omarchy's shell or the Hyprland shim. What Gooarchy lacks stays visibly missing (no bar yet means no bar) so the deficit is defined by the built distro, not hidden by borrowed parts.
+
 ## Defaults to ship
 
 - **Strata ([lgse/strata](https://github.com/lgse/strata)) is Gooarchy's standard file browser** (Mike, 2026-10-04): installed by default and set as the file manager (folder handler, Super+Shift+F). It ships in gooarchy-flavorings.
