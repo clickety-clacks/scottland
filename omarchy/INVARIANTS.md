@@ -60,6 +60,12 @@ Wayfire has no equivalent dynamic tag state; implementing it needs a per-window 
 that the shim can also report consistently in `clients` and events. A dispatch-only reply would
 make tags appear to change without updating those readers.
 
+[Omarchy compatibility audit](../docs/adapter-gaps.md) records 38 behavior rows (AG01–AG38)
+for stock and optional Omarchy choices, with source evidence, observed headless failures and
+unverified outcomes kept separate. O1/O2/O10 describe their exercised shell, IPC and launch
+paths; they do not establish compatibility for every menu action, application rule, portal,
+input layout or hardware configuration. The audit proposes fix layers, not new commitments.
+
 ## Switching from Mike's personal solar timer
 
 Mike's `~/.local/bin/omarchy-solar-theme` and its user timer stay in place until he chooses to
