@@ -1,6 +1,7 @@
 // WK36 pairing fit math and WK35/WK36 hint-hold detection, without Wayfire.
 #include "alt-mode.hpp"
 #include "pairing.hpp"
+#include "hint-style.hpp"
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -187,6 +188,15 @@ int main()
     mode.end(); pairs.clear(); mode.begin(many, 1); mode.letter('s', 1000);
     check(!mode.hold_waiting() && !mode.hold_due(3000) && pairs.empty(), "an incomplete prefix never holds");
 
+    // WK39 hold ring timing: a 100 ms pause, then a linear fill complete exactly at the hold.
+    check(hold_ring_progress(0, 500) == 0 && hold_ring_progress(100, 500) == 0, "hold ring waits 100 ms before filling");
+    check(near(hold_ring_progress(300, 500), .5) && near(hold_ring_progress(499, 500), 399.0 / 400),
+        "hold ring fills linearly from the pause to the hold delay");
+    check(hold_ring_progress(500, 500) == 1 && hold_ring_progress(800, 500) == 1, "hold ring is complete exactly when the hold fires");
+    check(near(hold_ring_progress(40, 80), .5) && hold_ring_progress(0, 80) == 0,
+        "a hold delay shorter than the pause fills from the press");
+    check(hold_ring_progress(99, 500, true) == 0 && hold_ring_progress(100, 500, true) == 1,
+        "reduced motion: a static whole ring after the pause, no fill animation");
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

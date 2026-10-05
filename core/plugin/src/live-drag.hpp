@@ -178,7 +178,10 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         wf::move_drag::drag_motion_signal ev{to};
         emit(&ev);
     }
-    void handle_input_released()
+    // commit = false ends the drag where the window really is, dropping whatever the drag drew
+    // (a hold form, WK35/WK36: the gesture was a hold, never a move). Only the live renderer can
+    // do that; the legacy move plugin always commits, so callers check is_live() first.
+    void handle_input_released(bool commit = true)
     {
         if (!view || finishing || transferring) return;
         if (!transform)
@@ -203,7 +206,7 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         if (grab_output) grab_output->deactivate_plugin(&activation);
         grab_output = nullptr;
         // Commit the shown global position before the common drop/morph/physics path.
-        if (target->is_mapped() && output)
+        if (commit && target->is_mapped() && output)
         {
             if (target->get_output() != output) wf::move_view_to_output(target, output, false);
             auto origin = wf::origin(output->get_layout_geometry());

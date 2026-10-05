@@ -1590,6 +1590,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::weak_ptr<wf::view_interface_t> held_above;
         drag_origin_t origin;
         bool cancelled = false;
+        bool held = false;  // ended as a hold form (WK35/WK36): no drop, no move
         uint64_t widget = 0;
         drag_origin_t last_drop;
         uint32_t last_drop_at = 0;
@@ -4631,7 +4632,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 start_touch_drag(view, finger);
             } else
             {
-                start_pointer_drag(view);
+                start_pointer_drag(view, BTN_LEFT, "halo press");
             }
         }
     }
@@ -4678,24 +4679,35 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void swipe_begin(uint32_t fingers)
     {
-        cancel_touchpad_hold(); // the fingers moved first: a drag (L23)
+        // Resting fingers jitter, so libinput may end its hold gesture and report a swipe while
+        // they barely move. That swipe continues the hold: same start time, same partner.
+        auto resting = touchpad_hold ? touchpad_hold : resting_hold;
+        touchpad_hold.reset(); touchpad_hold_timer.disconnect();
+        resting_hold.reset(); resting_hold_expiry.disconnect();
+        LOGI("scottland: touchpad swipe began: ", fingers, " fingers", resting ?
+            ", continuing a three-finger hold of " + std::to_string(int32_t(now_msec() - resting->began)) + " ms" : "");
         if (!touchpad_gestures || (fingers != 3) || drag->view || swipe_moving)
         {
+            cancel_hold_ring(false);
             return;
         }
 
         auto view = gesture_target();
         if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
         {
+            cancel_hold_ring(false);
             return;
         }
 
+        uint64_t partner = resting ? resting->partner : focused_app();
         wf::get_core().default_wm->focus_raise_view(view);
         drag->set_input(-1, true);
         drag->set_pending_drag(wf::get_core().get_cursor_position());
         drag->start_drag(view);
         note_drag_start();  // now, where the fingers began: the first update may be a while
         swipe_moving = true;
+        if (drag->view == view)
+            arm_drag_hold("three-finger swipe", partner, resting ? now_msec() - resting->began : 0);
     }
 
     void swipe_update(double dx, double dy)
@@ -4713,6 +4725,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void swipe_end()
     {
+        LOGI("scottland: touchpad swipe ended", swipe_moving ? "" : " (no window drag)");
         if (swipe_moving)
         {
             // The fingers lifted: the drag ends now. (A drag of the same window soon after counts
@@ -4737,29 +4750,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // soon as they move or click, so a swipe (L23) or click (L24) that starts first keeps its
     // meaning. On an unfocused window it pairs with the focused one; on the focused window it
     // reaches the solo hook. The gesture still reaches the app (it stops kinetic scrolling).
-    struct touchpad_hold_t { uint64_t window = 0, partner = 0; };
+    struct touchpad_hold_t { uint64_t window = 0, partner = 0; uint32_t began = 0; };
+    std::optional<touchpad_hold_t> resting_hold;  // a hold libinput just cancelled, for a swipe to continue
+    wf::wl_timer<false> resting_hold_expiry;
     std::optional<touchpad_hold_t> touchpad_hold;
     wf::wl_timer<false> touchpad_hold_timer;
     std::unique_ptr<virtual_pointer_t> test_touchpad; // scottland/test-touchpad only
 
-    void cancel_touchpad_hold() { touchpad_hold.reset(); touchpad_hold_timer.disconnect(); }
+    void cancel_touchpad_hold()
+    {
+        if (touchpad_hold || resting_hold) cancel_hold_ring(false);
+        touchpad_hold.reset(); touchpad_hold_timer.disconnect();
+        resting_hold.reset(); resting_hold_expiry.disconnect();
+    }
 
     void touchpad_hold_begin(wlr_input_device *device, uint32_t fingers, uint32_t time_msec)
     {
         cancel_touchpad_hold();
-        if (!touchpad_gestures || (fingers != 3) || !is_touchpad(device) || drag->view || swipe_moving ||
-            middle_pending || middle_resizing) return;
         auto view = gesture_target();
-        if (!view) return;
-        auto link = link_of_widget(view);
-        uint64_t window = link ? link->window_id : view->get_id();
-        if (!model.windows.count(window)) return;
-        touchpad_hold = touchpad_hold_t{window, window_keys.focused ? window_keys.focused() : 0};
-        // Timed from the fingers' event, on the same clock as hint holds (WK39).
-        uint32_t delay = std::clamp(int(window_hold_delay), 1, 3000);
+        auto link = view ? link_of_widget(view) : nullptr;
+        uint64_t window = view ? (link ? link->window_id : view->get_id()) : 0;
+        const char *refused = !touchpad_gestures ? "touchpad gestures are off" : fingers != 3 ? "not three fingers" :
+            !is_touchpad(device) ? "not a touchpad" : (drag->view || swipe_moving) ? "a drag is running" :
+            (middle_pending || middle_resizing) ? "a three-finger click came first" :
+            !model.windows.count(window) ? "no window under the pointer" : nullptr;
+        LOGI("scottland: touchpad hold began: ", fingers, " fingers on window ", window, refused ? ", ignored: " : "",
+            refused ? refused : "");
+        if (refused) return;
         uint32_t now = now_msec(), elapsed = now - time_msec;
-        uint32_t remaining = (elapsed > 1000) ? delay : (elapsed >= delay ? 1 : delay - elapsed);
-        touchpad_hold_timer.set_timeout(remaining, [=] () { touchpad_hold_due(); });
+        if (elapsed > 1000) elapsed = 0;  // an event stamped by another clock counts as now
+        uint32_t delay = hold_delay_ms();
+        elapsed = std::min(elapsed, delay - 1);
+        touchpad_hold = touchpad_hold_t{window, focused_app(), now - elapsed};
+        // Timed from the fingers' event, on the same clock as hint holds (WK39).
+        touchpad_hold_timer.set_timeout(delay - elapsed, [=] () { touchpad_hold_due(); });
+        start_hold_ring(0, window, elapsed, delay);
     }
 
     void touchpad_hold_due()
@@ -4769,8 +4794,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Still the window under the fingers, and nothing grabbed it meanwhile.
         auto view = gesture_target();
         auto link = view ? link_of_widget(view) : nullptr;
-        if (!view || drag->view || swipe_moving || (link ? link->window_id : view->get_id()) != hold.window) return;
-        LOGI("scottland: three-finger hold on ", hold.window, hold.window == hold.partner ? " (focused)" : "");
+        if (!view || drag->view || swipe_moving || (link ? link->window_id : view->get_id()) != hold.window)
+        {
+            LOGI("scottland: three-finger hold on window ", hold.window, ": the window under the fingers changed");
+            cancel_hold_ring(false);
+            return;
+        }
+        complete_hold_ring();
+        LOGI("scottland: three-finger hold held still ", int32_t(now_msec() - hold.began), " ms on window ", hold.window,
+            ": ", hold.window == hold.partner ? "solo" : hold.partner ? "pair" : "nothing (no focused window)");
         if (hold.window == hold.partner) solo_window(hold.window);
         else if (hold.partner) pair_windows(hold.window, hold.partner);
     }
@@ -4779,7 +4811,21 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::input_event_signal<wlr_pointer_hold_begin_event> *ev)
     { touchpad_hold_begin(ev->device, ev->event->fingers, ev->event->time_msec); };
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_hold_end_event>> on_hold_end =
-        [=] (wf::input_event_signal<wlr_pointer_hold_end_event>*) { cancel_touchpad_hold(); };
+        [=] (wf::input_event_signal<wlr_pointer_hold_end_event> *ev)
+    {
+        if (touchpad_hold)
+            LOGI("scottland: touchpad hold ended (", ev->event->cancelled ? "cancelled by libinput: fingers moved or clicked" :
+                "fingers lifted", ") after ", int32_t(now_msec() - touchpad_hold->began), " ms");
+        // Cancelled holds usually turn into a swipe at once; swipe_begin takes the hold over.
+        if (ev->event->cancelled && touchpad_hold)
+        {
+            resting_hold = touchpad_hold;
+            touchpad_hold.reset(); touchpad_hold_timer.disconnect();
+            resting_hold_expiry.set_timeout(150, [=] () { if (resting_hold) { resting_hold.reset(); cancel_hold_ring(false); } });
+            return;
+        }
+        cancel_touchpad_hold();
+    };
 
     void replay_middle_click()
     {
@@ -5473,23 +5519,128 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto view = gesture_target();
         if (!view || drag->view) return false;
-        start_pointer_drag(view, wf::buttonbinding_t(move_button).get_button());
+        // A touchpad's tap-and-drag (drag lock) arrives as this same press.
+        start_pointer_drag(view, wf::buttonbinding_t(move_button).get_button(), "Super + press");
         return bool(drag->view);
     };
     wf::button_callback on_move_shift = [this] (auto)
     {
         auto view = gesture_target();
         if (!view || drag->view) return false;
-        start_pointer_drag(view, wf::buttonbinding_t(move_shift_button).get_button());
+        start_pointer_drag(view, wf::buttonbinding_t(move_shift_button).get_button(), "Super + Shift + press");
         return bool(drag->view);
     };
 
-    void start_pointer_drag(wayfire_toplevel_view view, uint32_t button = BTN_LEFT)
+    void start_pointer_drag(wayfire_toplevel_view view, uint32_t button = BTN_LEFT, const char *gesture = "halo press")
     {
         drag->set_input(-1, false, button);
         drag->set_pending_drag(wf::get_core().get_cursor_position());
         drag->start_drag(view);
+        if (drag->view != view) return;
+        auto link = link_of_widget(view);
+        uint64_t window = link ? link->window_id : view->get_id();
+        uint64_t partner = pressed_focus;
+        if (last_click.window == window && uint32_t(now_msec() - last_click.at) <= HOLD_CHAIN_MS)
+            partner = last_click.partner;
+        arm_drag_hold(gesture, partner);
     }
+
+    // Hold forms (WK35/WK36; Mike, 2026-10-04: every gesture that drags a window has one). A
+    // pointer or three-finger drag that stays within HOLD_WOBBLE of where it began for the hint
+    // hold delay is a hold: it ends where the window is, with no drop, and solos the focused
+    // window or pairs an unfocused one with the window focused before the gesture. Moving past
+    // the wobble first makes it an ordinary drag (and the drag audition can follow, SP); letting
+    // go first is a click or a short drag. Touch drags start from a long press already (L25) and
+    // keep that meaning.
+    static constexpr double HOLD_WOBBLE = 12.0;  // logical px: resting fingers and hands jitter
+    struct drag_hold_t
+    {
+        uint64_t window = 0, partner = 0;
+        wf::pointf_t start;
+        double travel = 0;
+        std::string gesture;
+        uint32_t began = 0;  // now_msec when the gesture began (the press, or the fingers)
+    };
+    std::optional<drag_hold_t> drag_hold;
+    wf::wl_timer<false> drag_hold_timer;
+    uint64_t pressed_focus = 0;  // the app window focused when the latest button went down
+    // Double-tap-and-hold (drag lock) and double-click-and-hold begin with a click that already
+    // focused the window. A press on it this soon after continues that gesture and keeps the
+    // partner from before the first tap, so the hold still pairs instead of soloing.
+    static constexpr uint32_t HOLD_CHAIN_MS = 400;
+    struct { uint64_t window = 0, partner = 0; uint32_t at = 0; } last_click;
+
+    uint64_t focused_app() { return window_keys.focused ? window_keys.focused() : 0; }
+    uint32_t hold_delay_ms() { return std::clamp(int(window_hold_delay), 1, 3000); }
+
+    void arm_drag_hold(const std::string& gesture, uint64_t partner, uint32_t elapsed = 0)
+    {
+        disarm_drag_hold(nullptr);
+        if (!drag->view || !drag->is_live()) return;  // the legacy move always drops
+        auto link = link_of_widget(drag->view);
+        uint64_t window = link ? link->window_id : drag->view->get_id();
+        if (!model.windows.count(window)) return;
+        if (!partner)
+        {
+            LOGI("scottland: ", gesture, " on window ", window, ": a drag (nothing was focused, so no hold form)");
+            return;
+        }
+        uint32_t delay = hold_delay_ms();
+        elapsed = std::min(elapsed, delay - 1);
+        drag_hold = drag_hold_t{window, partner, wf::get_core().get_cursor_position(), 0, gesture, now_msec() - elapsed};
+        drag_hold_timer.set_timeout(delay - elapsed, [=] () { drag_hold_due(); });
+        start_hold_ring(0, window, elapsed, delay);
+        LOGI("scottland: ", gesture, " on window ", window, " began: a hold if it stays within ", HOLD_WOBBLE,
+            " px for ", delay, " ms", window == partner ? " (focused: solo)" : " (pairs)");
+    }
+
+    void disarm_drag_hold(const char *why, bool let_go = false)
+    {
+        if (drag_hold && let_go) last_click = {drag_hold->window, drag_hold->partner, now_msec()};
+        if (drag_hold && why)
+            LOGI("scottland: ", drag_hold->gesture, " on window ", drag_hold->window, ": ", why, " after ",
+                int32_t(now_msec() - drag_hold->began), " ms, travel ", std::round(drag_hold->travel * 10) / 10, " px");
+        if (drag_hold) cancel_hold_ring(false);
+        drag_hold.reset();
+        drag_hold_timer.disconnect();
+    }
+
+    void drag_hold_motion(wf::pointf_t at)
+    {
+        if (!drag_hold) return;
+        drag_hold->travel = std::max(drag_hold->travel, std::hypot(at.x - drag_hold->start.x, at.y - drag_hold->start.y));
+        if (drag_hold->travel > HOLD_WOBBLE) disarm_drag_hold("moved past the wobble, a drag");
+    }
+
+    void drag_hold_due()
+    {
+        if (!drag_hold) return;
+        auto hold = *drag_hold;
+        auto link = drag->view ? link_of_widget(drag->view) : nullptr;
+        if (!drag->view || (link ? link->window_id : drag->view->get_id()) != hold.window)
+        {
+            disarm_drag_hold("ended before the hold delay");
+            return;
+        }
+        drag_hold.reset();
+        complete_hold_ring();
+        LOGI("scottland: ", hold.gesture, " held still ", int32_t(now_msec() - hold.began), " ms (travel ",
+            std::round(hold.travel * 10) / 10, " px) on window ", hold.window, ": ",
+            hold.window == hold.partner ? "solo" : "pair with window " + std::to_string(hold.partner));
+        // The gesture was a hold, never a move: the drag ends where the window is, with no drop.
+        model.drag.held = true;
+        swipe_moving = false;
+        drag->handle_input_released(false);
+        if (hold.window == hold.partner) solo_window(hold.window);
+        else pair_windows(hold.window, hold.partner);
+    }
+
+    // Before any binding or halo acts on a press (which focuses its window), note what had focus.
+    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> on_press_focus =
+        [=] (wf::input_event_signal<wlr_pointer_button_event> *ev)
+    {
+        if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED) pressed_focus = focused_app();
+    };
 
     static constexpr double CLICK_SLOP = 6.0;  // a press and release within this is a click, not a move
 
@@ -6612,6 +6763,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto view   = drag->view;
         auto output = drag->current_output;
+        drag_hold_motion({double(ev->current_position.x), double(ev->current_position.y)});
         refresh_layout_avoidance();
         note_drag_start();
         drag_velocity.add(now_msec(), ev->current_position.x, ev->current_position.y);
@@ -6747,7 +6899,26 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
         swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
+        disarm_drag_hold("let go before the hold delay, a click or a short drag", true);
         reconcile_rail_slides();  // a widget held in place by the grab may go now
+        if (model.drag.held)
+        {
+            // A hold form (WK35/WK36): the window never moved and nothing drops. Its scale pin
+            // is the one it had (the drag start cleared it); solo or pair follow.
+            model.drag.held = false;
+            model.drag.input_override.reset();
+            cancel_rail_drag();
+            audition_end("hold");
+            if (main && main->is_mapped() && !is_widget(main) && model.drag.origin.view == main->get_id())
+                pin_scale(main, model.drag.origin.pin);
+            release_above();
+            model.drag.last_drop = {};
+            model.drag.widget = 0;
+            model.drag.started = false;
+            retry_widget_arrivals();
+            publish_model();
+            return;
+        }
         if (model.drag.cancelled)
         {
             model.drag.cancelled = false;
@@ -7319,6 +7490,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_swipe_end);
         wf::get_core().connect(&on_hold_begin);
         wf::get_core().connect(&on_hold_end);
+        wf::get_core().connect(&on_press_focus);
         wf::get_core().connect(&on_touchpad_button);
         wf::get_core().connect(&on_touch_down_capture);
         wf::get_core().connect(&on_touch_motion_capture);
@@ -7478,6 +7650,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_swipe_end.disconnect();
         on_hold_begin.disconnect();
         on_hold_end.disconnect();
+        on_press_focus.disconnect();
+        drag_hold.reset(); drag_hold_timer.disconnect();
+        resting_hold.reset(); resting_hold_expiry.disconnect();
         cancel_touchpad_hold();
         test_touchpad.reset();
         ipc_repo->unregister_method("scottland/test-touchpad");

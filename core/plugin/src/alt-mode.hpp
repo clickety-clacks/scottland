@@ -37,6 +37,7 @@ class alt_mode
     unsigned hold_delay = 500;
     // A hint press is still held and may yet become a hold.
     bool hold_waiting() const { return bool(hold); }
+    uint64_t hold_window() const { return hold ? hold->id : 0; }
     // Milliseconds until a pending hold is due at time_ms (0: due now or none pending).
     uint32_t hold_remaining(uint32_t time_ms) const;
     // Act on a hold whose delay has passed by time_ms; true if it acted.

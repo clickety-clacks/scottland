@@ -70,7 +70,21 @@ class hint_outline_node : public wf::scene::node_t
     hint_rgb color{0, 0, 0};
     double radius = 0, line = hint_outline_width;
 };
-// Frees the outline shader; call with the plugin's other GL resources on unload.
+// WK39: a hold in progress, as a stroked arc that fills clockwise from the top around a hint
+// badge or the pointer (hold_ring_progress). One small shader quad; dots without GLES.
+class hold_ring_node : public wf::scene::node_t
+{
+  public:
+    hold_ring_node() : node_t(false) {}
+    void update(double cx, double cy, double radius, double line, hint_rgb color, double progress);
+    wf::geometry_t get_bounding_box() override { return box; }
+    void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+        wf::scene::damage_callback damage, wf::output_t *output) override;
+    wf::geometry_t box{0, 0, 0, 0};
+    double cx = 0, cy = 0, radius = 0, line = hold_ring_width, progress = 0;
+    hint_rgb color{0, 0, 0};
+};
+// Frees the outline and ring shaders; call with the plugin's other GL resources on unload.
 void release_hint_gl();
 
 // A small, click-through name plate while a quick Alt+Tab chord previews a center window.

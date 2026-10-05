@@ -333,14 +333,111 @@ outline_program_t& outline_program()
     static outline_program_t program;  // per loaded plugin copy (see meson.build)
     return program;
 }
+// The arc from the top, clockwise through `sweep` radians: the stroke band where the angle is
+// within the sweep, plus round caps at both ends (which also hide the band's angular cut).
+const char *ring_fragment_source = R"(#version 100
+varying highp vec2 pos;
+uniform highp vec2 center;
+uniform highp float radius;
+uniform highp float line;
+uniform highp float sweep;
+uniform highp float aa;
+uniform highp vec4 color;
+void main() {
+    highp vec2 v = pos - center;
+    highp float band = clamp(0.5 - (abs(length(v) - radius) - line * 0.5) / aa, 0.0, 1.0);
+    highp float angle = atan(v.x, -v.y);
+    if (angle < 0.0) angle += 6.2831853;
+    highp float inside = angle <= sweep ? 1.0 : 0.0;
+    highp vec2 tip = center + radius * vec2(sin(sweep), -cos(sweep));
+    highp float start = clamp(0.5 - (length(pos - center - vec2(0.0, -radius)) - line * 0.5) / aa, 0.0, 1.0);
+    highp float end = clamp(0.5 - (length(pos - tip) - line * 0.5) / aa, 0.0, 1.0);
+    gl_FragColor = color * max(band * inside, max(start, end));
+})";
+outline_program_t& ring_program()
+{
+    static outline_program_t program;
+    return program;
+}
 }
 
 void release_hint_gl()
 {
-    auto& p = outline_program();
-    if (!p.ready) return;
-    wf::gles::run_in_context_if_gles([&] { p.program.free_resources(); });
-    p.ready = false;
+    for (auto *p : {&outline_program(), &ring_program()})
+    {
+        if (!p->ready) continue;
+        wf::gles::run_in_context_if_gles([&] { p->program.free_resources(); });
+        p->ready = false;
+    }
+}
+
+void hold_ring_node::update(double ncx, double ncy, double nradius, double nline, hint_rgb dye, double nprogress)
+{
+    nprogress = std::clamp(nprogress, 0.0, 1.0);
+    if (ncx == cx && ncy == cy && nradius == radius && nline == line && nprogress == progress &&
+        dye.r == color.r && dye.g == color.g && dye.b == color.b) return;
+    wf::scene::damage_node(this, box);
+    cx = ncx; cy = ncy; radius = std::max(1.0, nradius); line = std::max(1.0, nline);
+    progress = nprogress; color = dye;
+    double reach = radius + line / 2 + 1;  // one logical px holds the antialiased edge
+    double x1 = std::floor(cx - reach), y1 = std::floor(cy - reach);
+    box = {int(x1), int(y1), int(std::ceil(cx + reach) - x1), int(std::ceil(cy + reach) - y1)};
+    wf::scene::damage_node(this, box);
+    wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
+}
+
+class hold_ring_render : public wf::scene::simple_render_instance_t<hold_ring_node>
+{
+  public:
+    using simple_render_instance_t::simple_render_instance_t;
+    void render(const wf::scene::render_instruction_t& data) override
+    {
+        if (self->progress <= 0) return;
+        auto c = self->color;
+        double sweep = self->progress * 2 * M_PI;
+        bool drawn = data.pass->custom_gles_subpass([&]
+        {
+            auto& p = ring_program();
+            if (!p.ready) { p.program.compile(outline_vertex_source, ring_fragment_source); p.ready = true; }
+            wf::gles::bind_render_buffer(data.target);
+            p.program.use(wf::TEXTURE_TYPE_RGBA);
+            p.program.uniformMatrix4f("MVP", wf::gles::render_target_orthographic_projection(data.target));
+            p.program.uniform2f("center", float(self->cx), float(self->cy));
+            p.program.uniform1f("radius", float(self->radius));
+            p.program.uniform1f("line", float(self->line));
+            p.program.uniform1f("sweep", float(sweep));
+            p.program.uniform1f("aa", 1.0f / std::max(0.01f, float(data.target.scale)));
+            p.program.uniform4f("color", glm::vec4{c.r, c.g, c.b, 1.0});
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            auto b = self->box;
+            GLfloat vertices[] = {float(b.x), float(b.y + b.height), float(b.x + b.width), float(b.y + b.height),
+                float(b.x + b.width), float(b.y), float(b.x), float(b.y)};
+            wf::gles::for_each_scissor_rect(data.target, data.damage, [&]
+            {
+                p.program.attrib_pointer("position", 2, 0, vertices);
+                glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            });
+            p.program.deactivate();
+        });
+        if (drawn) return;
+        // Without GLES: square dots along the arc, close enough to read as a stroke.
+        wf::color_t rim{c.r, c.g, c.b, 1};
+        int dots = std::max(1, int(std::ceil(sweep * self->radius / (self->line * 0.6))));
+        for (int i = 0; i <= dots; ++i)
+        {
+            double a = sweep * i / dots;
+            double x = self->cx + self->radius * std::sin(a), y = self->cy - self->radius * std::cos(a);
+            data.pass->add_rect(rim, data.target, {x - self->line / 2, y - self->line / 2, self->line, self->line},
+                data.damage);
+        }
+    }
+};
+
+void hold_ring_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+    wf::scene::damage_callback damage, wf::output_t *output)
+{
+    instances.push_back(std::make_unique<hold_ring_render>(this, damage, output));
 }
 
 void hint_outline_node::update(double nx, double ny, double nwidth, double nheight, double corner_radius,

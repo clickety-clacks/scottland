@@ -626,6 +626,97 @@
         if (!hint_flash_tick.is_connected())
             hint_flash_tick.set_timeout(16, [=] () { return step_hint_flashes(); });
     }
+    // WK39: the hold ring, for the one hold in progress. A hint hold draws it around that hint's
+    // badge; every pointer or touchpad hold draws it at the pointer, where the hand and the eyes
+    // are (the window's badge may be far away, covered, or not shown outside Window mode), in the
+    // target's hint color while hints show, else the accent. It fills from the press's own time,
+    // vanishes at once on a cancel and stays complete for a moment when the hold fires.
+    struct hold_ring_t
+    {
+        std::shared_ptr<scottland::windowing::hold_ring_node> node;
+        wf::output_t *output = nullptr;
+        std::chrono::steady_clock::time_point started;  // the press, on the steady clock
+        double delay = 500;
+        uint64_t hint = 0;     // ring around this window's hint badge (a hint hold)
+        uint64_t target = 0;   // the window a pointer hold acts on (for its color)
+        std::optional<std::chrono::steady_clock::time_point> fired;
+        bool placed = false;  // false: re-add in front (a drag just put its window there)
+    };
+    std::optional<hold_ring_t> hold_ring;
+    wf::wl_timer<true> hold_ring_tick;
+    void start_hold_ring(uint64_t hint, uint64_t target, double elapsed_ms, double delay_ms)
+    {
+        remove_hold_ring();
+        hold_ring_t ring;
+        ring.started = std::chrono::steady_clock::now() -
+            std::chrono::microseconds(int64_t(std::clamp(elapsed_ms, 0.0, delay_ms) * 1000));
+        ring.delay = delay_ms; ring.hint = hint; ring.target = target;
+        hold_ring = std::move(ring);
+        step_hold_ring();
+        if (!hold_ring_tick.is_connected()) hold_ring_tick.set_timeout(16, [=] () { return step_hold_ring(); });
+    }
+    void remove_hold_ring()
+    {
+        if (hold_ring && hold_ring->node) wf::scene::remove_child(hold_ring->node);
+        hold_ring.reset();
+        hold_ring_tick.disconnect();
+    }
+    // A cancel removes it at once; only the ring of the given kind (hint or pointer) is affected.
+    void cancel_hold_ring(bool hint_ring)
+    {
+        if (hold_ring && !hold_ring->fired && (hold_ring->hint != 0) == hint_ring) remove_hold_ring();
+    }
+    void complete_hold_ring()
+    {
+        if (!hold_ring || hold_ring->fired) return;
+        hold_ring->fired = std::chrono::steady_clock::now();
+        step_hold_ring();
+    }
+    bool step_hold_ring()
+    {
+        using namespace std::chrono;
+        if (!hold_ring) return false;
+        auto& ring = *hold_ring;
+        auto now = steady_clock::now();
+        // A hint hold that ended without firing (a release, another key, Alt) loses its ring
+        // even if no input path removed it.
+        if (ring.hint && !ring.fired && !window_keys.hold_waiting()) { remove_hold_ring(); return false; }
+        if (ring.fired && duration<double, std::milli>(now - *ring.fired).count() >=
+            scottland::windowing::hold_ring_linger) { remove_hold_ring(); return false; }
+        double progress = ring.fired ? 1.0 : scottland::windowing::hold_ring_progress(
+            duration<double, std::milli>(now - ring.started).count(), ring.delay, hints_reduced_motion);
+        wf::output_t *output = nullptr;  // null: in front of the whole scene, in layout coordinates
+        double cx = 0, cy = 0, radius = scottland::windowing::hold_ring_pointer;
+        auto color = scottland::windowing::hint_rgb{scottland::palette.accent.r, scottland::palette.accent.g,
+            scottland::palette.accent.b};
+        auto badge = ring.hint ? hint_visuals.find(ring.hint) : hint_visuals.end();
+        if (badge != hint_visuals.end() && badge->second.hint && badge->second.hint_output)
+        {
+            auto c = badge->second.hint->circle;
+            output = badge->second.hint_output;
+            cx = c.x + c.width / 2.0; cy = c.y + c.height / 2.0;
+            radius = c.width / 2.0 + scottland::windowing::hold_ring_gap;
+            color = color_for_hint(ensure_window_memory(ring.hint).hint_slot);
+        } else
+        {
+            // A dragged window is re-added in front of the whole scene (the live drag), so the
+            // pointer's ring goes there too, after it, in layout coordinates.
+            auto cursor = wf::get_core().get_cursor_position();
+            cx = cursor.x; cy = cursor.y;
+            if (window_keys.active && ring.target && model.windows.count(ring.target))
+                color = color_for_hint(ensure_window_memory(ring.target).hint_slot);
+        }
+        if (ring.node && (ring.output != output || !ring.placed)) { wf::scene::remove_child(ring.node); ring.node.reset(); }
+        if (!ring.node)
+        {
+            ring.node = std::make_shared<scottland::windowing::hold_ring_node>();
+            if (output) wf::scene::add_front(output->node_for_layer(wf::scene::layer::OVERLAY), ring.node);
+            else wf::scene::add_front(wf::get_core().scene(), ring.node);
+            ring.output = output; ring.placed = true;
+        }
+        ring.node->update(cx, cy, radius, scottland::windowing::hold_ring_width, color, progress);
+        return true;
+    }
     std::vector<scottland::windowing::rectangle> placement_obstacles(wf::output_t *output, uint64_t excluded)
     {
         std::vector<scottland::windowing::rectangle> rectangles;
@@ -997,7 +1088,9 @@
     void arm_hint_hold()
     {
         hint_hold.set_timeout(std::max(1u, window_keys.hold_remaining(now_msec())), [=] () {
-            if (!window_keys.hold_due(now_msec()) && window_keys.hold_waiting())
+            auto now = now_msec();
+            if (window_keys.hold_waiting() && window_keys.hold_remaining(now) == 0) complete_hold_ring();
+            if (!window_keys.hold_due(now) && window_keys.hold_waiting())
                 hint_hold_retry.run_once([=] () { if (window_keys.hold_waiting()) arm_hint_hold(); });
         });
     }
@@ -1558,6 +1651,7 @@
     void end_window_keys()
     {
         window_keys.interrupt(); // Alt release: a focused window's waiting press acts first
+        cancel_hold_ring(true);
         arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
         apply_all_opacity();
@@ -1615,7 +1709,10 @@
         if (!down && swallowed_keys.erase(code))
         {
             if (auto letter = window_hint_letter(keyboard, code))
+            {
                 window_keys.release(*letter, key_event_time(ev->event));
+                if (!window_keys.hold_waiting()) cancel_hold_ring(true); // released: a tap
+            }
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // finish our own pair; this is not a new compositor grab
         }
@@ -1702,6 +1799,7 @@
         // Another key ends a hint hold; Esc also drops a focused window's waiting press (WK35).
         if (code == KEY_ESC && first) window_keys.cancel_pending();
         else if (first || arrow_key(code)) window_keys.interrupt();
+        if (!window_keys.hold_waiting()) cancel_hold_ring(true); // another key ended the hold
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
         if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
@@ -1716,7 +1814,13 @@
                 window_keys.refresh(window_entries());
                 window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
                 window_keys.letter(*letter, key_event_time(ev->event));
-                if (window_keys.hold_waiting()) arm_hint_hold();
+                if (window_keys.hold_waiting())
+                {
+                    arm_hint_hold();
+                    double delay = window_keys.hold_delay;
+                    start_hold_ring(window_keys.hold_window(), window_keys.hold_window(),
+                        delay - window_keys.hold_remaining(now_msec()), delay);
+                }
             }
         }
     };
@@ -1759,6 +1863,19 @@
         reply["hint_step_count"] = int64_t(hint_step_count);
         reply["hint_step_animation"] = hint_step_animation;
         reply["hint_step_offset"] = hint_step_offset;
+        reply["hold_ring"] = wf::json_t();
+        reply["hold_ring"]["visible"] = hold_ring && hold_ring->node && hold_ring->node->progress > 0;
+        if (hold_ring && hold_ring->node)
+        {
+            // Diagnostics: where the ring is drawn (output-local) and how full; tests judge pixels.
+            auto& n = *hold_ring->node;
+            reply["hold_ring"]["x"] = n.cx; reply["hold_ring"]["y"] = n.cy;
+            reply["hold_ring"]["radius"] = n.radius; reply["hold_ring"]["line"] = n.line;
+            reply["hold_ring"]["progress"] = n.progress; reply["hold_ring"]["fired"] = bool(hold_ring->fired);
+            reply["hold_ring"]["output"] = hold_ring->output ? hold_ring->output->to_string() : ""; // "": layout coordinates
+            reply["hold_ring"]["color"] = wf::json_t::array();
+            for (double c : {n.color.r, n.color.g, n.color.b}) reply["hold_ring"]["color"].append(c);
+        }
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
         window_keys.refresh(window_entries());
         for (auto e : window_keys.entries)
@@ -1916,7 +2033,7 @@
         hint_hold.disconnect(); hint_hold_retry.disconnect(); deferred_pair.disconnect(); deferred_pair_ready.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
         stop_keyboard_motion();
-        end_center_switcher(false); hint_flash_tick.disconnect();
+        end_center_switcher(false); hint_flash_tick.disconnect(); remove_hold_ring();
         for (auto& [id, flash] : hint_flashes) if (flash.node) wf::scene::remove_child(flash.node);
         hint_flashes.clear();
         window_keys.end();
