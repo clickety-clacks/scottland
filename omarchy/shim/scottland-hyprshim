@@ -284,7 +284,25 @@ class Translator:
         reply = self.wf.call("scottland/session-state") or {}
         return bool(reply.get("locked"))
 
-    def monitor(self, outputs, output, focused_id, locked=False):
+    @staticmethod
+    def output_power(*args):
+        """Run scottland-output-power (DPMS through wlr-output-power-management): (ok, {name: on?}, error)."""
+        hooks = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+        try:
+            result = subprocess.run([os.path.join(hooks, "libexec/scottland-output-power"), *args],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as error:
+            return False, {}, str(error)
+        power = {}
+        for line in result.stdout.splitlines():
+            try:
+                entry = json.loads(line)
+                power[entry["name"]] = entry["power"] == "on"
+            except (ValueError, KeyError):
+                pass
+        return result.returncode == 0, power, result.stderr.strip()
+
+    def monitor(self, outputs, output, focused_id, locked=False, power=None):
         geometry, workarea = output["geometry"], output["workarea"]
         reserved = [
             int(workarea["x"] - geometry["x"]),
@@ -303,7 +321,7 @@ class Translator:
             "specialWorkspace": {"id": 0, "name": ""},
             "reserved": reserved, "scale": 1, "transform": 0,
             "focused": output["id"] == focused_id,
-            "dpmsStatus": True, "vrr": False,
+            "dpmsStatus": (power or {}).get(output["name"], True), "vrr": False,
             # omarchy-hyprland-session-locked reads the session lock from here: Hyprland lists
             # "LOCK" among the reasons a monitor can't go solitary while a lock holds the session,
             # including one whose lock client died.
@@ -353,7 +371,10 @@ class Translator:
     def monitors(self):
         outputs, focused = self.outputs(), self.focused_output_id()
         locked = self.session_locked()
-        return [self.monitor(outputs, o, focused, locked) for o in outputs]
+        ok, power, error = self.output_power("status")
+        if not ok:
+            log(f"output power state unavailable: {error}")
+        return [self.monitor(outputs, o, focused, locked, power) for o in outputs]
 
     def workspaces(self):
         outputs, views = self.outputs(), self.views()
@@ -419,6 +440,26 @@ class Translator:
 
     EXEC_LUA = re.compile(r'^hl\.dsp\.exec_cmd\s*\(')
 
+    DPMS_LUA = re.compile(r'^hl\.dsp\.dpms\s*\(')
+    DPMS_CLASSIC = re.compile(r'^dpms(?:\s+(on|off|toggle))?(?:\s+(\S+))?\s*$')
+    DPMS_ACTIONS = {"enable": "on", "on": "on", "disable": "off", "off": "off", "toggle": "toggle",
+                    None: "toggle"}
+
+    def dpms(self, text, match):
+        """Turn displays off/on: hl.dsp.dpms({ action = "disable", monitor = "eDP-1" }) or the
+        classic `dpms off [name]`. Applied by the compositor's power management; the reply says
+        whether it took effect."""
+        if match.re is self.DPMS_LUA:
+            fields = dict(self.LUA_FIELD.findall(text))
+            action, monitor = fields.get("action"), fields.get("monitor")
+        else:
+            action, monitor = match.group(1), match.group(2)
+        if action not in self.DPMS_ACTIONS:
+            return f"error: unknown dpms action {action!r}"
+        args = (["--output", monitor] if monitor else []) + [self.DPMS_ACTIONS[action]]
+        ok, _power, error = self.output_power(*args)
+        return "ok" if ok else f"error: dpms {self.DPMS_ACTIONS[action]} failed: {error or 'refused'}"
+
     @classmethod
     def exec_command(cls, text):
         """The command of an exec dispatch: hl.dsp.exec_cmd(<Lua string>, ...) or classic `exec`."""
@@ -439,6 +480,9 @@ class Translator:
             subprocess.Popen(["sh", "-c", command], start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return "ok"
+        dpms = self.DPMS_LUA.match(text.strip()) or self.DPMS_CLASSIC.match(text.strip())
+        if dpms:
+            return self.dpms(text.strip(), dpms)
         if "send_key_state" in text or "send_shortcut" in text:
             # hl.dsp.send_key_state({ key = "Insert", mods = "CTRL", state = "down" })
             fields = dict(self.LUA_FIELD.findall(text))

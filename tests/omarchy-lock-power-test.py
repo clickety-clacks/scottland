@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""The session lock state is reported truthfully (adapter-gaps AG17).
+"""Lock state and display power are real and reported truthfully (adapter-gaps AG17, AG18).
 
 Isolated headless --omarchy session (fixture HOME). Omarchy's own scripts run unchanged against
-the shim: omarchy-hyprland-session-locked (exit 0 locked, 1 unlocked). The lock is a real ext-session-lock client (tests/session-lock-fixture.qml),
+the shim: omarchy-hyprland-session-locked (exit 0 locked, 1 unlocked) and
+omarchy-brightness-display off/on (DPMS dispatches; `on` dispatches only when the shim reports a
+display off). The lock is a real ext-session-lock client (tests/session-lock-fixture.qml),
 unlocked by pressing Return on it (stipc key) or killed to strand the lock.
 
-Independent oracle: a screencopy client (grim). While locked it sees the lock surface (magenta) or, after
+Independent oracles: a screencopy client (grim). It cannot capture an output that is powered
+off and captures it again once on; while locked it sees the lock surface (magenta) or, after
 the lock client died, Wayfire's stand-in, never the window underneath (#3366CC).
 
   tests/omarchy-lock-power-test.py
@@ -63,11 +66,28 @@ with Session(fixture, "hl-omarchy-lock-power") as session:
     check("unlocked session reports unlocked (exit 1)", locked_status(session) == 1,
           locked_status(session))
 
+    # AG18: display off and on through Omarchy's own script.
+    off = session.run("omarchy-brightness-display", "off")
+    ok, _ = wait_capture(session, "dpms-off", center, lambda p: p is None)
+    check("omarchy-brightness-display off powers the display off (screencopy fails)",
+          off.returncode == 0 and ok, off.returncode)
+    on = session.run("omarchy-brightness-display", "on")
+    ok, value = wait_capture(session, "dpms-on", center, lambda p: p == WINDOW)
+    check("omarchy-brightness-display on powers it back on (window captured again)",
+          on.returncode == 0 and ok, (on.returncode, value))
+
     # AG17: a real lock, reported locked; display power works while locked.
     start_lock(session)
     ok, _ = wait_capture(session, "locked", center, lambda p: p == LOCK)
     check("lock client covers the screen", ok)
     check("locked session reports locked (exit 0)", locked_status(session) == 0, locked_status(session))
+    session.run("omarchy-brightness-display", "off")
+    ok, _ = wait_capture(session, "locked-off", center, lambda p: p is None)
+    check("display powers off while locked", ok)
+    session.run("omarchy-brightness-display", "on")
+    ok, _ = wait_capture(session, "locked-on", center, lambda p: p == LOCK)
+    check("display powers on while locked, still showing the lock", ok)
+
     session.tap("KEY_ENTER")
     ok, _ = wait_capture(session, "unlocked", center, lambda p: p == WINDOW)
     check("Return unlocks; the window is visible again", ok)
