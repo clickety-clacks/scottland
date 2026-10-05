@@ -5,12 +5,13 @@ scottland-reload does it (fresh copy, widget hand-over mark). Checks that it sur
 window and widget, renders, and that the new build's solo works afterwards.
 
 Runs inside the OLD build's headless session (tests/reload-rehearsal-test.sh starts it).
-argv: ARTIFACTS NEW_PLUGIN_SO"""
+argv: ARTIFACTS NEW_PLUGIN_SO SESSION_METADATA_XML NEW_METADATA_XML"""
 import json, os, shutil, sys, time
 from pathlib import Path
 
 art = Path(sys.argv[1]).resolve(); art.mkdir(parents=True, exist_ok=True)
 plugin = Path(sys.argv[2]).resolve()
+session_xml, new_xml = Path(sys.argv[3]), Path(sys.argv[4])
 source = Path(__file__).with_name('spread-test.py').read_text().split('\ntry:\n', 1)[0]
 sys.argv = [sys.argv[0], str(art)]
 h = {}
@@ -55,9 +56,10 @@ try:
     time.sleep(1)
     ids = [h['launch'](f'Rehearse{i}') for i in range(7)]
     S = ids[0]
-    # Overlapping windows, so the peek engine has windows to move aside, and two widgets.
+    # Two windows wholly behind the focused one, so the peek engine has to move them aside, an
+    # overlapping pair in the periphery, and two widgets.
     h['setup']([(ids[1], 80, 120, 700, 500), (ids[2], 300, 300, 700, 500), (ids[3], 1800, 200, 600, 500),
-                (ids[4], 1700, 500, 600, 450), (ids[5], 900, 150, 600, 450), (ids[6], 1100, 700, 600, 450),
+                (ids[4], 1700, 500, 600, 450), (ids[5], 950, 450, 500, 350), (ids[6], 1150, 650, 500, 350),
                 (S, 830, 370, 900, 700)], S)
     for w in (ids[3], ids[4]):
         h['alt'](True); h['press_hint'](w); time.sleep(.1); h['press_hint'](w); h['alt'](False)
@@ -72,7 +74,10 @@ try:
     check(len(peeking) >= 1, f'before: windows peek out under the old build ({len(peeking)} displaced)')
     h['shot']('before-reload.png')
 
-    # The reload, as scottland-reload does it: a fresh copy and the hand-over mark for widgets.
+    # The reload, as scottland-reload does it: the new build's settings metadata (new options)
+    # registered first, a fresh copy of the plugin, and the hand-over mark for widgets.
+    shutil.copy(new_xml, session_xml)
+    ipc('wayfire/reload-config-metadata')
     mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.reloading')
     mark.parent.mkdir(parents=True, exist_ok=True); mark.touch()
     fresh = art / f'libscottland-rehearsal-{time.time_ns()}.so'

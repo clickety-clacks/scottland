@@ -109,7 +109,7 @@ plugin refuses an offer before it releases the drag.
 | SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on the x86 test machine and the ARM test machine); real-GPU latency not yet measured |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (headless on both test machines) |
 | SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots over running glides (and once avoidance offsets have settled), refuses on a change of the hotspot setting, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (the ARM test machine, headless, real stipc drags, 59 checks, 2026-10-04) |
-| SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (headless on both test machines reload rehearsal) |
+| SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced; a reload from the previous main build keeps every window, widget and peek. | verified (headless reload rehearsals on both test machines, 2026-10-04) |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared test session was not
 reloaded). The two settings have no row in Scottland Settings yet; `scottland-ctl` sets them.
@@ -153,7 +153,11 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
 
 `tests/spread-unit.sh` (fixtures, fuzz, determinism, slices, starved budgets, cancellation, timing),
 `tests/spread-test.sh` (46 real-input checks plus the load measurement),
-`tests/spread-reload-test.sh` (reload rehearsal), all headless on either test machine.
+`tests/spread-reload-test.sh` (reload rehearsal with a solve in flight or an offer showing), and
+`tests/reload-rehearsal-test.sh OLD_CHECKOUT` (a session started on an older build, with widgets
+and peeking windows, reloaded in place into this one: the new settings metadata is registered first,
+as `scottland-reload` does; without that the new plugin cannot load its options and the session is
+left without Scottland), all headless on either test machine.
 
 ## Rail behavior (WG26)
 
