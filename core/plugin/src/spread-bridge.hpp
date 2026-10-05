@@ -24,6 +24,10 @@
         std::chrono::steady_clock::time_point started;
         std::chrono::nanoseconds compute_limit{0}, wall_limit{0}; // 0: until finished
         std::string purpose;
+        // The event loop's own time between two slices (frames, input): reported, since delivery
+        // can only happen when the loop comes back to the solve.
+        std::chrono::steady_clock::time_point last_slice_end;
+        std::chrono::nanoseconds longest_gap{0};
     };
     std::optional<spread_run_t> spread_run;
     wf::wl_timer<true> spread_tick;
@@ -149,8 +153,19 @@
     {
         if (!spread_run) return false;
         auto& run = *spread_run;
-        bool done = run.job->step(spread_test_slow ? std::chrono::nanoseconds(1) : std::chrono::nanoseconds(SPREAD_SLICE));
-        auto waited = std::chrono::steady_clock::now() - run.started;
+        auto now = std::chrono::steady_clock::now();
+        if (run.job->slices)
+            run.longest_gap = std::max(run.longest_gap,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now - run.last_slice_end));
+        // At the wall limit, deliver what exists now; a further slice would only make it later.
+        auto waited = now - run.started;
+        if (run.wall_limit.count() && waited >= run.wall_limit) { spread_deliver(); return false; }
+        std::chrono::nanoseconds allowance = spread_test_slow ? std::chrono::nanoseconds(1) :
+            std::chrono::nanoseconds(SPREAD_SLICE);
+        if (run.wall_limit.count()) allowance = std::min(allowance, run.wall_limit - waited);
+        bool done = run.job->step(allowance);
+        run.last_slice_end = std::chrono::steady_clock::now();
+        waited = run.last_slice_end - run.started;
         bool out = done || (run.compute_limit.count() && run.job->total >= run.compute_limit) ||
             (run.wall_limit.count() && waited >= run.wall_limit);
         if (!out) return true;
@@ -187,6 +202,8 @@
         record["longest_slice_ms"] = longest;
         record["solving_ms"] = solving;
         record["waited_ms"] = waited;
+        record["longest_gap_ms"] = std::chrono::duration<double, std::milli>(run.longest_gap).count();
+        record["wall_limit_ms"] = std::chrono::duration<double, std::milli>(run.wall_limit).count();
         record["spacing"] = result.spacing;
         record["sequence"] = (int64_t)spread_solves;
         wf::json_t moves = wf::json_t::array();
@@ -490,6 +507,10 @@
             {
                 audition_reset("left the hotspot");
                 audition_restart(pointer);
+            } else if (spread_signature(output, audition.dragged) != audition.signature)
+            {
+                audition_reset("the desktop changed");  // e.g. zone settings: no signal reaches here
+                audition_restart(pointer);
             }
             return;
         }
@@ -600,8 +621,10 @@
     // (the dropped window stays exactly where it was dropped, so it does not coast).
     bool audition_drop(wayfire_toplevel_view main, wf::pointf_t released)
     {
+        // Still the offer it was: inside the hotspot, not a Shift drop (L31), nothing changed since.
         bool accept = audition.offered && main && main->get_id() == audition.dragged && main->get_output() == audition.output &&
-            std::hypot(released.x - audition.anchor.x, released.y - audition.anchor.y) <= audition_hotspot();
+            std::hypot(released.x - audition.anchor.x, released.y - audition.anchor.y) <= audition_hotspot() &&
+            !shift_held() && spread_signature(audition.output, audition.dragged) == audition.signature;
         if (accept)
         {
             auto g = main->get_geometry();
@@ -625,10 +648,11 @@
 
     // A client mapped, closed or resized, or the zones changed: an offer ends as a refusal (an
     // independent change is never rolled back) and the pause is timed again.
-    void audition_invalidate(wayfire_view view)
+    void audition_invalidate(wayfire_view view, bool resized = false)
     {
         if (!audition.watching || (!audition.solving && !audition.result && !audition.offered)) return;
-        if (view && view->get_id() == audition.dragged) return;
+        // The dragged window moving is the drag itself; resizing it voids the reservation.
+        if (view && view->get_id() == audition.dragged && !resized) return;
         audition_reset("the desktop changed");
         audition.still_since = std::chrono::steady_clock::now();
         audition_schedule();

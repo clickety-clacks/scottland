@@ -377,6 +377,38 @@ static void fixtures()
         for (const auto& m : r.moves)
             if (m.id == 1 && std::abs(m.cx - x) < 1e-6) CHECK(m.pin && std::abs(*m.pin - 0.5) < 1e-9, "pin lost at same x");
     }
+    // Fable's W1/W1b (decision 4): a resident 4 pt under the solo target moves vertically at its
+    // own x and scale (keeping a pin), never a few points outward, though that travels less.
+    for (bool pinned : {false, true})
+    {
+        auto s = screen(2560, 1440);
+        double x = representable(700, 600);
+        double sc = pinned ? 0.9 : std::clamp(s.scale(x), 0.05, 1.0);
+        s.windows.push_back(window(1, role_t::resident, 600, 400, x, 500, sc, pinned));
+        double right = x + 600 * sc / 2;
+        s.solo = {right - 4, 600, right + 660, 1300};
+        auto r = solve(s);
+        check_invariants(s, r, pinned ? "W1b" : "W1");
+        bool ok = false;
+        for (const auto& m : r.moves)
+            if (m.id == 1) ok = std::abs(m.cx - x) < 1e-6 && std::abs(m.scale - sc) < 1e-9 && (!pinned || m.pin);
+        CHECK(ok, "%s: the resident did not move vertically at its own x and scale", pinned ? "W1b" : "W1");
+    }
+    // Fable's W2: a resident that has no legal spot stays under the solo target; the status
+    // says so (it is not "clear").
+    {
+        zones_t z; z.min_scale = 0.9;
+        auto s = screen(2560, 1440, z);
+        double x = representable(600, 900);
+        s.windows.push_back(window(1, role_t::resident, 900, 1700, x, 720, std::clamp(s.scale(x), 0.05, 1.0)));
+        double right = x + 900 * s.windows[0].scale / 2;
+        s.solo = {right - 60, 300, right + 900, 1100};
+        auto r = solve(s);
+        CHECK(r.status != status_t::clear, "W2: an immovable resident under the solo reported %s", status_name(r.status));
+        bool reported = false;
+        for (auto [a, b] : r.overlaps) reported |= a == 1 && b == 0;
+        CHECK(reported, "W2: the overlap with the solo target is not listed");
+    }
     // A widget protruding into the periphery is avoided like any fixed thing.
     {
         auto s = screen(2560, 1440);
@@ -411,6 +443,20 @@ static void check_spacing(const snapshot_t& s, const std::vector<result_t>& publ
             CHECK(std::abs(p.cx - q.cx) < 1e-6 && std::abs(p.s - q.s) < 1e-9, "%s: spacing moved resident %llu sideways", name,
                 (unsigned long long)w.id);
     }
+    for (const auto& w : s.windows)
+        for (const auto& o : s.windows)
+        {
+            if (o.id <= w.id) continue;
+            auto gap = [&] (const std::map<uint64_t, final_t>& L) {
+                box x = rect_of(w, L.at(w.id)), y = rect_of(o, L.at(o.id));
+                double dx = std::max(x.x0, y.x0) - std::min(x.x1, y.x1), dy = std::max(x.y0, y.y0) - std::min(x.y1, y.y1);
+                if (dx < 0 && dy < 0) return std::max(dx, dy);
+                return std::hypot(std::max(0.0, dx), std::max(0.0, dy));
+            };
+            double before = gap(a), after = gap(b);
+            CHECK(after >= std::min(r.spacing, before) - 1e-6, "%s: spacing brought %llu and %llu from %.2f to %.2f", name,
+                (unsigned long long)w.id, (unsigned long long)o.id, before, after);
+        }
     CHECK(contact->overlaps.size() == r.overlaps.size(), "%s: spacing changed overlap", name);
     CHECK(contact->score.below_band == r.score.below_band, "%s: spacing changed the band", name);
 }
@@ -489,6 +535,31 @@ static void starved()
                 }
         }
     }
+}
+
+// A cut during the first arrangement delivers the arrivals placed so far, not the seed pile.
+static void anytime()
+{
+    std::mt19937 rng(31);
+    int partial = 0, scenes = 0;
+    for (int c = 0; c < 40; ++c)
+    {
+        auto s = random_scene(rng, 5 + c % 3, 6);
+        auto full = solve(s);
+        if (full.checkpoint.rfind("seed", 0) == 0) continue;
+        ++scenes;
+        bool seen = false;
+        for (uint64_t cap = 500; cap < full.work && !seen; cap = cap * 5 / 4)
+        {
+            auto cut = s; cut.work_cap = cap;
+            auto r = solve(cut);
+            seen = r.checkpoint.find("placed)") != std::string::npos;
+            if (seen) check_invariants(cut, r, "anytime");
+        }
+        partial += seen;
+    }
+    CHECK(partial * 2 > scenes, "anytime: a cut delivered placed arrivals in only %d of %d scenes", partial, scenes);
+    std::printf("anytime: %d of %d scenes delivered partial progress at some cut\n", partial, scenes);
 }
 
 // Destroying an unfinished job unwinds it (no leak, no crash) and its result stays usable.
@@ -610,6 +681,7 @@ int main(int argc, char **argv)
     fixtures();
     fuzz(bench ? 200 : 600);
     starved();
+    anytime();
     cancellation();
     timing();
     std::printf("arrivals hanging more than 16 pt into the center zone (too wide to avoid it): %d\n", hanging);

@@ -45,16 +45,21 @@ nothing untouched moves. Arrivals hang into the center zone at most 16 pt when t
 10-04). If nothing clear exists the least-overlap legal layout is used, solo in front; nothing ever
 goes to a rail or becomes a widget.
 
-**Bounded (P8).** Every unit operation charges one work counter (cap 1,000,000 units, about 12 ms
-on plumbus). Until the main-loop worker lands (branch mainloop-impl), the solve runs on the event
-loop in 2 ms slices with the loop free for at least 1 ms between them (`spread-job.hpp`: the solve
-is suspended inside its unit operations on its own small stack, so the worker can call the same
-`step()` later). A keyboard solo commits the best validated checkpoint after 12 ms of solving or
-30 ms of waiting. Measured in the real build (plumbus headless, `tests/spread-load-test.py`): 12,
-24 and 40 windows took 1, 2 and 6 slices, longest 0.75, 2.00 and 2.00 ms; 40 windows were cut at
-12 ms of solving (delivered after 30 ms) with the best checkpoint. Unit operations measure under
-40 µs of CPU; longer wall-clock slices seen on plumbus were preemption under load (nacelle, idle:
-longest 1.008 ms for a 1 ms allowance).
+**Bounded (P8).** Every unit operation charges one work counter (cap 1,000,000 units, about 9 to
+11 ms on an idle plumbus or nacelle core). Until the main-loop worker lands (branch mainloop-impl),
+the solve runs on the event loop in 2 ms slices with the loop free for at least 1 ms between them
+(`spread-job.hpp`: the solve is suspended inside its unit operations on its own small stack, so the
+worker can call the same `step()` later). A keyboard solo commits the best validated checkpoint after
+12 ms of solving or 30 ms of waiting, at the first event-loop turn after that limit. The first
+arrangement offers a checkpoint after each arrival it places (the rest at their seed spots), so a
+cut delivers the progress made. Measured in the real build (nacelle headless,
+`tests/spread-load-test.py`, 2026-10-04): 12, 24 and 40 windows took 1, 5 and 5 slices, longest
+1.53, 2.00 and 2.00 ms; the 40-window solve was cut at 10 ms of solving with 10 of 13 arrivals
+placed, delivered after 78 ms because one event-loop turn spent 64 ms drawing 40 windows in
+software between two slices (spread itself never held the loop longer than a slice). Inside that
+session the kernel did about 31 units/µs against 112 in the unit suite on the same host, so its
+12 ms reach less far there; this is still to be measured on a real GPU session. Unit operations
+measure under 40 µs of CPU; longer wall-clock slices seen on plumbus were preemption under load.
 
 **The drag audition.** A drag of a window (not a widget, not a Shift drag, L31) whose center is in
 the center zone, with the pointer resting within 8 pt for `solo_audition_delay` (3000 ms; 0 turns it
@@ -66,7 +71,9 @@ more than `solo_audition_hotspot` (50 pt) from the anchor, leaving the center zo
 mapping, closing or resizing refuses it: every window eases back to exactly where it was (its true
 geometry never changed) and the pause is timed again. A drop inside the hotspot accepts it: each
 window glides from where it is drawn to its spot, and the dropped window stays exactly where it was
-dropped (no settle, no coast, P14). Unloading the plugin refuses an offer before it releases the drag.
+dropped (no settle, no coast, P14). A Shift drop, a changed desktop or zone setting (rechecked on
+every motion and at the drop) and a resize of the dragged window refuse it too. Unloading the
+plugin refuses an offer before it releases the drag.
 
 ### Invariants
 
@@ -82,13 +89,20 @@ dropped (no settle, no coast, P14). Unloading the plugin refuses an offer before
 | SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (plumbus and nacelle headless reload rehearsal) |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared plumbus session was not
-reloaded). The two settings have no row in Scottland Settings yet.
+reloaded). The two settings have no row in Scottland Settings yet; `scottland-ctl` sets them.
 
 ### Implementation choices (for review against final.md)
 
 - Outward distances closer than one halo count as equal, so travel decides between near-equal spots
   (P11). Strict lexicographic order sent an arrival across the screen for a 0.6 pt gain (seen on
-  plumbus).
+  plumbus). For a resident, a spot at its own x still beats any outward one, however small
+  (decision 4; Fable's review, witnesses W1/W1b).
+- A window the solve could not move out from under the solo target is reported as overlap, moved or
+  not (Fable's W2).
+- The spacing pass also rejects a trial that brings any pair closer than it was or than the
+  clearance sought (Astra's review: two nudged windows narrowed a non-close pair from 11.7 to 3.8 pt).
+- Keyboard delivery waits up to 30 ms (final.md targets 16 ms): on the event loop, 12 ms of solving
+  spread over 2 ms slices cannot be delivered sooner.
 - A pinned resident that moves vertically at its own x keeps its pin ("same scale", decision 4);
   anywhere else it takes the natural scale there and loses the pin.
 - The work cap is 1,000,000 of this kernel's units (about 12 ms on plumbus); final.md's 150,000 was a

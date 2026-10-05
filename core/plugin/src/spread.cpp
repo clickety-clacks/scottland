@@ -85,6 +85,7 @@ struct spot_t
     double cx = 0, cy = 0, s = 0;
     bool pin = false;
     double outward = 0, travel = 0;
+    bool same_x_first = false;       // resident rule: a spot at its own x beats every other x
     double overlap = 0;              // least-overlap rung: weighted normalized overlap
     int conflicts = 0;               // push rung: soft obstacles in the way
     double conflict_area = 0;
@@ -102,6 +103,7 @@ struct request_t
     double ox = 0, oy = 0;           // origin: travel is measured from here
     double base = 0;                 // outward = max(0, |x - W/2| - base)
     bool want_push = false, want_overlap = false;
+    bool same_x_first = false;       // the resident rule
     const std::vector<box> *hard = nullptr;
     const std::vector<soft_t> *soft = nullptr;
     size_t solo_index = SIZE_MAX;    // index in *hard of the solo target (weighted in least overlap)
@@ -123,6 +125,13 @@ bool better_clear(const spot_t& a, const spot_t& b)
 {
     if (!b.ok) return a.ok;
     if (!a.ok) return false;
+    // Decision 4: a resident's same-scale vertical move comes before any outward one, however
+    // small (the halo tie below is for arrivals and among a resident's outward spots).
+    if (a.same_x_first || b.same_x_first)
+    {
+        bool az = a.outward < 0.25, bz = b.outward < 0.25;
+        if (az != bz) return az;
+    }
     if (std::abs(a.outward - b.outward) > OUTWARD_TIE) return a.outward < b.outward;
     if (std::abs(a.travel - b.travel) > 1e-9) return a.travel < b.travel;
     return false;  // keep the earlier candidate: deterministic
@@ -487,6 +496,7 @@ class solver_t
         if (side == 0) { q.xlo = dom_lo[0]; q.xhi = std::min(dom_hi[0], w.cx); }
         else { q.xlo = std::max(dom_lo[1], w.cx); q.xhi = dom_hi[1]; }
         q.max_scale = w.scale + 1e-9;
+        q.same_x_first = true;
         q.ox = w.cx; q.oy = w.cy; q.base = from_middle(w.cx);
         q.hard = &hard; q.solo_index = 0;
         return q;
@@ -625,6 +635,7 @@ class solver_t
         auto make = [&] (double y) {
             spot_t sp; sp.ok = true; sp.cx = x; sp.cy = y; sp.s = s; sp.pin = pin;
             sp.outward = outward; sp.travel = std::hypot(x - q.ox, y - q.oy);
+            sp.same_x_first = q.same_x_first;
             return sp;
         };
         // Hard obstacles: exact clear intervals in y.
@@ -824,7 +835,7 @@ class solver_t
         auto overlap_reason = [] (const std::optional<checkpoint_t>& c) {
             return c && (c->score.overlap > 1e-6 || c->score.solo_overlap > 1e-6);
         };
-        auto frozen_large = arrange(false, by_size, "frozen, largest first");
+        auto frozen_large = arrange(false, by_size, "frozen, largest first", true);
         std::optional<checkpoint_t> frozen_best = frozen_large;
         if (overlap_reason(frozen_large) && by_recency != by_size)
         {
@@ -865,7 +876,10 @@ class solver_t
         if (extra) hard.push_back(rect(extra->first, extra->second));
     }
 
-    std::optional<checkpoint_t> arrange(bool privileged, const std::vector<size_t>& order, const char *name)
+    // `anytime`: after each arrival, offer the layout so far with the rest at their seed spots,
+    // so a cut delivers the progress made, not the seed pile (it is complete and legal).
+    std::optional<checkpoint_t> arrange(bool privileged, const std::vector<size_t>& order, const char *name,
+        bool anytime = false)
     {
         layout_t L = baseline;
         // Arrivals are re-placed from the baseline; the seed spots are only the fallback.
@@ -874,8 +888,17 @@ class solver_t
         for (size_t j : residents) if (L.forced[j]) L.moved_order.push_back(j);
         std::vector<box> hard;
         std::vector<soft_t> soft;
+        size_t done = 0;
         for (size_t i : order)
         {
+            if (anytime && done++ > 0)
+            {
+                layout_t P = L;
+                for (size_t j : arrivals)
+                    if (!P.placed[j]) { P.pos[j] = baseline.pos[j]; P.placed[j] = 1; }
+                offer(P, std::string(name) + " (" + std::to_string(done - 1) + " of " +
+                    std::to_string(order.size()) + " placed)");
+            }
             // Rungs 1, 3, 4 treat residents as hard.
             hard_for(i, L, false, hard, soft);
             picked_t sides[2];
@@ -1139,8 +1162,9 @@ class solver_t
         }
         for (size_t i = 0; i < S.windows.size(); ++i)
         {
+            // A window still under the solo target is reported, moved or not.
+            if (win(i).role != role_t::fixed && real_overlap(rects[i], S.solo)) r.overlaps.emplace_back(win(i).id, 0);
             if (!affected[i]) continue;
-            if (real_overlap(rects[i], S.solo)) r.overlaps.emplace_back(win(i).id, 0);
             for (size_t j = 0; j < S.windows.size(); ++j)
                 if (j != i && !(affected[j] && j < i) && real_overlap(rects[i], rects[j]))
                     r.overlaps.emplace_back(win(i).id, win(j).id);
@@ -1227,7 +1251,7 @@ class solver_t
             try_spacing(L, actors, is_actor, g);
             double after = min_clearance(L);
             if (after + 1e-6 < g) continue;
-            if (!spacing_valid(contact, L)) continue;
+            if (!spacing_valid(contact, L, g)) continue;
             offer(L, contact.name + " + spacing", g);
             return;
         }
@@ -1372,9 +1396,29 @@ class solver_t
     // The spaced layout replaces the contact one only if every comparison term but travel is
     // unchanged, each nudged window moved at most one halo, arrivals stay in band, residents
     // keep x and scale, nothing new overlaps and no moved resident's original spot is clear.
-    bool spacing_valid(const checkpoint_t& contact, const layout_t& L)
+    bool spacing_valid(const checkpoint_t& contact, const layout_t& L, double g)
     {
         const auto& L0 = contact.layout;
+        // No pair ends closer than it was or than the clearance sought, whichever is less: the
+        // fixed pair set only covers pairs that were close, and two nudged windows may approach
+        // each other from farther away.
+        for (size_t i = 0; i < S.windows.size(); ++i)
+        {
+            if (same_pos(L.pos[i], L0.pos[i])) continue;
+            box r = rect(i, L.pos[i]), r0 = rect(i, L0.pos[i]);
+            for (const auto& b : base_hard)
+            {
+                work.charge();
+                if (clearance(r, b) < std::min(g, clearance(r0, b)) - 1e-6) return false;
+            }
+            for (size_t j = 0; j < S.windows.size(); ++j)
+            {
+                if (j == i) continue;
+                work.charge();
+                if (clearance(r, rect(j, L.pos[j])) < std::min(g, clearance(r0, rect(j, L0.pos[j]))) - 1e-6)
+                    return false;
+            }
+        }
         for (size_t i = 0; i < S.windows.size(); ++i)
         {
             work.charge();

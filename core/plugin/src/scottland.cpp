@@ -6121,9 +6121,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
         [=] (wf::view_geometry_changed_signal *ev)
     {
-        if (ev->old_geometry.width != ev->view->get_geometry().width ||
-            ev->old_geometry.height != ev->view->get_geometry().height || drag->view != ev->view)
-            audition_invalidate(ev->view);
+        audition_invalidate(ev->view, ev->old_geometry.width != ev->view->get_geometry().width ||
+            ev->old_geometry.height != ev->view->get_geometry().height);
         if (auto view = wf::toplevel_cast(ev->view))
         {
             recenter_keyboard_resize(view);

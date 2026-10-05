@@ -284,6 +284,31 @@ try:
     check(geometry(A1)['width'] == g['width'] - 60, 'invalidation: the client change is kept')
     pointer(1280 + 200, 300); time.sleep(.2); end_drag(); settle(ids)
 
+    # 6b. Shift pressed while the offer shows, without moving: the drop refuses it (L31).
+    setup(drag_scene, A2)
+    true_before = {i: geometry(i) for i in ids}
+    start_drag(S, (1280, 700)); time.sleep(3.4)
+    check(wait(lambda: spread()['audition']['offered'], 2, 'offer'), 'Shift at the drop: the offer shows')
+    key('LEFTSHIFT', True); time.sleep(.2); end_drag(); key('LEFTSHIFT', False); settle(ids)
+    check(all(geometry(i) == true_before[i] for i in (A1, A2, R)), 'Shift at the drop: the offer is refused, nothing else moves',
+          str({i: (true_before[i], geometry(i)) for i in (A1, A2, R) if geometry(i) != true_before[i]}))
+
+    # 6c. The dragged window resizing itself voids the reservation: the offer ends.
+    setup(drag_scene, A2)
+    start_drag(S, (1280, 700)); time.sleep(3.4)
+    check(wait(lambda: spread()['audition']['offered'], 2, 'offer'), 'dragged resize: the offer shows')
+    g = geometry(S)
+    ipc('window-rules/configure-view', {'id': S, 'geometry': {'x': g['x'], 'y': g['y'], 'width': g['width'] + 80, 'height': g['height']}})
+    resized = True
+    try: wait(lambda: geometry(S)['width'] == g['width'] + 80, 3, 'dragged resize')
+    except RuntimeError: resized = False
+    if resized:
+        time.sleep(.3)
+        check(not spread()['audition']['offered'], 'dragged resize: the offer ends', str(spread()['audition']))
+    else:
+        print('NOTE dragged resize: the client did not take the new size during the drag; check skipped', flush=True)
+    pointer(1280 + 200, 300); time.sleep(.2); end_drag(); settle(ids)
+
     # 7. A Shift drag keeps its scale (L31) and never auditions.
     setup(drag_scene, A2)
     start_drag(S, (1280, 700)); key('LEFTSHIFT', True); pointer(1281, 700); time.sleep(3.6)
