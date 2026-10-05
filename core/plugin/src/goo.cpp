@@ -156,6 +156,7 @@ class goo_node_t : public wf::scene::node_t
     {
         state.output = o;
         state.settings = goo::current_settings;
+        state.revision++;
         state.wake = [this] { wake("frame"); };
         pre = [this] { SCOTTLAND_LOOP_SCOPE(goo_prepare); prepare(); };
         o->render->add_effect(&pre, wf::OUTPUT_EFFECT_PRE);
@@ -732,6 +733,7 @@ class goo_node_t : public wf::scene::node_t
                 }
             }
             state.sources = std::move(next);
+            state.revision++;
             band_cache.reset();
             update_breathing();
             // A quiet change: an outline that shifted without anything moving enough to
@@ -902,6 +904,7 @@ struct goo_t::impl
         {
             n->breath_keys = breath_keys;
             n->state.settings = goo::current_settings;
+            n->state.revision++;
             n->band_cache.reset();
             n->update_breathing();
             n->whole = true;

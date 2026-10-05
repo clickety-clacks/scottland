@@ -82,7 +82,18 @@
     wf::wl_idle_call hint_registration;
 
     scottland::windowing::hint_palette hints_palette;
-    std::chrono::steady_clock::time_point palette_read;
+    // The palette file is read only at init() and when it changes (its inotify watch); hints
+    // rebuild their colors from this copy when it or the color scheme changes (design 2.3).
+    std::string palette_text;
+    bool palette_dirty = true;
+    void read_palette_file()
+    {
+        SCOTTLAND_LOOP_SCOPE(palette_read);
+        const char *override_path = std::getenv("SCOTTLAND_PALETTE");
+        std::ifstream in(override_path ? override_path : runtime_file(".palette.json"));
+        palette_text = in ? std::string((std::istreambuf_iterator<char>(in)), {}) : std::string();
+        palette_dirty = true;
+    }
     bool hints_reduced_motion = false;
     std::map<unsigned, scottland::windowing::hint_rgb> hint_colors;
     scottland::windowing::hint_rgb color_for_hint(unsigned slot)
@@ -93,10 +104,8 @@
     }
     void refresh_hint_palette()
     {
-        auto now = std::chrono::steady_clock::now();
-        if (now - palette_read < std::chrono::milliseconds(250)) return;
-        palette_read = now;
-        SCOTTLAND_LOOP_SCOPE(palette_read);
+        if (!palette_dirty) return;
+        palette_dirty = false;
         hint_colors.clear();
         hints_reduced_motion = false;
         hints_palette.light = scottland::palette.light;
@@ -107,11 +116,8 @@
             scottland::windowing::hint_rgb{0.122, 0.137, 0.173};
         hints_palette.foreground = hints_palette.light ? scottland::windowing::hint_rgb{0.137, 0.165, 0.208} :
             scottland::windowing::hint_rgb{0.847, 0.871, 0.914};
-        const char *override_path = std::getenv("SCOTTLAND_PALETTE");
-        std::ifstream in(override_path ? override_path : runtime_file(".palette.json"));
-        if (!in) return;
-        wf::json_t colors; std::string contents((std::istreambuf_iterator<char>(in)), {});
-        if (wf::json_t::parse_string(contents, colors) || !colors.is_object()) return;
+        wf::json_t colors;
+        if (palette_text.empty() || wf::json_t::parse_string(palette_text, colors) || !colors.is_object()) return;
         hints_reduced_motion = colors.has_member("reduced_motion") && colors["reduced_motion"].as_bool();
         if (colors["scheme"].as_string() == "light") hints_palette.light = true;
         else if (colors["scheme"].as_string() == "dark") hints_palette.light = false;
@@ -175,7 +181,7 @@
             }
             if (changed)
             {
-                self->palette_read = {};
+                self->read_palette_file();
                 if (self->window_keys.active || self->window_avoidance_always ||
                     self->hint_avoidance_always)
                     self->refresh_layout_avoidance();
@@ -355,7 +361,7 @@
         {
             auto view = wf::toplevel_cast(state.view.lock());
             if (!view || !view->is_mapped() || !view->get_output() ||
-                view->role != wf::VIEW_ROLE_TOPLEVEL || is_widget(view) || runs_as_widget(state.pid))
+                view->role != wf::VIEW_ROLE_TOPLEVEL || is_widget(view) || runs_as_widget(id))
             {
                 state.placement.reset();
                 continue;
@@ -386,7 +392,7 @@
         if (found == model.windows.end()) return false;
         auto view = wf::toplevel_cast(found->second.view.lock());
         return view && view->is_mapped() && view->get_output() && view->role == wf::VIEW_ROLE_TOPLEVEL &&
-            !is_widget(view) && !runs_as_widget(found->second.pid) &&
+            !is_widget(view) && !runs_as_widget(id) &&
             window_zone(view) == scottland::windowing::zone::center;
     }
     std::vector<uint64_t> center_switcher_candidates()
@@ -429,7 +435,6 @@
             wf::scene::add_front(output->node_for_layer(wf::scene::layer::OVERLAY), center_switcher.preview);
         }
         center_switcher.output = output;
-        palette_read = {};
         refresh_hint_palette();
         center_switcher.preview->update(output->get_relative_geometry().width, title, position, count,
             hints_palette, output->get_scale());
@@ -1323,7 +1328,6 @@
         apply_all_opacity();
         for (auto& [id, widget] : model.widgets)
             if (widget.docked() && in_focus_mode(widget.output)) slide_widget(widget, false);
-        palette_read = {}; // always read the current theme on entry
         declutter_signature.clear(); refresh_layout_avoidance(true);
     }
 
@@ -1461,6 +1465,7 @@
     wf::ipc::method_callback hints_state = [=] (wf::json_t) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(hints_state);
+        flush_at_exit_t barrier{this};
         auto reply = wf::ipc::json_ok(); reply["active"] = window_keys.active;
         reply["hint_text_scale"] = hints_palette.text_scale;
         reply["minimum_window_hint_size"] = 48 * hints_palette.text_scale;
@@ -1648,6 +1653,9 @@
             in.close(); std::remove(path.c_str());
         }
         window_entries();
+        read_palette_file();
+        refresh_hint_palette();
+        scottland::windowing::warm_hint_text(hints_palette.font_family);
         window_keys.select = [=] (uint64_t id, bool restore) {
             keyboard_selection = true;
             auto view = wf::toplevel_cast(view_by_id(id));

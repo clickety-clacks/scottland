@@ -106,9 +106,14 @@ ShellRoot {
   }
   function sendBatch(values) {
     const supported = {}
-    for (const key of Object.keys(values))
-      if (unsupported.indexOf(key) < 0) supported[key] = values[key]
-    live.write("batch " + JSON.stringify(supported) + "\n")
+    let changed = false
+    for (const key of Object.keys(values)) {
+      if (unsupported.indexOf(key) >= 0 || JSON.stringify(values[key]) === lastSent[key]) continue
+      supported[key] = values[key]
+      lastSent[key] = JSON.stringify(values[key])
+      changed = true
+    }
+    if (changed) live.write("batch " + JSON.stringify(supported) + "\n")
   }
   onGooValuesChanged: if (loaded && !push.running) push.start()
   property var original: null
@@ -209,15 +214,20 @@ ShellRoot {
   Timer {
     id: push
     interval: 30
-    onTriggered: { root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth); root.sendGoo(root.gooValues); root.sendBatch(root.motionValues); root.sendBatch(root.opacityValues); root.sendBatch(root.widgetValues) }
+    // One batch per tick with only the values that changed: every batch costs the compositor
+    // its config-reload listeners (about 3 ms) whether or not anything changed.
+    onTriggered: root.sendBatch(Object.assign({}, root.layoutValues(root.centerWidth, root.railWidth, root.curvePoints,
+      root.blendWidth), root.gooValues, root.motionValues, root.opacityValues, root.widgetValues))
   }
+  property var lastSent: ({})
 
-  function send(center, rail, points, blend) {
-    sendBatch({ center_width: Number(center.toFixed(3)), rail_width: Number(rail.toFixed(3)),
+  function layoutValues(center, rail, points, blend) {
+    return { center_width: Number(center.toFixed(3)), rail_width: Number(rail.toFixed(3)),
       blend_width: Number(blend.toFixed(1)), scale_curve: curveText(points),
       // Endpoints double as min/max for anything reading those.
-      min_scale: Number(points[points.length - 1].y.toFixed(3)), max_scale: Number(points[0].y.toFixed(3)) })
+      min_scale: Number(points[points.length - 1].y.toFixed(3)), max_scale: Number(points[0].y.toFixed(3)) }
   }
+  function send(center, rail, points, blend) { sendBatch(layoutValues(center, rail, points, blend)) }
 
   onCenterWidthChanged: if (loaded && !push.running) push.start()
   onRailWidthChanged: if (loaded && !push.running) push.start()

@@ -56,6 +56,11 @@ def view_id_from_address(text):
     return int(text.removeprefix("0x"), 16) - ADDRESS_BASE
 
 
+
+# The Wayfire event kinds the shim translates (Translator.event_lines); keep the two in step.
+WATCHED_EVENTS = ("view-mapped", "view-unmapped", "view-focused", "view-title-changed", "view-set-output",
+                  "view-fullscreen", "output-gain-focus")
+
 class Log:
     def __init__(self):
         # The headless harness supplies an explicit state path so its shim can never append
@@ -142,7 +147,9 @@ class Wayfire:
                 sock = self._connect()
                 with self.event_lock:
                     self.event_sock = sock
-                self.send(sock, "window-rules/events/watch")
+                # Only the kinds event_lines() translates: Wayfire serializes every other kind
+                # for every watcher on its main loop otherwise.
+                self.send(sock, "window-rules/events/watch", {"events": list(WATCHED_EVENTS)})
                 self.receive(sock)
                 while True:
                     yield self.receive(sock)

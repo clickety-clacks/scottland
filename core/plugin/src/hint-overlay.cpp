@@ -2,6 +2,7 @@
 #include "loop.hpp"
 #include <cairo.h>
 #include <array>
+#include <vector>
 #include <cmath>
 #include <wayfire/opengl.hpp>
 #include <sstream>
@@ -41,7 +42,8 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
         wf::scene::damage_node(this, box);
         drawn_opacity = -1;
         appearance = key.str(); texture.reset();
-        pixel_size = int(std::ceil(canvas_size * std::max(1.0, scale)));
+        // At most 512x512 pixels, whatever the text size and output scale.
+        pixel_size = std::min(512, int(std::ceil(canvas_size * std::max(1.0, scale))));
         pixels.assign(pixel_size * pixel_size * 4, 0);
         auto surface = cairo_image_surface_create_for_data(pixels.data(), CAIRO_FORMAT_ARGB32,
             pixel_size, pixel_size, pixel_size * 4);
@@ -82,6 +84,21 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
     }
     const bool popping = animate();
     return popping || (!reduced && (t < 1.0 || resize_t < 1.0));
+}
+void warm_hint_text(const std::string& family)
+{
+    auto surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 64, 64);
+    auto cr = cairo_create(surface);
+    cairo_select_font_face(cr, family.empty() ? "sans-serif" : family.c_str(), CAIRO_FONT_SLANT_NORMAL,
+        CAIRO_FONT_WEIGHT_BOLD);
+    for (double size : {9.0, 15.0, 22.0})
+    {
+        cairo_set_font_size(cr, size);
+        cairo_move_to(cr, 2, 40);
+        cairo_show_text(cr, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/ \u2026");
+    }
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
 }
 void hint_node::geometry()
 {
@@ -184,18 +201,32 @@ void center_switcher_node::update(double output_width, const std::string& title,
     auto cr = cairo_create(measure);
     cairo_select_font_face(cr, palette.font_family.c_str(), CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, font_size);
+    // At most 256 codepoints are shown, and the longest prefix that fits is found by binary
+    // search: at most 9 measurements whatever the title (a 4,096-character title once took
+    // 141 ms here, one measurement per removed codepoint).
+    std::vector<size_t> ends;  // byte length of each codepoint prefix
+    for (size_t at = 0; at < caption.size() && ends.size() < 256;)
+    {
+        do ++at; while (at < caption.size() && (static_cast<unsigned char>(caption[at]) & 0xc0) == 0x80);
+        ends.push_back(at);
+    }
+    bool shortened = ends.size() && ends.back() < caption.size();
+    if (shortened) caption.erase(ends.back());
     cairo_text_extents_t ext;
     cairo_text_extents(cr, caption.c_str(), &ext);
-    bool shortened = false;
-    while (ext.width > max_text_width && !caption.empty())
+    if (ext.width > max_text_width)
     {
-        // Drop one UTF-8 codepoint before adding an ellipsis; titles may be localized.
-        size_t start = caption.size() - 1;
-        while (start && (static_cast<unsigned char>(caption[start]) & 0xc0) == 0x80) --start;
-        caption.erase(start);
+        size_t low = 0, high = ends.size();  // prefixes of `low` codepoints fit (with the ellipsis)
+        while (low + 1 < high)
+        {
+            size_t mid = (low + high) / 2;
+            std::string shown = caption.substr(0, ends[mid - 1]) + "…";
+            cairo_text_extents(cr, shown.c_str(), &ext);
+            if (ext.width <= max_text_width) low = mid; else high = mid;
+        }
+        caption.erase(low ? ends[low - 1] : 0);
         shortened = true;
-        std::string shown = caption + "…";
-        cairo_text_extents(cr, shown.c_str(), &ext);
+        cairo_text_extents(cr, (caption + "…").c_str(), &ext);
     }
     if (shortened) caption += "…";
     double width = std::min(output_width - 24.0, std::ceil(ext.width + 34));

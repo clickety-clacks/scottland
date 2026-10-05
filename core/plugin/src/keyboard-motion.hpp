@@ -409,14 +409,13 @@
         for (auto& [code, repeat] : arrow_repeats)
             if (window_keys.active && now >= repeat.next)
             {
-                // Deliver every due repeat, even after a late frame; impulses still accumulate
-                // with the speed cap, rather than dropping repeats during compositor load.
-                while (repeat.next <= now)
-                {
-                    keyboard_impulse(code);
-                    repeat.next += std::chrono::duration_cast<motion_clock::duration>(
-                        std::chrono::duration<double>(repeat.interval));
-                }
+                // One repeat per due tick: after a stall the missed repeats are not replayed as a
+                // burst (main-loop design 2.6); the next one follows at the keyboard's rate.
+                keyboard_impulse(code);
+                auto interval = std::chrono::duration_cast<motion_clock::duration>(
+                    std::chrono::duration<double>(repeat.interval));
+                repeat.next += interval;
+                if (repeat.next <= now) repeat.next = now + interval;
             }
         return !keyboard_motions.empty() || !arrow_repeats.empty() || !fullscreen_impulses.empty();
     }

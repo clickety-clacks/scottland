@@ -1,6 +1,7 @@
 #include <chrono>
 #include <wayfire/plugin.hpp>
 #include <wayfire/core.hpp>
+#include <wayfire/render-manager.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/seat.hpp>
 #include <wayfire/input-device.hpp>
@@ -871,6 +872,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void load_color_scheme()
     {
+        palette_dirty = true;  // hint colors follow the scheme
         scottland::palette.light = std::string(color_scheme) == "light";
         scottland::palette.unfocused_edge_tone_light = unfocused_edge_tone_light;
         scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
@@ -1232,10 +1234,38 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return best;
     }
 
+    // Visual proximity (which halo the pointer is near, its hover and side targets) runs once
+    // per frame, in the frame's pre-render hook, not per pointer event (design 2.4). Routing stays
+    // immediate: hit tests, press, release and peek ownership run per event, and a pending
+    // proximity update runs before a button is routed.
+    bool proximity_dirty = false;
+    std::map<wf::output_t*, std::unique_ptr<wf::effect_hook_t>> proximity_hooks;
+    void pointer_moved()
+    {
+        update_widget_peeks();
+        proximity_dirty = true;
+        auto cursor = wf::get_core().get_cursor_position();
+        if (auto output = wf::get_core().output_layout->find_closest_output(cursor))
+            output->render->schedule_redraw();
+    }
+
+    void run_proximity()
+    {
+        if (!proximity_dirty) return;
+        proximity_dirty = false;
+        track_proximity();
+    }
+
     void track_pointer()
     {
-        SCOTTLAND_LOOP_SCOPE(track_pointer);
         update_widget_peeks();
+        proximity_dirty = false;
+        track_proximity();
+    }
+
+    void track_proximity()
+    {
+        SCOTTLAND_LOOP_SCOPE(track_pointer);
         auto owner = pointer_owner.lock();
         if (owner && owner->is_pressed())
         {
@@ -1445,11 +1475,24 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint32_t launched_at = 0;
     };
 
+    struct process_facts_t  // see gather_process()
+    {
+        pid_t pid = 0;
+        bool read = false;
+        std::vector<std::string> cgroup;
+        std::vector<pid_t> chain;
+    };
+
     struct window_state_t
     {
         std::weak_ptr<wf::view_interface_t> view;
         std::string app_id, title;
         pid_t pid = 0;
+        // Is its process in a widget scope? Set from the process facts gathered as it maps (design
+        // 2.2), never read again from /proc for hints, the switcher or drags. Unknown (the read
+        // failed) is treated as "no", as before. A process moved into or out of a widget scope by
+        // something else after its window mapped is noticed only when that window maps again.
+        enum class widget_process_t : uint8_t { unknown, yes, no } widget_process = widget_process_t::unknown;
         wf::geometryf_t geometry = {0, 0, 0, 0};
         zone_t zone = zone_t::center;
         double scale = 1.0;                           // target, never an animation sample
@@ -1721,7 +1764,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     /** Wayfire facts enter the model here, on map/geometry/title/focus signals. Rendering does
      *  not become a second owner: transformations and disable leases follow model targets. */
-    void observe_view(wayfire_toplevel_view view)
+    void observe_view(wayfire_toplevel_view view, const process_facts_t *facts = nullptr)
     {
         if (!view || !view->is_mapped())
         {
@@ -1732,7 +1775,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         state.view = view->weak_from_this();
         state.app_id = view->get_app_id();
         state.title = view->get_title();
-        state.pid = view_pid(view);
+        auto pid = view_pid(view);
+        if (facts && facts->pid == pid)
+        {
+            state.widget_process = !facts->read ? window_state_t::widget_process_t::unknown :
+                in_widget_scope(*facts) ? window_state_t::widget_process_t::yes : window_state_t::widget_process_t::no;
+        } else if (state.pid != pid)
+        {
+            state.widget_process = window_state_t::widget_process_t::unknown;
+        }
+        state.pid = pid;
         auto g = view->get_geometry();
         state.geometry = g;
         state.above = view->has_data("wm-actions-above");
@@ -2072,6 +2124,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (active && ((active->get_id() == window) ||
                 ((link != model.widgets.end()) && (link->second.widget.lock().get() == active.get()))))
             {
+                flush_model();
                 auto reply = model_snapshot("attention");
                 reply["version"] = (int64_t)model.version;
                 reply["in_front"] = true;  // already in front of the user: nothing to show, answered
@@ -2085,6 +2138,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             show_attention(window);  // only that source's is taken back
         }
 
+        flush_model();  // the barrier: after the last mutation, before the reply's snapshot and version
         auto reply = model_snapshot("attention");
         reply["version"] = (int64_t)model.version;
         return reply;
@@ -2152,59 +2206,68 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return surface_pid(view ? view->get_wlr_surface() : nullptr);
     }
 
-    /** Is `ancestor` the process `pid` or one of its ancestors (a few levels up)? */
-    static bool descends_from(pid_t pid, pid_t ancestor)
+    /** What adoption needs to know about a process: its cgroup lines (1 read) and its ancestor
+     *  chain (itself and up to 7 parents, one /proc/PID/stat read each). Gathered once per
+     *  distinct pid per dispatch and shared by every link comparison in it; never kept after
+     *  the dispatch, so no decision uses an old fact (design 2.2; an ML4 exception: at most 9
+     *  reads per new process). */
+    static inline uint64_t proc_reads = 0;  // reported by loop-stats (the design 2.2 gate)
+    static process_facts_t gather_process(pid_t pid, bool chain = true)
     {
-        for (int depth = 0; (pid > 1) && (depth < 8); depth++)
+        process_facts_t facts;
+        facts.pid = pid;
+        if (pid <= 1) return facts;
+        std::ifstream cgroup("/proc/" + std::to_string(pid) + "/cgroup");
+        proc_reads++;
+        std::string line;
+        while (std::getline(cgroup, line))
         {
-            if (pid == ancestor)
-            {
-                return true;
-            }
-
+            facts.cgroup.push_back(line);
+            facts.read = true;
+        }
+        for (int depth = 0; chain && (pid > 1) && (depth < 8); depth++)
+        {
+            facts.chain.push_back(pid);
             std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
-            std::string line;
-            if (!std::getline(stat, line))
-            {
-                return false;
-            }
-
+            proc_reads++;
+            if (!std::getline(stat, line)) break;
             // pid (comm) state ppid ...: comm may contain spaces, so parse after the last ')'.
             auto close = line.rfind(')');
-            if (close == std::string::npos)
-            {
-                return false;
-            }
-
+            if (close == std::string::npos) break;
             std::istringstream rest(line.substr(close + 1));
             std::string state;
             rest >> state >> pid;
         }
+        return facts;
+    }
 
+    /** Is the process in systemd scope `unit`? (A widget's processes stay in its scope even
+     *  when a launcher forks and exits.) */
+    static bool in_scope(const process_facts_t& facts, const std::string& unit)
+    {
+        if (unit.empty()) return false;
+        for (auto& line : facts.cgroup)
+            if ((line.size() > unit.size()) && (line.compare(line.size() - unit.size() - 1, std::string::npos,
+                "/" + unit) == 0)) return true;
         return false;
     }
 
-    /** Is process `pid` in systemd scope `unit`? (A widget's processes stay in its scope even
-     *  when a launcher forks and exits.) */
-    static bool in_scope(pid_t pid, const std::string& unit)
+    static bool in_widget_scope(const process_facts_t& facts)
     {
-        if ((pid <= 1) || unit.empty())
-        {
-            return false;
-        }
-
-        std::ifstream cgroup("/proc/" + std::to_string(pid) + "/cgroup");
-        std::string line;
-        while (std::getline(cgroup, line))
-        {
-            if ((line.size() > unit.size()) && (line.compare(line.size() - unit.size() - 1, std::string::npos,
-                "/" + unit) == 0))
-            {
-                return true;
-            }
-        }
-
+        for (auto& line : facts.cgroup)
+            if (line.find("/scottland-widget-") != std::string::npos) return true;
         return false;
+    }
+
+    /** Was the window's process launched for this link? In its scope, or (without a scope)
+     *  descended from the launched process while that still runs (its number could belong to
+     *  someone else once it has exited). */
+    bool launched_by(const process_facts_t& facts, const widget_link_t& link)
+    {
+        if (!link.launcher) return false;
+        if (in_scope(facts, link.launcher->unit)) return true;
+        return alive(link.launcher) && std::find(facts.chain.begin(), facts.chain.end(), link.launcher->pid) != facts.chain.end() &&
+            alive(link.launcher);
     }
 
     widget_link_t *link_of_window(wayfire_view view)
@@ -2499,6 +2562,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             reason_index | (uint64_t)preview << 8 | (uint64_t)(link.rail == "right") << 9,
             scottland::loop::xy(geometry.x, geometry.y), scottland::loop::xy(geometry.width, geometry.height));
 
+        flush_model();  // the widget launches with the current model
         wf::json_t context;
         context["id"]     = std::to_string(link.window_id);
         context["window"] = (int64_t)link.window_id;
@@ -2571,16 +2635,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     /** A window mapped: is it a widget we launched? Then place it where its app window was dropped. */
-    bool adopt_widget(wayfire_toplevel_view view)
+    bool adopt_widget(wayfire_toplevel_view view, const process_facts_t& facts)
     {
-        pid_t pid = view_pid(view);
         for (auto& [id, link] : model.widgets)
         {
-            if (link.widget.lock() || !link.launcher ||
-                !(in_scope(pid, link.launcher->unit) ||
-                  // Without a scope: descent from the launched process, while it still runs (its
-                  // number could belong to someone else once it has exited).
-                  (alive(link.launcher) && descends_from(pid, link.launcher->pid) && alive(link.launcher))))
+            if (link.widget.lock() || !launched_by(facts, link))
             {
                 continue;
             }
@@ -2638,20 +2697,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return std::string(runtime ? runtime : "/tmp") + "/scottland/" + (display ? display : "wayland") + suffix;
     }
 
-    /** Is the process part of a widget (in a widget scope: one still closing after an unload)? */
-    static bool runs_as_widget(pid_t pid)
+    /** Is the window's process part of a widget (in a widget scope: one still closing after an
+     *  unload)? The answer stored when it mapped: no I/O. */
+    bool runs_as_widget(uint64_t window) const
     {
-        std::ifstream cgroup("/proc/" + std::to_string(pid) + "/cgroup");
-        std::string line;
-        while (std::getline(cgroup, line))
-        {
-            if (line.find("/scottland-widget-") != std::string::npos)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        auto found = model.windows.find(window);
+        return found != model.windows.end() &&
+            found->second.widget_process == window_state_t::widget_process_t::yes;
     }
 
     /** On load: a window whose center is on a rail is a widget (WG1), however it got there (a
@@ -2662,7 +2714,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             auto view = wf::toplevel_cast(any);
             if (!view || !view->is_mapped() || !can_widgetize(view) || link_of_window(view) || is_widget(view) ||
-                (view->role != wf::VIEW_ROLE_TOPLEVEL) || runs_as_widget(view_pid(view)))
+                (view->role != wf::VIEW_ROLE_TOPLEVEL) || runs_as_widget(view->get_id()))
             {
                 continue;
             }
@@ -3127,6 +3179,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        std::map<pid_t, process_facts_t> gathered;  // this dispatch only
         for (const auto& object : ev->tx->get_objects())
         {
             auto toplevel = std::dynamic_pointer_cast<wf::toplevel_t>(object);
@@ -3154,10 +3207,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             pid_t pid = mapping_pid(view);
+            auto known = gathered.find(pid);
+            if (known == gathered.end()) known = gathered.emplace(pid, gather_process(pid)).first;
             for (auto& [id, link] : model.widgets)
             {
-                if (link.widget.lock() || !link.launcher || !(in_scope(pid, link.launcher->unit) ||
-                    (alive(link.launcher) && descends_from(pid, link.launcher->pid))))
+                if (link.widget.lock() || !launched_by(known->second, link))
                 {
                     continue;
                 }
@@ -3791,14 +3845,45 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool installing_model = true;  // no partial init/handover snapshots escape
     std::map<std::string, std::string> published_slices;
     std::map<std::string, uint64_t> published_versions;
+    // Publication is coalesced (design 2.1): a change marks the model dirty and a timer
+    // publishes at most once per 8 ms, always with a trailing flush. A flush is what increments
+    // model.version. Barriers flush at once where a reply or a launch must carry the current
+    // state: after a handler's last mutation, before it builds its snapshot or reads the version.
+    bool model_dirty = false;
+    uint64_t last_model_flush = 0;
+    wf::wl_timer<false> publish_timer;
     void publish_model()
     {
-        SCOTTLAND_LOOP_SCOPE(publish_model);
         if (installing_model)
         {
             return;
         }
 
+        model_dirty = true;
+        if (publish_timer.is_connected()) return;
+        auto now = scottland::loop::now_ns() / scottland::loop::ms;
+        int wait = int(std::clamp<int64_t>(8 - int64_t(now - last_model_flush), 0, 8));
+        publish_timer.set_timeout(std::max(1, wait), [=] { SCOTTLAND_LOOP_SCOPE(publish_timer); flush_model(); });
+    }
+
+    /** Ends at scope exit: a barrier for replies that carry no snapshot or version. */
+    struct flush_at_exit_t
+    {
+        scottland_plugin_t *self;
+        ~flush_at_exit_t() { self->flush_model(); }
+    };
+
+    void flush_model()
+    {
+        SCOTTLAND_LOOP_SCOPE(publish_model);
+        if (installing_model || !model_dirty)
+        {
+            return;
+        }
+
+        model_dirty = false;
+        last_model_flush = scottland::loop::now_ns() / scottland::loop::ms;
+        publish_timer.disconnect();
         auto full = model_snapshot("desktop");
         auto text = full.serialize();
         if (published_slices["desktop"] == text)
@@ -3827,6 +3912,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback desktop_state = [=] (wf::json_t data) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(desktop_state);
+        flush_model();
         std::string slice = data.has_member("slice") && data["slice"].is_string() ? data["slice"].as_string() : "desktop";
         if ((slice != "desktop") && (slice != "widgets") && (slice != "attention"))
         {
@@ -3864,6 +3950,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback widgets_state = [=] (wf::json_t) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(widgets_state);
+        flush_model();
         auto reply = wf::ipc::json_ok();
         reply["widgets"] = widget_snapshot();
         reply["version"] = (int64_t)model.version;
@@ -3874,6 +3961,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback audit_model = [=] (wf::json_t data) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(audit_model);
+        flush_model();
         auto issues = wf::json_t::array();
         auto fail = [&] (const std::string& message) { issues.append(message); };
         for (auto& any : wf::get_core().get_all_views())
@@ -4038,6 +4126,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         output_instance[output]->on_start = [=] () { stop_keyboard_motion(); bypass_window_keys(); };
         output->connect(&on_above);
         watch_fullscreen(output);
+        auto hook = std::make_unique<wf::effect_hook_t>([=] { SCOTTLAND_LOOP_SCOPE(proximity_frame); run_proximity(); });
+        output->render->add_effect(hook.get(), wf::OUTPUT_EFFECT_PRE);
+        proximity_hooks[output] = std::move(hook);
     }
 
     void handle_output_removed(wf::output_t *output) override
@@ -4045,6 +4136,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         SCOTTLAND_LOOP_SCOPE(output_removed);
         output->disconnect(&on_above);
         unwatch_fullscreen(output);
+        if (auto hook = proximity_hooks.find(output); hook != proximity_hooks.end())
+        {
+            output->render->rem_effect(hook->second.get());
+            proximity_hooks.erase(hook);
+        }
         wf::per_output_tracker_mixin_t<center_resize_t>::handle_output_removed(output);
     }
 
@@ -4070,6 +4166,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback widget_traits = [=] (wf::json_t data) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(widget_traits);
+        flush_at_exit_t barrier{this};  // its reply carries no version: the event follows it
         if (!data.has_member("window") || !data["window"].is_int64() || !data.has_member("unit") ||
             !data["unit"].is_string())
         {
@@ -4143,6 +4240,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback present_method = [=] (wf::json_t data) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(present_method);
+        flush_at_exit_t barrier{this};  // its reply carries no version: the event follows it
         if (!data.has_member("window") || !data["window"].is_int())
         {
             return wf::ipc::json_error("present needs integer \"window\"");
@@ -4213,6 +4311,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback widget_action = [=] (wf::json_t data) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(widget_action);
+        flush_at_exit_t barrier{this};  // its reply carries no version: the event follows it
         if (!data.has_member("id") || !data["id"].is_string() || !data.has_member("action") ||
             !data["action"].is_string())
         {
@@ -4778,8 +4877,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         const char *runtime = getenv("XDG_RUNTIME_DIR");
         std::string dir = std::string(runtime ? runtime : "/tmp") + "/scottland";
-        std::string mkdir = "mkdir -p '" + dir + "'";
-        if (system(mkdir.c_str()) != 0)
+        if (mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST)
         {
             return;
         }
@@ -4843,13 +4941,33 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool wants_wheel(wayfire_view view)
     {
         std::string pattern = touch_scroll_wheel;
-        try {
-            return view && !pattern.empty() && std::regex_search(view->get_app_id(), std::regex(pattern, std::regex::icase));
-        } catch (const std::regex_error&)
+        return view && !pattern.empty() && app_matches(pattern, view->get_app_id(), 0);
+    }
+
+    /** App-id patterns from the user's options, compiled once per distinct pattern and with
+     *  results memoized per (pattern, app id): repeats are free, but a pathological pattern's
+     *  first match is still unbounded (D5). An invalid pattern is noted once and never matches. */
+    std::map<std::string, std::shared_ptr<std::regex>> regex_cache;
+    std::map<std::pair<std::string, std::string>, bool> regex_results;
+    bool app_matches(const std::string& pattern, const std::string& app, uint64_t option)
+    {
+        auto memo = regex_results.find({pattern, app});
+        if (memo != regex_results.end()) return memo->second;
+        auto compiled = regex_cache.find(pattern);
+        if (compiled == regex_cache.end())
         {
-            scottland::loop::note(scottland::loop::note_id::bad_regex, 0);
-            return false;
+            std::shared_ptr<std::regex> re;
+            try { re = std::make_shared<std::regex>(pattern, std::regex::icase); }
+            catch (const std::regex_error&) { scottland::loop::note(scottland::loop::note_id::bad_regex, option); }
+            if (regex_cache.size() > 256) regex_cache.clear();
+            compiled = regex_cache.emplace(pattern, re).first;
         }
+        bool result = false;
+        try { result = compiled->second && std::regex_search(app, *compiled->second); }
+        catch (const std::regex_error&) { scottland::loop::note(scottland::loop::note_id::bad_regex, option); }
+        if (regex_results.size() > 4096) regex_results.clear();
+        regex_results[{pattern, app}] = result;
+        return result;
     }
 
     bool wants_touch_scroll(wayfire_view view)
@@ -4867,14 +4985,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;  // an emptied entry: the user switched a default off
             }
 
-            try {
-                if (std::regex_search(app, std::regex(pattern, std::regex::icase)))
-                {
-                    return true;
-                }
-            } catch (const std::regex_error&)
+            if (app_matches(pattern, app, 1))
             {
-                scottland::loop::note(scottland::loop::note_id::bad_regex, 1);
+                return true;
             }
         }
 
@@ -4977,6 +5090,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback test_input = [=] (wf::json_t data) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(test_input);
+        flush_at_exit_t barrier{this};  // its reply carries no version: the event follows it
         // Real wlroots pointer-axis input for isolated settings scroll tests. This is
         // deliberately unavailable in ordinary sessions, and never sets QML state.
         if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("scroll_y"))
@@ -5024,9 +5138,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
 
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_event>> on_motion =
-        [=] (auto) { SCOTTLAND_LOOP_SCOPE(on_motion); check_middle_drag(); track_pointer(); };
+        [=] (auto) { SCOTTLAND_LOOP_SCOPE(on_motion); check_middle_drag(); pointer_moved(); };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_absolute_event>> on_motion_abs =
-        [=] (auto) { SCOTTLAND_LOOP_SCOPE(on_motion); check_middle_drag(); track_pointer(); };
+        [=] (auto) { SCOTTLAND_LOOP_SCOPE(on_motion); check_middle_drag(); pointer_moved(); };
+    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> on_button_before =
+        [=] (wf::input_event_signal<wlr_pointer_button_event>*) { SCOTTLAND_LOOP_SCOPE(on_button); run_proximity(); };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_button_event>> on_button =
         [=] (wf::post_input_event_signal<wlr_pointer_button_event> *ev)
     {
@@ -5048,6 +5164,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             apply(view);
         }
+    }
+
+    // A settings batch sets several layout options at once, each with its own callback: lay
+    // out once, right after the batch (still before the next request is read).
+    wf::wl_idle_call apply_idle;
+    void apply_all_soon()
+    {
+        if (!apply_idle.is_connected())
+            apply_idle.run_once([=] { SCOTTLAND_LOOP_SCOPE(apply_idle); apply_all(); });
     }
 
     // Live scaling while a window is dragged. The drag keeps the grabbed point of the window's
@@ -6242,10 +6367,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         SCOTTLAND_LOOP_SCOPE(on_mapped);
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
-            observe_view(toplevel);
+            // One gather for this new window's process, shared by the widget-scope answer and
+            // every link comparison; the chain only matters while launches are pending.
+            auto facts = gather_process(view_pid(toplevel), !model.widgets.empty());
+            observe_view(toplevel, &facts);
             if (!model.widgets.empty())
             {
-                adopt_widget(toplevel);
+                adopt_widget(toplevel, facts);
             }
         }
 
@@ -6331,6 +6459,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::ipc::method_callback layout_state = [=] (wf::json_t data) -> wf::json_t
     {
         SCOTTLAND_LOOP_SCOPE(layout_state);
+        flush_model();
         wf::json_t reply = wf::ipc::json_ok();
         wf::json_t views = wf::json_t::array();
         reply["widget_transition_count"] = (int64_t)widget_transitions.size();
@@ -6574,14 +6703,8 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
                 continue;
             }
 
-            try {
-                if (!std::regex_search(app, std::regex(apps, std::regex::icase)))
-                {
-                    continue;
-                }
-            } catch (const std::regex_error&)
+            if (!app_matches(apps, app, 2))
             {
-                scottland::loop::note(scottland::loop::note_id::bad_regex, 2);
                 continue;
             }
 
@@ -6638,6 +6761,7 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         reply["reload"]["load"] = (int64_t)plugin_load;
         reply["reload"]["nonce"] = reload_nonce;
         reply["reload"]["outcome"] = handover_outcome;
+        reply["proc_reads"] = (int64_t)proc_reads;
         return reply;
     };
     uint64_t plugin_load = 0;  // which plugin load in this compositor process this copy is
@@ -6801,7 +6925,9 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         wf::get_core().tx_manager->connect(&on_new_transaction);
         for (auto& view : wf::get_core().get_all_views())
         {
-            observe_view(wf::toplevel_cast(view));
+            auto toplevel = wf::toplevel_cast(view);
+            auto facts = gather_process(view_pid(toplevel), false);  // init: once per window
+            observe_view(toplevel, &facts);
         }
         if (handover_fault("init-fail-before-adoption")) throw std::runtime_error("test: init fails before adoption");
         take_handover();
@@ -6825,19 +6951,20 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         installing_model = false;
         announce_widgets();  // a widget service that outlived a reload catches up
         wf::get_core().connect(&on_motion_abs);
+        wf::get_core().connect(&on_button_before);
         wf::get_core().connect(&on_button);
         wf::get_core().bindings->add_button(move_button, &on_move);
         wf::get_core().bindings->add_button(move_shift_button, &on_move_shift);
         drag->connect(&on_drag_output);
         drag->connect(&on_drag_motion);
         drag->connect(&on_drag_done);
-        center_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
-        rail_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
-        min_scale.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
-        max_scale.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
+        center_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all_soon(); });
+        rail_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all_soon(); });
+        min_scale.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all_soon(); });
+        max_scale.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all_soon(); });
         load_curve();
-        scale_curve_text.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); load_curve(); apply_all(); });
-        blend_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
+        scale_curve_text.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); load_curve(); apply_all_soon(); });
+        blend_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all_soon(); });
         center_opacity_focused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
         center_opacity_unfocused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
         side_opacity_focused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
@@ -6891,6 +7018,8 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         // Only a copy whose init() completed hands over (a failed one never does), and only
         // during a reload: scottland-reload's marker.
         handover_faults_read = false;  // tests may change them between this copy's init() and fini()
+        flush_model();  // subscribers and the handover snapshot carry the last change
+        publish_timer.disconnect();
         bool reloading = init_completed && access(runtime_file(".reloading").c_str(), F_OK) == 0;
         if (!init_completed) fail_reload();
         installing_model = reloading;  // teardown is also part of the atomic handover
@@ -7067,8 +7196,12 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         }
         end_due_processes(true);
         ending_timer.disconnect();
+        apply_idle.disconnect();
         on_motion_abs.disconnect();
+        on_button_before.disconnect();
         on_button.disconnect();
+        for (auto& [output, hook] : proximity_hooks) output->render->rem_effect(hook.get());
+        proximity_hooks.clear();
         on_drag_output.disconnect();
         on_drag_motion.disconnect();
         on_drag_done.disconnect();

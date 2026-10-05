@@ -107,6 +107,19 @@ ownership is established outside the handover file.
   `SCOTTLAND_TEST_RELOAD_DIR` so plugin copies and config stay out of the machine's real runtime
   directory.
 
+## Phase 2: repeated work
+
+| Item | What changed | Verified (nacelle, headless, real input) |
+|---|---|---|
+| 2.1 Model publication | A change marks the model dirty; a timer publishes at most once per 8 ms, always with a trailing publication; replies that carry the model publish first, after their last change (DM2). | `tests/model-publish-test.py`: attention reply has the new state and the next version; the subscription's first slice is current; widget-traits' event carries the next version; an unchanged flush keeps the version; a 2 s drag published 216 times for 23,850 motion events |
+| 2.2 `/proc` | Adoption gathers a process's facts once per dispatch (cgroup + up to 8 `stat` reads), shared by every link; each window stores whether its process runs as a widget, set when it maps. Hints, the switcher and drags do no `/proc` I/O. Stated limitation: a process moved into or out of a widget scope by something else is noticed when its window maps again. | `tests/mainloop-phase2-test.py`: no `/proc` read during an Alt hold, Window mode keys and a drag start (`loop-stats` `proc_reads`) |
+| 2.3 Palette | The palette file is read at `init()` and once when it changes (its inotify watch, which landed on main after the design and replaces the helper's IPC push); hints rebuild their colors from the copy in memory. | no palette read during interaction; a file change is read once |
+| 2.4 Pointer path | Visual proximity runs once per frame (the output's pre-render hook) and before a button is routed; hit testing stays per event and unchanged (A5). The hit test's filtered sources are rebuilt once per source or settings change. | 9-22 proximity runs for 600 pointer events; A5: a quarter-scale halo with thickness 4 is grabbed 10 px outside its edge and not 14 px (before and after) |
+| 2.5 Caches | App-id patterns compiled once and their results memoized (bounding nothing for a pathological pattern: D5). Not done: the per-output goo source cache (measured 0.04-0.1 ms per frame; its invalidators are many), left for review. | key-layer and touch suites |
+| 2.6 | One arrow repeat per due tick (WK17); the layout once per option batch; the settings app sends one batch per tick with only changed values (S3); the Hyprland shim watches only the seven event kinds it translates. | one layout for a five-option batch |
+| 2.7 | The switcher's title: at most 256 codepoints and a binary search for the fitting prefix (at most 9 measurements); badge rasters capped at 512x512; `mkdir(2)` instead of `system("mkdir -p")`. | a 4,096-character title: switcher update 0.37 ms |
+| ML8 | The hint font is loaded at `init()`. | first Window mode entry: badge raster 0.87 ms (13.9 ms on Phase 1); entry 5.5 ms first and 2.5 ms after at 6 windows (41-53 ms first on Phase 1) |
+
 ## Window mode entry (ML8)
 
 Attribution on nacelle (aarch64, Asahi GPU, 10 windows, Phase 1 scopes): the first Alt hold of a

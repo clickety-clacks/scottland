@@ -72,6 +72,9 @@ class hint_outline_node : public wf::scene::node_t
 };
 // Frees the outline shader; call with the plugin's other GL resources on unload.
 void release_hint_gl();
+/** Load the hint font (fontconfig match, face, glyphs) now, in init(): the first badge raster
+ *  otherwise pays a font miss of 25-40 ms on the main loop at Window mode entry (ML8). */
+void warm_hint_text(const std::string& family);
 
 // A small, click-through name plate while a quick Alt+Tab chord previews a center window.
 class center_switcher_node : public wf::scene::node_t

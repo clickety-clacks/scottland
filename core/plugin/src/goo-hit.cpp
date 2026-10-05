@@ -29,12 +29,17 @@ handle_t goo_handle(const frame_t &frame, wf::pointf_t point)
     auto &screen = *it->second;
     // Hint circles are click-through: neither their islands nor their liquid
     // may mask app content or acquire a window's grab/resize ownership.
-    std::vector<goo::source_t> input_sources;
-    if (std::any_of(screen.sources.begin(), screen.sources.end(), [](auto &s) { return s.hint_circle; }))
-        std::copy_if(screen.sources.begin(), screen.sources.end(), std::back_inserter(input_sources),
-            [](auto &s) { return !s.hint_circle; });
-    if (!input_sources.empty()) goo::amounts(input_sources, screen.settings);
-    const auto &sources = input_sources.empty() ? screen.sources : input_sources;
+    // Built once per source or settings change (design 2.4), not per hit test.
+    if (screen.input_revision != screen.revision)
+    {
+        screen.input_sources.clear();
+        if (std::any_of(screen.sources.begin(), screen.sources.end(), [](auto &s) { return s.hint_circle; }))
+            std::copy_if(screen.sources.begin(), screen.sources.end(), std::back_inserter(screen.input_sources),
+                [](auto &s) { return !s.hint_circle; });
+        if (!screen.input_sources.empty()) goo::amounts(screen.input_sources, screen.settings);
+        screen.input_revision = screen.revision;
+    }
+    const auto &sources = screen.input_sources.empty() ? screen.sources : screen.input_sources;
     auto source = std::find_if(sources.begin(), sources.end(),
         [&](const auto& s) { return s.id == v->get_id(); });
     if (source == sources.end() || !source->emitter) return handle_t::none;
