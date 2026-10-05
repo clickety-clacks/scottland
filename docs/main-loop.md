@@ -18,7 +18,7 @@ Phases 0, 1, 2 and 4 on 2026-10-03; Mike decided the two Phase 3 questions the s
 | ML5 | Every Scottland entry point is timed (`SCOTTLAND_LOOP_SCOPE`); slow callbacks and unresponsive periods are recorded in the diagnostic ring. Nothing in the plugin writes to stderr or Wayfire's log after `init()`. | implemented (Phase 1) |
 | ML6 | No plugin thread, event source or callback outlives `fini()`. | implemented: the watchdog and its eventfd source stop last in `fini()`; reload tests count descriptors |
 | ML7 | A late result never overrides a newer state. | rule (worker, Phase 4) |
-| ML8 | Window mode entry (Alt held: `alt_hold` → `begin_window_keys`, including the first badge raster of a session) is an acceptance target of this work: it was 41-53 ms the first time (cold font) and 7-20 ms after at 10 windows, 92 ms at 30. | open: 15 ms at 10 windows and 47 ms at 30 on nacelle after the font warm-up, the overlay batching and Phase 3; see "Window mode entry" |
+| ML8 | Window mode entry (Alt held: `alt_hold` → `begin_window_keys`, including the first badge raster of a session) is an acceptance target of this work: it was 41-53 ms the first time (cold font) and 7-20 ms after at 10 windows, 92 ms at 30. | open: 15 ms at 10 windows and 47 ms at 30 on the aarch64 test machine after the font warm-up, the overlay batching and Phase 3; see "Window mode entry" |
 
 ## Timing every entry point
 
@@ -134,7 +134,7 @@ ownership is established outside the handover file.
 
 ## Phase 2: repeated work
 
-| Item | What changed | Verified (nacelle, headless, real input) |
+| Item | What changed | Verified (the aarch64 test machine, headless, real input) |
 |---|---|---|
 | 2.1 Model publication | A change marks the model dirty; a timer publishes at most once per 8 ms, always with a trailing publication; replies that carry the model publish first, after their last change (DM2). | `tests/model-publish-test.py`: attention reply has the new state and the next version; the subscription's first slice is current; widget-traits' event carries the next version; an unchanged flush keeps the version; a 2 s drag published 216 times for 23,850 motion events |
 | 2.2 `/proc` | Adoption gathers a process's facts once per dispatch (cgroup + up to 8 `stat` reads), shared by every link; each window stores whether its process runs as a widget, set when it maps. Hints, the switcher and drags do no `/proc` I/O. Stated limitation: a process moved into or out of a widget scope by something else is noticed when its window maps again. | `tests/mainloop-phase2-test.py`: no `/proc` read during an Alt hold, Window mode keys and a drag start (`loop-stats` `proc_reads`) |
@@ -171,11 +171,11 @@ result (1 MB). Past any limit the goo keeps its loose strips; any change of sour
 mode bumps the lane's epoch. A result is installed only if its ticket and epoch are current, the
 goo still sleeps and the output is the same incarnation. A job capped at the whole-job limit
 tightens only the rectangles it finished; none finished means no change. Work units (one per
-density term) are calibrated by `tests/worker-unit.sh`: 29-36 ns each on nacelle, so a step of
+density term) are calibrated by `tests/worker-unit.sh`: 29-36 ns each on the aarch64 test machine, so a step of
 60,000 units is about 2 ms and the cap of 9,000,000 about 300 ms; the slowest single operation (a
 256-source density call) is 9-10 µs at p99.
 
-Verified (nacelle): `tests/worker-unit.sh` (ThreadSanitizer, no suppressions: forced interleavings
+Verified (the aarch64 test machine): `tests/worker-unit.sh` (ThreadSanitizer, no suppressions: forced interleavings
 of submit, finish, deliver, cancel, epoch bump, close and stop for both policies; `broken` without
 the eventfd; 16-lane limit; stop with running, pending and undelivered jobs; identical results at
 a 1-unit and an unlimited allowance; caps at the first unit, mid-row and the last unit; equality
@@ -210,10 +210,10 @@ failures leave the loose strips).
 - **Fallback.** GLES 2, any readback failure, or the `goo-state` test switch: the simulation
   sleeps 6 s after the last change (GO10, Mike 2026-10-03), until the renderer is re-created.
 
-Measured (nacelle, Asahi): collection at most 0.03-0.05 ms; issue 0.7 ms at 12 windows and
+Measured (the aarch64 test machine, Asahi): collection at most 0.03-0.05 ms; issue 0.7 ms at 12 windows and
 2.1 ms at 30, of which the fence and flush cost 0.001 ms and the reduction passes' submission
-0.6-1.6 ms. The design's issue target (0.5 ms) is **not met on nacelle**, so Phase 3 stays open
-with that number in the exception table; plumbus (busy with a VM build) and an Intel test host
+0.6-1.6 ms. The design's issue target (0.5 ms) is **not met on the aarch64 test machine**, so Phase 3 stays open
+with that number in the exception table; the x86 test machine (busy with a VM build) and an Intel test host
 are not measured yet. `tests/goo-readback-test.py`: no GPU read on pointer motion; the goo
 sleeps on asynchronous readings; nothing stays in flight once asleep; readings held in flight
 (test switch) across a change, a resize A→B→A or a reload don't apply; a full ring is collected
@@ -224,7 +224,7 @@ CPU time; legal incoming pack state is normalized and readings still apply.
 
 ## Window mode entry (ML8)
 
-Attribution on nacelle (aarch64, Asahi GPU, 10 windows, Phase 1 scopes): the first Alt hold of a
+Attribution on the aarch64 test machine (aarch64, Asahi GPU, 10 windows, Phase 1 scopes): the first Alt hold of a
 session spends 40-53 ms in `begin_window_keys`, of which the first badge raster (`hint_raster`,
 cold font) is 25-38 ms and the bounded solve (`hint_solve`) 1.9 ms; a later entry spends 7-20 ms,
 about 1 ms per window creating badges, outlines and dyes (`hint_visual`). The acceptance target is
@@ -233,7 +233,7 @@ that entry, cold or warm, stays inside ML1 or is listed with its number. Done: t
 GPU when badges change the scene (Phase 3); new badges and outlines enter the overlay in one scene
 update per tick instead of one per node plus two per circle per outline (each update rebuilt every
 window's render instances: 42,720 rebuilds in one entry at 30 windows). Entry is now about 15 ms
-at 10 windows and 47 ms at 30 on nacelle (open): what remains is per-window badge, outline and
+at 10 windows and 47 ms at 30 on the aarch64 test machine (open): what remains is per-window badge, outline and
 offset work (about 1.5 ms per window) and the goo's own render on this GPU. Next: create badges
 over several ticks within a budget, or the raster helper (D4) and the solve worker (D1).
 
@@ -243,12 +243,12 @@ Measured numbers, with the build and host, are in "Baselines". An entry leaves o
 closes or its owner's design ships. Ceilings for the latency test are in
 `tests/mainloop-exceptions.json`.
 
-Measured on nacelle (aarch64, Asahi GPU; plumbus was busy), optimized build with the Phase 1
+Measured on the aarch64 test machine (aarch64, Asahi GPU; the x86 test machine was busy), optimized build with the Phase 1
 scopes, headless 2560x1600, real stipc input, 2026-10-04. Maxima over every scenario of
 `tests/mainloop-latency-test.sh`. Nested scopes are listed with the entry points that contain them,
 so one cost can appear on several rows. Also listed without a scope of its own: `core_run` at the
 sites the broker does not cover (focus hook, pop sound, key-release commands, broker start, stop
-fallback; 6-13 ms each on plumbus) and the `fini()` wait loop (up to 0.5 s) (D3); a font miss on a
+fallback; 6-13 ms each on the x86 test machine) and the `fini()` wait loop (up to 0.5 s) (D3); a font miss on a
 font family other than the one warmed at `init()` (D4); pathological user regexes (D5);
 `place_rectangle` at 60+ obstacles (D6); `init()`/`fini()` file I/O on reload.
 
@@ -257,7 +257,7 @@ font family other than the one warmed at `init()` (D4); pathological user regexe
 | `goo_sample_at` | 25.3 ms | 65.3 ms | pointer hit test reads one pixel of wave height back from the GPU; runs inside frame_find_node_at, and inside every scene change that refocuses the pointer | Phase 3 |
 | `frame_find_node_at` | 25.3 ms | 65.3 ms | the halo hit test (contains goo_sample_at) | Phase 3 |
 | `goo_energy_readback` | 23.6 ms | 44 ms | every 30th simulation step waits for a 1-pixel energy read | Phase 3 |
-| `goo_render` | 28.8 ms | 58.3 ms | simulation step (contains goo_energy_readback); the first frame of a newly loaded copy also builds its renderer: 200-400 ms on nacelle after a reload | Phase 3 |
+| `goo_render` | 28.8 ms | 58.3 ms | simulation step (contains goo_energy_readback); the first frame of a newly loaded copy also builds its renderer: 200-400 ms on the aarch64 test machine after a reload | Phase 3 |
 | `goo_shape_update` | 14.3 ms | 31.1 ms | widget alpha-shape readbacks | D2 |
 | `frame_render` | 16.8 ms | 31.1 ms | window render instance (contains goo_shape_update) | D2 |
 | `hints_tick` | 18.3 ms | 287.2 ms | Window mode tick at 30 windows: each badge, outline or offset changes the scene and Wayfire's pointer refocus runs the hit test readback; the solve itself stays at 2.2 ms | Phase 3, ML8, D1 |
@@ -275,7 +275,7 @@ font family other than the one warmed at `init()` (D4); pathological user regexe
 | `option_layout` | 19.2 ms | 46.9 ms | a layout option callback (apply_all per option) | Phase 2.6 |
 | `publish_model` | 12.3 ms | 2.2 ms | model publication (2,806 per settings-slider run before coalescing) | Phase 2.1 |
 | `goo_prepare` | 9.8 ms | 15.4 ms | per-frame goo sources and bands | Phase 2.5 (sources cache); bands stay exact |
-| `goo_settle_tick` | 6.1 ms | 12.4 ms | GO19 breathing shrink slice (2.5 ms on plumbus, slower on nacelle) | Phase 4: closed (the scope no longer exists) |
+| `goo_settle_tick` | 6.1 ms | 12.4 ms | GO19 breathing shrink slice (2.5 ms on the x86 test machine, slower on the aarch64 test machine) | Phase 4: closed (the scope no longer exists) |
 | `tighten_breathing` | 6.1 ms | 12.4 ms | inside goo_settle_tick | Phase 4: closed |
 | `on_mapped` | 4.4 ms | 12.3 ms | widget adoption procfs gather and placement | Phase 2.2, D6 |
 | `on_move` | 4.6 ms | 10.4 ms | drag start: /proc reads and publishes | Phase 2.1, 2.2 |
@@ -298,7 +298,7 @@ font family other than the one warmed at `init()` (D4); pathological user regexe
 | `on_geometry` | 1.3 ms | 2.3 ms | geometry change (publishes) | Phase 2.1 |
 | `hint_solve` | 3.6 ms | 2.2 ms | Luna's bounded avoidance solve | D1 (Phase 0: bounded at 2 ms + overshoot) |
 
-**Status after Phases 2-4** (nacelle, `39e9580` and the ML8 batching):
+**Status after Phases 2-4** (the aarch64 test machine, `39e9580` and the ML8 batching):
 
 | Scope | Now | |
 |---|---|---|
@@ -321,7 +321,7 @@ and `core_run` were not exercised, so both stay open exceptions (Astra, implemen
 Phase 0 (Luna's bounded avoidance, on main from `b6955db` until the peek-strip engine replaced it;
 history: since the join with main its per-output slice is `peek_step`): the solve itself was at
 most 2.2 ms at 30 windows and 3.6 ms at 10 (first entry). Window mode as a whole is not: its ticks
-reach 287 ms at 30 windows on nacelle, and the cost is not the solve. Each badge, outline or offset
+reach 287 ms at 30 windows on the aarch64 test machine, and the cost is not the solve. Each badge, outline or offset
 it creates changes the scene, Wayfire refocuses the pointer, and the halo hit test waits for a GPU
 readback (`goo_sample_at`, up to 65 ms each). Phase 3 removes that readback from the hit test; the
 first-entry font miss leaves with the warm-up at `init()` (Phase 2).
@@ -360,7 +360,7 @@ the first, window-mode-entry 64.6/85.4 against 30.7/51.6, settings-slider 33.3/6
 | scale-change | 64.04/80.36 | 91.61/121.48 | 87.41/157.42 | 126.10/144.67 |
 
 
-## Results after Phases 1-4 (nacelle)
+## Results after Phases 1-4 (the aarch64 test machine)
 
 Ping lateness p99/max in ms (pings to Wayfire IPC at 1 kHz with real input; a late ping means
 the main loop was busy). Same host, one run per column, host load 1-6 from other agents' tests;
@@ -425,7 +425,7 @@ What changed for the user (measured): at 30 windows pointer motion over windows 
 longer stalls on the GPU (pointer-sweep p99 158 -> 14 ms, pointer reply p99 218 -> 13 ms), drags
 and widget conversions stay under about 25 ms, and Window mode's ticks drop from about 200 ms
 to about 30 ms. What remains over the targets is in the exception table: the goo's simulation
-step on this GPU (goo_render 10-50 ms on nacelle's Asahi driver), widget shape readbacks (D2),
+step on this GPU (goo_render 10-50 ms on the aarch64 test machine's Asahi driver), widget shape readbacks (D2),
 Window mode entry (ML8: per-window badge work), the settings slider (Wayfire's config reload).
 
 ## Joined with main (2026-10-05)
@@ -447,6 +447,28 @@ Super+M widget modes, GO24 watercolor, GO26 breathing keys). What carried over:
 - The handover carries main's widget mode; adopted widgets snap into their rail place.
 - Spread solves stay in main's measured event-loop slices (`spread_tick`); moving that job to the
   worker is not part of this branch.
+
+Measured after the join (the aarch64 test machine, Asahi GPU, headless with real stipc input, host
+load 0.7-1.1; `tests/mainloop-latency-test.sh`, rebuilt into `tests/mainloop-exceptions.json` by
+`tests/mainloop-exceptions-update.py`: 32 open exceptions, each a measured residual, 16 closed as
+history, `core_run` and the uncached capture open and unmeasured):
+
+| Scenario | ping p99 / max, 10 windows | ping p99 / max, 30 windows |
+|---|---|---|
+| idle | 0.12 / 2.8 ms | 0.15 / 2.8 ms |
+| pointer sweep | 9.4 / 13 ms | 16 / 33 ms |
+| pointer over halos | 8.8 / 13 ms | 19 / 50 ms |
+| drag | 11 / 17 ms | 14 / 24 ms |
+| Window mode entry | 41 / 62 ms | 118 / 138 ms |
+| settings slider | 54 / 89 ms | 57 / 84 ms |
+
+P8 is not met. With every open exception inside its ceiling, 11 of 20 scenarios at 10 windows and
+18 of 20 at 30 still have pings over 10 ms at p99 that no single scope explains: attribution
+unknown. The largest residuals are Window mode entry (`alt_hold` 73 ms at 30 windows, mostly
+`step_hints` on the peek-strip engine's first pass and badge creation), the goo's render on this
+GPU (`goo_render` up to 38 ms), widget shape readbacks (D2, 27 ms) and render instance rebuilds
+(`frame_gen_render_instances` 25 ms at 30 windows). The energy issue (`goo_energy_issue` 2.9-6.3
+ms) stays over its 0.5 ms target. Not measured: the x86 test machine and an Intel GPU.
 
 ## Tests
 

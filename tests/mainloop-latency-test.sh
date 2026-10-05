@@ -1,6 +1,6 @@
 #!/bin/bash
 # Main-loop latency scenarios in a headless session of this checkout (docs/main-loop.md).
-# Run on a test host (plumbus, nacelle), never on a daily desktop.
+# Run on a test host (the x86 test machine, the aarch64 test machine), never on a daily desktop.
 #
 #   tests/mainloop-latency-test.sh LABEL [--windows N] [--mike] [--widgets] [--outputs 2] [--gate PHASE] [scenario ...]
 #
