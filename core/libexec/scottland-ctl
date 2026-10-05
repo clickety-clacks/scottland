@@ -21,7 +21,7 @@ NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", 
 GOO = ("goo", "goo_breath_keys", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak",
-       "goo_dye_strength", "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance",
+       "goo_dye_density", "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance",
        "attention_color_family")
 WIDGETS = ("widget_bounce", "widget_peek_enter_delay", "widget_peek_leave_delay", "widget_attention_peek_duration",
            "widget_make_room_dwell", "minimize_hold_delay")
@@ -33,7 +33,8 @@ NAMES += GOO + UNFOCUSED_EDGE + ("cycle_overshoot", "key_impulse", "key_friction
                 "key_max_velocity", "alt_hold_delay", "window_double_tap_delay", "window_mode_tint", "window_hold_delay") + WIDGETS + OPACITY
 NAMES += ("window_avoidance_always", "solo_audition_delay", "solo_audition_hotspot")
 TEXT = ("scale_curve", "goo_falloff", "attention_color_family")
-LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always"}
+# Renamed settings: the old name is still accepted (Mike, 2026-10-05: dye strength is dye density).
+LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always", "goo_dye_strength": "goo_dye_density"}
 ACCEPTED_NAMES = set(NAMES) | set(LEGACY_OPTIONS)
 
 def setting_updates(name, value):
