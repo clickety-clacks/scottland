@@ -59,7 +59,7 @@ class Ipc:
     def __init__(self, path, timeout=5):
         # A busy compositor can have its accept queue full for a moment: retry the connection
         # for a few seconds before calling it unanswered.
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + min(3, timeout)
         while True:
             self.sock = socket.socket(socket.AF_UNIX)
             self.sock.settimeout(timeout)
@@ -132,7 +132,12 @@ def main():
 
     lock = open(file(".reload-lock"), "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
-    ipc = Ipc(socket_path)
+    try:
+        ipc = Ipc(socket_path)
+    except OSError as error:
+        print(f"scottland-reload: the compositor did not answer ({type(error).__name__}: {error}); nothing changed",
+              file=sys.stderr)
+        return UNRESOLVED
     compositor = ipc.peer_pid()
     started = start_time(compositor)
 
@@ -153,12 +158,12 @@ def main():
         for path in (handover, receipt, importing, ack, failed, marker, attempt_file):
             path.unlink(missing_ok=True)
 
-    def probe():
+    def probe(within=10):
         """('answering', load info) when a Scottland plugin is loaded, ('absent', None) when the
         compositor answers without one, ('unknown', None) when it doesn't answer: never read as
         'no plugin'. Load info is {load, nonce} from builds that report it, else load 0."""
         try:
-            peer = Ipc(socket_path, timeout=10)
+            peer = Ipc(socket_path, timeout=within)
             reply = peer.call("scottland/desktop-model")
             if isinstance(reply, dict) and "error" in reply:
                 missing = "method" in str(reply["error"]).lower() or "no such" in str(reply["error"]).lower()
@@ -178,10 +183,10 @@ def main():
             result = outcome(attempt)
             if result:
                 return result
-            if time.monotonic() - checked > .5:
+            if time.monotonic() - checked > 2:
                 # An older build that loaded this copy writes no acknowledgment: its own evidence.
                 checked = time.monotonic()
-                state, info = probe()
+                state, info = probe(within=max(.1, min(1, deadline - time.monotonic())))  # within the wait
                 if state == "answering" and not info["load"] and target_loaded(attempt):
                     return ("ack", "the plugin loaded is an older build that does not report reloads: "
                             "nothing was carried over by receipt")
