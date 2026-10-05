@@ -97,7 +97,9 @@ try:
         return list(data[at:at+3])
     check('goo remains visible after a wallpaper maps',
           sum(abs(a-b) for a,b in zip(pixel('02-red-soak',400,234),pixel('02-red-soak',400,100)))>30
-          and sum(abs(a-b) for a,b in zip(pixel('02-red-soak',400,441),pixel('02-red-soak',400,500)))>30)
+          and sum(abs(a-b) for a,b in zip(pixel('02-red-soak',400,446),pixel('02-red-soak',400,500)))>30)
+    # (Both samples 6 pt out from the wall. GO28: on blue paper the focused goo's blue mixes
+    # with the paper's, so at the wall itself it can match the paper.)
     # GO28 retired GO15's state-dominant wall and wall fade: focus now mixes with the paper
     # across the whole band (tests/goo-one-dye-test.py checks that instead).
     check('wallpaper red enters GPU dye history',
@@ -181,7 +183,8 @@ try:
           state(*bridge)['density']>state(*bridge)['threshold']
           and state(*straight)['density']>state(*straight)['threshold'])
     bare_bridge=dye(*bridge); bare_straight=dye(*straight)
-    options(goo_soak=1); settle()
+    # The shipped pickup: at full pickup pure red paper saturates both readings (GO28 mixing).
+    options(goo_soak=.12); settle()
     wash_bridge=dye(*bridge); wash_straight=dye(*straight)
     def red_pickup(after,before):
         return (after[0]-before[0])-(after[1]-before[1]+after[2]-before[2])*.5

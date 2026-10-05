@@ -380,9 +380,11 @@ class goo_node_t : public wf::scene::node_t
     wf::regionf_t motion_area;
     bool water_enabled = true;
     bool water_frozen = false;  // tests: tick and repaint, but leave the dye as it is
+    // Pickup is on and there is something to pick up: a background-layer client, or windows
+    // under overlap film (GO28). Without either, nothing changes from GO21 (GO24).
     bool watercolor()
     {
-        return water_enabled && state.settings.soak > 0;
+        return water_enabled && state.settings.soak > 0 && (!wallpaper_nodes.empty() || state.renderer.overlapping());
     }
     const wf::regionf_t &own_area() const { return motion_area.empty() ? breath_area : motion_area; }
     void set_breath_area(const wf::regionf_t &exact)
@@ -1159,6 +1161,7 @@ struct goo_t::impl
             s["wakes"] = wakes;
             s["last_wake"] = n->last_wake;
             s["wallpaper_node_changes"] = (int64_t)n->wallpaper_node_changes;
+            s["open_pickup"] = n->state.renderer.open_pickup;
             // GO28: pickup of what lies beneath, and its bounded wakes.
             s["under_pixels"] = (int64_t)n->state.renderer.under_pixels;
             s["backdrop_checks"] = (int64_t)n->state.renderer.backdrop_checks;
