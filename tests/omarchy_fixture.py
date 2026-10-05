@@ -114,6 +114,9 @@ class Session:
 
     def stop(self):
         if self.started:
+            log = self.dir / "wayfire.log"
+            if log.exists():  # evidence outlives the session directory
+                (self.dir.parent / f"{self.dir.name}-wayfire.log").write_bytes(log.read_bytes())
             self.harness("stop", check=False)
             self.started = False
 
