@@ -173,6 +173,7 @@ class goo_node_t : public wf::scene::node_t
         wallpaper_nodes.clear();
         pickup_timer.disconnect();
         check_timer.disconnect();
+        idle_check.disconnect();
         if (attached)
             state.output->render->rem_effect(&pre);
         attached = false;
@@ -726,6 +727,8 @@ class goo_node_t : public wf::scene::node_t
     bool pickup_pending = false, seen_due = false;
     uint64_t pickup_coasts = 0, pickup_deferred = 0, backdrop_changes = 0;
     wf::wl_timer<false> pickup_timer, check_timer;
+    wf::wl_idle_call idle_check;
+    bool idle_foreign = false;
     // `repainted`: something other than the goo repainted under the liquid this frame.
     void backdrop_copied(bool repainted = false)
     {
@@ -940,7 +943,6 @@ class goo_node_t : public wf::scene::node_t
                 auto area = drawn_area();
                 // The backdrop is never copied in dry content, whether or not the test
                 // switch keeps it in the drawn area.
-                uint64_t copied = state.renderer.under_pixels;
                 state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
                                     reuse_backdrop, &dry, &dry, &own_area());
                 // GO28: the first frame asleep takes what lies beneath as seen; later frames
@@ -949,8 +951,14 @@ class goo_node_t : public wf::scene::node_t
                 {
                     seen_due = false;
                     state.renderer.backdrop_seen();
-                } else if (state.renderer.under_pixels != copied)
-                    backdrop_copied(frame_foreign);
+                } else if (state.renderer.under_waiting())
+                {
+                    // After the frame: the check (and the pickup texture's refresh) never
+                    // interrupts a frame's rendering (GO28, GO10).
+                    idle_foreign = idle_foreign || frame_foreign;
+                    if (!idle_check.is_connected())
+                        idle_check.run_once([this] { backdrop_copied(std::exchange(idle_foreign, false)); });
+                }
             });
     }
 };

@@ -303,9 +303,10 @@ void main(){
     float pool=clamp((ksum-maxK)/max(maxK,1e-4),0.,1.);
     float thick=max(pool,smoothstep(3.,uThickness,nearEdge));
     float pick=uRelease*uPickup*where*mix(.65,1.,thick)*smoothstep(uT*.5,uT,ksum);
-    // Wet pigment is richer than the paper it lifted from.
+    // Wet pigment is a little richer than the paper it lifted from. (Subtractive mixing keeps
+    // saturation; a stronger boost turns complementary colors to mud where they meet.)
     vec3 paper=under.rgb;
-    paper=clamp(mix(vec3(dot(paper,vec3(.299,.587,.114))),paper,1.+.7*sqrt(uPickup*.5)),0.,1.);
+    paper=clamp(mix(vec3(dot(paper,vec3(.299,.587,.114))),paper,1.+.35*sqrt(uPickup/1.25)),0.,1.);
     load+=pick*absorb(paper);rate+=pick;
   }
   if(rate>0.)c=mix(c,load/rate,clamp(often(rate)*m+(1.-m)*.25,0.,1.));

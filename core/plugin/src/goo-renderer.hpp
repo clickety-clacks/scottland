@@ -29,6 +29,7 @@ class renderer_t
     int backdrop_changes();
     void backdrop_seen();
     uint64_t under_pixels = 0, backdrop_checks = 0;
+    bool under_waiting() const;  // a frame copied backdrop the pickup texture has not taken yet
     // Draws only where `area` (output-logical) meets the damage: the goo never leaves its bands.
     void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
               const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys = true,

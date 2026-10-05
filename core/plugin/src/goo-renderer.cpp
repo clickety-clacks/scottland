@@ -123,7 +123,20 @@ struct renderer_t::impl
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query, atlas;
     // GO28: the backdrop at the dye grid's resolution, and the copy of it the dye last saw.
+    // Frames only note what they copied (`under_pending`, output-logical, with the mapping it
+    // was copied under); the pickup texture is refreshed when it is next needed, outside the
+    // frame where possible, so a frame never switches framebuffers for it.
     target_t under, seen;
+    wf::regionf_t under_pending;
+    glm::mat4 under_map{1};
+    uint64_t flush_under()
+    {
+        if (under_pending.empty() || !under.fb || !background.texture)
+            return 0;
+        auto texels = refresh_under(under_pending, under_map);
+        under_pending.clear();
+        return texels;
+    }
     target_t intrinsic, refraction, intrinsic_b, refraction_b;
     std::vector<std::shared_ptr<const shape_t>> atlas_shapes;
     std::vector<glm::vec4> shape_tiles;
@@ -305,7 +318,7 @@ struct renderer_t::impl
         one("uT", settings.threshold());
         one("uPacked", packed ? 1 : 0);
         // GO28: pickup relative to release; the dye mixes it subtractively with what is there.
-        one("uPickup", settings.soak > 0 ? 2 * std::sqrt(settings.soak) : 0);
+        one("uPickup", settings.soak > 0 ? 1.25f * std::sqrt(settings.soak) : 0);
         one("uOpenPickup", open_pickup ? 1 : 0);
         bind(program, "uSources", 0, source.texture);
         bind(program, "uShapes", 6, atlas.texture);
@@ -359,6 +372,7 @@ struct renderer_t::impl
         width = w;
         height = h;
         wave_tiles.clear();
+        under_pending.clear();
         bool ok = field.allocate((w + 1) / 2, (h + 1) / 2, packed, es3);
         ok = mask.allocate((w + 3) / 4, (h + 3) / 4, true, es3) && ok;
         glBindTexture(GL_TEXTURE_2D, mask.texture);
@@ -611,6 +625,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         p->simulate(wave_program, p->wave[1], wave_area);
         std::swap(p->wave[0], p->wave[1]);
     }
+    under_pixels += p->flush_under();
     p->dye_pass(dye_program, flow, 1, false);
     packed = p->packed;
     steps++;
@@ -629,6 +644,7 @@ void renderer_t::flow_dye(float flow, float step, int passes)
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     p->open_pickup = open_pickup;
+    under_pixels += p->flush_under();
     for (int i = 0; i < passes; i++)
         p->dye_pass(p->fast ? p->dye_fast : p->dye_p, flow, step, true);
     p->sampled_step = UINT64_MAX;  // a dye readback is stale now
@@ -690,7 +706,10 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     // Real scene beneath the shared visible liquid, including overlapped window content.
     auto &bg = p->background;
     if (!bg.texture || bg.width != viewport[2] || bg.height != viewport[3])
+    {
         bg.allocate(viewport[2], viewport[3], true, p->es3, false);
+        p->under_pending.clear();  // what it noted was copied into the old texture
+    }
     p->backdrop_geometry = data.target.geometry;
     p->backdrop_scale = data.target.scale;
     p->backdrop_transform = data.target.wl_transform;
@@ -717,11 +736,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     auto ortho = wf::gles::render_target_orthographic_projection(data.target);
     if (!reuse_backdrop && p->settings.soak > 0 && p->under.fb)
     {
-        // GO28: what the goo picks up is what was just copied from beneath it.
-        under_pixels += p->refresh_under(capture, ortho);
-        wf::gles::bind_render_buffer(data.target);
-        glBindFramebuffer(GL_FRAMEBUFFER, wf::gles::ensure_render_buffer_fb_id(data.target));
-        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        // GO28: what the goo picks up is what was just copied from beneath it. Only noted here.
+        p->under_pending |= capture;
+        p->under_map = ortho;
     }
     const GLfloat vertices[] = {0, 0, float(p->width), 0, float(p->width),
                                 float(p->height), 0, float(p->height)};
@@ -1132,6 +1149,7 @@ int renderer_t::backdrop_changes()
         state_t guard;
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
+        under_pixels += p->flush_under();
         GLuint input = 0;
         int iw = p->under.width, ih = p->under.height;
         for (size_t i = 0; i < p->reduction.size(); i++)
@@ -1171,12 +1189,15 @@ void renderer_t::backdrop_seen()
     {
         state_t guard;
         glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        under_pixels += p->flush_under();
         glBindFramebuffer(GL_FRAMEBUFFER, p->under.fb);
         glBindTexture(GL_TEXTURE_2D, p->seen.texture);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, p->under.width, p->under.height);
     });
 }
 bool renderer_t::overlapping() const { return p->overlap; }
+bool renderer_t::under_waiting() const { return !p->under_pending.empty(); }
 bool renderer_t::backdrop_ready(const wf::render_target_t &target) const
 {
     // The backdrop cache is RGBA8: it stands in for scene pixels losslessly only on an

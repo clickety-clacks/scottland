@@ -2544,8 +2544,10 @@ compositor drew under the goo's own scene node: the wallpaper (the node sits on 
 background layer when nothing overlaps) or the windows beneath (it sits at the bottom of the overlay
 layer when they overlap). It never holds the goo (copied before the goo draws, only where the scene
 beneath was repainted) nor hint overlays and the cursor (drawn after it). Each dye step mixes
-the picked-up color in at `goo_release x 2 sqrt(soak)`, a little richer in saturation as wet pigment
-is (unchanged from GO24), graded by thickness (thin goo two thirds of pooled, GO24). With no
+the picked-up color in at `goo_release x 1.25 sqrt(soak)`, a little richer in saturation as wet
+pigment is (`1 + 0.35 soak^0.25`, half GO24's boost: subtractive mixing keeps saturation, and the
+full boost turned complementary colors to mud where they met), graded by thickness (thin goo two
+thirds of pooled, GO24). With no
 background-layer client, open desktop picks up nothing, as before; film still takes the window under it.
 
 **Mixing, not replacement.** Each texel moves toward the mixture of everything feeding it,
@@ -2594,9 +2596,10 @@ where nothing was picked up. GO24's ramp to a fully opaque body at the wall goes
 2. Subtractive mixing: a blue accent over orange wallpaper goes toward brown-violet, not gray-blue.
    (The ruling: "like mixing watercolors".)
 3. Film over a window takes that window's colors, and they spread into the open goo. (The ruling.)
-4. Balance at Mike's settings (soak 1, dye density 1.5): about 55-60% picked-up color against his
-   focus color across the band; at the shipped soak 0.12, about 40%. Chosen so the shipped default
-   still shows pickup clearly (GO24) and full soak never hides the state color (GO28).
+4. Balance at Mike's settings (soak 1, dye density 1.5): about 45% picked-up color against 55% of
+   his focus color across the band; at the shipped soak 0.12, about 30%. Chosen so the shipped
+   default still shows pickup clearly (GO24) and full soak never hides the state color (GO28). (A
+   first balance, 2 sqrt(soak), left Mike's focus color at 40% and read as subdued in the pictures.)
 5. A wallpaper change restarts only the dye's coast instead of three seconds of full simulation.
 6. The liquid's dye share keeps today's formula (no new control); only the wall-band ramp to fully
    opaque is gone. Mike's "dye density" is the existing Dye strength setting, renamed Dye density
