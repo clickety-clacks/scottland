@@ -28,9 +28,9 @@ assert edge_rows == edge_options, (
     f"unknown {edge_rows - edge_options}")
 assert options["attention_color_family"].attrib["type"] == "string"
 assert options["attention_color_family"].findtext("default") == "theme"
-assert options["goo_dye_strength"].findtext("default") == "1"
-assert options["goo_dye_strength"].findtext("min") == "0"
-assert options["goo_dye_strength"].findtext("max") == "1.5"
+assert options["goo_dye_density"].findtext("default") == "1"
+assert options["goo_dye_density"].findtext("min") == "0"
+assert options["goo_dye_density"].findtext("max") == "1.5"
 ctl = (root / "core/libexec/scottland-ctl").read_text()
 assert all(f'"{name}"' in ctl for name in edge_options)
 for name in edge_options:

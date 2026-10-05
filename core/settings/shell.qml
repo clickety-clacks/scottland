@@ -45,7 +45,7 @@ ShellRoot {
     { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
     { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_hover_distance", hint: "How far away a control starts highlighting. Higher responds sooner; zero responds only over it.", title: "Control proximity", initial: 48, low: 0, high: 150, step: 1 },
-    { name: "goo_dye_strength", hint: "Scales focus, attention and Window mode hint colors in goo and fallback halos. One keeps today's look; higher values strengthen state colors, capped at full opacity. The unfocused neutral edge keeps its separate strength.", title: "Dye strength", initial: 1, low: 0, high: 1.5, step: 0.01 }]
+    { name: "goo_dye_density", hint: "How much pigment focus, attention and Window mode hint colors carry into the goo and fallback halos. Higher is denser color, capped at full opacity; zero leaves them clear. The unfocused neutral edge keeps its own strength.", title: "Dye density", initial: 1, low: 0, high: 1.5, step: 0.01 }]
   readonly property var edgeControls: [
     { name: root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark",
       hint: "Gray of an unfocused edge in the active color scheme. Lower is black; higher is white.",
@@ -130,7 +130,7 @@ ShellRoot {
     window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing", solo_audition_delay:"Solo audition pause",
     solo_audition_hotspot:"Solo audition hotspot", unfocused_edge_tone_light:"Unfocused edge tone (light)",
     unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength",
-    attention_color_family:"Attention color family", goo_dye_strength:"Dye strength" })
+    attention_color_family:"Attention color family", goo_dye_density:"Dye density" })
 
   // The session palette carries theme colors and the desktop's interface font/text scale.
   property var palette: ({})

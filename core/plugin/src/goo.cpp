@@ -970,7 +970,7 @@ struct goo_t::impl
     };
     const std::vector<option_t> fields = {
         {"thickness", &goo::settings_t::thickness}, {"reach", &goo::settings_t::reach},
-        {"dye_strength", &goo::settings_t::dye_strength},
+        {"dye_density", &goo::settings_t::dye_density},
         {"thinning", &goo::settings_t::thinning},   {"swell", &goo::settings_t::swell},
         {"noise", &goo::settings_t::noise},         {"lump", &goo::settings_t::lump},
         {"drift", &goo::settings_t::drift},         {"wave_speed", &goo::settings_t::wave_speed},

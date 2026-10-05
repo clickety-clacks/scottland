@@ -291,7 +291,7 @@ struct renderer_t::impl
         glUniform2f(glGetUniformLocation(id, "uRes"), width, height);
         glUniform2f(glGetUniformLocation(id, "uSize"), w, h);
         one("uTime", time);
-        one("uDyeStrength", settings.dye_strength);
+        one("uDyeStrength", settings.dye_density);
         one("uReach", settings.reach);
         one("uThickness", settings.thickness);
         one("uOverlap", overlap ? 1 : 0);
