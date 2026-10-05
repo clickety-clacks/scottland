@@ -3,6 +3,9 @@
     scottland::windowing::alt_mode window_keys;
     wf::option_wrapper_t<int> alt_hold_delay{"scottland/alt_hold_delay"};
     wf::option_wrapper_t<int> window_double_tap_delay{"scottland/window_double_tap_delay"};
+    wf::option_wrapper_t<int> window_hold_delay{"scottland/window_hold_delay"};
+    wf::wl_timer<false> hint_hold;
+    wf::wl_idle_call hint_hold_retry;
     wf::option_wrapper_t<wf::keybinding_t> center_switcher_next{"scottland/center_switcher_next"};
     wf::option_wrapper_t<wf::keybinding_t> center_switcher_previous{"scottland/center_switcher_previous"};
     std::set<uint32_t> swallowed_keys, alt_keys, held_keys;
@@ -223,7 +226,20 @@
             }
             return r;
         }
-        if (auto frame = frame_of(view, false)) return frame->screen_rect();
+        if (auto frame = frame_of(view, false))
+        {
+            auto r = frame->screen_rect();
+            // A rail make-room ease (WG26) runs for a few hundred ms. Avoidance plans against
+            // where those widgets are going, so it re-solves when that target changes rather
+            // than on every frame of the ease.
+            if (for_avoidance_solve)
+            {
+                auto remaining = rail_layout_remaining(view);
+                r.x1 += remaining.x; r.x2 += remaining.x;
+                r.y1 += remaining.y; r.y2 += remaining.y;
+            }
+            return r;
+        }
         auto g = view->get_geometry();
         return {double(g.x), double(g.y), double(g.x + g.width), double(g.y + g.height)};
     }
@@ -312,6 +328,43 @@
         return g.x + g.width / 2.0 < view->get_output()->get_relative_geometry().width / 2.0 ?
             Z::left_periphery : Z::right_periphery;
     }
+    // A side spot reads as lower priority than the center once its scale has visibly fallen: by 5%,
+    // or halfway to the rail's scale when the curve has less range than that (WP4, WP8).
+    double periphery_threshold(double screen_width)
+    {
+        double rail = screen_width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        double outer_scale = place_at(rail + 1, screen_width).scale;
+        return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
+    }
+    // Whether a spot at x reads as zone z (WP8): the center inside the center zone, and just past its
+    // edge (the softness band) while an unpinned window there still shows its zone's full-looking
+    // scale; a periphery anywhere else in the side zone. A Shift pin makes a side spot a periphery
+    // spot wherever it is: the user put it there at that scale, even at full size (L31). A pin
+    // never applies inside the center zone (tenet 4). Rails are what they are.
+    bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin, double screen_width)
+    {
+        using Z = scottland::windowing::zone;
+        auto place = place_at(x, screen_width);
+        bool center = place.zone == zone_t::center ||
+            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(screen_width));
+        if (z == Z::center) return center;
+        if (z == Z::left_periphery || z == Z::right_periphery)
+            return place.zone == zone_t::continuous && !center && ((x < screen_width / 2) == (z == Z::left_periphery));
+        return true;
+    }
+    // The zone a window counts as for its zone memories and cycles (WP8): its zone, except that an
+    // unpinned side window that still reads as full scale counts as the center, where the user sees it.
+    scottland::windowing::zone memory_zone(wayfire_toplevel_view view)
+    {
+        using Z = scottland::windowing::zone;
+        auto z = window_zone(view);
+        if (z != Z::left_periphery && z != Z::right_periphery) return z;
+        auto g = placed_geometry(view);
+        auto found = model.windows.find(view->get_id());
+        auto pin = found == model.windows.end() ? std::nullopt : found->second.pinned_scale;
+        return reads_as(Z::center, g.x + g.width / 2.0, pin, view->get_output()->get_relative_geometry().width) ?
+            Z::center : z;
+    }
     wayfire_toplevel_view represented_view(uint64_t id)
     {
         auto window = wf::toplevel_cast(view_by_id(id));
@@ -386,7 +439,7 @@
         auto link = link_of_widget(view);
         uint64_t id = link ? link->window_id : view->get_id();
         if (!model.windows.count(id)) return;
-        auto z = window_zone(view);
+        auto z = memory_zone(view);
         auto g = placed_geometry(view); auto screen = view->get_output()->get_relative_geometry();
         // The pin goes with the spot (WP1): a later return to this zone restores both.
         scottland::windowing::remember_spot(ensure_window_memory(id), z, {
@@ -408,7 +461,7 @@
             }
             if (!state.placement) { ensure_window_memory(id); remember_window(view); }
             auto link = link_of_window(view);
-            entries.push_back({id, state.placement->hint_slot, window_zone(view), link && link->docked()});
+            entries.push_back({id, state.placement->hint_slot, memory_zone(view), link && link->docked()});
         }
         window_keys.hint_width = model.hint_width;
         window_keys.refresh(entries);
@@ -635,6 +688,9 @@
         auto& memory = ensure_window_memory(window->get_id());
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
+        // A memory counts only while its spot still reads as its zone (WP8).
+        if (remembered && !reads_as(z, remembered->x, scottland::windowing::remembered_pin(memory, z), screen.width))
+            remembered.reset();
         double w = g.width, h = g.height;
         if (z == Z::center)
         {
@@ -667,24 +723,40 @@
                 region.y += WIDGET_INSET; region.height = std::max(h, region.height - 2 * WIDGET_INSET);
             } else
             {
-                // An unremembered side destination must visibly leave center priority.
-                // Find the first center inside the side zone whose natural scale has
-                // fallen by 5% (or halfway to the rail scale when less is available).
-                // Remembered positions remain exact, even inside the soft edge band.
+                // An unremembered side destination goes as close to the center as it may (WP4): its
+                // center past where the zone scale has visibly fallen (WP8), and at most a quarter
+                // of its scaled width hanging into the center zone, never half of it (Mike,
+                // 2026-10-04), where it fits on screen (WP7); else as far out as fits. From there
+                // the placement routine below keeps it off center windows (and any other) and
+                // nearest the center. Remembered positions remain exact (WP2).
                 if (!remembered && side.width > 0)
                 {
                     double inner = left ? side.x + side.width : side.x;
                     double outer = left ? side.x : side.x + side.width;
-                    double outer_scale = place_at(outer, screen.width).scale;
-                    double threshold = 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
-                    for (int step = 1; step <= 128; ++step)
+                    double threshold = periphery_threshold(screen.width);
+                    double center_edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
+                    double boundary = left ? center_edge : screen.width - center_edge;
+                    auto area = output->workarea->get_workarea();
+                    std::optional<double> chosen;
+                    for (int step = 0; step <= 512; ++step)
                     {
-                        double trial = inner + (outer - inner) * step / 128;
-                        if (place_at(trial, screen.width).scale > threshold) continue;
-                        if (left) side.width = trial - side.x;
+                        double trial = inner + (outer - inner) * step / 512;
+                        // A pixel inward too, so rounding the landing can't bring it back.
+                        double inward = trial + (left ? 1 : -1);
+                        double scale = place_at(trial, screen.width).scale;
+                        if (std::max(scale, place_at(inward, screen.width).scale) > threshold) continue;
+                        double half = g.width * scale / 2;
+                        auto pa = padded(area, g.width * scale, g.height * scale);
+                        if (left ? trial - half < pa.x : trial + half > pa.x + pa.width) continue;
+                        chosen = trial;
+                        double hang = half / 2;   // a quarter of its scaled width
+                        if (left ? trial + half - hang <= boundary : trial - half + hang >= boundary) break;
+                    }
+                    if (chosen)
+                    {
+                        if (left) side.width = *chosen - side.x;
                         else { double right = side.x + side.width;
-                            side.x = trial; side.width = right - trial; }
-                        break;
+                            side.x = *chosen; side.width = right - *chosen; }
                     }
                 }
                 // Re-evaluate the rectangle footprint as its natural zone scale
@@ -759,26 +831,31 @@
         // frame, then its existing widget handoff stops the glide itself.
         if (!rail) stop_glide(window);
         // Explicit zone cycling follows the zone, including center at 100%, unless the user pinned
-        // a scale at this zone's remembered spot (WP1/WP5). A spot that zone settings have since
-        // put inside the center zone is full scale (tenet 4).
-        double screen_width = window->get_output()->get_relative_geometry().width;
-        auto pin = scottland::windowing::remembered_pin(ensure_window_memory(id), z);
-        if (pin && place_at(at.x, screen_width).zone == zone_t::center) pin.reset();
+        // a scale at this zone's remembered spot (WP1/WP5). The pin comes back only with that spot,
+        // and only while it still reads as its zone (WP8; inside the center zone, never: tenet 4).
+        auto screen = window->get_output()->get_relative_geometry();
+        auto& memory = ensure_window_memory(id);
+        auto pin = scottland::windowing::remembered_pin(memory, z);
+        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z, p->x * screen.width, pin, screen.width)))
+            pin.reset();
         pin_scale(window, pin);
+        // Where its center actually lands, after pixel rounding: the drawn scale must be that
+        // spot's zone scale, or it would stay off by the rounding on a steep curve (WP5).
+        wf::pointf_t landed{std::round(at.x - real.width / 2.0) + real.width / 2.0,
+            std::round(at.y - real.height / 2.0) + real.height / 2.0};
         if (destination == D::periphery && link_of_window(window))
             restore_window(*link_of_window(window), at, true);
-        else if (!rail) move_window(window, std::round(at.x - real.width / 2.0), std::round(at.y - real.height / 2.0));
+        else if (!rail) move_window(window, landed.x - real.width / 2.0, landed.y - real.height / 2.0);
         if (rail)
         {
             model.windows[id].pending_rail = current;
             widgetize(window, false, left ? "left" : "right", "hint-rail");
             if (auto link = link_of_window(window)) link->drop = {at.x, at.y};
             if (!link_of_window(window)) model.windows[id].pending_rail.reset();
-            auto& memory = ensure_window_memory(id);
-            memory.last_side = left ? -1 : 1;
+            ensure_window_memory(id).last_side = left ? -1 : 1;
             publish_model();
         } else { remember_window(window); start_cycle_glide(window, from, from_scale,
-            {at.x, at.y}, destination == D::center ? 1.0 : pin ? *pin : place_at(at.x, screen_width).scale); }
+            landed, pin ? *pin : place_at(landed.x, screen.width).scale); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)
@@ -799,6 +876,134 @@
     wf::wl_idle_call deferred_ready;
     bool cycle_waiting = false;
     std::vector<std::pair<uint64_t, scottland::windowing::destination>> deferred_moves;
+
+    // WK36: holding an unfocused window's hint pairs it with the window that had focus.
+    static constexpr double PAIR_GAP = scottland::HALO; // a halo-sized gap (P7)
+    wf::wl_timer<false> deferred_pair;
+    wf::wl_idle_call deferred_pair_ready;
+    // The pair holds still for window avoidance, so the windows behind it peek out instead,
+    // until either member moves or is resized. Nothing else about the pair is kept.
+    std::vector<std::pair<uint64_t, wf::geometry_t>> pair_anchors;
+    bool pair_anchored(wayfire_toplevel_view view)
+    {
+        if (!view) return false;
+        uint64_t id = view->get_id();
+        if (auto link = link_of_widget(view)) id = link->window_id;
+        bool member = false;
+        for (auto [window, geometry] : pair_anchors)
+        {
+            auto shown = represented_view(window);
+            if (!shown || link_of_window(wf::toplevel_cast(view_by_id(window))) ||
+                shown->toplevel()->pending().geometry != geometry)
+            { pair_anchors.clear(); return false; }
+            member |= window == id;
+        }
+        return member;
+    }
+    void pair_windows(uint64_t held_id, uint64_t partner_id, int attempts = 0)
+    {
+        auto held = wf::toplevel_cast(view_by_id(held_id));
+        auto partner = wf::toplevel_cast(view_by_id(partner_id));
+        if (!held || !partner || held == partner || deferred_pair.is_connected()) return;
+        auto held_shown = represented_view(held_id), partner_shown = represented_view(partner_id);
+        if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output()) return;
+        // Full screen ends first, as for an explicit cycle (WK12); the pair uses restored sizes.
+        bool waiting = false;
+        for (auto window : {held, partner})
+            if (window->pending_fullscreen())
+            {
+                waiting = true;
+                wf::get_core().default_wm->fullscreen_request(window, window->get_output(), false);
+            } else if (window->toplevel()->current().fullscreen) waiting = true; // until its size commits
+        if (waiting)
+        {
+            if (attempts < 10) deferred_pair.set_timeout(100, [=] () {
+                deferred_pair_ready.run_once([=] () { pair_windows(held_id, partner_id, attempts + 1); }); });
+            return;
+        }
+        // The pair forms on the focused window's screen; the held one joins it there.
+        auto output = partner_shown->get_output();
+        // Keep the current left/right order across the whole layout (P1).
+        auto global_x = [] (wayfire_toplevel_view view) {
+            auto g = view->get_geometry();
+            return view->get_output()->get_layout_geometry().x + g.x + g.width / 2.0;
+        };
+        bool held_left = global_x(held_shown) < global_x(partner_shown);
+        auto left = held_left ? held : partner, right = held_left ? partner : held;
+        auto lg = left->get_geometry(), rg = right->get_geometry();
+        auto a = output->workarea->get_workarea();
+        auto fit = scottland::windowing::fit_pair({double(lg.width), double(lg.height)},
+            {double(rg.width), double(rg.height)},
+            {double(a.x), double(a.y), double(a.width), double(a.height)}, PAIR_GAP, SCREEN_PADDING);
+        LOGI("scottland: pairing ", held_id, " with ", partner_id, " at ", fit.scale * 100,
+            "%, gap ", fit.gap, ", margin ", fit.margin);
+        place_paired(left, fit.left, fit.scale, output);
+        place_paired(right, fit.right, fit.scale, output);
+        pair_anchors.clear();
+        for (auto window : {left, right})
+            pair_anchors.emplace_back(window->get_id(), window->toplevel()->pending().geometry);
+        // Both in front of the other center windows, which stay put and peek out (avoidance);
+        // the held window was selected and focused by its press (WK6) and stays so.
+        wf::view_bring_to_front(partner);
+        wf::get_core().default_wm->focus_raise_view(held);
+        declutter_signature.clear();
+        refresh_layout_avoidance();
+    }
+    void place_paired(wayfire_toplevel_view window, scottland::windowing::point at, double scale,
+        wf::output_t *output)
+    {
+        auto shown = represented_view(window->get_id());
+        keyboard_motions.erase(window->get_id());
+        if (shown) keyboard_motions.erase(shown->get_id());
+        fullscreen_impulses.erase(std::remove_if(fullscreen_impulses.begin(), fullscreen_impulses.end(),
+            [&] (auto impulse) { return impulse.id == window->get_id(); }), fullscreen_impulses.end());
+        // The pair's scale holds wherever its center lands, even outside the center zone; it is
+        // an ordinary scale pin (L31), so the next drag, push or cycle clears it.
+        pin_scale(window, scale);
+        auto place = [&] () {
+            if (window->get_output() != output) wf::move_view_to_output(window, output, false);
+            auto g = window->get_geometry();
+            move_window(window, std::round(at.x - g.width / 2.0), std::round(at.y - g.height / 2.0));
+        };
+        if (auto link = link_of_window(window))
+        {
+            // A widget joins as its app window, opened from the rail into its place (tenet 3).
+            restore_window(*link, wf::pointf_t{at.x, at.y}, true);
+            if (window->get_output() != output) place();
+            remember_window(window);
+            return;
+        }
+        auto drawn = hint_rectangle(shown ? shown : window);
+        wf::pointf_t from{(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
+        double from_scale = displayed_scale(window);
+        if (window->get_output() != output)
+        {
+            auto was = window->get_output()->get_layout_geometry(), now = output->get_layout_geometry();
+            from.x += was.x - now.x; from.y += was.y - now.y;
+        }
+        stop_glide(window);
+        place();
+        remember_window(window);
+        start_cycle_glide(window, from, from_scale, {at.x, at.y}, scale);
+    }
+    // WK35 (not built yet): holding the focused window's hint will solo it. Until then the hold
+    // does nothing; its press has already acted as an ordinary tap (WK6).
+    void solo_window(uint64_t) {}
+    // One clock for hint timing: presses and releases carry their input event time (WK15), and
+    // holds compare it with the same monotonic clock, so a hold is timed from the physical press.
+    static uint32_t key_event_time(wlr_keyboard_key_event *event)
+    {
+        auto now = now_msec();
+        // An event stamped by another clock (in the future or implausibly old) counts as now.
+        return uint32_t(now - event->time_msec) > 1000 ? now : event->time_msec;
+    }
+    void arm_hint_hold()
+    {
+        hint_hold.set_timeout(std::max(1u, window_keys.hold_remaining(now_msec())), [=] () {
+            if (!window_keys.hold_due(now_msec()) && window_keys.hold_waiting())
+                hint_hold_retry.run_once([=] () { if (window_keys.hold_waiting()) arm_hint_hold(); });
+        });
+    }
 
     // Overlay circles precede window islands in the same ordered liquid field.
     // Presentation-only IDs cannot collide with Wayfire's view IDs.
@@ -895,6 +1100,7 @@
         signature << "active:" << window_keys.active << ";avoidance:" << avoidance_active
             << ";anchor:" << (focused ? focused->get_id() : 0) << ";live:" << live
             << ";text:" << hints_palette.text_scale;
+        for (auto [id, geometry] : pair_anchors) signature << ";pair:" << id;
         auto current_signature = signature.str();
         auto solve_now = std::chrono::steady_clock::now();
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
@@ -1015,7 +1221,8 @@
                         else if (z == Z::left_periphery) { input.zone_x1 = rail; input.zone_x2 = width / 2 - center_half - .5; }
                         else { input.zone_x1 = width / 2 + center_half + .5; input.zone_x2 = width - rail; }
                         input.center_y1 = area.y; input.center_y2 = area.y + area.height;
-                        input.anchored = view == focused;
+                        // Focused and paired windows (WK36) are fixed: others peek around them.
+                        input.anchored = view == focused || pair_anchored(view);
                         input.full_hint = hint_size(view);
                         input.minimum_hint = 48 * text;
                         input.target = visual.target;
@@ -1179,7 +1386,7 @@
                     dt = std::clamp(dt, 0.0, 1.0 / 60.0);
                     double dx = (target.x - offset->translation_x) * .18;
                     double dy = (target.y - offset->translation_y) * .18;
-                    const double step = std::hypot(dx, dy), cap = 1000 * dt;
+                    const double step = std::hypot(dx, dy), cap = scottland::motion::AUTOMATIC_MAX_SPEED * dt;
                     if (step > cap && step > .001) { dx *= cap / step; dy *= cap / step; }
                     exposure_easing_speed_max = std::max(exposure_easing_speed_max,
                         std::hypot(dx, dy) / std::max(dt, .0001));
@@ -1347,6 +1554,7 @@
     }
     void end_window_keys()
     {
+        window_keys.interrupt(); // Alt release: a focused window's waiting press acts first
         arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
         apply_all_opacity();
@@ -1358,8 +1566,7 @@
             remove_hint_outline(visual);
             if (visual.hint) visual.hint->hide(hints_reduced_motion);
         }
-        for (auto& [id, link] : model.widgets)
-            if (link.docked() && in_focus_mode(link.output)) slide_widget(link, true);
+        apply_widget_mode();  // collapsed and hidden widgets go back (WG16), and away in full screen (WK12)
         refresh_layout_avoidance();
     }
     void begin_window_keys()
@@ -1370,8 +1577,7 @@
         auto link = link_of_widget(active);
         window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
         apply_all_opacity();
-        for (auto& [id, widget] : model.widgets)
-            if (widget.docked() && in_focus_mode(widget.output)) slide_widget(widget, false);
+        apply_widget_mode();  // every widget comes back expanded while asking (WG16, WK12)
         palette_read = {}; // always read the current theme on entry
         declutter_signature.clear(); refresh_layout_avoidance(true);
     }
@@ -1406,7 +1612,7 @@
         if (!down && swallowed_keys.erase(code))
         {
             if (auto letter = window_hint_letter(keyboard, code))
-                window_keys.release(*letter, ev->event->time_msec);
+                window_keys.release(*letter, key_event_time(ev->event));
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // finish our own pair; this is not a new compositor grab
         }
@@ -1490,6 +1696,9 @@
         if (!down) return;
         bool first = swallowed_keys.insert(code).second;
         if (!window_keys.active) return; // Esc cancels, but this whole Alt chord remains ours.
+        // Another key ends a hint hold; Esc also drops a focused window's waiting press (WK35).
+        if (code == KEY_ESC && first) window_keys.cancel_pending();
+        else if (first || arrow_key(code)) window_keys.interrupt();
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
         if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
@@ -1502,7 +1711,9 @@
             {
                 window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
                 window_keys.refresh(window_entries());
-                window_keys.letter(*letter, ev->event->time_msec);
+                window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
+                window_keys.letter(*letter, key_event_time(ev->event));
+                if (window_keys.hold_waiting()) arm_hint_hold();
             }
         }
     };
@@ -1592,6 +1803,9 @@
             }
             item["dx"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_x) : 0.0;
             item["dy"] = hint_visuals.count(e.id) ? double(hint_visuals[e.id].offset->translation_y) : 0.0;
+            // Whether the window holds still for avoidance as a pair member (WK36).
+            item["pair_anchored"] = std::any_of(pair_anchors.begin(), pair_anchors.end(),
+                [&] (auto& anchor) { return anchor.first == e.id; });
             item["target_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.x : 0.0;
             item["target_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.y : 0.0;
             item["label_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.x : 0.0;
@@ -1674,6 +1888,14 @@
                 found->second.peek_hint_due && int32_t(now_msec() - *found->second.peek_hint_due) < 0;
         };
         window_keys.hint_action = [=] (uint64_t id) { flash_hint(id); };
+        window_keys.focused = [=] () -> uint64_t {
+            auto active = wf::get_core().seat->get_active_view();
+            if (auto link = link_of_widget(active)) return link->window_id;
+            return active && model.windows.count(active->get_id()) ? active->get_id() : 0;
+        };
+        window_keys.pair = [=] (uint64_t held, uint64_t partner) {
+            keyboard_selection = true; pair_windows(held, partner); };
+        window_keys.solo = [=] (uint64_t id) { solo_window(id); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
         wf::get_core().connect(&on_window_key);
@@ -1684,6 +1906,7 @@
     void fini_window_keys()
     {
         on_window_key.disconnect(); alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
+        hint_hold.disconnect(); hint_hold_retry.disconnect(); deferred_pair.disconnect(); deferred_pair_ready.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
         stop_keyboard_motion();
         end_center_switcher(false); hint_flash_tick.disconnect();

@@ -17,6 +17,7 @@
 #include "goo.hpp"
 #include "goo-shape.hpp"
 #include "edge-style.hpp"
+#include "state-dye.hpp"
 #include <wayfire/view-transform.hpp>
 #include <wayfire/opengl.hpp>
 #include <wayfire/core.hpp>
@@ -72,6 +73,7 @@ struct palette_t
     float unfocused_edge_tone_dark = .92f;
     float unfocused_edge_strength = 1.f;
     float hint_tint = .07f;             // WK38 Window mode overlay strength (0 = off)
+    float dye_strength = 1.f;
 
     glm::vec3 unfocused_edge_tone() const
     {
@@ -403,6 +405,9 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     // Generic drag-owned layout audition. Independent of glides, widget morphs and the live
     // transform on the dragged view; committed moves clear this after real geometry applies.
     double drag_layout_x = 0, drag_layout_y = 0;
+    // A widget sliding off or peeking in at its screen edge (FS1, WG16's hidden mode). Owned by
+    // the rail slides alone, so glides and morphs never reset it.
+    double rail_slide_x = 0;
     std::function<bool(wayfire_toplevel_view)> is_widget;
 
     bool can_resize() const
@@ -529,7 +534,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     {
         // The base transformer scales about the center. Cancel its movement of the
         // rail-side edge, without stealing the translation owned by a glide.
-        return translation_x + drag_layout_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
+        return translation_x + drag_layout_x + rail_slide_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
             (window_geometry().width - presentation->width) * 0.5 : 0);
     }
 
@@ -1588,6 +1593,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         float density     = edge_style::halo_neutral_density(edge_strength, focus) * alpha;
         float attention   = self->attention_mix;
         tone    = glm::mix(tone, palette.attention, attention);
+        if (palette.dye_strength != 1.f)
+            tone = state_dye::tone(neutral, tone, palette.dye_strength);
         density = density + (0.5f * alpha - density) * attention;
 
         program.use(wf::TEXTURE_TYPE_RGBA);
@@ -1600,8 +1607,10 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("ripple", std::min(4.0, std::abs(self->swell_velocity) * travel * 0.3));
         program.uniform1f("phase", self->phase);
         program.uniform1f("aa", aa);
-        if (self->hint_dye) tone = *self->hint_dye;
-        program.uniform4f("hint_dye", self->hint_dye ? glm::vec4{*self->hint_dye, alpha} : glm::vec4{0});
+        if (self->hint_dye)
+            tone = palette.dye_strength == 1.f ? *self->hint_dye :
+                state_dye::tone(neutral, *self->hint_dye, palette.dye_strength);
+        program.uniform4f("hint_dye", self->hint_dye ? glm::vec4{tone, alpha} : glm::vec4{0});
         program.uniform1f("hint_border", windowing::hint_border_width);
         program.uniform3f("tone", tone.r, tone.g, tone.b);
         program.uniform1f("density", density);

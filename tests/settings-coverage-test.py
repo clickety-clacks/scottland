@@ -32,9 +32,21 @@ assert "root.edgeControls.concat(root.gooControls)" in qml
 assert 'unfocused_edge_tone_light: 0.08' in qml
 assert 'unfocused_edge_tone_dark: 0.92' in qml
 assert 'unfocused_edge_strength: 1' in qml
+assert 'attention_color_family: "theme"' in qml
+assert 'attention_color_family:"Attention color family"' in qml
+assert 'text: "Theme follows your palette. Warm shifts from red to amber; Cool shifts from olive to yellow-green."' in qml
+assert all(f'id: attention{name}' in qml for name in ("Theme", "Warm", "Cool"))
+assert options["attention_color_family"].attrib["type"] == "string"
+assert options["attention_color_family"].findtext("default") == "theme"
+assert 'goo_dye_strength:"Dye strength"' in qml
+assert options["goo_dye_strength"].findtext("default") == "1"
+assert options["goo_dye_strength"].findtext("min") == "0"
+assert options["goo_dye_strength"].findtext("max") == "1.5"
 assert 'root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark"' in edge_section
 ctl = (root / "core/libexec/scottland-ctl").read_text()
 assert "UNFOCUSED_EDGE = (" in ctl
+assert '"attention_color_family"' in ctl.split("GOO = (", 1)[1].split("WIDGETS =", 1)[0]
+assert '"attention_color_family"' in ctl.split("TEXT = (", 1)[1].split("\n", 1)[0]
 assert all(f'"{name}"' in ctl for name in edge_options)
 assert "NAMES += GOO + UNFOCUSED_EDGE" in ctl
 for name in edge_options:
@@ -44,7 +56,7 @@ assert 'Zero leaves clear glass; one uses the full tint.' in edge_section
 
 inertia = {name for name in options if name in {
     "key_impulse", "key_friction", "resize_impulse", "resize_friction", "key_max_velocity", "cycle_overshoot",
-    "alt_hold_delay", "window_double_tap_delay"}}
+    "alt_hold_delay", "window_double_tap_delay", "window_hold_delay"}}
 motion_section = qml.split("id:motionSettings", 1)[1].split("id:windowOpacitySettings", 1)[0]
 motion_rows = set(re.findall(r'id:\s*"([^"]+)"', motion_section))
 motion_special = set(re.findall(r'setMotion\("([^"]+)"', qml))
@@ -57,7 +69,8 @@ assert qml.count("CoastGraph {") == 2
 
 for name, label, step in (("goo_depth", "Liquid depth", 0.1),
                           ("goo_profile", "Wall wetting", 0.01),
-                          ("goo_soak", "Wallpaper soak", 0.01)):
+                          ("goo_soak", "Wallpaper soak", 0.01),
+                          ("goo_dye_strength", "Dye strength", 0.01)):
     match = re.search(r'\{\s*name:\s*"' + name + r'"[^}]+\}', goo_section)
     assert match, f"No row for {name}"
     row = match.group()
@@ -76,5 +89,5 @@ assert "window_mode_tint:7" in qml and options["window_mode_tint"].findtext("def
 assert options["window_mode_tint"].findtext("min") == "0"
 assert '"window_mode_tint"' in (root / "core/libexec/scottland-ctl").read_text()
 assert 'id:"widget_bounce"' in qml
-print(f"PASS Settings covers {len(expected_goo)} Goo, {len(edge_options)} unfocused-edge and "
-      f"{len(inertia)} inertial options; GO14/GO15 hints and ranges match metadata")
+print(f"PASS Settings covers {len(goo_rows)} numeric Goo, {len(edge_options)} unfocused-edge and "
+      f"{len(inertia)} inertial options; GO14/GO15/GO23 hints and ranges match metadata")

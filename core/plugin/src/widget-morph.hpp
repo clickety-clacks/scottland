@@ -145,7 +145,7 @@ struct widget_morph_t
 // independently faded layers would expose the wallpaper even between opaque cards.
 // Images keep their natural pixel scale and rail alignment; the frame clips them.
 // Extend the inside edge pixel when the old (narrower) image cannot fill the new frame.
-// A card's 20px/16px icon inset is interpolated before sampling, so icons stay registered.
+// A card's 17px/16px icon inset is interpolated before sampling, so icons stay registered.
 class widget_morph_renderer_t
 {
     OpenGL::program_t program;

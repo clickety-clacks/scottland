@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 namespace scottland::goo
 {
@@ -19,8 +20,17 @@ uniform vec2 uAtlasSize;
 uniform int uCount;
 uniform vec2 uRes, uSize;
 uniform float uTime, uReach, uNoise, uNoiseScale, uNoiseSpeed, uT, uPacked, uThickness;
-uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;
-vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/float(max(uCount,1)))); }
+#ifdef GOO_FAST
+// The common resting/breathing path: no overlap film, no control proximity, and every source
+// is eligible, so loops end at uCount. Uniform branches alone keep the overlap/hover loop
+// state alive on Xe even when both are absent.
+uniform float uFilm,uCloudiness,uEmissivity,uDyeStrength; const float uOverlap=0.,uControls=0.;
+#define GOO_BOUND(n) uCount
+#else
+uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls,uDyeStrength;
+#define GOO_BOUND(n) int(n)
+#endif
+vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/max(float(uCount),1.))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p) {
   vec2 i=floor(p), f=fract(p), u=f*f*(3.-2.*f);
@@ -101,9 +111,11 @@ vec4 gooField(vec2 p) {
   float F=0.,tinted=0.,cloud=0.,weight=0.,breathing=0.;vec2 back=backdrop(p);
   // Extend the front source under its own content for bilinear reconstruction.
   // Rendering and the flow mask still clip that content analytically.
+#ifndef GOO_FAST
   if(back.x==0.)back=vec2(1.,0.);
+#endif
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);
+    if(i>=GOO_BOUND(back.x))break;vec4 r=source(i,0.),g=source(i,1.);
     // A hint's own halo remains visible over app content even when window film is off.
     if(g.x<=0.||(back.y<0.&&uFilm<=0.&&source(i,5.).w<.5))continue;
     float e=edgeDistance(p,r,g,back,i),fe=fall(e);
@@ -117,7 +129,9 @@ vec4 gooField(vec2 p) {
     if(back.x<float(uCount)&&back.y<0.)a/=max(g.x,.0001);
     float contribution=max(a,0.)*fe;
     F+=contribution;
-    tinted+=contribution*source(i,7.).y;
+    // Preserve A16's original field channel exactly at GO23's default. Other
+    // values carry the state share separately so neutral dye keeps its own strength.
+    tinted+=contribution*(uDyeStrength==1.?source(i,7.).y:source(i,7.).z);
     // Finite support applies only to the decorative modulation, never field/dye tails.
     float shore=g.y<0.?sourceSdf(p,i):sdBox(p-r.xy,r.zw,g.y);
     float local=1.-smoothstep(3.*uReach,4.*uReach,max(shore,0.));
@@ -196,16 +210,40 @@ void main(){
 inline const std::string dye_shader = common + mask + R"(
 uniform sampler2D uDyeTex;
 uniform float uSpread,uSwirl,uRelease,uSoak;
+// GO24: uFlow is the swirl's own clock (it runs while the simulation sleeps); uStep is
+// how many ordinary steps this pass stands for (1 awake, more for a sleeping tick), and
+// uWetOnly leaves dry texels as they are on those ticks.
+uniform float uFlow,uStep,uWetOnly;
 uniform sampler2D uWallpaper;
 uniform mat4 uWallpaperMap;
+float often(float rate){return 1.-pow(1.-clamp(rate,0.,.999),uStep);}
 void main(){
   vec2 uv=gl_FragCoord.xy/uSize,px=1./uSize,p=uv*uRes;
   float m=gooMask(uv);
   vec3 c=texture2D(uDyeTex,uv).rgb;
+  if(m<=0.&&uWetOnly>.5){gl_FragColor=vec4(c,1);return;}
   if(m>0.){ // the swirl only moves dye that is in goo
-    vec2 q=p*.004+vec2(0.,uTime*.03);float h=.01;
+    vec2 q=p*.004+vec2(0.,uFlow*.03);float h=.01;
     float gx=(fbm(q+vec2(h,0))-fbm(q-vec2(h,0)))/(2.*h),gy=(fbm(q+vec2(0,h))-fbm(q-vec2(0,h)))/(2.*h);
-    vec2 vel=vec2(gy,-gx)*uSwirl,adv=uv-vel/uRes;
+    vec2 vel=vec2(gy,-gx)*uSwirl;
+    // Watercolor runs along the liquid: most of the flow follows the band (across the
+    // field's gradient), so pigment travels down an edge instead of stalling at its sides.
+    if(uSoak>0.){
+      vec2 fp=1./uRes*4.;
+      vec2 grad=vec2(field(uv+vec2(fp.x,0.))-field(uv-vec2(fp.x,0.)),field(uv+vec2(0.,fp.y))-field(uv-vec2(0.,fp.y)));
+      float gl=length(grad);
+      if(gl>1e-5){vec2 n=grad/gl,along=vec2(-n.y,n.x);
+        // A slow current along the band, eddying with the noise, plus a little cross flow.
+        // It turns over every several seconds, so streaks of pigment lengthen, slacken
+        // and reverse: a still flow would paint a still picture.
+        // Short currents: a color smears a few tens of points along the band from the
+        // paper it was lifted from and no farther, so each part of the goo keeps the
+        // colors of the wallpaper beneath and near it (Mike, 2026-10-03: local, never a
+        // screen-wide wash).
+        float current=(fbm(q*1.2+vec2(11.3,uFlow*.05))-.5)*20.;
+        vel=mix(vel,along*(dot(vel,along)+current*sqrt(uSwirl)),.85);}
+    }
+    vec2 adv=uv-vel*uStep/uRes;
     // Both ends must contain goo: backtracing cannot pull color across a dry gap.
     c=texture2D(uDyeTex,mix(uv,adv,gooMask(adv)*m)).rgb;
   }
@@ -217,19 +255,33 @@ void main(){
   float ksum=1e-4,maxK=0.,nearEdge=1e5;vec3 nearest=vec3(0);vec2 back=backdrop(p);
   // Retain the front source's dye under its own island as well: interpolation
   // at a thin film must not mix its color with black dry texels inside content.
+#ifndef GOO_FAST
   if(back.x==0.)back=vec2(1.,0.);
+#endif
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
+    if(i>=GOO_BOUND(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e);maxK=max(maxK,k);ksum+=k;nearEdge=min(nearEdge,e);nearest+=k*source(i,2.).rgb;
   }
+  // GO24 watercolor. `wash` is where the liquid carries paper pigment: all of it, thin
+  // bands around small or scaled windows included ("in watercolors it spreads
+  // everywhere"), except a narrow band at each window wall, a point to three points
+  // wide whatever the goo's thickness, which the state colors keep. `share` is how much of the wet band the pigment takes over: clearly
+  // present at the shipped soak, nearly all of it at full soak.
+  float pool=clamp((ksum-maxK)/max(maxK,1e-4),0.,1.);
+  // Graded by thickness, never zero: thin goo carries about two thirds of what thick
+  // or pooled liquid does (Mike, 2026-10-03: stronger in the thick parts, still clearly
+  // present in the thin).
+  float thick=max(pool,smoothstep(3.,uThickness,nearEdge));
+  float wash=uSoak>0.?smoothstep(1.,3.,nearEdge)*smoothstep(uT*.5,uT,ksum)*mix(.65,1.,thick):0.;
+  float share=uSoak>0.?pow(uSoak,.25):0.;
   for(int i=0;i<1024;i++){
-    if(i>=int(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
+    if(i>=GOO_BOUND(back.x))break;vec4 r=source(i,0.),g=source(i,1.);float e=edgeDistance(p,r,g,back,i);
     float k=g.x*fall(e); if(k<maxK-.00001)continue;
     float w=uRelease*g.w*exp(-e/(uReach*.6));
-    // At the wall, keep state ink ahead of wallpaper color diffusing inward.
-    // The extra anchoring follows the user's release setting and vanishes in
-    // the open band; without a wallpaper source uSoak is zero.
-    if(uSoak>0.)w*=1.+3.*uSoak*(1.-smoothstep(0.,uThickness*.7,e));
+    // At the wall, keep state ink ahead of wallpaper color diffusing inward; out in
+    // the wet band the state ink gives way to the pigment by the soak's share.
+    if(uSoak>0.)w*=(1.+2.*(1.-smoothstep(0.,3.,e)))*mix(1.,(1.-share)*(1.-share),wash);
+    w=often(w);
     vec3 tint=source(i,2.).rgb;
     // State marks are released dye, Gaussian deposits, never overlay geometry.
     float cloud=controlCloud(p,i)*uCloudiness;
@@ -243,15 +295,21 @@ void main(){
   // advects and diffuses. The shore distance vanishes at every window wall;
   // summed source density and bridge contributions favor thick pooled liquid.
   // State release above remains stronger, and hint dye still wins at draw time.
-  if(m>0.&&uSoak>0.){
-    float pool=clamp((ksum-maxK)/max(maxK,1e-4),0.,1.);
-    float wash=sqrt(smoothstep(0.,uThickness*.7,nearEdge))*
-      smoothstep(uT*.7,uT*1.4,ksum)*mix(.65,1.3,pool);
+  vec3 rest=nearest/ksum;
+  if(uSoak>0.){
     vec2 wallpaperUV=(uWallpaperMap*vec4(p,0,1)).xy*.5+.5;
-    c=mix(c,texture2D(uWallpaper,wallpaperUV).rgb,
-      uSoak*min(.03,uRelease*.5)*wash*m);
+    // Wet pigment is richer than the paper it lifted from.
+    vec3 paper=texture2D(uWallpaper,wallpaperUV).rgb;
+    paper=clamp(mix(vec3(dot(paper,vec3(.299,.587,.114))),paper,1.+.7*share),0.,1.);
+    // A slow pickup against the flow: the color travels and smears before it is replaced.
+    // The pickup keeps pace with the dye release setting, so the pigment's share of the
+    // band is the soak's, whatever the release.
+    if(m>0.)c=mix(c,paper,often(.5*uRelease)*share*wash*m);
+    // Texels at and beyond the shore rest at the paper's color, not the window's: they
+    // are what a thin band's dye mixes with, and state ink there would wash the pigment out.
+    rest=mix(rest,paper,share*smoothstep(1.,3.,nearEdge));
   }
-  c=mix(c,nearest/ksum,(1.-m)*.25);
+  c=mix(c,rest,(1.-m)*.25);
   gl_FragColor=vec4(c,1);
 }
 )";
@@ -314,18 +372,37 @@ void main(){
   float hintAmount=0.;vec3 hintDye=vec3(0.);
   vec2 hintBack=backdrop(p);
   if(uHints>.5)for(int i=0;i<1024;i++){
-    if(i>=int(hintBack.x))break;if(source(i,5.).x<=0.)continue;
+    if(i>=GOO_BOUND(hintBack.x))break;if(source(i,5.).x<=0.)continue;
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
+  // GO24: with soak on, the wet band is paper pigment, so the state color (focus,
+  // attention, neutral) is drawn in a narrow band at the window wall, exact to the pixel
+  // whatever the goo's thickness: the dye grid is too coarse to hold a band that thin.
+  float wallBand=uSoak>0.?1.-smoothstep(1.5,4.,d):0.;
+  float wallAmount=0.;vec3 wallDye=vec3(0.);
+  if(wallBand>0.)for(int i=0;i<1024;i++){
+    if(i>=GOO_BOUND(hintBack.x))break;
+    vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
+    wallDye+=source(i,2.).rgb*contribution;wallAmount+=contribution;
+  }
+  if(wallAmount<=0.)wallBand=0.;
   float dyeTint=clamp(value.g,0.,1.);
   float cloud=uControls>.5?value.b:0.;
   vec3 n=normalize(vec3(-slope,1.));
   // Keep the shipped one-pixel exclusion around window content.
   vec2 refr=p-clamp(slope,vec2(-2.),vec2(2.))*(film?1.:8.); if(unionSdf(refr)<1.)refr=p;
   vec2 bgUV=(uBackgroundMap*vec4(refr,0,1)).xy*.5+.5;
+#ifdef GOO_CACHE
+  // GO24: neither cache holds the backdrop or the dye. The intrinsic cache is the surface with
+  // no dye (hint dye and control milk, which replace or whiten it, stay); the parameter cache
+  // carries the dye's share of the color (below). The composite multiplies the live dye in.
+  vec3 bg=vec3(0.),dye=vec3(0.);
+#else
   vec3 bg=texture2D(uBackground,bgUV).rgb,dye=texture2D(uDyeTex,uv).rgb;
+#endif
   if(hintAmount>0.)dye=hintDye/hintAmount;
+  else if(wallBand>0.)dye=mix(dye,wallDye/wallAmount,wallBand);
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);
   float spec=pow(max(dot(reflect(-L,n),vec3(0,0,1)),0.),48.)*uShine;
   float rim=1.-smoothstep(0.,.5,max(log(max(Fe,1e-4)/uT),0.));
@@ -335,16 +412,46 @@ void main(){
   // The wet outer band can show refracted paper. At the wall, state dye
   // supplies the color so saturated wallpaper cannot repaint a focused edge.
   float dyeBlend=.55+milk*.25;
-  if(uSoak>0.)dyeBlend=mix(dyeBlend,1.,1.-smoothstep(0.,uThickness*.9,d));
-  if(uNeutralTint>.5&&dyeTint<.999999)dyeBlend*=dyeTint;
+  // GO24: soaked liquid is more pigment and less clear lens, by the soak's share.
+  if(uSoak>0.)dyeBlend=mix(dyeBlend+.22*pow(uSoak,.25),1.,1.-smoothstep(0.,uThickness*.9,d));
+  float stateTint=dyeTint;
+  if(uDyeStrength==1.){
+    if(uNeutralTint>.5&&dyeTint<.999999)dyeBlend*=dyeTint;
+  }else{
+    float stateMix=clamp(value.g,0.,1.);
+    float neutralStrength=clamp(source(0,7.).w,0.,1.);
+    stateTint=neutralStrength*(1.-stateMix)+uDyeStrength*stateMix;
+    dyeBlend=clamp(dyeBlend*stateTint,0.,1.);
+  }
   vec3 color=mix(bg*(film?1.:1.4),dye*.85,dyeBlend)*diff+spec*vec3(1.,.98,.95);
-  if(uNeutralTint>.5)color+=dye*rim*.22*dyeTint;
-  else color+=dye*rim*.22;
+  // One rim tint for the surface and for the cached dye share below (GO23 x GO24).
+  float rimTint=uDyeStrength!=1.?stateTint:uNeutralTint>.5?dyeTint:1.;
+  color+=dye*rim*.22*rimTint;
   // Emission is independent of normal, light and dye release. Zero really is off.
   color+=cloud*uEmissivity*mix(dye,vec3(1.),.65);
   color+=.25*pulse*mix(dye,vec3(1.),.25);
   a*=film?mix(.48,.78,milk):mix(.96,1.,milk);
+#ifdef GOO_CACHE
+  // Every dye term above is the texture dye times a factor; this is that factor, out of the
+  // wall band and the control milk, which do not come from the texture.
+  float dyeShare=hintAmount>0.?0.:(1.-wallBand)*(1.-milk*.8)*
+    (.85*dyeBlend*diff+rim*.22*rimTint+cloud*uEmissivity*.35+.25*pulse*.75);
+  vec4 cacheParams=vec4(clamp((refr-p)/32.+.5,0.,1.),
+    clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),clamp(dyeShare/1.5,0.,1.));
+#endif
+#if defined(GOO_CACHE_BOTH)
+  // GO26: one pass writes both caches (color and coverage; refraction and light).
+  gl_FragColor=vec4(clamp(color,0.,1.),a);
+  goo_params=cacheParams;
+#elif defined(GOO_CACHE_PARAMS)
+  gl_FragColor=cacheParams;
+#elif defined(GOO_CACHE)
+  // The background term is nonnegative, so clamping intrinsic light before compositing
+  // gives the same final clamp.
+  gl_FragColor=vec4(clamp(color,0.,1.),a);
+#else
   gl_FragColor=vec4(clamp(color,0.,1.)*a,a);
+#endif
 }
 )";
 // The settled surface is independent of the scene beneath it. Cache its own
@@ -353,8 +460,12 @@ void main(){
 inline const std::string cached_composite_shader = R"(
 precision highp float;
 varying vec2 pos;
-uniform sampler2D uIntrinsic,uRefraction,uBackground;
+uniform sampler2D uIntrinsic,uRefraction,uBackground,uDyeTex;
 uniform mat4 uBackgroundMap;
+uniform vec2 uRes;
+// GO24: the surface's color is its own light plus a share of the dye. The cache keeps
+// the two apart (refraction alpha is the dye's share), and the dye is read here, so
+// the dye can move without the surface being rendered again.
 void main(){
   vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
   vec4 intrinsic=texture2D(uIntrinsic,uv);
@@ -363,7 +474,7 @@ void main(){
   vec2 shifted=pos+(refr.rg-.5)*32.;
   vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb;
-  vec3 color=clamp(intrinsic.rgb+refr.b*1.5*bg,0.,1.);
+  vec3 color=clamp(intrinsic.rgb+refr.a*1.5*texture2D(uDyeTex,pos/uRes).rgb+refr.b*1.5*bg,0.,1.);
   gl_FragColor=vec4(color*intrinsic.a,intrinsic.a);
 }
 )";
@@ -373,17 +484,20 @@ void main(){
 inline const std::string cached_composite_mix_shader = R"(
 precision highp float;
 varying vec2 pos;
-uniform sampler2D uIntrinsic,uRefraction,uIntrinsicB,uRefractionB,uBackground;
+uniform sampler2D uIntrinsic,uRefraction,uIntrinsicB,uRefractionB,uBackground,uDyeTex;
 uniform mat4 uBackgroundMap;
+uniform vec2 uRes;
 uniform float uMix;
+vec3 dye;
 vec4 layer(vec4 intrinsic,vec4 refr){
   if(intrinsic.a<=0.)return vec4(0.);
   vec2 shifted=pos+(refr.rg-.5)*32.;
   vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
-  vec3 color=clamp(intrinsic.rgb+refr.b*1.5*texture2D(uBackground,bgUV).rgb,0.,1.);
+  vec3 color=clamp(intrinsic.rgb+refr.a*1.5*dye+refr.b*1.5*texture2D(uBackground,bgUV).rgb,0.,1.);
   return vec4(color*intrinsic.a,intrinsic.a);
 }
 void main(){
+  dye=texture2D(uDyeTex,pos/uRes).rgb;
   vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
   vec4 a=texture2D(uIntrinsic,uv),b=texture2D(uIntrinsicB,uv);
   if(a.a<=0.&&b.a<=0.)discard;
@@ -423,4 +537,71 @@ uniform vec2 uPoint;
 uniform sampler2D uDyeTex;
 void main(){float h=decode(texture2D(uWave,uPoint/uRes)).x;gl_FragColor=vec4(texture2D(uDyeTex,uPoint/uRes).rgb,h/8.+128./255.);}
 )";
+inline const std::string copy_shader =
+    "precision highp float; uniform sampler2D image; void main(){gl_FragColor=texture2D(image,vec2(.5));}";
+
+// Program variants are chosen by #defines written into the sources above (GOO_FAST, GOO_CACHE,
+// GOO_CACHE_PARAMS, GOO_CACHE_BOTH), never by searching and editing shader text: a change to a
+// shader can then only fail to compile, which tests/goo-shader-variants-test.sh checks for
+// every variant in both dialects, not throw at startup or silently stop matching.
+struct program_variant
+{
+    const char *name;
+    const std::string *fragment;
+    const char *defines;
+    bool derivatives = false;
+    bool two_outputs = false;  // GLES 3 only: goo_color and goo_params
+    bool es3_only = false;
+    bool required = true;      // false: the renderer has a fallback when it does not link
+};
+inline const std::vector<program_variant> &program_variants()
+{
+    static const std::vector<program_variant> variants{
+        {"field", &field_shader, ""}, {"mask", &mask_shader, ""}, {"wave", &wave_shader, ""},
+        {"dye", &dye_shader, ""}, {"render", &render_shader, "", true},
+        {"energy", &energy_shader, ""}, {"query", &query_shader, ""},
+        {"field_fast", &field_shader, "#define GOO_FAST\n"}, {"mask_fast", &mask_shader, "#define GOO_FAST\n"},
+        {"wave_fast", &wave_shader, "#define GOO_FAST\n"}, {"dye_fast", &dye_shader, "#define GOO_FAST\n"},
+        {"render_fast", &render_shader, "#define GOO_FAST\n", true},
+        {"intrinsic", &render_shader, "#define GOO_CACHE\n", true},
+        {"refraction", &render_shader, "#define GOO_CACHE\n#define GOO_CACHE_PARAMS\n", true},
+        {"cache_both", &render_shader, "#define GOO_CACHE\n#define GOO_CACHE_BOTH\n", true, true, true, false},
+        {"composite", &cached_composite_shader, ""}, {"composite_mix", &cached_composite_mix_shader, ""},
+        {"backdrop", &backdrop_shader, ""}, {"copy", &copy_shader, ""},
+    };
+    return variants;
+}
+// GLES 2 sources are written in GLSL ES 1.00; GLES 3 gets the same text in 3.00 spelling.
+inline std::string es3_spelling(std::string s, bool fragment)
+{
+    auto replace = [&s] (const std::string &from, const std::string &to)
+    {
+        for (size_t at = 0; (at = s.find(from, at)) != std::string::npos; at += to.size())
+            s.replace(at, from.size(), to);
+    };
+    if (!fragment)
+    {
+        replace("attribute ", "in ");
+        replace("varying ", "out ");
+        return s;
+    }
+    replace("varying ", "in ");
+    replace("texture2D(", "texture(");
+    replace("gl_FragColor", "goo_color");
+    replace("i<1024", "i<uCount");
+    return s;
+}
+inline std::string vertex_source(bool es3)
+{
+    return es3 ? "#version 300 es\n" + es3_spelling(vertex, false) : "#version 100\n" + vertex;
+}
+inline std::string fragment_source(const program_variant &v, bool es3)
+{
+    if (es3)
+        return std::string("#version 300 es\n") + v.defines + "precision highp float; " +
+            (v.two_outputs ? "layout(location=0) out vec4 goo_color; layout(location=1) out vec4 goo_params;\n" :
+                             "out vec4 goo_color;\n") + es3_spelling(*v.fragment, true);
+    return std::string("#version 100\n") +
+        (v.derivatives ? "#extension GL_OES_standard_derivatives : require\n" : "") + v.defines + *v.fragment;
+}
 } // namespace scottland::goo

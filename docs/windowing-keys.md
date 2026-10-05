@@ -34,10 +34,10 @@ on a physical session. This change is not tested on either machine's live displa
 | WK9 | A widget-start loop visits center → periphery → widget repeatedly; selection leaves its first center step for the next slow hint (WK6/WK30). | implemented (headless) |
 | WK10 | Tab and Shift+Tab select the next/previous window or widget in hint order, wrapping. Tab focuses a widget without opening it; its hint opens it. F4 closes the selected window and its widget through normal linked lifecycle, preserving save-confirmation behavior. | implemented (headless) |
 | WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Starting a drag suppresses hints for that chord, even after drop; unless `scottland/window_avoidance_always` is on, window avoidance then eases away (WK13/WK27). Shift during a drag pins scale (L31). Adding any modifier after entry stays in the mode (WK2). | implemented (Plumbus stipc, 2026-10-03) |
-| WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints; on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
+| WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints (shown expanded, WG16, as are hidden and collapsed widgets outside full screen); on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
 | WK13 | **Window avoidance: the peeking strip** (P12, P13; Mike's peek-strip decisions 1–9, 2026-10-04). By default it exists only while Window mode is active; Alt release or Esc returns temporary offsets to zero unless the user moved the window meanwhile. `scottland/window_avoidance_always` (default off; Settings label “Window avoidance”) keeps it on outside that mode; `scottland/hint_avoidance_always` remains a compatibility alias. **One engine, two tests** (`core/plugin/src/peek.cpp`): each window behind others takes the nearest offset at which it shows a free rectangle on screen. Always on, the rectangle is a strip 24 × 100 pt × text scale, in either orientation, at an edge or through a gap between front windows (decisions 1, 4, 7); a strip dimension larger than the window shrinks to the window's. In Window mode it is first room for the window's full hint, then room for the 48 pt × text-scale minimum hint, then the strip (decisions 2, 5): windows are nudged temporarily and return to their peek offsets when Window mode ends. pt are logical pixels: independent of output scale and not shrunk by zone scale; rectangles are drawn frames (zone scale applied, avoidance offset excluded); the strip must lie in the output's work area (not under a panel). **Only the covered window moves**: front windows never move for rear ones, so a pass goes front to back and each result is final when computed. The search is exact: candidate placements come from obstacle edges and the window's own reach, and their coverage is computed in one grid pass (no sampling, no rays, no give-up state). **Limits:** the displayed center stays in the window's own zone (P13: the center zone, or its periphery without the rail; decision 6) and vertically inside the work area (decision 8: no top/bottom band); its edges may hang past both. The focused or grabbed window is anchored and never moves. **Direction (decision 8):** smallest move, with a soft preference for peeking toward the window's position relative to the window covering it most: a move in any other direction counts double (`peek_direction_weight`). A window with no room on any rung inside its limits does not move (`no_room`, P2) and only its hint is placed (WK31). **Calm (P11):** while live (drag, drag coast, keyboard motion or glide), a window keeps its current way (the least offset within 16 px of its target) unless the least offset within 64 px per axis of where it is drawn is more than 6 px smaller. Every rung is tried this way first, so a smaller hint nearby beats a full one far away; only when no rung has a kept or near way does it take, down the ladder again, the feasible offset nearest where it is drawn. At rest it takes the least offset, unless its current way is within 6 px of it. Live to rest is a layout change, so the rest rule runs once after a drag. Targets ease 0.18 per tick with a 1000 px/s cap; reduced motion snaps. **Passes (P8):** one front-to-back pass per output over a snapshot, resumable in slices of `peek_slice_units` work units (170,000: 1.45 ms on plumbus, 1.23 ms on nacelle) and paused by the 2 ms refresh deadline; results never depend on slicing. A layout change during a pass lets it finish on its snapshot and starts the next pass at once from the newest layout, so rear windows lag a moving front window by at most one pass; a change of windows or stacking starts over (previous targets hold). Solves are requested at most every 16 ms; a settled layout stops ticking. `scottland/hints` reports per window `outcome` (visible, moved, no_room, pending), `rung`, `rule` (K keep, N near, Y any, H home), `room` and `drawn`, and per pass units and slices. Offsets are scene-only: they never alter geometry, zone, scale, memory or widget state, and never widgetize a window, except that grabbing a shifted window commits its offset as its real position (WK27). Explicit user moves and cycles remain real. Grabbing a shifted window keeps it where it is drawn and commits that as its position; selecting it by its hint returns it to its true position (decision 9, WK27). | implemented; verified on nacelle with real input (`tests/peek-strip-test.sh`, 40 checks, strips measured from screenshots; also on plumbus) and by `tests/peek-unit.sh` (55 checks, nacelle and plumbus), 2026-10-04 |
 | WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`; an atomic palette-file change wakes the hint refresh, and reads are rate-limited to 250 ms while a step is running. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a hint-color overlay (7% by default; strength setting WK38), a 2 logical px full-color rounded border even at the supported 5% window scale, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. With the screen-wide goo (on by default), window mode simply tints the goo with the hint color as dye (GO6): the window/card overlay stays, and there is no separate rim. The 2 logical px border applies to the fallback halo (goo off); with the goo on, the hint shows only as the window/card tint and the goo dye. | implemented (headless) |
-| WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing unless a WK34 hint peek is active, where the repeat takes WK30's center step. The interval starts at the first hint's final key release and ends at the repeated hint's first physical key press; holding a key or typing the rest of the repeated hint does not spend that interval. The first complete hint still acts immediately on press. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, Alt release or cancellation resets double-tap recognition. | verified on plumbus with human timing, 2026-10-04 |
+| WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing unless a WK34 hint peek is active, where the repeat takes WK30's center step. The interval starts at the first hint's final key release and ends at the repeated hint's first physical key press; holding a key or typing the rest of the repeated hint does not spend that interval. The first complete hint still acts immediately on press. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, Alt release or cancellation resets double-tap recognition; so does a hint hold (WK39). | verified on plumbus with human timing, 2026-10-04 |
 | WK16 | Double-taps use physical presses and a final-key release between complete hints, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; timing is latched at its first letter, but repeating a prefix alone does not move a window. | verified on plumbus with human timing, 2026-10-04 |
 | WK17 | In entered Alt window mode, each unclaimed arrow press (including auto-repeat) adds a fixed impulse to its axis's surviving velocity, clamped independently to a maximum. Movement and resize each use their own constant deceleration (S14), integrated until zero including the final partial tick, with no restarted position animation. One default impulse travels v²/(2a) = 92.29 logical px. Hints/cycles retain physical-press-only behavior. | implemented (headless) |
 | WK18 | Arrows target the hint/Tab-selected window if selected this hold, otherwise the currently focused window (a focused widget represents its app). Different windows retain independent coasts. Left/Right change x, Up/Down change y; diagonals combine independent axes. An arrow on fullscreen explicitly exits it and waits for restored geometry before applying queued impulses. A later explicit cycle stops that window's coast before its lifecycle/placement action. Closing/unmapping or having no output discards its motion safely. | implemented (headless) |
@@ -56,18 +56,196 @@ on a physical session. This change is not tested on either machine's live displa
 | WK31 | In Window mode each ordinary window's hint is placed from the room WK13 found for it. **The frontmost window** (nothing covers it) gets its hint at the exact center of its on-screen part, at its proportional size (WK5/WK25), with no search and no avoidance for it (Mike, 2026-10-04). "Nothing covers it" is strict: no window or widget in front overlaps its on-screen part at all, so it also holds for a rear window nothing overlaps, and for a covered window whose move left it uncovered; raising a covered window centers its hint. **A covered window** with hint room (rungs full or minimum): the room is grown to a maximal free rectangle (left, right, up, down, each to the nearest obstacle, its own edge or the screen edge) and the hint sits at its center, as large as fits up to the full size and never below the 48 pt × text-scale minimum. **No hint room inside its limits** (strip rung; decision 5): the minimum hint is centered on the visible strip and overlaps the front window's edge (on screen). **No room at all** (`no_room`): the minimum hint at the window's center, on screen: hint only. Strip and no-room hints that would land on a hint in front of them slide along their strip (no-room: along the screen's shorter axis) the least distance that clears every hint already placed, 6 px apart after the WK28 pop; if none clears, they stay. Front hints never move for rear ones, and hints draw in window stacking order, so a front window's centered hint is never covered. A hint appears once the offsets it depends on have settled. The osanwe engram case (2026-10-04: a window at the top covered except a sliver along its top got its hint near its center under the front window) is a regression in `tests/peek-unit.cpp` and `tests/peek-strip-test.py`: it gets room when its zone allows, and otherwise its hint sits on the sliver over the front window's edge. Hints use the room their own window shows, never exterior attachment; only widgets use WK26 exterior hints. Geometry, zone, scale and memories do not change (except that a grab commits a shifted window's offset as its position, WK27). | implemented; verified on nacelle with real input (`tests/peek-strip-test.sh` B, E, F; `tests/hint-front-center-test.sh` 28 checks), 2026-10-04 |
 | WK32 | Quick Alt+Tab previews the next center-zone window in MRU order; Alt+Shift+Tab previews the previous, and further Tab presses while holding Alt keep stepping. Releasing Alt focuses and raises the preview. The small, click-through preview names the next window and its place in the cycle, or says there are no center windows. With one center window it previews that same window; with none, focus stays as it was. Side windows and widgets never enter the list. This owns Wayfire switcher's former bindings and is reserved from Omarchy imports (O5). Once window mode has opened, Tab instead retains WK10 hint order. Tenets 2 and 3 choose the brief visible preview and immediate, no-op empty behavior. | implemented (headless) |
 | WK33 | Each completed hint press that acts on a window or widget briefly pulses its hint-color tint over that representation, peaking quickly and fading within about 220 ms. Repeated acting presses pulse again. The flash is visual only: it does not alter focus, zone, scale, memory, or input routing. Tenet 2 gives immediate feedback for the chosen hint. | implemented (headless) |
-| WK34 | In window mode, the hint press that first selects an unselected collapsed widget also expands it for a five-second peek; collapsed intent and placement stay unchanged, and it collapses again at expiry unless another peek trigger is active. A further hint press during the peek follows WK30's center-first cycle and restores the app window to center, even within WK15's double-tap interval; this ends the peek. Tab selection keeps WK10 behavior; hint circles remain click-through (WK4). Tenets 2 and 3 make a minimized widget recognizable briefly while preserving its stored place. | implemented (plumbus headless, 2026-10-03) |
-| WK35 | Holding the hint of the focused window (past a hold delay, proposed 500 ms, a setting) solos it: it goes to the center and the other center windows go to the periphery, which spreads (docs/spread.md; spread's keyboard solo). It commits outright, no undo (P5). A tap keeps today's behavior (WK15 double-tap, WK6 slow repeats); key auto-repeat never counts as a hold or a repeat (WK16). (Mike, 2026-10-03; focused-window condition 2026-10-04) For the focused window only, its hint press acts on key release instead of key-down, so a hold doesn't first move the window one step: a tap still acts (on release), a hold solos it. Unfocused windows keep acting on key-down. (Mike, 2026-10-04) Touchpad trigger (Mike, 2026-10-04): a three-finger hold on the focused window solos it, matching WK36's three-finger hold on an unfocused window. | not built |
-| WK36 | Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side. Window sizes are preserved: they are never resized and never scaled up. If both fit side by side at their own size they stay at 100%; only if they don't fit are they scaled down, together, just enough to fit, going edge-to-edge across the screen only when necessary. When scaling is needed, both get roughly the same magnification (the larger window takes the larger share), best effort, rather than 50/50. The other windows already in the center stay where they are; window avoidance makes them peek out (above and below the pair) rather than sending them to the periphery, since the pair may span the screen. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Tenet 4 exception: pairing is an explicit request, so scaling center windows down to fit the pair is a concession the user grants. Order: the two keep their current left/right order (whichever is further left now goes left; P1). Placement: both windows vertically centered on the screen's horizontal center line, the pair centered horizontally on the screen as a unit, with a halo-sized gap between them that is the first thing given up when space is tight (P7). (Mike, 2026-10-04) Touchpad trigger (Mike, 2026-10-04): a three-finger hold on an unfocused window (fingers down and still, within a small wobble, for the hold delay, without clicking or dragging) pairs it with the focused window, exactly as the hint hold does; a three-finger drag (L23) or click (L24) that starts moving or clicking first keeps its current meaning. | specified, not built |
+| WK34 | In window mode, the hint press that first selects an unselected collapsed widget also expands it for a five-second peek; collapsed intent and placement stay unchanged, and it collapses again at expiry unless another peek trigger is active. A further hint press during the peek follows WK30's center-first cycle and restores the app window to center, even within WK15's double-tap interval; this ends the peek. Tab selection keeps WK10 behavior; hint circles remain click-through (WK4). Tenets 2 and 3 make a minimized widget recognizable briefly while preserving its stored place. Since WG16's revision (2026-10-04) Window mode shows every collapsed widget expanded anyway; this peek now matters for the seconds after Alt is released. | implemented (plumbus headless, 2026-10-03) |
+| WK35 | Holding the hint of the focused window (past a hold delay, proposed 500 ms, a setting) solos it: it goes to the center and the other center windows go to the periphery, which spreads (docs/spread.md; spread's keyboard solo). It commits outright, no undo (P5). A tap keeps today's behavior (WK15 double-tap, WK6 slow repeats); key auto-repeat never counts as a hold or a repeat (WK16). (Mike, 2026-10-03; focused-window condition 2026-10-04) For the focused window only, its hint press acts on key release instead of key-down, so a hold doesn't first move the window one step: a tap still acts (on release), a hold solos it. Unfocused windows keep acting on key-down. (Mike, 2026-10-04) Touchpad trigger (Mike, 2026-10-04): a three-finger hold on the focused window solos it, matching WK36's three-finger hold on an unfocused window. | hint hold, the focused window's release timing and the three-finger hold implemented (WK39; plumbus and nacelle headless, 2026-10-04); the solo itself not built: both holds reach an empty hook, `solo_window` |
+| WK36 | Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side. Window sizes are preserved: they are never resized and never scaled up. If both fit side by side at their own size they stay at 100%; only if they don't fit are they scaled down, together, just enough to fit, going edge-to-edge across the screen only when necessary. When scaling is needed, both get roughly the same magnification (the larger window takes the larger share), best effort, rather than 50/50. The other windows already in the center stay where they are; window avoidance makes them peek out (above and below the pair) rather than sending them to the periphery, since the pair may span the screen. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Tenet 4 exception: pairing is an explicit request, so scaling center windows down to fit the pair is a concession the user grants. Order: the two keep their current left/right order (whichever is further left now goes left; P1). Placement: both windows vertically centered on the screen's horizontal center line, the pair centered horizontally on the screen as a unit, with a halo-sized gap between them that is the first thing given up when space is tight (P7). (Mike, 2026-10-04) Touchpad trigger (Mike, 2026-10-04): a three-finger hold on an unfocused window (fingers down and still, within a small wobble, for the hold delay, without clicking or dragging) pairs it with the focused window, exactly as the hint hold does; a three-finger drag (L23) or click (L24) that starts moving or clicking first keeps its current meaning. | implemented: hint hold (plumbus and nacelle headless, real stipc keys) and three-finger hold (nacelle headless, virtual touchpad emitting libinput's hold/swipe/button events), 2026-10-04; not yet seen on a physical screen or real touchpad |
 | WK37 | In Window mode, a window that is mostly occluded (less than half of its on-screen area visible: `hint_outline_visible_fraction` = 0.5 in `hint-style.hpp`) also gets an opaque outline in its hint color, 2 logical px (`hint_outline_width`), following its drawn rounded frame, antialiased at the output's device pixels (also on scaled outputs). The outlines draw in the overlay layer above all windows, like the hint overlay, so nothing occludes them: they sit in front of every window and of overlay surfaces already shown (e.g. Scottland Settings), with only the hint circles and press flashes above them. Its full extent and identity show through what covers it; only the ring is drawn, so front windows' content shows inside it. Occlusion is measured only in Window mode (not for always-on avoidance outside it), after each avoidance solve has finished an output (only on layout changes, WK27), from the solver's own front-to-back frames at their settled avoidance targets, with widgets in front counting as cover: an exact sweep over the covering rectangles, no per-frame work. The pass shares the solve's 2 ms deadline (P8): if the deadline is reached it stops and resumes on the next tick (until then the previous measurements stand); a layout change restarts it. Only the on-screen part counts; widgets and fullscreen windows get none. Alt release and Esc clear the outlines with the hints. (Mike, 2026-10-04; overlay layer above all windows, same day) | implemented (plumbus headless real input + screenshots, 2026-10-04) |
 | WK38 | The Window mode hint-color overlay on windows and cards (WK14) has a strength setting, `scottland/window_mode_tint` (percent, 0–30, default 7), with a live slider ("Hint color overlay") in the Window mode Settings tab; 0 turns the overlay off. It applies to the frame tint and fullscreen tint, live including while hints are showing. Hint circles, borders, outlines, goo dye and press flashes are unaffected, and hint colors keep the 7% default as their contrast basis, so moving the slider never recolors hints. Also in plugin metadata and `scottland-ctl`. (Mike, 2026-10-04) | implemented (plumbus headless real input + screenshots, 2026-10-04) |
+| WK39 | Holding a complete hint's final key, without releasing it, for `scottland/window_hold_delay` ms (default 500, range 1–3000; Settings “Hold a hint”) is a hint hold, timed from the physical press (the input event's timestamp, the same clock WK15 uses). An unfocused window's or widget's press still acts immediately on key-down (WK6), and holding it pairs (WK36) with the window that had focus before the press. The focused window's press acts on key release instead (WK35, Mike 2026-10-04): a tap acts when released, and a hold is WK35's solo (not built yet: nothing happens, the window does not move). Releasing the key first is a tap. Key auto-repeat neither counts nor restarts the hold (WK16). Any other key press (another hint, Tab, an arrow, F4) or Alt release ends the hold; a focused window's press still waiting for release acts first, as the tap it was. Esc ends the hold and drops a waiting focused press. A press that completed a double-tap acts at once and never becomes a hold, and after a hold the next press of that hint is not its double-tap. (Mike, 2026-10-03/04, WK35/WK36) | implemented (plumbus headless, real stipc input, 2026-10-04) |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. Each zone memory also keeps the window's scale pin there, if the user set one (Shift-drag, L31): returning to that zone by cycling restores both the remembered position and that pinned scale; with no pin the zone's normal scale applies. Only the periphery memories keep a pin; the center and rails never do (see Decisions). (Mike, 2026-10-04) | implemented (plumbus headless, 2026-10-04) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
-| WP4 | Without a memory, use the pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. An unremembered periphery destination places its center far enough into the side zone for a visible scale reduction (5% when available, otherwise halfway toward the rail scale), then re-evaluates its natural scaled footprint at the landing position. A remembered spot remains exact (WP2). Rail placement is refined to the actual widget footprint when it maps. | implemented (headless) |
-| WP5 | Explicit zone cycling, card opens and presenting a side window clear the current Shift scale pin, but a zone's remembered pin (WP1) is restored when the window returns to that zone. Center destinations keep the original window size and are always at 100%. A cycle's drawn scale target is computed from its destination center before the geometry transaction commits, so the final displayed scale matches that zone; later old-geometry notifications cannot retarget the cycle. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). A restored pin is also the cycle's drawn scale target, so the window lands at the pin with no jump. | implemented (plumbus headless, 2026-10-04) |
+| WP4 | Without a memory, use the pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. An unremembered periphery destination goes as close to the center as possible while overlapping the center as little as possible (Mike, 2026-10-04): its center goes past the point where the zone scale has visibly fallen (5% when available, otherwise halfway toward the rail scale), so it reads as the periphery (WP8), and at most a quarter of its scaled width may hang into the center zone, never its middle point over the line with half of it in the center; where that doesn't fit on screen with its WP7 padding, as far out as fits. From that innermost spot, contention (this routine) keeps it off center windows and any others, so it hangs into the center zone only where that covers no window, and otherwise lands nearest the center, re-evaluating its natural scaled footprint at the landing position. Best effort when space is tight. A remembered spot remains exact (WP2). Rail placement is refined to the actual widget footprint when it maps. | implemented (plumbus headless, 2026-10-04) |
+| WP5 | Explicit zone cycling, card opens and presenting a side window clear the current Shift scale pin, but a zone's remembered pin (WP1) is restored when the window returns to that zone. Center destinations keep the original window size and are at 100%, except a remembered center spot in the softness band just past the center zone's edge (WP8), which returns at its own zone scale there, between 95% and 100% (the scale the user left it at). A cycle's drawn scale target is computed from its destination center, after pixel rounding, before the geometry transaction commits, so the final displayed scale matches that zone (on a steep scale curve, half a pixel shows); later old-geometry notifications cannot retarget the cycle. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). A restored pin is also the cycle's drawn scale target, so the window lands at the pin with no jump. | implemented (plumbus headless, 2026-10-04) |
+| WP8 | A zone memory belongs to the zone the window reads as, and a cycle starts from it: a side spot just past the center zone's edge, where an unpinned window still shows at full scale (its zone scale above the WP4 threshold: 95%, or halfway to the rail's scale on a curve with less range), is the center's, so dropping a periphery window there doesn't replace its periphery memory, and its next cycle goes to that memory. A remembered spot counts only while it still reads as its zone at the current zone settings; otherwise the cycle places the window afresh (WP4), with no pin. A Shift-pinned window anywhere in the side zone is a periphery window with its pin, even pinned at full size (L31: moving it aside at 100% is what Shift is mostly for). A center spot of this kind returns at the scale it has there (between that threshold and 100%; WP5); one inside the center zone is 100%. (Mike, 2026-10-04: a window dragged from the periphery back to the center then cycled between two center spots and a widget.) | implemented (plumbus headless, 2026-10-04) |
 | WP6 | The placement routine and force solver have no Wayfire dependencies and have standalone unit tests. The placement routine is reusable for any rectangle/region contention; it never resizes an incoming rectangle or moves obstacles. | implemented (headless) |
 | WP7 | Windows Scottland places (zone cycling, card opens: the placement routine) keep off the screen's edges by the halo's width plus 5 pt (about 16 pt), in each dimension where the window fits; one larger than the screen in a dimension is not padded there. Widgets keep their own, wider rail inset. Remembered spots (WP2) and the user's own drops are kept exactly. | implemented (headless) |
+
+## Pairing (WK36) and hint holds (WK39)
+
+`pairing.*` holds the pure fit (`fit_pair`); `alt-mode.*` detects holds from press and release
+timestamps (the bridge's one-shot timer asks it at the delay); `pair_windows` in
+`windowing-bridge.hpp` applies the result. `tests/pairing-unit.sh` covers both pure parts;
+`tests/pairing-test.sh` drives real stipc keys in isolated headless sessions, one and two outputs.
+
+**Fit.** With `W` the usable width and the two windows' widths `l` and `r` (never resized):
+
+| Room | Result |
+|---|---|
+| `l + r + gap + 2·padding ≤ W` | 100%, halo gap, centered |
+| `l + r + 2·padding ≤ W` | 100%, the gap shrinks (P7: it gives way first) |
+| `l + r ≤ W` | 100%, no gap, the WP7 edge padding gives way |
+| otherwise | both at `W / (l + r)`, edge to edge, no gap |
+
+One shared factor gives both the same magnification, so the larger window keeps the larger share.
+Scale never goes below 5% (WK29's minimum); beyond that the pair overflows both edges equally.
+The gap is one halo thickness (`scottland::HALO`, 10.7 pt; `PAIR_GAP`). With the goo, the two
+halos meet across it, so the pair reads as one liquid unit; the padding is WP7's `HALO + 5`.
+
+**Decisions at unspecified edges.**
+
+- *Which window is "focused"* (tenet 2, WK6): the one with focus before the press, because the
+  press itself selects and focuses the held window. After pairing the held window stays selected
+  and focused; both are raised above the other windows, the held one on top.
+- *Heights* (tenet 4): only width decides the scale. A window taller than the usable area stays
+  full size, centered on the center line and overflowing equally, as WP5/WP7 already keep
+  oversized windows full size. Scaling it further would be a concession pairing didn't ask for.
+- *Screen* (tenet 3): "the screen" is the focused window's output work area, so panels don't
+  count and the center line is the usable area's. With several outputs the pair forms on the
+  focused window's output; the held window moves there. Left/right order compares global
+  layout positions (P1), so a held window on the output to the left goes left.
+- *Zone scaling afterwards* (tenet 4 exception, L31): both windows keep the pair's scale through
+  an ordinary scale pin, also at 100%, so a pair wider than the center zone is not shrunk by the
+  periphery's scale where its centers land. Nothing is locked: the pin is the one Shift-drag
+  sets, so the next drag, arrow push or cycle clears it and zone scaling returns (WK19, WP5).
+  Each window's zone memory records where its center landed, as for any explicit move (WP1).
+- *Widgets* (tenet 3: to look at something you bring it to the center): a widget, held or focused,
+  joins as its app window, opened from the rail with its usual grow into its pair spot (WG17).
+  Its first press still selects it (and peeks a collapsed one, WK34).
+- *Esc or Alt release during the hold* (tenet 3, WK22): cancel the pairing; the press's selection
+  stays, as explicit actions do. Once the hold has acted, Esc does not undo it (P5: a key request
+  commits).
+- *Full screen* (WK12): a fullscreen member leaves full screen first and the pair uses its
+  restored size (retried every 100 ms, for up to 1 s).
+- *Nothing focused*: the hold does nothing beyond the press's selection.
+- *Other windows* (P2, P12): they stay exactly where they are. While both pair members keep their
+  pair geometry, window avoidance treats them as anchored, like the focused window, so it is the
+  covered windows that peek out, never the pair that shifts. Moving or resizing either member
+  ends that.
+- *Focused hold (WK35)*: Mike decided (2026-10-04) that the focused window's press acts on
+  release, so a hold solos it without first moving it one step. The solo itself is not built:
+  the hold reaches `solo_window`, which does nothing. A press still waiting for release acts as
+  a tap when another key arrives or Alt is released first (tenet 2: a rolled key is still the
+  tap the user typed); Esc drops it, as Esc cancels.
+- *Three-finger hold* (WK35/WK36 touchpad trigger): libinput reports three still fingers as a hold
+  gesture and ends it, cancelled, once they move (a swipe follows) or click. So the hold starts
+  at `hold_begin` with three fingers on a window under the pointer, and acts if the hold delay
+  (the same `scottland/window_hold_delay` as hints, timed from the event) passes with no
+  `hold_end`, swipe or touchpad button; libinput's own threshold is the "small wobble". A swipe
+  or click that starts first keeps L23/L24 and ends the hold. After a hold has acted, moving the
+  fingers is an ordinary L23 drag. It works with or without Window mode (no keys involved). The
+  window is the one under the pointer; on a widget card it pairs the card's app, as the hint
+  does. The partner is the window focused when the fingers landed. The gesture still reaches the
+  app under it (apps use holds to stop kinetic scrolling). Two- and four-finger holds do nothing.
+  Tests drive a test-only virtual touchpad (`scottland/test-touchpad`, refused outside test
+  sessions) whose wlroots device emits the same hold, swipe and button events libinput's backend
+  does, so they take Wayfire's real input path.
+- *Pairing needs the first press* (WK6): only a hold that starts on an unfocused window pairs.
+  A tap focuses that window, so holding it next is a hold on the focused window, which is
+  WK35's solo.
+- *A Shift-pinned window* (L31): pairing replaces its pin with the pair's scale, so a window the
+  user had pinned small is shown at the pair's scale (never above 100%). Pairing is the newer
+  explicit request.
+- *Zone memory* (WP1): the pair spot becomes each window's remembered spot for the zone its center
+  lands in, so a later cycle back to that zone returns there, as after any explicit move.
+- *Double-tap compatibility*: holds share the `release(char, time)` entry point and the event
+  clock with the release-timed double-tap (WK15, merged from `double-tap-fix`), and a hold clears
+  double-tap recognition, so its release never starts a repeat. A near-hold (450 ms, released)
+  followed by a quick press is therefore a double-tap to the rail, as WK15 says.
+- *Avoidance after a glide* (WK13, P12): a cycle or pair glide moves only the drawn frame, so its
+  end raises no geometry signal. Each finished glide now requests one avoidance solve on the
+  settled frames; before this, a window the pair had just covered kept its pre-pair result (no
+  offset) until Window mode was entered again. The same cause hid a cycled window's own hint:
+  the hint refresh ticks only while something it tracks animates, a cycle's first refresh still
+  sees the window drawn at its old place, and nothing refreshed after its glide, so the hint
+  stayed where the window had been (Mike's report on `2bf738e`, 2026-10-04).
+
+**Verification (plumbus, isolated headless sessions, 2026-10-04).** Second round, after
+Fable's review, on the merge of `double-tap-fix` (`7f6c3e5`) and main:
+
+| Suite | Result |
+|---|---|
+| `tests/pairing-unit.sh` (fit regimes, 20,000 random pairs; holds, focused release timing, Esc/another key/Alt release, remaining-time re-arm) | 51 passed |
+| `tests/windowing-unit.sh` (with `double-tap-fix`'s release-timed cases) | 186 passed |
+| `tests/pairing-test.sh`, one 1600×1000 output, real stipc keys | 70 passed |
+| `tests/pairing-test.sh`, two outputs (1600×1000 + 1280×800) | 17 passed |
+| `tests/window-double-tap-test.sh` (`double-tap-fix`'s human-timing suite) | 57 passed (same as on `7f6c3e5`) |
+| windowing end-to-end / key layers / widget hints / cycle overshoot | 102 / 59 / 228 / 79 passed |
+| window-avoidance calm | 18 passed |
+| settings coverage | passed |
+
+The real-input suite now covers: a third window wholly inside the pair's footprint getting a
+real offset within the same hold, part of it visible and its badge on that part (finding 1);
+exact size preservation in every case; the gap-shrinks and padding-gives-way regimes with
+exact-size GTK clients; a scaled pair edge to edge, then an inward arrow push and a real
+Super+drag each clearing the pin; an unfocused hint focused while still held; Esc and Alt
+release mid-hold with the focus checked through `window-rules/get-focused-view`; the focused
+window's tap moving only on release and its hold moving nothing; a 450 ms near-hold then a quick
+press going to the rail for both a focused and an unfocused window; a held widget and a focused
+widget partner opening into the pair; a full-screen partner leaving full screen at its restored
+size; a window taller than the screen; and on two outputs, scaled pairs in both directions.
+
+Correction to the first round: its "an arrow push clears the pair scale" check pushed the right
+window outward at the screen's edge, which docks it (WK20), so the check passed on a widget.
+The push is now inward and asserts the window stays a window. The first round's peek check
+accepted "offset or visible badge" and its third window overhung the pair, so it did not test
+finding 1.
+
+Flaky on this loaded shared machine, and not reproduced on rerun: one `window-double-tap` run
+stopped at its own fixture-focus assertion before any key of that case (57/57 on rerun), and one
+calm run failed 3 drag-geometry checks (18/18 on rerun; unmodified main failed its search-budget
+check in the same comparison). Settings help fails its border-drag slider checks on this machine
+with and without this branch (6 here; 9 on unmodified main earlier); nothing in Settings changed
+in this round. No physical screen was used.
+
+**Third round: three-finger hold and quiet-machine checks (nacelle, aarch64 Asahi, isolated
+headless sessions, 2026-10-04),** on the merge with main `7076f78`:
+
+| Suite | Result |
+|---|---|
+| `tests/pairing-unit.sh` / `tests/windowing-unit.sh` | 51 / 223 passed |
+| `tests/pairing-test.sh`, one output (now with 19 three-finger checks) | 89 passed |
+| `tests/pairing-test.sh`, two outputs | 17 passed |
+| `tests/window-double-tap-test.sh`, run to completion | 57 passed (main: 57) |
+| windowing end-to-end / key layers / widget hints / cycle overshoot / live drag (L23) | 102 / 59 / 228 / 79 / 11 passed |
+| widget morph | 267 passed, 3 goo frame-following failures (main on nacelle: 4 of the same) |
+| window-avoidance calm | 13 passed, 3 drag-geometry failures (main on nacelle: the same 3) |
+
+The three-finger checks drive the test-only virtual touchpad with libinput's sequences: still
+fingers past the delay pair an unfocused window (sizes, order, scale, focus), also on a widget
+card; lifted early, nothing; moving first is an L23 drag that pairs nothing; a three-finger click
+first (with or without libinput ending the hold first) stays an L24 middle click; the focused
+window reaches the solo hook and nothing moves; two fingers do nothing; after a hold, moving
+fingers still drag. One earlier double-tap run on nacelle failed one 150 ms two-letter case and
+did not reproduce in two later complete runs.
+
+Main-loop latency (P8, `tests/pairing-latency.py`): a second IPC connection pings the
+compositor every millisecond; worst round trip per phase, two runs each:
+
+| Phase | This branch | main |
+|---|---|---|
+| idle | 15.5 / 7.5 ms | 17.5 / 8.1 ms |
+| hint hold that pairs (scaled 0.84, a covered window peeks) | 10.6 / 9.0 ms | 6.9 / 12.0 ms (a long press, no pairing) |
+| zone cycle (focused tap, glide to the periphery) | 15.1 / 10.1 ms | 10.4 / 10.5 ms |
+| three-finger hold that pairs | 6.0 / 7.0 ms | n/a |
+| Window mode entry (hints appear) | 61.2 / 64.1 ms | 63.6 / 65.9 ms |
+
+Medians stay below 0.1 ms. Pairing adds no measurable stall. Window mode entry stalls about
+60 ms on nacelle on main as well, so it predates this branch; it is outside this change and
+recorded here for P8.
+
+**Cycled window's hint (2026-10-04, nacelle, isolated headless sessions).** Mike reported on
+`2bf738e` that cycling a window by its hint left its hint where the window had been.
+`tests/hint-follow-test.sh` cycles the focused window center → periphery → widget → center and an
+unfocused window, with window avoidance always-on and off, at output scales 1 and 2. After each
+move it checks the badge against the window's drawing through IPC, and once with no Scottland
+IPC at all between the key and a screenshot, by finding the hint's letter color in the image
+(the focused window is anchored, so its letter must be on its true frame). On `2bf738e` it fails
+6 checks at each scale: the periphery hint stays at the old center (818,482) while the window is
+drawn at 218..706, and an unfocused window's hint never reaches it within 2 s. On this branch
+(the glide-end re-check above) all 14 checks pass at both scales, twice, and the hint is on the
+moving window 33–64 ms after the key. The fix is the re-check when a glide ends; ship7's hint
+draw-order change is not involved (the hint was in the wrong place, not the wrong order).
 
 ## Cycle rule (WK7)
 
@@ -102,6 +280,37 @@ Double-tap requests the widget step directly.
 - WP4/WP5, tenets 3 and 4: a new periphery placement must read as lower priority through
   its center's zone scale. Exclude the near-center soft band when no side memory exists,
   and pin a cycle's scale target to that chosen center before the move transaction completes.
+- WP4 (2026-10-04): a 5% smaller window whose center sits a few points past the center zone's
+  edge still covers most of the center zone; with Mike's steep curve that was 47 pt past the edge
+  at 94%, read as "another spot in the center" or "unscaled". A first fix kept the whole scaled
+  window clear of the center zone (about 52% for his windows); Mike ruled instead: as close to the
+  center as possible, overlapping the center (zone and its windows) as little as possible, hanging
+  a little into the zone only where that covers no center window, never half of it. How much is
+  "a little" was left open; the agent chose a quarter of the window's scaled width, by tenet 4
+  (concede as little scale as possible: about 62% for his windows) against tenet 3 (the center is
+  for looking: three quarters of it, and its center, stay in the periphery), comfortably short of
+  the half he ruled out. The quarter bounds the innermost spot; the shared placement routine then
+  moves it off any window it would cover (its 1% overlap tolerance and pixel rounding may leave a
+  sliver), so center windows at the edge push it outward. Where the screen can't hold that spot
+  (very wide windows), it goes as far out as fits on screen (WP7): off-screen content would break
+  WP7, and more overlap with the center is the smaller concession.
+- WP8, tenets 2, 3 and 4: zones are what the user sees. Past the center zone's edge the scale eases
+  in (the softness band), so a window dropped a few points outside still shows at 100% and the user
+  put it "in the center"; recording it as a periphery spot replaced the real one and made the
+  periphery step of every later cycle land at full scale. The line is the same 5% threshold WP4
+  uses, so a cycle's fresh periphery spot always reads as the periphery and a drop never falls in a
+  gap between the two. A Shift pin never makes a side spot the center's: the user moved it there
+  and chose its scale, so it is a periphery spot with that pin, even pinned at full size (review,
+  2026-10-04: treating a full-size pin as the center made the first hint press shrink the window
+  in place and drop its pin and center memory). The current zone (window_zone) is unchanged for
+  everything else: avoidance's center-zone bounds, the center switcher (L34), translucency and
+  presenting. Whether a full-looking unpinned window just past the edge should count as a center
+  window for those too is open for Mike.
+  Memories made before this rule (Mike's live window 52 holds a right periphery spot 2 pt past the
+  edge) and memories that zone settings have since moved into the center or its band are ignored
+  by cycles instead of returning there: a cycle to the periphery that lands at full scale is the
+  reported bug. This supersedes the earlier edge below (a remembered spot now in the center coming
+  back at 100%).
 - WP1/WP5 zone pins (Mike, 2026-10-04): a zone memory stores the L31 pin the window has when that
   memory is established (drop, finished keyboard or drag coast, cycle placement, the spot it is
   leaving on a cycle), or its absence, so an unpinned drop there clears that zone's pin. Edges:
@@ -124,16 +333,17 @@ Double-tap requests the widget step directly.
     change its priority).
   - Left and right periphery keep separate pins; a pin comes back only with its own zone's
     remembered spot and never reaches another zone. If zone settings have since put that spot
-    inside the center zone, the window comes back there at 100% (tenet 4).
+    inside the center zone (or where it shows at full scale), the spot no longer counts (WP8): the
+    window is placed in the periphery afresh, with no pin.
   - Screens: the pin is the window's own scale factor, the same logical size on any screen, so it
     is applied unchanged on a screen of another size or output scale, like its normalized spot.
   - Persistence: pins travel in the desktop model's placement record (`positions[z].pin`), so a
     marked reload keeps them; closing the window forgets them with the rest of its memory. A pin
     read back (a zone pin or the current `pinned_scale`) is clamped to the scale range, 0.05 to 1;
     zero, negative or non-numeric values read as no pin.
-  - Known edge: when zone settings have moved a remembered spot into the center, the window comes
-    back there at 100% and the memory still holds the pin until the window next leaves that spot
-    (which records it with no pin). Only reachable by changing zone settings between cycles.
+  - Known edge: a periphery memory that zone settings have moved into the center keeps its spot
+    and pin in the record until the window next establishes that zone's memory; cycles ignore it
+    meanwhile (WP8).
 
 
 - WK29, tenets 2 and 4: animate only the drawn position and scale, preserving the destination,
@@ -1191,6 +1401,73 @@ Measurement notes: strips are measured from screenshots with the goo's shine, re
 film at zero (their light bands change a 24 px strip's color); the shipped look is checked for
 "nothing hidden". With the goo off, the per-window halo fallback draws a translucent rim about
 10 px wide over the strip of the window behind it; the strip is still visible through it.
+
+## WP4/WP8 cycles reach the periphery (2026-10-04, plumbus headless)
+
+Mike's report, on main `a4dd1b2`: keyboard cycles rarely landed windows in the periphery. Recon on
+plumbus (real stipc drags and Alt hint presses, his zone settings) reproduced both observations on
+`a4dd1b2` and on `zone-scale-memory` `1b1c6a0` alike:
+
+1. A drop clearly inside the center kept the periphery memory, as it should. A drop just past the
+   center zone's edge, where the window still shows at 100%, was recorded as the periphery: the
+   loop then went center (100%) -> widget -> that edge spot (100%). His live session had one such
+   memory (window 52: right periphery at x 1666 on 2560, 2 pt past the edge; his log shows the
+   drag that put it there at 11:19 AM PT).
+2. A window never in the periphery, cycled there, landed 47 pt past the edge at 94% for every size
+   (the WP4 5% point on his curve), most of it over the center zone, drawn at 0.943 while its zone
+   scale was 0.941 (the target came from its center before pixel rounding).
+
+`tests/cycle-periphery-test.sh` (needs `SCOTTLAND_HEADLESS_DIR`) runs a 2560x1600 headless output
+with Mike's layout.ini zone settings (center 30%, rail 1.9%, softness 40 pt, curve
+`0:0.997 0.041:0.779 1:0.255`) and Mike-sized windows (1179x1051): the edge drop on both sides and
+a drop well inside the center, the WK7 loop and single presses in fresh holds; fresh periphery
+cycles for a small, a Mike-sized and a wide window and among other windows; and an old periphery
+memory that a wider center zone puts in the softness band.
+
+| Suite (plumbus, isolated checkouts) | This branch | Before |
+|---|---|---|
+| Cycle periphery real input | 25 passed | main `a4dd1b2` and `1b1c6a0`: 14 passed, 11 failed (every check above) |
+| Zone pin real input | see the follow-up below | — |
+| Windowing end-to-end | 102 passed | — |
+| Cycle overshoot | 79 passed | — |
+| Hint avoidance always (stress) | 42 passed | — |
+| Drag coast | 25 passed, 2 failed (hint avoidance during keyboard coasts) | `1b1c6a0`: the same 2 |
+| State regressions | stops at the late-widget fixture | `1b1c6a0`: stops at the same point |
+
+Not yet run on a live screen session; nothing was installed or reloaded on plumbus or osanwe, and
+nothing ran on osanwe beyond read-only queries of Mike's live state.
+
+Follow-up after review (2026-10-04): a window Shift-pinned at full size and parked at the side was
+read as the center (its pin is above 95%), so its first hint press shrank it in place, dropped the
+pin and overwrote its center memory. Only an unpinned window in the softness band reads as the
+center now; a pinned side window is always a periphery window. `tests/zone-pin-test.sh` adds that
+case (a full-size Shift pin aside: periphery memory with its pin, center memory untouched, out to
+the center at 100% and back to the pin, and the loop through the widget). Run side by side on
+plumbus with origin/main `2bf738e` (main ships zone-scale-memory but not WP8):
+
+| Suite | This branch | origin/main `2bf738e` | Branch before this fix |
+|---|---|---|---|
+| Zone pin real input | 37 passed (three runs; one other run stopped at the older widget-drag step when the widget's view was not listed yet, under parallel load) | 36 passed, 1 failed: the reversed settings-change edge, as intended | 33 passed, 4 failed: every full-size pin check |
+| Cycle periphery real input | 25 passed | 14 passed, 11 failed | — |
+| Windowing end-to-end | 102 passed | — | — |
+| Cycle overshoot | 79 passed | — | — |
+
+Follow-up, fresh periphery spot (Mike's ruling, 2026-10-04): the innermost fresh spot now hangs up
+to a quarter of its scaled width into the center zone instead of clearing it; the placement routine
+keeps it off center windows. With his settings on nacelle (headless, real input), landing scales:
+
+| Window, nothing else open | This change | Clear of the zone (before) | main `1bdbe57` |
+|---|---|---|---|
+| 301x181 | 0.818, hangs 24% | 0.723 | 0.941 |
+| 1179x1051 (his terminals) | 0.624, hangs 25% | 0.513 | 0.941 |
+| 1601x1121 | 0.575, hangs 25% | 0.467 | 0.941 |
+
+Beside a center window whose edge is at the zone's edge it lands at 0.516, touching but not covering
+it; beside a center window wider than the zone (its edge 206 pt into the periphery) at 0.426, clear
+of it. `tests/cycle-periphery-test.sh`: 28 passed (the branch before: 24 passed, 4 failed, the
+quarter-hang checks; main: 16 passed, 12 failed). Side by side with main on nacelle: zone pin 37
+passed (main's own copy of that suite: 32 passed), windowing 102 and cycle overshoot 79 passed on
+both.
 
 ## Grabbing a peeking window (WK27, peek-strip decision 9; 2026-10-04, nacelle + plumbus headless)
 

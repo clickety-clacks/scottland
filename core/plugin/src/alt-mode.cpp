@@ -31,13 +31,16 @@ void alt_mode::refresh(std::vector<hint_entry> windows)
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == cycling; })) cycling = 0;
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == selected; })) selected = 0;
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == last_hint; })) last_hint = 0;
+    if (hold && std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == hold->id; })) hold.reset();
+    if (waiting_tap && std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == waiting_tap->id; }))
+        waiting_tap.reset();
 }
 void alt_mode::begin(std::vector<hint_entry> windows, uint64_t focused)
 {
-    active = true; selected = focused; cycling = 0; last_hint = 0;
+    active = true; selected = focused; cycling = 0; last_hint = 0; hold.reset(); waiting_tap.reset();
     awaiting_release = repeat_candidate = false; prefix.clear(); refresh(std::move(windows));
 }
-void alt_mode::end() { active = false; cycling = 0; last_hint = 0; awaiting_release = repeat_candidate = false; prefix.clear(); }
+void alt_mode::end() { active = false; cycling = 0; last_hint = 0; awaiting_release = repeat_candidate = false; hold.reset(); waiting_tap.reset(); prefix.clear(); }
 void alt_mode::activate(uint64_t id, bool double_tap)
 {
     auto it = std::find_if(entries.begin(), entries.end(), [&] (auto e) { return e.id == id; });
@@ -86,6 +89,7 @@ void alt_mode::activate(uint64_t id, bool double_tap)
 void alt_mode::letter(char key, uint32_t time_ms)
 {
     if (!active || keys.find(key) == std::string::npos) return;
+    interrupt(); // a further letter press is another key, never part of a hold
     // Dwell on the previous key and typing the rest of a multi-letter repeat
     // do not consume the user's inter-hint gap. Latch at its first physical
     // press, but act only after the same complete hint has been entered.
@@ -103,7 +107,16 @@ void alt_mode::letter(char key, uint32_t time_ms)
             bool double_tap = repeat_candidate && last_hint == e.id;
             last_hint = e.id; last_key = key; awaiting_release = true;
             repeat_candidate = false;
-            activate(e.id, double_tap); return;
+            // Remember who had focus before the press, which may select and focus (WK6).
+            uint64_t partner = focused ? focused() : selected;
+            // A double-tap acts at once and never becomes a hold. The focused window's press
+            // waits for release (WK35): a tap then acts, a hold solos it without a first step.
+            // Every other press acts at once (WK6) and may still become a pairing hold (WK36).
+            if (double_tap) { activate(e.id, true); return; }
+            if (partner == e.id) waiting_tap = pending_tap{e.id, key};
+            else activate(e.id, false);
+            if (active) hold = pending_hold{e.id, key, time_ms, partner};
+            return;
         }
         partial |= hint.compare(0, prefix.size(), prefix) == 0;
     }
@@ -111,19 +124,55 @@ void alt_mode::letter(char key, uint32_t time_ms)
 }
 void alt_mode::release(char key, uint32_t time_ms)
 {
+    if (hold && hold->key == key) hold.reset(); // a tap, not a hold
     if (active && last_hint && awaiting_release && key == last_key)
     {
         last_release = time_ms;
         awaiting_release = false;
     }
+    if (waiting_tap && waiting_tap->key == key) act_waiting_tap();
+}
+void alt_mode::act_waiting_tap()
+{
+    if (!waiting_tap) return;
+    auto id = waiting_tap->id; waiting_tap.reset();
+    if (active) activate(id, false);
+}
+void alt_mode::interrupt()
+{
+    hold.reset();
+    act_waiting_tap();
+}
+uint32_t alt_mode::hold_remaining(uint32_t time_ms) const
+{
+    if (!hold) return 0;
+    uint32_t elapsed = time_ms - hold->pressed;
+    // A timestamp from after time_ms (a clock mismatch) waits the whole delay, never longer.
+    if (int32_t(elapsed) < 0) return hold_delay;
+    return elapsed >= hold_delay ? 0 : hold_delay - elapsed;
+}
+bool alt_mode::hold_due(uint32_t time_ms)
+{
+    if (!active || !hold || uint32_t(time_ms - hold->pressed) < hold_delay) return false;
+    auto held = *hold; hold.reset();
+    if (!held.partner) return true; // nothing had focus: nothing to pair with
+    // The hold was this press's gesture: the next press of the hint is never its double-tap,
+    // and its next cycle starts from wherever the hold leaves the window.
+    last_hint = 0; cycling = 0;
+    if (held.partner == held.id) // WK35: the waiting press never acts; the hold is the solo
+    { waiting_tap.reset(); if (solo) solo(held.id); return true; }
+    if (hint_action) hint_action(held.id);
+    if (pair) pair(held.id, held.partner);
+    return true;
 }
 void alt_mode::tab(bool backwards)
 {
+    interrupt();
     if (entries.empty()) return;
     auto it = std::find_if(entries.begin(), entries.end(), [&] (auto e) { return e.id == selected; });
     int at = it == entries.end() ? (backwards ? 0 : -1) : int(it - entries.begin());
     at = (at + (backwards ? -1 : 1) + int(entries.size())) % int(entries.size());
     selected = entries[at].id; cycling = 0; last_hint = 0; prefix.clear(); select(selected, false);
 }
-void alt_mode::close_selected() { if (selected) { close(selected); cycling = 0; last_hint = 0; prefix.clear(); } }
+void alt_mode::close_selected() { interrupt(); if (selected) { close(selected); cycling = 0; last_hint = 0; prefix.clear(); } }
 }

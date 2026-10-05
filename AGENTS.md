@@ -35,8 +35,8 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG27): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets, and elastic expansion/contraction.
-- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints and live focused-window-anchored avoidance (WK1–WK31),
-  remembered zones and contention-aware placement (WP1–WP7).
+- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints, live focused-window-anchored avoidance, hint holds and pairing (WK1–WK39),
+  remembered zones and contention-aware placement (WP1–WP8).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO27): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).
 - [docs/settings.md](docs/settings.md): Scottland Settings (S1–S19): zone sliders and overlay with draggable borders, Goo and Window mode tabs, hint popouts, and the planned Widgets tab.
@@ -44,6 +44,15 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
+
+## Privacy of developer networks (Mike, 2026-10-04)
+
+This repository is public. Never reveal the internal topology or identifiers of any developer's network:
+no host names, IP addresses, tailnet or domain names, user names, device names or home paths, in code,
+docs, comments, commit messages, test fixtures or logs. Say "the test machine" or "the daily machine";
+which machine that is lives in private environment docs. If a component needs to reach a machine, its
+address is a configurable field set at install time, never a constant. Existing mentions in current files
+are being removed (names already in git history stay); don't add new ones.
 
 ## Where does a request belong?
 
