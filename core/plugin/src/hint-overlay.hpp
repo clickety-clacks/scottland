@@ -84,6 +84,9 @@ class hold_ring_node : public wf::scene::node_t
     double cx = 0, cy = 0, radius = 0, line = hold_ring_width, progress = 0;
     hint_rgb color{0, 0, 0};
 };
+// Compiles the outline and ring shaders up front, so the first hold ring or outline costs no
+// compile on an input path (P8). Call in a GL context (wf::gles::run_in_context_if_gles).
+void prepare_hint_gl();
 // Frees the outline and ring shaders; call with the plugin's other GL resources on unload.
 void release_hint_gl();
 

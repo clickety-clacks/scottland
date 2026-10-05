@@ -387,7 +387,7 @@
         commit_spread_moves(result.moves);
         if (auto link = link_of_window(window))
         {
-            restore_window(*link, at, true);
+            restore_window(*link, at, !restore_without_grow);  // an offer already showed it there
         } else
         {
             auto g = window->get_geometry();

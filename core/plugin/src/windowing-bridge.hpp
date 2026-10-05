@@ -1078,7 +1078,7 @@
         if (auto link = link_of_window(window))
         {
             // A widget joins as its app window, opened from the rail into its place (tenet 3).
-            restore_window(*link, wf::pointf_t{at.x, at.y}, true);
+            restore_window(*link, wf::pointf_t{at.x, at.y}, !restore_without_grow);  // an offer already showed it
             if (window->get_output() != output) place();
             remember_window(window);
             return;

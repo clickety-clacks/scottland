@@ -361,6 +361,14 @@ outline_program_t& ring_program()
 }
 }
 
+void prepare_hint_gl()
+{
+    auto& outline = outline_program();
+    if (!outline.ready) { outline.program.compile(outline_vertex_source, outline_fragment_source); outline.ready = true; }
+    auto& ring = ring_program();
+    if (!ring.ready) { ring.program.compile(outline_vertex_source, ring_fragment_source); ring.ready = true; }
+}
+
 void release_hint_gl()
 {
     for (auto *p : {&outline_program(), &ring_program()})

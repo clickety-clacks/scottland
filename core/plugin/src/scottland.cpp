@@ -4677,20 +4677,29 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
-    void swipe_begin(uint32_t fingers)
+    void swipe_begin(wlr_input_device *device, uint32_t fingers)
     {
-        if (hold_offer && hold_offer->active && drag->view && !swipe_moving)
+        if (hold_offer && hold_offer->active)
         {
-            // Fingers moving during a three-finger hold's offer: the swipe drives the suspended
-            // drag, so the hotspot is measured from here on (WK39).
-            hold_offer_orphan.disconnect();
-            swipe_moving = true;
-            LOGI("scottland: touchpad swipe began during an offer: ", fingers, " fingers");
+            // Only the offer's own fingers carry it on: a three-finger swipe from the touchpad
+            // whose hold made it drives the suspended drag (the hotspot is measured from here).
+            // Any other swipe (another finger count, another device, a pointer's offer) is not
+            // this gesture and changes nothing.
+            if (hold_offer->owner.kind == hold_owner_t::touchpad && hold_offer->owner.device == device &&
+                fingers == 3 && touchpad_gestures && drag->view && !swipe_moving)
+            {
+                hold_offer_abandoned.disconnect();
+                swipe_moving = true; swipe_device = device;
+                hold_offer->from_libinput_hold = false;
+                LOGI("scottland: touchpad swipe continues the offer: ", fingers, " fingers");
+            } else LOGI("scottland: touchpad swipe began: ", fingers, " fingers, not the offer's gesture: ignored");
             return;
         }
         // Resting fingers jitter, so libinput may end its hold gesture and report a swipe while
-        // they barely move. That swipe continues the hold: same start time, same partner.
+        // they barely move. A three-finger swipe from the same touchpad continues the hold: same
+        // start time, same partner.
         auto resting = touchpad_hold ? touchpad_hold : resting_hold;
+        if (resting && resting->device != device) resting.reset();
         touchpad_hold.reset(); touchpad_hold_timer.disconnect();
         resting_hold.reset(); resting_hold_expiry.disconnect();
         LOGI("scottland: touchpad swipe began: ", fingers, " fingers", resting ?
@@ -4714,52 +4723,62 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag->set_pending_drag(wf::get_core().get_cursor_position());
         drag->start_drag(view);
         note_drag_start();  // now, where the fingers began: the first update may be a while
-        swipe_moving = true;
+        swipe_moving = true; swipe_device = device;
         if (drag->view == view)
-            arm_drag_hold("three-finger swipe", partner, resting ? now_msec() - resting->began : 0, SWIPE_HOLD_WOBBLE);
+            arm_drag_hold("three-finger swipe", partner, {hold_owner_t::touchpad, device},
+                resting ? now_msec() - resting->began : 0);
+        else cancel_hold_ring(false);
     }
 
-    void swipe_update(double dx, double dy)
+    void swipe_update(wlr_input_device *device, double dx, double dy)
     {
         if (!swipe_moving || !drag->view)
         {
             swipe_moving = false;  // its drag ended some other way
             return;
         }
+        if (device != swipe_device) return;  // another touchpad's gesture is not this drag
 
         // Gestures don't move the pointer; the fingers carry both pointer and window.
         wf::get_core().warp_cursor(wf::get_core().get_cursor_position() + wf::pointf_t{dx, dy});
         drag->handle_motion(wf::get_core().get_cursor_position());
     }
 
-    void swipe_end()
+    void swipe_end(wlr_input_device *device, bool cancelled)
     {
-        LOGI("scottland: touchpad swipe ended", swipe_moving ? "" : " (no window drag)");
-        if (swipe_moving)
+        if (swipe_moving && device != swipe_device) return;
+        LOGI("scottland: touchpad swipe ended", cancelled ? " (cancelled by libinput)" : "", swipe_moving ? "" : " (no window drag)");
+        if (!swipe_moving) return;
+        if (cancelled && hold_offer && hold_offer->active)
         {
-            // The fingers lifted: the drag ends now. (A drag of the same window soon after counts
-            // as the same move only for where Esc sends it back, WG14.)
-            swipe_moving = false;
-            drag->handle_input_released();
+            abandon_hold_offer("the fingers' gesture was cancelled, not lifted");
+            return;
         }
+        // The fingers lifted: the drag ends now (an offer is taken within its hotspot). (A drag of
+        // the same window soon after counts as the same move only for where Esc sends it back.)
+        swipe_moving = false;
+        drag->handle_input_released();
     }
+    wlr_input_device *swipe_device = nullptr;
 
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_swipe_begin_event>> on_swipe_begin =
-        [=] (wf::input_event_signal<wlr_pointer_swipe_begin_event> *ev) { swipe_begin(ev->event->fingers); };
+        [=] (wf::input_event_signal<wlr_pointer_swipe_begin_event> *ev) { swipe_begin(ev->device, ev->event->fingers); };
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_swipe_update_event>> on_swipe_update =
         [=] (wf::input_event_signal<wlr_pointer_swipe_update_event> *ev)
     {
-        swipe_update(ev->event->dx, ev->event->dy);
+        swipe_update(ev->device, ev->event->dx, ev->event->dy);
     };
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_swipe_end_event>> on_swipe_end =
-        [=] (wf::input_event_signal<wlr_pointer_swipe_end_event>*) { swipe_end(); };
+        [=] (wf::input_event_signal<wlr_pointer_swipe_end_event> *ev) { swipe_end(ev->device, ev->event->cancelled); };
 
     // Three-finger hold (WK35/WK36): fingers down and still for the hint hold delay, before any
     // click or drag. libinput reports still fingers as a hold gesture and ends it (cancelled) as
     // soon as they move or click, so a swipe (L23) or click (L24) that starts first keeps its
     // meaning. On an unfocused window it pairs with the focused one; on the focused window it
-    // reaches the solo hook. The gesture still reaches the app (it stops kinetic scrolling).
-    struct touchpad_hold_t { uint64_t window = 0, partner = 0; uint32_t began = 0; };
+    // solos it; either way as an offer until the fingers lift. The gesture still reaches the app
+    // (it stops kinetic scrolling). Only the hold that began with three fingers on a touchpad is
+    // tracked: another finger count, or another device, never ends or takes it.
+    struct touchpad_hold_t { uint64_t window = 0, partner = 0; uint32_t began = 0; wlr_input_device *device = nullptr; };
     std::optional<touchpad_hold_t> resting_hold;  // a hold libinput just cancelled, for a swipe to continue
     wf::wl_timer<false> resting_hold_expiry;
     std::optional<touchpad_hold_t> touchpad_hold;
@@ -4775,22 +4794,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void touchpad_hold_begin(wlr_input_device *device, uint32_t fingers, uint32_t time_msec)
     {
-        cancel_touchpad_hold();
         auto view = gesture_target();
         auto link = view ? link_of_widget(view) : nullptr;
         uint64_t window = view ? (link ? link->window_id : view->get_id()) : 0;
         const char *refused = !touchpad_gestures ? "touchpad gestures are off" : fingers != 3 ? "not three fingers" :
-            !is_touchpad(device) ? "not a touchpad" : (drag->view || swipe_moving) ? "a drag is running" :
+            !is_touchpad(device) ? "not a touchpad" : (drag->view || swipe_moving || hold_offer) ? "a drag or an offer is running" :
             (middle_pending || middle_resizing) ? "a three-finger click came first" :
             !model.windows.count(window) ? "no window under the pointer" : nullptr;
         LOGI("scottland: touchpad hold began: ", fingers, " fingers on window ", window, refused ? ", ignored: " : "",
             refused ? refused : "");
-        if (refused) return;
+        if (refused) return;  // nothing of it is tracked: its end changes nothing either
+        cancel_touchpad_hold();
         uint32_t now = now_msec(), elapsed = now - time_msec;
         if (elapsed > 1000) elapsed = 0;  // an event stamped by another clock counts as now
         uint32_t delay = hold_delay_ms();
         elapsed = std::min(elapsed, delay - 1);
-        touchpad_hold = touchpad_hold_t{window, focused_app(), now - elapsed};
+        touchpad_hold = touchpad_hold_t{window, focused_app(), now - elapsed, device};
         // Timed from the fingers' event, on the same clock as hint holds (WK39).
         touchpad_hold_timer.set_timeout(delay - elapsed, [=] () { touchpad_hold_due(); });
         start_hold_ring(0, window, elapsed, delay);
@@ -4825,7 +4844,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
         drag->suspend(true);
-        begin_hold_offer(hold.window, hold.partner, "three-finger hold");
+        begin_hold_offer(hold.window, hold.partner, "three-finger hold", {hold_owner_t::touchpad, hold.device}, true);
     }
 
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_hold_begin_event>> on_hold_begin =
@@ -4834,21 +4853,26 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_hold_end_event>> on_hold_end =
         [=] (wf::input_event_signal<wlr_pointer_hold_end_event> *ev)
     {
-        if (touchpad_hold)
-            LOGI("scottland: touchpad hold ended (", ev->event->cancelled ? "cancelled by libinput: fingers moved or clicked" :
-                "fingers lifted", ") after ", int32_t(now_msec() - touchpad_hold->began), " ms");
-        if (hold_offer && hold_offer->active && drag->view && !swipe_moving)
+        bool cancelled = ev->event->cancelled;
+        if (hold_offer && hold_offer->active && hold_offer->from_libinput_hold)
         {
-            // An offer from a three-finger hold: lifting takes it; moving goes on as a swipe,
-            // which must follow at once (else the fingers lifted with the hold cancelled).
-            LOGI("scottland: touchpad hold ended during its offer (", ev->event->cancelled ? "fingers moved" : "lifted", ")");
-            if (!ev->event->cancelled) { drag->handle_input_released(); return; }
-            hold_offer_orphan.set_timeout(300, [=] () {
-                if (hold_offer && hold_offer->active && drag->view && !swipe_moving) drag->handle_input_released(); });
+            // Only the hold that made the offer ends it: a lift takes it; libinput cancelling it
+            // (fingers moved or clicked) hands it to the swipe that follows from those fingers,
+            // and if none comes the gesture was abandoned: refused, never taken.
+            if (hold_offer->owner.device != ev->device) return;
+            LOGI("scottland: touchpad hold ended during its offer (", cancelled ? "cancelled by libinput" : "lifted", ")");
+            if (!cancelled) { drag->handle_input_released(); return; }
+            hold_offer_abandoned.set_timeout(300, [=] () {
+                if (hold_offer && hold_offer->active && hold_offer->from_libinput_hold)
+                    abandon_hold_offer("libinput cancelled the hold and no swipe followed");
+            });
             return;
         }
+        if (!touchpad_hold || touchpad_hold->device != ev->device) return;  // not a hold we track
+        LOGI("scottland: touchpad hold ended (", cancelled ? "cancelled by libinput: fingers moved or clicked" :
+            "fingers lifted", ") after ", int32_t(now_msec() - touchpad_hold->began), " ms");
         // Cancelled holds usually turn into a swipe at once; swipe_begin takes the hold over.
-        if (ev->event->cancelled && touchpad_hold)
+        if (cancelled)
         {
             resting_hold = touchpad_hold;
             touchpad_hold.reset(); touchpad_hold_timer.disconnect();
@@ -5491,14 +5515,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             std::string phase = data["swipe"].as_string();
             if (phase == "begin")
             {
-                swipe_begin(data.has_member("fingers") ? (uint32_t)data["fingers"].as_int() : 3);
+                swipe_begin(nullptr, data.has_member("fingers") ? (uint32_t)data["fingers"].as_int() : 3);
             } else if (phase == "update")
             {
-                swipe_update(data.has_member("dx") ? data["dx"].as_double() : 0.0,
+                swipe_update(nullptr, data.has_member("dx") ? data["dx"].as_double() : 0.0,
                     data.has_member("dy") ? data["dy"].as_double() : 0.0);
             } else if (phase == "end")
             {
-                swipe_end();
+                swipe_end(nullptr, false);
             }
         }
 
@@ -5564,29 +5588,38 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void start_pointer_drag(wayfire_toplevel_view view, uint32_t button = BTN_LEFT, const char *gesture = "halo press")
     {
-        drag->set_input(-1, false, button);
+        drag->set_input(-1, false, button, pressed_device);
         drag->set_pending_drag(wf::get_core().get_cursor_position());
         drag->start_drag(view);
         if (drag->view != view) return;
         auto link = link_of_widget(view);
         uint64_t window = link ? link->window_id : view->get_id();
         uint64_t partner = pressed_focus;
-        if (last_click.window == window && uint32_t(now_msec() - last_click.at) <= HOLD_CHAIN_MS)
+        // Drag lock and double-click-and-hold begin with a completed tap that already focused the
+        // window: this press continues it only straight after that tap (no other press between),
+        // soon, with the focus still where the tap left it.
+        if (last_click.window == window && last_click.press + 1 == press_serial && pressed_focus == window &&
+            uint32_t(now_msec() - last_click.at) <= HOLD_CHAIN_MS)
             partner = last_click.partner;
-        arm_drag_hold(gesture, partner);
+        arm_drag_hold(gesture, partner, {hold_owner_t::pointer, pressed_device});
     }
 
     // Hold forms (WK35/WK36; Mike, 2026-10-04: every gesture that drags a window has one). A
     // pointer or three-finger drag that stays within HOLD_WOBBLE of where it began for the hint
-    // hold delay is a hold: it ends where the window is, with no drop, and solos the focused
-    // window or pairs an unfocused one with the window focused before the gesture. Moving past
-    // the wobble first makes it an ordinary drag (and the drag audition can follow, SP); letting
-    // go first is a click or a short drag. Touch drags start from a long press already (L25) and
-    // keep that meaning.
-    static constexpr double HOLD_WOBBLE = 12.0;  // logical px a pointer hold may wander: hands jitter
-    // A three-finger swipe reports accelerated deltas, and libinput only starts one after the
-    // fingers have moved a little: resting fingers wander further in these units.
-    static constexpr double SWIPE_HOLD_WOBBLE = 24.0;
+    // hold delay is a hold. Until it is decided the drag is suspended: the window stays where it
+    // is, so nothing has visibly moved when the hold fires (a drag that has moved stays a drag,
+    // L23), and no rail morph, rail room or audition can begin inside the wobble. Moving past the
+    // wobble resumes the drag, the window rejoining the pointer at its grab point; letting go
+    // first is a click. A fired hold is an offer (below). Touch drags start from a long press
+    // already (L25) and keep that meaning.
+    static constexpr double HOLD_WOBBLE = 12.0;  // logical px: hands and resting fingers jitter
+    // Who owns a hold or an offer: only its own device's release, lift, swipe or cancel acts on
+    // it; another device, or a gesture with another finger count, never takes it over.
+    struct hold_owner_t
+    {
+        enum kind_t { pointer, touchpad } kind = pointer;
+        wlr_input_device *device = nullptr;
+    };
     struct drag_hold_t
     {
         uint64_t window = 0, partner = 0;
@@ -5594,21 +5627,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double travel = 0;
         std::string gesture;
         uint32_t began = 0;  // now_msec when the gesture began (the press, or the fingers)
-        double wobble = HOLD_WOBBLE;
+        hold_owner_t owner;
     };
     std::optional<drag_hold_t> drag_hold;
     wf::wl_timer<false> drag_hold_timer;
     uint64_t pressed_focus = 0;  // the app window focused when the latest button went down
-    // Double-tap-and-hold (drag lock) and double-click-and-hold begin with a click that already
-    // focused the window. A press on it this soon after continues that gesture and keeps the
-    // partner from before the first tap, so the hold still pairs instead of soloing.
+    wlr_input_device *pressed_device = nullptr;  // the pointer device of that press
+    uint64_t press_serial = 0;   // counts every button press
     static constexpr uint32_t HOLD_CHAIN_MS = 400;
-    struct { uint64_t window = 0, partner = 0; uint32_t at = 0; } last_click;
+    struct { uint64_t window = 0, partner = 0; uint32_t at = 0; uint64_t press = 0; } last_click;
 
     uint64_t focused_app() { return window_keys.focused ? window_keys.focused() : 0; }
     uint32_t hold_delay_ms() { return std::clamp(int(window_hold_delay), 1, 3000); }
 
-    void arm_drag_hold(const std::string& gesture, uint64_t partner, uint32_t elapsed = 0, double wobble = HOLD_WOBBLE)
+    void arm_drag_hold(const std::string& gesture, uint64_t partner, hold_owner_t owner, uint32_t elapsed = 0)
     {
         disarm_drag_hold(nullptr);
         if (!drag->view || !drag->is_live()) return;  // the legacy move always drops
@@ -5622,16 +5654,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         uint32_t delay = hold_delay_ms();
         elapsed = std::min(elapsed, delay - 1);
-        drag_hold = drag_hold_t{window, partner, wf::get_core().get_cursor_position(), 0, gesture, now_msec() - elapsed, wobble};
+        drag_hold = drag_hold_t{window, partner, wf::get_core().get_cursor_position(), 0, gesture, now_msec() - elapsed, owner};
         drag_hold_timer.set_timeout(delay - elapsed, [=] () { drag_hold_due(); });
+        drag->suspend(true);  // nothing moves until it is a drag
         start_hold_ring(0, window, elapsed, delay);
-        LOGI("scottland: ", gesture, " on window ", window, " began: a hold if it stays within ", wobble,
+        LOGI("scottland: ", gesture, " on window ", window, " began: a hold if it stays within ", HOLD_WOBBLE,
             " px for ", delay, " ms", window == partner ? " (focused: solo)" : " (pairs)");
     }
 
-    void disarm_drag_hold(const char *why, bool let_go = false)
+    void disarm_drag_hold(const char *why)
     {
-        if (drag_hold && let_go) last_click = {drag_hold->window, drag_hold->partner, now_msec()};
         if (drag_hold && why)
             LOGI("scottland: ", drag_hold->gesture, " on window ", drag_hold->window, ": ", why, " after ",
                 int32_t(now_msec() - drag_hold->began), " ms, travel ", std::round(drag_hold->travel * 10) / 10, " px");
@@ -5640,11 +5672,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag_hold_timer.disconnect();
     }
 
-    void drag_hold_motion(wf::pointf_t at)
+    // True while the hold is still pending (the drag stays suspended).
+    bool drag_hold_motion(wf::pointf_t at)
     {
-        if (!drag_hold) return;
+        if (!drag_hold) return false;
         drag_hold->travel = std::max(drag_hold->travel, std::hypot(at.x - drag_hold->start.x, at.y - drag_hold->start.y));
-        if (drag_hold->travel > drag_hold->wobble) disarm_drag_hold("moved past the wobble, a drag");
+        if (drag_hold->travel <= HOLD_WOBBLE) return true;
+        disarm_drag_hold("moved past the wobble, a drag");
+        drag->suspend(false);  // the drag shows from here: the window rejoins the pointer
+        return false;
     }
 
     void drag_hold_due()
@@ -5662,30 +5698,35 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         LOGI("scottland: ", hold.gesture, " held still ", int32_t(now_msec() - hold.began), " ms (travel ",
             std::round(hold.travel * 10) / 10, " px) on window ", hold.window, ": ",
             hold.window == hold.partner ? "solo" : "pair with window " + std::to_string(hold.partner));
-        // The gesture was a hold, never a move: the window is drawn where it really is, and the
-        // result is offered while the button or fingers stay down.
-        drag->suspend(true);
-        begin_hold_offer(hold.window, hold.partner, hold.gesture);
+        // The window never moved (the drag stayed suspended); the result is offered while the
+        // button or fingers stay down.
+        begin_hold_offer(hold.window, hold.partner, hold.gesture, hold.owner);
     }
 
     // Hold offers (WK39; Mike, 2026-10-05). A pointer or touchpad hold that has fired is an offer
-    // while the button or fingers stay down, as the drag audition is: the solo or pair is shown
-    // on the audition's presentation layer; letting go within the hotspot
-    // (scottland/solo_audition_hotspot, from where the hold fired) commits it; moving out of
-    // the hotspot refuses it, every window eases back to exactly where it is, and the gesture
-    // carries on as the ordinary window drag. The suspended drag keeps the grab, so its motion,
-    // release and Esc keep arriving through the drag (on_drag_motion, on_drag_done).
+    // while its button or fingers stay down, as the drag audition is: the real result is shown on
+    // the presentation layer, every window at its destination and scale, a widget as the app it
+    // represents, a window joining from another screen on that screen (P5: what you see is what
+    // you get). Letting go, by the owner's own release or lift, within the hotspot
+    // (scottland/solo_audition_hotspot, from where the hold fired) commits it; moving out of the
+    // hotspot refuses it, everything eases back to exactly where it is, and the gesture carries
+    // on as the ordinary window drag; Esc, or the owning gesture ending without a lift, refuses
+    // it. The suspended drag keeps the grab, so motion, release and Esc arrive through the drag.
     struct hold_offer_actor_t
     {
-        uint64_t id = 0;
-        double ox = 0, oy = 0, os = 1;  // true center and scale
-        double tx = 0, ty = 0, ts = 1;  // where the offer puts it
+        uint64_t window = 0;        // the app window the result moves
+        uint64_t shown = 0;         // the view drawn for it: the window, or its widget card
+        bool card = false;          // shown as its card, morphing into the app (a widget)
+        double tx = 0, ty = 0, ts = 1;  // destination center (layout coordinates) and scale
+        double app_w = 0, app_h = 0;    // the app's size, for a card's morph
     };
     struct hold_offer_t
     {
         uint64_t window = 0, partner = 0;
         bool solo = false, active = true;  // inactive: easing back after a refusal
         std::string gesture;
+        hold_owner_t owner;
+        bool from_libinput_hold = false;   // started by libinput's hold gesture (no swipe yet)
         wf::pointf_t anchor{0, 0};  // the pointer when the hold fired, layout coordinates
         double radius = 50;
         std::vector<hold_offer_actor_t> actors;
@@ -5699,7 +5740,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     std::optional<hold_offer_t> hold_offer;
     wf::wl_timer<true> hold_offer_tick;
-    wf::wl_timer<false> hold_offer_orphan;  // fingers moved (libinput's hold ended) but no swipe came
+    // libinput ended the owning hold as moved or clicked: a swipe from the same fingers takes the
+    // offer over at once; if none comes, the gesture was abandoned, never accepted (refused).
+    wf::wl_timer<false> hold_offer_abandoned;
+    bool restore_without_grow = false;  // a widget the offer showed as its app opens exactly there
+
+    // Add the actor for one window of the result: its destination center (output-local on
+    // `output`) and scale.
+    void add_offer_actor(hold_offer_t& o, uint64_t window_id, double x, double y, double scale, wf::output_t *output)
+    {
+        auto window = wf::toplevel_cast(view_by_id(window_id));
+        if (!window || !output) return;
+        auto origin = output->get_layout_geometry();
+        hold_offer_actor_t a;
+        a.window = window_id;
+        a.tx = x + origin.x; a.ty = y + origin.y; a.ts = scale;
+        if (auto link = link_of_window(window))
+        {
+            auto card = wf::toplevel_cast(link->widget.lock());
+            if (!card || !card->is_mapped() || !frame_of(card, false)) return;
+            a.shown = card->get_id(); a.card = true;
+            auto g = window->get_geometry(); a.app_w = g.width; a.app_h = g.height;
+            // The app's look, as the drag morph shows it (WG22): a capture of its last frame.
+            auto frame = frame_of(card, false);
+            auto image = scottland::widget_image_t::capture(window, 0);
+            frame->morph.snapshot = image;
+            frame->morph.other_geometry = g;
+            frame->morph.snapshot_box = image.box;
+            frame->morph.snapshot_box.x += g.x; frame->morph.snapshot_box.y += g.y;
+        } else
+        {
+            if (!window->is_mapped() || !frame_of(window, false)) return;
+            a.shown = window_id;
+        }
+        o.actors.push_back(a);
+    }
 
     void hold_offer_present()
     {
@@ -5707,13 +5782,39 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double p = hold_offer->progress;
         for (const auto& a : hold_offer->actors)
         {
-            auto view = wf::toplevel_cast(view_by_id(a.id));
+            auto view = wf::toplevel_cast(view_by_id(a.shown));
             auto frame = view ? frame_of(view, false) : nullptr;
-            if (!frame) continue;
+            if (!frame || !view->get_output()) continue;
             auto g = view->get_geometry();
-            double ux = g.x + g.width / 2.0 + frame->translation_x, uy = g.y + g.height / 2.0 + frame->translation_y;
+            auto origin = view->get_output()->get_layout_geometry();
+            // Where it is drawn now without the offer, in layout coordinates (a suspended drag
+            // draws its window at its true place in front of everything, on any screen).
+            double ux = origin.x + g.x + g.width / 2.0 + frame->translation_x;
+            double uy = origin.y + g.y + g.height / 2.0 + frame->translation_y;
             double us = std::max(0.05, (double)frame->scale_x);
-            set_drag_layout_offset(view, p * (a.tx - ux), p * (a.ty - uy), (us + p * (a.ts - us)) / us);
+            if (a.card)
+            {
+                // The card morphs into the app at the app's size and destination scale.
+                frame->damage();
+                frame->morph.shape = p; frame->morph.fade = p;
+                frame->morph.w = a.app_w * a.ts; frame->morph.h = a.app_h * a.ts;
+                frame->morph.scale = a.ts;
+                set_drag_layout_offset(view, p * (a.tx - ux), p * (a.ty - uy), 1);
+                frame->damage();
+            } else
+                set_drag_layout_offset(view, p * (a.tx - ux), p * (a.ty - uy), (us + p * (a.ts - us)) / us);
+        }
+    }
+
+    // Everything the offer drew, gone at once (offsets and card morphs).
+    void clear_offer_presentation(const hold_offer_t& o)
+    {
+        for (const auto& a : o.actors)
+        {
+            auto view = wf::toplevel_cast(view_by_id(a.shown));
+            if (!view) continue;
+            if (auto frame = a.card ? frame_of(view, false) : nullptr) { frame->damage(); frame->morph = {}; frame->damage(); }
+            set_drag_layout_offset(view, 0, 0, 1);
         }
     }
 
@@ -5738,34 +5839,32 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (t < 1) return true;
         if (!o.active)  // eased back: nothing of the offer is left
         {
-            for (const auto& a : o.actors) set_drag_layout_offset(wf::toplevel_cast(view_by_id(a.id)), 0, 0, 1);
+            clear_offer_presentation(o);
             hold_offer.reset();
             refresh_layout_avoidance();
         }
         return false;
     }
 
-    void begin_hold_offer(uint64_t window_id, uint64_t partner, const std::string& gesture)
+    void begin_hold_offer(uint64_t window_id, uint64_t partner, const std::string& gesture, hold_owner_t owner,
+        bool from_libinput_hold = false)
     {
         end_hold_offer();
         audition_end("hold offer");  // a held drag is this offer, not the audition
+        end_morph();                 // nothing of a rail morph may survive into the offer
         hold_offer_t o;
         o.window = window_id; o.partner = partner; o.solo = window_id == partner; o.gesture = gesture;
+        o.owner = owner; o.from_libinput_hold = from_libinput_hold;
         o.anchor = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
         o.radius = audition_hotspot();
         auto window = wf::toplevel_cast(view_by_id(window_id));
         if (!o.solo)
         {
-            // Pair: both windows' places now. A widget, or a window joining from another screen,
-            // shows up there when it commits (WK36), not in the preview.
+            // Pair: both windows' real places, including a widget (as its app) and a window that
+            // joins from another screen (WK36).
             if (auto plan = plan_pair(window_id, partner))
                 for (auto [view, at] : {std::pair{plan->left, plan->fit.left}, std::pair{plan->right, plan->fit.right}})
-                {
-                    if (link_of_window(view) || view->get_output() != plan->output) continue;
-                    auto g = view->get_geometry();
-                    o.actors.push_back({view->get_id(), g.x + g.width / 2.0, g.y + g.height / 2.0,
-                        std::clamp(scale_for(view), 0.05, 1.0), at.x, at.y, plan->fit.scale});
-                }
+                    add_offer_actor(o, view->get_id(), at.x, at.y, plan->fit.scale, plan->output);
             hold_offer = std::move(o);
             hold_offer_ease(1);
         } else if (auto shown = represented_view(window_id); window && shown && shown->get_output() &&
@@ -5787,8 +5886,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     [=] (const scottland::spread::result_t& result) { hold_offer_solved(result); });
         } else hold_offer = std::move(o);
         LOGI("scottland: ", gesture, " offers ", hold_offer->solo ? "a solo" : "a pair", " of window ", window_id,
-            hold_offer->solo ? "" : " with window " + std::to_string(partner),
-            ": let go within ", hold_offer->radius, " px to take it, move away to keep dragging");
+            hold_offer->solo ? "" : " with window " + std::to_string(partner), " (", hold_offer->actors.size(),
+            " windows shown): let go within ", hold_offer->radius, " px to take it, move away to keep dragging");
     }
 
     void hold_offer_solved(const scottland::spread::result_t& result)
@@ -5797,22 +5896,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto& o = *hold_offer;
         o.solving = false;
         o.result = result;
-        for (const auto& m : result.moves)
-        {
-            auto view = wf::toplevel_cast(view_by_id(m.id));
-            if (!view || !view->is_mapped() || link_of_window(view)) continue;
-            auto g = view->get_geometry();
-            o.actors.push_back({m.id, g.x + g.width / 2.0, g.y + g.height / 2.0,
-                std::clamp(scale_for(view), 0.05, 1.0), m.cx, m.cy, m.scale});
-        }
-        // The solo window itself goes to the center if it is not there (WK35).
-        if (auto window = wf::toplevel_cast(view_by_id(o.window)); window && !link_of_window(window))
+        for (const auto& m : result.moves) add_offer_actor(o, m.id, m.cx, m.cy, m.scale, o.output);
+        // The solo window itself goes to the center if it is not there (WK35), a widget as its app.
+        if (auto window = wf::toplevel_cast(view_by_id(o.window)))
         {
             auto g = window->get_geometry();
-            if (std::abs(g.x + g.width / 2.0 - o.solo_at.x) > 0.25 || std::abs(g.y + g.height / 2.0 - o.solo_at.y) > 0.25)
-                o.actors.push_back({o.window, g.x + g.width / 2.0, g.y + g.height / 2.0,
-                    std::clamp(scale_for(window), 0.05, 1.0), o.solo_at.x, o.solo_at.y, 1.0});
+            if (link_of_window(window) || std::abs(g.x + g.width / 2.0 - o.solo_at.x) > 0.25 ||
+                std::abs(g.y + g.height / 2.0 - o.solo_at.y) > 0.25)
+                add_offer_actor(o, o.window, o.solo_at.x, o.solo_at.y, 1.0, o.output);
         }
+        LOGI("scottland: ", o.gesture, " solo offer shows ", o.actors.size(), " windows");
         if (o.release_pending) { commit_hold_offer(); return; }
         hold_offer_ease(1);
     }
@@ -5835,23 +5928,46 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (hold_offer->solving && spread_run && spread_run->purpose == "hold offer") spread_cancel();
         hold_offer->active = false;
         hold_offer->release_pending = false;
-        hold_offer_orphan.disconnect();
+        hold_offer_abandoned.disconnect();
+        // A card shown as its app goes back to being the card at once: the resumed drag's own
+        // morph (WG22) owns its shape from here; the windows ease back.
+        auto& actors = hold_offer->actors;
+        for (auto it = actors.begin(); it != actors.end();)
+        {
+            if (!it->card) { ++it; continue; }
+            if (auto view = wf::toplevel_cast(view_by_id(it->shown)))
+            {
+                if (auto frame = frame_of(view, false)) { frame->damage(); frame->morph = {}; frame->damage(); }
+                set_drag_layout_offset(view, 0, 0, 1);
+            }
+            it = actors.erase(it);
+        }
         hold_offer_ease(0);
+    }
+
+    // The owning gesture ended without letting go (libinput cancelled it, or another finger
+    // count took over): refuse the offer and end the drag where the window is, taking nothing.
+    void abandon_hold_offer(const char *why)
+    {
+        if (!hold_offer || !hold_offer->active) return;
+        refuse_hold_offer(why);
+        swipe_moving = false;
+        if (drag->view) { model.drag.cancelled = true; drag->handle_input_released(); }
     }
 
     // Remove an offer outright (a new gesture, unload): no easing.
     void end_hold_offer()
     {
         hold_offer_tick.disconnect();
-        hold_offer_orphan.disconnect();
+        hold_offer_abandoned.disconnect();
         if (!hold_offer) return;
         if (hold_offer->solving && spread_run && spread_run->purpose == "hold offer") spread_cancel();
-        for (const auto& a : hold_offer->actors) set_drag_layout_offset(wf::toplevel_cast(view_by_id(a.id)), 0, 0, 1);
+        clear_offer_presentation(*hold_offer);
         hold_offer.reset();
     }
 
     // Let go within the hotspot: the offer is the result. Every window glides from where the
-    // preview draws it to its place, so nothing jumps.
+    // preview draws it to its place, and a widget opens as its app exactly where it was shown.
     void commit_hold_offer()
     {
         if (!hold_offer || !hold_offer->active) return;
@@ -5860,8 +5976,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         LOGI("scottland: ", o.gesture, " offer taken: ", o.solo ? "solo" : "pair", " of window ", o.window);
         auto offer = std::move(o);
         hold_offer_tick.disconnect();
-        hold_offer_orphan.disconnect();
+        hold_offer_abandoned.disconnect();
         hold_offer.reset();
+        // Card morphs end now: the restored app takes their place at the same spot and size.
+        for (const auto& a : offer.actors)
+            if (a.card)
+                if (auto view = wf::toplevel_cast(view_by_id(a.shown)))
+                    if (auto frame = frame_of(view, false)) { frame->damage(); frame->morph = {}; frame->damage(); }
+        restore_without_grow = true;
         if (!offer.solo)
         {
             pair_windows(offer.window, offer.partner);  // each pair window glides from its preview
@@ -5872,15 +5994,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 commit_solo(offer.window, offer.solo_at, *offer.result);
             else LOGI("scottland: solo ", offer.window, ": the desktop changed while offered; not applied");
         }
-        for (const auto& a : offer.actors) set_drag_layout_offset(wf::toplevel_cast(view_by_id(a.id)), 0, 0, 1);
+        restore_without_grow = false;
+        clear_offer_presentation(offer);
         refresh_layout_avoidance();
     }
 
-    // Before any binding or halo acts on a press (which focuses its window), note what had focus.
+    // Before any binding or halo acts on a press (which focuses its window), note what had focus,
+    // which device pressed, and count the press (a drag-lock chain must be uninterrupted).
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> on_press_focus =
         [=] (wf::input_event_signal<wlr_pointer_button_event> *ev)
     {
-        if (ev->event->state == WL_POINTER_BUTTON_STATE_PRESSED) pressed_focus = focused_app();
+        if (ev->event->state != WL_POINTER_BUTTON_STATE_PRESSED) return;
+        pressed_focus = focused_app();
+        pressed_device = ev->device;
+        ++press_serial;
     };
 
     static constexpr double CLICK_SLOP = 6.0;  // a press and release within this is a click, not a move
@@ -6756,6 +6883,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
         if ((ev->event->keycode == KEY_ESC) && (ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED) &&
+            !drag->view && (touchpad_hold || resting_hold))
+        {
+            // A three-finger hold that has not fired yet has no drag; Esc cancels it all the same.
+            LOGI("scottland: Esc cancels a pending three-finger hold");
+            cancel_touchpad_hold();
+            ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            return;
+        }
+        if ((ev->event->keycode == KEY_ESC) && (ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED) &&
             drag->view && !model.drag.cancelled)
         {
             model.drag.cancelled = true;
@@ -7006,7 +7142,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto output = drag->current_output;
         wf::pointf_t at{double(ev->current_position.x), double(ev->current_position.y)};
         if (hold_offer_motion(at)) return;  // a fired hold is offering: the drag is suspended
-        drag_hold_motion(at);
+        if (drag_hold_motion(at)) return;   // a pending hold: nothing moves inside the wobble
         refresh_layout_avoidance();
         note_drag_start();
         drag_velocity.add(now_msec(), ev->current_position.x, ev->current_position.y);
@@ -7142,7 +7278,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
         swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
-        disarm_drag_hold("let go before the hold delay, a click or a short drag", true);
+        // A completed tap (not Esc) may start a drag-lock or double-click hold on the same window.
+        if (drag_hold && !model.drag.cancelled)
+            last_click = {drag_hold->window, drag_hold->partner, now_msec(), press_serial};
+        disarm_drag_hold(model.drag.cancelled ? "cancelled before the hold delay" : "let go before the hold delay, a click");
         bool offer_taken = false;
         if (hold_offer && hold_offer->active)
         {
@@ -7159,6 +7298,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.held = false;
             model.drag.input_override.reset();
             cancel_rail_drag();
+            end_morph();  // no widget shape survives a hold (the drag never moved)
             audition_end("hold");
             if (main && main->is_mapped() && !is_widget(main) && model.drag.origin.view == main->get_id())
                 pin_scale(main, model.drag.origin.pin);
@@ -7712,6 +7852,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         signal(SIGQUIT, SIG_DFL);
         // Compile the shared blend shader during plugin startup, before any input-driven morph.
         wf::gles::run_in_context_if_gles([] { scottland::widget_morph_renderer().prepare(); });
+        wf::gles::run_in_context_if_gles([] { scottland::windowing::prepare_hint_gl(); });
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
         if (getenv("SCOTTLAND_TEST_MODEL"))
             wf::get_core().connect(&on_test_render_end);
@@ -7879,7 +8020,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_unmapped.disconnect();
         idle_focus.disconnect();
         on_motion.disconnect();
-        swipe_end();
+        swipe_end(swipe_device, false);
         on_swipe_begin.disconnect();
         on_cancel_key.disconnect();
         glide_tick.disconnect();
