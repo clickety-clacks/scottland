@@ -84,7 +84,9 @@ session the kernel did about 31 units/µs against 112 in the unit suite on the s
 12 ms reach less far there; this is still to be measured on a real GPU session. Unit operations
 measure under 40 µs of CPU; longer wall-clock slices seen on the x86 test machine were preemption under load.
 
-**The drag audition.** A drag of a window (not a widget, not a Shift drag, L31) whose center is in
+**The drag audition.** (A drag held still from its very start is a hold form instead, WK39: it
+offers a solo or pair at the hold delay, shown on this same presentation layer and taken on
+release within the hotspot. The audition follows a drag that has moved.) A drag of a window (not a widget, not a Shift drag, L31) whose center is in
 the center zone, with the pointer resting within 8 pt for `solo_audition_delay` (3000 ms; 0 turns it
 off), is offered the solo. At 1 s the anchor is frozen and the solve runs against a reservation: the
 window's full-scale footprint grown by the hotspot on every side, so any accepted drop is honest. At
@@ -102,7 +104,7 @@ plugin refuses an offer before it releases the drag.
 
 | ID | Invariant | Status |
 |---|---|---|
-| SP1 | Only the focused window's hint hold, its three-finger hold and an accepted audition solo; nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04) |
+| SP1 | Only a hold on the focused window (its hint hold, or a taken offer of a hold form of a drag gesture: Super + press, the halo, three fingers, WK39) and an accepted audition solo; nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04) |
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
 | SP3 | A resident moves only if the solo target covers it or an arrival would otherwise land below its band (P6); it stays on its side (P1), never grows, never moves inward, ends clear when pushed, and returns when its spot is free again (P2). | verified (unit fuzz and fixtures; headless) |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |

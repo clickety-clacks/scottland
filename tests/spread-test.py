@@ -207,7 +207,9 @@ try:
     x1, y1, x2, y2 = footprint(S); pointer((x1 + x2) / 2, (y1 + y2) / 2); time.sleep(.1)
     pad('hold_begin', fingers=3); time.sleep(.75); pad('hold_end', cancelled=False)
     result = wait_solve(n)
-    check(result['purpose'] == 'solo', 'three-finger hold on the focused window solos it', result['purpose'])
+    # A touchpad hold is an offer while the fingers rest (WK39, 2026-10-05); lifting takes it.
+    check(result['purpose'] == 'hold offer', 'three-finger hold on the focused window offers its solo, taken on lift',
+          result['purpose'])
     check_spread('three-finger solo', result, S, (A1, A2), r_before)
     shot('touchpad-solo.png')
 
