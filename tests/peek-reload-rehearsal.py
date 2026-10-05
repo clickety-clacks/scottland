@@ -30,15 +30,13 @@ original = t.ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["
 def reload_into(name):
     shutil.copyfile(new_xml, xml_dir / "scottland.xml")
     t.ipc.call("wayfire/reload-config-metadata")
-    fresh = out / f"libscottland-{name}.so"
-    shutil.copyfile(new_plugin, fresh)
-    changed = " ".join(str(fresh) if p == "scottland" or "/libscottland" in p else p for p in original.split())
-    mark.touch()
-    try:
-        t.ipc.call("wayfire/set-config-options", {"core/plugins": changed})
-        time.sleep(1.5)
-    finally:
-        mark.unlink(missing_ok=True)
+    # Through this checkout's scottland-reload (receipt, handover, acknowledgment), as dev-install
+    # installs them together: a plugin swapped in without a receipt carries nothing over.
+    done = subprocess.run([str(Path(__file__).resolve().parents[1] / "core/session/scottland-reload")],
+                          env=dict(os.environ, SCOTTLAND_TEST_RELOAD_DIR=str(out), SCOTTLAND_RELOAD_SOURCE=str(new_plugin)),
+                          capture_output=True, text=True, timeout=120)
+    print(f"scottland-reload -> {done.returncode}: {(done.stdout + done.stderr).strip()[-200:]}", flush=True)
+    time.sleep(1.5)
 
 
 def shot(name):
