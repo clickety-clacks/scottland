@@ -368,7 +368,7 @@
 		</option>
 		<option name="release_bindings" type="dynamic-list" type-hint="dict">
 			<_short>Key release bindings</_short>
-			<_long>Run a command when a key is released.</_long>
+			<_long>Run a command when a key is released. Like other shortcuts, these do not run while the session is locked.</_long>
 			<entry prefix="release_key_" type="string" name="key">
 				<_short>Key</_short>
 				<_long>xkb keysym name (e.g. Super_L) or code:N.</_long>
@@ -376,6 +376,22 @@
 			<entry prefix="release_command_" type="string" name="command">
 				<_short>Command</_short>
 				<_long>Command to run when the key is released.</_long>
+			</entry>
+		</option>
+		<option name="switch_bindings" type="dynamic-list" type-hint="dict">
+			<_short>Switch bindings</_short>
+			<_long>Run a command when a hardware switch, such as a laptop lid, changes. Switches are hardware state, so these run whether or not the session is locked.</_long>
+			<entry prefix="switch_device_" type="string" name="device">
+				<_short>Switch</_short>
+				<_long>Input device name, e.g. Lid Switch.</_long>
+			</entry>
+			<entry prefix="switch_state_" type="string" name="state">
+				<_short>When</_short>
+				<_long>on, off, or toggle (either).</_long>
+			</entry>
+			<entry prefix="switch_command_" type="string" name="command">
+				<_short>Command</_short>
+				<_long>Command to run.</_long>
 			</entry>
 		</option>
 	</plugin>

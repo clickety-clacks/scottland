@@ -73,6 +73,7 @@ extern "C" {
 #include "hint-overlay.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
+#include "session.hpp"
 #include "attention-color.hpp"
 #include "state-dye.hpp"
 
@@ -898,6 +899,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     public wf::per_output_tracker_mixin_t<center_resize_t>
 {
     scottland::key_layers_t key_layers;
+    scottland::session_t session_state;
 
     static constexpr const char *TRANSFORMER = "scottland-scale";
     scottland::goo_t goo;
@@ -7266,6 +7268,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
+        // Shortcuts belong to the unlocked session; the lock screen gets the keys.
+        if (scottland::session_locked())
+        {
+            return;
+        }
+
         auto keyboard = wlr_seat_get_keyboard(wf::get_core().get_current_seat());
         xkb_keymap *keymap = keyboard ? keyboard->keymap : nullptr;
         for (const auto& [name, key, command] : release_bindings.value())
@@ -7290,6 +7298,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Compile the shared blend shader during plugin startup, before any input-driven morph.
         wf::gles::run_in_context_if_gles([] { scottland::widget_morph_renderer().prepare(); });
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
+        session_state.init();
         if (getenv("SCOTTLAND_TEST_MODEL"))
             wf::get_core().connect(&on_test_render_end);
         init_output_tracking();
@@ -7439,6 +7448,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         goo.stop();
         fini_window_keys();
         key_layers.fini();
+        session_state.fini();
 
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
