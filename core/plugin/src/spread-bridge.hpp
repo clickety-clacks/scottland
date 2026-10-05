@@ -853,6 +853,20 @@
         reply["solves"] = (int64_t)spread_solves;
         reply["cancel_ms"] = spread_cancel_ms;
         reply["audition"] = audition_state();
+        // Diagnostics of a hold's offer (WK39); tests judge the windows' geometry and pixels.
+        reply["hold_offer"] = wf::json_t();
+        reply["hold_offer"]["active"] = hold_offer && hold_offer->active;
+        reply["hold_offer"]["returning"] = hold_offer && !hold_offer->active;
+        if (hold_offer)
+        {
+            reply["hold_offer"]["window"] = (int64_t)hold_offer->window;
+            reply["hold_offer"]["solo"] = hold_offer->solo;
+            reply["hold_offer"]["progress"] = hold_offer->progress;
+            reply["hold_offer"]["radius"] = hold_offer->radius;
+            reply["hold_offer"]["anchor"] = wf::json_t::array();
+            reply["hold_offer"]["anchor"].append(hold_offer->anchor.x); reply["hold_offer"]["anchor"].append(hold_offer->anchor.y);
+            reply["hold_offer"]["actors"] = (int64_t)hold_offer->actors.size();
+        }
         return reply;
     };
 

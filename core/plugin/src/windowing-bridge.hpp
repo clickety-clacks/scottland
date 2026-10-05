@@ -1012,6 +1012,37 @@
                 deferred_pair_ready.run_once([=] () { pair_windows(held_id, partner_id, attempts + 1); }); });
             return;
         }
+        auto plan = plan_pair(held_id, partner_id);
+        if (!plan) return;
+        auto [left, right, fit, output] = *plan;
+        LOGI("scottland: pairing ", held_id, " with ", partner_id, " at ", fit.scale * 100,
+            "%, gap ", fit.gap, ", margin ", fit.margin);
+        place_paired(left, fit.left, fit.scale, output);
+        place_paired(right, fit.right, fit.scale, output);
+        pair_anchors.clear();
+        for (auto window : {left, right})
+            pair_anchors.emplace_back(window->get_id(), window->toplevel()->pending().geometry);
+        // Both in front of the other center windows, which stay put and peek out (avoidance);
+        // the held window was selected and focused by its press (WK6) and stays so.
+        wf::view_bring_to_front(partner);
+        wf::get_core().default_wm->focus_raise_view(held);
+        declutter_signature.clear();
+        refresh_layout_avoidance();
+    }
+    // Where a pair goes, without moving anything (the pair, and a hold's offer preview of it).
+    struct pair_plan_t
+    {
+        wayfire_toplevel_view left, right;
+        scottland::windowing::pair_layout fit;
+        wf::output_t *output = nullptr;
+    };
+    std::optional<pair_plan_t> plan_pair(uint64_t held_id, uint64_t partner_id)
+    {
+        auto held = wf::toplevel_cast(view_by_id(held_id));
+        auto partner = wf::toplevel_cast(view_by_id(partner_id));
+        if (!held || !partner || held == partner) return std::nullopt;
+        auto held_shown = represented_view(held_id), partner_shown = represented_view(partner_id);
+        if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output()) return std::nullopt;
         // The pair forms on the focused window's screen; the held one joins it there.
         auto output = partner_shown->get_output();
         // Keep the current left/right order across the whole layout (P1).
@@ -1026,19 +1057,7 @@
         auto fit = scottland::windowing::fit_pair({double(lg.width), double(lg.height)},
             {double(rg.width), double(rg.height)},
             {double(a.x), double(a.y), double(a.width), double(a.height)}, PAIR_GAP, SCREEN_PADDING);
-        LOGI("scottland: pairing ", held_id, " with ", partner_id, " at ", fit.scale * 100,
-            "%, gap ", fit.gap, ", margin ", fit.margin);
-        place_paired(left, fit.left, fit.scale, output);
-        place_paired(right, fit.right, fit.scale, output);
-        pair_anchors.clear();
-        for (auto window : {left, right})
-            pair_anchors.emplace_back(window->get_id(), window->toplevel()->pending().geometry);
-        // Both in front of the other center windows, which stay put and peek out (avoidance);
-        // the held window was selected and focused by its press (WK6) and stays so.
-        wf::view_bring_to_front(partner);
-        wf::get_core().default_wm->focus_raise_view(held);
-        declutter_signature.clear();
-        refresh_layout_avoidance();
+        return pair_plan_t{left, right, fit, output};
     }
     void place_paired(wayfire_toplevel_view window, scottland::windowing::point at, double scale,
         wf::output_t *output)
@@ -1064,9 +1083,12 @@
             remember_window(window);
             return;
         }
+        // From where it is drawn, including a hold offer's preview of this very result (WK39).
         auto drawn = hint_rectangle(shown ? shown : window);
         wf::pointf_t from{(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
         double from_scale = displayed_scale(window);
+        if (auto frame = frame_of(window, false)) from_scale *= frame->drag_layout_scale;
+        set_drag_layout_offset(window, 0, 0, 1);
         if (window->get_output() != output)
         {
             auto was = window->get_output()->get_layout_geometry(), now = output->get_layout_geometry();

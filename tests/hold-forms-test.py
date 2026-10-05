@@ -68,6 +68,23 @@ def ring_pixels(cx, cy, radius, rgb, angles, png):
 
 def ring(): return hints()['hold_ring']
 
+def px(x, y):
+    """The color drawn at one logical point (a 1x1 capture: what is on screen)."""
+    out = art / 'px.png'
+    subprocess.run(['grim', '-g', f'{int(x)},{int(y)} 1x1', str(out)], check=True)
+    raw = subprocess.run(['magick', str(out), '-depth', '8', 'rgb:-'], check=True, capture_output=True).stdout
+    return tuple(raw[:3])
+def light(rgb): return sum(rgb) > 450  # a GTK window's light background, not the dark desktop
+def offer(): return ipc('scottland/spread-state')['hold_offer']
+def until(predicate, seconds, what):
+    """Poll a predicate; on the deadline, a failure with the last observation (not an exception)."""
+    end = time.monotonic() + seconds; last = None
+    while time.monotonic() < end:
+        last = predicate()
+        if last: return True, last
+        time.sleep(.03)
+    return False, last
+
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300,
         'scottland/window_hold_delay': 500, 'scottland/window_double_tap_delay': 300,
@@ -153,6 +170,101 @@ try:
     try: wait(lambda: not in_center_zone(C, area), 3, 'three-finger solo')
     except RuntimeError: pass
     check(not in_center_zone(C, area), 'a three-finger hold on the focused window solos it', f'C {geometry(C)}')
+
+    # ---- three fingers, made reliable: a slow drift under the swipe wobble, a late swipe hand-off
+    setup(pair_layout, A); before = sizes_of(A, B); x, y = center_of(B); pointer(x, y); time.sleep(.1)
+    pad('swipe_begin', fingers=3)
+    for _ in range(18): pad('swipe_update', fingers=3, dx=1, dy=0); time.sleep(.045)  # 18 px over 0.8 s
+    pad('swipe_end')
+    await_pair('three resting fingers drifting 18 px (more than a hand, less than the swipe wobble) still pair', A, B, before)
+    setup(pair_layout, A); before = sizes_of(A, B); x, y = center_of(B); pointer(x, y); time.sleep(.1)
+    pad('hold_begin', fingers=3); time.sleep(.1); pad('hold_end', cancelled=True); time.sleep(.25)
+    pad('swipe_begin', fingers=3)
+    jiggle(.5, 1.5, lambda dx, dy: pad('swipe_update', fingers=3, dx=dx, dy=dy))
+    pad('swipe_end')
+    await_pair('a swipe arriving 250 ms after libinput cancelled the hold continues it and pairs', A, B, before)
+
+    # ---- offers (WK39; Mike, 2026-10-05): a fired pointer hold previews its result while held,
+    # commits on release within the hotspot, and returns everything when dragged out of it.
+    # Exact-size GTK windows: light on the dark desktop, so the preview can be read in pixels.
+    for client in clients: client.terminate()
+    for client in clients: client.wait(timeout=5)
+    clients.clear()
+    A, B, C = launch_gtk('OfferA'), launch_gtk('OfferB'), launch_gtk('OfferC')
+    pair_layout = [(C, 1100, 40, 420, 200), (B, 1060, 560, 420, 300), (A, 200, 140, 520, 360)]
+    solo_layout = [(C, 600, 560, 420, 300), (B, 1100, 80, 420, 300), (A, 560, 140, 520, 360)]
+    want, _, _ = expected((A, (520, 360)), (B, (420, 300)), area)
+    b_old = (1300, 800)  # inside B's place (also when dragged 80 px left), outside its pair spot
+    b_new = (want[B][0] + 210, want[B][1] + 150)                           # the middle of B's pair spot
+    setup(pair_layout, A); f0 = frames(A, B); before = sizes_of(A, B)
+    check(light(px(*b_old)) and not light(px(*b_new)), 'fixture: B drawn at its place, its pair spot empty')
+    x, y = center_of(B); pointer(x, y); time.sleep(.05); key('LEFTMETA', True); button(True)
+    ok, seen = until(lambda: (lambda o, n: o if (not light(o) and light(n)) else None)(px(*b_old), px(*b_new)), 3, 'preview')
+    check(ok, 'a fired Super hold previews the pair while held: B drawn at its pair spot, its place empty', str(seen))
+    check(frames(A, B) == f0, 'the preview changes no true geometry while held (Wayfire geometry)', str(frames(A, B)))
+    shot('offer-preview.png')
+    button(False); key('LEFTMETA', False)
+    await_pair('releasing within the hotspot takes the offered pair', A, B, before)
+
+    setup(pair_layout, A); f0 = frames(A, B)
+    x, y = center_of(B); pointer(x, y); time.sleep(.05); key('LEFTMETA', True); button(True)
+    until(lambda: offer()['active'] and offer()['progress'] > .9, 3, 'offer shown')
+    for i in range(1, 11): pointer(x - 8 * i, y); time.sleep(.02)      # 80 px: out of the 50 pt hotspot
+    ok, seen = until(lambda: (lambda o: o if light(o) else None)(px(*b_old)), 2, 'B back')
+    check(ok and frames(A, B)[A] == f0[A], 'dragging out of the hotspot refuses the offer: the preview returns', str(seen))
+    time.sleep(.2); button(False); key('LEFTMETA', False)
+    ok, g = until(lambda: (lambda g: g if abs(g['x'] - (f0[B]['x'] - 80)) <= 3 else None)(geometry(B)), 2, 'drag drop')
+    check(ok and geometry(A) == f0[A], 'then the gesture carries on as the ordinary drag: B dropped where the pointer took it, A untouched',
+          f'B {geometry(B)} (from {f0[B]["x"]}) A {geometry(A)}')
+
+    setup(pair_layout, A); before = sizes_of(A, B)
+    x, y = center_of(B); pointer(x, y); time.sleep(.05); key('LEFTMETA', True); button(True)
+    until(lambda: offer()['active'], 3, 'offer')
+    for i in range(1, 9): pointer(x + 4 * i, y); time.sleep(.02)       # 32 px: past the wobble, inside the hotspot
+    time.sleep(.2); button(False); key('LEFTMETA', False)
+    await_pair('moving within the hotspot after the hold fired still takes the offer', A, B, before)
+
+    setup(pair_layout, A); f0 = frames(A, B)
+    x, y = center_of(B); pointer(x, y); time.sleep(.05); key('LEFTMETA', True); button(True)
+    until(lambda: offer()['active'] and offer()['progress'] > .9, 3, 'offer before Esc')
+    key('ESC', True); key('ESC', False); button(False); key('LEFTMETA', False)
+    ok, seen = until(lambda: (lambda o: o if light(o) else None)(px(*b_old)), 2, 'B back after Esc')
+    time.sleep(.6)
+    check(ok and frames(A, B) == f0, 'Esc during an offer: nothing changes', str(frames(A, B)))
+
+    setup(solo_layout, A); f0 = frames(A, C)
+    c_old = (center_of(C)[0] + 120, center_of(C)[1] + 80)
+    check(light(px(*c_old)), 'fixture: C drawn in the center beside A')
+    x, y = center_of(A); pointer(x, y); time.sleep(.05); key('LEFTMETA', True); button(True)
+    ok, seen = until(lambda: (lambda o: o if not light(o) else None)(px(*c_old)), 3, 'solo preview')
+    check(ok and frames(A, C) == f0, 'a fired Super hold on the focused window previews the solo: C leaves the center on screen only', str(seen))
+    button(False); key('LEFTMETA', False)
+    ok, _ = until(lambda: not in_center_zone(C, area), 3, 'solo commit')
+    check(ok, 'releasing within the hotspot takes the solo (C moved to the periphery)', str(geometry(C)))
+
+    setup(pair_layout, A); before = sizes_of(A, B); x, y = center_of(B); pointer(x, y); time.sleep(.1)
+    pad('hold_begin', fingers=3)
+    ok, seen = until(lambda: (lambda o, n: o if (not light(o) and light(n)) else None)(px(*b_old), px(*b_new)), 3, 'pad preview')
+    check(ok and frames(A, B)[B] == geometry(B), 'a three-finger hold previews the pair while the fingers rest', str(seen))
+    pad('hold_end', cancelled=False)
+    await_pair('lifting the three fingers takes the offer', A, B, before)
+
+    setup(pair_layout, A); f0 = frames(A, B); x, y = center_of(B); pointer(x, y); time.sleep(.1)
+    pad('hold_begin', fingers=3)
+    until(lambda: offer()['active'] and offer()['progress'] > .9, 3, 'pad offer')
+    pad('hold_end', cancelled=True); pad('swipe_begin', fingers=3)
+    for _ in range(10): pad('swipe_update', fingers=3, dx=-8, dy=0); time.sleep(.02)
+    time.sleep(.3); pad('swipe_end')
+    ok, g = until(lambda: (lambda g: g if g['x'] < f0[B]['x'] - 50 else None)(geometry(B)), 2, 'pad drag drop')
+    check(ok and geometry(A) == f0[A], 'three fingers moving out of the hotspot refuse the offer and drag B (L23)',
+          f'B {geometry(B)} A {geometry(A)}')
+
+    setup(pair_layout, A); before = sizes_of(A, B); alt(True)
+    text = hint(B)['hint']; key(text.upper(), True)
+    want, _, _ = expected((A, (geometry(A)['width'], geometry(A)['height'])), (B, (geometry(B)['width'], geometry(B)['height'])), area)
+    ok, _ = until(lambda: abs(geometry(B)['x'] - want[B][0]) <= 1, 3, 'hint pair while held')
+    check(ok, 'the hint-key hold stays an outright commit: paired while the key is still down', str(geometry(B)))
+    key(text.upper(), False); alt(False)
 
     # ---- the hold ring (WK39): a 1.5 s hold so a mid-hold capture is well inside the fill
     ipc('wayfire/set-config-options', {'scottland/window_hold_delay': 1500})

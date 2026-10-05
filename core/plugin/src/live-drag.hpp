@@ -152,9 +152,34 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         wf::move_drag::drag_focus_output_signal ev{nullptr, current_output};
         emit(&ev);
     }
+    // A hold that fired is an offer while the button or fingers stay down (WK39): the window is
+    // drawn where it really is (the offer previews it elsewhere), while the grab, its motion and
+    // its release keep coming here. Resuming carries on as the ordinary drag: the window rejoins
+    // the pointer at its original grab point.
+    bool suspended = false;
+    void suspend(bool on)
+    {
+        if (!view || !transform || on == suspended) return;
+        suspended = on;
+        auto node = view->get_transformed_node();
+        if (on) node->rem_transformer(transform);
+        else
+        {
+            transform->position = position;
+            node->add_transformer(transform, wf::TRANSFORMER_HIGHLEVEL - 1, "scottland-live-drag");
+        }
+        view->damage();
+    }
     void handle_motion(wf::pointf_t to)
     {
         if (!view || finishing || transferring) return;
+        if (suspended)
+        {
+            position = to;
+            wf::move_drag::drag_motion_signal ev{to};
+            emit(&ev);
+            return;
+        }
         if (!transform)
         {
             legacy->handle_motion(to);
@@ -198,7 +223,9 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         auto node = target->get_transformed_node();
         unmap.disconnect();
         wf::scene::readd_front(parent, node);
-        node->rem_transformer(transform);
+        if (suspended) commit = false;  // an offer ends where the window really is
+        else node->rem_transformer(transform);
+        suspended = false;
         transform.reset();
         parent.reset();
         if (grab) grab->ungrab_input();
