@@ -280,7 +280,11 @@ class Translator:
         index = self.monitor_index(outputs, output_id)
         return {"id": index + 1, "name": str(index + 1)}
 
-    def monitor(self, outputs, output, focused_id):
+    def session_locked(self):
+        reply = self.wf.call("scottland/session-state") or {}
+        return bool(reply.get("locked"))
+
+    def monitor(self, outputs, output, focused_id, locked=False):
         geometry, workarea = output["geometry"], output["workarea"]
         reserved = [
             int(workarea["x"] - geometry["x"]),
@@ -300,9 +304,10 @@ class Translator:
             "reserved": reserved, "scale": 1, "transform": 0,
             "focused": output["id"] == focused_id,
             "dpmsStatus": True, "vrr": False,
-            # omarchy-hyprland-session-locked reads lock state from here; "LOCK" means locked.
-            # TODO: report the real session-lock state.
-            "solitary": "0", "solitaryBlockedBy": ["CANDIDATE"],
+            # omarchy-hyprland-session-locked reads the session lock from here: Hyprland lists
+            # "LOCK" among the reasons a monitor can't go solitary while a lock holds the session,
+            # including one whose lock client died.
+            "solitary": "0", "solitaryBlockedBy": ["LOCK", "CANDIDATE"] if locked else ["CANDIDATE"],
             "activelyTearing": False, "tearingBlockedBy": ["CANDIDATE"],
             "directScanoutTo": "0", "directScanoutBlockedBy": ["CANDIDATE"],
             "disabled": False, "currentFormat": "XRGB8888", "mirrorOf": "none",
@@ -347,7 +352,8 @@ class Translator:
 
     def monitors(self):
         outputs, focused = self.outputs(), self.focused_output_id()
-        return [self.monitor(outputs, o, focused) for o in outputs]
+        locked = self.session_locked()
+        return [self.monitor(outputs, o, focused, locked) for o in outputs]
 
     def workspaces(self):
         outputs, views = self.outputs(), self.views()

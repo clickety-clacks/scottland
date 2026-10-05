@@ -55,7 +55,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O17 | Full screen holds Omarchy's notifications (FS1): the `focus.d` hook turns the shell's do-not-disturb on while a fullscreen window is in front, and back off after; a do-not-disturb the user already had on stays on. | implemented (tests/omarchy-focus-test.sh, with a stand-in shell) |
 | O9 | A close action on Super+W is left unbound so a press cannot become an immediate single-press close; the omitted shortcut appears in the O20 report. | implemented (Plumbus headless real-input test) |
 | O10 | Apps launched through Omarchy's launcher (uwsm-app) open in Scottland. | verified |
-| O11 | The shim reports the real session-lock state. | not built |
+| O11 | The shim reports the real session-lock state: while a lock holds the session, including one whose lock client died, `monitors` lists `LOCK` in `solitaryBlockedBy`, so Omarchy's `omarchy-hyprland-session-locked` answers locked; otherwise unlocked. Source: core E9. (AG17) | implemented (nacelle headless with a real ext-session-lock client, unlock by Return and a killed client; screencopy oracle, `tests/omarchy-lock-power-test.py`, 2026-10-05) |
 | O12 | Keyboard layout switching and night light work under the shim. Runtime surface shortcuts use core key layers (K1; [../docs/key-layers.md](../docs/key-layers.md)), rather than adapter submaps. | layout/night light: not built; key layers: core K1 |
 
 The optional `dispatch hl.dsp.window.tag(...)` translation remains logged as unsupported.

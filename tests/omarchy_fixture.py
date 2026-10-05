@@ -197,5 +197,7 @@ def pixel(image, x, y):
 def screenshot(session, name):
     """Capture the session's screen with grim (screencopy, as any recorder would)."""
     path = session.dir.parent / f"{session.dir.name}-{name}.ppm"
-    result = session.run("grim", "-t", "ppm", str(path))
+    path.unlink(missing_ok=True)
+    # Bounded: on an output that is powered off, screencopy may wait for a frame that never comes.
+    result = session.run("timeout", "5", "grim", "-t", "ppm", str(path))
     return read_ppm(path) if result.returncode == 0 and path.exists() else None
