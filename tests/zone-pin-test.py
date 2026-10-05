@@ -7,6 +7,8 @@ scale both come back, drawn without a jump; the same without a pin; a pin made i
 reaching another; the pins surviving a reload; every hint-key path out and back (slow presses
 through the widget, a WK15 double tap to the rail); Esc; Shift+arrow pins; and a remembered spot
 that zone settings have moved into the center."""
+import sys as _sys; _sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from session_reload import reload_session
 import json
 import math
 import os
@@ -324,17 +326,7 @@ try:
     pin = view('Pinned')['applied_scale']; spot = center(view('Pinned'))
     cycle(a, 'Pinned')   # now in the center, the pin only in the left memory
     before = [(h['window'], h['memories']) for h in ipc('scottland/hints')['hints']]
-    runtime = Path(os.environ['XDG_RUNTIME_DIR'])
-    display = (Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'display').read_text().strip()
-    mark = runtime / 'scottland' / (display + '.reloading')
-    mark.touch()
-    fresh = Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'libscottland-zone-pin-reload.so'
-    subprocess.run(['cp', 'build/libscottland.so', str(fresh)], check=True)
-    plugins = ipc('wayfire/get-config-option', {'option': 'core/plugins'})['value']
-    ipc('wayfire/set-config-options', {'core/plugins': ' '.join(
-        str(fresh) if p == 'scottland' else p for p in plugins.split())})
-    time.sleep(1)
-    mark.unlink()
+    reload_session(); time.sleep(.3)
     after = [(h['window'], h['memories']) for h in ipc('scottland/hints')['hints']]
     check(before == after and dict(after)[a][1].get('pin') == pin, 'a reload keeps the zone pins', after)
     cycle(a, 'Pinned')

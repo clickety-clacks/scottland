@@ -7004,8 +7004,10 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
                 list.leases.push_back(id);
             }
 
+            // Written even with no widget: it also carries every window's memories, pins,
+            // attention and the model version.
             auto path = runtime_file(".widget-handover.json");
-            if (ok && !handed.empty())
+            if (ok)
             {
                 auto snapshot = model_snapshot("desktop");
                 snapshot["version"] = (int64_t)model.version;
@@ -7023,7 +7025,7 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
                 ok = ok && !handover_fault("setenv") &&
                     setenv(scottland::handover::environment, scottland::handover::format_list(list).c_str(), 1) == 0;
             }
-            published = ok && !handed.empty();
+            published = ok;
             if (!published)
             {
                 for (int fd : list.fds) ::close(fd);
@@ -7059,7 +7061,7 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
             }
         }
         model.widgets.clear();
-        if (!published)
+        if (handed.empty())
         {
             announce_widgets();  // the widget service drops its objects
         }

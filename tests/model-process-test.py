@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Observe a forking widget launcher's exit through a full model subscription."""
+import sys as _sys; _sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from session_reload import reload_session
 import json
 import os
 import socket
@@ -47,16 +49,7 @@ if "--reload" in sys.argv:
             while len(result) < size: result += request.recv(size-len(result))
             return json.loads(result)
     with tempfile.TemporaryDirectory() as directory:
-        fresh = Path(directory) / "libscottland-exit-reload.so"
-        shutil.copyfile("build/libscottland.so", fresh)
-        plugins = call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
-        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
-        mark.touch()
-        try:
-            call("wayfire/set-config-options", {"core/plugins": plugins.replace("scottland", str(fresh))})
-            time.sleep(.8)  # config replacement runs on the compositor idle turn
-        finally:
-            mark.unlink(missing_ok=True)
+        reload_session()
         assert call("scottland/desktop-model", {})["widgets"][0]["widget_unit"] == unit
         # Library is now mapped; unlinking its file cannot affect the loaded plugin.
 while True:

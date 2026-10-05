@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Seeded real-input model/scene/replica/render audits. Invoked by state-model-test.sh only."""
+import sys as _sys; _sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from session_reload import reload_session
 import ast
 import json
 import os
@@ -188,18 +190,7 @@ while True:
 
 def reload_plugin():
     global ipc
-    runtime = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland"
-    mark = runtime / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
-    fresh = Path(work.name) / f"libscottland-{time.monotonic_ns()}.so"
-    shutil.copyfile("build/libscottland.so", fresh)
-    plugins = ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
-    changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
-    mark.touch()
-    try:
-        ipc.call("wayfire/set-config-options", {"core/plugins": changed})
-        time.sleep(0.8)
-    finally:
-        mark.unlink(missing_ok=True)
+    reload_session()
     # Reconnect and read current state, exactly as a late external subscriber does.
     ipc.sock.close()
     ipc = Ipc()

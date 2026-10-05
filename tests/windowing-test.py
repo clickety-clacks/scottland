@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Real stipc keyboard/pointer input, app delivery, compositor state, and reload checks."""
+import sys as _sys; _sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from session_reload import reload_session
 import json
 import errno
 import math
@@ -635,16 +637,7 @@ try:
     wait_for(lambda: any(v['widget'] for v in views()))
     time.sleep(.5)
     before = hints()['hints']
-    runtime = Path(os.environ['XDG_RUNTIME_DIR'])
-    display = (Path(os.environ['SCOTTLAND_HEADLESS_DIR'])/'display').read_text().strip()
-    mark = runtime/'scottland'/(display+'.reloading')
-    mark.touch()
-    fresh = Path(os.environ['SCOTTLAND_HEADLESS_DIR'])/'libscottland-windowing-reload.so'
-    subprocess.run(['cp','build/libscottland.so',str(fresh)],check=True)
-    plugins = ipc('wayfire/get-config-option', {'option':'core/plugins'})['value']
-    ipc('wayfire/set-config-options', {'core/plugins':' '.join(str(fresh) if p=='scottland' else p for p in plugins.split())})
-    time.sleep(1)
-    mark.unlink()
+    reload_session(); time.sleep(.3)
     after = hints()['hints']
     check([(h['window'],h['hint'],h['memories']) for h in before] == [(h['window'],h['hint'],h['memories']) for h in after], 'reload preserves zone memories and hint assignments')
     hold()

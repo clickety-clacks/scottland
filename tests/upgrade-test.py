@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """A real legacy main -> model upgrade preserves the original resolved launch identity."""
+import sys as _sys; _sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from session_reload import reload_session
 import importlib.machinery
 import importlib.util
 import os
@@ -30,14 +32,7 @@ try:
     assert expected['desktop'] and expected['name'] and expected['icon'], expected
     # This compositor genuinely started on main; its legacy list has no resolved identity.
     assert 'desktop' not in before
-    plugins = ipc.call('wayfire/get-config-option', {'option': 'core/plugins'})['value']
-    mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY']+'.reloading')
-    mark.touch()
-    try:
-        ipc.call('wayfire/set-config-options', {'core/plugins': plugins.replace('scottland', str(branch/'build/libscottland.so'))})
-        time.sleep(.8)
-    finally:
-        mark.unlink(missing_ok=True)
+    reload_session(branch / 'build/libscottland.so')
     time.sleep(.7)
     after = ipc.call('scottland/desktop-model')['widgets'][0]
     assert all(after[k] == v for k, v in expected.items()), (expected, after)
