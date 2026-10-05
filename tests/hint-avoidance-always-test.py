@@ -166,10 +166,36 @@ try:
           any(row["id"] == pulse_id and "always-avoid-stress" in row["attention"]
               for row in attention.get("windows", [])))
     target = titles[-1]
+    # Raising attention wakes the goo, which simulates for a few seconds before it sleeps; only
+    # then is the desktop settled (breathing only). Sample both, and record what breathes.
+    awake_sample = cpu_sample()
+    def goo_screens():
+        return t.ipc.call("scottland/goo-state").get("screens", [])
+    asleep = False
+    until = time.monotonic() + 20
+    while time.monotonic() < until:
+        screens = goo_screens()
+        if screens and all(screen.get("sleeping") for screen in screens):
+            asleep = True
+            break
+        time.sleep(.2)
+    check("the goo falls asleep after the attention wake", asleep)
+    before = t.ipc.call("scottland/hints")
     sample = cpu_sample()
-    check("settled always-on compositor stays below a full-core spin", sample < .95, f"{sample:.1%} of one core")
+    after = t.ipc.call("scottland/hints")
+    breath = [r for screen in goo_screens() for r in screen.get("breath_damage", [])]
+    breath_area = sum(r["width"] * r["height"] for r in breath)
+    solves = after["avoidance_solve_count"] - before["avoidance_solve_count"]
+    check("settled always-on avoidance does no work while asleep", solves == 0, f"{solves} solves")
+    check("settled always-on compositor stays below a full-core spin", sample < .95,
+          f"{sample:.1%} of one core asleep; {awake_sample:.1%} just after the attention wake; "
+          f"breathing {len(breath)} rectangles, {breath_area:.0f} px^2")
     (artifacts / "stress-metrics.json").write_text(json.dumps({
         "settled_compositor_cpu_one_core_fraction": sample,
+        "awake_compositor_cpu_one_core_fraction": awake_sample,
+        "breathing_rectangles": len(breath),
+        "breathing_area_px2": breath_area,
+        "avoidance_solves_while_settled": solves,
         "attention_window": pulse_id,
         "windows_shifted_outward_toward_rails": toward_rail,
         "offsets_before_widget_cycles": displaced,
@@ -250,7 +276,8 @@ try:
     settled_zero()
     check("scottland-ctl accepts the legacy setting name",
           all(abs(dx) + abs(dy) < .15 for dx, dy, _ in offsets().values()))
-    print(f"always-avoid stress: {passes} passed, {failures} failed; settled compositor CPU {sample:.1%} of one core",
+    print(f"always-avoid stress: {passes} passed, {failures} failed; settled (goo asleep) compositor CPU {sample:.1%} of one core, "
+          f"{awake_sample:.1%} awake; breathing {len(breath)} rects {breath_area:.0f} px^2",
           flush=True)
 finally:
     for _, proc in children:

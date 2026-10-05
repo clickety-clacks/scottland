@@ -287,6 +287,25 @@
         declutter_signature.clear();
     }
 
+    // The solo window holds still for window avoidance, as a pair does (WK36): the windows behind it
+    // peek out around it, until it moves, is resized or becomes a widget.
+    std::optional<std::pair<uint64_t, wf::geometry_t>> solo_anchor;
+    bool solo_anchored(wayfire_toplevel_view view)
+    {
+        if (!view || !solo_anchor) return false;
+        auto [id, geometry] = *solo_anchor;
+        auto window = wf::toplevel_cast(view_by_id(id));
+        if (!window || !window->is_mapped() || link_of_window(window) || window->toplevel()->pending().geometry != geometry)
+        { solo_anchor.reset(); return false; }
+        return view->get_id() == id;
+    }
+    void anchor_solo(wayfire_toplevel_view window)
+    {
+        if (window && window->is_mapped() && !link_of_window(window))
+            solo_anchor = std::make_pair(window->get_id(), window->toplevel()->pending().geometry);
+        declutter_signature.clear();
+    }
+
     // ------------------------------------------------------------------ keyboard solo (WK35)
     // Where the solo window goes: where it is if it is already in the center zone (P2, P14);
     // else its remembered center spot (WP2); else the middle of the screen. Whole and padded
@@ -391,8 +410,10 @@
             }
             start_cycle_glide(window, from, from_scale, at, 1.0);
         }
-        // The solo window is in front of everything it may still overlap.
+        // The solo window is in front of everything it may still overlap, and holds still for
+        // peeking while it stays where it was put.
         wf::get_core().default_wm->focus_raise_view(window);
+        anchor_solo(window);
         refresh_layout_avoidance();
         publish_model();
     }
@@ -772,6 +793,7 @@
         audition_end("accepted");
         commit_spread_moves(moves);
         wf::get_core().default_wm->focus_raise_view(main);
+        anchor_solo(main);
         refresh_layout_avoidance();
         publish_model();
         return true;

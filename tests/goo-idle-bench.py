@@ -193,6 +193,7 @@ def visual(window):
     from gi.repository import GdkPixbuf
     attention(window, True)
     sleep_goo('visual attention')
+    state({'water_freeze': True})   # GO24: compare stills, not the moving watercolor
     if 'breath_keys' not in state():
         print(json.dumps({'visual': 'skipped: build has no breath keyframes'}), flush=True)
         attention(window, False)
@@ -260,7 +261,7 @@ def visual(window):
             if shot(f'visual-dry-on-{hold}', hold, False).get_pixels() != everywhere: dry['identical'] = False
         dry['dry_pixels'] = state()['dry_pixels']
         print(json.dumps({'visual_dry_content': dry}), flush=True)
-    state({'breath_hold': -1, 'breath_exact': False})
+    state({'breath_hold': -1, 'breath_exact': False, 'water_freeze': False})
     (out/'visual.json').write_text(json.dumps({'keys': keys, 'comparisons': rows, 'damage': damage,
                                                'backdrop_reuse': reuse}, indent=2))
     attention(window, False)

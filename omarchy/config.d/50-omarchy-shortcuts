@@ -1040,7 +1040,8 @@ def main():
                     elif option == "center_switcher_previous":
                         now = f"Scottland's Window mode previews the previous center window on {pretty_keys(label)}."
                     elif option == "minimize_widget":
-                        now = f"{pretty_keys(label)} now collapses or expands Scottland's widget icons."
+                        now = (f"{pretty_keys(label)} now cycles Scottland's widgets: expanded, icons only, hidden; "
+                               "holding it hides them (or expands them) until released.")
                     else:
                         now = f"Scottland's {title.lower()} action uses this key."
                     group = feature_report_group(section, option)

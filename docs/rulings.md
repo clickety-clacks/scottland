@@ -35,12 +35,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | "Look far apart, then go deep" applies only to searching for a hint spot, never to choosing where a window moves; windows never avoid by moving to the other side. | WK13, WK31 |
 | 10-03 | Keep continuous motion during drags (no pause-then-glide). | WK13 |
 | 10-03 | One engine, two tests: always-on peeking needs a strip; on Alt, hints get room. | P12 |
-| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | peek-strip design |
-| 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | peek-strip design |
-| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | peek-strip design |
-| 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
+| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | WK13 |
+| 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | WK13 |
+| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | WK13 |
+| 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | WK13 |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
-| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | peek-strip design |
+| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13, WK27 |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 
@@ -84,6 +84,8 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Return on a focused widget always opens its window; nothing inside the widget gets it. | WG25 |
 | 10-04 | Super+M taps cycle expanded -> collapsed -> hidden; holding is momentary (hide from expanded, expand otherwise). | WG16 |
 | 10-04 | Entering Window mode temporarily expands collapsed and hidden widgets until Alt is released; hidden widgets still show attention. | WG16 |
+| 10-04 | Attention while widgets are hidden: the widget slides in for the usual attention peek, then leaves a 24 pt strip at the screen edge breathing the attention color until the user goes to it; hovering the strip brings it in. | WG16 |
+| 10-04 | The Super+M hold delay is 300 ms (same as the Alt hold), adjustable in Settings. | WG16 |
 
 ## Zones and scale
 
@@ -112,3 +114,19 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
 | 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
+| 10-04 | Gooarchy patterns after Omarchy but starts clean: nothing is borrowed to fill a gap (no bar yet means no bar), so the distro's deficit is clearly defined once it is built. | distro-notes |
+| 10-04 | Gooarchy will have its own custom bar and its own notification system; until they exist it ships neither. | distro-notes |
+
+## Knocks (concept in discussion; docs/knocks.md)
+
+| Date | Ruling |
+|---|---|
+| 10-04 | Attention generalizes beyond agents: objects exist whether or not they're on the desktop; windows/widgets are representations of the ones that are forefront; an object asks for the user with a knock (ephemeral, not a window or widget, with a message and optionally an answer UI). |
+| 10-04 | A knock's look is organic to what it is (the attention goo, a vignette), not just another window. |
+| 10-04 | From a knock the user can answer directly with its UI, or invite the object in (find or open its window, bring it center, and tell the object to focus on that knock). |
+| 10-04 | Mapping a knock to its sender's window must be dependable. |
+| 10-04 | The bigger frame is attention regimes: center, periphery, widgets, and the ether (objects not on the desktop that still exist and can be promoted). Scottland models and visualizes all of it. | P15 |
+| 10-04 | The ether is a mental place, not a spot on screen: closed things still exist and can keep running. Knocks must be reachable and actionable in every form a sender takes on the desktop: window, scaled window, widget. | docs/knocks.md |
+| 10-04 | The breathing border is the direct representation of a knock; the hover swell of a border is the interaction to reach it. | docs/knocks.md |
+| 10-04 | Knocks from objects on the desktop matter most (the user elected them to be there). Knock priority comes from another system; Scottland only renders it. | docs/knocks.md |
+| 10-04 | Knocks have many channels, not one: every window is a channel for its object's knocks, and knocks from objects not on the desktop coexist with them; nothing is ranked against anything else. | docs/knocks.md |

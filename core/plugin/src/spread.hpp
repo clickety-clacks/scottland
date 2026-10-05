@@ -27,7 +27,7 @@ inline constexpr double TOLERANCE = 1.0;        // overlap deeper than this is r
 inline constexpr double EDGE_MARGIN = 2.0;      // rounding-safe distance of a center from a zone edge
 inline constexpr size_t MAX_MOVABLE = 128;      // arrivals plus residents
 inline constexpr size_t MAX_OBSTACLES = 256;    // fixed rectangles plus every window
-// About 12 ms of solving on plumbus at -O2 (90 units per microsecond, tests/spread-unit.sh
+// About 12 ms of solving on the x86 test machine at -O2 (90 units per microsecond, tests/spread-unit.sh
 // timing); final.md started at 150,000 with a prototype that counted coarser units.
 inline constexpr uint64_t WORK_CAP = 1000000;
 

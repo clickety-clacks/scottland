@@ -5,6 +5,17 @@ wf::option_wrapper_t<int> widget_peek_leave_delay{"scottland/widget_peek_leave_d
 wf::option_wrapper_t<int> widget_attention_peek_duration{"scottland/widget_attention_peek_duration"};
 wf::wl_timer<true> widget_peek_tick;
 
+/** Is the widget grabbed (pressed or being dragged)? Its presentation and place hold still. */
+bool widget_held(const widget_link_t& link)
+{
+    auto widget = wf::toplevel_cast(link.widget.lock());
+    auto frame = widget ? frame_of(widget, false) : nullptr;
+    // Wayfire owns the grab before the first motion records its model origin.
+    return (widget && drag->view == widget) ||
+        (model.drag.started && ((widget && model.drag.widget == widget->get_id()) ||
+            model.drag.origin.view == link.window_id)) || (frame && frame->is_pressed());
+}
+
 void reset_widget_peek(widget_link_t& link)
 {
     link.peek_pointer = link.peek_hover = false;
@@ -35,15 +46,16 @@ bool step_widget_peeks()
     }
 
     bool active = false, changed = false;
+    bool hidden = shown_widget_mode() == widget_mode_t::hidden;
     for (auto& [id, link] : model.widgets)
     {
-        bool eligible = link.collapsed && link.docked() && !link.away && !in_focus_mode(link.output);
+        // Hover and attention expand a collapsed widget; in hidden mode they bring a widget in
+        // from its screen edge, while it needs attention (peeking in) or is already in.
+        bool eligible = link.docked() && !in_focus_mode(link.output) &&
+            (hidden ? (needs_attention(id) || link.peek) : (link.collapsed && !link.away));
+        bool revealed = widget_revealed(link);
         auto widget = wf::toplevel_cast(link.widget.lock());
-        auto frame = widget ? frame_of(widget, false) : nullptr;
-        // Wayfire owns the grab before the first motion records its model origin.
-        bool held = (widget && drag->view == widget) ||
-            (model.drag.started && ((widget && model.drag.widget == widget->get_id()) ||
-                model.drag.origin.view == id)) || (frame && frame->is_pressed());
+        bool held = widget_held(link);
         if (!eligible)
         {
             reset_widget_peek(link);
@@ -75,10 +87,11 @@ bool step_widget_peeks()
             if (link.peek_hint_due && int32_t(now - *link.peek_hint_due) >= 0)
                 link.peek_hint_due.reset();
         }
-        bool peek = eligible && (link.peek_hover || link.peek_attention_due.has_value() ||
-            link.peek_hint_due.has_value());
+        bool peek = revealed || (eligible && (link.peek_hover || link.peek_attention_due.has_value() ||
+            link.peek_hint_due.has_value()));
         if (peek != link.peek)
         {
+            if (wanted_place(link, peek) != rail_place_t::away) return_from_away(link);
             set_widget_presentation(link, link.collapsed, peek);
             changed = true;
         }
@@ -87,7 +100,11 @@ bool step_widget_peeks()
         active |= link.peek_pointer || link.peek_hover || link.peek_hover_due.has_value() ||
             link.peek_attention_due.has_value() || link.peek_hint_due.has_value();
     }
-    if (changed) publish_model();
+    if (changed)
+    {
+        reconcile_rail_slides();
+        publish_model();
+    }
     return active;
 }
 

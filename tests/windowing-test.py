@@ -274,7 +274,15 @@ try:
     focus(a)
     memories_before = {h['window']: h['memories'] for h in hints()['hints']}
     hold()
+    # A rear window's hint appears once the offsets it depends on settle (WK31); entering Window
+    # mode may first nudge it to give its hint full room (WK13).
+    started = time.monotonic()
+    try:
+        wait_for(lambda: all(h['visible'] for h in hints()['hints']), 3)
+    except RuntimeError:
+        pass
     check(all(h['visible'] for h in hints()['hints']), 'Alt-alone hold shows every window hint')
+    print(f'      every hint shown {time.monotonic()-started+.4:.2f} s after Alt reached Window mode', flush=True)
     saved = center(view('Alpha')), center(view('Beta'))
     offsets = [(hint(i)['dx'], hint(i)['dy']) for i in (a,b)]
     check(any(math.hypot(*p) > 10 for p in offsets), 'coincident windows visually displace')
@@ -483,9 +491,15 @@ try:
     # Actual card click and hint on a collapsed widget (placement is covered by WK26's suite).
     key('LEFTMETA', True); tap('M'); key('LEFTMETA', False); time.sleep(.6)
     hold()
+    time.sleep(.6)
     widget = next(v for v in views() if v['widget'])
-    check(hint(a)['visible'] and widget['geometry']['width'] < 120, 'collapsed widget retains a visible hint')
+    # Window mode shows collapsed widgets expanded until Alt is released (WG16).
+    check(hint(a)['visible'] and widget['geometry']['width'] > 120 and
+          ipc('scottland/widget-mode')['mode'] == 'collapsed', 'collapsed widget expands for Window mode with its hint')
     release()
+    time.sleep(.8)
+    widget = next(v for v in views() if v['widget'])
+    check(widget['geometry']['width'] < 120, 'Alt release collapses it again')
     f = widget['frame']
     subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts/'remembered-card-before-click.png')], check=True)
     ipc('stipc/move_cursor', {'x': round(f['x']+f['width']/2), 'y': round(f['y']+f['height']/2)})
@@ -495,7 +509,7 @@ try:
     (artifacts/'remembered-card-after-click.json').write_text(json.dumps({'window': view('Cycle'),
         'widget': next((v for v in views() if v['widget']), None), 'hints': hints()}, indent=2))
     check(not view('Cycle')['widgetized'] and near(center(view('Cycle')), center_memory), 'WG17 real card click restores remembered center')
-    key('LEFTMETA', True); tap('M'); key('LEFTMETA', False)
+    ipc('scottland/widget-mode', {'mode': 'expanded'})  # a tap would go on to hidden (WG16)
     drag('Cycle', 6, height*.27)
     wait_for(lambda: any(v['widget'] for v in views()))
     time.sleep(.5)

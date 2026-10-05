@@ -2,8 +2,8 @@
 
 This document records the two layouts that make room for something the user placed, and the
 presentation contract they share: **solo** (one window takes the center; the other center windows
-go to the periphery, which spreads; built from the signed-off design in
-`~/.local/state/scottland-jobs/spread/final.md`) and the **WG26 rail profile**. Both follow P14:
+go to the periphery, which spreads; built from the signed-off design, "final.md", kept with the
+project's private design notes) and the **WG26 rail profile**. Both follow P14:
 the thing the user placed stays exactly where it was put; everything else flows around it.
 
 Window avoidance for Window-mode hints is a separate policy ([WK13](windowing-keys.md#invariants),
@@ -26,7 +26,11 @@ spread.
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
-scale, in front.
+scale, in front. Afterwards it holds still for window avoidance like a pair member (WK36): the
+peek-strip engine treats it as anchored, so the windows behind it peek out around it and it is never
+nudged off the spot the user asked for (P14), until it moves, is resized or becomes a widget. A drop
+that accepts an audition anchors the dropped window the same way, and while an offer shows, the
+windows it moves are anchored too (they are drawn where the offer puts them).
 
 **The solve** (`core/plugin/src/spread.{hpp,cpp}`, pure, no Wayfire). Windows whose center is in the
 center zone are *arrivals*; periphery windows are *residents*; widgets and rail windows are fixed.
@@ -46,13 +50,13 @@ nothing untouched moves. Arrivals hang into the center zone at most 16 pt when t
 goes to a rail or becomes a widget.
 
 **Bounded (P8).** Every unit operation charges one work counter (cap 1,000,000 units, about 9 to
-11 ms on an idle plumbus or nacelle core). Until the main-loop worker lands (branch mainloop-impl),
+11 ms on an idle either test machine core). Until the main-loop worker lands (branch mainloop-impl),
 the solve runs on the event loop in 2 ms slices with the loop free for at least 1 ms between them
 (`spread-job.hpp`: the solve is suspended inside its unit operations on its own small stack, so the
 worker can call the same `step()` later). A keyboard solo commits the best validated checkpoint after
 12 ms of solving or 30 ms of waiting, at the first event-loop turn after that limit. The first
 arrangement offers a checkpoint after each arrival it places (the rest at their seed spots), so a
-cut delivers the progress made. Measured in the real build (nacelle headless,
+cut delivers the progress made. Measured in the real build (the ARM test machine, headless,
 `tests/spread-load-test.py`, 2026-10-04): 12, 24 and 40 windows took 1, 5 and 5 slices, longest
 1.53, 2.00 and 2.00 ms; the 40-window solve was cut at 10 ms of solving with 10 of 13 arrivals
 placed, delivered after 78 ms because one event-loop turn spent 64 ms drawing 40 windows in
@@ -63,7 +67,7 @@ per obstacle, at most 4 × 256), charged by their length in advance; the arrival
 sorts (at most 128 windows, once per solve); and setup and copy loops over at most 256 obstacles
 (building obstacle lists, copying layouts). This is the measured main-thread alternative of final.md
 section 4, not the main-loop design's literal per-item cancellation everywhere: the longest CPU time
-between two charges was 13.5 µs over 40 scenes of 50 windows on nacelle (Astra measured 35.7 µs at 50 windows
+between two charges was 13.5 µs over 40 scenes of 50 windows on the ARM test machine (Astra measured 35.7 µs at 50 windows
 and 19.8 µs at the 128-window cap). Each checkpoint's result is built inside the budget when it
 becomes the best, so a stopped or cancelled solve delivers it without further work; the input caps
 are checked before anything is collected. Outside the slices, delivering a solo (the result copy,
@@ -78,7 +82,7 @@ worker will wrap it with a cancellation adapter, and a job stays on the thread t
 (destroying an unfinished one resumes it there to unwind). Inside that
 session the kernel did about 31 units/µs against 112 in the unit suite on the same host, so its
 12 ms reach less far there; this is still to be measured on a real GPU session. Unit operations
-measure under 40 µs of CPU; longer wall-clock slices seen on plumbus were preemption under load.
+measure under 40 µs of CPU; longer wall-clock slices seen on the x86 test machine were preemption under load.
 
 **The drag audition.** A drag of a window (not a widget, not a Shift drag, L31) whose center is in
 the center zone, with the pointer resting within 8 pt for `solo_audition_delay` (3000 ms; 0 turns it
@@ -98,23 +102,23 @@ plugin refuses an offer before it releases the drag.
 
 | ID | Invariant | Status |
 |---|---|---|
-| SP1 | Only the focused window's hint hold, its three-finger hold and an accepted audition solo; nothing else spreads (P4). | verified (plumbus and nacelle headless, real stipc input, 2026-10-04) |
+| SP1 | Only the focused window's hint hold, its three-finger hold and an accepted audition solo; nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04) |
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
 | SP3 | A resident moves only if the solo target covers it or an arrival would otherwise land below its band (P6); it stays on its side (P1), never grows, never moves inward, ends clear when pushed, and returns when its spot is free again (P2). | verified (unit fuzz and fixtures; headless) |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
-| SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on plumbus and nacelle); real-GPU latency not yet measured |
-| SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (plumbus and nacelle headless) |
-| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots over running glides (and once avoidance offsets have settled), refuses on a change of the hotspot setting, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (nacelle headless, real stipc drags, 59 checks, 2026-10-04) |
-| SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (plumbus and nacelle headless reload rehearsal) |
+| SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on the x86 test machine and the ARM test machine); real-GPU latency not yet measured |
+| SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (headless on both test machines) |
+| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots over running glides (and once avoidance offsets have settled), refuses on a change of the hotspot setting, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (the ARM test machine, headless, real stipc drags, 59 checks, 2026-10-04) |
+| SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (headless on both test machines reload rehearsal) |
 
-Not yet seen on a physical screen or with a physical touchpad (the shared plumbus session was not
+Not yet seen on a physical screen or with a physical touchpad (the shared test session was not
 reloaded). The two settings have no row in Scottland Settings yet; `scottland-ctl` sets them.
 
 ### Implementation choices (for review against final.md)
 
 - Outward distances closer than one halo count as equal, so travel decides between near-equal spots
   (P11). Strict lexicographic order sent an arrival across the screen for a 0.6 pt gain (seen on
-  plumbus). For a resident, a spot at its own x still beats any outward one, however small
+  the x86 test machine). For a resident, a spot at its own x still beats any outward one, however small
   (decision 4; Fable's review, witnesses W1/W1b).
 - A window the solve could not move out from under the solo target is reported as overlap, moved or
   not (Fable's W2).
@@ -124,7 +128,7 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
   spread over 2 ms slices cannot be delivered sooner.
 - A pinned resident that moves vertically at its own x keeps its pin ("same scale", decision 4);
   anywhere else it takes the natural scale there and loses the pin.
-- The work cap is 1,000,000 of this kernel's units (about 12 ms on plumbus); final.md's 150,000 was a
+- The work cap is 1,000,000 of this kernel's units (about 12 ms on the x86 test machine); final.md's 150,000 was a
   starting value for a prototype that counted coarser units.
 - A glide running on a window when the offer starts is suspended at its current sample and resumed
   on refusal (a cycle glide keeps its clock; another restarts from the sample to its own
@@ -132,7 +136,7 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
   progress each window is drawn exactly at its offered spot and scale even while a scale animation
   runs underneath, and easing back ends on the live state. A window still coasting, or gliding
   away, delays the offer. Hint-avoidance offsets of offered windows ease to zero while the offer
-  shows (they are held still, as for a pair) and are recomputed after: the offered spot is exact
+  shows (the peek-strip engine treats them as anchored, as it does pair members) and are recomputed after: the offered spot is exact
   once they have settled, not during that easing, and the earlier avoidance state is recomputed
   rather than restored (Astra's review asked for suspension and accepted this equivalent; tested
   with avoidance on).
@@ -149,42 +153,99 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
 
 `tests/spread-unit.sh` (fixtures, fuzz, determinism, slices, starved budgets, cancellation, timing),
 `tests/spread-test.sh` (46 real-input checks plus the load measurement),
-`tests/spread-reload-test.sh` (reload rehearsal), all headless on plumbus or nacelle.
+`tests/spread-reload-test.sh` (reload rehearsal), all headless on either test machine.
 
 ## Rail behavior (WG26)
 
 While a window is shown as a widget during a drag, or a widget is dragged along a rail, only
 widgets on that output and rail take part. The dragged item stays under the pointer and keeps its
-existing WG1/WG13 morph. Other widgets shift along the rail by the least distance needed to clear
-the dragged item's current visible interval by 1 px. A shift reaches the next widget only when the
-previous shift makes that widget too close. Existing gaps and overlaps are otherwise preserved;
-the rail is not tiled or compacted. A widget never crosses to the other rail.
+existing WG1/WG13 morph. The rail spreads to make room for the item's landing interval (Mike,
+2026-10-04): any widget may move when that's what it takes, widgets keep their order, total
+movement is the least it can be, and widgets overlap the item only when the rail is truly full.
+Touching as little as possible is the preference that falls out of least movement, not a rule.
+P14 (the user always wins): the dropped item ends up exactly where the user put it; only the
+other widgets move around it, and the order around it is decided by where it was placed. A widget
+never crosses to the other rail, and the hole left by a widget being dragged stays open.
 
-The hole left by a widget being dragged remains open after a successful drop. A full rail may have
-no space to clear the landing interval. In that case each causal chain advances only as far as its
-members can fit, stopped by the tightest rail-end limit, and the drop may overlap. The solver reports
-that case as `overlap`; it never publishes an off-rail or reordered result.
+Pointer motion updates only the dragged item's latest landing interval and the pause timer; it does
+not solve or move its neighbors. The pointer must stay within a 4 px radius for
+`scottland/widget_make_room_dwell` (default 350 ms, live range 100–1500 ms). Each completed pause
+solves against the latest interval. Movement after a solve keeps that arrangement until another
+pause completes. Release commits the arrangement the user saw when it was solved for the landing
+spot, within the 4 px wobble. If the drag ends before its first pause, or the landing spot moved more
+than 4 px since the last solve (pause, move on, drop without pausing again), release runs one more
+solve from the captured positions, so the drop clears its real landing spot and any neighbor that no
+longer needs to move goes home (P2). This hold buffer follows P11 (calm movement) and P2 (move only
+what is needed), while cancel and drag-back-out retain P5's exact restoration.
 
-The solver uses the true widget positions captured when the drag enters the rail. For each widget,
-its initial yield direction is chosen by comparing its center with the dragged interval's center.
-That direction stays latched until the dragged center passes the widget's center by
-`max(6 px, 10% of the widget height)`. This prevents small pointer wobble from reversing a chain.
+The solver uses the true widget positions captured when the drag enters the rail, in rail order.
+Neighbors must end at least 1 px apart, or no further into each other than they already are (an
+earlier full rail), and the item needs 1 px of clearance on each side (touching within that gap
+is not overlap). The item never moves, so it splits the widgets into those above it and those
+below it. For one split, each side is independent: its widgets go between a rail end and the
+item, in order, minimizing the sum of squared displacements from home. Subtracting each widget's
+packed offset turns "in order, apart" into "non-decreasing", so a side is an isotonic regression
+with bounds, solved exactly by pool-adjacent-violators in O(n). An item hanging off a rail end is
+laid out where placement will put it, on the rail, which is where it lands. With n capped at 256 a
+solve is O(n²) at most; review round 3 measured about 1 ms average, 2.9 ms worst at the cap.
 
-For one direction, the solver visits widgets in their captured rail order. It requests only the
-CONTACT displacement needed by the first widget, then propagates it through neighbors. For each
-pair it preserves any existing overlap and keeps any gap larger than 1 px. The first displacement
-is clamped by the available rail-end space of **every** member of the chain; each later member moves
-only after the slack before it has been used. The opposite direction uses the mirrored calculation.
-The final intervals are checked against both rail ends and their original order. Invalid input or a
-failed check produces zero shifts with `overlap` status.
+Which split: where the item was placed decides. A widget whose span the item's center is past
+stays on that side (the center below a widget keeps it above, and the reverse). A widget the
+item's center is on (the user dropped onto it) may go either way, since both orders match the
+placement; among those splits, the ones that fit compete on total movement, ties going to the
+split by centers. So a card dropped onto the card at a rail end goes first, and that card makes
+room on the other side with the rest.
 
-Each solve is synchronous in the drag path. The maximum actor count is 256, checked before any
-sorting or per-actor state allocation. Order and scratch arrays are prepared once for the captured
-rail; pointer updates reuse them and publish a complete result. An over-cap update returns the
-identity/no-shifts result without iterating actors or changing direction latches. The current
-admission check uses the session's total widget count as a constant-time upper bound, so a session
-with more than 256 widgets skips rail making-room even when the active rail itself has fewer actors.
-That conservative check keeps the whole input path bounded.
+If none of the allowed splits fits, the widgets overlap the item rather than it moving or the
+placed order being broken, by the least amount: their packed run reaches into the item from the
+side that lacks room. That happens on a rail that is truly full, and in one more case **for Mike
+to look at**: a drop that clips a widget pinned at a rail end, with the drop's center past that
+widget, keeps the widget on its aimed side, so it overlaps the drop by at most half the dropped
+card (in the review fuzz: 1.5% of pauses, worst 44 px) even though crossing it would make room.
+The status is `overlap`. Results never leave the rail or change the widgets' order; a failed
+check produces zero shifts with `overlap` status.
+
+During the drag the audition shows the neighbors placed around the item exactly where it is, so
+the gap opens under the pointer, where the card will land. On release the drop's layout is
+committed as shown. If the card lands on the interval that layout was solved for (within the 4 px
+wobble), nothing is solved again, so the cards never rearrange a second time. Only a different
+landing (the real card is another size, or placement moved it) is solved again around the card
+where it actually is.
+
+P11 hysteresis ("a window keeps its current way out of the way until it stops working"): the
+previous split stands while the placement allows it and it fits as well. A widget changes side by
+choice only once the item's center has passed that widget's center by `max(6 px, 10% of its
+height)` toward its new side, and only if the new split fits with that margin to spare. A widget
+the center has just passed keeps its other side until the center is that margin past its edge, and
+on a full rail the previous split stands while it overlaps no more than that margin extra. On a
+nearly full rail, where the other order would fit only within that margin, the current order stands
+while it overlaps by no more than the margin, rather than sending a widget across the item and back
+for a sub-pixel fit (review fuzz: 21 of 600,000 pauses, at most 9.5 px). A widget therefore never
+switches side and back across small re-pauses (0 in 600,000 pauses of each fuzz). Within one split
+every widget moves at most 1 px per pixel of drag.
+
+Each solve is synchronous but, during a drag, runs only on a completed pause or once on drop, never
+for every pointer event. A non-drag window-to-widget arrival runs one solve after its widget has
+mapped and reached its landing geometry. The maximum actor count is 256, checked before any sorting
+or per-actor state allocation. Order and scratch arrays are prepared once for the captured rail;
+each pause reuses them and publishes a complete result. An over-cap solve returns the identity/no-
+shifts result without iterating actors or changing direction latches. The current admission check
+uses the session's total widget count as a constant-time upper bound, so a session with more than 256
+widgets skips rail making-room even when the active rail itself has fewer actors. That conservative
+check keeps the whole input path bounded.
+
+Every change of rail-layout target eases in and out over 190–360 ms (longer with distance), including
+large shifts, release-time solves, geometry-commit corrections and return to zero. No move exceeds
+the 1000 px/s automatic-motion speed limit it shares with window avoidance; a move too long for that
+within 360 ms takes longer. A retarget in mid-move starts from the speed the widget already has,
+so it does not kick, and never overshoots its new target; speed against the new direction is dropped
+and the widget turns there. The frame translation keeps the visible
+position continuous while target geometry commits. Reduced motion from the active palette applies
+to these shifts too and snaps directly to the target. Direct drag drops use the active drag solve;
+inertial coast arrivals and Window-mode key widgetization solve against the mapped widget's actual
+landing rectangle through the same rail solver. Window avoidance plans against where the rail's
+widgets are going, not where each frame of the ease draws them, so a rail layout change costs one
+avoidance re-solve rather than one per frame.
 
 The behavior follows P1 (stay on the same side), P2 (move only what is in the way), P5 (show the
 proposal, commit it on drop, restore it on cancel), and P8 (bound synchronous work so the pointer
@@ -209,7 +270,12 @@ actors with nonzero solver offsets receive a real move on drop.
 
 | ID | Invariant | Status |
 |---|---|---|
-| SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item. It moves only a causal chain, preserves the rail order and never crosses sides. | verified (plumbus headless, 2026-10-03) |
-| SM2 | Contact clearance is 1 px where room exists. A shortage is clamped by every chain member's rail-end headroom; a drop may overlap when the rail is full. | verified (plumbus headless, 2026-10-03) |
-| SM3 | Shifts are visual for the duration of the drag, become real moves on drop, and return exactly on Esc or when the item leaves the rail. | verified (plumbus headless, 2026-10-03) |
-| SM4 | The synchronous solve checks its 256-actor bound before allocation, reuses its captured order and scratch state, and returns only complete validated results. | verified (plumbus headless, 2026-10-03; bounded unit suite) |
+| SM1 | A rail solve considers widgets from the dragged item's output and rail, excluding the dragged item (whose spot stays open). Any of them may move; they keep their order and never cross sides; total squared movement around the fixed item is least for the chosen split (exact per side by pool-adjacent-violators). | verified (unit suite incl. brute-force grid search, 2026-10-04) |
+| SM2 | P14: the dropped item never moves; the order around it follows where it was placed (a widget its center is on may go either side). Clearance is 1 px (existing overlaps between widgets are never deepened). Widgets overlap the item only when no allowed order fits: a truly full rail, or a clipped widget pinned at a rail end (at most half the item; for Mike to look at). | verified (plumbus/nacelle unit suite, review fuzz: no intrusion into the placed item, order kept, overlap only when no allowed order fits; real stipc input, 2026-10-04) |
+| SM3 | Shifts stay visual until drop, then commit; Esc and dragging out restore exact geometry and drawn positions. A drop before any completed pause, or more than 4 px from where the last pause solved, solves once more; otherwise it commits the held layout. | verified (Plumbus real stipc input, 2026-10-04) |
+| SM4 | Each solve checks its 256-actor bound before allocation, reuses captured order and scratch state, and returns only complete validated results. A drag solves only on pause/drop, never each pointer event; a non-drag widget arrival solves once after mapping. | verified (Plumbus; bounded unit suite and real stipc input, 2026-10-04) |
+| SM5 | A 4 px pointer wobble is part of the same pause. The 350 ms default dwell is live configurable from 100–1500 ms; movement after a solve holds that layout until the next completed pause. | verified (Plumbus real stipc input, 2026-10-04) |
+| SM6 | Every target change, including large shifts, release-time solves, geometry corrections and returns, eases in and out over 190–360 ms, longer only to stay under the shared 1000 px/s limit; retargets keep their speed and never overshoot; active reduced motion snaps. | verified (Plumbus frame sampling, planned and drawn frame-to-frame compositor speed, reduced-motion palette, 2026-10-04) |
+| SM7 | Direct rail drops, inertial coast arrivals and Window-mode key widgetization run the shared solver at the widget's actual landing spot. | verified (Plumbus real stipc input, 2026-10-04) |
+| SM8 | Window avoidance sees a rail ease's target, so it re-solves once per rail layout change, not per animation frame. | verified (Plumbus real stipc input against a no-move control, 2026-10-04) |
+| SM9 | The split keeps its value across small re-pauses (P11): a widget changes side by choice only after the item's center passes its center by its direction margin and the new split fits with that margin to spare; forced changes happen only when the old split stops fitting or the placement forbids it. Within a split every widget moves at most as far as the pointer did. After a drop the cards stay as shown: no second solve. | verified (review fuzz, 600,000 solves: 0 back-and-forth; 1 px sweep suite; real stipc re-pause and drop, 2026-10-04) |
