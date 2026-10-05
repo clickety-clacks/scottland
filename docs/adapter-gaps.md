@@ -255,3 +255,46 @@ What could be built, each a product decision for Mike (none chosen):
 2. **Hide excluded windows on screen while anything captures.** Possible only for captures the
    compositor sees (not KMS), and it changes what the user sees during a call.
 3. **Warn when a matching window is on screen during a capture.** Same detection limits as 2.
+
+## Status after the adapter-fixes branch (2026-10-05)
+
+Mike approved two groups (rulings 2026-10-05). All tests below ran on the ARM test machine in
+isolated headless sessions with a fixture HOME loading the installed, unchanged Omarchy files
+(Omarchy 4.0.0 there), real stipc input, and oracles the code under test doesn't report itself
+(what commands ran, Wayfire's view list, screencopy pixels, portal pixels, hyprctl exit status).
+The x86 test machine was unreachable for the whole session, so nothing here is **verified** on a
+real screen or real hardware; statuses are **implemented**.
+
+| Row | Now | Evidence | Remaining |
+|---|---|---|---|
+| AG09 | F9 press runs `voxtype record start`, release `record stop`; a Lua-function press/release pair keeps both. | `tests/omarchy-bindings-test.py`; fails on the previous adapter as H1 did | Real dictation untested. |
+| AG19 | `exec_cmd` with any Lua string literal runs; the stock `omarchy-launch-screensaver` maps its terminal. | `tests/omarchy-shim-test.py` | The screensaver opens as an ordinary window: its fullscreen rule and monitor focus are untranslated (AG28 territory). |
+| AG15 | Super+Print starts hyprpicker; a click puts the picked color on the clipboard. | `tests/omarchy-color-picker-test.py` | — |
+| AG10 | `repeating` repeats while held; `locked` also runs on the lock screen (once there); other shortcuts, including release ones, don't run while locked; modified release chords run on release. Scottland's own volume/brightness bindings step aside so Omarchy's flags hold. | `tests/omarchy-bindings-test.py` with a real lock client | A `locked` release shortcut runs only unlocked (reported in O20). |
+| AG20 | Startup handlers run once per session when Scottland is the only graphical session; never on reload or Lua host restart; the stock environment import and shell launch are left to Scottland's own hooks. | `tests/omarchy-startup-test.py` | Keep mode: not run (question 1). |
+| Visible failure | Unsupported shim requests answer `error: …` (hyprctl exits 7); the Lua host raises unsupported `hl.*` calls and refused dispatches inside shortcuts. `hyprctl reload` rebuilds the translated config instead of failing. | `tests/omarchy-shim-test.py` | Stock scripts now see these failures; most already fall back or ignore them. |
+| AG02 | ScreenCast and Screenshot go to xdg-desktop-portal-wlr (`scottland-portals.conf`); GlobalShortcuts/InputCapture/Inhibit unavailable rather than routed to Hyprland's backend. | `tests/portal-test.py`: screenshot and a PipeWire frame show the expected pixels; before, Hyprland's backend never answered | Whole outputs only, picked in its slurp chooser; no meeting app or OBS tested; the package must be installed. |
+| AG01 | Not enforceable (section above). Every `no_screen_share` rule is listed in the O20 report as not enforced. | `tests/omarchy-capture-exclusion-test.py`: report entries, and a matching window does appear in a capture | Question 2. |
+| AG17 | `omarchy-hyprland-session-locked` answers locked while a lock holds, including a crashed lock client's stand-in. | `tests/omarchy-lock-power-test.py` | — |
+| AG18 | DPMS dispatches are applied (wlr-output-power-management) and `dpmsStatus` is real, so `omarchy-brightness-display on` wakes the screen. | same test: screencopy fails while off, works after on | No physical panel tested. |
+| AG04 | Lid close runs `omarchy-system-lid-close` (also on the lock screen). | `tests/omarchy-lid-test.py`, virtual switch through Wayfire's switch path | Docked clamshell (laptop panel off) needs monitor config (AG03, not approved); lid open's clamshell reconcile is reported, not run. Real lid untested. |
+
+Reload: `tests/omarchy-reload-rehearsal-test.py` and `tests/reload-rehearsal-test.sh` reload a
+session started on the installed build (bb821e3) into this one; it survives and renders, and the
+plugin, config and Lua host fixes take effect. The Hyprland shim keeps running its old code
+through a reload, and a Quickshell Hyprland client (the Omarchy shell) does not reconnect if the
+shim is restarted, so the shim fixes (AG17, AG18, AG19, visible failure, reload) reach a running
+session at its next start.
+
+Questions for Mike (no choice made):
+
+1. Keep mode and startup apps (AG20): with Hyprland still running, should Scottland start its own
+   copies of startup apps (Sunshine, udiskie, ...) or leave Hyprland's? Today: neither changes.
+2. Capture exclusion (AG01): pursue one of the three options above, or keep the report only?
+3. Docked lid close (AG04) needs monitor config translation (AG03): approve that work?
+4. Screensaver (AG19): should it open full screen (translating its window rule), or stay out of
+   scope for now?
+5. Shim updates: should `scottland-reload` restart the shim and the Omarchy shell together (the
+   shell's bar and menus reload), or keep shim changes for the next session start?
+6. Screen sharing picks an output by clicking it (xdg-desktop-portal-wlr's slurp chooser). Keep,
+   or configure another chooser behavior?
