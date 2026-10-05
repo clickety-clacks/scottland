@@ -18,7 +18,7 @@ Phases 0, 1, 2 and 4 on 2026-10-03; Mike decided the two Phase 3 questions the s
 | ML5 | Every Scottland entry point is timed (`SCOTTLAND_LOOP_SCOPE`); slow callbacks and unresponsive periods are recorded in the diagnostic ring. Nothing in the plugin writes to stderr or Wayfire's log after `init()`. | implemented (Phase 1) |
 | ML6 | No plugin thread, event source or callback outlives `fini()`. | implemented: the watchdog and its eventfd source stop last in `fini()`; reload tests count descriptors |
 | ML7 | A late result never overrides a newer state. | rule (worker, Phase 4) |
-| ML8 | Window mode entry (Alt held: `alt_hold` → `begin_window_keys`, including the first badge raster of a session) is an acceptance target of this work: today about 50-60 ms the first time (cold font) and 7-20 ms after, on the test hosts. | open: see "Window mode entry" |
+| ML8 | Window mode entry (Alt held: `alt_hold` → `begin_window_keys`, including the first badge raster of a session) is an acceptance target of this work: it was 41-53 ms the first time (cold font) and 7-20 ms after at 10 windows, 92 ms at 30. | open: 15 ms at 10 windows and 47 ms at 30 on nacelle after the font warm-up, the overlay batching and Phase 3; see "Window mode entry" |
 
 ## Timing every entry point
 
@@ -186,8 +186,14 @@ Attribution on nacelle (aarch64, Asahi GPU, 10 windows, Phase 1 scopes): the fir
 session spends 40-53 ms in `begin_window_keys`, of which the first badge raster (`hint_raster`,
 cold font) is 25-38 ms and the bounded solve (`hint_solve`) 1.9 ms; a later entry spends 7-20 ms,
 about 1 ms per window creating badges, outlines and dyes (`hint_visual`). The acceptance target is
-that entry, cold or warm, stays inside ML1 or is listed with its number; the font miss leaves with
-a warm-up at `init()` (Phase 2) and the per-window badge work with bounded per-tick creation.
+that entry, cold or warm, stays inside ML1 or is listed with its number. Done: the font is loaded at
+`init()` (Phase 2: the first badge raster 13.9 -> 0.9 ms); hit tests no longer read back from the
+GPU when badges change the scene (Phase 3); new badges and outlines enter the overlay in one scene
+update per tick instead of one per node plus two per circle per outline (each update rebuilt every
+window's render instances: 42,720 rebuilds in one entry at 30 windows). Entry is now about 15 ms
+at 10 windows and 47 ms at 30 on nacelle (open): what remains is per-window badge, outline and
+offset work (about 1.5 ms per window) and the goo's own render on this GPU. Next: create badges
+over several ticks within a budget, or the raster helper (D4) and the solve worker (D1).
 
 ## Exceptions
 
@@ -250,6 +256,22 @@ font family other than the one warmed at `init()` (D4); pathological user regexe
 | `on_geometry` | 1.3 ms | 2.3 ms | geometry change (publishes) | Phase 2.1 |
 | `hint_solve` | 3.6 ms | 2.2 ms | Luna's bounded avoidance solve | D1 (Phase 0: bounded at 2 ms + overshoot) |
 
+**Status after Phases 2-4** (nacelle, `39e9580` and the ML8 batching):
+
+| Scope | Now | |
+|---|---|---|
+| `goo_sample_at` in input | gone from every input path | closed (Phase 3) |
+| `goo_energy_readback` (waiting read) | gone; replaced by `goo_energy_issue` 0.7-2.3 ms (reduction submission) and `goo_energy_collect` <= 0.06 ms | issue open (target 0.5 ms) |
+| `goo_settle_tick` / `tighten_breathing` | gone: on the worker; install 0.06 ms | closed (Phase 4) |
+| `hint_raster` (cold) | 0.6-0.9 ms | closed for the shipped font (ML8); other families D4 |
+| `hints_tick` at 30 windows | 28-32 ms (from 287) | open (ML8) |
+| `alt_hold` / `begin_window_keys` | 15 ms at 10 windows, 47 at 30 | open (ML8) |
+| `option_layout`, `publish_model` | out of the worst scopes; publish <= 0.7 ms | closed (Phase 2) |
+| `goo_render` | 6-50 ms: the simulation's GPU submission on Asahi | open: not in this design's scope; needs a GPU profile |
+| `goo_shape_update`, `frame_render` | 9-30 ms | D2 |
+| `widget_transition_tick` | 13-43 ms at 30 windows | open: attribution |
+| `goo_prepare` | 4-35 ms at 30 windows (settings slider) | open (Phase 2.5 source cache not done) |
+
 Not over 2 ms in any scenario: widget and morph captures (`widget_capture`, the retained-pixel
 path), the wallpaper capture, `core_run` (not exercised), the broker reply. The design's capture
 exception therefore leaves the table for the paths measured here.
@@ -294,6 +316,74 @@ the first, window-mode-entry 64.6/85.4 against 30.7/51.6, settings-slider 33.3/6
 | settings-slider | 36.53/57.17 | 61.58/93.39 | 90.11/115.98 | 65.58/113.31 |
 | scale-change | 64.04/80.36 | 91.61/121.48 | 87.41/157.42 | 126.10/144.67 |
 
+
+## Results after Phases 1-4 (nacelle)
+
+Ping lateness p99/max in ms (pings to Wayfire IPC at 1 kHz with real input; a late ping means
+the main loop was busy). Same host, one run per column, host load 1-6 from other agents' tests;
+the run-to-run spread of one build is shown under "Baselines". "Phases 2+3+4" is `39e9580`.
+
+10 windows
+| Scenario | main | Phase 2 | Phases 2+3+4 |
+|---|---|---|---|
+| idle | 2.07/4.00 | 2.70/8.17 | 0.71/2.89 |
+| window-mode-entry | 30.73/51.55 | 41.16/60.99 | 52.36/71.94 |
+| ipc-queries | 8.97/8.97 | 5.24/5.24 | 10.18/11.08 |
+| pointer-sweep | 10.22/21.97 | 14.63/25.85 | 9.63/13.39 |
+| pointer-halo | 12.91/20.61 | 25.32/51.13 | 9.38/14.35 |
+| drag | 6.22/10.78 | 12.38/19.72 | 11.50/15.46 |
+| after-drag-settle | 6.40/11.89 | 10.95/20.22 | 9.06/16.67 |
+| window-mode | 22.42/33.48 | 14.76/40.73 | 14.04/39.72 |
+| window-mode-arrows | 22.22/38.47 | 17.29/30.35 | 13.84/31.54 |
+| always-avoid-drag | 15.81/33.69 | 47.87/85.81 | 31.39/67.57 |
+| map-unmap | 8.44/22.79 | 13.95/21.64 | 11.75/16.20 |
+| long-title | 8.30/16.21 | 18.38/33.29 | 16.19/25.39 |
+| attention-breath-sleep | 4.83/14.60 | 7.54/29.60 | 7.91/17.53 |
+| slow-subscriber | 9.55/15.61 | 14.61/18.73 | 12.27/17.11 |
+| widgetize | 14.69/18.66 | 14.76/21.28 | 8.75/12.74 |
+| widgets-8 | 20.43/36.33 | 19.77/34.89 | 10.69/16.41 |
+| widget-attention-sleep | 10.87/26.54 | 10.33/26.69 | 9.85/26.67 |
+| settings-slider | 36.53/57.17 | 42.15/70.95 | 42.89/77.35 |
+| scale-change | 64.04/80.36 | 71.80/95.60 | 84.87/101.26 |
+
+30 windows (Mike goo values)
+| Scenario | main | Phase 2 | Phases 2+3+4 |
+|---|---|---|---|
+| idle | 2.11/3.20 | 2.45/3.27 | 1.97/3.53 |
+| window-mode-entry | 257.75/278.60 | 265.97/283.61 | 200.10/220.88 |
+| ipc-queries | 12.39/12.83 | 23.73/26.44 | 14.71/16.76 |
+| pointer-sweep | 158.31/299.35 | 151.50/209.55 | 14.03/24.30 |
+| pointer-halo | 71.83/118.60 | 101.20/179.96 | 18.09/25.47 |
+| drag | 108.70/122.37 | 73.88/88.68 | 13.98/25.12 |
+| after-drag-settle | 20.85/30.78 | 21.39/33.53 | 18.24/22.70 |
+| window-mode | 186.43/221.48 | 220.94/253.30 | 228.61/259.98 |
+| window-mode-arrows | 234.84/293.27 | 222.19/275.04 | 169.46/222.34 |
+| always-avoid-drag | 137.62/220.70 | 67.03/87.97 | 63.22/89.25 |
+| map-unmap | 28.30/49.42 | 28.22/57.47 | 22.19/28.70 |
+| long-title | 507.77/535.38 | 204.83/237.18 | 211.95/245.31 |
+| attention-breath-sleep | 23.55/46.16 | 18.23/32.11 | 16.90/23.32 |
+| slow-subscriber | 31.46/42.37 | 21.48/28.32 | 15.72/25.80 |
+| widgetize | 48.61/58.98 | 46.68/56.99 | 20.62/26.74 |
+| widgets-8 | 92.19/135.38 | 69.43/107.13 | 31.65/49.48 |
+| widget-attention-sleep | 84.09/185.76 | 40.63/64.33 | 34.65/45.77 |
+| settings-slider | 90.11/115.98 | 65.39/105.13 | 60.53/73.73 |
+| scale-change | 87.41/157.42 | 115.44/163.29 | 73.42/98.95 |
+
+Window mode with the ML8 overlay batching (`331a54b`), same host:
+
+| Scenario | 10 windows | 30 windows |
+|---|---|---|
+| window-mode-entry | 29.62/51.17 (entry callback 14.8 ms) | 67.56/88.55 (entry 46.6 ms) |
+| window-mode | 10.85/34.37 | 58.08/70.70 (ticks 28-32 ms, from 207) |
+| window-mode-arrows | 15.54/31.54 | 60.34/66.65 |
+| long-title | - | 57.58/69.89 |
+
+What changed for the user (measured): at 30 windows pointer motion over windows and halos no
+longer stalls on the GPU (pointer-sweep p99 158 -> 14 ms, pointer reply p99 218 -> 13 ms), drags
+and widget conversions stay under about 25 ms, and Window mode's ticks drop from about 200 ms
+to about 30 ms. What remains over the targets is in the exception table: the goo's simulation
+step on this GPU (goo_render 10-50 ms on nacelle's Asahi driver), widget shape readbacks (D2),
+Window mode entry (ML8: per-window badge work), the settings slider (Wayfire's config reload).
 
 ## Tests
 
