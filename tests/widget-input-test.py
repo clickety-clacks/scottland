@@ -414,25 +414,37 @@ def peeking():
         toggle()
 
 
+def diagnostics():
+    """The session's diagnostic notes (the ring, read by scottland-loop-read; the plugin no longer logs)."""
+    reader = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")) / "libexec/scottland-loop-read"
+    lines = subprocess.run([str(reader)], capture_output=True, text=True).stdout.splitlines()
+    return "".join(line + "\n" for line in lines if " note " in line)
+
+
+def trace_available():
+    reader = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")) / "libexec/scottland-loop-read"
+    return reader.exists()
+
+
 def held_key():
     title = "press-regression"
     launch(title)
     # A fresh mode for this case, without bypassing the binding under test.
     if minimized(title):
         toggle()
-    if args.log:
-        log_start = len(args.log.read_text())
+    if trace_available():
+        log_start = len(diagnostics())
         key("M", True)
         key("M", False)
         check("WG20 plain M typing emits no collapse diagnostics",
-              "minimize-key" not in args.log.read_text()[log_start:])
+              "minimize-key" not in diagnostics()[log_start:])
         key("LEFTSHIFT", True)
         key("M", True)
         key("M", False)
         key("LEFTSHIFT", False)
         check("WG20 unrelated modifiers do not trace M typing",
-              "minimize-key" not in args.log.read_text()[log_start:])
-    log_start = len(args.log.read_text()) if args.log else 0
+              "minimize-key" not in diagnostics()[log_start:])
+    log_start = len(diagnostics()) if trace_available() else 0
     key("LEFTMETA", True)
     key("M", True)
     check("WG20 first press activates", minimized(title))
@@ -454,22 +466,22 @@ def held_key():
         key("M", False)
     check("WG20 four rapid intentional presses all activate", states == [True, False, True, False], states)
     key("LEFTMETA", False)
-    if args.log:
-        trace = args.log.read_text()[log_start:]
+    if trace_available():
+        trace = diagnostics()[log_start:]
         edges = [line for line in trace.splitlines() if "minimize-key edge=" in line]
         check("WG20 diagnostics record tracked binding edges with device, time and state",
               len(edges) == 14 and all(all(field in line for field in
-                  ("device=stipc_keyboard@", "time_msec=", "received_msec=", "key=50", "state=",
+                  ("device=0x", "time_msec=", "received_msec=", "key=50", "state=",
                    "held_devices=", "activated=", "collapsed=")) for line in edges), edges)
         check("WG20 diagnostics distinguish six activations and two ignored duplicates",
               trace.count("minimize-key activation ") == 6 and
               trace.count("minimize-key ignored-duplicate ") == 2, trace)
-        log_start = len(args.log.read_text())
+        log_start = len(diagnostics())
         key("LEFTMETA", True)
         key("M", True)
         key("LEFTMETA", False)
         key("M", False)
-        trace = args.log.read_text()[log_start:]
+        trace = diagnostics()[log_start:]
         edges = [line for line in trace.splitlines() if "minimize-key edge=" in line]
         check("WG20 tracked M release is logged after Super is released",
               len(edges) == 2 and "state=release" in edges[-1] and "held_devices=0" in edges[-1], edges)

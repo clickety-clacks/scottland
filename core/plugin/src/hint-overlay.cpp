@@ -1,4 +1,5 @@
 #include "hint-overlay.hpp"
+#include "loop.hpp"
 #include <cairo.h>
 #include <array>
 #include <cmath>
@@ -36,6 +37,7 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
     if (background) key << ':' << background->r << ',' << background->g << ',' << background->b;
     if (key.str() != appearance)
     {
+        SCOTTLAND_LOOP_SCOPE(hint_raster);
         wf::scene::damage_node(this, box);
         drawn_opacity = -1;
         appearance = key.str(); texture.reset();
@@ -115,6 +117,7 @@ class hint_render : public wf::scene::simple_render_instance_t<hint_node>
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
+        SCOTTLAND_LOOP_SCOPE(hint_render);
         if (!self->texture && !self->pixels.empty())
         {
             auto tex = wlr_texture_from_pixels(data.pass->get_wlr_renderer(), DRM_FORMAT_ARGB8888,
@@ -128,6 +131,7 @@ class hint_render : public wf::scene::simple_render_instance_t<hint_node>
 void hint_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
     wf::scene::damage_callback damage, wf::output_t *output)
 {
+    SCOTTLAND_LOOP_SCOPE(hint_gen_render_instances);
     instances.push_back(std::make_unique<hint_render>(this, damage, output));
 }
 void fullscreen_hint_node::update(wf::geometry_t geometry, hint_rgb dye, double tint)
@@ -144,6 +148,7 @@ class fullscreen_hint_render : public wf::scene::simple_render_instance_t<fullsc
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
+        SCOTTLAND_LOOP_SCOPE(hint_render);
         auto r = self->box; auto c = self->color; double a = self->alpha;
         // The render pass takes premultiplied colors (the frame shader composites explicitly).
         if (a > 0)
@@ -160,12 +165,14 @@ class fullscreen_hint_render : public wf::scene::simple_render_instance_t<fullsc
 void fullscreen_hint_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
     wf::scene::damage_callback damage, wf::output_t *output)
 {
+    SCOTTLAND_LOOP_SCOPE(hint_gen_render_instances);
     instances.push_back(std::make_unique<fullscreen_hint_render>(this, damage, output));
 }
 
 void center_switcher_node::update(double output_width, const std::string& title, unsigned position,
     unsigned count, const hint_palette& palette, double scale)
 {
+    SCOTTLAND_LOOP_SCOPE(switcher_update);
     wf::scene::damage_node(this, box);
     texture.reset();
     std::string caption = count ? std::to_string(position) + " / " + std::to_string(count) + "   " +
@@ -235,6 +242,7 @@ class center_switcher_render : public wf::scene::simple_render_instance_t<center
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
+        SCOTTLAND_LOOP_SCOPE(hint_render);
         if (!self->texture && !self->pixels.empty())
         {
             auto tex = wlr_texture_from_pixels(data.pass->get_wlr_renderer(), DRM_FORMAT_ARGB8888,
@@ -248,6 +256,7 @@ class center_switcher_render : public wf::scene::simple_render_instance_t<center
 void center_switcher_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
     wf::scene::damage_callback damage, wf::output_t *output)
 {
+    SCOTTLAND_LOOP_SCOPE(hint_gen_render_instances);
     instances.push_back(std::make_unique<center_switcher_render>(this, damage, output));
 }
 
@@ -268,6 +277,7 @@ class hint_flash_render : public wf::scene::simple_render_instance_t<hint_flash_
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
+        SCOTTLAND_LOOP_SCOPE(hint_render);
         auto b = self->box;
         if (self->alpha <= 0 || b.width <= 0 || b.height <= 0) return;
         double r = std::min({self->radius, b.width / 2.0, b.height / 2.0});
@@ -293,6 +303,7 @@ class hint_flash_render : public wf::scene::simple_render_instance_t<hint_flash_
 void hint_flash_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
     wf::scene::damage_callback damage, wf::output_t *output)
 {
+    SCOTTLAND_LOOP_SCOPE(hint_gen_render_instances);
     instances.push_back(std::make_unique<hint_flash_render>(this, damage, output));
 }
 
@@ -366,6 +377,7 @@ class hint_outline_render : public wf::scene::simple_render_instance_t<hint_outl
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
+        SCOTTLAND_LOOP_SCOPE(hint_render);
         double x = self->x, y = self->y, w = self->width, h = self->height;
         if (w <= 0 || h <= 0) return;
         double line = std::min({self->line, w / 2, h / 2});
@@ -441,6 +453,7 @@ class hint_outline_render : public wf::scene::simple_render_instance_t<hint_outl
 void hint_outline_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
     wf::scene::damage_callback damage, wf::output_t *output)
 {
+    SCOTTLAND_LOOP_SCOPE(hint_gen_render_instances);
     instances.push_back(std::make_unique<hint_outline_render>(this, damage, output));
 }
 

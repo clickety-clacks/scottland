@@ -8,6 +8,9 @@
   scottland-ctl windows                  list open windows: id, app-id, zone, scale, title
   scottland-ctl present 42               bring window 42 (or its widget's window) to the middle, focused
   scottland-ctl option scottland/sounds  print an option's live value (any Wayfire option)
+  scottland-ctl loop [--follow] [--json] print the main-loop diagnostic ring (slow callbacks, stuck or
+                                         unresponsive periods, diagnostics); works while the compositor is stuck
+  scottland-ctl loop-stats [--reset]     per-callback timing, the ML2 maximum and watchdog counters (IPC)
 
 Outside a Scottland session it runs inside one through scottland-exec.
 """
@@ -64,8 +67,20 @@ def call(sock, method, data):
 
 
 def main():
-    sock = connect()
     command = sys.argv[1] if len(sys.argv) > 1 else "get"
+    if command == "loop":
+        # The ring is read from its file, never over IPC: this must work while the compositor is stuck.
+        if not os.environ.get("WAYLAND_DISPLAY") or (not os.environ.get("WAYFIRE_SOCKET") and not os.environ.get("SCOTTLAND_EXEC")):
+            connect()
+        here = os.path.dirname(os.path.realpath(__file__))
+        data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        places = [os.path.join(os.environ.get("SCOTTLAND_HOOKS", ""), "libexec"), os.path.join(data, "scottland/dev/libexec"),
+                  here, os.path.join(here, "../../build"), "/usr/lib/scottland/libexec"]
+        reader = next((path for path in (os.path.join(p, "scottland-loop-read") for p in places) if os.access(path, os.X_OK)), None)
+        if not reader:
+            sys.exit("scottland-ctl: scottland-loop-read is not installed")
+        os.execv(reader, [reader, "--display", os.environ["WAYLAND_DISPLAY"], *sys.argv[2:]])
+    sock = connect()
     if command == "get":
         # Settings the running plugin doesn't know (it predates them; the session needs a restart)
         # are listed under "unsupported" instead of being reported as 0.
@@ -101,6 +116,8 @@ def main():
         reply = call(sock, "scottland/present", {"window": int(sys.argv[2])})
         print(json.dumps(reply))
         sys.exit(1 if "error" in reply else 0)
+    elif command == "loop-stats":
+        print(json.dumps(call(sock, "scottland/loop-stats", {"reset": "--reset" in sys.argv[2:]}), indent=1))
     elif command == "windows":
         for view in call(sock, "scottland/layout-state", {}).get("views", []):
             print(f"{view['id']:>5}  {view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")

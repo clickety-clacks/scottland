@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loop.hpp"
 #include <wayfire/plugins/common/input-grab.hpp>
 #include <wayfire/plugins/common/shared-core-data.hpp>
 #include <wayfire/plugins/common/move-drag-interface.hpp>
@@ -34,10 +35,12 @@ class live_drag_transform_t : public wf::scene::transformer_base_node_t
         using transformer_render_instance_t::transformer_render_instance_t;
         void transform_damage_region(wf::regionf_t& damage) override
         {
+            SCOTTLAND_LOOP_SCOPE(live_drag_transform_damage);
             damage += self->offset();
         }
         void render(const wf::scene::render_instruction_t& data) override
         {
+            SCOTTLAND_LOOP_SCOPE(live_drag_render);
             data.pass->add_texture(get_texture(data.target.scale), data.target,
                 self->get_bounding_box(), data.damage);
         }
@@ -45,6 +48,7 @@ class live_drag_transform_t : public wf::scene::transformer_base_node_t
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
         wf::scene::damage_callback damage, wf::output_t *output) override
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_gen_render_instances);
         instances.push_back(std::make_unique<instance_t>(this, damage, output));
     }
 };
@@ -59,15 +63,17 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> legacy_output =
         [this] (auto *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_output);
         view = legacy->view;
         current_output = legacy->current_output;
         emit(ev);
     };
     wf::signal::connection_t<wf::move_drag::drag_motion_signal> legacy_motion =
-        [this] (auto *ev) { emit(ev); };
+        [this] (auto *ev) { SCOTTLAND_LOOP_SCOPE(live_drag_motion); emit(ev); };
     wf::signal::connection_t<wf::move_drag::drag_done_signal> legacy_done =
         [this] (auto *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_done);
         view = nullptr;
         current_output = nullptr;
         emit(ev);
@@ -87,10 +93,11 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         .capabilities = wf::CAPABILITY_GRAB_INPUT | wf::CAPABILITY_MANAGE_DESKTOP,
     };
     wf::signal::connection_t<wf::view_unmapped_signal> unmap =
-        [this] (auto *) { handle_input_released(); };
+        [this] (auto *) { SCOTTLAND_LOOP_SCOPE(live_drag_unmap); handle_input_released(); };
     wf::signal::connection_t<wf::output_removed_signal> removed =
         [this] (auto *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_output_removed);
         if (ev->output == current_output || ev->output == grab_output ||
             (view && view->get_output() == ev->output)) handle_input_released();
     };
@@ -225,19 +232,23 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
     }
     void handle_pointer_motion(wf::pointf_t, uint32_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_pointer_motion);
         if (finger < 0 && !gesture) handle_motion(wf::get_core().get_cursor_position());
     }
     void handle_pointer_button(const wlr_pointer_button_event& ev) override
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_pointer_button);
         if (finger < 0 && ev.button == button && ev.state == WL_POINTER_BUTTON_STATE_RELEASED)
             handle_input_released();
     }
     void handle_touch_motion(uint32_t, int id, wf::pointf_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_touch_motion);
         if (id == finger) handle_motion(wf::get_core().get_touch_position(id));
     }
     void handle_touch_up(uint32_t, int id, wf::pointf_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(live_drag_touch_up);
         if (id == finger) handle_input_released();
     }
 };

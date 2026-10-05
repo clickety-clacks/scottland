@@ -14,7 +14,7 @@ layer_shell_header = custom_target('layer-shell-header',
   command: [find_program('wayland-scanner'), 'server-header', '@INPUT@', '@OUTPUT@'])
 
 shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declutter.cpp',
-  'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/goo-shape.cpp',
+  'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/loop.cpp', 'src/goo-shape.cpp',
   'src/key-layers.cpp', 'src/inertia.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp'],
   dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo],
 
@@ -32,3 +32,7 @@ shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declu
 
 install_data('metadata/scottland.xml',
   install_dir: wayfire.get_variable(pkgconfig: 'metadatadir'))
+
+# The diagnostic ring's only external reader (docs/main-loop.md): built from the same ABI header.
+executable('scottland-loop-read', 'src/loop-read.cpp', install: true,
+  install_dir: get_option('prefix') / 'lib' / 'scottland' / 'libexec')

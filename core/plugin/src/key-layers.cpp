@@ -1,4 +1,5 @@
 #include "key-layers.hpp"
+#include "loop.hpp"
 #include <wayfire/core.hpp>
 #include <wayfire/seat.hpp>
 #include <wayfire/bindings-repository.hpp>
@@ -123,7 +124,7 @@ struct key_layers_t::impl
     // callbacks again. Probe first, including for nested input, and balance only our own hold.
     wf::option_sptr_t<wf::keybinding_t> probe = wf::create_option(
         wf::keybinding_t{0x80000000u, 0xffffffffu});
-    wf::key_callback probe_callback = [] (const wf::keybinding_t&) { return true; };
+    wf::key_callback probe_callback = [] (const wf::keybinding_t&) { SCOTTLAND_LOOP_SCOPE(key_layer_probe); return true; };
 
     bool claim(wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
@@ -179,6 +180,7 @@ struct key_layers_t::impl
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> before =
         [this] (auto *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(key_layer_before);
         bool claimed = claim(ev);
         bool suspended = claimed && wf::get_core().bindings->handle_key(probe->get_value(), 0);
         events.push_back({ev->event, claimed, suspended});
@@ -192,6 +194,7 @@ struct key_layers_t::impl
     wf::signal::connection_t<wf::post_input_event_signal<wlr_keyboard_key_event>> after =
         [this] (auto *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(key_layer_after);
         auto it = std::find_if(events.rbegin(), events.rend(), [ev] (auto& pending)
         {
             return pending.key == ev->event;
@@ -208,10 +211,12 @@ struct key_layers_t::impl
     };
     wf::signal::connection_t<wf::view_unmapped_signal> unmapped = [this] (auto *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(key_layer_unmapped);
         layers.erase(ev->view->get_id());
     };
     wf::signal::connection_t<wf::input_device_removed_signal> removed = [this] (auto *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(key_layer_device_removed);
         auto device = ev->device->get_wlr_handle();
         for (auto it = held.begin(); it != held.end();)
         {
@@ -234,6 +239,7 @@ struct key_layers_t::impl
      *  Lifetime belongs to the Wayland surface, not to the short-lived IPC connection. */
     wf::ipc::method_callback method = [this] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(key_layer_method);
         if (!data.has_member("action") || !data["action"].is_string())
         {
             return wf::ipc::json_error("key-layer needs action: set, clear or list");

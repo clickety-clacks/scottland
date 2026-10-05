@@ -42,6 +42,7 @@ link-dev:
 	ln -sf $(CURDIR)/core/session/scottland-reload $(HOME)/.local/bin/scottland-reload
 	ln -sf $(CURDIR)/core/libexec/scottland-exec $(HOME)/.local/bin/scottland-exec
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
+	ln -sf $(CURDIR)/build/scottland-loop-read $(DEV)/libexec/scottland-loop-read
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
@@ -72,6 +73,7 @@ hooks:
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOOKS_DIR)/libexec/start-scottland
 	ln -sf $(CURDIR)/core/session/scottland-reload $(HOOKS_DIR)/libexec/scottland-reload
 	ln -sf $(CURDIR)/core/session/scottland-settings $(HOOKS_DIR)/libexec/scottland-settings
+	ln -sf $(CURDIR)/build/scottland-loop-read $(HOOKS_DIR)/libexec/scottland-loop-read
 	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done

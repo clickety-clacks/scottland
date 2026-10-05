@@ -45,7 +45,7 @@
         auto g = view->get_geometry(); m.x = g.x + g.width / 2.0; m.y = g.y + g.height / 2.0;
         m.width = g.width; m.height = g.height;
         m.vx.impulse(vx, key_max_velocity); m.vy.impulse(vy, key_max_velocity);
-        if (!keyboard_tick.is_connected()) keyboard_tick.set_timeout(8, [=] () { return step_keyboard_motion(); });
+        if (!keyboard_tick.is_connected()) keyboard_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(keyboard_tick); return step_keyboard_motion(); });
     }
 
     static bool arrow_key(uint32_t code)
@@ -203,7 +203,7 @@
             }
         }
         keyboard_sample = now;
-        if (settling) keyboard_tick.set_timeout(8, [=] () { return step_keyboard_motion(); });
+        if (settling) keyboard_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(keyboard_tick); return step_keyboard_motion(); });
         else keyboard_tick.disconnect();
     }
 
@@ -426,5 +426,5 @@
         if (first && keyboard->repeat_info.rate > 0)
             arrow_repeats[code] = {motion_clock::now() + std::chrono::milliseconds(keyboard->repeat_info.delay),
                 1.0 / keyboard->repeat_info.rate};
-        if (!keyboard_tick.is_connected()) keyboard_tick.set_timeout(8, [=] () { return step_keyboard_motion(); });
+        if (!keyboard_tick.is_connected()) keyboard_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(keyboard_tick); return step_keyboard_motion(); });
     }

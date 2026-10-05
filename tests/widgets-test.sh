@@ -907,14 +907,9 @@ read -r ax ay aw ah <<<"$(view_field carry-app "round(f['x']), round(f['y']), ro
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 2.5
 carry_before=$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")
-mark=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.reloading
-touch "$mark"
-fresh=$headless_dir/libscottland-test-$(date +%s%N).so
-cp build/libscottland.so "$fresh"
-plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
-h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': ' '.join(sys.argv[2] if p == 'scottland' or '/libscottland-' in p else p for p in sys.argv[1].split())}))" "$plugins" "$fresh")"
-sleep 2
-rm -f "$mark"
+# The real reload (receipt, handover, acknowledgment), kept inside this test session.
+tests/headless.sh run env SCOTTLAND_TEST_RELOAD_DIR="$headless_dir" SCOTTLAND_RELOAD_SOURCE="$PWD/build/libscottland.so" \
+  "$PWD/core/session/scottland-reload" >"$artifacts/reload.txt" 2>&1 || fail "scottland-reload in the test session"
 check "WG5 (marked reload) the widget stays, linked, its window still hidden" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['widget_view'] for w in json.load(sys.stdin)['widgets'] if w['title']=='carry-app'])")/$(view_field carry-app "v['hidden'] and v['widgetized']")" = "$carry_before/True" ]
 h window-rules/close-view "{\"id\": $(view_field carry-app "v['id']")}"

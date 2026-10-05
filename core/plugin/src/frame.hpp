@@ -15,6 +15,7 @@
 // shaders (drawing). Distances are in the coordinates the window is drawn in (after scaling).
 
 #include "goo.hpp"
+#include "loop.hpp"
 #include "goo-shape.hpp"
 #include "edge-style.hpp"
 #include <wayfire/view-transform.hpp>
@@ -609,6 +610,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         hovering = false;
         linger.set_timeout(LINGER_MS, [=] ()
         {
+            SCOTTLAND_LOOP_SCOPE(frame_linger);
             if (!is_pressed() && !hovering && !lifted)
             {
                 set_swell(0.0);
@@ -933,6 +935,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     std::optional<wf::scene::input_node_t> find_node_at(const wf::pointf_t& at) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_find_node_at);
         if (handle_at(at) != handle_t::none)
         {
             return wf::scene::input_node_t{.node = this, .local_coords = at};
@@ -973,16 +976,19 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     // undone (to_local); the halo lives in the scaled coordinates, so map it back.
     void handle_pointer_enter(wf::pointf_t position) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_pointer_enter);
         last_pointer = to_global(position);
     }
 
     void handle_pointer_motion(wf::pointf_t position, uint32_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_pointer_motion);
         last_pointer = to_global(position);
     }
 
     void handle_pointer_button(const wlr_pointer_button_event& event) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_pointer_button);
         auto v = toplevel();
         if (!v || (event.button != BTN_LEFT))
         {
@@ -1026,6 +1032,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     void handle_touch_down(uint32_t, int finger_id, wf::pointf_t position) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_touch_down);
         auto v = toplevel();
         last_touch = to_global(position);
         if ((touch_finger >= 0) && !wf::get_core().get_touch_state().fingers.count(touch_finger))
@@ -1040,7 +1047,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
         // Fingers can't hover: touching the halo shows the close dot for a while.
         dot_target = 1.0;
-        dot_hide.set_timeout(3000, [=] () { dot_target = 0.0; start_ticking(); });
+        dot_hide.set_timeout(3000, [=] () { SCOTTLAND_LOOP_SCOPE(frame_dot_hide); dot_target = 0.0; start_ticking(); });
         start_ticking();
 
         touch_finger = finger_id;
@@ -1061,6 +1068,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     void handle_touch_motion(uint32_t, int finger_id, wf::pointf_t position) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_touch_motion);
         if (finger_id == touch_finger)
         {
             last_touch = to_global(position);
@@ -1069,6 +1077,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     void handle_touch_up(uint32_t, int finger_id, wf::pointf_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_touch_up);
         if (finger_id != touch_finger)
         {
             return;
@@ -1227,7 +1236,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             linger.disconnect();
             if ((swell_target < 1.0) && !is_pressed())
             {
-                dwell.set_timeout(DWELL_MS, [=] () { set_swell(1.0); });
+                dwell.set_timeout(DWELL_MS, [=] () { SCOTTLAND_LOOP_SCOPE(frame_dwell); set_swell(1.0); });
             }
         } else if (was || force)
         {
@@ -1236,6 +1245,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             {
                 linger.set_timeout(LINGER_MS, [=] ()
                 {
+                    SCOTTLAND_LOOP_SCOPE(frame_linger);
                     if (!is_pressed() && !hovering && !lifted)
                     {
                         set_swell(0.0);
@@ -1329,6 +1339,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         last_tick = now_ms();
         tick.set_timeout(16, [=] ()
         {
+            SCOTTLAND_LOOP_SCOPE(frame_tick);
             uint32_t now = now_ms();
             double dt = std::clamp((now - last_tick) / 1000.0, 0.001, 0.05);
             last_tick = now;
@@ -1406,10 +1417,11 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         frame->connect(&on_frame_damage);
     }
     wf::signal::connection_t<wf::scene::node_damage_signal> on_frame_damage =
-        [this] (wf::scene::node_damage_signal *ev) { this->_push_damage(ev->region); };
+        [this] (wf::scene::node_damage_signal *ev) { SCOTTLAND_LOOP_SCOPE(frame_damage); this->_push_damage(ev->region); };
 
     void transform_damage_region(wf::regionf_t& damage) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_transform_damage);
         self->shape_dirty = true;
         self->surface_insets_dirty = true;
         auto copy = damage;
@@ -1422,6 +1434,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
     void render(const wf::scene::render_instruction_t& data) override
     {
+        SCOTTLAND_LOOP_SCOPE(frame_render);
         self->sync_goo_animation();
         if (!wf::get_core().is_gles2())
         {
@@ -1474,6 +1487,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                     if (changed) { self->damage(); goo_wake(*self); }
                 } else if (!self->shape_retry.is_connected())
                     self->shape_retry.set_timeout(200 - (now - self->shape_checked), [frame = self.get()] {
+                        SCOTTLAND_LOOP_SCOPE(frame_shape_retry);
                         frame->damage();
                     });
             } else if (!wants_shape) { self->alpha_shape.reset(); self->shape_retry.disconnect(); }
@@ -1708,6 +1722,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 inline void frame_t::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
     wf::scene::damage_callback push_damage, wf::output_t *shown_on)
 {
+    SCOTTLAND_LOOP_SCOPE(frame_gen_render_instances);
     auto instance = std::make_unique<frame_render_instance_t>(this, push_damage, shown_on);
     if (instance->has_instances())
     {

@@ -89,7 +89,7 @@ void begin_window_widget_transition(wayfire_toplevel_view window)
     window->get_transformed_node()->end_transform_update();
     widget_transitions[window->get_id()] = std::move(transition);
     if (!widget_transition_tick.is_connected())
-        widget_transition_tick.set_timeout(8, [=] { return step_widget_transitions(); });
+        widget_transition_tick.set_timeout(8, [=] { SCOTTLAND_LOOP_SCOPE(widget_transition_tick); return step_widget_transitions(); });
 }
 
 // The card's applied mapping/placement transaction supplies the destination rectangle.
@@ -213,6 +213,7 @@ void begin_widget_transition(widget_link_t& link, bool target)
             auto listener = std::make_unique<wf::signal::connection_t<wf::scene::node_damage_signal>>(
                 [observer, surface, sequence, leaf, texture] (auto*)
                 {
+                    SCOTTLAND_LOOP_SCOPE(presentation_damage);
                     auto applied = leaf->to_texture();
                     // Keep the original buffer locked and compare the APPLIED texture. A
                     // later ack-only commit can clear current.committed's BUFFER bit while
@@ -232,14 +233,14 @@ void begin_widget_transition(widget_link_t& link, bool target)
     watch(view->get_surface_root_node());
     if (surface)
     {
-        observer->surface_destroyed.set_callback([observer] (void*) { observer->applied.clear(); });
+        observer->surface_destroyed.set_callback([observer] (void*) { SCOTTLAND_LOOP_SCOPE(presentation_surface_destroyed); observer->applied.clear(); });
         observer->surface_destroyed.connect(&surface->events.destroy);
     }
     frame->damage();
     frame->presentation = pixels;
     widget_transitions[view->get_id()] = std::move(transition);
     if (!widget_transition_tick.is_connected())
-        widget_transition_tick.set_timeout(8, [=] { return step_widget_transitions(); });
+        widget_transition_tick.set_timeout(8, [=] { SCOTTLAND_LOOP_SCOPE(widget_transition_tick); return step_widget_transitions(); });
 }
 
 // All presentation changes, including hover/attention peeks, come through here before

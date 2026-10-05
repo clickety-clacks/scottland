@@ -2,6 +2,7 @@
 
 // WG16 presentation resources. Logical collapse/peek intent belongs to the desktop model;
 // these images and the clock only describe the pixels currently shown by a frame.
+#include "loop.hpp"
 #include <wayfire/opengl.hpp>
 #include <wayfire/core.hpp>
 #include <wayfire/toplevel-view.hpp>
@@ -27,6 +28,7 @@ struct widget_image_t
 
     static widget_image_t capture(wayfire_toplevel_view view, double inset, wf::auxilliary_buffer_t *drawn = nullptr)
     {
+        SCOTTLAND_LOOP_SCOPE(widget_capture);
         widget_image_t image;
         // A simple surface already has the exact pixels we need. Keep its buffer locked,
         // rather than allocate/render/submit a second GPU pass during an input callback.

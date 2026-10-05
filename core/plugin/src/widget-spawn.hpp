@@ -45,7 +45,7 @@ void receive_widget_spawn()
     process->pidfd = pidfd;
     if (process->pid <= 0 || pidfd < 0)
     {
-        LOGE("scottland: widget broker couldn't launch ", process->unit);
+        scottland::loop::note(scottland::loop::note_id::broker_launch_failed);
         // The normal launch watchdog restores the still-visible app.
         return;
     }
@@ -63,13 +63,14 @@ void init_widget_spawn()
     fcntl(endpoints[1], F_SETFD, 0);
     auto launcher = widget_launcher();
     auto helper = launcher.substr(0, launcher.rfind('/') + 1) + "scottland-widget-spawn";
-    auto pid = wf::get_core().run(shell_quote(helper) + " " + std::to_string(endpoints[1]));
+    auto pid = run_command(shell_quote(helper) + " " + std::to_string(endpoints[1]));
     close(endpoints[1]);
     if (pid <= 0) { close(endpoints[0]); return; }
     widget_spawn_fd = endpoints[0];
     widget_spawn_watch = wl_event_loop_add_fd(wf::get_core().ev_loop, widget_spawn_fd,
         WL_EVENT_READABLE, [] (int, uint32_t mask, void *data)
         {
+            SCOTTLAND_LOOP_SCOPE(widget_spawn_reply);
             auto self = static_cast<scottland_plugin_t*>(data);
             if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))
             {

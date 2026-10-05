@@ -67,6 +67,8 @@ extern "C" {
 #include "hint-overlay.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
+#include "loop.hpp"
+#include "handover.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -76,8 +78,10 @@ extern "C" {
 #include <set>
 #include <regex>
 #include <optional>
+#include <sys/stat.h>
 #include <signal.h>
 extern "C" {
+#include <sys/wait.h>
 #include <sys/pidfd.h>  // glibc declares it without C linkage for C++
 }
 #include <unistd.h>
@@ -122,6 +126,13 @@ struct custom_event_signal_t
 
 namespace
 {
+/** Every command Scottland starts in the compositor process forks it (an ML4 exception, D3). */
+pid_t run_command(const std::string& command)
+{
+    SCOTTLAND_LOOP_SCOPE(core_run);
+    return wf::get_core().run(command);
+}
+
 uint32_t now_msec()
 {
     timespec ts;
@@ -507,6 +518,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
     wf::button_callback on_activate = [=] (auto)
     {
+        SCOTTLAND_LOOP_SCOPE(resize_activate);
         auto target = wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
         // Direction is absolute, wherever the window was grabbed: right/up grows, left/down shrinks.
         return start(target, wf::buttonbinding_t(button).get_button(), 1, -1);
@@ -515,6 +527,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
     // The same resize on a second binding (Super+Alt+drag by default).
     wf::button_callback on_activate_alt = [=] (auto)
     {
+        SCOTTLAND_LOOP_SCOPE(resize_activate);
         auto target = wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
         return start(target, wf::buttonbinding_t(alt_button).get_button(), 1, -1);
     };
@@ -597,6 +610,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
         // Let the app's final commit land, then stop keeping it centered.
         settle.set_timeout(300, [=] ()
         {
+            SCOTTLAND_LOOP_SCOPE(resize_settle);
             on_geometry.disconnect();
             recenter_view.reset();
         });
@@ -609,6 +623,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
         [=] (wf::view_geometry_changed_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(resize_geometry);
         auto target = wf::toplevel_cast(ev->view);
         if (!target || (target.get() != recenter_view.lock().get()))
         {
@@ -644,6 +659,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
     void handle_pointer_button(const wlr_pointer_button_event& event) override
     {
+        SCOTTLAND_LOOP_SCOPE(resize_pointer_button);
         if ((event.state == WL_POINTER_BUTTON_STATE_RELEASED) && (event.button == grab_button))
         {
             end();
@@ -652,6 +668,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
     void handle_touch_motion(uint32_t, int finger_id, wf::pointf_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(resize_touch_motion);
         if (finger_id == touch_finger)
         {
             update();
@@ -660,6 +677,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
     void handle_touch_up(uint32_t, int finger_id, wf::pointf_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(resize_touch_up);
         if (finger_id == touch_finger)
         {
             end();
@@ -668,6 +686,7 @@ class center_resize_t : public wf::per_output_plugin_instance_t, public wf::poin
 
     void handle_pointer_motion(wf::pointf_t, uint32_t) override
     {
+        SCOTTLAND_LOOP_SCOPE(resize_pointer_motion);
         if (touch_finger < 0)
         {
             update();
@@ -881,7 +900,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (!text.empty())
             {
-                LOGE("scottland: ignoring invalid scale_curve \"", text, "\"");
+                scottland::loop::note(scottland::loop::note_id::scale_curve_invalid);
             }
 
             scale_curve = {};
@@ -919,7 +938,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (state.pinned_scale != scale)
         {
             state.pinned_scale = scale;
-            LOGI("scottland: window ", view->get_id(), scale ? " keeps its scale (Shift)" : " follows its zone again");
+            scottland::loop::note(scottland::loop::note_id::scale_pin, view->get_id(), scale.has_value());
             publish_model();
         }
     }
@@ -961,6 +980,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void apply_all_opacity()
     {
+        SCOTTLAND_LOOP_SCOPE(apply_all_opacity);
         for (auto& any_view : wf::get_core().get_all_views())
             if (auto view = wf::toplevel_cast(any_view)) apply_opacity(view);
     }
@@ -1045,7 +1065,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         transition.animation.animate(current, target);
         if (!transition_tick.is_connected())
         {
-            transition_tick.set_timeout(8, [=] () { return step_transitions(); });
+            transition_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(transition_tick); return step_transitions(); });
         }
     }
 
@@ -1214,6 +1234,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void track_pointer()
     {
+        SCOTTLAND_LOOP_SCOPE(track_pointer);
         update_widget_peeks();
         auto owner = pointer_owner.lock();
         if (owner && owner->is_pressed())
@@ -1270,6 +1291,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::keyboard_focus_changed_signal> on_focus =
         [=] (wf::keyboard_focus_changed_signal*)
     {
+        SCOTTLAND_LOOP_SCOPE(on_focus);
         update_focus();
         if (window_keys.active)
         {
@@ -1300,6 +1322,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_unmapped);
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             auto disappearing_card = link_of_widget(toplevel);
@@ -1814,6 +1837,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_minimize_edge =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_minimize_edge);
         if (key_layers.handles(ev) || (ev->mode == wf::input_event_processing_mode_t::IGNORE &&
             !minimize_presses.count(ev->event->keycode))) return;
         auto code = ev->event->keycode;
@@ -1844,11 +1868,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                << "@" << static_cast<void*>(ev->device);
         minimize_device = device.str();
         minimize_event_time = ev->event->time_msec;
-        LOGI("scottland: minimize-key edge=", ++minimize_edge, " device=", minimize_device,
-            " time_msec=", minimize_event_time, " received_msec=", now_msec(), " key=", code,
-            " state=", down ? "press" : "release", " duplicate_down=", duplicate,
-            " held_devices=", press.devices.size(), " activated=", press.activated,
-            " collapsed=", model.collapsed, " processing=", (int)ev->mode);
+        scottland::loop::note(scottland::loop::note_id::minimize_key_edge, ++minimize_edge,
+            (uint64_t)minimize_event_time | (uint64_t)now_msec() << 32, (uint64_t)(uintptr_t)ev->device,
+            (uint64_t)(code & 0xffff) | (uint64_t)down << 16 | (uint64_t)duplicate << 17 |
+            (uint64_t)press.activated << 18 | (uint64_t)model.collapsed << 19 | (uint64_t)((int)ev->mode & 15) << 20 |
+            (uint64_t)std::min<size_t>(press.devices.size(), 255) << 24);
         if (press.devices.empty())
         {
             minimize_presses.erase(code);
@@ -1858,6 +1882,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_device_removed_signal> on_minimize_device_removed =
         [=] (wf::input_device_removed_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_minimize_device_removed);
         auto device = ev->device->get_wlr_handle();
         for (auto it = widget_return_keys.begin(); it != widget_return_keys.end();)
         {
@@ -1868,9 +1893,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (it->second.devices.erase(device))
             {
-                LOGI("scottland: minimize-key device-removed key=", it->first,
-                    " device=", static_cast<void*>(device),
-                    " received_msec=", now_msec(), " held_devices=", it->second.devices.size());
+                scottland::loop::note(scottland::loop::note_id::minimize_key_device_removed, it->first,
+                    (uint64_t)(uintptr_t)device, now_msec(), it->second.devices.size());
             }
 
             it = it->second.devices.empty() ? minimize_presses.erase(it) : std::next(it);
@@ -1879,13 +1903,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::key_callback on_minimize_key = [=] (const wf::keybinding_t& key)
     {
+        SCOTTLAND_LOOP_SCOPE(on_minimize_key);
         auto& press = minimize_presses[key.get_key()];
         if (key.get_key() && press.activated)
         {
-            LOGI("scottland: minimize-key ignored-duplicate edge=", minimize_edge,
-                " device=", minimize_device, " time_msec=", minimize_event_time,
-                " key=", key.get_key(), " modifiers=", key.get_modifiers(),
-                " collapsed=", model.collapsed);
+            scottland::loop::note(scottland::loop::note_id::minimize_key_ignored_duplicate, minimize_edge,
+                minimize_event_time, (uint64_t)key.get_key() | (uint64_t)key.get_modifiers() << 32, model.collapsed);
             return press.consumed;
         }
 
@@ -1903,8 +1926,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (!any)
         {
-            LOGI("scottland: minimize-key no-widgets edge=", minimize_edge,
-                " device=", minimize_device, " time_msec=", minimize_event_time);
+            scottland::loop::note(scottland::loop::note_id::minimize_key_no_widgets, minimize_edge, minimize_event_time);
             return false;  // no widgets: the key goes on to the app
         }
 
@@ -1917,9 +1939,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.collapsed = !all_minimized;
 
         press.consumed = true;
-        LOGI("scottland: minimize-key activation edge=", minimize_edge, " device=", minimize_device,
-            " time_msec=", minimize_event_time, " key=", key.get_key(),
-            " modifiers=", key.get_modifiers(), " collapsed=", model.collapsed);
+        scottland::loop::note(scottland::loop::note_id::minimize_key_activation, minimize_edge,
+            minimize_event_time, (uint64_t)key.get_key() | (uint64_t)key.get_modifiers() << 32, model.collapsed);
         announce_widgets();
         return true;
     };
@@ -1961,6 +1982,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         on_activate.set_callback([=] (void *data)
         {
+            SCOTTLAND_LOOP_SCOPE(on_activation);
             auto ev = static_cast<wlr_xdg_activation_v1_request_activate_event*>(data);
             auto view = wf::toplevel_cast(ev->surface ? wf::wl_surface_to_wayfire_view(ev->surface->resource) : nullptr);
             if (view && view->is_mapped())
@@ -1998,6 +2020,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_focus_request_signal> on_focus_request =
         [=] (wf::view_focus_request_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_focus_request);
         auto view = wf::toplevel_cast(ev->view);
         if (auto widget_link = view ? link_of_widget(view) : nullptr;
             widget_link && (widget_link->away || in_focus_mode(widget_link->output)) && !window_keys.active)
@@ -2024,6 +2047,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      *  takes back only that source's. Replies in_front when the user is already on it. */
     wf::ipc::method_callback attention_method = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(attention_method);
         if (!data.has_member("window") || !data["window"].is_int() || !data.has_member("attention") ||
             !data["attention"].is_bool())
         {
@@ -2083,6 +2107,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_hints_changed_signal> on_hints =
         [=] (wf::view_hints_changed_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_hints);
         if (!ev->view)
         {
             return;
@@ -2267,6 +2292,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         process->exit_watch = wl_event_loop_add_fd(wf::get_core().ev_loop, process->pidfd,
             WL_EVENT_READABLE, [] (int, uint32_t, void *data)
         {
+            SCOTTLAND_LOOP_SCOPE(process_exit);
             auto process = static_cast<widget_process_t*>(data);
             wl_event_source_remove(process->exit_watch);
             process->exit_watch = nullptr;
@@ -2308,7 +2334,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 // A failed broker must not leave a scope's descendants alive.
                 // The synchronous path is only recovery, never a healthy conversion.
-                wf::get_core().run("systemctl --user stop --no-block " + shell_quote(process->unit) +
+                run_command("systemctl --user stop --no-block " + shell_quote(process->unit) +
                     " >/dev/null 2>&1");
             }
         }
@@ -2339,7 +2365,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (!ending_timer.is_connected())
         {
-            ending_timer.set_timeout(250, [=] () { return end_due_processes(false); });
+            ending_timer.set_timeout(250, [=] () { SCOTTLAND_LOOP_SCOPE(ending_timer); return end_due_processes(false); });
         }
     }
 
@@ -2439,6 +2465,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         if (auto existing = link_of_window(view))
         {
+            SCOTTLAND_LOOP_SCOPE(widgetize);
             if (existing->previewing() && !preview)
             {
                 auto g = view->get_geometry();
@@ -2463,9 +2490,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         link.drop   = {geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
         link.rail   = rail ? *rail : (link.drop.x < width / 2 ? "left" : "right");
         link.launched_at = now_msec();
-        LOGI("scottland: widgetize window=", link.window_id, " reason=", reason,
-            " preview=", preview, " rail=", link.rail,
-            " geometry=", geometry.x, ",", geometry.y, ",", geometry.width, ",", geometry.height);
+        static const char *const reasons[] = {"rail-drop", "inertial-contact", "hint-rail", "load-rail-recovery",
+            "drag-preview", "cancel-form-return"};
+        uint64_t reason_index = std::size(reasons);
+        for (size_t i = 0; i < std::size(reasons); i++)
+            if (!strcmp(reason, reasons[i])) reason_index = i;
+        scottland::loop::note(scottland::loop::note_id::widgetize, link.window_id,
+            reason_index | (uint64_t)preview << 8 | (uint64_t)(link.rail == "right") << 9,
+            scottland::loop::xy(geometry.x, geometry.y), scottland::loop::xy(geometry.width, geometry.height));
 
         wf::json_t context;
         context["id"]     = std::to_string(link.window_id);
@@ -2488,7 +2520,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         context["unit"] = process->unit;  // the launcher runs the widget in this scope
         if (!send_widget_spawn(context))
         {
-            LOGE("scottland: couldn't queue a widget for ", view->get_app_id());
+            scottland::loop::note(scottland::loop::note_id::widget_queue_failed, link.window_id);
             return;
         }
         widget_spawn_pending[process->unit] = process;
@@ -2509,7 +2541,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (!widget_watchdog.is_connected())
         {
-            widget_watchdog.set_timeout(500, [=] () { return check_widget_launches(); });
+            widget_watchdog.set_timeout(500, [=] () { SCOTTLAND_LOOP_SCOPE(widget_watchdog); return check_widget_launches(); });
         }
     }
 
@@ -2522,7 +2554,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto& link = it->second;
             if (!link.widget.lock() && (now_msec() - link.launched_at > WIDGET_ADOPT_MS))
             {
-                LOGE("scottland: no widget window appeared for window ", link.window_id, "; restoring it");
+                scottland::loop::note(scottland::loop::note_id::widget_launch_timeout, link.window_id);
                 transition_widget(link, widget_link_t::lifecycle_t::restoring);
                 model.windows[link.window_id].pending_rail.reset();
                 end_process(link.launcher, 0);  // a late widget would show up unlinked
@@ -2687,6 +2719,128 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (link.icon.empty() && window) link.icon = window->get_app_id();
     }
 
+    // Reload handover (design 3.8, docs/main-loop.md "Reload"). handover_pending owns what the
+    // outgoing copy transferred until each item is adopted; whatever is left when import ends is
+    // disposed of exactly once (handles closed, leases returned with one enable).
+    scottland::handover::pending_t handover_pending;
+    std::optional<scottland::handover::list_t> handover_list;
+    bool init_completed = false;
+    bool receipt_consumed = false;
+    std::string reload_nonce, handover_outcome = "nothing to import";
+    size_t handover_imported = 0;
+
+    /** Tests only (SCOTTLAND_TEST_MODEL=1): failures to inject at a reload, one name per line in
+     *  $SCOTTLAND_TEST_STATE/handover-faults (read in init() and fini() only). */
+    std::set<std::string> handover_faults;
+    bool handover_faults_read = false;
+    bool handover_fault(const std::string& name)
+    {
+        if (!handover_faults_read)
+        {
+            handover_faults_read = true;
+            const char *state = getenv("SCOTTLAND_TEST_STATE");
+            if (getenv("SCOTTLAND_TEST_MODEL") && state)
+            {
+                std::ifstream in(std::string(state) + "/handover-faults");
+                for (std::string line; std::getline(in, line);) if (!line.empty()) handover_faults.insert(line);
+            }
+        }
+        return handover_faults.count(name) > 0;
+    }
+
+    void return_lease(uint64_t window)
+    {
+        if (auto view = view_by_id(window))
+            wf::scene::set_node_enabled(view->get_root_node(), true);
+    }
+
+    void dispose_handover()
+    {
+        handover_pending.dispose([this] (uint64_t window) { return_lease(window); });
+    }
+
+    /** First statement of init(): own what the outgoing copy of this process listed in the
+     *  environment, before anything that can throw or reject. Nothing here throws. */
+    void acquire_handover() noexcept
+    {
+        const char *found = getenv(scottland::handover::environment);
+        if (!found) return;
+        std::optional<scottland::handover::list_t> list;
+        try { list = scottland::handover::parse_list(found); } catch (...) {}
+        const char *version = getenv("SCOTTLAND_INTERNAL_MODEL_VERSION");
+        bool current = list && version && std::strtoull(version, nullptr, 10) == list->version;
+        unsetenv(scottland::handover::environment);
+        // A list some other build left behind (an older plugin loaded in between, which neither
+        // consumed it nor kept its model version) names numbers nobody here owns now.
+        if (!current || !handover_pending.reserve(list->fds.size(), list->leases.size())) return;
+        for (int fd : list->fds) handover_pending.own_fd(fd);
+        for (auto window : list->leases) handover_pending.own_lease(window);
+        try { handover_list = std::move(list); } catch (...) {}
+    }
+
+    /** Read the receipt scottland-reload wrote for this attempt. Consumed (renamed) only when it
+     *  names this compositor process; it authorizes an import only for this model session. */
+    bool consume_receipt(std::string& refusal)
+    {
+        auto path = runtime_file(".reload-receipt");
+        std::ifstream in(path);
+        if (!in) { refusal = "no reload receipt"; return false; }
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        wf::json_t receipt;
+        if (wf::json_t::parse_string(text, receipt) || !receipt.is_object() || !receipt.has_member("nonce") ||
+            !receipt["nonce"].is_string() || !receipt.has_member("pid") || !receipt.has_member("start_time") ||
+            !receipt.has_member("session") || !receipt["session"].is_string())
+        {
+            refusal = "unreadable reload receipt";
+            return false;
+        }
+        auto number = [] (const wf::json_t& v) -> int64_t { return v.is_int64() ? v.as_int64() : v.is_int() ? v.as_int() : -1; };
+        if (number(receipt["pid"]) != getpid() ||
+            number(receipt["start_time"]) != (int64_t)scottland::handover::process_start_time())
+        {
+            refusal = "reload receipt for another compositor";
+            return false;
+        }
+        auto importing = runtime_file(".reload-importing");
+        if (std::rename(path.c_str(), importing.c_str()) != 0)
+        {
+            refusal = "couldn't consume the reload receipt";
+            return false;
+        }
+        receipt_consumed = true;
+        reload_nonce = receipt["nonce"].as_string();
+        if (receipt["session"].as_string() != model.session)
+        {
+            refusal = "reload receipt for another session";
+            return false;
+        }
+        return true;
+    }
+
+    /** One link from the handover file, as plain values. */
+    struct handover_entry_t
+    {
+        uint64_t window = 0, widget = 0;
+        int64_t pid = 0;
+        int pidfd = -1;
+        bool descriptor = false;  // pidfd validated and owned
+        std::string unit, rail, desktop, name, icon;
+        double x = 0, y = 0;
+        bool minimized = false, touch_drag = false, card = false, has_desktop = false;
+    };
+
+    /** Both formats: a number names a handle only if it is an open pidfd that no other entry
+     *  named, and a live process behind it must be the recorded one (a recorded 0 never
+     *  authorizes a live handle). A reaped launcher (Pid: -1) is owned-dead. */
+    static bool valid_descriptor(int fd, int64_t pid, std::vector<int>& seen)
+    {
+        if (fd < 0 || std::find(seen.begin(), seen.end(), fd) != seen.end()) return false;
+        seen.push_back(fd);
+        if (!scottland::handover::is_pidfd(fd)) return false;
+        auto live = scottland::handover::pidfd_pid(fd);
+        return live && (*live == -1 || (*live > 0 && pid > 0 && *live == pid));
+    }
+
     /** After a reload: take over the widgets the previous plugin handed over. */
     void take_handover()
     {
@@ -2694,23 +2848,62 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.collapsed = access(collapsed.c_str(), F_OK) == 0;
         std::remove(collapsed.c_str());
         auto path = runtime_file(".widget-handover.json");
+        std::string refusal;
+        bool authorized = consume_receipt(refusal);
         std::ifstream in(path);
         if (!in)
         {
+            handover_outcome = authorized ? "nothing to import" : refusal;
+            dispose_handover();
             return;
         }
 
         std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         in.close();
         std::remove(path.c_str());
-        wf::json_t entries;
-        if (wf::json_t::parse_string(text, entries))
+        if (!authorized)
         {
-            LOGE("scottland: unreadable widget handover");
+            // Nothing in a file this attempt did not authorize is touched.
+            handover_outcome = refusal;
+            dispose_handover();
             return;
         }
 
-        if (!entries.is_array())
+        wf::json_t entries;
+        if (wf::json_t::parse_string(text, entries) || !(entries.is_array() || entries.is_object()))
+        {
+            LOGE("scottland: unreadable widget handover");
+            handover_outcome = "unreadable handover file";
+            dispose_handover();
+            return;
+        }
+
+        bool new_format = entries.is_object() && entries.has_member("format");
+        if (new_format)
+        {
+            auto number = [] (const wf::json_t& v) -> int64_t { return v.is_int64() ? v.as_int64() : v.is_int() ? v.as_int() : -1; };
+            if (!handover_list || number(entries["format"]) != scottland::handover::format ||
+                !entries.has_member("id") || !entries["id"].is_string() || entries["id"].as_string() != handover_list->id ||
+                number(entries["pid"]) != getpid() ||
+                number(entries["start_time"]) != (int64_t)scottland::handover::process_start_time() ||
+                !entries["session"].is_string() || entries["session"].as_string() != model.session)
+            {
+                handover_outcome = "handover file does not match this reload";
+                dispose_handover();
+                return;
+            }
+        } else if (handover_list || !entries.is_object() || !entries.has_member("session") ||
+            !entries["session"].is_string() || entries["session"].as_string() != model.session)
+        {
+            // Legacy (the installed writer): no envelope and no environment list. Ownership
+            // rests on the receipt, so the file must belong to the session it names.
+            handover_outcome = "legacy handover file from another session";
+            dispose_handover();
+            return;
+        }
+
+        std::vector<handover_entry_t> links;
+        try
         {
             model.version = std::max(model.version, (uint64_t)entries["version"].as_int64());
             model.collapsed = entries["collapsed"].as_bool();
@@ -2736,76 +2929,134 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     found->second.attention.insert(sources[j].as_string());
                 }
             }
-            entries = entries["links"];
+
+            // Parse every link into plain values before anything is owned or adopted.
+            auto list = entries["links"];
+            for (size_t i = 0; i < list.size(); i++)
+            {
+                auto entry = list[i];
+                handover_entry_t e;
+                e.window = (uint64_t)entry["window"].as_int64();
+                e.widget = (uint64_t)entry["widget"].as_int64();
+                e.pid = entry["pid"].as_int64();
+                e.pidfd = entry.has_member("pidfd") ? (int)entry["pidfd"].as_int64() : -1;
+                e.unit = entry["unit"].as_string();
+                e.rail = entry["rail"].as_string();
+                e.x = entry["x"].as_double();
+                e.y = entry["y"].as_double();
+                e.minimized = entry["minimized"].as_bool();
+                e.touch_drag = entry.has_member("touch_drag") && entry["touch_drag"].as_bool();
+                e.has_desktop = entry.has_member("desktop");
+                e.desktop = e.has_desktop ? entry["desktop"].as_string() : "";
+                e.name = entry.has_member("name") ? entry["name"].as_string() : "";
+                e.icon = entry.has_member("icon") ? entry["icon"].as_string() : "";
+                e.card = entry.has_member("card") && entry["card"].as_bool();
+                links.push_back(std::move(e));
+            }
+        } catch (...)
+        {
+            handover_outcome = "handover file with invalid entries";
+            dispose_handover();
+            return;
         }
 
-        for (size_t i = 0; i < entries.size(); i++)
+        // Ownership, in a loop that cannot throw. New format: entries claim what the
+        // environment list transferred. Legacy: the receipt-authorized file is the only
+        // writer, and it kept one disable for each entry's window.
+        std::vector<int> seen;
+        if (!new_format && !handover_pending.reserve(links.size(), links.size()))
         {
-            wf::json_t entry = entries[i];
-            auto window = view_by_id((uint64_t)entry["window"].as_int64());
-            auto widget = view_by_id((uint64_t)entry["widget"].as_int64());
+            handover_outcome = "out of memory";
+            return;
+        }
+        for (auto& e : links)
+        {
+            if (!new_format) handover_pending.own_lease(e.window);
+            if (valid_descriptor(e.pidfd, e.pid, seen))
+                e.descriptor = new_format ? handover_pending.holds_fd(e.pidfd) : handover_pending.own_fd(e.pidfd);
+        }
+
+        for (auto& e : links)
+        {
+            auto window = view_by_id(e.window);
+            auto widget = view_by_id(e.widget);
+            if (!window || !window->is_mapped() || !widget || !widget->is_mapped() || model.widgets.count(e.window))
+            {
+                continue;  // its lease and handle are returned below
+            }
+
             auto process = std::make_shared<widget_process_t>();
-            // New handovers transfer an already-open handle inside this compositor process.
-            process->pidfd = entry.has_member("pidfd") ? (int)entry["pidfd"].as_int64() : -1;
-            if (!window || !window->is_mapped())
-            {
-                continue;
-            }
-
-            if (!widget || !widget->is_mapped())
-            {
-                wf::scene::set_node_enabled(window->get_root_node(), true);  // the handed-over disable
-                continue;
-            }
-
+            process->pidfd = e.descriptor ? handover_pending.claim_fd(e.pidfd) : -1;
+            process->pid = process->pidfd >= 0 ? (pid_t)e.pid : 0;  // no unobserved numeric identity survives
+            process->unit = e.unit;
             widget_link_t link;
             link.window_id = window->get_id();
             link.window = window->weak_from_this();
             link.widget = widget->weak_from_this();
-            disabled_nodes.insert(window->get_id());  // adopt the previous renderer's lease
+            if (handover_pending.claim_lease(e.window))
+                disabled_nodes.insert(window->get_id());  // adopt the previous renderer's lease
             link.output = widget->get_output();
             link.away = !link.output->node_for_layer(wf::scene::layer::TOP)->is_enabled();
             transition_widget(link, widget_link_t::lifecycle_t::docked);
-            link.rail   = entry["rail"].as_string();
-            link.drop   = {entry["x"].as_double(), entry["y"].as_double()};
-            link.collapsed   = entry["minimized"].as_bool();
-            link.touch_drag  = entry.has_member("touch_drag") && entry["touch_drag"].as_bool();
-            link.desktop = entry.has_member("desktop") ? entry["desktop"].as_string() : "";
-            link.name = entry.has_member("name") ? entry["name"].as_string() : "";
-            link.icon = entry.has_member("icon") ? entry["icon"].as_string() : "";
-            link.card = entry.has_member("card") && entry["card"].as_bool();
-            if (!entry.has_member("desktop"))
+            link.rail   = e.rail;
+            link.drop   = {e.x, e.y};
+            link.collapsed   = e.minimized;
+            link.touch_drag  = e.touch_drag;
+            link.desktop = e.desktop;
+            link.name = e.name;
+            link.icon = e.icon;
+            link.card = e.card;
+            if (!e.has_desktop)
             {
-                migrate_widget_identity(link, widget, entry["unit"].as_string());
+                migrate_widget_identity(link, widget, e.unit);
             }
             link.launched_at = now_msec();
-            process->pid  = (pid_t)entry["pid"].as_int64();
-            process->unit = entry["unit"].as_string();
-            if ((process->pidfd < 0) && (process->pid > 1) &&
-                (in_scope(process->pid, process->unit) || descends_from(view_pid(widget), process->pid)))
-            {
-                process->pidfd = pidfd_open(process->pid, 0);
-                // Legacy upgrade: validate the live relationship around opening the handle.
-                if (!in_scope(process->pid, process->unit) && !descends_from(view_pid(widget), process->pid))
-                {
-                    if (process->pidfd >= 0) ::close(process->pidfd);
-                    process->pidfd = -1;
-                }
-            }
-            if (process->pidfd < 0)
-            {
-                process->pid = 0;  // unobserved numeric identities must never survive a reload
-            }
-
             watch_process(process);
             link.launcher = process;
             model.widgets[link.window_id] = std::move(link);
             keep_above(widget);
             set_scale(widget, 1.0);
             place_widget(widget, widget->get_output(), model.widgets[window->get_id()]);
+            handover_imported++;
         }
 
+        handover_outcome = "imported " + std::to_string(handover_imported) + " of " + std::to_string(links.size());
+        dispose_handover();
         announce_widgets();
+    }
+
+    /** Last statement of a successful init(): the reload that loaded this copy is complete. */
+    void acknowledge_reload()
+    {
+        if (!receipt_consumed) return;
+        std::remove(runtime_file(".reload-importing").c_str());
+        auto ack = runtime_file(".reload-ack");
+        std::ofstream out(ack + ".tmp");
+        out << reload_nonce << "\n" << handover_outcome << "\n";
+        out.close();
+        if (out) std::rename((ack + ".tmp").c_str(), ack.c_str());
+        else std::remove((ack + ".tmp").c_str());
+    }
+
+    /** fini() after a failed init(): never hands over; the attempt ends as failed. */
+    void fail_reload()
+    {
+        dispose_handover();
+        std::string nonce = reload_nonce;
+        if (!receipt_consumed)
+        {
+            // init() failed before reading its receipt: it is still this attempt's.
+            std::string refusal;
+            if (consume_receipt(refusal) || receipt_consumed) nonce = reload_nonce;
+        }
+        if (!receipt_consumed) return;
+        std::remove(runtime_file(".reload-importing").c_str());
+        auto failed = runtime_file(".reload-failed");
+        std::ofstream out(failed + ".tmp");
+        out << nonce << "\n" << "init failed" << "\n";
+        out.close();
+        if (out) std::rename((failed + ".tmp").c_str(), failed.c_str());
+        else std::remove((failed + ".tmp").c_str());
     }
 
     /** Widgets float above all ordinary windows (WG4), in the always-above layer Wayfire's
@@ -2870,6 +3121,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::txn::new_transaction_signal> on_new_transaction =
         [=] (wf::txn::new_transaction_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_new_transaction);
         if (model.widgets.empty())
         {
             return;
@@ -3541,6 +3793,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     std::map<std::string, uint64_t> published_versions;
     void publish_model()
     {
+        SCOTTLAND_LOOP_SCOPE(publish_model);
         if (installing_model)
         {
             return;
@@ -3554,7 +3807,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         model.version++;
-        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
         published_slices["desktop"] = text;
         full["version"] = (int64_t)model.version;
         send_ipc_event(full, "scottland-model#");
@@ -3574,6 +3826,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::ipc::method_callback desktop_state = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(desktop_state);
         std::string slice = data.has_member("slice") && data["slice"].is_string() ? data["slice"].as_string() : "desktop";
         if ((slice != "desktop") && (slice != "widgets") && (slice != "attention"))
         {
@@ -3586,6 +3839,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     wf::ipc::method_callback_full subscribe_model = [=] (wf::json_t data, wf::ipc::client_interface_t *client) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(subscribe_model);
         auto snapshot = desktop_state(data);
         if (!client || snapshot.has_member("error"))
         {
@@ -3609,6 +3863,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     wf::ipc::method_callback widgets_state = [=] (wf::json_t) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(widgets_state);
         auto reply = wf::ipc::json_ok();
         reply["widgets"] = widget_snapshot();
         reply["version"] = (int64_t)model.version;
@@ -3618,6 +3873,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Test-only observations cross IPC explicitly. No live drift monitor or repair path exists.
     wf::ipc::method_callback audit_model = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(audit_model);
         auto issues = wf::json_t::array();
         auto fail = [&] (const std::string& message) { issues.append(message); };
         for (auto& any : wf::get_core().get_all_views())
@@ -3770,12 +4026,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::wm_actions_above_changed_signal> on_above =
         [=] (wf::wm_actions_above_changed_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_above);
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
     };
 
     void handle_new_output(wf::output_t *output) override
     {
+        SCOTTLAND_LOOP_SCOPE(output_added);
         wf::per_output_tracker_mixin_t<center_resize_t>::handle_new_output(output);
         output_instance[output]->on_start = [=] () { stop_keyboard_motion(); bypass_window_keys(); };
         output->connect(&on_above);
@@ -3784,6 +4042,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     void handle_output_removed(wf::output_t *output) override
     {
+        SCOTTLAND_LOOP_SCOPE(output_removed);
         output->disconnect(&on_above);
         unwatch_fullscreen(output);
         wf::per_output_tracker_mixin_t<center_resize_t>::handle_output_removed(output);
@@ -3792,6 +4051,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_title_changed_signal> on_title =
         [=] (wf::view_title_changed_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_title);
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
     };
@@ -3799,6 +4059,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id =
         [=] (wf::view_app_id_changed_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_app_id);
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
     };
@@ -3808,6 +4069,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // from an earlier launch for the same window changes nothing.
     wf::ipc::method_callback widget_traits = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(widget_traits);
         if (!data.has_member("window") || !data["window"].is_int64() || !data.has_member("unit") ||
             !data["unit"].is_string())
         {
@@ -3880,6 +4142,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      *  raised and focused. `window` may name the app's window or its widget. */
     wf::ipc::method_callback present_method = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(present_method);
         if (!data.has_member("window") || !data["window"].is_int())
         {
             return wf::ipc::json_error("present needs integer \"window\"");
@@ -3949,6 +4212,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::ipc::method_callback widget_action = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(widget_action);
         if (!data.has_member("id") || !data["id"].is_string() || !data.has_member("action") ||
             !data["action"].is_string())
         {
@@ -4117,14 +4381,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_swipe_begin_event>> on_swipe_begin =
-        [=] (wf::input_event_signal<wlr_pointer_swipe_begin_event> *ev) { swipe_begin(ev->event->fingers); };
+        [=] (wf::input_event_signal<wlr_pointer_swipe_begin_event> *ev) { SCOTTLAND_LOOP_SCOPE(on_swipe); swipe_begin(ev->event->fingers); };
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_swipe_update_event>> on_swipe_update =
         [=] (wf::input_event_signal<wlr_pointer_swipe_update_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_swipe);
         swipe_update(ev->event->dx, ev->event->dy);
     };
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_swipe_end_event>> on_swipe_end =
-        [=] (wf::input_event_signal<wlr_pointer_swipe_end_event>*) { swipe_end(); };
+        [=] (wf::input_event_signal<wlr_pointer_swipe_end_event>*) { SCOTTLAND_LOOP_SCOPE(on_swipe); swipe_end(); };
 
     void replay_middle_click()
     {
@@ -4139,6 +4404,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> on_touchpad_button =
         [=] (wf::input_event_signal<wlr_pointer_button_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_touchpad_button);
         if (!touchpad_gestures || (ev->event->button != BTN_MIDDLE) || !is_touchpad(ev->device))
         {
             return;
@@ -4255,6 +4521,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_touch_down_event>> on_touch_down_capture =
         [=] (wf::input_event_signal<wlr_touch_down_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_touch_capture);
         if (!captured_touches.empty() || !wf::get_core().get_touch_state().fingers.empty())
         {
             return;  // another finger is down: a multi-finger touch, the app's as usual
@@ -4279,6 +4546,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_touch_motion_event>> on_touch_motion_capture =
         [=] (wf::input_event_signal<wlr_touch_motion_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_touch_capture);
         if (captured_touches.count(ev->event->touch_id))
         {
             ev->mode = wf::input_event_processing_mode_t::NO_CLIENT;
@@ -4288,6 +4556,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_touch_up_event>> on_touch_up_capture =
         [=] (wf::input_event_signal<wlr_touch_up_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_touch_capture);
         if (captured_touches.count(ev->event->touch_id))
         {
             ev->mode = wf::input_event_processing_mode_t::NO_CLIENT;
@@ -4297,6 +4566,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_down_event>> on_touch_down =
         [=] (wf::post_input_event_signal<wlr_touch_down_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_touch_down);
 
         int finger = ev->event->touch_id;
         log_widget_touch(finger);
@@ -4305,8 +4575,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             if (wf::get_core().get_touch_state().fingers.size() == 1)
             {
-                LOGI("scottland: touch ignored: a finger still counted down (hold ", hold_finger,
-                    ", lifted ", lifted_finger, ")");
+                scottland::loop::note(scottland::loop::note_id::touch_ignored, scottland::loop::xy(hold_finger, lifted_finger));
             }
 
             cancel_hold();  // a second finger: this is a multi-finger touch, never a lift
@@ -4332,20 +4601,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (auto link = link_of_widget(view))
         {
-            LOGI("scottland: touch on widget ", view->get_id(), link->touch_drag ? " (a drag moves it)" :
-                " (its own drags)");
+            scottland::loop::note(scottland::loop::note_id::touch_on_widget, view->get_id(), link->touch_drag);
         }
 
         start_touch_scroll(finger, view);
         hold_finger = finger;
         hold_origin = wf::get_core().get_touch_position(finger);
         hold_view   = view->weak_from_this();
-        hold_timer.set_timeout(std::max(50, (int)lift_delay), [=] () { lift_held_window(); });
+        hold_timer.set_timeout(std::max(50, (int)lift_delay), [=] () { SCOTTLAND_LOOP_SCOPE(hold_timer); lift_held_window(); });
     };
 
     wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_motion_event>> on_touch_motion =
         [=] (wf::post_input_event_signal<wlr_touch_motion_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_touch_motion);
 
         if ((ev->event->touch_id == lifted_finger) && drag->view)
         {
@@ -4370,7 +4639,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto link = view ? link_of_widget(view) : nullptr;
             if (link && link->touch_drag)
             {
-                LOGI("scottland: touch drag on widget ", view->get_id(), ": moving it");
+                scottland::loop::note(scottland::loop::note_id::touch_drag_widget, view->get_id());
                 lift_held_window(false);
             } else
             {
@@ -4382,6 +4651,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_up_event>> on_touch_up =
         [=] (wf::post_input_event_signal<wlr_touch_up_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_touch_up);
 
         if (ev->event->touch_id == hold_finger)
         {
@@ -4434,12 +4704,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto link = link_of_widget(widget);
-        LOGI("scottland: touch down on widget ", widget->get_id(), " at ", at.x, ",", at.y, ": hit ",
-            on_frame ? "its halo" : "its surface", ", touch focus ", focus ? (dynamic_cast<scottland::frame_t*>(
-            focus.get()) ? "a halo" : "a surface") : "none", ", fingers ",
-            wf::get_core().get_touch_state().fingers.size(), ", hold ", hold_finger, ", lifted ", lifted_finger,
-            ", movable ", (widget->get_allowed_actions() & wf::VIEW_ALLOW_MOVE) ? "yes" : "no",
-            ", touch_drag ", (link && link->touch_drag) ? "yes" : "no");
+        uint64_t focus_kind = focus ? (dynamic_cast<scottland::frame_t*>(focus.get()) ? 2 : 1) : 0;
+        scottland::loop::note(scottland::loop::note_id::touch_down_widget, widget->get_id(), scottland::loop::xy(at.x, at.y),
+            (uint64_t)on_frame | focus_kind << 1 | (uint64_t)bool(widget->get_allowed_actions() & wf::VIEW_ALLOW_MOVE) << 3 |
+            (uint64_t)bool(link && link->touch_drag) << 4 |
+            (uint64_t)std::min<size_t>(wf::get_core().get_touch_state().fingers.size(), 255) << 8,
+            scottland::loop::xy(hold_finger, lifted_finger));
     }
 
     void lift_held_window(bool pop = true)
@@ -4547,7 +4817,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        wf::get_core().run("pw-play '" + pop_sound + "' 2>/dev/null || paplay '" + pop_sound +
+        run_command("pw-play '" + pop_sound + "' 2>/dev/null || paplay '" + pop_sound +
             "' 2>/dev/null || aplay -q '" + pop_sound + "' 2>/dev/null");
     }
 
@@ -4577,7 +4847,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return view && !pattern.empty() && std::regex_search(view->get_app_id(), std::regex(pattern, std::regex::icase));
         } catch (const std::regex_error&)
         {
-            LOGE("scottland: bad touch_scroll_wheel regex: ", pattern);
+            scottland::loop::note(scottland::loop::note_id::bad_regex, 0);
             return false;
         }
     }
@@ -4604,7 +4874,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
             } catch (const std::regex_error&)
             {
-                LOGE("scottland: bad touch_scroll_", name, " regex: ", pattern);
+                scottland::loop::note(scottland::loop::note_id::bad_regex, 1);
             }
         }
 
@@ -4690,6 +4960,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         momentum.set_timeout(16, [=] ()
         {
+            SCOTTLAND_LOOP_SCOPE(momentum);
             touch_pointer->scroll(scroll_velocity.x * 16, scroll_velocity.y * 16, scroll_as_wheel);
             scroll_velocity = {scroll_velocity.x * 0.94, scroll_velocity.y * 0.94};
             if (std::hypot(scroll_velocity.x, scroll_velocity.y) < 0.03)
@@ -4705,6 +4976,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // Tests can't produce real touchpad gestures: this feeds the same handlers synthetic ones.
     wf::ipc::method_callback test_input = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(test_input);
         // Real wlroots pointer-axis input for isolated settings scroll tests. This is
         // deliberately unavailable in ordinary sessions, and never sets QML state.
         if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("scroll_y"))
@@ -4752,12 +5024,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
 
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_event>> on_motion =
-        [=] (auto) { check_middle_drag(); track_pointer(); };
+        [=] (auto) { SCOTTLAND_LOOP_SCOPE(on_motion); check_middle_drag(); track_pointer(); };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_motion_absolute_event>> on_motion_abs =
-        [=] (auto) { check_middle_drag(); track_pointer(); };
+        [=] (auto) { SCOTTLAND_LOOP_SCOPE(on_motion); check_middle_drag(); track_pointer(); };
     wf::signal::connection_t<wf::post_input_event_signal<wlr_pointer_button_event>> on_button =
         [=] (wf::post_input_event_signal<wlr_pointer_button_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_button);
         if (ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED)
         {
             if (auto owner = pointer_owner.lock())
@@ -4785,6 +5058,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<wf::buttonbinding_t> move_shift_button{"scottland/move_shift"};
     wf::button_callback on_move = [this] (auto)
     {
+        SCOTTLAND_LOOP_SCOPE(on_move);
         auto view = gesture_target();
         if (!view || drag->view) return false;
         start_pointer_drag(view, wf::buttonbinding_t(move_button).get_button());
@@ -4792,6 +5066,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     wf::button_callback on_move_shift = [this] (auto)
     {
+        SCOTTLAND_LOOP_SCOPE(on_move);
         auto view = gesture_target();
         if (!view || drag->view) return false;
         start_pointer_drag(view, wf::buttonbinding_t(move_shift_button).get_button());
@@ -4835,7 +5110,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.held_above = view->weak_from_this();
         }
 
-        held_above_timer.set_timeout(DRAG_CHAIN_MS, [=] () { release_above(); });
+        held_above_timer.set_timeout(DRAG_CHAIN_MS, [=] () { SCOTTLAND_LOOP_SCOPE(held_above_timer); release_above(); });
     }
 
     void release_above()
@@ -4932,9 +5207,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.origin.view = view;  // the window being dragged now (maybe the other form)
         }
 
-        LOGI("scottland: drag start: window ", drag->view->get_id(), continued ? " continues the move" :
-            " starts a move", " (", (int32_t)(now_msec() - model.drag.last_drop_at), " ms after the last drop, of window ",
-            model.drag.last_drop.became, "); Esc goes to ", model.drag.origin.position.x, ",", model.drag.origin.position.y);
+        scottland::loop::note(scottland::loop::note_id::drag_start, drag->view->get_id(),
+            (uint64_t)continued | (uint64_t)(uint32_t)(int32_t)(now_msec() - model.drag.last_drop_at) << 32,
+            model.drag.last_drop.became, scottland::loop::xy(model.drag.origin.position.x, model.drag.origin.position.y));
         model.drag.cancelled = false;
         auto running = transitions.find(drag->view->get_id());
         model.drag.target = running != transitions.end() ? running->second.animation.end : displayed_scale(drag->view);
@@ -4944,6 +5219,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::move_drag::drag_focus_output_signal> on_drag_output =
         [=] (wf::move_drag::drag_focus_output_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_drag_output);
         if (!ev->previous_focus_output)
         {
             note_drag_start();
@@ -5066,7 +5342,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         if (!morph_tick.is_connected())
         {
-            morph_tick.set_timeout(8, [=] () { return step_morph(); });
+            morph_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(morph_tick); return step_morph(); });
         }
     }
 
@@ -5279,7 +5555,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         frame->translation_x = glide.dx; frame->translation_y = glide.dy;
         frame->scale_x = frame->scale_y = from_scale;
         frame->damage();
-        if (!glide_tick.is_connected()) glide_tick.set_timeout(8, [=] () { return step_glides(); });
+        if (!glide_tick.is_connected()) glide_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(glide_tick); return step_glides(); });
     }
 
     /** Draw `view` gliding away from where it is to (dx, dy) off it, then run `done`. */
@@ -5302,7 +5578,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         glide.progress.animate(0.0, 1.0);
         if (!glide_tick.is_connected())
         {
-            glide_tick.set_timeout(8, [=] () { return step_glides(); });
+            glide_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(glide_tick); return step_glides(); });
         }
     }
 
@@ -5317,7 +5593,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void watch_fullscreen(wf::output_t *output)
     {
         auto watch = std::make_unique<wf::signal::connection_t<wf::fullscreen_layer_focused_signal>>(
-            [=] (wf::fullscreen_layer_focused_signal *ev) { set_focus_mode(output, ev->has_promoted); });
+            [=] (wf::fullscreen_layer_focused_signal *ev) { SCOTTLAND_LOOP_SCOPE(on_fullscreen); set_focus_mode(output, ev->has_promoted); });
         output->connect(watch.get());
         fullscreen_watch[output] = std::move(watch);
     }
@@ -5349,7 +5625,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.focused_outputs.erase(output);
         }
 
-        LOGI("scottland: full screen on ", output->to_string(), on ? ": focus (widgets away)" : ": widgets back");
+        scottland::loop::note(scottland::loop::note_id::fullscreen, on);
         for (auto& [id, link] : model.widgets)
         {
             if ((link.output == output) && !link.previewing())
@@ -5415,7 +5691,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         focus_hooks_on = any;
         const char *hooks = getenv("SCOTTLAND_HOOKS");
-        wf::get_core().run(shell_quote(std::string(hooks ? hooks : "/usr/lib/scottland") +
+        run_command(shell_quote(std::string(hooks ? hooks : "/usr/lib/scottland") +
             "/libexec/scottland-focus-mode") + (any ? " on" : " off"));
     }
 
@@ -5440,13 +5716,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         view->damage();
         if (!glide_tick.is_connected())
         {
-            glide_tick.set_timeout(8, [=] () { return step_glides(); });
+            glide_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(glide_tick); return step_glides(); });
         }
     }
 
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_cancel_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_cancel_key);
         if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
         if ((ev->event->keycode == KEY_ESC) && (ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED) &&
             drag->view && !model.drag.cancelled)
@@ -5483,8 +5760,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             wf::move_view_to_output(view, origin.output, false);
         }
 
-        LOGI("scottland: Esc: window ", view->get_id(), " (", view->get_title(), ") back from ", g.x, ",", g.y,
-            " to ", origin.position.x, ",", origin.position.y);
+        scottland::loop::note(scottland::loop::note_id::esc_return, view->get_id(), scottland::loop::xy(g.x, g.y),
+            scottland::loop::xy(origin.position.x, origin.position.y));
         move_window(view, origin.position.x, origin.position.y);
         if (auto link = link_of_widget(view))
         {
@@ -5688,6 +5965,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::move_drag::drag_motion_signal> on_drag_motion =
         [=] (wf::move_drag::drag_motion_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_drag_motion);
         auto view   = drag->view;
         auto output = drag->current_output;
         refresh_layout_avoidance();
@@ -5816,6 +6094,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::move_drag::drag_done_signal> on_drag_done =
         [=] (wf::move_drag::drag_done_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_drag_done);
         // The dropped geometry is final; drag->view may still point at the view here.
         // What you saw while dragging is what you get: right at a jump in scale (the drag keeps
         // its size there until the other one agrees, see on_drag_motion) the drop can land where
@@ -5852,8 +6131,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.last_drop    = origin_for(main);
             model.drag.last_drop_at = now_msec();
             model.drag.last_drop.became = main->get_id();
-            LOGI("scottland: drop: window ", main->get_id(), " (the move began at ", model.drag.last_drop.position.x, ",",
-                model.drag.last_drop.position.y, ")");
+            scottland::loop::note(scottland::loop::note_id::drop, main->get_id(),
+                scottland::loop::xy(model.drag.last_drop.position.x, model.drag.last_drop.position.y));
         }
 
         model.drag.origin = {};
@@ -5960,6 +6239,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_mapped);
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             observe_view(toplevel);
@@ -5970,13 +6250,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         apply(ev->view);
-        hint_registration.run_once([=] () { refresh_layout_avoidance(); });
-        idle_focus.run_once([=] () { update_focus(); });
+        hint_registration.run_once([=] () { SCOTTLAND_LOOP_SCOPE(hint_registration); refresh_layout_avoidance(); });
+        idle_focus.run_once([=] () { SCOTTLAND_LOOP_SCOPE(idle_focus); update_focus(); });
     };
 
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
         [=] (wf::view_geometry_changed_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_geometry);
         if (auto view = wf::toplevel_cast(ev->view))
         {
             recenter_keyboard_resize(view);
@@ -6004,6 +6285,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::signal::connection_t<wf::view_set_output_signal> on_output = [=] (wf::view_set_output_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_output);
         apply(ev->view);
         refresh_layout_avoidance();
     };
@@ -6018,6 +6300,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::render_pass_end_signal> on_test_render_end =
         [this] (wf::render_pass_end_signal *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_test_render_end);
         if (!capture_next_frame)
             return;
         auto target = ev->pass.get_target();
@@ -6047,6 +6330,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::ipc::method_callback layout_state = [=] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(layout_state);
         wf::json_t reply = wf::ipc::json_ok();
         wf::json_t views = wf::json_t::array();
         reply["widget_transition_count"] = (int64_t)widget_transitions.size();
@@ -6167,6 +6451,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::ipc::method_callback send_key = [] (wf::json_t data) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(send_key);
         if (!data.has_member("key") || !data["key"].is_string())
         {
             return wf::ipc::json_error("send-key needs a string \"key\"");
@@ -6214,6 +6499,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_axis_event>> on_axis =
         [=] (wf::input_event_signal<wlr_pointer_axis_event> *ev)
     {
+SCOTTLAND_LOOP_SCOPE(on_axis);
 #if WAYFIRE_API_ABI_VERSION_MACRO <= 2026'07'26
         if ((ev->event->source == WL_POINTER_AXIS_SOURCE_FINGER) && ev->device &&
             (ev->device->type == WLR_INPUT_DEVICE_POINTER) &&
@@ -6248,6 +6534,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_remap_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_remap_key);
         if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
         if (key_layers.handles(ev))
         {
@@ -6294,7 +6581,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 }
             } catch (const std::regex_error&)
             {
-                LOGE("scottland: bad remap_apps_", name, " regex: ", apps);
+                scottland::loop::note(scottland::loop::note_id::bad_regex, 2);
                 continue;
             }
 
@@ -6316,6 +6603,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_key);
         if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
         if (key_layers.handles(ev) || (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED))
         {
@@ -6329,14 +6617,125 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto code = evdev_keycode(keymap, key);
             if (code && (*code == ev->event->keycode))
             {
-                wf::get_core().run(command);
+                run_command(command);
             }
         }
     };
 
+    // Main-loop timing, diagnostic ring and watchdog (docs/main-loop.md). Started first in init()
+    // and stopped last in fini().
+    scottland::loop::monitor_t loop_monitor;
+    wf::wl_idle_call test_loop_idle;
+    wf::ipc::method_callback loop_stats = [=] (wf::json_t data) -> wf::json_t
+    {
+        SCOTTLAND_LOOP_SCOPE(loop_stats);
+        wf::json_t reply;
+        bool reset = data.has_member("reset") && data["reset"].is_bool() && data["reset"].as_bool();
+        if (wf::json_t::parse_string(loop_monitor.stats_json(reset), reply))
+            return wf::ipc::json_error("loop statistics unavailable");
+        // What scottland-reload needs to resolve an attempt by evidence: which load of the plugin
+        // in this process answers, and the receipt it consumed.
+        reply["reload"]["load"] = (int64_t)plugin_load;
+        reply["reload"]["nonce"] = reload_nonce;
+        reply["reload"]["outcome"] = handover_outcome;
+        return reply;
+    };
+    uint64_t plugin_load = 0;  // which plugin load in this compositor process this copy is
+
+    // Tests only (SCOTTLAND_TEST_MODEL=1): another owner's disable on a window ("disable",
+    // "enable"), a root node's state ("enabled"), and descriptor sentinels ("open": "live",
+    // "dead" or "file") that a reload must leave alone.
+    std::vector<int> test_sentinels;
+    std::vector<pid_t> test_children;
+    wf::ipc::method_callback test_handover = [=] (wf::json_t data) -> wf::json_t
+    {
+        SCOTTLAND_LOOP_SCOPE(test_loop);
+        auto reply = wf::ipc::json_ok();
+        for (auto action : {"disable", "enable", "enabled"})
+            if (data.has_member(action))
+            {
+                auto view = view_by_id((uint64_t)data[action].as_int64());
+                if (!view) return wf::ipc::json_error("no such view");
+                if (std::string(action) == "disable") wf::scene::set_node_enabled(view->get_root_node(), false);
+                if (std::string(action) == "enable") wf::scene::set_node_enabled(view->get_root_node(), true);
+                reply["enabled"] = view->get_root_node()->is_enabled();
+            }
+        if (data.has_member("open"))
+        {
+            std::string kind = data["open"].as_string();
+            int fd = -1;
+            if (kind == "file") fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+            else
+            {
+                pid_t child = fork();
+                if (child == 0) { if (kind == "live") { alarm(600); pause(); } _exit(0); }
+                fd = child > 0 ? pidfd_open(child, 0) : -1;
+                if (kind == "dead" && child > 0) waitpid(child, nullptr, 0);
+                if (kind == "live" && child > 0) test_children.push_back(child);
+            }
+            if (fd < 0) return wf::ipc::json_error("couldn't open a sentinel");
+            test_sentinels.push_back(fd);
+            reply["fd"] = fd;
+        }
+        return reply;
+    };
+    // Tests only (SCOTTLAND_TEST_MODEL=1): occupy the main loop for busy_ms, inside a work scope or,
+    // with "scoped": false, in an idle callback outside every Scottland scope.
+    wf::ipc::method_callback test_loop = [=] (wf::json_t data) -> wf::json_t
+    {
+        SCOTTLAND_LOOP_SCOPE(test_loop);
+        uint64_t busy = data.has_member("busy_ms") && data["busy_ms"].is_int() ? data["busy_ms"].as_int() : 0;
+        bool scoped = !data.has_member("scoped") || !data["scoped"].is_bool() || data["scoped"].as_bool();
+        test_loop_idle.run_once([busy, scoped] ()
+        {
+            std::optional<scottland::loop::scope_t> scope;
+            if (scoped) scope.emplace(scottland::loop::scope_id::test_loop);
+            auto until = scottland::loop::now_ns() + busy * scottland::loop::ms;
+            while (scottland::loop::now_ns() < until) {}
+        });
+        return wf::ipc::json_ok();
+    };
+
+    void start_loop_monitor()
+    {
+        scottland::loop::faults_t faults;
+        if (getenv("SCOTTLAND_TEST_MODEL"))
+            if (const char *list = getenv("SCOTTLAND_TEST_LOOP_FAULTS"))
+            {
+                std::string text = list;
+                faults.ring = text.find("ring") != std::string::npos;
+                faults.mlock = text.find("mlock") != std::string::npos;
+                faults.eventfd = text.find("eventfd") != std::string::npos;
+                faults.event_source = text.find("source") != std::string::npos;
+                faults.thread = text.find("thread") != std::string::npos;
+            }
+        auto ring = runtime_file(".loop");
+        mkdir(ring.substr(0, ring.rfind('/')).c_str(), 0700);
+        loop_monitor.start(wf::get_core().ev_loop, ring, scottland::loop::hash(model.session), faults);
+        scottland::loop::current = &loop_monitor;
+        ipc_repo->register_method("scottland/loop-stats", loop_stats);
+        if (getenv("SCOTTLAND_TEST_MODEL") && std::string(getenv("SCOTTLAND_TEST_MODEL")) == "1")
+        {
+            ipc_repo->register_method("scottland/test-loop", test_loop);
+            ipc_repo->register_method("scottland/test-handover", test_handover);
+        }
+    }
+
+    void stop_loop_monitor(bool reloading)
+    {
+        test_loop_idle.disconnect();
+        ipc_repo->unregister_method("scottland/loop-stats");
+        ipc_repo->unregister_method("scottland/test-loop");
+        ipc_repo->unregister_method("scottland/test-handover");
+        scottland::loop::current = nullptr;
+        loop_monitor.stop(!reloading);
+    }
+
   public:
     void init() override
     {
+        // Before anything that can throw: what a reload transferred is owned from here on.
+        acquire_handover();
         // Wayfire's PRINT_TRACE SIGABRT handler prints then _Exit(-1), losing the
         // core (and can itself block in a hung process). Use the kernel's core
         // disposition for operator diagnostics, independent of the event loop.
@@ -6357,6 +6756,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             setenv("SCOTTLAND_INTERNAL_MODEL_SESSION", session.c_str(), 1);
         }
         model.session = getenv("SCOTTLAND_INTERNAL_MODEL_SESSION");
+        if (auto loads = getenv("SCOTTLAND_INTERNAL_PLUGIN_LOADS")) plugin_load = std::strtoull(loads, nullptr, 10);
+        setenv("SCOTTLAND_INTERNAL_PLUGIN_LOADS", std::to_string(++plugin_load).c_str(), 1);
+        start_loop_monitor();
         if (auto version = getenv("SCOTTLAND_INTERNAL_MODEL_VERSION"))
         {
             model.version = std::strtoull(version, nullptr, 10);
@@ -6401,7 +6803,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             observe_view(wf::toplevel_cast(view));
         }
+        if (handover_fault("init-fail-before-adoption")) throw std::runtime_error("test: init fails before adoption");
         take_handover();
+        if (handover_fault("init-fail-after-adoption")) throw std::runtime_error("test: init fails after adoption");
         init_window_keys();
         wf::get_core().connect(&on_minimize_edge);
         wf::get_core().connect(&on_minimize_device_removed);
@@ -6427,34 +6831,35 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag->connect(&on_drag_output);
         drag->connect(&on_drag_motion);
         drag->connect(&on_drag_done);
-        center_width.set_callback([=] { apply_all(); });
-        rail_width.set_callback([=] { apply_all(); });
-        min_scale.set_callback([=] { apply_all(); });
-        max_scale.set_callback([=] { apply_all(); });
+        center_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
+        rail_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
+        min_scale.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
+        max_scale.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
         load_curve();
-        scale_curve_text.set_callback([=] { load_curve(); apply_all(); });
-        blend_width.set_callback([=] { apply_all(); });
-        center_opacity_focused.set_callback([=] { apply_all_opacity(); });
-        center_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
-        side_opacity_focused.set_callback([=] { apply_all_opacity(); });
-        side_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
-        widget_opacity_focused.set_callback([=] { apply_all_opacity(); });
-        widget_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
-        window_mode_opacity_focused.set_callback([=] { apply_all_opacity(); });
-        window_mode_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
-        unfocused_edge_tone_light.set_callback([=] { load_color_scheme(); });
-        unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
-        unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
-        window_mode_tint.set_callback([=] { load_color_scheme(); refresh_layout_avoidance(); });
+        scale_curve_text.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); load_curve(); apply_all(); });
+        blend_width.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_layout); apply_all(); });
+        center_opacity_focused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        center_opacity_unfocused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        side_opacity_focused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        side_opacity_unfocused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        widget_opacity_focused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        widget_opacity_unfocused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        window_mode_opacity_focused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        window_mode_opacity_unfocused.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_opacity); apply_all_opacity(); });
+        unfocused_edge_tone_light.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_colors); load_color_scheme(); });
+        unfocused_edge_tone_dark.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_colors); load_color_scheme(); });
+        unfocused_edge_strength.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_colors); load_color_scheme(); });
+        window_mode_tint.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_colors); load_color_scheme(); refresh_layout_avoidance(); });
         auto avoidance_setting_changed = [=] {
+            SCOTTLAND_LOOP_SCOPE(option_avoidance);
             declutter_signature.clear();
             refresh_layout_avoidance();
         };
         window_avoidance_always.set_callback(avoidance_setting_changed);
         hint_avoidance_always.set_callback(avoidance_setting_changed);
-        color_scheme.set_callback([=] { load_color_scheme(); });
-        accent_color.set_callback([=] { load_color_scheme(); });
-        attention_color.set_callback([=] { load_color_scheme(); });
+        color_scheme.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_colors); load_color_scheme(); });
+        accent_color.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_colors); load_color_scheme(); });
+        attention_color.set_callback([=] { SCOTTLAND_LOOP_SCOPE(option_colors); load_color_scheme(); });
         load_color_scheme();
         apply_all();
         update_focus();
@@ -6474,6 +6879,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             });
         refresh_layout_avoidance();
         LOGI("scottland: plugin loaded");
+        init_completed = true;
+        acknowledge_reload();
     }
 
     void fini() override
@@ -6481,7 +6888,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag->handle_input_released();
         wf::get_core().bindings->rem_binding(&on_move);
         wf::get_core().bindings->rem_binding(&on_move_shift);
-        bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
+        // Only a copy whose init() completed hands over (a failed one never does), and only
+        // during a reload: scottland-reload's marker.
+        handover_faults_read = false;  // tests may change them between this copy's init() and fini()
+        bool reloading = init_completed && access(runtime_file(".reloading").c_str(), F_OK) == 0;
+        if (!init_completed) fail_reload();
         installing_model = reloading;  // teardown is also part of the atomic handover
         widget_peek_tick.disconnect();
         goo.stop();
@@ -6548,18 +6959,37 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         end_morph();
         widget_watchdog.disconnect();
         release_above();  // a just-dropped window doesn't stay above for good
+        // The handover is published completely or not at all: duplicated handles, the file and
+        // the environment list. On any failure the widgets go as in an ordinary unload.
         wf::json_t handover = wf::json_t::array();
-        for (auto& [id, link] : model.widgets)
+        std::vector<uint64_t> handed;
+        scottland::handover::list_t list;
+        bool published = false;
+        if (reloading)
         {
-            auto widget = wf::toplevel_cast(link.widget.lock());
-            if (reloading && link.docked() && widget && widget->is_mapped())
+            list.id = scottland::handover::random_id();
+            list.version = model.version;
+            bool ok = true;
+            for (auto& [id, link] : model.widgets)
             {
+                auto widget = wf::toplevel_cast(link.widget.lock());
+                if (!link.docked() || !widget || !widget->is_mapped()) continue;
+                int duplicate = -1;
+                if (link.launcher && link.launcher->pidfd >= 0 && !handover_fault("dup"))
+                {
+                    duplicate = fcntl(link.launcher->pidfd, F_DUPFD_CLOEXEC, 0);
+                    if (duplicate < 0) ok = false;
+                    else list.fds.push_back(duplicate);
+                } else if (link.launcher && link.launcher->pidfd >= 0)
+                {
+                    ok = false;
+                }
                 wf::json_t entry;
                 entry["window"] = (int64_t)id;
                 entry["widget"] = (int64_t)widget->get_id();
                 entry["unit"]   = link.launcher ? link.launcher->unit : "";
-                entry["pid"]    = (int64_t)(link.launcher ? link.launcher->pid : 0);
-                entry["pidfd"]  = (int64_t)(link.launcher && link.launcher->pidfd >= 0 ? fcntl(link.launcher->pidfd, F_DUPFD_CLOEXEC, 0) : -1);
+                entry["pid"]    = (int64_t)(link.launcher ? link.launcher->pid : 0) + (handover_fault("bad-pid") ? 7 : 0);
+                entry["pidfd"]  = (int64_t)duplicate;
                 entry["rail"]   = link.rail;
                 entry["x"] = link.drop.x;
                 entry["y"] = link.drop.y;
@@ -6570,24 +7000,51 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 entry["icon"] = link.icon;
                 entry["card"] = link.card;
                 handover.append(entry);
+                handed.push_back(id);
+                list.leases.push_back(id);
+            }
+
+            auto path = runtime_file(".widget-handover.json");
+            if (ok && !handed.empty())
+            {
+                auto snapshot = model_snapshot("desktop");
+                snapshot["version"] = (int64_t)model.version;
+                snapshot["links"] = handover;
+                snapshot["format"] = scottland::handover::format;
+                snapshot["id"] = handover_fault("wrong-id") ? std::string("not-this-list") : list.id;
+                snapshot["pid"] = (int64_t)getpid();
+                snapshot["start_time"] = (int64_t)scottland::handover::process_start_time();
+                snapshot["session"] = model.session;
+                std::ofstream out(path + ".tmp");
+                out << (handover_fault("corrupt-file") ? std::string("{\"format\": 2, \"links\": [") : snapshot.serialize());
+                out.close();
+                ok = out && !handover_fault("write") && !handover_fault("rename") &&
+                    std::rename((path + ".tmp").c_str(), path.c_str()) == 0;
+                ok = ok && !handover_fault("setenv") &&
+                    setenv(scottland::handover::environment, scottland::handover::format_list(list).c_str(), 1) == 0;
+            }
+            published = ok && !handed.empty();
+            if (!published)
+            {
+                for (int fd : list.fds) ::close(fd);
+                std::remove((path + ".tmp").c_str());
+                std::remove(path.c_str());
+                unsetenv(scottland::handover::environment);
+                handed.clear();
+            }
+        }
+
+        for (auto& [id, link] : model.widgets)
+        {
+            auto widget = wf::toplevel_cast(link.widget.lock());
+            if (std::find(handed.begin(), handed.end(), id) != handed.end())
+            {
                 transition_widget(link, widget_link_t::lifecycle_t::handed_over);
                 continue;  // the window keeps its disable: the next plugin holds it
             }
 
             transition_widget(link, widget_link_t::lifecycle_t::restoring);
             close_view_or_process(widget, link.launcher);
-        }
-
-        if (reloading)
-        {
-            auto snapshot = model_snapshot("desktop");
-            snapshot["version"] = (int64_t)model.version;
-            snapshot["links"] = handover;
-            auto path = runtime_file(".widget-handover.json");
-            std::ofstream out(path + ".tmp");
-            out << snapshot.serialize();
-            out.close();
-            std::rename((path + ".tmp").c_str(), path.c_str());
         }
 
         // Returning a disable is part of unloading the renderer. Only handed-over apps keep
@@ -6602,7 +7059,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
         model.widgets.clear();
-        if (handover.size() == 0)
+        if (!published)
         {
             announce_widgets();  // the widget service drops its objects
         }
@@ -6625,6 +7082,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fini_widget_spawn();
         fini_hint_palette_watch();
         LOGI("scottland: plugin unloaded");
+        stop_loop_monitor(reloading);
+        // The handover list is bound to the version the next copy will find (nothing publishes
+        // while handing over, but the binding must hold whatever happened above).
+        if (published && model.version != list.version)
+        {
+            list.version = model.version;
+            setenv(scottland::handover::environment, scottland::handover::format_list(list).c_str(), 1);
+        }
+        // The next copy continues the model's version. Written once, here, and not on every
+        // publish: setenv is not safe while another thread may read the environment.
+        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
     }
 };
 

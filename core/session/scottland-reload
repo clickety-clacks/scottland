@@ -1,83 +1,329 @@
-#!/bin/sh
-# Reload Scottland in place: load the current plugin build and config into the running session.
-# Windows stay open. Use after updating or rebuilding Scottland; a session restart is only
-# needed for changes to the launcher or session hooks.
-#
-# The plugin is copied to a fresh file each time: a library at the same path would be reused
-# from memory, so Wayfire would keep running the old code.
-#
-#   scottland-reload [--display wayland-N]
-#
-# Runs inside the session's own environment wherever it's started from (a keybinding, another
-# desktop's terminal, ssh, an agent): it re-executes itself through scottland-exec, which uses
-# the environment the session recorded at startup. The caller's environment is never used, so a
-# shell belonging to Hyprland can't leak Hyprland's variables into Scottland's helpers.
-set -eu
-dev="${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev"
-if [ -z "${SCOTTLAND_EXEC:-}" ]; then
-  for exe in "$dev/libexec/scottland-exec" /usr/lib/scottland/libexec/scottland-exec; do
-    [ -x "$exe" ] || continue
-    if [ -n "$("$exe" --list)" ]; then
-      exec "$exe" "$@" -- "$0"
-    fi
-    break
-  done
-  # Sessions started before scottland-exec existed recorded no environment: only a caller
-  # inside the session (the keybinding) has the right one.
-  echo "scottland-reload: this session predates scottland-exec; using the caller's environment" >&2
-fi
-runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
-hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}"
-[ -n "${WAYFIRE_SOCKET:-}" ] || { echo "scottland-reload: no running Scottland session found" >&2; exit 1; }
+#!/usr/bin/env python3
+"""Reload Scottland in place: load the current plugin build and config into the running session.
+Windows stay open. Use after updating or rebuilding Scottland; a session restart is only needed
+for changes to the launcher or session hooks.
 
-source_plugin=/usr/lib/wayfire/libscottland.so
-[ -e "$dev/plugins/libscottland.so" ] && source_plugin="$dev/plugins/libscottland.so"
+  scottland-reload [--display wayland-N]
 
-mkdir -p "$runtime/plugins"
-fresh="$runtime/plugins/libscottland-$(date +%s%N).so"
-cp -L "$source_plugin" "$fresh"
-previous=$(cat "$runtime/plugins/current" 2>/dev/null || true)
-echo "$fresh" >"$runtime/plugins/current"
+Runs inside the session's own environment wherever it's started from (a keybinding, another
+desktop's terminal, ssh, an agent): it re-executes itself through scottland-exec, which uses the
+environment the session recorded at startup. The caller's environment is never used.
 
-# Rewrite the config (new settings take their saved values; the plugin list names the fresh
-# copy), register any new settings, then swap the plugin. The plugin list is also set over IPC:
-# values set over IPC (e.g. by the settings app) take precedence over the file.
-"$hooks/libexec/scottland-build-config" >/dev/null
-# Widgets stay through a reload: the outgoing plugin sees this mark and hands them over.
-reloading="$runtime/${WAYLAND_DISPLAY:-wayland}.reloading"
-touch "$reloading"
-trap 'rm -f "$reloading"' EXIT
-python3 - "$WAYFIRE_SOCKET" "$fresh" "$runtime/wayfire.ini" <<'PY'
-import json, re, socket, struct, sys, time
-sock = socket.socket(socket.AF_UNIX); sock.connect(sys.argv[1])
-def call(method, data=None):
-    body = json.dumps({"method": method, "data": data or {}}).encode()
-    sock.sendall(struct.pack("<I", len(body)) + body)
-    size = struct.unpack("<I", sock.recv(4))[0]; reply = b""
-    while len(reply) < size: reply += sock.recv(size - len(reply))
-    return json.loads(reply)
-call("wayfire/reload-config-metadata")
-# The plugin list comes from the rebuilt config, so a reload also adds and removes plugins.
-config = open(sys.argv[3]).read()
-match = re.search(r"(?ms)^plugins\s*=\s*((?:[^\n]*\\\n)*[^\n]*)", config)
-plugins = match.group(1).replace("\\\n", " ").split() if match else \
-    call("wayfire/get-config-option", {"option": "core/plugins"})["value"].split()
-plugins = [sys.argv[2] if p == "scottland" or "/libscottland-" in p else p for p in plugins]
-reply = call("wayfire/set-config-options", {"core/plugins": " ".join(plugins)})
-if reply.get("error"): sys.exit(f"scottland-reload: {reply['error']}")
-time.sleep(1)
-PY
-rm -f "$reloading"
+Test sessions (tests/headless.sh) set SCOTTLAND_TEST_RELOAD_DIR: plugin copies and the config are
+kept there instead of the machine's runtime directory, which belongs to its real session, and
+SCOTTLAND_RELOAD_SOURCE names the plugin build to load.
 
-# Old copies are no longer loaded.
-for old in "$runtime"/plugins/libscottland-*.so; do
-  [ "$old" = "$fresh" ] || rm -f "$old"
-done
-[ -n "$previous" ] && rm -f "$previous"
-# Integrations restart their own session helpers (reload.d/*, e.g. the adapter's Lua host).
-for hook in "$hooks"/reload.d/*; do
-  [ -f "$hook" ] && [ -x "$hook" ] && "$hook"
-done
+A reload is one serialized attempt with an explicit outcome (docs/main-loop.md, "Reload"):
+  1. Under a lock, an earlier attempt for this compositor that has no outcome yet blocks a new
+     one. If a Scottland plugin answers, the swap may still be in progress: refuse. If none
+     answers (the new copy never loaded), resume that attempt: retry the configured copy with
+     wayfire/reload-plugins (setting the same plugin list again would load nothing).
+  2. A fresh attempt writes a receipt (nonce, compositor pid and start time, model session) and
+     the .reloading mark before anything that can make Wayfire swap the plugin. The new plugin
+     consumes the receipt and answers with an acknowledgment (or fini() records a failure).
+  3. Wait up to 30 s for that outcome. Once a swap may have been triggered, an error or a timeout
+     leaves the attempt unresolved: receipt, handover and mark stay for the next invocation.
+"""
+import fcntl
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
 
-command -v notify-send >/dev/null && notify-send -a Scottland "Scottland reloaded" "Plugin and config reloaded in place." || true
-echo "reloaded from $source_plugin"
+UNRESOLVED = 2
+
+
+def reexec():
+    if os.environ.get("SCOTTLAND_EXEC"):
+        return
+    dev = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "scottland/dev"
+    for exe in (dev / "libexec/scottland-exec", Path("/usr/lib/scottland/libexec/scottland-exec")):
+        if not os.access(exe, os.X_OK):
+            continue
+        if subprocess.run([str(exe), "--list"], capture_output=True, text=True).stdout.strip():
+            os.execv(str(exe), [str(exe), *sys.argv[1:], "--", os.path.realpath(sys.argv[0])])
+        break
+    # Sessions started before scottland-exec existed recorded no environment: only a caller
+    # inside the session (the keybinding) has the right one.
+    print("scottland-reload: this session predates scottland-exec; using the caller's environment", file=sys.stderr)
+
+
+class Ipc:
+    def __init__(self, path, timeout=5):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(timeout)
+        self.sock.connect(path)
+
+    def peer_pid(self):
+        pid, _, _ = struct.unpack("3i", self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        return pid
+
+    def _read(self, n):
+        b = b""
+        while len(b) < n:
+            more = self.sock.recv(n - len(b))
+            if not more:
+                raise EOFError("the compositor closed the IPC connection")
+            b += more
+        return b
+
+    def call(self, method, data=None):
+        body = json.dumps({"method": method, "data": data or {}}).encode()
+        self.sock.sendall(struct.pack("<I", len(body)) + body)
+        return json.loads(self._read(struct.unpack("<I", self._read(4))[0]))
+
+
+def start_time(pid):
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    return int(text[text.rindex(")") + 2:].split()[19])
+
+
+def write_atomic(path, text):
+    partial = path.with_name(path.name + ".tmp")
+    partial.write_text(text)
+    os.replace(partial, path)
+
+
+def hook(stage):
+    """Tests only: SCOTTLAND_RELOAD_TEST_HOOK runs at named stages."""
+    command = os.environ.get("SCOTTLAND_RELOAD_TEST_HOOK")
+    if command:
+        subprocess.run([command, stage], check=False)
+
+
+def main():
+    reexec()
+    runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "scottland"
+    hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
+    socket_path = os.environ.get("WAYFIRE_SOCKET")
+    if not socket_path:
+        sys.exit("scottland-reload: no running Scottland session found")
+    display = os.environ.get("WAYLAND_DISPLAY", "wayland")
+    base = runtime_dir / display
+    def file(suffix): return base.with_name(display + suffix)
+    attempt_file, receipt, importing = file(".reload-attempt"), file(".reload-receipt"), file(".reload-importing")
+    ack, failed, marker, handover = file(".reload-ack"), file(".reload-failed"), file(".reloading"), file(".widget-handover.json")
+    timeout = float(os.environ.get("SCOTTLAND_RELOAD_TIMEOUT", "30"))
+    test_dir = os.environ.get("SCOTTLAND_TEST_RELOAD_DIR")
+    copies = Path(test_dir) / "plugins" if test_dir else runtime_dir / "plugins"
+    config_file = runtime_dir / "wayfire.ini"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    lock = open(file(".reload-lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    ipc = Ipc(socket_path)
+    compositor = ipc.peer_pid()
+    started = start_time(compositor)
+
+    def outcome(attempt):
+        """('ack'|'failed', detail), ('died', ''), or None while unresolved."""
+        if attempt["pid"] != compositor or attempt["start_time"] != started or start_time(compositor) != started:
+            return ("died", "")
+        for kind, path in (("ack", ack), ("failed", failed)):
+            try:
+                lines = path.read_text().splitlines()
+            except OSError:
+                continue
+            if lines and lines[0] == attempt["nonce"]:
+                return (kind, lines[1] if len(lines) > 1 else "")
+        return None
+
+    def clear_resolved():
+        for path in (handover, receipt, importing, ack, failed, marker, attempt_file):
+            path.unlink(missing_ok=True)
+
+    def probe():
+        """('answering', load info) when a Scottland plugin is loaded, ('absent', None) when the
+        compositor answers without one, ('unknown', None) when it doesn't answer: never read as
+        'no plugin'. Load info is {load, nonce} from builds that report it, else load 0."""
+        try:
+            peer = Ipc(socket_path, timeout=5)
+            reply = peer.call("scottland/desktop-model")
+            if isinstance(reply, dict) and "error" in reply:
+                missing = "method" in str(reply["error"]).lower() or "no such" in str(reply["error"]).lower()
+                return ("absent" if missing else "unknown"), None
+            stats = peer.call("scottland/loop-stats")
+        except (OSError, EOFError, ValueError):
+            return "unknown", None
+        info = stats.get("reload", {}) if isinstance(stats, dict) and "error" not in stats else {}
+        return "answering", {"load": int(info.get("load", 0)), "nonce": info.get("nonce", ""),
+                             "outcome": info.get("outcome", ""), "session": reply.get("session", "")}
+
+    def wait(attempt):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = outcome(attempt)
+            if result:
+                return result
+            time.sleep(.05)
+        return None
+
+    def finish(attempt, result, previous=None):
+        kind, detail = result
+        marker.unlink(missing_ok=True)
+        attempt_file.unlink(missing_ok=True)
+        if kind == "died":
+            print("scottland-reload: the compositor this reload was for has exited", file=sys.stderr)
+            return 1
+        (ack if kind == "ack" else failed).unlink(missing_ok=True)
+        if kind == "failed":
+            print(f"scottland-reload: the new plugin failed to start ({detail}); Scottland is not loaded. "
+                  "Fix the build and run scottland-reload again.", file=sys.stderr)
+            return 1
+        target = attempt["target"]
+        for old in copies.glob("libscottland-*.so"):
+            if str(old) != target:
+                old.unlink(missing_ok=True)
+        # Integrations restart their own session helpers (reload.d/*, e.g. the adapter's Lua host).
+        for helper in sorted((hooks / "reload.d").glob("*")):
+            if helper.is_file() and os.access(helper, os.X_OK):
+                subprocess.run([str(helper)], check=False)
+        if shutil.which("notify-send"):
+            subprocess.run(["notify-send", "-a", "Scottland", "Scottland reloaded", "Plugin and config reloaded in place."],
+                check=False)
+        print(f"reloaded from {attempt['source']} ({detail})")
+        return 0
+
+    # 1. An earlier attempt.
+    if attempt_file.exists():
+        try:
+            attempt = json.loads(attempt_file.read_text())
+        except (OSError, ValueError):
+            print(f"scottland-reload: unreadable attempt record {attempt_file}; nothing changed", file=sys.stderr)
+            return UNRESOLVED
+        result = outcome(attempt)
+        if result is None:
+            state, info = probe()
+            if state == "answering":
+                # Resolved only by evidence: the copy that consumed this receipt answers; or a later
+                # copy answers (it loaded without the receipt, so it imported nothing); or the copy
+                # that answered when the attempt began still answers after the whole timeout
+                # (Wayfire swaps right after a config change, so no swap was started).
+                age = time.time() - attempt.get("created", time.time())
+                if info["nonce"] == attempt["nonce"]:
+                    result = ("ack", info["outcome"])
+                elif info["load"] > attempt.get("answering_load", 0):
+                    result = ("ack", "the new plugin loaded without this reload's receipt: nothing was carried over")
+                elif age > attempt.get("timeout", 30) and info["load"] == attempt.get("answering_load", 0):
+                    print(f"scottland-reload: the earlier reload ({attempt['nonce']}) never swapped the plugin; "
+                          "starting over", file=sys.stderr)
+                    result = ("not-started", "")
+                else:
+                    print(f"scottland-reload: an earlier reload ({attempt['nonce']}) has no outcome yet and Scottland is "
+                          "answering: the swap may still be in progress. Nothing changed; try again shortly.", file=sys.stderr)
+                    return 3
+            elif state == "unknown":
+                print(f"scottland-reload: an earlier reload ({attempt['nonce']}) has no outcome and the compositor "
+                      "did not answer; nothing changed.", file=sys.stderr)
+                return UNRESOLVED
+            # No Scottland copy is loaded: the attempt's copy never started. Resume it.
+            if result is None:
+                result = outcome(attempt)
+            if result is None:
+                configured = ipc.call("wayfire/get-config-option", {"option": "core/plugins"}).get("value", "")
+                if attempt["target"] not in str(configured).split() or not Path(attempt["target"]).exists():
+                    print("scottland-reload: an earlier reload has no outcome and its plugin copy is no longer "
+                          "configured; nothing changed.", file=sys.stderr)
+                    return UNRESOLVED
+                reply = ipc.call("wayfire/reload-plugins")
+                if isinstance(reply, dict) and reply.get("error"):
+                    print(f"scottland-reload: retrying the plugin load failed: {reply['error']}", file=sys.stderr)
+                    return UNRESOLVED
+                print(f"scottland-reload: resuming the earlier reload ({attempt['nonce']})", file=sys.stderr)
+                result = wait(attempt)
+                if result is None:
+                    print(f"scottland-reload: no answer from the new plugin within {timeout:g} s; the reload is "
+                          "unresolved. Run scottland-reload again to check.", file=sys.stderr)
+                    return UNRESOLVED
+                return finish(attempt, result)
+        if result[0] == "ack":
+            print(f"scottland-reload: the earlier reload ({attempt['nonce']}) had completed: {result[1]}", file=sys.stderr)
+        elif result[0] == "failed":
+            print(f"scottland-reload: the earlier reload ({attempt['nonce']}) had failed: {result[1]}", file=sys.stderr)
+        clear_resolved()
+
+    # 2. A fresh attempt. Everything up to the receipt can fail without any swap having started.
+    clear_resolved()
+    dev = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "scottland/dev"
+    source = dev / "plugins/libscottland.so"
+    if not source.exists():
+        source = Path("/usr/lib/wayfire/libscottland.so")
+    if os.environ.get("SCOTTLAND_RELOAD_SOURCE"):
+        source = Path(os.environ["SCOTTLAND_RELOAD_SOURCE"])
+    copies.mkdir(parents=True, exist_ok=True)
+    # A fresh file each time: a library at the same path would be reused from memory.
+    target = copies / f"libscottland-{time.time_ns()}.so"
+    shutil.copyfile(source.resolve(), target)
+    if not test_dir:
+        write_atomic(copies / "current", str(target) + "\n")
+    state, info = probe()
+    if state == "unknown":
+        target.unlink(missing_ok=True)
+        print("scottland-reload: the compositor did not answer; nothing changed", file=sys.stderr)
+        return UNRESOLVED
+    attempt = {"nonce": secrets.token_hex(16), "pid": compositor, "start_time": started, "target": str(target),
+               "source": str(source), "session": info["session"] if info else "", "created": time.time(),
+               "answering_load": info["load"] if info else 0, "timeout": timeout}
+    try:
+        write_atomic(receipt, json.dumps({k: attempt[k] for k in ("nonce", "pid", "start_time", "session")}))
+        write_atomic(attempt_file, json.dumps(attempt))
+        # Widgets stay through a reload: the outgoing plugin sees this mark and hands them over.
+        marker.touch()
+    except OSError as error:
+        for path in (receipt, attempt_file, marker):
+            path.unlink(missing_ok=True)
+        print(f"scottland-reload: couldn't prepare the reload: {error}", file=sys.stderr)
+        return 1
+    hook("prepared")
+
+    # From here on Wayfire may swap the plugin (its config backend watches the file being
+    # rewritten): an error is an unresolved outcome, never proof that nothing started.
+    def unresolved(what):
+        print(f"scottland-reload: {what}; the reload may still complete. Its receipt and handover are kept: "
+              "run scottland-reload again to check.", file=sys.stderr)
+        return UNRESOLVED
+    # A test session keeps the config its harness wrote (it adds stipc): only the plugin swaps.
+    built = subprocess.run([str(hooks / "libexec/scottland-build-config")], stdout=subprocess.DEVNULL) \
+        if not test_dir else subprocess.CompletedProcess([], 0)
+    if built.returncode != 0:
+        return unresolved("rebuilding the config failed")
+    try:
+        ipc.call("wayfire/reload-config-metadata")
+        # The plugin list comes from the rebuilt config, so a reload also adds and removes plugins.
+        config = config_file.read_text() if config_file.exists() and not test_dir else ""
+        match = re.search(r"(?ms)^plugins\s*=\s*((?:[^\n]*\\\n)*[^\n]*)", config)
+        plugins = match.group(1).replace("\\\n", " ").split() if match else \
+            str(ipc.call("wayfire/get-config-option", {"option": "core/plugins"}).get("value", "")).split()
+        plugins = [str(target) if p == "scottland" or "/libscottland-" in p else p for p in plugins]
+        hook("before-set")
+        if os.environ.get("SCOTTLAND_RELOAD_TEST_FAIL_SET"):
+            reply = {"error": "test: injected IPC error"}
+        else:
+            reply = ipc.call("wayfire/set-config-options", {"core/plugins": " ".join(plugins)})
+    except (OSError, EOFError, ValueError) as error:
+        return unresolved(f"IPC failed: {error}")
+    if isinstance(reply, dict) and reply.get("error"):
+        return unresolved(f"setting the plugin list failed: {reply['error']}")
+    hook("after-set")
+
+    # 3. Wait for the outcome.
+    result = wait(attempt)
+    if result is None:
+        print(f"scottland-reload: no answer from the new plugin within {timeout:g} s; the reload is unresolved. "
+              "Run scottland-reload again to check.", file=sys.stderr)
+        return UNRESOLVED
+    return finish(attempt, result)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

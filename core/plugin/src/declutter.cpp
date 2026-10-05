@@ -1,3 +1,4 @@
+#include "loop.hpp"
 #include "declutter.hpp"
 #include <algorithm>
 #include <array>
@@ -1372,6 +1373,7 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
     std::chrono::steady_clock::time_point deadline, bool *deadline_hit,
     exposure_profile *profile, exposure_limits limits)
 {
+    SCOTTLAND_LOOP_SCOPE(hint_solve);
     if (deadline_hit) *deadline_hit = false;
     if (progress.results.size() != windows.size() || progress.has_result.size() != windows.size() ||
         progress.complete.size() != windows.size() || progress.attempts.size() != windows.size())
@@ -1640,6 +1642,7 @@ bool expose_window_hints_progressively(const std::vector<exposure_window>& windo
 std::vector<point> declutter(const std::vector<point>& anchors, rectangle bounds, double gap,
     const std::vector<double>& diameters, const std::vector<hint_constraint>& constraints)
 {
+    SCOTTLAND_LOOP_SCOPE(hint_declutter);
     auto nodes = anchors;
     if (gap <= 0) return nodes;
     auto radius = [&] (size_t i) { return i < diameters.size() ? diameters[i] / 2 : 0; };

@@ -1,3 +1,4 @@
+#include "loop.hpp"
 #include "goo-shape.hpp"
 #include "goo-gl.hpp"
 #include "goo-shaders.hpp"
@@ -133,6 +134,7 @@ shape_cache_t::~shape_cache_t()
 GLuint shape_cache_t::texture() const { return p->sdf.texture; }
 bool shape_cache_t::update(glm::vec4 bounds, const std::function<void(const wf::render_target_t &)> &draw)
 {
+    SCOTTLAND_LOOP_SCOPE(goo_shape_update);
     auto start = std::chrono::steady_clock::now();
     gl::state_t guard;
     // Half-resolution like the field, bounded for unusually large custom widgets.

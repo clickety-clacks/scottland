@@ -94,7 +94,7 @@ bool step_widget_peeks()
 void update_widget_peeks()
 {
     if (step_widget_peeks() && !widget_peek_tick.is_connected())
-        widget_peek_tick.set_timeout(16, [=] { return step_widget_peeks(); });
+        widget_peek_tick.set_timeout(16, [=] { SCOTTLAND_LOOP_SCOPE(widget_peek_tick); return step_widget_peeks(); });
 }
 
 void peek_widget_for_hint(uint64_t id)

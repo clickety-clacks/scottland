@@ -13,6 +13,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import time
 
 
 def main():
@@ -54,6 +55,9 @@ def main():
                 response['error'] = str(error)
                 if child is not None and child.poll() is None:
                     child.terminate()
+            test_delay = Path(os.environ.get('SCOTTLAND_TEST_STATE', '/nonexistent'), 'broker-reply-delay')
+            if os.environ.get('SCOTTLAND_TEST_MODEL') and test_delay.exists():
+                time.sleep(float(test_delay.read_text() or 0))  # tests: a widget maps before its reply
             try:
                 rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [pidfd]))] if pidfd >= 0 else []
                 try:

@@ -77,7 +77,7 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_LOOP_FAULTS|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -218,7 +218,9 @@ PY
     kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs
     [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
     [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
-    rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo"
+    rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo" "$runtime/scottland/$name.loop" "$runtime/scottland/$name.loop.names" \
+      "$runtime/scottland/$name".reload-{lock,attempt,attempt.tmp,receipt,receipt.tmp,importing,ack,ack.tmp,failed,failed.tmp} \
+      "$runtime/scottland/$name.reloading" "$runtime/scottland/$name.widget-handover.json"
     rm -rf "$dir"
     echo "stopped headless Scottland on $name"
     ;;

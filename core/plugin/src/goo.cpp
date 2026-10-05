@@ -1,4 +1,5 @@
 #include "goo.hpp"
+#include "loop.hpp"
 #include "attention-breath.hpp"
 #include "frame.hpp"
 #include "goo-runtime.hpp"
@@ -90,7 +91,7 @@ class goo_node_t : public wf::scene::node_t
     std::string reuse_blocked;
     std::unique_ptr<wf::scene::render_instance_manager_t> scene_observer;
     wf::signal::connection_t<wf::scene::root_node_update_signal> on_scene_update =
-        [this] (wf::scene::root_node_update_signal *) { foreign_damage = true; };
+        [this] (wf::scene::root_node_update_signal *) { SCOTTLAND_LOOP_SCOPE(goo_scene_update); foreign_damage = true; };
     void observe_scene(bool on)
     {
         if (on == bool(scene_observer))
@@ -156,7 +157,7 @@ class goo_node_t : public wf::scene::node_t
         state.output = o;
         state.settings = goo::current_settings;
         state.wake = [this] { wake("frame"); };
-        pre = [this] { prepare(); };
+        pre = [this] { SCOTTLAND_LOOP_SCOPE(goo_prepare); prepare(); };
         o->render->add_effect(&pre, wf::OUTPUT_EFFECT_PRE);
     }
     ~goo_node_t() { detach(); }
@@ -184,6 +185,7 @@ class goo_node_t : public wf::scene::node_t
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr> &out,
                               wf::scene::damage_callback damage, wf::output_t *o) override
     {
+        SCOTTLAND_LOOP_SCOPE(goo_gen_render_instances);
         out.push_back(std::make_unique<goo_instance_t>(this, damage, o));
     }
     // Goo exists only in a band around each window (and in the gaps it bridges),
@@ -412,6 +414,7 @@ class goo_node_t : public wf::scene::node_t
         // 125 samples per breath. The maximum light step is below 0.8% and the
         // preset's moving contour advances less than 0.09 logical pixels/tick.
         breath_tick.set_timeout(40, [this] {
+            SCOTTLAND_LOOP_SCOPE(goo_breath_tick);
             double tick_start = now();
             state.breath = breath_hold >= 0 ? breath_hold : goo::attention_breath(now());
             if (state.sleeping)
@@ -461,6 +464,7 @@ class goo_node_t : public wf::scene::node_t
             return;
         settle_tick.set_timeout(20, [this]
         {
+            SCOTTLAND_LOOP_SCOPE(goo_settle_tick);
             if (!state.sleeping || !breath_tight)
                 return false;
             tighten_breathing();
@@ -469,6 +473,7 @@ class goo_node_t : public wf::scene::node_t
     }
     void tighten_breathing(double budget_ms = 2)
     {
+        SCOTTLAND_LOOP_SCOPE(tighten_breathing);
         double tighten_start = now();
         if (!tightening)
         {
@@ -579,6 +584,7 @@ class goo_node_t : public wf::scene::node_t
             tick.set_timeout(16,
                              [this]
                              {
+                                 SCOTTLAND_LOOP_SCOPE(goo_tick);
                                  if (state.sleeping)
                                      return false;
                                  damage();
@@ -601,6 +607,7 @@ class goo_node_t : public wf::scene::node_t
     glm::mat4 wallpaper_map{1};
     void prepare_wallpaper()
     {
+        SCOTTLAND_LOOP_SCOPE(goo_wallpaper_capture);
         if (state.settings.soak <= 0) return;
         std::vector<wf::scene::node_ptr> next;
         for (auto &child : state.output->node_for_layer(wf::scene::layer::BACKGROUND)->get_children())
@@ -611,6 +618,7 @@ class goo_node_t : public wf::scene::node_t
             wallpaper_nodes = next;
             for (auto &child : wallpaper_nodes)
                 child->gen_render_instances(wallpaper_instances, [this](const wf::regionf_t &region) {
+                    SCOTTLAND_LOOP_SCOPE(goo_wallpaper_damage);
                     // Only a recapture: prepare_wallpaper() wakes the simulation if the
                     // captured pixels changed. The damage repaints the output, so it runs.
                     wallpaper_dirty = true;
@@ -788,7 +796,7 @@ class goo_node_t : public wf::scene::node_t
                     if (!ok)
                     {
                         state.sleeping = true;
-                        LOGE("scottland goo: simulation unavailable; retaining halo");
+                        loop::note(loop::note_id::goo_simulation_unavailable);
                         if (failed)
                             failed();
                     }
@@ -824,10 +832,11 @@ goo_instance_t::goo_instance_t(goo_node_t *s, wf::scene::damage_callback d, wf::
     : simple_render_instance_t(s, d, o)
 {
 }
-void goo_instance_t::render(const wf::scene::render_instruction_t &data) { self->render(data, !reuse.empty()); }
+void goo_instance_t::render(const wf::scene::render_instruction_t &data) { SCOTTLAND_LOOP_SCOPE(goo_render); self->render(data, !reuse.empty()); }
 void goo_instance_t::schedule_instructions(std::vector<wf::scene::render_instruction_t> &instructions,
                                            const wf::render_target_t &target, wf::regionf_t &damage)
 {
+    SCOTTLAND_LOOP_SCOPE(goo_schedule);
     // Scheduled even with no damage of its own, as before: render() also steps the simulation.
     auto ours = damage & self->get_bounding_box();
     reuse = ours.empty() ? wf::regionf_t{} : self->breath_only_frame(target, damage);
@@ -848,9 +857,9 @@ struct goo_t::impl
     std::map<wf::output_t *, std::shared_ptr<goo_node_t>> nodes;
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc;
     wf::signal::connection_t<wf::output_added_signal> added = [this](wf::output_added_signal *e)
-    { add(e->output); };
+    { SCOTTLAND_LOOP_SCOPE(goo_output_added); add(e->output); };
     wf::signal::connection_t<wf::output_removed_signal> removed = [this](wf::output_removed_signal *e)
-    { remove(e->output); };
+    { SCOTTLAND_LOOP_SCOPE(goo_output_removed); remove(e->output); };
     struct option_t
     {
         const char *name;
@@ -876,7 +885,7 @@ struct goo_t::impl
         for (size_t i = 0; i < fields.size(); i++)
             goo::current_settings.*fields[i].field = options[i]->value();
         if (!goo::current_settings.curve(curve.value()))
-            LOGE("scottland goo: invalid falloff, keeping last valid curve");
+            loop::note(loop::note_id::goo_invalid_falloff);
         bool on = enabled;
         if (on && !goo::enabled)
         {
@@ -913,6 +922,7 @@ struct goo_t::impl
             fallback.run_once(
                 [this]
                 {
+                    SCOTTLAND_LOOP_SCOPE(goo_fallback);
                     goo::enabled = false;
                     while (!nodes.empty())
                         remove(nodes.begin()->first);
@@ -942,6 +952,7 @@ struct goo_t::impl
     }
     wf::ipc::method_callback state = [this](const wf::json_t &data)
     {
+        SCOTTLAND_LOOP_SCOPE(goo_state);
         wf::json_t out;
         out["enabled"] = goo::enabled;
         out["breath_keys_enabled"] = bool(breath_keys);
@@ -1095,18 +1106,19 @@ void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *,
     for (auto &field : p->fields)
     {
         auto o = std::make_unique<wf::option_wrapper_t<double>>(std::string("scottland/goo_") + field.name);
-        o->set_callback([this] { p->config(); });
+        o->set_callback([this] { SCOTTLAND_LOOP_SCOPE(goo_option); p->config(); });
         p->options.push_back(std::move(o));
     }
-    p->enabled.set_callback([this] { p->config(); });
+    p->enabled.set_callback([this] { SCOTTLAND_LOOP_SCOPE(goo_option); p->config(); });
     p->breath_keys.set_callback([this] {
+        SCOTTLAND_LOOP_SCOPE(goo_option);
         for (auto &[o, n] : p->nodes)
         {
             n->breath_keys = p->breath_keys;
             n->damage();
         }
     });
-    p->curve.set_callback([this] { p->config(); });
+    p->curve.set_callback([this] { SCOTTLAND_LOOP_SCOPE(goo_option); p->config(); });
     wf::get_core().output_layout->connect(&p->added);
     wf::get_core().output_layout->connect(&p->removed);
     p->ipc->register_method("scottland/goo-state", p->state);

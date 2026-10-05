@@ -96,6 +96,7 @@
         auto now = std::chrono::steady_clock::now();
         if (now - palette_read < std::chrono::milliseconds(250)) return;
         palette_read = now;
+        SCOTTLAND_LOOP_SCOPE(palette_read);
         hint_colors.clear();
         hints_reduced_motion = false;
         hints_palette.light = scottland::palette.light;
@@ -151,6 +152,7 @@
         hint_palette_watch = wl_event_loop_add_fd(wf::get_core().ev_loop, hint_palette_watch_fd,
             WL_EVENT_READABLE, [] (int, uint32_t mask, void *data)
         {
+            SCOTTLAND_LOOP_SCOPE(palette_watch);
             auto self = static_cast<scottland_plugin_t*>(data);
             if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))
             {
@@ -347,6 +349,7 @@
     }
     std::vector<scottland::windowing::hint_entry> window_entries()
     {
+        SCOTTLAND_LOOP_SCOPE(window_entries);
         std::vector<scottland::windowing::hint_entry> entries;
         for (auto& [id, state] : model.windows)
         {
@@ -522,7 +525,7 @@
         hint_flashes[id].color = color_for_hint(slot);
         step_hint_flashes();
         if (!hint_flash_tick.is_connected())
-            hint_flash_tick.set_timeout(16, [=] () { return step_hint_flashes(); });
+            hint_flash_tick.set_timeout(16, [=] () { SCOTTLAND_LOOP_SCOPE(hint_flash_tick); return step_hint_flashes(); });
     }
     std::vector<scottland::windowing::rectangle> placement_obstacles(wf::output_t *output, uint64_t excluded)
     {
@@ -689,9 +692,11 @@
             deferred_moves.emplace_back(id, destination);
             wf::get_core().default_wm->fullscreen_request(window, window->get_output(), false);
             deferred_cycle.set_timeout(100, [=] () {
+                SCOTTLAND_LOOP_SCOPE(deferred_cycle);
                 // Drain from idle, after the one-shot timer has disconnected. A later queued
                 // window may itself need a fullscreen exit and a new timer on this same object.
                 deferred_ready.run_once([=] () {
+                    SCOTTLAND_LOOP_SCOPE(deferred_ready);
                     cycle_waiting = false;
                     auto moves = std::move(deferred_moves); deferred_moves.clear();
                     for (auto [window, to] : moves) cycle_window(window, to);
@@ -776,6 +781,7 @@
 
     bool step_hints(bool force_solve = false)
     {
+        SCOTTLAND_LOOP_SCOPE(step_hints);
         ++hint_step_count;
         refresh_hint_palette();
         auto entries = window_entries();
@@ -1085,6 +1091,7 @@
         bool moving = false, animation_moving = false;
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
         {
+            SCOTTLAND_LOOP_SCOPE(hint_visual);
             auto& visual = it->second; auto view = wf::toplevel_cast(visual.view.lock());
             if (!view || !represented.count(it->first))
             {
@@ -1134,7 +1141,7 @@
                 std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > 0.1;
             moving |= unsettled;
             if (!unsettled) { offset->translation_x = target.x; offset->translation_y = target.y; }
-            if (offset_changed) { view->get_transformed_node()->end_transform_update(); view->damage(); }
+            if (offset_changed) { SCOTTLAND_LOOP_SCOPE(hint_offset_update); view->get_transformed_node()->end_transform_update(); view->damage(); }
             if (window_keys.active)
             {
                 if (visual.hint && visual.hint_output != view->get_output())
@@ -1163,6 +1170,7 @@
                 {
                     visual.hint_output = view->get_output();
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
+                    SCOTTLAND_LOOP_SCOPE(hint_add_node);
                     wf::scene::add_front(view->get_output()->node_for_layer(wf::scene::layer::OVERLAY), visual.hint);
                     hint_order_dirty = true;
                 }
@@ -1172,6 +1180,7 @@
                 auto color = color_for_hint(slot);
                 if (auto frame = frame_of(view, false))
                 {
+                    SCOTTLAND_LOOP_SCOPE(hint_dye);
                     frame->set_hint_dye(glm::vec3{color.r, color.g, color.b});
                     if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
                     visual.fullscreen_tint.reset();
@@ -1284,7 +1293,7 @@
         // Hint entry still computes its first frame immediately.
         if (immediate) step_hints(true);
         if (!hints_tick.is_connected())
-            hints_tick.set_timeout(8, [=] () { return step_hints(); });
+            hints_tick.set_timeout(8, [=] () { SCOTTLAND_LOOP_SCOPE(hints_tick); return step_hints(); });
     }
     void end_window_keys()
     {
@@ -1305,6 +1314,7 @@
     }
     void begin_window_keys()
     {
+        SCOTTLAND_LOOP_SCOPE(begin_window_keys);
         if (alt_bypassed || alt_keys.empty() || held_keys.size() != 1 || drag->view) return;
         capture_chord = true; keyboard_selection = false;
         auto active = wf::get_core().seat->get_active_view();
@@ -1330,6 +1340,7 @@
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_window_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        SCOTTLAND_LOOP_SCOPE(on_window_key);
         auto code = ev->event->keycode;
         bool down = ev->event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
         bool alt = code == KEY_LEFTALT || code == KEY_RIGHTALT;
@@ -1383,7 +1394,7 @@
                 uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
                 alt_bypassed = claimed || drag->view || held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
                 if (!alt_bypassed)
-                    alt_hold.set_timeout(std::max(1, int(alt_hold_delay)), [=] () { begin_window_keys(); });
+                    alt_hold.set_timeout(std::max(1, int(alt_hold_delay)), [=] () { SCOTTLAND_LOOP_SCOPE(alt_hold); begin_window_keys(); });
             }
             if (down) alt_keys.insert(code); else alt_keys.erase(code);
             if (!capture_chord && held_keys.size() > 1) { alt_bypassed = true; alt_hold.disconnect(); }
@@ -1449,6 +1460,7 @@
     };
     wf::ipc::method_callback hints_state = [=] (wf::json_t) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(hints_state);
         auto reply = wf::ipc::json_ok(); reply["active"] = window_keys.active;
         reply["hint_text_scale"] = hints_palette.text_scale;
         reply["minimum_window_hint_size"] = 48 * hints_palette.text_scale;
@@ -1608,6 +1620,7 @@
     };
     wf::ipc::method_callback center_switcher_state = [=] (wf::json_t) -> wf::json_t
     {
+        SCOTTLAND_LOOP_SCOPE(center_switcher_state);
         auto reply = wf::ipc::json_ok();
         reply["active"] = center_switcher.active;
         reply["count"] = int(center_switcher.candidates.size());

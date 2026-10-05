@@ -1,0 +1,7 @@
+{
+  "comment": "Named exceptions to ML1 (docs/main-loop.md). A scope listed here is an open delivery risk, not a met target; its ceiling is the measured number it may not exceed in tests/mainloop-latency-test.sh. Every other scope's ceiling is budget_ms.",
+  "budget_ms": 2.0,
+  "ml2_ms": 4.0,
+  "noise_load": 3.0,
+  "scopes": {}
+}

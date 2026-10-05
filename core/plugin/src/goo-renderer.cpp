@@ -1,4 +1,5 @@
 #include "goo-renderer.hpp"
+#include "loop.hpp"
 #include "goo-shaders.hpp"
 #include "goo-gl.hpp"
 #include "attention-breath.hpp"
@@ -94,7 +95,7 @@ struct renderer_t::impl
             {
                 // Retain the per-widget masked fallback rather than diverging
                 // from CPU input by substituting a rectangle for one widget.
-                LOGE("scottland goo: widget shape atlas exceeds GPU limits; retaining halo");
+                loop::note(loop::note_id::goo_atlas_too_large);
                 return false;
             }
             tiles.emplace_back(x, y, s->width, s->height);
@@ -184,7 +185,7 @@ struct renderer_t::impl
         es3 = version && (strstr(version, "OpenGL ES 3") || strstr(version, "OpenGL ES 4"));
         available = es3 || (extension(extensions, "GL_OES_texture_float") &&
             extension(extensions, "GL_OES_standard_derivatives"));
-        LOGI("scottland goo: ", version ? version : "no GL context", ", float textures and derivatives ", available);
+        loop::note(loop::note_id::goo_gl, version != nullptr, es3, available);
         if (!available)
             return false;
         timing = es3 && extension(extensions, "GL_EXT_disjoint_timer_query");
@@ -199,7 +200,7 @@ struct renderer_t::impl
             return false;
         }
         field.release();
-        LOGI("scottland goo: ", packed ? "packed RGBA8" : "RGBA16F", " simulation targets");
+        loop::note(loop::note_id::goo_targets, packed);
         const std::array programs{std::make_pair(&field_p, &field_shader), std::make_pair(&mask_p, &mask_shader), std::make_pair(&wave_p, &wave_shader),
                           std::make_pair(&dye_p, &dye_shader), std::make_pair(&render_p, &render_shader),
                           std::make_pair(&energy_p, &energy_shader), std::make_pair(&query_p, &query_shader)};
@@ -270,7 +271,7 @@ struct renderer_t::impl
                 "precision highp float; uniform sampler2D image; void "
                 "main(){gl_FragColor=texture2D(image,vec2(.5));}");
         if (!available)
-            LOGE("scottland goo: shader unavailable; retaining halo");
+            loop::note(loop::note_id::goo_shader_unavailable);
         return available;
     }
     void common(OpenGL::program_t &program, int w, int h)
@@ -423,6 +424,7 @@ struct renderer_t::impl
     }
     float measure(float &wave_energy, float &dye_energy)
     {
+        SCOTTLAND_LOOP_SCOPE(goo_energy_readback);
         GLuint input = 0;
         int iw = wave[0].width, ih = wave[0].height;
         for (size_t i = 0; i < reduction.size(); i++)
@@ -483,7 +485,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
     if (!p->es3 && sources.size() > 1024)
     {
-        LOGE("scottland goo: too many sources for GLES 2; retaining halo");
+        loop::note(loop::note_id::goo_gles2_sources, sources.size());
         return false;
     }
     bool measure_gpu = p->timing && !p->timer_pending;
@@ -712,7 +714,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             p->intrinsic.release();
             p->refraction.release();
             p->cache_available = false;
-            LOGE("scottland goo: surface cache unavailable; using direct draw");
+            loop::note(loop::note_id::goo_cache_unavailable);
         }
     }
     if (settled && p->cache_available)
@@ -741,7 +743,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                 p->intrinsic_b.release();
                 p->refraction_b.release();
                 p->layer_b_available = false;
-                LOGE("scottland goo: breathing keyframe layer unavailable; using exact strips");
+                loop::note(loop::note_id::goo_keyframes_unavailable);
             }
         }
         int keys = requested_keys && p->layer_b_available ? key_intervals : 0;
@@ -914,6 +916,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
 }
 glm::vec4 renderer_t::sample_at(glm::vec2 point)
 {
+    SCOTTLAND_LOOP_SCOPE(goo_sample_at);
     if (!p->ready)
         return {};
     // The scene can test several candidate frames at the same pointer position. One
