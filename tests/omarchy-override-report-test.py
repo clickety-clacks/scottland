@@ -392,9 +392,9 @@ require("omarchy.plugins.ask")
                   report_group(report, "Scottland has no window groups") and
                   "Super+V — Was: Toggle the window split layout." in
                   report_group(report, "Scottland does its own window layout (no tiling)") and
-                  "Super+K — Was: Run a shortcut function." in report_group(report, "Unsupported in Scottland") and
-                  "Shift+F4 — Was: Release action with modifier." in
-                  report_group(report, "Unsupported in Scottland") and
+                  # Modified release chords are imported now (adapter-gaps AG10), not omitted.
+                  "Super+K —" not in report_group(report, "Unsupported in Scottland") and
+                  "Shift+F4 —" not in report_group(report, "Unsupported in Scottland") and
                   "Super+Nosuchkey — Was: Unsupported key name." in
                   report_group(report, "Unsupported in Scottland") and
                   "Super+Y — Was: Unsupported Hyprland action." in

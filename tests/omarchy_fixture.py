@@ -166,3 +166,36 @@ class Checks:
     def summary(self):
         print(f"\n{len(self.passed)} passed, {len(self.failed)} failed", flush=True)
         return 0 if not self.failed else 1
+
+
+def read_ppm(path):
+    """(width, height, rgb bytes) of a binary PPM, such as `grim -t ppm` writes."""
+    data = Path(path).read_bytes()
+    fields, index = [], 0
+    while len(fields) < 4:
+        while data[index:index + 1].isspace():
+            index += 1
+        if data[index:index + 1] == b"#":
+            index = data.index(b"\n", index) + 1
+            continue
+        end = index
+        while not data[end:end + 1].isspace():
+            end += 1
+        fields.append(data[index:end])
+        index = end
+    assert fields[0] == b"P6", fields
+    width, height = int(fields[1]), int(fields[2])
+    return width, height, data[index + 1:]
+
+
+def pixel(image, x, y):
+    width, _height, rgb = image
+    offset = (y * width + x) * 3
+    return tuple(rgb[offset:offset + 3])
+
+
+def screenshot(session, name):
+    """Capture the session's screen with grim (screencopy, as any recorder would)."""
+    path = session.dir.parent / f"{session.dir.name}-{name}.ppm"
+    result = session.run("grim", "-t", "ppm", str(path))
+    return read_ppm(path) if result.returncode == 0 and path.exists() else None
