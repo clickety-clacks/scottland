@@ -766,24 +766,15 @@ def modes():
     drag_end()
     check("WG16 a widget docked while hidden then slides away", placed("mode-new", "away"), link("mode-new"))
 
-    # The mode survives a reload; hidden widgets stay away across it.
+    # The mode survives a reload; hidden widgets stay away across it. The real reload (receipt,
+    # handover, acknowledgment): a plugin swapped in without a receipt imports nothing.
     if args.log:
-        fresh = artifacts / "libscottland-modes-reload.so"
-        shutil.copyfile("build/libscottland.so", fresh)
-        plugins = ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
-        changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
-        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
-        def reload_to(value):
-            mark.touch()
-            try:
-                ipc.call("wayfire/set-config-options", {"core/plugins": value})
-                time.sleep(1)
-            finally:
-                mark.unlink(missing_ok=True)
-        reload_to(changed)
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from session_reload import reload_session
+        out = reload_session()
+        time.sleep(1)
         check("WG16 hidden mode survives a reload", mode() == "hidden" and
-              all(placed(t, "away") for t in titles + ("mode-new",)), (widget_mode(), widgets()))
-        reload_to(plugins)  # back to the session's own plugin entry, for the cases that follow
+              all(placed(t, "away") for t in titles + ("mode-new",)), (out, widget_mode(), widgets()))
     press(.12)
     check("WG16 after that a tap brings every widget back expanded", mode() == "expanded" and
           all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles + ("mode-new",)))

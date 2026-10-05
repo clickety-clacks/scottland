@@ -892,7 +892,8 @@ super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 sleep 2.5
 id=$(widget_id)
 plugins=$(ipc wayfire/get-config-option '{"option":"core/plugins"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
-without=$(python3 -c "import sys; print(' '.join(p for p in sys.argv[1].split() if p != 'scottland'))" "$plugins")
+# The entry is "scottland", or a copy's path once a real reload ran earlier in the session.
+without=$(python3 -c "import sys; print(' '.join(p for p in sys.argv[1].split() if p != 'scottland' and '/libscottland' not in p))" "$plugins")
 h wayfire/set-config-options "$(python3 -c "import json,sys; print(json.dumps({'core/plugins': sys.argv[1]}))" "$without")"
 sleep 2
 check "WG5 (unload) the widget service drops the widget's object" \

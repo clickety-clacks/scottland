@@ -123,7 +123,7 @@ class monitor_t
     };
     bool ml2_over = false;
     ml2_episode_t episode;
-    std::array<ml2_episode_t, 64> episodes{};
+    std::array<ml2_episode_t, 1024> episodes{};  // per reset: a latency scenario fits
     uint64_t episode_count = 0;
     void ml2_compose(uint64_t window_start, ml2_episode_t& into) const;
 

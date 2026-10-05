@@ -36,7 +36,7 @@ Pure accessors Wayfire calls per node (bounding boxes, transformer getters) are 
   (`reload.load`, `reload.nonce`, `reload.outcome`).
 - ML2 is exact for every window ending at a callback exit: a queue of the outermost intervals that
   intersect the last 16.7 ms, the oldest clipped. Each run of windows over 4 ms (an episode) is
-  recorded with the scopes that filled its worst window (`ml2_episodes`, the last 64): the latency
+  recorded with the scopes that filled its worst window (`ml2_episodes`, the last 1,024): the latency
   gate excuses an episode only by the open exceptions inside that window.
 - Cost of a scope: two monotonic clock reads and, for an outermost scope, a handful of atomic
   stores; measured in the latency test (scopes compiled in, against the same build without them).
@@ -427,6 +427,26 @@ and widget conversions stay under about 25 ms, and Window mode's ticks drop from
 to about 30 ms. What remains over the targets is in the exception table: the goo's simulation
 step on this GPU (goo_render 10-50 ms on nacelle's Asahi driver), widget shape readbacks (D2),
 Window mode entry (ML8: per-window badge work), the settings slider (Wayfire's config reload).
+
+## Joined with main (2026-10-05)
+
+The branch was joined onto main at `2fcd22a` (the peek-strip engine, spread and solo, pairing, the
+Super+M widget modes, GO24 watercolor, GO26 breathing keys). What carried over:
+
+- Scopes on main's new entry points (spread and audition timers, the touchpad hold, rail slides and
+  dwell, hint hold, deferred pairing, the water tick, widget-mode and spread-state IPC) and on the
+  peek-strip engine: Window mode entry (`alt_hold`, `begin_window_keys`), each tick (`hints_tick`)
+  and each output's slice (`peek_step`) are timed separately.
+- Coalesced publication keeps main's spread-commit batch: nothing, not even a barrier, publishes a
+  batch's partial state; the widget-mode reply follows a barrier.
+- Main's waiting energy read is replaced by Phase 3's asynchronous one; GO24 watercolor still
+  decides sleep on wave energy, also on the timed fallback. Main's main-thread shrink slices are
+  replaced by the worker (GO26's quarter-second cap is the job's whole-job cap).
+- Main's new diagnostics (Super+M taps, holds and edges, the breathing path, rail steps, the
+  three-finger hold) are ring notes; the tests that read them use `scottland-loop-read`.
+- The handover carries main's widget mode; adopted widgets snap into their rail place.
+- Spread solves stay in main's measured event-loop slices (`spread_tick`); moving that job to the
+  worker is not part of this branch.
 
 ## Tests
 
