@@ -156,7 +156,9 @@ app.connect('activate', activate); app.run([])
 clients = []
 def launch(title):
     clients.append(subprocess.Popen([sys.executable, '-c', GTK_APP, title], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-    return need(lambda: next((v['id'] for v in views() if v.get('title') == title), None), 10, 'launch ' + title)
+    # Listed before it maps: wait for the map, which may also take focus (setup settles focus after).
+    return need(lambda: next((v['id'] for v in views() if v.get('title') == title and v.get('mapped')), None), 10,
+                'launch ' + title)
 def place(id, x, y, w, h, output=None):
     data = {'id': id, 'geometry': {'x': x, 'y': y, 'width': w, 'height': h}}
     if output is not None: data['output_id'] = output
@@ -174,6 +176,8 @@ def setup(spec, focus):
     ipc('window-rules/focus-view', {'id': focus})
     need(lambda: focused() == focus, 2, 'fixture focus')
     stable(*[s[0] for s in spec])
+    ok, _ = holds(lambda: focused() == focus, .3)  # nothing late (a client mapping) takes it away
+    if not ok: raise Abort(f'fixture focus moved to {focused()}')
 
 def expected(left, right, area):
     """Mirror of fit_pair: ({id: (x, y) top-left output-local}, scale)."""
@@ -261,7 +265,7 @@ def offer_solo():
 
 @scenario
 def offer_refused_by_leaving_the_hotspot():
-    'dragging out of the hotspot refuses the offer and carries on as the ordinary drag'
+    'starting to drag (beyond the hotspot) cancels the audition; the held window drags on under the pointer'
     setup(PAIR, A); f0 = frames(A, B); want, _ = pair_plan(A, B, area)
     x, y = center(B); super_press(x, y)
     need(lambda: light(px(want[B][0] + 210, want[B][1] + 150)), 3, 'preview before leaving')
@@ -385,9 +389,9 @@ def widget_offer_preview():
     co = output_of(card)['geometry']
     super_press(co['x'] + cg['x'] + cg['width'] / 2, co['y'] + cg['y'] + cg['height'] / 2)
     need(lambda: light(px(want[B][0] + 210, want[B][1] + 150)), 3, 'the app previewed at its pair spot')
-    size = drawn_size(want[B][0] + 210, want[B][1] + 150)
-    check(size and abs(size[0] - 420) <= 8 and abs(size[1] - 300) <= 8,
-          'the widget is previewed as its app at the app\'s size at its pair spot (pixels)', str(size))
+    verify(lambda: (lambda size: size if size and abs(size[0] - 420) <= 8 and abs(size[1] - 300) <= 8 else None)(
+           drawn_size(want[B][0] + 210, want[B][1] + 150)), 2,
+           'the widget is previewed, once its morph settles, as its app at the app\'s size at its pair spot (pixels)')
     capture(0, 0, area['width'], area['height'], 'widget-offer.png')
     super_release()
     verify(lambda: not scottland_view(B).get('widgetized') and paired(A, B, area, want), 3, 'taking it opens the app there, paired with A (Wayfire)')

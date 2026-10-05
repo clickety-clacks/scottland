@@ -5703,15 +5703,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         begin_hold_offer(hold.window, hold.partner, hold.gesture, hold.owner);
     }
 
-    // Hold offers (WK39; Mike, 2026-10-05). A pointer or touchpad hold that has fired is an offer
-    // while its button or fingers stay down, as the drag audition is: the real result is shown on
-    // the presentation layer, every window at its destination and scale, a widget as the app it
-    // represents, a window joining from another screen on that screen (P5: what you see is what
-    // you get). Letting go, by the owner's own release or lift, within the hotspot
-    // (scottland/solo_audition_hotspot, from where the hold fired) commits it; moving out of the
-    // hotspot refuses it, everything eases back to exactly where it is, and the gesture carries
-    // on as the ordinary window drag; Esc, or the owning gesture ending without a lift, refuses
-    // it. The suspended drag keeps the grab, so motion, release and Esc arrive through the drag.
+    // Hold offers (WK39; Mike, 2026-10-05: a solo or pair from a hold is an audition). A pointer
+    // or touchpad hold that has fired is an offer while its button or fingers stay down: the real
+    // result is shown on the presentation layer, every window at its destination and scale, a
+    // widget as the app it represents, a window joining its partner's screen on that screen (P5:
+    // what you see is what you get). Nothing really moves, so the pointer may not be over the
+    // held window. Letting go, by the owner's own release or lift, without starting to drag
+    // commits it; starting to drag cancels it, everything eases back to exactly where it is and
+    // the held window returns under the pointer to drag as normal; Esc, or the owning gesture
+    // ending without a lift, cancels it. The suspended drag keeps the grab, so motion, release
+    // and Esc arrive through the drag.
+    // Starting to drag is moving beyond the hotspot (scottland/solo_audition_hotspot) from where
+    // the hold fired (Mike, 2026-10-05). The hint-key hold is intentional and commits outright.
     struct hold_offer_actor_t
     {
         uint64_t window = 0;        // the app window the result moves
@@ -5916,7 +5919,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!hold_offer || !hold_offer->active) return false;
         double away = std::hypot(pointer.x - hold_offer->anchor.x, pointer.y - hold_offer->anchor.y);
         if (away <= hold_offer->radius) return true;
-        refuse_hold_offer("moved out of the hotspot");
+        refuse_hold_offer("started to drag");
         drag->suspend(false);  // the ordinary drag carries on from here
         return false;
     }
