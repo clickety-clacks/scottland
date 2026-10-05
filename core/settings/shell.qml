@@ -40,7 +40,7 @@ ShellRoot {
     { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 },
     { name: "goo_depth", hint: "Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it.", title: "Liquid depth", initial: 6, low: 0, high: 20, step: 0.1 },
     { name: "goo_profile", hint: "How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead.", title: "Wall wetting", initial: 0.65, low: 0, high: 1, step: 0.01 },
-    { name: "goo_soak", hint: "Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.", title: "Wallpaper soak", initial: 0.12, low: 0, high: 1, step: 0.01 },
+    { name: "goo_soak", hint: "How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off.", title: "Wallpaper soak", initial: 0.12, low: 0, high: 1, step: 0.01 },
     { name: "goo_overlap_film", hint: "Width of goo over windows behind. Higher covers a wider strip; zero hides the film.", title: "Overlap film", initial: 4, low: 0, high: 20, step: 0.5 },
     { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
     { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },

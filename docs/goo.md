@@ -1012,7 +1012,7 @@ every Goo and inertial metadata option against Settings controls:
 |---|---|---|---|
 | `goo_depth` | Liquid depth | 0–20 / 6 / 0.1 | Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it. |
 | `goo_profile` | Wall wetting | 0–1 / 0.65 / 0.01 | How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead. |
-| `goo_soak` | Wallpaper soak | 0–1 / 0.12 / 0.01 | Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off. |
+| `goo_soak` | Wallpaper soak | 0–1 / 0.12 / 0.01 | How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off. |
 
 ### Isolation and evidence
 

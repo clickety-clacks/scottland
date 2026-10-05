@@ -80,7 +80,7 @@ struct renderer_t::impl
     glm::vec2 sampled_point{};
     glm::vec4 sampled_value{};
     settings_t settings;
-    bool overlap = false, controls = false, fast = true, has_wallpaper = false;
+    bool overlap = false, controls = false, fast = true, open_pickup = false;
     bool cache_valid = false, cache_dirty = true, cache_available = true;
     wf::geometry_t backdrop_geometry{};
     float backdrop_scale = 0;
@@ -90,6 +90,7 @@ struct renderer_t::impl
     bool layer_b_available = true, requested_keyframes = false, use_keyframes = false;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p, backdrop_p;
+    OpenGL::program_t under_p, change_p;
     // GO26: both cache textures of a layer as two attachments of one framebuffer.
     bool mrt = false, layer_fail_seen = false, cache_fail_seen = false;
     OpenGL::program_t cache_p;
@@ -121,6 +122,8 @@ struct renderer_t::impl
     OpenGL::program_t intrinsic_p, refraction_p, composite_p, composite_mix_p;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query, atlas;
+    // GO28: the backdrop at the dye grid's resolution, and the copy of it the dye last saw.
+    target_t under, seen;
     target_t intrinsic, refraction, intrinsic_b, refraction_b;
     std::vector<std::shared_ptr<const shape_t>> atlas_shapes;
     std::vector<glm::vec4> shape_tiles;
@@ -192,10 +195,12 @@ struct renderer_t::impl
             fb = 0;
         }
         for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p, &backdrop_p,
+                       &under_p, &change_p,
                        &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p, &cache_p,
                        &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
         for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query,
+                       &under, &seen,
                        &intrinsic, &refraction, &intrinsic_b, &refraction_b, &atlas})
             p->release();
         for (auto &t : reduction)
@@ -244,7 +249,7 @@ struct renderer_t::impl
             {"wave_fast", &wave_fast}, {"dye_fast", &dye_fast}, {"render_fast", &render_fast},
             {"intrinsic", &intrinsic_p}, {"refraction", &refraction_p}, {"cache_both", &cache_p},
             {"composite", &composite_p}, {"composite_mix", &composite_mix_p},
-            {"backdrop", &backdrop_p}, {"copy", &copy_p}};
+            {"backdrop", &backdrop_p}, {"copy", &copy_p}, {"under", &under_p}, {"change", &change_p}};
         mrt = false;
         for (auto &variant : program_variants())
         {
@@ -299,6 +304,9 @@ struct renderer_t::impl
         one("uNoiseSpeed", settings.drift);
         one("uT", settings.threshold());
         one("uPacked", packed ? 1 : 0);
+        // GO28: pickup relative to release; the dye mixes it subtractively with what is there.
+        one("uPickup", settings.soak > 0 ? 2 * std::sqrt(settings.soak) : 0);
+        one("uOpenPickup", open_pickup ? 1 : 0);
         bind(program, "uSources", 0, source.texture);
         bind(program, "uShapes", 6, atlas.texture);
         glUniform2f(glGetUniformLocation(program.get_program_id(wf::TEXTURE_TYPE_RGBA), "uAtlasSize"),
@@ -361,8 +369,15 @@ struct renderer_t::impl
             ok = t->allocate((w + 3) / 4, (h + 3) / 4, packed, es3) && ok;
             if (t == &wave[0] || t == &wave[1])
                 glClearColor(0, packed ? 128.f / 255 : 0, 0, packed ? 128.f / 255 : 1);
-            else
-                glClearColor(.6, .7, .8, 1);
+            else  // the clear color (.6, .7, .8) as stored absorbance (GO28)
+                glClearColor(.2918, .2439, .1928, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        // Nothing beneath is known until a frame copies it.
+        for (auto t : {&under, &seen})
+        {
+            ok = t->allocate((w + 3) / 4, (h + 3) / 4, true, es3) && ok;
+            glClearColor(0, 0, 0, 0);
             glClear(GL_COLOR_BUFFER_BIT);
         }
         query.allocate(1, 1, true, es3);
@@ -426,22 +441,53 @@ struct renderer_t::impl
         }
         return true;
     }
-    // One pass of the dye: advection, spread, state release and wallpaper pickup.
-    void dye_pass(OpenGL::program_t &dye_program, wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map,
-                  float flow, float step, bool wet_only)
+    // One pass of the dye: advection, spread, state release and pickup of what lies beneath.
+    void dye_pass(OpenGL::program_t &dye_program, float flow, float step, bool wet_only)
     {
         common(dye_program, dye[1].width, dye[1].height);
         dye_program.uniform1f("uSpread", settings.spread);
         dye_program.uniform1f("uSwirl", settings.swirl);
         dye_program.uniform1f("uRelease", settings.release);
-        dye_program.uniform1f("uSoak", wallpaper ? settings.soak : 0);
         dye_program.uniform1f("uFlow", flow);
         dye_program.uniform1f("uStep", step);
         dye_program.uniform1f("uWetOnly", wet_only ? 1 : 0);
-        dye_program.uniformMatrix4f("uWallpaperMap", wallpaper_map);
-        bind(dye_program, "uWallpaper", 5, wallpaper ? wf::gles_texture_t::from_aux(*wallpaper).tex_id : 0);
+        bind(dye_program, "uUnder", 5, under.texture);
         draw_to(dye_program, dye[1]);
         std::swap(dye[0], dye[1]);
+    }
+    // GO28: average the backdrop just copied into the dye grid, over texels whose whole footprint
+    // lies in `copied` (output-logical). Elsewhere `under` keeps what it last knew.
+    uint64_t refresh_under(const wf::regionf_t &copied, const glm::mat4 &map)
+    {
+        double sx = double(under.width) / width, sy = double(under.height) / height;
+        tiles.clear();
+        uint64_t texels = 0;
+        for (auto &r : copied)
+        {
+            float x1 = std::max(0.0, std::ceil(r.x1 * sx)), y1 = std::max(0.0, std::ceil(r.y1 * sy));
+            float x2 = std::min<double>(under.width, std::floor(r.x2 * sx));
+            float y2 = std::min<double>(under.height, std::floor(r.y2 * sy));
+            if (x2 <= x1 || y2 <= y1)
+                continue;
+            texels += uint64_t(x2 - x1) * (y2 - y1);
+            tiles.insert(tiles.end(), {x1, y1, x2, y1, x2, y2, x1, y1, x2, y2, x1, y2});
+        }
+        if (tiles.empty())
+            return 0;
+        under_p.use(wf::TEXTURE_TYPE_RGBA);
+        under_p.uniformMatrix4f("MVP", glm::ortho(0.f, float(under.width), 0.f, float(under.height), -1.f, 1.f));
+        under_p.uniformMatrix4f("uBackgroundMap", map);
+        under_p.uniform2f("uRes", width, height);
+        under_p.uniform2f("uSize", under.width, under.height);
+        bind(under_p, "uBackground", 5, background.texture);
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, under.fb);
+        glViewport(0, 0, under.width, under.height);
+        under_p.attrib_pointer("position", 2, 0, tiles.data());
+        glDrawArrays(GL_TRIANGLES, 0, tiles.size() / 2);
+        under_p.deactivate();
+        return texels;
     }
     float measure(float &wave_energy, float &dye_energy)
     {
@@ -496,8 +542,7 @@ bool renderer_t::supported()
     return ok;
 }
 bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &s, int w, int h, float time,
-                        const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area,
-                        wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map, float flow)
+                        const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area, float flow)
 {
     state_t guard;
     if (!p->support())
@@ -531,7 +576,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     auto &wave_program = p->fast ? p->wave_fast : p->wave_p;
     auto &dye_program = p->fast ? p->dye_fast : p->dye_p;
     p->settings = s;
-    p->has_wallpaper = wallpaper && s.soak > 0;
+    p->open_pickup = open_pickup;
     p->time = time;
     if (!p->upload())
     {
@@ -566,7 +611,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         p->simulate(wave_program, p->wave[1], wave_area);
         std::swap(p->wave[0], p->wave[1]);
     }
-    p->dye_pass(dye_program, wallpaper, wallpaper_map, flow, 1, false);
+    p->dye_pass(dye_program, flow, 1, false);
     packed = p->packed;
     steps++;
     if (steps % 30 == 0)
@@ -576,17 +621,16 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return true;
 }
-void renderer_t::flow_dye(wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map, float flow,
-                          float step, int passes)
+void renderer_t::flow_dye(float flow, float step, int passes)
 {
     if (!p->ready)
         return;
     state_t guard;
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
-    p->has_wallpaper = wallpaper && p->settings.soak > 0;
+    p->open_pickup = open_pickup;
     for (int i = 0; i < passes; i++)
-        p->dye_pass(p->fast ? p->dye_fast : p->dye_p, wallpaper, wallpaper_map, flow, step, true);
+        p->dye_pass(p->fast ? p->dye_fast : p->dye_p, flow, step, true);
     p->sampled_step = UINT64_MAX;  // a dye readback is stale now
     ++dye_flows;
 }
@@ -671,6 +715,14 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
                                         }
                                     });
     auto ortho = wf::gles::render_target_orthographic_projection(data.target);
+    if (!reuse_backdrop && p->settings.soak > 0 && p->under.fb)
+    {
+        // GO28: what the goo picks up is what was just copied from beneath it.
+        under_pixels += p->refresh_under(capture, ortho);
+        wf::gles::bind_render_buffer(data.target);
+        glBindFramebuffer(GL_FRAMEBUFFER, wf::gles::ensure_render_buffer_fb_id(data.target));
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    }
     const GLfloat vertices[] = {0, 0, float(p->width), 0, float(p->width),
                                 float(p->height), 0, float(p->height)};
     if (reuse_backdrop)
@@ -724,12 +776,10 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         program.uniform1f("uRelief", p->settings.relief);
         program.uniform1f("uDepth", p->settings.depth);
         program.uniform1f("uProfile", p->settings.profile);
-        program.uniform1f("uSoak", p->has_wallpaper ? p->settings.soak : 0);
+        program.uniform1f("uSoak", p->settings.soak);
         program.uniform1f("uAlpha", 1);
         program.uniform1f("uHints", std::any_of(p->sources.begin(), p->sources.end(),
             [](const source_t &s) { return s.hinted; }));
-        program.uniform1f("uNeutralTint", std::any_of(p->sources.begin(), p->sources.end(),
-            [](const source_t &s) { return s.dye_strength < .999999f; }));
     };
     // An active simulation already redraws the surface for a new field every
     // step. Keep that path direct; populate the cache once it settles.
@@ -1071,6 +1121,60 @@ glm::vec4 renderer_t::sample_at(glm::vec2 point)
     p->sampled_point = point;
     p->sampled_value = result;
     return result;
+}
+int renderer_t::backdrop_changes()
+{
+    if (!p->ready || !p->under.fb)
+        return 0;
+    int count = 0;
+    wf::gles::run_in_context_if_gles([&]
+    {
+        state_t guard;
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        GLuint input = 0;
+        int iw = p->under.width, ih = p->under.height;
+        for (size_t i = 0; i < p->reduction.size(); i++)
+        {
+            auto &t = p->reduction[i];
+            auto &program = p->change_p;
+            program.use(wf::TEXTURE_TYPE_RGBA);
+            program.uniformMatrix4f("MVP", glm::ortho(0.f, float(t.width), 0.f, float(t.height), -1.f, 1.f));
+            program.uniform1i("uFirst", i == 0 ? 1 : 0);
+            program.uniform2f("uInputSize", iw, ih);
+            bind(program, "uUnder", 0, p->under.texture);
+            bind(program, "uSeen", 1, p->seen.texture);
+            bind(program, "uMask", 2, p->mask.texture);
+            bind(program, "uReduce", 3, input);
+            p->draw_to(program, t);
+            input = t.texture;
+            iw = t.width;
+            ih = t.height;
+        }
+        p->copy_p.use(wf::TEXTURE_TYPE_RGBA);
+        p->copy_p.uniformMatrix4f("MVP", glm::ortho(0.f, 1.f, 0.f, 1.f, -1.f, 1.f));
+        bind(p->copy_p, "image", 0, input);
+        p->draw_to(p->copy_p, p->query);
+        unsigned char value[4];
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, value);
+        count = value[0];
+    });
+    ++backdrop_checks;
+    p->sampled_step = UINT64_MAX;
+    return count;
+}
+void renderer_t::backdrop_seen()
+{
+    if (!p->ready || !p->under.fb)
+        return;
+    wf::gles::run_in_context_if_gles([&]
+    {
+        state_t guard;
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, p->under.fb);
+        glBindTexture(GL_TEXTURE_2D, p->seen.texture);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, p->under.width, p->under.height);
+    });
 }
 bool renderer_t::overlapping() const { return p->overlap; }
 bool renderer_t::backdrop_ready(const wf::render_target_t &target) const
