@@ -34,7 +34,7 @@ from pathlib import Path
 HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
 
 LUA_SCAN = r'''
-local order, binds = {}, {}
+local order, binds, window_rules = {}, {}, {}
 local baseline = os.getenv("SCOTTLAND_OMARCHY_BASELINE_SCAN") == "1"
 
 local function normalize(keys)
@@ -137,6 +137,32 @@ hl = setmetatable({
     return noop
   end,
   get_config = function() return nil end,
+  -- Window rules that hide windows from screen sharing (no_screen_share): Scottland cannot honor
+  -- them, so the report must say so. Printed as "@rule" rows after the bindings.
+  window_rule = function(rules)
+    if type(rules) == "table" and rules.no_screen_share then
+      local parts = {}
+      for k, v in pairs(type(rules.match) == "table" and rules.match or {}) do
+        parts[#parts + 1] = tostring(k) .. " " .. tostring(v)
+      end
+      table.sort(parts)
+      local origin = "custom"
+      local defaults = (os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/default/"
+      for level = 2, 16 do
+        local info = debug.getinfo(level, "S")
+        if not info then break end
+        local source = (info.source or ""):gsub("^@", "")
+        if not source:match("/default/hypr/helpers%.lua$") and source:sub(1, 1) == "/" then
+          if source:sub(1, #defaults) == defaults and not from_user_omarchy_plugin() then
+            origin = "default"
+          end
+          break
+        end
+      end
+      window_rules[#window_rules + 1] = { table.concat(parts, ", "), origin }
+    end
+    return noop
+  end,
 }, { __index = function() return noop end })
 
 local real_require = require
@@ -183,6 +209,9 @@ for _, id in ipairs(order) do
     for i = 1, #b do b[i] = tostring(b[i]):gsub("[\t\n]", " ") end
     print(table.concat(b, "\t"))
   end
+end
+for _, rule in ipairs(window_rules) do
+  print("@rule\t" .. rule[1]:gsub("[\t\n]", " ") .. "\t" .. rule[2])
 end
 '''
 
@@ -247,6 +276,10 @@ REPORT_GROUPS = {
                    "Scottland translates keys before bindings and the app see them, preserving their intended editing effect in matching apps."),
     "super_w": ("Scottland leaves Super+W unbound",
                 "A single press should not close a window; Scottland keeps closing an explicit action."),
+    "capture": ("Not hidden from screen sharing in Scottland",
+                "Hyprland blacked these windows out of screen sharing and screenshots. Scottland "
+                "cannot: every capture copies the screen as it is shown, so these windows appear in "
+                "shared screens, screenshots and recordings."),
     "partial": ("Works with a limitation in Scottland",
                 "Scottland runs these shortcuts, but not in every situation Hyprland did."),
     "unsupported": ("Unsupported in Scottland",
@@ -254,7 +287,7 @@ REPORT_GROUPS = {
 }
 
 REPORT_GROUP_ORDER = {name: index for index, name in enumerate((
-    "workspaces", "layout", "window_navigation", "groups", "window_mode",
+    "capture", "workspaces", "layout", "window_navigation", "groups", "window_mode",
     "widget_controls", "window_controls", "settings", "reload", "other_feature",
     "app_remaps", "super_w", "partial", "unsupported"))}
 
@@ -312,6 +345,8 @@ def report_identity(label):
 def parse_scan_rows(output):
     rows = []
     for line in output.splitlines():
+        if line.startswith("@rule\t"):
+            continue
         fields = (line.split("\t") + [""] * 12)[:12]
         mods, key, description, kind, arg, repeat, release, locked, mouse, function, options, _plugin = fields
         rows.append({"identity": scan_identity(mods, key),
@@ -507,11 +542,11 @@ def pretty_keys(value):
 SWITCH_KEY = re.compile(r"switch:(?:(on|off):)?(.+)", re.IGNORECASE)
 
 
-def report_entry(group, label, description, now, origin=None):
+def report_entry(group, label, description, now, origin=None, keys=None):
     heading, explanation = REPORT_GROUPS[group]
     switch = SWITCH_KEY.fullmatch(label)
-    keys = (f"{switch.group(2).strip()} ({(switch.group(1) or 'either way').lower()})" if switch
-            else pretty_keys(label))
+    keys = keys or (f"{switch.group(2).strip()} ({(switch.group(1) or 'either way').lower()})"
+                    if switch else pretty_keys(label))
     was = (description or f"Shortcut on {keys}").strip().rstrip(".")
     return {"heading": heading, "why": explanation, "keys": keys,
             "was": was, "now": now, "origin": origin or source_for_label(label),
@@ -957,6 +992,15 @@ def main():
         report_overrides.append(report_entry(group, label, was, now))
 
     for line in scan_stdout.splitlines():
+        if line.startswith("@rule\t"):
+            # P10: a protection the user had is gone, so say so (adapter-gaps AG01).
+            _, match, origin = (line.split("\t") + ["", ""])[:3]
+            report_overrides.append(report_entry(
+                "capture", "", "Hidden from screen sharing and screenshots (no_screen_share)",
+                "Shown in screen sharing, screenshots and recordings like any other window",
+                origin="Omarchy default" if origin == "default" else "Your custom/changed shortcut",
+                keys=f"Window rule: {match or 'any window'}"))
+            continue
         mods, key, description, kind, arg, repeat, release, locked = (line.split("\t") + [""] * 8)[:8]
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
         if mods == "ALT" and not key:

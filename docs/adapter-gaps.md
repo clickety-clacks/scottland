@@ -227,3 +227,31 @@ that choice. App choices, drivers, theme engines and defaults remain distro conc
 No product code, live settings or packages were changed. These 38 audit rows record current
 limits and hypotheses; H1/H2 confirm failures, not their repair. Existing O1/O2/O7/O10 status
 must be read at the granularity of their exercised paths, not as blanket Omarchy compatibility.
+
+## Capture exclusion in Scottland (AG01, 2026-10-05)
+
+What a Scottland session offers for capture, from Wayfire 0.11's source (`src/core/core.cpp`)
+and wlroots 0.20's headers:
+
+- **wlr-screencopy-v1** (grim, xdg-desktop-portal-wlr's ScreenCast and Screenshot, OBS's
+  wlrobs): copies an output's composed frame.
+- **ext-image-copy-capture-v1** with **output** sources only: the same composed frame. Wayfire
+  creates no toplevel (per-window) capture source.
+- **wlr-export-dmabuf-v1**: exports the output's buffer.
+- **KMS capture** (Omarchy's default recorder, gpu-screen-recorder): reads the display planes
+  through DRM; the compositor is not involved, under Hyprland either.
+
+None of these lets the compositor, or a Scottland plugin, leave a window out of what is captured
+while still showing it on screen: there is no capture-time render pass to change. So Hyprland's
+`no_screen_share` cannot be enforced, and the adapter does not pretend to: every such rule is
+listed in the O20 report as not enforced (adapter O27), and a test confirms that a window the
+1Password rule matches does appear in a screen capture.
+
+What could be built, each a product decision for Mike (none chosen):
+
+1. **A capture path that renders without excluded windows.** Scottland would serve the capture
+   protocols itself, rendering a separate frame for capture clients. Large: it replaces
+   wlroots' screencopy handling and needs Wayfire support; KMS capture would still bypass it.
+2. **Hide excluded windows on screen while anything captures.** Possible only for captures the
+   compositor sees (not KMS), and it changes what the user sees during a call.
+3. **Warn when a matching window is on screen during a capture.** Same detection limits as 2.
