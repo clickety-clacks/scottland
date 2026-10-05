@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic behavior assertions, independent of the model/scene audit."""
 import json
+import sys
 import os
 import socket
 import struct
@@ -56,18 +57,11 @@ def drag(window, x, absolute=False, y=None):
     time.sleep(.5)
 
 def reload_plugin():
-    with tempfile.TemporaryDirectory() as directory:
-        fresh = Path(directory) / 'libscottland-fs-reload.so'
-        shutil.copyfile('build/libscottland.so', fresh)
-        plugins = ipc.call('wayfire/get-config-option', {'option': 'core/plugins'})['value']
-        changed = ' '.join(str(fresh) if p == 'scottland' or '/libscottland-' in p else p for p in plugins.split())
-        mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.reloading')
-        mark.touch()
-        try:
-            ipc.call('wayfire/set-config-options', {'core/plugins': changed})
-            time.sleep(.8)
-        finally: mark.unlink(missing_ok=True)
-        time.sleep(.7)
+    # The real reload (receipt, handover, acknowledgment): without a receipt nothing is carried over.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from session_reload import reload_session
+    reload_session(timeout=20)
+    time.sleep(.7)
 
 clients = []
 def open_app(app_id):

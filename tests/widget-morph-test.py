@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Real stipc rail transitions and Super+M; compositor geometry and captured pixels."""
+import sys as _sys; _sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from session_reload import reload_session
 import importlib.util
 import ast
 import math
@@ -162,7 +164,7 @@ def entry_paths():
             # Exercise the recovery entry with stock move input while Scottland
             # is unloaded in THIS private compositor, then load the same build.
             plugins = t.ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
-            without = " ".join(p for p in plugins.split() if p != "scottland")
+            without = " ".join(p for p in plugins.split() if p != "scottland" and "/libscottland" not in p)
             stock_move = t.ipc.call("wayfire/get-config-option", {"option": "move/activate"})["value"]
             t.ipc.call("wayfire/set-config-options", {"core/plugins": without, "move/activate": "<super> BTN_LEFT"})
             try:
@@ -395,17 +397,10 @@ def entry_lifecycle():
     t.check("entry unload: both widget windows close", not any(v["title"].startswith("Scottland widget") for v in plain), plain)
     t.ipc.call("wayfire/set-config-options", {"core/plugins": plugins})
     card = t.wait_for(lambda: t.card(titles[0]) and t.card(titles[0])["frame"].get("presentation") and t.card(titles[0]))
-    # This reload is strictly inside the private test compositor.
-    fresh = out / "libscottland-entry-reload.so"
-    shutil.copyfile("build/libscottland.so", fresh)
-    changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
-    mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
-    mark.touch()
-    try:
-        t.ipc.call("wayfire/set-config-options", {"core/plugins": changed})
-        time.sleep(1)
-    finally:
-        mark.unlink(missing_ok=True)
+    # This reload is strictly inside the private test compositor: the real one (receipt, handover,
+    # acknowledgment), since a plugin swapped in without a receipt carries nothing over.
+    reload_session(timeout=20)
+    time.sleep(1)
     t.check("entry reload: mapped card keeps its identity and hidden live app",
         t.card(titles[0]) and t.card(titles[0])["id"] == card["id"] and
         t.app(titles[0]) and t.app(titles[0])["hidden"])
@@ -612,17 +607,8 @@ try:
     settle()
     t.check("closing during a morph releases its resources", state()["widget_transition_count"] == 0 and not t.card(title))
     t.toggle(); time.sleep(.08)
-    fresh = out / "libscottland-morph-reload.so"
-    shutil.copyfile("build/libscottland.so", fresh)
-    plugins = t.ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
-    changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
-    mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
-    mark.touch()
-    try:
-        t.ipc.call("wayfire/set-config-options", {"core/plugins": changed})
-        time.sleep(1)
-    finally:
-        mark.unlink(missing_ok=True)
+    reload_session(timeout=20)
+    time.sleep(1)
     t.check("headless reload during a morph survives and releases snapshots", state()["widget_transition_count"] == 0)
 
     t.cleanup(); t.owned.clear()

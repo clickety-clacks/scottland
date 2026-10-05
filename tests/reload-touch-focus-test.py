@@ -4,6 +4,8 @@ pointer focus off, so removing the grab can't refocus the pointer. The first mou
 plugin reload then sends that grab a pointer leave. Before the fix its interaction object was freed
 and its code unmapped, and the compositor crashed (seed 271828 of tests/state-model-test.sh: a card
 finger drag, a reload, then an Esc drag with the mouse). Invoked by reload-touch-focus-test.sh."""
+import sys as _sys; _sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from session_reload import reload_session
 import json
 import os
 from pathlib import Path
@@ -82,17 +84,10 @@ def finger_drag(view_id, dx, dy, hold):
 
 
 def reload_plugin():
-    fresh = Path(work.name) / f'libscottland-{time.monotonic_ns()}.so'
-    shutil.copyfile('build/libscottland.so', fresh)
-    plugins = ipc.call('wayfire/get-config-option', {'option': 'core/plugins'})['value']
-    changed = ' '.join(str(fresh) if p == 'scottland' or '/libscottland-' in p else p for p in plugins.split())
-    mark = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.reloading')
-    mark.touch()
-    try:
-        ipc.call('wayfire/set-config-options', {'core/plugins': changed})
-        time.sleep(.8)
-    finally:
-        mark.unlink(missing_ok=True)
+    # The real reload (receipt, handover, acknowledgment): a plugin swapped in without a receipt
+    # carries no widget over, and the cards this test follows would be new ones.
+    reload_session(timeout=20)
+    time.sleep(.3)
 
 
 def mouse_after_reload(view_id, label):
