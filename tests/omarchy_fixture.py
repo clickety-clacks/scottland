@@ -78,7 +78,7 @@ require("default.hypr.helpers")
 
 
 class Session:
-    def __init__(self, fixture, name, extra_args=(), env=None, repo=REPO):
+    def __init__(self, fixture, name, extra_args=(), env=None, repo=REPO, omarchy=True):
         """repo: the checkout whose tests/headless.sh (and build) runs the session; an older
         checkout for reload rehearsals."""
         self.fixture = fixture
@@ -90,6 +90,7 @@ class Session:
                     "TMPDIR": str(REPO / "build" / "tmp"), **(env or {})}
         (REPO / "build" / "tmp").mkdir(parents=True, exist_ok=True)
         self.extra_args = list(extra_args)
+        self.omarchy = omarchy  # False: core alone, no adapter hooks
         self.started = False
 
     def __enter__(self):
@@ -105,7 +106,8 @@ class Session:
 
     def start(self):
         self.harness("stop", check=False)
-        result = self.harness("start", "--omarchy", *self.extra_args, timeout=120)
+        result = self.harness("start", *(["--omarchy"] if self.omarchy else []), *self.extra_args,
+                              timeout=120)
         self.started = True
         self.display = (self.dir / "display").read_text().strip()
         return result
@@ -247,3 +249,46 @@ def read_png(path):
     rgb = b"".join(bytes(v for i, v in enumerate(row) if i % channels < 3) for row in rows) \
         if channels == 4 else b"".join(rows)
     return width, height, rgb
+
+
+def axis_recorder():
+    """Build tests/axis-recorder.c into build/ (once per source change); returns its path."""
+    source = REPO / "tests/axis-recorder.c"
+    out = REPO / "build/axis-recorder"
+    if out.exists() and out.stat().st_mtime >= source.stat().st_mtime:
+        return out
+    gen = REPO / "build/axis-recorder-gen"
+    gen.mkdir(parents=True, exist_ok=True)
+    protocols = {"xdg-shell": "/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml",
+                 "wlr-layer-shell-unstable-v1":
+                     str(REPO / "core/plugin/protocols/wlr-layer-shell-unstable-v1.xml")}
+    sources = [str(source)]
+    for name, xml in protocols.items():
+        subprocess.run(["wayland-scanner", "client-header", xml, str(gen / f"{name}-client-protocol.h")],
+                       check=True)
+        subprocess.run(["wayland-scanner", "private-code", xml, str(gen / f"{name}-protocol.c")], check=True)
+        sources.append(str(gen / f"{name}-protocol.c"))
+    subprocess.run(["cc", "-O1", "-o", str(out), *sources, f"-I{gen}", "-lwayland-client"], check=True)
+    return out
+
+
+class Recorder:
+    """An axis-recorder client in a session: what scroll its surface received."""
+
+    def __init__(self, session, name, color, layer=False):
+        self.session, self.name = session, name
+        self.log = session.dir.parent / f"{session.dir.name}-axis-{name}.log"
+        self.log.unlink(missing_ok=True)
+        args = ["--layer", name] if layer else [name]
+        session.run("sh", "-c", f"exec {axis_recorder()} {' '.join(args)} {color} "
+                                f">{self.log} 2>&1 </dev/null &")
+
+    def lines(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def mark(self):
+        return len(self.lines())
+
+    def vertical(self, since=0):
+        """Sum of vertical axis values received after line `since`."""
+        return sum(float(line.split()[2]) for line in self.lines()[since:] if line.startswith("axis 0 "))

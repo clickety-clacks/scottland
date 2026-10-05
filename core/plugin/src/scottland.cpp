@@ -5377,6 +5377,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         else if (event == "swipe_update") test_touchpad->swipe_update(fingers,
             data.has_member("dx") ? data["dx"].as_double() : 0.0, data.has_member("dy") ? data["dy"].as_double() : 0.0);
         else if (event == "swipe_end") test_touchpad->swipe_end(cancelled);
+        else if (event == "scroll") test_touchpad->scroll(  // two-finger scroll (finger source)
+            data.has_member("dx") ? data["dx"].as_double() : 0.0, data.has_member("dy") ? data["dy"].as_double() : 0.0);
         else if (event == "button") test_touchpad->press(
             data.has_member("button") && data["button"].as_string() == "left" ? BTN_LEFT : BTN_MIDDLE,
             data.has_member("pressed") && data["pressed"].as_bool());
@@ -5402,7 +5404,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // touchpad follows the shipped compositor multiplier before Qt sees it.
             double delta = data["scroll_y"].as_double();
             if (data.has_member("touchpad") && data["touchpad"].as_bool())
-                delta *= double(touchpad_scroll_speed);
+                delta *= touchpad_scroll_factor().first;
             touch_pointer->scroll(0, delta,
                 data.has_member("wheel") && data["wheel"].as_bool());
         }
@@ -7157,19 +7159,74 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // here, before Wayfire handles the event. Remove this
     // once the upstream fix ships (the ABI check below turns it off for newer Wayfire builds).
     wf::option_wrapper_t<double> touchpad_scroll_speed{"input/touchpad_scroll_speed"};
+    // Per-app speeds: [scottland] touchpad_scroll_apps_<name> = <regex matching the whole app-id>,
+    // touchpad_scroll_factor_<name> = <speed>. The window under the pointer takes the first entry
+    // (by name) whose regex matches its app-id; that speed replaces touchpad_scroll_speed for it.
+    // Anything else (no match, a panel or other layer surface) scrolls at touchpad_scroll_speed.
+    wf::option_wrapper_t<wf::config::compound_list_t<std::string, double>> touchpad_scroll_apps{
+        "scottland/touchpad_scroll_speeds"};
+    std::map<std::string, std::optional<std::regex>> touchpad_scroll_regexes;  // pattern -> compiled
+
+    /** The touchpad scroll speed for the window under the pointer, and whether an app entry set it. */
+    std::pair<double, bool> touchpad_scroll_factor()
+    {
+        double global = std::max(0.0, (double)touchpad_scroll_speed);
+        auto view = wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
+        if (!view)
+        {
+            return {global, false};
+        }
+
+        std::string app_id = view->get_app_id();
+        for (const auto& [name, pattern, factor] : touchpad_scroll_apps.value())
+        {
+            auto cached = touchpad_scroll_regexes.find(pattern);
+            if (cached == touchpad_scroll_regexes.end())
+            {
+                std::optional<std::regex> compiled;  // stays empty for a bad pattern, logged once
+                try
+                {
+                    compiled = std::regex(pattern);
+                } catch (const std::regex_error&)
+                {
+                    LOGE("scottland: bad touchpad_scroll_apps_", name, " regex: ", pattern);
+                }
+
+                cached = touchpad_scroll_regexes.emplace(pattern, std::move(compiled)).first;
+            }
+
+            if (cached->second && std::regex_match(app_id, *cached->second))
+            {
+                return {std::max(0.0, factor), true};
+            }
+        }
+
+        return {global, false};
+    }
+
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_axis_event>> on_axis =
         [=] (wf::input_event_signal<wlr_pointer_axis_event> *ev)
     {
-#if WAYFIRE_API_ABI_VERSION_MACRO <= 2026'07'26
-        if ((ev->event->source == WL_POINTER_AXIS_SOURCE_FINGER) && ev->device &&
-            (ev->device->type == WLR_INPUT_DEVICE_POINTER) &&
-            !(touch_pointer && (ev->device == &touch_pointer->pointer.base)))
+        if ((ev->event->source != WL_POINTER_AXIS_SOURCE_FINGER) || !ev->device ||
+            (ev->device->type != WLR_INPUT_DEVICE_POINTER) ||
+            (touch_pointer && (ev->device == &touch_pointer->pointer.base)))
         {
-            double speed = std::max(0.0, (double)touchpad_scroll_speed);
-            ev->event->delta *= speed;
-            ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
+            return;
         }
+
+        auto [speed, per_app] = touchpad_scroll_factor();
+#if WAYFIRE_API_ABI_VERSION_MACRO > 2026'07'26
+        // Newer Wayfire applies touchpad_scroll_speed itself: only an app's own speed is ours.
+        double global = std::max(0.0, (double)touchpad_scroll_speed);
+        if (!per_app || (global <= 0))
+        {
+            return;
+        }
+
+        speed /= global;
 #endif
+        ev->event->delta *= speed;
+        ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
     };
 
     // Per-app key remaps: [scottland] remap_apps_<name> (app-id regex, case-insensitive),
