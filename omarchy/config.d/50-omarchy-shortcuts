@@ -209,7 +209,9 @@ KEYSYMS = {
     "xf86touchpadon": "TOUCHPAD_ON", "xf86touchpadoff": "TOUCHPAD_OFF", "xf86eject": "EJECTCD",
 }
 
-HYPRLAND_ONLY = re.compile(r"hyprctl|omarchy-hyprland-|hyprsunset|hyprpicker|workspace")
+# Commands that only act on Hyprland itself. hyprpicker is not one: it uses the screencopy and
+# layer-shell protocols Wayfire has (tests/omarchy-color-picker-test.py).
+HYPRLAND_ONLY = re.compile(r"hyprctl|omarchy-hyprland-|hyprsunset|workspace")
 
 # Hyprland dispatchers with a Wayfire equivalent: expression prefix -> (section, option)
 DISPATCHERS = {
