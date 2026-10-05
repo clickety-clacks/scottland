@@ -53,6 +53,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | A three-finger hold on an unfocused window pairs it with the focused window (touchpad equivalent of the hint hold). | WK36 |
 | 10-04 | A three-finger hold on the focused window solos it (built with solo). | WK35 |
 | 10-04 | General rule: every gesture that drags a window (Super + drag, Super + double-tap drag lock, three-finger drag) has a hold form: the same gesture held still instead of dragged solos the focused window or pairs an unfocused one. | WK35, WK36 |
+| 10-04 | Holding the halo counts as a hold form too. While any hold is in progress, a timing circle fills around the hint (or at the pointer), as Vimarchy does, completing when the hold fires. | WK35, WK36, WK39 |
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
 
