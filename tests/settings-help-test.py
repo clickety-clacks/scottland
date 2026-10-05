@@ -160,6 +160,13 @@ def key(code):
     time.sleep(.12)
 
 
+def option_reaches_change(name, before, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if option(name) != before: return True
+        time.sleep(.05)
+    return False
+
 def option_reaches(name, expected, timeout=2):
     # QML debounces previews and invokes an asynchronous ctl process. Wait for its result,
     # not an assumed process-start/IPC latency; never resend input to make a check pass.
@@ -609,8 +616,8 @@ try:
     check("resize graph sets real size coast",abs(changed_resize-170)<4 and baseline_resize>80)
     check("Save persists all Window mode options",all(k+" =" in layout.read_text() for k in saved_motion))
     check("Save writes the always-avoid choice", "window_avoidance_always = true" in layout.read_text())
-    # A layout.ini from before the drag audition was removed still names its settings.
-    with layout.open("a") as f: f.write("solo_audition_delay = 5000\nsolo_audition_hotspot = 120\n")
+    # A layout.ini from before the drag audition was removed still names its pause.
+    with layout.open("a") as f: f.write("solo_audition_delay = 5000\n")
     panel=open_panel();tab(2)
     check("reopen retains both coast endpoints",
           all(abs(snapshot()["motion"][k]-saved_motion[k])<.01 for k in
@@ -626,11 +633,13 @@ try:
     check("double-tap timeline edits live timing",option("window_double_tap_delay")>300)
     click(*reveal("hintHoldTiming",180,60));key("KEY_RIGHT")
     check("hint hold timeline edits live timing",option("window_hold_delay")>500)
+    click(*reveal("soloHotspot",180,60));key("KEY_RIGHT")
+    check("hold hotspot row edits the live hotspot",option_reaches_change("solo_audition_hotspot",50))
     shot("06a-window-timelines")
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);time.sleep(.2)
     check("Window Defaults restores original feel",option("key_impulse")==335 and option("key_friction")==608
           and option("resize_impulse")==335 and option("resize_friction")==608
-          and not bool_option("window_avoidance_always"))
+          and not bool_option("window_avoidance_always") and option("solo_audition_hotspot")==50)
     close_panel(panel,via_button=True)
     check("Cancel restores saved motion after Defaults",all(abs(option(k)-saved_motion[k])<.01 for k in
           ("key_impulse","key_friction","resize_impulse","resize_friction")))
@@ -638,8 +647,8 @@ try:
     panel=open_panel();tab(2);click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);close_panel(panel,save=True)
     check("Window Defaults saves always-avoid off", not bool_option("window_avoidance_always") and
           "window_avoidance_always = false" in layout.read_text())
-    check("Save drops the removed solo audition settings from an older layout.ini",
-          "solo_audition" not in layout.read_text())
+    check("Save drops the removed solo audition pause from an older layout.ini and keeps the hotspot",
+          "solo_audition_delay" not in layout.read_text() and "solo_audition_hotspot = 50" in layout.read_text())
     layout.unlink()
     # Theme applies to every control, not only hints.
     panel=open_panel()

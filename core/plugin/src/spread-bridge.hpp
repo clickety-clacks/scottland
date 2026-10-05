@@ -4,6 +4,11 @@
 // over, and applies a result: committed outright for a hint hold or three-finger hold on the
 // focused window (WK35). Nothing else ever spreads (P4).
 
+    // How far the pointer may move from where a pointer hold fired before that counts as starting
+    // to drag, which cancels the hold's audition (ruling 10-05; WK39).
+    wf::option_wrapper_t<double> solo_audition_hotspot{"scottland/solo_audition_hotspot"};
+    double audition_hotspot() const { return std::clamp((double)solo_audition_hotspot, 8.0, 400.0); }
+
     // P8: 2 ms of solving per slice, then the event loop runs (input, frames) for at least 1 ms.
     // A keyboard solo commits the best checkpoint after 12 ms of solving or 30 ms of waiting.
     static constexpr auto SPREAD_SLICE = std::chrono::microseconds(2000);

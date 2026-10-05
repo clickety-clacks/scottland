@@ -185,6 +185,13 @@
             <min>1</min>
             <max>3000</max>
         </option>
+        <option name="solo_audition_hotspot" type="double">
+            <_short>Hold hotspot (pt)</_short>
+            <_long>While a pointer hold shows its solo or pair, moving the pointer farther than this from where the hold fired counts as starting to drag: the audition is cancelled and the window drags as normal. Smaller movements keep it.</_long>
+            <default>50</default>
+            <min>8</min>
+            <max>400</max>
+        </option>
         <option name="cycle_overshoot" type="double">
             <_short>Hint cycle overshoot (%)</_short>
             <_long>Elastic settlement of position and scale when a keyboard hint moves a window. Higher gives a larger overshoot; zero keeps the original motion. Screen edges limit the overshoot. Drags, coasts and widget morphs are unaffected.</_long>
