@@ -45,6 +45,15 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
 
+## Privacy of developer networks (Mike, 2026-10-04)
+
+This repository is public. Never reveal the internal topology or identifiers of any developer's network:
+no host names, IP addresses, tailnet or domain names, user names, device names or home paths, in code,
+docs, comments, commit messages, test fixtures or logs. Say "the test machine" or "the daily machine";
+which machine that is lives in private environment docs. If a component needs to reach a machine, its
+address is a configurable field set at install time, never a constant. Existing mentions in current files
+are being removed (names already in git history stay); don't add new ones.
+
 ## Where does a request belong?
 
 Every time Mike asks for something, decide which of these it is, **say which you assumed and
