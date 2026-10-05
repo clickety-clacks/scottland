@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include "goo-model.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <memory>
@@ -34,7 +35,7 @@ class renderer_t
     // The settle check (GO10) without waiting (main-loop Phase 3): every 30th step issues the
     // energy reduction into a pixel buffer with a fence; readings are collected later, without
     // waiting, inside a render pass or from the goo's collection timer. A reading applies only
-    // if nothing changed since it was issued (invalidation counter, size) and it is newer than
+    // if nothing changed since it was issued (generation, invalidation counter, size) and it is newer than
     // the last applied one. Without pixel buffers and fences (GLES 2), after any readback
     // failure, or with the test switch, the simulation sleeps on time alone (timed_sleep()).
     uint64_t invalidation = 0;
@@ -42,8 +43,20 @@ class renderer_t
     bool timed_sleep() const;
     bool force_timed_sleep = false;  // tests (goo-state), SCOTTLAND_TEST_MODEL only
     bool readback_pending() const;
+    int readback_in_flight() const;
     /** Examine at most `budget` busy slots (shared across outputs). In a GL context. */
     void collect(int &budget);
+    /** The collection allowance of the current main-loop dispatch, shared by every output's
+     *  renderer and the collection timer; `spent` arranges its refill after the dispatch. */
+    struct allowance_t { int left = 2; std::function<void()> spent; uint64_t examined = 0; };
+    allowance_t *allowance = nullptr;
+    /** The output changed (mode, scale, transform) or was recreated: readings in flight are
+     *  retired and none issued before applies, even at equal dimensions. In a GL context. */
+    void new_generation();
+    uint64_t generation() const;
+    // Tests only: "hold" (nothing is collected), "incoming-pack-state", "prior-value",
+    // "wait-failed", "map-failed", "unmap-failed"; "" also leaves the readback-failed fallback.
+    void set_readback_fault(const std::string &fault);
     std::string readback_mode() const;
     uint64_t readings_issued = 0, readings_applied = 0, readings_stale = 0, readings_skipped = 0;
     uint64_t last_applied_step = 0;

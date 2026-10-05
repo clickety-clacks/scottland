@@ -2809,7 +2809,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // outgoing copy transferred until each item is adopted; whatever is left when import ends is
     // disposed of exactly once (handles closed, leases returned with one enable).
     scottland::handover::pending_t handover_pending;
-    std::optional<scottland::handover::list_t> handover_list;
+    scottland::handover::list_t handover_list;  // valid when handover_listed
+    bool handover_listed = false;
     bool init_completed = false;
     bool receipt_consumed = false;
     std::string reload_nonce, handover_outcome = "nothing to import";
@@ -2840,28 +2841,21 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             wf::scene::set_node_enabled(view->get_root_node(), true);
     }
 
-    void dispose_handover()
+    void dispose_handover() noexcept
     {
-        handover_pending.dispose([this] (uint64_t window) { return_lease(window); });
+        handover_pending.dispose([] (void *self, uint64_t window)
+        {
+            try { static_cast<scottland_plugin_t*>(self)->return_lease(window); } catch (...) {}
+        }, this);
     }
 
     /** First statement of init(): own what the outgoing copy of this process listed in the
      *  environment, before anything that can throw or reject. Nothing here throws. */
     void acquire_handover() noexcept
     {
-        const char *found = getenv(scottland::handover::environment);
-        if (!found) return;
-        std::optional<scottland::handover::list_t> list;
-        try { list = scottland::handover::parse_list(found); } catch (...) {}
-        const char *version = getenv("SCOTTLAND_INTERNAL_MODEL_VERSION");
-        bool current = list && version && std::strtoull(version, nullptr, 10) == list->version;
-        unsetenv(scottland::handover::environment);
         // A list some other build left behind (an older plugin loaded in between, which neither
         // consumed it nor kept its model version) names numbers nobody here owns now.
-        if (!current || !handover_pending.reserve(list->fds.size(), list->leases.size())) return;
-        for (int fd : list->fds) handover_pending.own_fd(fd);
-        for (auto window : list->leases) handover_pending.own_lease(window);
-        try { handover_list = std::move(list); } catch (...) {}
+        handover_listed = scottland::handover::acquire(handover_pending, handover_list);
     }
 
     /** Read the receipt scottland-reload wrote for this attempt. Consumed (renamed) only when it
@@ -2915,18 +2909,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool minimized = false, touch_drag = false, card = false, has_desktop = false;
     };
 
-    /** Both formats: a number names a handle only if it is an open pidfd that no other entry
-     *  named, and a live process behind it must be the recorded one (a recorded 0 never
-     *  authorizes a live handle). A reaped launcher (Pid: -1) is owned-dead. */
-    static bool valid_descriptor(int fd, int64_t pid, std::vector<int>& seen)
-    {
-        if (fd < 0 || std::find(seen.begin(), seen.end(), fd) != seen.end()) return false;
-        seen.push_back(fd);
-        if (!scottland::handover::is_pidfd(fd)) return false;
-        auto live = scottland::handover::pidfd_pid(fd);
-        return live && (*live == -1 || (*live > 0 && pid > 0 && *live == pid));
-    }
-
     /** After a reload: take over the widgets the previous plugin handed over. */
     void take_handover()
     {
@@ -2969,8 +2951,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (new_format)
         {
             auto number = [] (const wf::json_t& v) -> int64_t { return v.is_int64() ? v.as_int64() : v.is_int() ? v.as_int() : -1; };
-            if (!handover_list || number(entries["format"]) != scottland::handover::format ||
-                !entries.has_member("id") || !entries["id"].is_string() || entries["id"].as_string() != handover_list->id ||
+            if (!handover_listed || number(entries["format"]) != scottland::handover::format ||
+                !entries.has_member("id") || !entries["id"].is_string() || entries["id"].as_string() != handover_list.id ||
                 number(entries["pid"]) != getpid() ||
                 number(entries["start_time"]) != (int64_t)scottland::handover::process_start_time() ||
                 !entries["session"].is_string() || entries["session"].as_string() != model.session)
@@ -2979,7 +2961,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 dispose_handover();
                 return;
             }
-        } else if (handover_list || !entries.is_object() || !entries.has_member("session") ||
+        } else if (handover_listed || !entries.is_object() || !entries.has_member("session") ||
             !entries["session"].is_string() || entries["session"].as_string() != model.session)
         {
             // Legacy (the installed writer): no envelope and no environment list. Ownership
@@ -3053,16 +3035,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Ownership, in a loop that cannot throw. New format: entries claim what the
         // environment list transferred. Legacy: the receipt-authorized file is the only
         // writer, and it kept one disable for each entry's window.
-        std::vector<int> seen;
-        if (!new_format && !handover_pending.reserve(links.size(), links.size()))
-        {
-            handover_outcome = "out of memory";
-            return;
-        }
+        scottland::handover::seen_t seen;
         for (auto& e : links)
         {
             if (!new_format) handover_pending.own_lease(e.window);
-            if (valid_descriptor(e.pidfd, e.pid, seen))
+            if (scottland::handover::valid_descriptor(e.pidfd, e.pid, seen))
                 e.descriptor = new_format ? handover_pending.holds_fd(e.pidfd) : handover_pending.own_fd(e.pidfd);
         }
 
@@ -3075,39 +3052,68 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;  // its lease and handle are returned below
             }
 
-            auto process = std::make_shared<widget_process_t>();
-            process->pidfd = e.descriptor ? handover_pending.claim_fd(e.pidfd) : -1;
-            process->pid = process->pidfd >= 0 ? (pid_t)e.pid : 0;  // no unobserved numeric identity survives
-            process->unit = e.unit;
-            widget_link_t link;
-            link.window_id = window->get_id();
-            link.window = window->weak_from_this();
-            link.widget = widget->weak_from_this();
-            if (handover_pending.claim_lease(e.window))
-                disabled_nodes.insert(window->get_id());  // adopt the previous renderer's lease
-            link.output = widget->get_output();
-            link.away = !link.output->node_for_layer(wf::scene::layer::TOP)->is_enabled();
-            transition_widget(link, widget_link_t::lifecycle_t::docked);
-            link.rail   = e.rail;
-            link.drop   = {e.x, e.y};
-            link.collapsed   = e.minimized;
-            link.touch_drag  = e.touch_drag;
-            link.desktop = e.desktop;
-            link.name = e.name;
-            link.icon = e.icon;
-            link.card = e.card;
-            if (!e.has_desktop)
+            // The destination takes each resource before the pending owner lets go of it, so a
+            // failure (an allocation) anywhere in a link's adoption returns that link's lease
+            // once, leaves its handle with an owner that closes it, and closes its widget as an
+            // ordinary unload would.
+            bool lease_moved = false, installed = false;
+            widget_process process;
+            try
             {
-                migrate_widget_identity(link, widget, e.unit);
+                process = std::make_shared<widget_process_t>();
+                if (handover_pending.holds_lease(e.window))
+                {
+                    disabled_nodes.insert(window->get_id());  // adopt the previous renderer's lease
+                    handover_pending.claim_lease(e.window);
+                    lease_moved = true;
+                }
+                process->pidfd = e.descriptor ? handover_pending.claim_fd(e.pidfd) : -1;
+                process->pid = process->pidfd >= 0 ? (pid_t)e.pid : 0;  // no unobserved numeric identity survives
+                if (handover_fault("adopt-throw")) throw std::bad_alloc();
+                process->unit = e.unit;
+                widget_link_t link;
+                link.window_id = window->get_id();
+                link.window = window->weak_from_this();
+                link.widget = widget->weak_from_this();
+                link.output = widget->get_output();
+                link.away = !link.output->node_for_layer(wf::scene::layer::TOP)->is_enabled();
+                link.rail   = e.rail;
+                link.drop   = {e.x, e.y};
+                link.collapsed   = e.minimized;
+                link.touch_drag  = e.touch_drag;
+                link.desktop = e.desktop;
+                link.name = e.name;
+                link.icon = e.icon;
+                link.card = e.card;
+                link.launcher = process;
+                auto& slot = model.widgets[link.window_id] = std::move(link);
+                installed = true;
+                transition_widget(slot, widget_link_t::lifecycle_t::docked);
+                if (!e.has_desktop)
+                {
+                    migrate_widget_identity(slot, widget, e.unit);
+                }
+                slot.launched_at = now_msec();
+                watch_process(process);
+                keep_above(widget);
+                set_scale(widget, 1.0);
+                place_widget(widget, widget->get_output(), slot);
+                handover_imported++;
+            } catch (...)
+            {
+                scottland::loop::note(scottland::loop::note_id::handover_adopt_failed, e.window);
+                try
+                {
+                    if (installed)
+                    {
+                        auto found = model.widgets.find(e.window);
+                        if (found != model.widgets.end()) transition_widget(found->second, widget_link_t::lifecycle_t::restoring);
+                        model.widgets.erase(e.window);
+                    }
+                    if (lease_moved) render_hidden(window, false);  // returned once
+                    close_view_or_process(widget, process);
+                } catch (...) {}
             }
-            link.launched_at = now_msec();
-            watch_process(process);
-            link.launcher = process;
-            model.widgets[link.window_id] = std::move(link);
-            keep_above(widget);
-            set_scale(widget, 1.0);
-            place_widget(widget, widget->get_output(), model.widgets[window->get_id()]);
-            handover_imported++;
         }
 
         handover_outcome = "imported " + std::to_string(handover_imported) + " of " + std::to_string(links.size());
@@ -7179,78 +7185,99 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         end_morph();
         widget_watchdog.disconnect();
         release_above();  // a just-dropped window doesn't stay above for good
-        // The handover is published completely or not at all: duplicated handles, the file and
-        // the environment list. On any failure the widgets go as in an ordinary unload.
-        wf::json_t handover = wf::json_t::array();
+        // The handover is published completely or not at all: duplicated handles, the file, the
+        // model version and the environment list. Each duplicated handle has an owner from the
+        // moment it exists; on any failure (an allocation included) the widgets go as in an
+        // ordinary unload and those handles are closed.
         std::vector<uint64_t> handed;
         scottland::handover::list_t list;
+        scottland::handover::duplicates_t duplicates;
         bool published = false;
+        std::string path;
         if (reloading)
         {
-            list.id = scottland::handover::random_id();
-            list.version = model.version;
-            bool ok = true;
-            for (auto& [id, link] : model.widgets)
+            try
             {
-                auto widget = wf::toplevel_cast(link.widget.lock());
-                if (!link.docked() || !widget || !widget->is_mapped()) continue;
-                int duplicate = -1;
-                if (link.launcher && link.launcher->pidfd >= 0 && !handover_fault("dup"))
+                path = runtime_file(".widget-handover.json");
+                wf::json_t handover = wf::json_t::array();
+                snprintf(list.id, sizeof(list.id), "%s", scottland::handover::random_id().c_str());
+                list.version = model.version;  // fixed from here: nothing publishes while handing over
+                bool ok = true;
+                for (auto& [id, link] : model.widgets)
                 {
-                    duplicate = fcntl(link.launcher->pidfd, F_DUPFD_CLOEXEC, 0);
-                    if (duplicate < 0) ok = false;
-                    else list.fds.push_back(duplicate);
-                } else if (link.launcher && link.launcher->pidfd >= 0)
-                {
-                    ok = false;
+                    auto widget = wf::toplevel_cast(link.widget.lock());
+                    if (!link.docked() || !widget || !widget->is_mapped()) continue;
+                    if (handed.size() == scottland::handover::max_transfer) break;  // the rest unload
+                    int duplicate = -1;
+                    if (link.launcher && link.launcher->pidfd >= 0)
+                    {
+                        duplicate = handover_fault("dup") ? -1 : duplicates.dup(link.launcher->pidfd);
+                        if (duplicate < 0 || !list.add_fd(duplicate)) ok = false;
+                    }
+                    if (handover_fault("export-throw")) throw std::bad_alloc();
+                    wf::json_t entry;
+                    entry["window"] = (int64_t)id;
+                    entry["widget"] = (int64_t)widget->get_id();
+                    entry["unit"]   = link.launcher ? link.launcher->unit : "";
+                    entry["pid"]    = (int64_t)(link.launcher ? link.launcher->pid : 0) + (handover_fault("bad-pid") ? 7 : 0);
+                    entry["pidfd"]  = (int64_t)duplicate;
+                    entry["rail"]   = link.rail;
+                    entry["x"] = link.drop.x;
+                    entry["y"] = link.drop.y;
+                    entry["minimized"] = link.collapsed;
+                    entry["touch_drag"] = link.touch_drag;
+                    entry["desktop"] = link.desktop;
+                    entry["name"] = link.name;
+                    entry["icon"] = link.icon;
+                    entry["card"] = link.card;
+                    handover.append(entry);
+                    handed.push_back(id);
+                    if (!list.add_lease(id)) ok = false;
                 }
-                wf::json_t entry;
-                entry["window"] = (int64_t)id;
-                entry["widget"] = (int64_t)widget->get_id();
-                entry["unit"]   = link.launcher ? link.launcher->unit : "";
-                entry["pid"]    = (int64_t)(link.launcher ? link.launcher->pid : 0) + (handover_fault("bad-pid") ? 7 : 0);
-                entry["pidfd"]  = (int64_t)duplicate;
-                entry["rail"]   = link.rail;
-                entry["x"] = link.drop.x;
-                entry["y"] = link.drop.y;
-                entry["minimized"] = link.collapsed;
-                entry["touch_drag"] = link.touch_drag;
-                entry["desktop"] = link.desktop;
-                entry["name"] = link.name;
-                entry["icon"] = link.icon;
-                entry["card"] = link.card;
-                handover.append(entry);
-                handed.push_back(id);
-                list.leases.push_back(id);
+
+                // Written even with no widget: it also carries every window's memories, pins,
+                // attention and the model version.
+                if (ok)
+                {
+                    auto snapshot = model_snapshot("desktop");
+                    snapshot["version"] = (int64_t)model.version;
+                    snapshot["links"] = handover;
+                    snapshot["format"] = scottland::handover::format;
+                    snapshot["id"] = handover_fault("wrong-id") ? std::string("not-this-list") : std::string(list.id);
+                    snapshot["pid"] = (int64_t)getpid();
+                    snapshot["start_time"] = (int64_t)scottland::handover::process_start_time();
+                    snapshot["session"] = model.session;
+                    auto manifest = scottland::handover::format_list(list);
+                    auto version = std::to_string(model.version);
+                    std::ofstream out(path + ".tmp");
+                    out << (handover_fault("corrupt-file") ? std::string("{\"format\": 2, \"links\": [") : snapshot.serialize());
+                    out.close();
+                    ok = out && !handover_fault("write") && !handover_fault("rename") &&
+                        std::rename((path + ".tmp").c_str(), path.c_str()) == 0;
+                    // The version the list is bound to goes first: a list without it is stale.
+                    ok = ok && !handover_fault("version-setenv") &&
+                        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", version.c_str(), 1) == 0;
+                    ok = ok && !handover_fault("setenv") &&
+                        setenv(scottland::handover::environment, manifest.c_str(), 1) == 0;
+                }
+                published = ok;
+            } catch (...)
+            {
+                scottland::loop::note(scottland::loop::note_id::handover_export_failed);
+                published = false;
             }
 
-            // Written even with no widget: it also carries every window's memories, pins,
-            // attention and the model version.
-            auto path = runtime_file(".widget-handover.json");
-            if (ok)
+            if (published)
             {
-                auto snapshot = model_snapshot("desktop");
-                snapshot["version"] = (int64_t)model.version;
-                snapshot["links"] = handover;
-                snapshot["format"] = scottland::handover::format;
-                snapshot["id"] = handover_fault("wrong-id") ? std::string("not-this-list") : list.id;
-                snapshot["pid"] = (int64_t)getpid();
-                snapshot["start_time"] = (int64_t)scottland::handover::process_start_time();
-                snapshot["session"] = model.session;
-                std::ofstream out(path + ".tmp");
-                out << (handover_fault("corrupt-file") ? std::string("{\"format\": 2, \"links\": [") : snapshot.serialize());
-                out.close();
-                ok = out && !handover_fault("write") && !handover_fault("rename") &&
-                    std::rename((path + ".tmp").c_str(), path.c_str()) == 0;
-                ok = ok && !handover_fault("setenv") &&
-                    setenv(scottland::handover::environment, scottland::handover::format_list(list).c_str(), 1) == 0;
-            }
-            published = ok;
-            if (!published)
+                duplicates.release();  // the next copy owns them through the list
+            } else
             {
-                for (int fd : list.fds) ::close(fd);
-                std::remove((path + ".tmp").c_str());
-                std::remove(path.c_str());
+                duplicates.close_all();
+                if (!path.empty())
+                {
+                    std::remove((path + ".tmp").c_str());
+                    std::remove(path.c_str());
+                }
                 unsetenv(scottland::handover::environment);
                 handed.clear();
             }
@@ -7310,16 +7337,14 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         fini_hint_palette_watch();
         LOGI("scottland: plugin unloaded");
         stop_loop_monitor(reloading);
-        // The handover list is bound to the version the next copy will find (nothing publishes
-        // while handing over, but the binding must hold whatever happened above).
-        if (published && model.version != list.version)
+        // The next copy continues the model's version. Written once per unload, and not on every
+        // publish: setenv is not safe while another thread may read the environment. A handover
+        // already wrote this same value (installing_model kept it from changing since); here
+        // it covers an ordinary unload.
+        try
         {
-            list.version = model.version;
-            setenv(scottland::handover::environment, scottland::handover::format_list(list).c_str(), 1);
-        }
-        // The next copy continues the model's version. Written once, here, and not on every
-        // publish: setenv is not safe while another thread may read the environment.
-        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
+            if (!published) setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
+        } catch (...) {}
     }
 };
 

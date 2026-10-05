@@ -41,12 +41,13 @@ class Conn:
         return bool(select.select([self.s], [], [], wait)[0])
 
 subprocess.run([str(repo / 'tests/headless.sh'), 'stop'], env=env, capture_output=True)
-subprocess.run([str(repo / 'tests/headless.sh'), 'start', '--widgets'], env=env, check=True, capture_output=True)
-display = (work / 'hl' / 'display').read_text().strip()
-entries = (runtime / f'{display}.env').read_bytes().split(b'\0')
-path = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET=')).decode()
 apps = []
 try:
+    subprocess.run([str(repo / 'tests/headless.sh'), 'start', '--widgets'], env=env, check=True, capture_output=True)
+    display = (work / 'hl' / 'display').read_text().strip()
+    entries = (runtime / f'{display}.env').read_bytes().split(b'\0')
+    path = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET=')).decode()
+    apps = []
     for title in ('pub-a', 'pub-b'):
         apps.append(subprocess.Popen([str(repo / 'tests/headless.sh'), 'run', 'foot', '-T', title, 'sh', '-c', 'exec sleep 600'],
                                      env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
@@ -108,28 +109,41 @@ try:
     c.call('stipc/move_cursor', {'x': cx, 'y': cy}); c.call('stipc/feed_key', {'key': 'KEY_LEFTMETA', 'state': True})
     c.call('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
     c.call('scottland/loop-stats', {'reset': True})
+    # Subscribed before the drag's last mutation; a thread collects its events. From here on no
+    # Scottland query runs until the trailing-flush check below (stipc input doesn't flush).
+    import threading
+    whole = Conn(path); first = whole.call('scottland/subscribe', {'slice': 'desktop'})
+    events, stop_events = [], threading.Event()
+    def collect():
+        while not stop_events.is_set():
+            if whole.pending(.05): events.append((time.monotonic(), whole.read()))
+    collector = threading.Thread(target=collect); collector.start()
     sent = 0; t0 = time.monotonic()
     while time.monotonic() - t0 < 2:
         for k in range(10):
             c.send('stipc/move_cursor', {'x': cx + 300 * math.sin(sent / 40), 'y': cy + 200 * math.cos(sent / 40)}); sent += 1
         for k in range(10): c.read()
-    stats = c.call('scottland/loop-stats')
+    stopped = time.monotonic()
+    stats = c.call('scottland/loop-stats')  # not a model query: it flushes nothing
+    # The motion stopped with the button still held. Without any query, the trailing timer must
+    # publish the last change: the first flushing query afterwards (desktop-model) would publish
+    # anything left dirty under a new version, so its version must be the last event's.
+    time.sleep(1.0)
+    stop_events.set(); collector.join()
+    last = events[-1][1] if events else None
+    targets = {round(e.get('drag', {}).get('target_scale', -1), 3) for _, e in events}
+    now = c.call('scottland/desktop-model')['version']
+    check(f"the drag's changes are published unsolicited ({len(events)} events, {len(targets)} distinct target scales; last "
+          f"{(events[-1][0] - stopped) * 1000 if events else -1:+.0f} ms from the last motion's reply), the last one by the "
+          f"trailing timer: a flushing query afterwards finds nothing newer",
+          len(events) > 10 and last.get('version') == now, (last and last.get('version'), now, len(events)))
     c.call('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'}); c.call('stipc/feed_key', {'key': 'KEY_LEFTMETA', 'state': False})
     timer = stats['scopes'].get('publish_timer', {}).get('calls', 0)
     flushes = stats['scopes'].get('publish_model', {}).get('calls', 0)
-    elapsed = time.monotonic() - t0
+    elapsed = stopped - t0
     check(f'a drag publishes at most once per 8 ms: {flushes} flushes for {sent} motion events in {elapsed:.1f} s',
           flushes <= elapsed * 1000 / 8 + 5 and timer <= flushes + 1 and flushes < sent, stats['scopes'].get('publish_model'))
-    # After the motion stops, the trailing timer publishes the last change by itself: the next
-    # reply needs no flush of its own (its version is the last event's).
-    time.sleep(1.5)
-    whole = Conn(path); first = whole.call('scottland/subscribe', {'slice': 'desktop'})
-    time.sleep(.3)
-    last = first
-    while whole.pending(.2): last = whole.read()
-    now = c.call('scottland/desktop-model')['version']
-    check('the trailing flush publishes the last change without a barrier', last is not None and last.get('version') == now,
-          (last and last.get('version'), now))
+
 finally:
     for p in apps:
         try: os.killpg(p.pid, 15)

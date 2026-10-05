@@ -12,8 +12,11 @@ maximum and per-scope maxima from scottland/loop-stats (absent on builds without
 
 Every number is labelled: "measured" (an observation), "ceiling" (a target from the exception table,
 tests/mainloop-exceptions.json) or "open exception" (a scope over 2 ms that the table lists). With
---gate, the run fails on a scope over its ceiling, ML2 over 4 ms outside listed exceptions, or ping
-p99 over 10 ms; a late ping with no scope over its ceiling and high host load is reported as noise.
+--gate, the run fails on a scope over its ceiling, an ML2 window still over 4 ms once the open
+exceptions in that same window are taken out (the monitor records each episode's contributors),
+or ping p99 over 10 ms (with no scope over its ceiling, attribution unknown; with high host load
+reported as noise). Only exceptions with status "open" carry an allowance; closed ones are
+history. This is a benchmark and gate, separate from the functional tests.
 """
 import collections, json, math, os, signal, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
@@ -349,7 +352,8 @@ for c in clients:
 
 # Report.
 def pct(a, p): return a[min(len(a) - 1, int(len(a) * p))] if a else float('nan')
-ceilings = {name: e['ceiling_ms'] for name, e in exceptions['scopes'].items()}
+# Only open exceptions carry an allowance; closed ones are kept in the file as history.
+ceilings = {name: e['ceiling_ms'] for name, e in exceptions['scopes'].items() if e.get('status', 'open') == 'open'}
 budget = exceptions['budget_ms']; ml2_budget = exceptions['ml2_ms']
 failures, noise = [], []
 lines = [f"{'scenario':24} {'pings':>6} {'p50':>6} {'p99':>7} {'max':>8} {'>8ms':>5} | {'input p50/p99/max':>20} {'offered/s':>9} "
@@ -373,9 +377,17 @@ for r in results:
         row += ', '.join(marks)
         for name, v in s['scopes'].items():
             if v['max_ms'] > ceilings.get(name, budget): scope_over.append((name, v['max_ms'], ceilings.get(name, budget)))
-        ml2_listed = any(v['max_ms'] > budget and name in ceilings for name, v in s['scopes'].items())
-        if s['ml2_max_ms'] > ml2_budget and not ml2_listed:
-            failures.append(f"{r['name']}: ML2 {s['ml2_max_ms']:.2f} ms over {ml2_budget} ms with no listed exception in the scenario")
+        # ML2, per episode (a run of 16.7 ms windows over budget): excused only by the open
+        # exceptions that were in its own worst window. What remains must fit the budget.
+        for e in s.get('ml2_episodes', []):
+            listed = sum(ms for name, ms in e['scopes'].items() if name in ceilings)
+            rest = e['peak_ms'] - listed
+            if rest > ml2_budget:
+                unlisted = ', '.join(f'{n} {ms:.2f}' for n, ms in e['scopes'].items() if n not in ceilings)
+                failures.append(f"{r['name']}: ML2 window {e['peak_ms']:.2f} ms; without its open exceptions {rest:.2f} ms over "
+                                f"{ml2_budget} ms ({unlisted}{', other ' + format(e['other_ms'], '.2f') if e['other_ms'] else ''})")
+        if s.get('ml2_episodes_dropped'):
+            failures.append(f"{r['name']}: {s['ml2_episodes_dropped']} ML2 episodes not recorded (attribution unknown)")
     else:
         row += '   n/a (no loop-stats in this build)'
     if r['note'] is not None: row += f"  [{r['note']}]"
@@ -388,7 +400,9 @@ for r in results:
         elif not scope_over and not r['stats']:
             failures.append(f"{r['name']}: ping p99 {pct(d,.99):.1f} ms over 10 ms")
         elif not scope_over:
-            failures.append(f"{r['name']}: ping p99 {pct(d,.99):.1f} ms over 10 ms, no Scottland scope over its ceiling (not Scottland's callbacks)")
+            # No single scope over its ceiling does not clear Scottland: several short callbacks,
+            # or work outside any scope, can hold the loop. Attribution unknown.
+            failures.append(f"{r['name']}: ping p99 {pct(d,.99):.1f} ms over 10 ms; attribution unknown (no single scope over its ceiling)")
     if isinstance(r['note'], str) and r['note'].startswith('ERROR'):
         failures.append(f"{r['name']}: {r['note']}")
 

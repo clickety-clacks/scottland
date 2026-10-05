@@ -4,6 +4,7 @@
 #include <csignal>
 #include <ctime>
 #include <pthread.h>
+#include <new>
 #include <sstream>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -41,12 +42,16 @@ uint64_t lane_handle_t::age_t::p95() const
 {
     auto n = std::min<uint64_t>(count, recent.size());
     if (!n) return 0;
-    std::vector<uint64_t> sorted(recent.begin(), recent.begin() + n);
-    std::sort(sorted.begin(), sorted.end());
+    auto sorted = recent;
+    std::sort(sorted.begin(), sorted.begin() + n);
     return sorted[std::min<uint64_t>(n - 1, n * 95 / 100)];
 }
 
-worker_t::worker_t(std::string name, uint64_t step_units) : name(std::move(name)), step_units(step_units) {}
+worker_t::worker_t(std::string name, uint64_t step_units) : name(std::move(name)), step_units(step_units)
+{
+    lanes.reserve(max_lanes);
+    handles.reserve(max_lanes);
+}
 
 worker_t::~worker_t() { stop(); }
 
@@ -55,6 +60,7 @@ bool worker_t::start(const worker_faults_t& faults)
     fd = faults.eventfd ? -1 : eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (fd < 0) return false;
     if (faults.thread) return false;
+    fail_iteration = faults.iteration;
     // Signals stay with the compositor's thread.
     sigset_t all, previous;
     sigfillset(&all);
@@ -91,6 +97,7 @@ uint64_t worker_t::stop()
         lane->pending.reset();
         lane->done.reset();
         lane->running.reset();  // the thread has exited: nothing else touches it
+        lane->running_now = false;
     }
     for (auto *handle : handles) handle->worker = nullptr;
     handles.clear();
@@ -107,7 +114,7 @@ std::unique_ptr<lane_handle_t> worker_t::open_lane(const std::string& lane_name,
     handle->name = lane_name;
     {
         std::lock_guard lock(m);
-        if (lanes.size() >= 16 || stopping) handle->lane->closed = true;
+        if (lanes.size() >= max_lanes || stopping) handle->lane->closed = true;
         else lanes.push_back(handle->lane);
     }
     if (!handle->lane->closed)
@@ -123,7 +130,7 @@ void worker_t::close(lane_handle_t& handle)
     handle.lane->closed = true;
     handle.lane->ticket++;
     std::optional<lane_t::slot_t> pending;
-    std::unique_ptr<done_t> done;
+    std::optional<done_t> done;
     {
         std::lock_guard lock(m);
         pending.swap(handle.lane->pending);
@@ -146,6 +153,11 @@ void lane_handle_t::close()
 bool lane_handle_t::submit(std::unique_ptr<job_t> job, uint64_t snapshot_ns)
 {
     if (!worker || lane->closed || !worker->available()) return false;
+    if (!job || !job->admissible())
+    {
+        lane->stats.rejected++;
+        return false;  // destroyed here, on the main thread, as any replaced job
+    }
     lane_t::slot_t slot;
     slot.job = std::move(job);
     slot.ticket = ++lane->ticket;
@@ -194,7 +206,22 @@ void worker_t::signal()
     }
 }
 
-void worker_t::run()
+void worker_t::run() noexcept
+{
+    // Nothing escapes the thread's entry: a failure of the worker itself (not of a job, which
+    // fails only that job) makes it unavailable. Every submit then fails and consumers keep their
+    // safe state; the thread still ends and stop() joins it and destroys what the lanes hold.
+    try
+    {
+        iterate();
+    } catch (...)
+    {
+        broken = true;
+    }
+    for (auto& lane : active) lane.reset();
+}
+
+void worker_t::iterate()
 {
     std::unique_lock lock(m);
     while (true)
@@ -207,6 +234,7 @@ void worker_t::run()
                 lane->running = std::move(lane->pending);
                 lane->pending.reset();
                 lane->running->start_ns = now_ns();
+                lane->running_now = true;
             }
             busy |= bool(lane->running) || bool(lane->pending);
         }
@@ -221,10 +249,13 @@ void worker_t::run()
             });
             continue;
         }
-        auto active = lanes;  // owning copies: a lane closed meanwhile stays valid until we drop it
+        // Owning copies: a lane closed meanwhile stays valid until we drop it. No allocation.
+        size_t count = std::min(lanes.size(), active.size());
+        std::copy_n(lanes.begin(), count, active.begin());
         lock.unlock();
-        for (auto& lane : active)
+        for (size_t i = 0; i < count; i++)
         {
+            auto& lane = active[i];
             if (!lane->running) continue;
             auto& slot = *lane->running;
             cancel_t cancel(lane.get(), slot.ticket, slot.epoch, &stopping, step_units);
@@ -232,46 +263,55 @@ void worker_t::run()
             {
                 lane->stats.cancelled++;
                 lane->running.reset();  // destroyed here, outside m
+                lane->running_now = false;
                 continue;
             }
             bool finished = false;
-            auto done = std::make_unique<done_t>();
+            done_t done;
             try
             {
                 finished = slot.job->step(cancel);
-                if (finished && !cancel.cancelled()) done->result = slot.job->result(done->outcome);
-                else if (finished) { lane->stats.cancelled++; lane->running.reset(); continue; }
+                if (finished && !cancel.cancelled()) done.result = slot.job->result(done.outcome);
+                else if (finished) { lane->stats.cancelled++; lane->running.reset(); lane->running_now = false; continue; }
             } catch (...)
             {
                 finished = true;
-                done->outcome = outcome_t::failed;
-                done->result.reset();
+                done.outcome = outcome_t::failed;
+                done.result.reset();
             }
             if (!finished) continue;
-            if (done->outcome == outcome_t::capped) lane->stats.capped++;
-            if (done->outcome == outcome_t::failed) lane->stats.failed++;
-            done->ticket = slot.ticket;
-            done->epoch = slot.epoch;
-            done->snapshot_ns = slot.snapshot_ns;
-            done->start_ns = slot.start_ns;
-            done->finish_ns = now_ns();
-            std::unique_ptr<done_t> replaced;
+            if (done.outcome == outcome_t::capped) lane->stats.capped++;
+            if (done.outcome == outcome_t::failed) lane->stats.failed++;
+            done.ticket = slot.ticket;
+            done.epoch = slot.epoch;
+            done.snapshot_ns = slot.snapshot_ns;
+            done.start_ns = slot.start_ns;
+            done.finish_ns = now_ns();
+            std::optional<done_t> replaced;
             {
                 std::lock_guard swap(m);
-                replaced = std::move(lane->done);
-                lane->done = std::move(done);
+                replaced.swap(lane->done);
+                lane->done.emplace(std::move(done));
             }
             lane->running.reset();
+            lane->running_now = false;
             replaced.reset();  // an undelivered older result, destroyed outside m
             signal();
         }
-        active.clear();
+        for (size_t i = 0; i < count; i++) active[i].reset();
+        if (fail_iteration) throw std::bad_alloc();
         lock.lock();
     }
     // Stopping: the running jobs are the worker's to destroy.
-    auto all = lanes;
+    size_t count = std::min(lanes.size(), active.size());
+    std::copy_n(lanes.begin(), count, active.begin());
     lock.unlock();
-    for (auto& lane : all) lane->running.reset();
+    for (size_t i = 0; i < count; i++)
+    {
+        active[i]->running.reset();
+        active[i]->running_now = false;
+        active[i].reset();
+    }
 }
 
 void worker_t::deliver(uint64_t budget_ns)
@@ -280,24 +320,30 @@ void worker_t::deliver(uint64_t budget_ns)
     uint64_t tokens;
     while (read(fd, &tokens, sizeof(tokens)) < 0 && errno == EINTR) {}
     auto started = now_ns();
-    auto list = handles;
-    for (size_t i = 0; i < list.size(); i++)
+    std::array<lane_handle_t*, max_lanes> list{};
+    size_t count = std::min(handles.size(), list.size());
+    std::copy_n(handles.begin(), count, list.begin());
+    // A rotating start: a budget spent on one lane doesn't keep deferring the next.
+    size_t first = count ? deliver_from++ % count : 0;
+    for (size_t n = 0; n < count; n++)
     {
         if (now_ns() - started > budget_ns)
         {
             signal();  // the rest on a later iteration
             return;
         }
-        auto *handle = list[i];
+        auto *handle = list[(first + n) % count];
         if (std::find(handles.begin(), handles.end(), handle) == handles.end()) continue;  // closed by a delivery
-        std::unique_ptr<done_t> done;
+        std::optional<done_t> done;
         {
             std::lock_guard lock(m);
-            done = std::move(handle->lane->done);
+            done.swap(handle->lane->done);
         }
         if (!done) continue;
         auto lane = handle->lane;  // keeps the lane while a delivery may close the handle
-        if (lane->closed || !handle->accept || !handle->accept(*done))
+        bool wanted = false;
+        try { wanted = !lane->closed && handle->accept && handle->accept(*done); } catch (...) {}
+        if (!wanted)
         {
             lane->stats.stale++;
             continue;
@@ -308,7 +354,9 @@ void worker_t::deliver(uint64_t budget_ns)
         handle->deliver_age.add(now - done->finish_ns);
         handle->total_age.add(now - done->snapshot_ns);
         lane->stats.delivered++;
-        if (handle->deliver) handle->deliver(*done);
+        // A consumer that fails to install a result keeps its previous state; nothing of it
+        // reaches the compositor's loop as an exception.
+        try { if (handle->deliver) handle->deliver(*done); } catch (...) { lane->stats.failed++; }
     }
 }
 
@@ -322,10 +370,18 @@ std::string worker_t::stats_json() const
     for (auto *h : handles)
     {
         auto& s = h->lane->stats;
+        bool pending, done;
+        {
+            std::lock_guard lock(m);
+            pending = bool(h->lane->pending);
+            done = bool(h->lane->done);
+        }
         out << (first ? "" : ",") << "{\"name\":\"" << h->name << "\",\"submitted\":" << s.submitted.load()
             << ",\"superseded\":" << s.superseded.load() << ",\"cancelled\":" << s.cancelled.load()
             << ",\"capped\":" << s.capped.load() << ",\"failed\":" << s.failed.load()
-            << ",\"delivered\":" << s.delivered.load() << ",\"stale\":" << s.stale.load();
+            << ",\"delivered\":" << s.delivered.load() << ",\"stale\":" << s.stale.load() << ",\"rejected\":" << s.rejected.load()
+            << ",\"pending\":" << (pending ? "true" : "false") << ",\"running\":" << (h->lane->running_now.load() ? "true" : "false")
+            << ",\"done\":" << (done ? "true" : "false");
         for (auto [label, age] : {std::pair{"snapshot_to_start", &h->queue_age}, std::pair{"start_to_finish", &h->run_age},
              std::pair{"finish_to_deliver", &h->deliver_age}, std::pair{"snapshot_to_deliver", &h->total_age}})
             out << ",\"" << label << "_ms\":{\"last\":" << ms(age->last) << ",\"max\":" << ms(age->max)

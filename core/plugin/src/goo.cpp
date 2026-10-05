@@ -452,6 +452,8 @@ class goo_node_t : public wf::scene::node_t
     bool settled_ready = false;
     std::unique_ptr<work::lane_handle_t> shrink_lane;
     bool shrink_pending = false;
+    uint64_t readback_incarnation = 0;
+    std::shared_ptr<std::atomic<bool>> shrink_hold;  // tests: the goo's one switch, shared by every output
     uint64_t shrink_incarnation() const
     {
         // Mode, scale or transform of the output: a result for another incarnation is dropped.
@@ -499,18 +501,32 @@ class goo_node_t : public wf::scene::node_t
         if (!breath_tight || !attached || !shrink_lane)
             return;  // no worker: the loose strips (correct, more damage per breath)
         SCOTTLAND_LOOP_SCOPE(shrink_snapshot);
-        if (state.sources.size() > 256)
-            return;  // past the snapshot limit (design 3.2): the loose strips stay
-        work::shrink_snapshot_t snapshot;
-        snapshot.sources = state.sources;
-        snapshot.settings = state.settings;
-        snapshot.time = state.time;
-        for (auto &b : bands())
-            snapshot.rects.push_back({double(b.x), double(b.y), double(b.width), double(b.height)});
-        snapshot.output_scale = state.output->handle->scale;
-        snapshot.incarnation = shrink_incarnation();
-        shrink_pending = shrink_lane->submit(std::make_unique<work::shrink_job_t>(std::move(snapshot)),
-            work::now_ns());
+        // Past the snapshot, scratch or result limits (design 3.2) the loose strips stay. Checked
+        // before copying anything, and again by the lane at submit.
+        auto &loose = bands();
+        if (!work::shrink_job_t::within_limits(state.sources, loose.size(), loose.size()))
+        {
+            shrink_rejected++;
+            return;
+        }
+        try
+        {
+            work::shrink_snapshot_t snapshot;
+            snapshot.sources = state.sources;
+            snapshot.settings = state.settings;
+            snapshot.time = state.time;
+            snapshot.rects.reserve(loose.size());
+            for (auto &b : loose)
+                snapshot.rects.push_back({double(b.x), double(b.y), double(b.width), double(b.height)});
+            snapshot.output_scale = state.output->handle->scale;
+            snapshot.incarnation = shrink_incarnation();
+            auto job = std::make_unique<work::shrink_job_t>(std::move(snapshot));
+            job->hold = shrink_hold;  // false unless a test holds jobs
+            shrink_pending = shrink_lane->submit(std::move(job), work::now_ns());
+        } catch (...)
+        {
+            shrink_pending = false;  // an allocation failed: the loose strips stay
+        }
         if (!shrink_pending)
             loop::note(loop::note_id::worker_unavailable, 0, 3);
     }
@@ -518,7 +534,7 @@ class goo_node_t : public wf::scene::node_t
     // simulation and redraws every band for at least three seconds.
     std::map<std::string, uint64_t> wake_counts;
     std::string last_wake;
-    uint64_t wake_step = 0, breath_tightens = 0;
+    uint64_t wake_step = 0, breath_tightens = 0, shrink_rejected = 0;
     double tick_ms = 0, tighten_ms = 0;
     void wake(const char *reason)
     {
@@ -751,6 +767,12 @@ class goo_node_t : public wf::scene::node_t
             {
                 auto g = get_bounding_box();
                 auto &band = bands();
+                // A new output incarnation (mode, scale, transform): no reading in flight applies.
+                if (auto incarnation = shrink_incarnation(); incarnation != readback_incarnation)
+                {
+                    if (readback_incarnation) state.renderer.new_generation();
+                    readback_incarnation = incarnation;
+                }
                 if (!state.sleeping)
                 {
                     goo::amounts(state.sources, state.settings);
@@ -825,6 +847,24 @@ struct goo_t::impl
     // timer for all outputs, armed only while some reading is in flight; at most two slots are
     // examined per run across all outputs (main-loop Phase 3).
     wf::wl_timer<true> collect_tick;
+    // One allowance per main-loop dispatch, whichever outputs render or the timer collects in
+    // it: refilled by an idle callback, which Wayfire's loop runs once the dispatch's events are
+    // handled. The timer starts at a rotating output, so an unsignalled reading on one output
+    // doesn't keep deferring another's.
+    goo::renderer_t::allowance_t allowance;
+    wf::wl_idle_call refill;
+    size_t collect_cursor = 0;
+    uint64_t examined_max = 0;  // the most slots examined in one dispatch (goo-state)
+    void spent()
+    {
+        if (allowance.left < 2 && !refill.is_connected())
+            refill.run_once([this]
+            {
+                examined_max = std::max(examined_max, allowance.examined);
+                allowance.examined = 0;
+                allowance.left = 2;
+            });
+    }
     void arm_collect()
     {
         if (collect_tick.is_connected()) return;
@@ -835,10 +875,14 @@ struct goo_t::impl
             wf::gles::run_in_context_if_gles([&]
             {
                 goo::gl::state_t guard(true);
-                int budget = 2;
+                std::vector<goo_node_t *> order;
                 for (auto &[o, n] : nodes)
-                    n->state.renderer.collect(budget);
-                for (auto &[o, n] : nodes)
+                    order.push_back(n.get());
+                size_t first = order.empty() ? 0 : collect_cursor++ % order.size();
+                for (size_t i = 0; i < order.size(); i++)
+                    order[(first + i) % order.size()]->state.renderer.collect(allowance.left);
+                spent();
+                for (auto *n : order)
                     pending |= n->state.renderer.readback_pending();
             });
             return pending;
@@ -917,6 +961,9 @@ struct goo_t::impl
         auto n = std::make_shared<goo_node_t>(o, snapshot);
         n->open_shrink_lane(worker);
         n->readback_issued = [this] { arm_collect(); };
+        n->state.renderer.allowance = &allowance;
+        n->shrink_hold = shrink_hold;
+        allowance.spent = [this] { spent(); };
         n->breath_keys = breath_keys;
         n->failed = [this]
         {
@@ -951,9 +998,12 @@ struct goo_t::impl
         screen_changed(o, false);
         o->render->damage_whole_idle();
     }
+    std::shared_ptr<std::atomic<bool>> shrink_hold = std::make_shared<std::atomic<bool>>(false);
     wf::ipc::method_callback state = [this](const wf::json_t &data)
     {
         SCOTTLAND_LOOP_SCOPE(goo_state);
+        if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("shrink_hold") && data["shrink_hold"].is_bool())
+            *shrink_hold = data["shrink_hold"].as_bool();
         wf::json_t out;
         out["enabled"] = goo::enabled;
         out["breath_keys_enabled"] = bool(breath_keys);
@@ -992,6 +1042,11 @@ struct goo_t::impl
                 if (data.has_member("timed_sleep") && data["timed_sleep"].is_bool())
                 {
                     n->state.renderer.force_timed_sleep = data["timed_sleep"].as_bool();
+                    test_changed = true;
+                }
+                if (data.has_member("readback_fault") && data["readback_fault"].is_string())
+                {
+                    n->state.renderer.set_readback_fault(data["readback_fault"].as_string());
                     test_changed = true;
                 }
                 if (data.has_member("reuse_deaf") && data["reuse_deaf"].is_bool())
@@ -1033,12 +1088,16 @@ struct goo_t::impl
             s["draw_gpu_ms"] = n->state.renderer.last_draw_gpu_ms;
             s["draws"] = (int64_t)n->state.renderer.draws;
             s["breath_tightens"] = (int64_t)n->breath_tightens;
+            s["shrink_rejected"] = (int64_t)n->shrink_rejected;
             s["readback"] = n->state.renderer.readback_mode();
             s["readback_pending"] = n->state.renderer.readback_pending();
+            s["readback_generation"] = (int64_t)n->state.renderer.generation();
             s["readings_issued"] = (int64_t)n->state.renderer.readings_issued;
             s["readings_applied"] = (int64_t)n->state.renderer.readings_applied;
             s["readings_stale"] = (int64_t)n->state.renderer.readings_stale;
             s["readings_skipped"] = (int64_t)n->state.renderer.readings_skipped;
+            s["last_applied_step"] = (int64_t)n->state.renderer.last_applied_step;
+            s["readings_in_flight"] = (int64_t)n->state.renderer.readback_in_flight();
             s["tick_ms"] = n->tick_ms;
             s["tighten_ms"] = n->tighten_ms;
             // The settled (tight) region is still being worked out; conservative bands in use.
@@ -1104,6 +1163,9 @@ struct goo_t::impl
             list.append(s);
         }
         out["screens"] = list;
+        out["collect_max_per_dispatch"] = (int64_t)examined_max;
+        if (data.has_member("reset_collect") && data["reset_collect"].is_bool() && data["reset_collect"].as_bool())
+            examined_max = 0;
         return out;
     };
 };

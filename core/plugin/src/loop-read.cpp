@@ -236,28 +236,46 @@ struct reader_t
         fflush(stdout);
     }
 
+    /** The running scope and its start, read as one sample (the watchdog's protocol): false if
+     *  no coherent sample could be read (the producer is between its two stores, or paused there). */
+    bool current_sample(uint64_t& current, uint64_t& start)
+    {
+        for (int attempt = 0; attempt < 64; attempt++)
+        {
+            auto seq = abi::word(base, abi::w_sample_seq).load();
+            current = abi::word(base, abi::w_current_scope).load();
+            start = abi::word(base, abi::w_current_start_ns).load();
+            if (!(seq & 1) && abi::word(base, abi::w_sample_seq).load() == seq) return true;
+            if (attempt > 8) usleep(100);
+        }
+        return false;
+    }
+
     void header()
     {
-        auto current = abi::word(base, abi::w_current_scope).load();
-        auto start = abi::word(base, abi::w_current_start_ns).load();
+        uint64_t current = 0, start = 0;
+        bool coherent = current_sample(current, start);
         auto instance = abi::word(base, abi::w_instance).load();
         names = load_names(base, names_path);
         auto now = now_ns();
         if (json)
         {
+            char age[32] = "null";
+            if (coherent) snprintf(age, sizeof(age), "%.3f", current ? (now - start) / 1e6 : 0.0);
             printf("{\"header\":{\"pid\":%" PRIu64 ",\"instance\":%" PRIu64 ",\"build\":\"%" PRIx64 "\","
-                "\"mlock_failed\":%s,\"current\":%s,\"current_ms\":%.3f,\"names\":%s}}\n",
+                "\"mlock_failed\":%s,\"current\":%s,\"current_ms\":%s,\"names\":%s}}\n",
                 abi::word(base, abi::w_pid).load(), instance, abi::word(base, abi::w_build).load(),
                 abi::word(base, abi::w_flags).load() & abi::flag_mlock_failed ? "true" : "false",
-                json_string(scope_name(instance, (uint32_t)current)).c_str(),
-                current ? (now - start) / 1e6 : 0.0, names.instance == instance ? "true" : "false");
+                coherent ? json_string(scope_name(instance, (uint32_t)current)).c_str() : "null",
+                age, names.instance == instance ? "true" : "false");
         } else
         {
             printf("compositor %" PRIu64 ", plugin instance %" PRIu64 " (build %" PRIx64 ")%s%s\n",
                 abi::word(base, abi::w_pid).load(), instance, abi::word(base, abi::w_build).load(),
                 abi::word(base, abi::w_flags).load() & abi::flag_mlock_failed ? ", ring not locked in memory" : "",
                 names.instance == instance ? "" : ", no names for this instance");
-            if (current) printf("now running: %s for %.1f ms\n", scope_name(instance, (uint32_t)current).c_str(), (now - start) / 1e6);
+            if (!coherent) printf("now running: unavailable (the compositor was changing it while read)\n");
+            else if (current) printf("now running: %s for %.1f ms\n", scope_name(instance, (uint32_t)current).c_str(), (now - start) / 1e6);
         }
     }
 };

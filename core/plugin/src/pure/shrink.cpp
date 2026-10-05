@@ -1,7 +1,8 @@
 #include "shrink.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
-#include <set>
+#include <thread>
 
 namespace scottland::work
 {
@@ -10,17 +11,35 @@ shrink_job_t::shrink_job_t(shrink_snapshot_t snapshot, uint64_t cap_units) : s(s
     out.reserve(s.rects.size());
 }
 
-size_t shrink_job_t::snapshot_bytes(const shrink_snapshot_t& snapshot)
+size_t shrink_job_t::snapshot_bytes(const shrink_snapshot_t& snapshot) noexcept
 {
-    size_t bytes = sizeof(snapshot) + snapshot.sources.size() * sizeof(goo::source_t) + snapshot.rects.size() * sizeof(rect_t);
-    std::set<const goo::shape_t*> shapes;
-    for (auto& source : snapshot.sources)
-        if (source.shape && shapes.insert(source.shape.get()).second) bytes += source.shape->pixels.size();
+    return snapshot_bytes(snapshot.sources, snapshot.rects.capacity());
+}
+
+size_t shrink_job_t::snapshot_bytes(const std::vector<goo::source_t>& sources, size_t rect_capacity) noexcept
+{
+    size_t bytes = sizeof(shrink_snapshot_t) + sources.capacity() * sizeof(goo::source_t) + rect_capacity * sizeof(rect_t);
+    for (size_t i = 0; i < sources.size(); i++)
+    {
+        auto *shape = sources[i].shape.get();
+        if (!shape) continue;
+        bool seen = false;
+        for (size_t j = 0; j < i && !seen; j++) seen = sources[j].shape.get() == shape;
+        if (!seen) bytes += sizeof(goo::shape_t) + shape->pixels.capacity();
+    }
     return bytes;
 }
 
 bool shrink_job_t::step(cancel_t& cancel)
 {
+    if (hold && hold->load())
+    {
+        // Tests: block the worker here (so a newer job waits as pending) until released or the
+        // worker stops; then yield, and the worker's cancellation check runs as usual.
+        while (hold->load() && !cancel.stopping_now())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return false;
+    }
     const uint64_t terms = std::max<size_t>(1, s.sources.size());
     const float wet = .5f * s.settings.threshold();
     const double padding = 5 + 1. / s.output_scale;

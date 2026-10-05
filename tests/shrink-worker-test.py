@@ -3,9 +3,11 @@
 headless sessions on a test host; each case starts and stops its own.
 
 Checks: the goo settles to the tight region with no shrink work on the main loop and short
-snapshot and install callbacks; a result for older sources, a woken goo or another output mode
-is dropped; a reload with a shrink in flight leaves one worker thread and no extra descriptors;
-a worker that can't start leaves the loose strips and Scottland working."""
+snapshot and install callbacks, drawing the same pixels as the loose bands; with a job held
+running (test switch) and a newer one observed pending, the old one is cancelled and never
+installed; a woken goo drops to its bands; an output removed under a running job leaves the rest
+working and a recreated output starts its own lane; a reload with a job running leaves one worker
+thread and no extra descriptors; a worker that can't start leaves the loose strips."""
 import json, os, socket, struct, subprocess, sys, time
 from pathlib import Path
 
@@ -26,11 +28,15 @@ class Session:
         if faults: self.env['SCOTTLAND_TEST_LOOP_FAULTS'] = faults
         os.environ['SCOTTLAND_HEADLESS_DIR'] = str(work / name)
         subprocess.run([str(repo / 'tests/headless.sh'), 'stop'], env=self.env, capture_output=True)
-        subprocess.run([str(repo / 'tests/headless.sh'), 'start'], env=self.env, check=True, capture_output=True)
-        self.display = (work / name / 'display').read_text().strip()
-        entries = (runtime / f'{self.display}.env').read_bytes().split(b'\0')
-        self.path = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET=')).decode()
         self.apps = []
+        try:
+            subprocess.run([str(repo / 'tests/headless.sh'), 'start'], env=self.env, check=True, capture_output=True)
+            self.display = (work / name / 'display').read_text().strip()
+            entries = (runtime / f'{self.display}.env').read_bytes().split(b'\0')
+            self.path = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET=')).decode()
+        except BaseException:
+            self.stop()  # a failed or interrupted start leaves nothing running
+            raise
     def ipc(self, method, data=None):
         s = socket.socket(socket.AF_UNIX); s.connect(self.path)
         b = json.dumps({'method': method, 'data': data or {}}).encode()
@@ -83,6 +89,31 @@ def fixture(s, n=12):
 
 def settled(g): return g['sleeping'] and g.get('settled_pixels', 0) > 0 and not g.get('breath_loose')
 
+def capture(s, name):
+    """The whole output in pixels (grim, PPM), without its header."""
+    path = work / f'{name}.ppm'
+    subprocess.run([str(repo / 'tests/headless.sh'), 'run', 'grim', '-t', 'ppm', str(path)], env=s.env, check=True,
+                   capture_output=True)
+    data = path.read_bytes()
+    fields, at = [], 0
+    while len(fields) < 4:
+        while data[at:at + 1].isspace(): at += 1
+        end = at
+        while not data[end:end + 1].isspace(): end += 1
+        fields.append(data[at:end]); at = end
+    return int(fields[1]), data[at + 1:]
+
+def lanes(s):
+    return {l['name']: l for l in s.ipc('scottland/loop-stats').get('workers', {}).get('shrink', {}).get('lanes', [])}
+
+def wait_lane(s, predicate, limit=10):
+    end = time.monotonic() + limit
+    while time.monotonic() < end:
+        l = s.lane()[0]
+        if predicate(l): return l
+        time.sleep(.05)
+    return s.lane()[0]
+
 s = Session('main')
 try:
     ids = fixture(s)
@@ -96,35 +127,97 @@ try:
           list(st['scopes']))
     install = st['scopes'].get('shrink_install', {})
     check(f"installing the result is short ({install.get('max_ms', 0):.2f} ms, under 2 ms)", install.get('max_ms', 99) < 2, install)
-    check(f"measured: snapshot to delivery {lane.get('snapshot_to_deliver_ms', {})} ms, the job ran {lane.get('start_to_finish_ms', {})} ms off the loop", True)
-    check('the settled region is smaller than the loose bands', g.get('settled_pixels', 0) < g.get('loose_pixels', 1e12) if 'loose_pixels' in g else True, g)
+    print(f"measured: snapshot to delivery {lane.get('snapshot_to_deliver_ms', {})} ms; the job ran "
+          f"{lane.get('start_to_finish_ms', {})} ms off the loop", flush=True)
+    check(f"the settled region ({g.get('settled_pixels')} px) is smaller than the loose bands ({g.get('band_pixels')} px)",
+          0 < g.get('settled_pixels', 0) < g.get('band_pixels', 0), g)
 
-    # A source change while a job runs: its result is dropped (stale or cancelled), a new one settles.
-    before = s.lane()[0]
+    # Pixels: with the breath held still, the tight region draws exactly what the loose bands do
+    # (conservative: shrinking never drops goo from the screen).
+    s.ipc('scottland/goo-state', {'breath_hold': 0.6}); time.sleep(.5)
+    g = s.wait(settled)
+    width, tight = capture(s, 'tight')
+    s.ipc('scottland/goo-state', {'breath_tight': False}); time.sleep(.6)
+    _, loose = capture(s, 'loose')
+    differ = sum(1 for i in range(0, min(len(tight), len(loose)), 3) if tight[i:i + 3] != loose[i:i + 3])
+    check(f'the tight region renders the same pixels as the loose bands ({differ} of {len(tight) // 3} pixels differ)',
+          len(tight) == len(loose) and differ == 0, differ)
+    s.ipc('scottland/goo-state', {'breath_tight': True})
+    g = s.wait(settled)
+    check('tightening on again settles through the worker', settled(g))
+    s.ipc('scottland/goo-state', {'breath_hold': -1})
+
+    # A job held running; the sources change (the goo wakes, settles again and submits a newer job,
+    # which waits as pending). Released: the old job is cancelled, never installed; the new settles.
+    s.ipc('scottland/goo-state', {'shrink_hold': True})
     s.ipc('window-rules/configure-view', {'id': ids[3], 'geometry': {'x': 400, 'y': 300, 'width': 330, 'height': 210}})
-    time.sleep(.02)
-    s.ipc('window-rules/configure-view', {'id': ids[3], 'geometry': {'x': 430, 'y': 310, 'width': 330, 'height': 210}})
+    s.wait(lambda g: not g['sleeping'], 3)
+    s.wait(lambda g: g['sleeping'], 30)
+    held = wait_lane(s, lambda l: l.get('running'))
+    check('test switch: a shrink job is observed running (held)', held.get('running') is True, held)
+    s.ipc('window-rules/configure-view', {'id': ids[3], 'geometry': {'x': 440, 'y': 320, 'width': 330, 'height': 210}})
+    s.wait(lambda g: not g['sleeping'], 3)
+    s.wait(lambda g: g['sleeping'], 30)
+    both = wait_lane(s, lambda l: l.get('running') and l.get('pending'))
+    check('... and a newer job for the changed sources is observed pending behind it', both.get('running') and both.get('pending'), both)
+    before = both
+    s.ipc('scottland/goo-state', {'shrink_hold': False})
     g = s.wait(settled)
     after = s.lane()[0]
-    check('changing the sources mid-job never installs an old result; the goo settles again',
-          settled(g) and after.get('submitted', 0) > before.get('submitted', 0), (before, after))
+    check(f"released: the old job was cancelled ({before.get('cancelled')} -> {after.get('cancelled')}), only the new one delivered, "
+          "and the goo settled", settled(g) and after.get('cancelled', 0) > before.get('cancelled', 0) and
+          after.get('delivered', 0) == before.get('delivered', 0) + 1 and after.get('stale', 0) == before.get('stale', 0), (before, after))
 
-    # Wake while a job runs: woken goo uses the bands; the old result is not installed.
+    # Woken while a job is held: the goo uses its bands; nothing old is installed.
+    s.ipc('scottland/goo-state', {'shrink_hold': True})
+    s.ipc('scottland/goo-state', {'breath_max_rects': 6})  # a new settle job while asleep
+    wait_lane(s, lambda l: l.get('running'))
     s.ipc('scottland/goo-state', {'breath_tight': False}); time.sleep(.2)
     g = s.goo()
-    check('switching tightening off drops to the loose strips at once', not g.get('settled_pixels'), g.get('settled_pixels'))
-    s.ipc('scottland/goo-state', {'breath_tight': True})
+    check('switching tightening off with a job running drops to the loose strips at once', not g.get('settled_pixels'), g.get('settled_pixels'))
+    s.ipc('scottland/goo-state', {'shrink_hold': False, 'breath_tight': True})
     g = s.wait(settled)
     check('and back on, it settles through the worker again', settled(g))
 
-    # An output mode change while asleep: the result for the old incarnation is dropped.
-    out = s.ipc('window-rules/list-outputs')[0]['name']
-    s.ipc('wayfire/set-config-options', {f'output:{out}/scale': 1.25}); time.sleep(.1)
+    # Output removal and recreation (a scale change is not that): a job held on a second output,
+    # the output removed under it; the first output keeps working; a new output settles anew.
+    second = s.ipc('wayfire/create-headless-output', {'width': 1024, 'height': 768})['output']
+    time.sleep(1)
+    def place2(output, x):
+        s.ipc('window-rules/configure-view', {'id': ids[8], 'output_id': output['id'],
+                                              'geometry': {'x': x, 'y': 200, 'width': 320, 'height': 200}})
+    place2(second, 200)
+    end = time.monotonic() + 30
+    while time.monotonic() < end and not (len(s.ipc('scottland/goo-state')['screens']) == 2 and
+                                          settled(s.ipc('scottland/goo-state')['screens'][1])): time.sleep(.1)
+    name2 = f"shrink:{second['name']}"
+    check('a second output settles through its own lane', len(s.ipc('scottland/goo-state')['screens']) == 2 and
+          lanes(s).get(name2, {}).get('delivered', 0) >= 1, lanes(s).keys())
+    s.ipc('scottland/goo-state', {'shrink_hold': True})
+    place2(second, 260)
+    end = time.monotonic() + 20
+    while time.monotonic() < end and not lanes(s).get(name2, {}).get('running'): time.sleep(.05)
+    check('... a job is held running on it', lanes(s).get(name2, {}).get('running') is True, lanes(s).get(name2))
+    s.ipc('wayfire/destroy-headless-output', {'output': second['name'], 'id': second['id']})
+    time.sleep(.5)
+    s.ipc('scottland/goo-state', {'shrink_hold': False})
+    check('removing that output closes its lane', name2 not in lanes(s), list(lanes(s)))
+    s.ipc('window-rules/configure-view', {'id': ids[2], 'geometry': {'x': 300, 'y': 260, 'width': 320, 'height': 200}})
     g = s.wait(settled)
-    check('after an output scale change it settles for the new output', settled(g))
-    s.ipc('wayfire/set-config-options', {f'output:{out}/scale': 1.0})
+    check('the first output still settles through the worker', settled(g))
+    third = s.ipc('wayfire/create-headless-output', {'width': 1024, 'height': 768})['output']
+    time.sleep(1)
+    place2(third, 220)
+    end = time.monotonic() + 30
+    while time.monotonic() < end and not (len(s.ipc('scottland/goo-state')['screens']) == 2 and
+                                          settled(s.ipc('scottland/goo-state')['screens'][1])): time.sleep(.1)
+    name3 = f"shrink:{third['name']}"
+    check('a recreated output settles through a new lane of its own (nothing inherited)',
+          lanes(s).get(name3, {}).get('delivered', 0) >= 1 and lanes(s).get(name3, {}).get('stale', 0) == 0, lanes(s).get(name3))
+    s.ipc('wayfire/destroy-headless-output', {'output': third['name'], 'id': third['id']})
+    time.sleep(.5)
 
-    # Reload with a shrink in flight (a source change makes a new job; reload right away).
+    # Reload with a shrink job held running.
     s.wait(settled)
     pid = s.compositor()
     # The first reload's reload.d hooks start session helpers a bare test session lacks (each
@@ -140,12 +233,16 @@ try:
             if not target.startswith('socket:') and 'wlroots-' not in target: out.append(target)
         return sorted(out)
     base_fds = own_fds()
+    s.ipc('scottland/goo-state', {'shrink_hold': True})
     s.ipc('window-rules/configure-view', {'id': ids[5], 'geometry': {'x': 200, 'y': 420, 'width': 300, 'height': 200}})
-    time.sleep(.05)
+    s.wait(lambda g: not g['sleeping'], 3)
+    s.wait(lambda g: g['sleeping'], 30)
+    held = wait_lane(s, lambda l: l.get('running'))
+    check('a job is held running before the reload', held.get('running') is True, held)
     out = reload_session()
     time.sleep(.5)
     threads = [Path(f'/proc/{pid}/task/{t}/comm').read_text().strip() for t in os.listdir(f'/proc/{pid}/task')]
-    check('reload with a shrink in flight succeeds', 'reloaded' in out, out)
+    check('reload with a shrink job running succeeds', 'reloaded' in out, out)
     check('exactly one shrink worker and one watchdog thread afterwards',
           threads.count('scottland-shrin') == 1 and threads.count('scottland-wd') == 1, threads)
     g = s.wait(settled)

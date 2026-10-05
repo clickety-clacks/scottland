@@ -123,35 +123,52 @@ void monitor_t::start(wl_event_loop *loop, const std::string& ring_path, uint64_
     ring_file = ring_path;
     if constexpr (abi::supported)
     {
-        int fd = faults.ring ? -1 : open(ring_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        // The previous copy's ring in this compositor process continues in place. Anything else
+        // (another process that used this display name, another ABI) gets a new file, renamed
+        // over the old one: a reader still mapping the old inode keeps reading that old stream
+        // intact, never reset sequence numbers or a file being resized under it.
+        auto pid = (uint64_t)getpid(), started = process_start_time();
+        void *base = MAP_FAILED;
+        bool reuse = false;
+        int fd = faults.ring ? -1 : open(ring_path.c_str(), O_RDWR | O_CLOEXEC);
         struct stat info{};
-        if (fd >= 0 && fstat(fd, &info) == 0)
+        if (fd >= 0 && fstat(fd, &info) == 0 && info.st_size == (off_t)abi::file_size)
         {
-            bool reuse = info.st_size == (off_t)abi::file_size;
-            if (!reuse && ftruncate(fd, abi::file_size) != 0)
-            {
-                close(fd);
-                fd = -1;
-            }
-            void *base = fd >= 0 ? mmap(nullptr, abi::file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED;
+            base = mmap(nullptr, abi::file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            reuse = base != MAP_FAILED && abi::word(base, abi::w_magic).load() == abi::magic &&
+                abi::word(base, abi::w_abi).load() == abi::version &&
+                abi::word(base, abi::w_pid).load() == pid &&
+                abi::word(base, abi::w_start_time).load() == started;
+            if (!reuse && base != MAP_FAILED) munmap(base, abi::file_size);
+            if (!reuse) base = MAP_FAILED;
+        }
+        if (fd >= 0) close(fd);
+        if (!reuse && !faults.ring)
+        {
+            auto partial = ring_path + ".new";
+            fd = open(partial.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+            if (fd >= 0 && ftruncate(fd, abi::file_size) == 0)
+                base = mmap(nullptr, abi::file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
             if (fd >= 0) close(fd);
             if (base != MAP_FAILED)
             {
-                auto pid = (uint64_t)getpid(), started = process_start_time();
-                // The previous copy's ring in this compositor process continues; anything else
-                // (another process that used this display name, another ABI) starts over.
-                reuse = reuse && abi::word(base, abi::w_magic).load() == abi::magic &&
-                    abi::word(base, abi::w_abi).load() == abi::version &&
-                    abi::word(base, abi::w_pid).load() == pid &&
-                    abi::word(base, abi::w_start_time).load() == started;
-                if (!reuse)
+                // A new file is zero: the identity first, the magic last, then it replaces the old.
+                abi::word(base, abi::w_abi).store(abi::version);
+                abi::word(base, abi::w_pid).store(pid);
+                abi::word(base, abi::w_start_time).store(started);
+                abi::word(base, abi::w_magic).store(abi::magic);
+                if (rename(partial.c_str(), ring_path.c_str()) != 0)
                 {
-                    for (size_t i = 0; i < abi::total_words; i++) abi::word(base, i).store(0);
-                    abi::word(base, abi::w_abi).store(abi::version);
-                    abi::word(base, abi::w_pid).store(pid);
-                    abi::word(base, abi::w_start_time).store(started);
-                    abi::word(base, abi::w_magic).store(abi::magic);
-                } else
+                    munmap(base, abi::file_size);
+                    base = MAP_FAILED;
+                }
+            }
+            if (base == MAP_FAILED) unlink(partial.c_str());
+        }
+        {
+            if (base != MAP_FAILED)
+            {
+                if (reuse)
                 {
                     // Touch every page: the next write must not fault on first use.
                     for (size_t i = 0; i < abi::total_words; i += 512)
@@ -282,6 +299,34 @@ void monitor_t::enter(scope_id id, uint64_t at)
     }
 }
 
+void monitor_t::ml2_compose(uint64_t window_start, ml2_episode_t& into) const
+{
+    // Per scope, clipped to the window; the largest eight kept, the rest summed. No allocation.
+    std::array<std::pair<uint32_t, uint64_t>, 64> sums{};
+    size_t distinct = 0;
+    into.other = 0;
+    for (size_t i = 0; i < ml2_size; i++)
+    {
+        auto& interval = ml2[(ml2_head + i) % ml2_capacity];
+        auto length = interval.end - std::max(interval.start, window_start);
+        size_t k = 0;
+        while (k < distinct && sums[k].first != interval.id) k++;
+        if (k == distinct)
+        {
+            if (distinct == sums.size()) { into.other += length; continue; }
+            sums[distinct++] = {interval.id, 0};
+        }
+        sums[k].second += length;
+    }
+    std::sort(sums.begin(), sums.begin() + distinct, [] (auto& a, auto& b) { return a.second > b.second; });
+    into.scopes = {};
+    for (size_t k = 0; k < distinct; k++)
+    {
+        if (k < into.scopes.size()) into.scopes[k] = sums[k];
+        else into.other += sums[k].second;
+    }
+}
+
 void monitor_t::exit(scope_id id, uint64_t at, uint64_t started)
 {
     auto duration = at - started;
@@ -304,26 +349,41 @@ void monitor_t::exit(scope_id id, uint64_t at, uint64_t started)
     // ML2: drop intervals that ended before the window, clip the oldest that remains.
     if (ml2_size == ml2_capacity)
     {
-        ml2_sum -= ml2[ml2_head].second - ml2[ml2_head].first;
+        ml2_sum -= ml2[ml2_head].end - ml2[ml2_head].start;
         ml2_head = (ml2_head + 1) % ml2_capacity;
         ml2_size--;
     }
-    ml2[(ml2_head + ml2_size) % ml2_capacity] = {started, at};
+    ml2[(ml2_head + ml2_size) % ml2_capacity] = {started, at, (uint32_t)id};
     ml2_size++;
     ml2_sum += duration;
     auto window_start = at > window_ns ? at - window_ns : 0;
-    while (ml2_size && ml2[ml2_head].second <= window_start)
+    while (ml2_size && ml2[ml2_head].end <= window_start)
     {
-        ml2_sum -= ml2[ml2_head].second - ml2[ml2_head].first;
+        ml2_sum -= ml2[ml2_head].end - ml2[ml2_head].start;
         ml2_head = (ml2_head + 1) % ml2_capacity;
         ml2_size--;
     }
     auto clipped = ml2_sum;
-    if (ml2_size && ml2[ml2_head].first < window_start) clipped -= window_start - ml2[ml2_head].first;
+    if (ml2_size && ml2[ml2_head].start < window_start) clipped -= window_start - ml2[ml2_head].start;
     if (clipped > ml2_max)
     {
         ml2_max = clipped;
         ml2_max_at = at;
+    }
+    if (clipped > ml2_budget_ns)
+    {
+        if (!ml2_over) episode = {};
+        ml2_over = true;
+        if (clipped > episode.peak)
+        {
+            episode.peak = clipped;
+            episode.at = at;
+            ml2_compose(window_start, episode);
+        }
+    } else if (ml2_over)
+    {
+        ml2_over = false;
+        episodes[episode_count++ % episodes.size()] = episode;
     }
 
     history[history_count++ % history.size()] = {(uint32_t)id, started, duration};
@@ -490,7 +550,29 @@ std::string monitor_t::stats_json(bool reset)
             << ",\"max_ms\":" << msf(s.max_ns) << ",\"over_2ms\":" << s.over_budget << "}";
         first = false;
     }
-    out << "},\"ml2_max_ms\":" << msf(ml2_max) << ",\"ml2_max_at_ns\":" << ml2_max_at
+    out << "},\"ml2_max_ms\":" << msf(ml2_max) << ",\"ml2_max_at_ns\":" << ml2_max_at << ",\"ml2_episodes\":[";
+    {
+        // Closed episodes, and one still open, each with the scopes in its worst window.
+        auto shown = std::min<uint64_t>(episode_count, episodes.size());
+        bool any = false;
+        auto emit = [&] (const ml2_episode_t& e)
+        {
+            out << (any ? "," : "") << "{\"peak_ms\":" << msf(e.peak) << ",\"at_ns\":" << e.at << ",\"other_ms\":" << msf(e.other)
+                << ",\"scopes\":{";
+            bool comma = false;
+            for (auto& [sid, ns] : e.scopes)
+            {
+                if (!sid) continue;
+                out << (comma ? "," : "") << "\"" << scope_info[sid].name << "\":" << msf(ns);
+                comma = true;
+            }
+            out << "}}";
+            any = true;
+        };
+        for (uint64_t i = 0; i < shown; i++) emit(episodes[(episode_count - shown + i) % episodes.size()]);
+        if (ml2_over) emit(episode);
+    }
+    out << "],\"ml2_episodes_dropped\":" << (episode_count > episodes.size() ? episode_count - episodes.size() : 0)
         << ",\"history\":[";
     auto count = std::min<uint64_t>(history_count, history.size());
     for (uint64_t i = 0; i < count; i++)
@@ -516,6 +598,8 @@ std::string monitor_t::stats_json(bool reset)
         stats = {};
         ml2_max = 0;
         ml2_max_at = 0;
+        episode_count = 0;
+        ml2_over = false;
         history_count = 0;
     }
     return out.str();

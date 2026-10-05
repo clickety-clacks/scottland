@@ -196,7 +196,56 @@ def main():
         print(f"reloaded from {attempt['source']} ({detail})")
         return 0
 
-    # 1. An earlier attempt.
+    def plugins_for(target):
+        """The plugin list with this attempt's copy in Scottland's place: from the rebuilt config,
+        so a reload also adds and removes plugins (a test session keeps its harness's list)."""
+        config = config_file.read_text() if config_file.exists() and not test_dir else ""
+        match = re.search(r"(?ms)^plugins\s*=\s*((?:[^\n]*\\\n)*[^\n]*)", config)
+        plugins = match.group(1).replace("\\\n", " ").split() if match else \
+            str(ipc.call("wayfire/get-config-option", {"option": "core/plugins"}).get("value", "")).split()
+        return [str(target) if p == "scottland" or "/libscottland-" in p else p for p in plugins]
+
+    def recoverable(attempt):
+        """The attempt can be driven again: its receipt is still unconsumed and names it, its
+        handover mark is in place and its copy exists. Anything else is not retried."""
+        try:
+            pending = json.loads(receipt.read_text())
+        except (OSError, ValueError):
+            return False
+        return (pending.get("nonce") == attempt["nonce"] and pending.get("pid") == attempt["pid"] and
+                pending.get("start_time") == attempt["start_time"] and marker.exists() and
+                not importing.exists() and Path(attempt["target"]).exists())
+
+    def drive_again(attempt, how):
+        """Request the attempt's own swap again and wait for its outcome. Never a new attempt: a
+        swap of this target already queued (behind Wayfire's config debounce, which further
+        config writes keep resetting) and this request load the same copy, and whichever loads
+        first consumes the one receipt."""
+        if not recoverable(attempt):
+            print(f"scottland-reload: an earlier reload ({attempt['nonce']}) has no outcome and its receipt or copy "
+                  "is no longer in place to retry it; nothing changed.", file=sys.stderr)
+            return UNRESOLVED
+        try:
+            if how == "set":
+                reply = ipc.call("wayfire/set-config-options", {"core/plugins": " ".join(plugins_for(attempt["target"]))})
+            else:
+                reply = ipc.call("wayfire/reload-plugins")
+        except (OSError, EOFError, ValueError) as error:
+            reply = {"error": str(error)}
+        if isinstance(reply, dict) and reply.get("error"):
+            print(f"scottland-reload: retrying the earlier reload ({attempt['nonce']}) failed: {reply['error']}; "
+                  "its records are kept.", file=sys.stderr)
+            return UNRESOLVED
+        print(f"scottland-reload: resuming the earlier reload ({attempt['nonce']})", file=sys.stderr)
+        result = wait(attempt)
+        if result is None:
+            print(f"scottland-reload: no answer from the new plugin within {timeout:g} s; the reload is "
+                  "unresolved. Run scottland-reload again to check.", file=sys.stderr)
+            return UNRESOLVED
+        return finish(attempt, result)
+
+    # 1. An earlier attempt. It is resolved only by evidence: its own outcome, a later copy that
+    # loaded, or the compositor's exit. Elapsed time and an answering old copy prove nothing.
     if attempt_file.exists():
         try:
             attempt = json.loads(attempt_file.read_text())
@@ -207,47 +256,35 @@ def main():
         if result is None:
             state, info = probe()
             if state == "answering":
-                # Resolved only by evidence: the copy that consumed this receipt answers; or a later
-                # copy answers (it loaded without the receipt, so it imported nothing); or the copy
-                # that answered when the attempt began still answers after the whole timeout
-                # (Wayfire swaps right after a config change, so no swap was started).
+                # The copy that consumed this receipt answers; or a later copy answers (it loaded
+                # without the receipt, so it imported nothing).
                 age = time.time() - attempt.get("created", time.time())
                 if info["nonce"] == attempt["nonce"]:
                     result = ("ack", info["outcome"])
                 elif info["load"] > attempt.get("answering_load", 0):
                     result = ("ack", "the new plugin loaded without this reload's receipt: nothing was carried over")
-                elif age > attempt.get("timeout", 30) and info["load"] == attempt.get("answering_load", 0):
-                    print(f"scottland-reload: the earlier reload ({attempt['nonce']}) never swapped the plugin; "
-                          "starting over", file=sys.stderr)
-                    result = ("not-started", "")
-                else:
+                elif age <= attempt.get("timeout", 30):
                     print(f"scottland-reload: an earlier reload ({attempt['nonce']}) has no outcome yet and Scottland is "
                           "answering: the swap may still be in progress. Nothing changed; try again shortly.", file=sys.stderr)
                     return 3
+                else:
+                    # The copy that answered when it began still answers. Its swap may be queued
+                    # or may never have been requested: either way, request that same swap.
+                    return drive_again(attempt, "set")
             elif state == "unknown":
                 print(f"scottland-reload: an earlier reload ({attempt['nonce']}) has no outcome and the compositor "
                       "did not answer; nothing changed.", file=sys.stderr)
                 return UNRESOLVED
-            # No Scottland copy is loaded: the attempt's copy never started. Resume it.
+            # No Scottland copy is loaded: the attempt's copy failed to load. Load it again.
             if result is None:
                 result = outcome(attempt)
             if result is None:
                 configured = ipc.call("wayfire/get-config-option", {"option": "core/plugins"}).get("value", "")
-                if attempt["target"] not in str(configured).split() or not Path(attempt["target"]).exists():
+                if attempt["target"] not in str(configured).split():
                     print("scottland-reload: an earlier reload has no outcome and its plugin copy is no longer "
                           "configured; nothing changed.", file=sys.stderr)
                     return UNRESOLVED
-                reply = ipc.call("wayfire/reload-plugins")
-                if isinstance(reply, dict) and reply.get("error"):
-                    print(f"scottland-reload: retrying the plugin load failed: {reply['error']}", file=sys.stderr)
-                    return UNRESOLVED
-                print(f"scottland-reload: resuming the earlier reload ({attempt['nonce']})", file=sys.stderr)
-                result = wait(attempt)
-                if result is None:
-                    print(f"scottland-reload: no answer from the new plugin within {timeout:g} s; the reload is "
-                          "unresolved. Run scottland-reload again to check.", file=sys.stderr)
-                    return UNRESOLVED
-                return finish(attempt, result)
+                return drive_again(attempt, "reload")
         if result[0] == "ack":
             print(f"scottland-reload: the earlier reload ({attempt['nonce']}) had completed: {result[1]}", file=sys.stderr)
         elif result[0] == "failed":
@@ -301,12 +338,7 @@ def main():
         return unresolved("rebuilding the config failed")
     try:
         ipc.call("wayfire/reload-config-metadata")
-        # The plugin list comes from the rebuilt config, so a reload also adds and removes plugins.
-        config = config_file.read_text() if config_file.exists() and not test_dir else ""
-        match = re.search(r"(?ms)^plugins\s*=\s*((?:[^\n]*\\\n)*[^\n]*)", config)
-        plugins = match.group(1).replace("\\\n", " ").split() if match else \
-            str(ipc.call("wayfire/get-config-option", {"option": "core/plugins"}).get("value", "")).split()
-        plugins = [str(target) if p == "scottland" or "/libscottland-" in p else p for p in plugins]
+        plugins = plugins_for(target)
         hook("before-set")
         if os.environ.get("SCOTTLAND_RELOAD_TEST_FAIL_SET"):
             reply = {"error": "test: injected IPC error"}

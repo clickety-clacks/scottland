@@ -265,8 +265,10 @@ int main(int argc, char **argv)
         std::thread releaser([&] { usleep(20000); gate.release(); });
         auto join = worker.stop();
         releaser.join();
+        bool joined = !worker.available() && worker.event_fd() < 0;
         worker.stop();
-        check("stop with running, pending and undelivered results joins (" + std::to_string(join / 1000) + " us) and is idempotent", true);
+        printf("measured: stop with a running job joined in %llu us\n", (unsigned long long)(join / 1000));
+        check("stop with running, pending and undelivered results joins and is idempotent", joined && !worker.available());
         check("every job was destroyed", destroyed.load() == 18);
         lanes.clear();  // handles outlive the worker's stop safely
     }
@@ -362,14 +364,138 @@ int main(int argc, char **argv)
         worker.stop();
     }
 
-    // 10. Memory: a maximum-size snapshot stays inside 8 MB.
+    // 10. Memory limits (design 3.2), checked at admission: allocated storage, every distinct
+    // shape once, shared shapes once.
     {
         auto s = snapshot_for(256, 4);
         auto shape = std::make_shared<goo::shape_t>();
         shape->pixels.resize(1100000);
         for (int i = 0; i < 4; i++) s.sources[i].shape = shape;  // shared shapes count once
-        check("a 256-source snapshot with a 1.1 MB shared shape is under 8 MB (" +
-            std::to_string(shrink_job_t::snapshot_bytes(s) / 1024) + " KB)", shrink_job_t::snapshot_bytes(s) < 8u << 20);
+        auto bytes = shrink_job_t::snapshot_bytes(s);
+        check("a 256-source snapshot with a 1.1 MB shared shape is under 8 MB (" + std::to_string(bytes / 1024) + " KB) and admitted",
+            bytes < shrink_snapshot_limit && shrink_job_t(s).admissible());
+
+        // Distinct shapes: as many 1.1 MB shapes as fit, then one more.
+        auto distinct = [] (int count, size_t pixels)
+        {
+            auto d = snapshot_for(8, 11);
+            for (int i = 0; i < count; i++)
+            {
+                auto own = std::make_shared<goo::shape_t>();
+                own->pixels.resize(pixels);
+                d.sources[i].shape = own;
+            }
+            return d;
+        };
+        auto fits = distinct(7, 1100000), over = distinct(8, 1100000);
+        check("seven distinct 1.1 MB shapes: " + std::to_string(shrink_job_t::snapshot_bytes(fits)) + " bytes, admitted",
+            shrink_job_t(fits).admissible());
+        check("eight distinct 1.1 MB shapes: " + std::to_string(shrink_job_t::snapshot_bytes(over)) + " bytes, over 8 MB, refused",
+            shrink_job_t::snapshot_bytes(over) > shrink_snapshot_limit && !shrink_job_t(over).admissible());
+        // Right at the limit: fill the last shape so the total is exactly 8 MB, then one byte more.
+        auto edge = distinct(1, 1);
+        size_t base = shrink_job_t::snapshot_bytes(edge) - 1;
+        auto exact = distinct(1, shrink_snapshot_limit - base), past = distinct(1, shrink_snapshot_limit - base + 1);
+        check("a snapshot of exactly 8 MB is admitted, one byte more is refused",
+            shrink_job_t::snapshot_bytes(exact) == shrink_snapshot_limit && shrink_job_t(exact).admissible() && !shrink_job_t(past).admissible());
+        // Storage, not element count: a reserved but empty shape still counts.
+        auto reserved = distinct(8, 0);
+        for (auto& src : reserved.sources)
+            if (src.shape) const_cast<goo::shape_t&>(*src.shape).pixels.reserve(1100000);
+        check("shape storage counts by capacity, not size", !shrink_job_t(reserved).admissible());
+        auto many = snapshot_for(8, 12);
+        many.rects.resize(shrink_max_rects + 1);
+        check("more than " + std::to_string(shrink_max_rects) + " rectangles (result bound) is refused", !shrink_job_t(many).admissible());
+        auto sources = snapshot_for(257, 13);
+        check("more than 256 sources is refused", !shrink_job_t(sources).admissible());
+
+        worker_t worker("shrink", shrink_step_units);
+        worker.start();
+        auto lane = worker.open_lane("shrink", policy_t::exact);
+        check("the lane refuses an over-limit job at submit (the goo keeps its loose bands)",
+            !lane->submit(std::make_unique<shrink_job_t>(distinct(8, 1100000)), now_ns()) &&
+            lane->ticket() == 0);
+        worker.stop();
+    }
+
+    // 10b. Stop at the worst case: on all 16 lanes a maximum-size job pending and one running,
+    // each holding its own near-8 MB of distinct shapes, and an undelivered maximum-rectangle
+    // result; stop releases every shape and destroys every result.
+    {
+        static std::atomic<int> results_alive{0};
+        struct counted_t : result_t
+        {
+            std::unique_ptr<result_t> inner;
+            explicit counted_t(std::unique_ptr<result_t> r) : inner(std::move(r)) { results_alive++; }
+            ~counted_t() override { results_alive--; }
+        };
+        struct held_t : job_t
+        {
+            shrink_job_t job;
+            std::atomic<bool> *entered;  // null: run the shrink to its result
+            held_t(shrink_snapshot_t s, std::atomic<bool> *e) : job(std::move(s)), entered(e) {}
+            bool admissible() const noexcept override { return job.admissible(); }
+            bool step(cancel_t& c) override
+            {
+                if (!entered) return job.step(c);
+                *entered = true;
+                c.charge(1);
+                return false;  // holds the running slot until stop
+            }
+            std::unique_ptr<result_t> result(outcome_t& o) override { return std::make_unique<counted_t>(job.result(o)); }
+        };
+        std::vector<std::weak_ptr<const goo::shape_t>> shapes;
+        size_t result_rects = 0;
+        auto big = [&] (std::atomic<bool> *entered)
+        {
+            auto d = snapshot_for(8, 21);
+            // The most rectangles a result may hold, far from every source: each is one sample.
+            d.rects.assign(shrink_max_rects, rect_t{-9000, -9000, 1, 1});
+            result_rects = d.rects.size();
+            // Maximum size in the optimized run; one shape per job under ThreadSanitizer, whose
+            // shadow memory would multiply 370 MB on a shared test host.
+            for (int i = 0; i < (timing ? 7 : 1); i++)
+            {
+                auto own = std::make_shared<goo::shape_t>();
+                own->pixels.resize(1100000);
+                shapes.push_back(own);
+                d.sources[i].shape = own;
+            }
+            return std::make_unique<held_t>(std::move(d), entered);
+        };
+        worker_t worker("shrink", 1000);
+        worker.start();
+        std::vector<std::unique_ptr<lane_handle_t>> lanes;
+        bool admitted = true;
+        for (int i = 0; i < 16; i++)
+        {
+            lanes.push_back(worker.open_lane("l" + std::to_string(i), policy_t::latest_completed));
+            lanes.back()->accept = [] (const done_t&) { return true; };
+            admitted &= lanes.back()->submit(big(nullptr), now_ns());  // finishes: an undelivered result
+        }
+        for (int i = 0; i < 200 && lanes[15]->ticket() && !wait_readable(worker.event_fd(), 0); i++) usleep(5000);
+        usleep(100000);  // every lane's result is in its done slot (none is delivered)
+        std::array<std::atomic<bool>, 16> entered{};
+        for (int i = 0; i < 16; i++) admitted &= lanes[i]->submit(big(&entered[i]), now_ns());  // running, held
+        bool all_running = false;
+        for (int t = 0; t < 400 && !all_running; t++)
+        {
+            all_running = true;
+            for (auto& e : entered) all_running &= e.load();
+            if (!all_running) usleep(5000);
+        }
+        for (int i = 0; i < 16; i++) admitted &= lanes[i]->submit(big(nullptr), now_ns());  // pending behind it
+        size_t alive = 0;
+        for (auto& w : shapes) alive += !w.expired();
+        int results = results_alive.load();
+        worker.stop();
+        lanes.clear();
+        size_t left = 0;
+        for (auto& w : shapes) left += !w.expired();
+        check("16 lanes: " + std::to_string(results) + " undelivered " + std::to_string(result_rects) + "-rectangle results, running and pending jobs holding " +
+            std::to_string(alive) + " shapes (about " + std::to_string(alive * 1100000 / (1 << 20)) + " MB), all admitted",
+            admitted && all_running && results == 16 && alive == 16u * 2 * (timing ? 7 : 1));
+        check("... stop releases every shape and destroys every result", left == 0 && results_alive.load() == 0);
     }
 
     // 11. Calibration (timing build only): the cost of a unit and the slowest single operation.

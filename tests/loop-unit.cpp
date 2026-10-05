@@ -10,6 +10,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -269,6 +270,97 @@ int main(int argc, char **argv)
         mapping_t map(path);
         check("mlock failure is recorded in the header", (abi::word(map.base, abi::w_flags).load() & abi::flag_mlock_failed) != 0);
         m2.stop(true);
+    }
+
+    // 4. Another compositor process on the same display gets a new file (a new inode): a reader
+    // still mapping the old one keeps that stream intact (Astra's implementation review, 10).
+    {
+        loop::monitor_t first;
+        first.start(events, path, 7, {});
+        loop::current = &first; { SCOTTLAND_LOOP_SCOPE(on_key); } loop::current = nullptr;
+        first.stop(false);  // the compositor died: its files stay
+        struct stat before{};
+        stat(path.c_str(), &before);
+        mapping_t paused(path);  // a reader paused on the old file
+        auto old_head = abi::word(paused.base, abi::w_head_a).load();
+        auto old_pid = abi::word(paused.base, abi::w_pid).load();
+        fflush(stdout);
+        pid_t child = fork();
+        if (child == 0)
+        {
+            auto own = wl_event_loop_create();
+            loop::monitor_t next;
+            loop::faults_t nothread;  // no thread after fork (ThreadSanitizer); the ring is the point
+            nothread.thread = true;
+            next.start(own, path, 8, nothread);
+            next.stop(false);
+            wl_event_loop_destroy(own);
+            _exit(0);
+        }
+        int status = 0;
+        waitpid(child, &status, 0);
+        struct stat after{};
+        stat(path.c_str(), &after);
+        mapping_t current(path);
+        check("a new compositor process publishes a new ring file (new inode)", after.st_ino != before.st_ino &&
+            abi::word(current.base, abi::w_pid).load() == (uint64_t)child && abi::word(current.base, abi::w_instance).load() == 1);
+        check("... the paused reader's mapping keeps the old stream unchanged", abi::word(paused.base, abi::w_pid).load() == old_pid &&
+            abi::word(paused.base, abi::w_head_a).load() == old_head && old_head > 0);
+        check("... and no partial file is left beside it", access((path + ".new").c_str(), F_OK) != 0);
+        loop::monitor_t same;
+        same.start(events, path, 9, {});
+        struct stat again{};
+        stat(path.c_str(), &again);
+        check("this process again: a new file too (another process wrote the current one)", again.st_ino != after.st_ino);
+        same.stop(false);
+        loop::monitor_t reload;
+        reload.start(events, path, 9, {});
+        struct stat reloaded{};
+        stat(path.c_str(), &reloaded);
+        check("a reload in the same process continues the same file", reloaded.st_ino == again.st_ino);
+        reload.stop(true);
+    }
+
+    // 5. The external reader's header reads the running scope as one coherent sample.
+    if (argc > 3)
+    {
+        std::string reader = argv[3], fixture = dir + "/fixture.loop";
+        int fd = open(fixture.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        bool made = fd >= 0 && ftruncate(fd, abi::file_size) == 0;
+        void *base = made ? mmap(nullptr, abi::file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED;
+        if (fd >= 0) close(fd);
+        if (base != MAP_FAILED)
+        {
+            abi::word(base, abi::w_abi).store(abi::version);
+            abi::word(base, abi::w_pid).store(1);
+            abi::word(base, abi::w_instance).store(1);
+            abi::word(base, abi::w_magic).store(abi::magic);
+            auto run = [&]
+            {
+                std::string out;
+                if (FILE *p = popen((reader + " --file " + fixture + " --json").c_str(), "r"))
+                {
+                    char line[4096];
+                    while (fgets(line, sizeof(line), p)) out += line;
+                    pclose(p);
+                }
+                return out;
+            };
+            // Paused between its two stores: the new scope stored, the start still the old zero.
+            abi::word(base, abi::w_sample_seq).store(1);
+            abi::word(base, abi::w_current_scope).store((uint64_t)loop::scope_id::on_key);
+            auto paused = run();
+            check("a producer paused mid-sample: the header reports the running scope unavailable, not a huge age",
+                paused.find("\"current\":null") != std::string::npos && paused.find("\"current_ms\":null") != std::string::npos);
+            abi::word(base, abi::w_current_start_ns).store(loop::now_ns() - 5 * loop::ms);
+            abi::word(base, abi::w_sample_seq).store(2);
+            auto steady = run();
+            auto age = json_number(steady, "current_ms");
+            check("a coherent sample: the running scope with its real age", steady.find("\"current\":\"") != std::string::npos &&
+                age >= 5 && age < 5000);
+            munmap(base, abi::file_size);
+        } else check("reader fixture created", false);
+        unlink(fixture.c_str());
     }
 
     wl_event_loop_destroy(events);

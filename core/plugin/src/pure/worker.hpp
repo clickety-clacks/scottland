@@ -39,6 +39,7 @@ class cancel_t
      *  step's allowance is spent; the job resumes at its next step). */
     bool charge(uint64_t units = 1);
     bool cancelled() const;
+    bool stopping_now() const { return stopping->load(); }
     uint64_t charged() const { return used; }
     // Tests only: an allowance of 1 unit per step must give the same result as an unlimited one.
     uint64_t allowance;
@@ -63,6 +64,9 @@ class job_t
     virtual bool step(cancel_t& cancel) = 0;
     /** Once, after step() returned true. */
     virtual std::unique_ptr<result_t> result(outcome_t& outcome) = 0;
+    /** Within the job type's memory limits (snapshot, scratch, result)? Checked at submit,
+     *  without allocating; a job over them never runs and the consumer keeps its safe state. */
+    virtual bool admissible() const noexcept { return true; }
 };
 
 struct done_t
@@ -75,7 +79,7 @@ struct done_t
 
 struct lane_stats_t
 {
-    std::atomic<uint64_t> submitted{0}, superseded{0}, cancelled{0}, capped{0}, failed{0}, delivered{0}, stale{0};
+    std::atomic<uint64_t> submitted{0}, superseded{0}, cancelled{0}, capped{0}, failed{0}, delivered{0}, stale{0}, rejected{0};
 };
 
 struct lane_t
@@ -87,9 +91,10 @@ struct lane_t
     // Under the worker's mutex.
     struct slot_t { std::unique_ptr<job_t> job; uint64_t ticket = 0, epoch = 0, snapshot_ns = 0, start_ns = 0; };
     std::optional<slot_t> pending;
-    std::unique_ptr<done_t> done;
+    std::optional<done_t> done;  // in place: finishing a job allocates nothing but its result
     // The worker's own (never touched by the main thread).
     std::optional<slot_t> running;
+    std::atomic<bool> running_now{false};  // diagnostics: a job is in the running slot
 };
 
 class worker_t;
@@ -99,8 +104,8 @@ class lane_handle_t
 {
   public:
     ~lane_handle_t() { close(); }
-    /** Replace the pending job. False if the worker is unavailable (the consumer keeps its
-     *  safe state; nothing runs on the main loop). */
+    /** Replace the pending job. False if the worker is unavailable or the job is over its
+     *  limits (the consumer keeps its safe state; nothing runs on the main loop). */
     bool submit(std::unique_ptr<job_t> job, uint64_t snapshot_ns);
     void cancel();
     /** The consumer's invalidating event: a running or finished result of an older epoch is not wanted. */
@@ -123,7 +128,10 @@ class lane_handle_t
     worker_t *worker = nullptr;
 };
 
-struct worker_faults_t { bool eventfd = false, thread = false; };
+// Tests: eventfd or thread creation fails; the worker's own iteration throws after its first job.
+struct worker_faults_t { bool eventfd = false, thread = false, iteration = false; };
+
+constexpr size_t max_lanes = 16;
 
 class worker_t
 {
@@ -149,16 +157,22 @@ class worker_t
 
   private:
     friend class lane_handle_t;
-    void run();
+    void run() noexcept;
+    void iterate();
     void signal();
     void close(lane_handle_t& handle);
     uint64_t step_units;
+    bool fail_iteration = false;
     int fd = -1;
     std::thread thread;
     mutable std::mutex m;
     std::condition_variable cv;
     std::atomic<bool> stopping{false}, broken{false};
-    std::vector<std::shared_ptr<lane_t>> lanes;  // under m; at most 16
+    // Fixed capacity, reserved before the thread starts: the worker's own bookkeeping never
+    // allocates, so only a job's step or result can fail, and that fails the job, not the thread.
+    std::vector<std::shared_ptr<lane_t>> lanes;  // under m; at most max_lanes
+    std::array<std::shared_ptr<lane_t>, max_lanes> active;  // the worker thread's owning copies
     std::vector<lane_handle_t*> handles;         // main thread only
+    size_t deliver_from = 0;                     // main thread only
 };
 }

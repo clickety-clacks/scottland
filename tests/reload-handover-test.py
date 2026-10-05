@@ -57,6 +57,7 @@ class Session:
         self.socket = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET=')).decode()
         self.ipc('wayfire/set-config-options', {'scottland/sounds': False})
         self.apps = []
+        self.colors = {}
 
     def widgets(self):
         path = work / 'widgets'
@@ -117,9 +118,43 @@ class Session:
             time.sleep(.2)
         raise AssertionError(f'window {title} never appeared')
 
+    # Each app paints a solid color of its own: what is on screen is checked in captured pixels,
+    # not only in the plugin's `hidden` field.
+    palette = ['c81e64', '1e9650', '3264c8', 'c8a01e', '8c3cc8', '1ec8c8', 'e06414', '64c81e']
     def app(self, title, app_id=None):
-        self.run('foot', *(['--app-id', app_id] if app_id else []), '-T', title, '-W', '40x8', 'sh', '-c', 'exec sleep 3600')
-        return self.wait_view(title)
+        color = self.palette[len(self.colors) % len(self.palette)]
+        self.run('foot', *(['--app-id', app_id] if app_id else []), '-o', f'colors.background={color}', '-o', 'cursor.color=' + color + ' ' + color,
+                 '-T', title, '-W', '40x8', 'sh', '-c', 'exec sleep 3600')
+        v = self.wait_view(title)
+        self.colors[v['id']] = tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+        return v
+
+    def painted(self, view_id):
+        """The fraction of the window's inner frame showing its color on screen (grim capture)."""
+        v = next((v for v in self.views() if v['id'] == view_id), None)
+        if not v: return 0.0
+        f = v['frame']; screen = self.ipc('window-rules/list-outputs')[0]['geometry']
+        x1, y1 = int(max(0, f['x'] + 12)), int(max(0, f['y'] + 12))
+        x2, y2 = int(min(screen['width'], f['x'] + f['width'] - 12)), int(min(screen['height'], f['y'] + f['height'] - 12))
+        if x2 - x1 < 4 or y2 - y1 < 4: return 0.0
+        path = work / f'capture-{self.name}.ppm'
+        self.headless('run', 'grim', '-t', 'ppm', '-g', f'{x1},{y1} {x2 - x1}x{y2 - y1}', str(path))
+        data = path.read_bytes(); path.unlink(missing_ok=True)
+        fields, at = [], 0
+        while len(fields) < 4:  # P6 width height maxval
+            while data[at:at + 1].isspace(): at += 1
+            end = at
+            while not data[end:end + 1].isspace(): end += 1
+            fields.append(data[at:end]); at = end
+        pixels = data[at + 1:]
+        want = self.colors[view_id]; n = len(pixels) // 3
+        match = sum(1 for i in range(0, n * 3, 3) if all(abs(pixels[i + c] - want[c]) <= 6 for c in range(3)))
+        return match / max(1, n)
+
+    def shown(self, view_id):
+        """On screen in pixels: True (mostly its color), False (none of it), None (in between)."""
+        p = self.painted(view_id)
+        return True if p > .5 else False if p < .02 else None
 
     def pointer(self, x, y): self.ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
 
@@ -255,6 +290,17 @@ def standard(s, launch_daemon=True):
     return {'alive': a, 'daemon': b, 'unrelated': c, 'doubly': d}
 
 
+def raise_window(s, view_id):
+    """Front and center at full scale, so its pixels can be checked unoccluded (a hidden window
+    stays hidden: geometry and focus don't return a lease)."""
+    screen = s.ipc('window-rules/list-outputs')[0]['geometry']
+    v = next((v for v in s.views() if v['id'] == view_id), None)
+    if not v or v.get('hidden') or view_id in s.links(): return
+    s.ipc('window-rules/configure-view', {'id': view_id, 'geometry': {
+        'x': screen['width'] // 2 - 200, 'y': screen['height'] // 2 - 150, 'width': 400, 'height': 300}})
+    s.ipc('window-rules/focus-view', {'id': view_id}); time.sleep(.6)
+
+
 def check_balance(t, s, ids, imported, label):
     """Leases held exactly where Scottland holds them: a window is hidden exactly while it is a
     widget (or minimized by its other owner). When nothing was carried over, the new copy may make
@@ -272,11 +318,19 @@ def check_balance(t, s, ids, imported, label):
         elif key != 'doubly':
             t.check(f'{label}: {key} is hidden exactly while it is a widget', s.hidden(ids[key]) == (ids[key] in links),
                     (s.hidden(ids[key]), ids[key] in links))
-    t.check(f'{label}: the unrelated minimized window is still hidden', s.hidden(ids['unrelated']) is True)
-    t.check(f'{label}: the doubly disabled window is hidden', s.hidden(ids['doubly']) is True)
+        if key != 'doubly':
+            raise_window(s, ids[key])
+            t.check(f'{label}: {key} is on screen (pixels) exactly while it is not a widget', s.shown(ids[key]) == (ids[key] not in links),
+                    (s.painted(ids[key]), ids[key] in links))
+    t.check(f'{label}: the unrelated minimized window is still hidden', s.hidden(ids['unrelated']) is True and s.shown(ids['unrelated']) is False,
+            s.painted(ids['unrelated']))
+    t.check(f'{label}: the doubly disabled window is hidden', s.hidden(ids['doubly']) is True and s.shown(ids['doubly']) is False,
+            s.painted(ids['doubly']))
     s.minimize(ids['doubly'], False); time.sleep(.5)
+    raise_window(s, ids['doubly'])
     t.check(f'{label}: un-minimizing it leaves it hidden exactly while Scottland holds its lease',
-            s.hidden(ids['doubly']) == (ids['doubly'] in s.links()), (s.hidden(ids['doubly']), ids['doubly'] in s.links()))
+            s.hidden(ids['doubly']) == (ids['doubly'] in s.links()) and s.shown(ids['doubly']) == (ids['doubly'] not in s.links()),
+            (s.hidden(ids['doubly']), s.painted(ids['doubly']), ids['doubly'] in s.links()))
     if imported:
         t.check(f'{label}: (it is still a widget)', ids['doubly'] in s.links())
     s.minimize(ids['doubly'], True); time.sleep(.3)
@@ -288,19 +342,24 @@ def finish_balance(t, s, ids):
     for key in ('alive', 'daemon'):
         if ids.get(key) is None or ids[key] not in s.links(): continue
         s.ipc('scottland/widget-action', {'id': str(ids[key]), 'action': 'restore'}); time.sleep(1.5)
-        t.check(f'restoring {key} shows its window', s.hidden(ids[key]) is False)
+        raise_window(s, ids[key])
+        t.check(f'restoring {key} shows its window', s.hidden(ids[key]) is False and s.shown(ids[key]) is True, s.painted(ids[key]))
     if ids['doubly'] in s.links():
         s.ipc('scottland/widget-action', {'id': str(ids['doubly']), 'action': 'restore'}); time.sleep(1.5)
     # Restoring focuses the window, which un-minimizes it (Wayfire). Probe the reference count: a
     # lease Scottland still held would keep it hidden; one returned twice would keep it shown.
     s.minimize(ids['doubly'], False); time.sleep(.5)
-    t.check('the doubly disabled window shows once nobody disables it', s.hidden(ids['doubly']) is False)
+    raise_window(s, ids['doubly'])
+    t.check('the doubly disabled window shows once nobody disables it', s.hidden(ids['doubly']) is False and s.shown(ids['doubly']) is True,
+            s.painted(ids['doubly']))
     s.minimize(ids['doubly'], True); time.sleep(.5)
-    t.check('one disable hides it again (no lease returned twice)', s.hidden(ids['doubly']) is True)
+    t.check('one disable hides it again (no lease returned twice)', s.hidden(ids['doubly']) is True and s.shown(ids['doubly']) is False,
+            s.painted(ids['doubly']))
     s.minimize(ids['doubly'], False); time.sleep(.3)
     t.check('the unrelated window is still minimized', s.hidden(ids['unrelated']) is True)
     s.minimize(ids['unrelated'], False); time.sleep(.3)
-    t.check('and shows once un-minimized', s.hidden(ids['unrelated']) is False)
+    raise_window(s, ids['unrelated'])
+    t.check('and shows once un-minimized', s.hidden(ids['unrelated']) is False and s.shown(ids['unrelated']) is True, s.painted(ids['unrelated']))
 
 
 def handles_match_links(t, s, label, extra=()):
@@ -471,6 +530,29 @@ def dup_fails():
     return failure_case('dup-fails', lambda s: s.faults('dup'), 0, False, after=recover_then_finish('nothing to import'))
 
 @case
+def version_setenv_fails():
+    return failure_case('version-setenv-fails', lambda s: s.faults('version-setenv'), 0, False, after=recover_then_finish('nothing to import'))
+
+@case
+def export_throws():
+    """An allocation failure while preparing the handover (after a handle was duplicated): the
+    widgets unload as in an ordinary unload and the duplicated handles are closed."""
+    return failure_case('export-throw', lambda s: s.faults('export-throw'), 0, False, after=recover_then_finish('nothing to import'))
+
+@case
+def adopt_throws():
+    """An allocation failure while adopting each link: each lease is returned once, each handle
+    closed, each card closed; the apps come back as after an ordinary unload."""
+    def after(t, s, ids, out):
+        t.check('the outcome counts no import', 'imported 0 of 2' in out, out)
+        s.faults()
+        check_balance(t, s, ids, False, 'after the failed adoptions')
+        code, out2 = s.reload()
+        t.check('a later reload completes', code == 0, out2)
+        t.check('no reload records are left', not s.records(), s.records())
+    return failure_case('adopt-throw', lambda s: s.faults('adopt-throw'), 0, False, after=after)
+
+@case
 def corrupt_file():
     return failure_case('corrupt-file', lambda s: s.faults('corrupt-file'), 0, False, after=recover_then_finish('unreadable'))
 
@@ -538,16 +620,79 @@ def swap_beyond_timeout():
 
 @case
 def ipc_error_old_answers():
+    """An IPC error before the swap was requested, and the old copy keeps answering: the attempt
+    is never declared unswapped by elapsed time (Astra, finding 2); it is preserved and driven again."""
     def after(t, s, ids, out):
         t.check('an IPC error after the swap could start keeps every record',
                 {'.reload-attempt', '.reload-receipt', '.reloading'} <= set(s.records()), s.records())
+        nonce = json.loads(s.file('.reload-attempt').read_text())['nonce']
         code, out2 = s.reload(timeout=3)
         t.check('a second request is refused while the old copy answers', code == 3, out2)
+        t.check('... and keeps every record', {'.reload-attempt', '.reload-receipt', '.reloading'} <= set(s.records()), s.records())
         time.sleep(4)
         code, out3 = s.reload()
-        t.check('after the timeout with the same copy answering, the attempt is known never to have swapped',
-                code == 0 and 'never swapped' in out3 and 'imported 2 of 2' in out3, out3)
+        loaded = s.ipc('scottland/loop-stats')['reload']
+        t.check('past the timeout with the same copy answering, the same attempt is driven again, not abandoned',
+                code == 0 and f'resuming the earlier reload ({nonce})' in out3 and 'never swapped' not in out3, out3)
+        t.check('the loaded copy consumed that attempt\'s receipt and carried the widgets',
+                loaded['nonce'] == nonce and 'imported 2 of 2' in loaded['outcome'], loaded)
+        check_balance(t, s, ids, True, 'after the resumed attempt')
+        finish_balance(t, s, ids)
     return failure_case('ipc-error-no-swap', lambda s: None, 2, True, timeout=3, fail_set=True, after=after)
+
+@case
+def queued_config():
+    """Astra's probe with widgets: the new copy is queued in the session's config file behind
+    Wayfire's 500 ms debounce, which continual config writes keep resetting past the helper's
+    timeout, and the option IPC reports an error. The old copy answers throughout."""
+    import threading
+    stop = threading.Event()
+    def write_config(s):
+        while not stop.wait(.05):
+            with (s.dir / 'wayfire.ini').open('a') as cfg:
+                cfg.write('\n# reload-handover-test: another config write within the debounce interval\n')
+    def prepare(s):
+        s.ipc('wayfire/set-config-options', {'workarounds/config_reload_delay': 500})
+        s.first_load = s.ipc('scottland/loop-stats')['reload']['load']
+        s.writer = threading.Thread(target=write_config, args=(s,)); s.writer.start()
+    def hook(s):
+        path = work / 'hook-queue-config.py'
+        path.write_text(f'''#!/usr/bin/env python3
+import json, re, sys
+from pathlib import Path
+if sys.argv[1] == 'before-set':
+    target = json.loads(Path({str(s.file(".reload-attempt"))!r}).read_text())['target']
+    cfg = Path({str(s.dir / "wayfire.ini")!r})
+    new, n = re.subn(r'(?m)^(\\s*)scottland(\\s*\\\\)$', lambda m: m[1] + target + m[2], cfg.read_text())
+    assert n == 1, n
+    cfg.write_text(new)
+'''); path.chmod(0o755)
+        return path
+    def after(t, s, ids, out):
+        try:
+            nonce = json.loads(s.file('.reload-attempt').read_text())['nonce']
+            attempt = json.loads(s.file('.reload-attempt').read_text())
+            same = True
+            while time.time() < attempt['created'] + attempt['timeout'] + .5:
+                same &= s.ipc('scottland/loop-stats')['reload']['load'] == s.first_load
+                time.sleep(.1)
+            t.check('the old copy answers past the helper timeout with the swap still queued', same)
+            code, out2 = s.reload(timeout=10)
+            t.check('the next request drives the same attempt (no "never swapped", no fresh attempt)',
+                    code == 0 and f'resuming the earlier reload ({nonce})' in out2 and 'never swapped' not in out2, out2)
+        finally:
+            stop.set(); s.writer.join()
+        time.sleep(2)  # the debounced config reload names the same copy: no second swap
+        loaded = s.ipc('scottland/loop-stats')['reload']
+        t.check('once config writes stop, the queued reload changes nothing: one swap, this attempt\'s receipt, widgets carried',
+                loaded['load'] == s.first_load + 1 and loaded['nonce'] == nonce and 'imported 2 of 2' in loaded['outcome'], loaded)
+        t.check('no reload records are left', not s.records(), s.records())
+        check_balance(t, s, ids, True, 'after the queued reload')
+        finish_balance(t, s, ids)
+    try:
+        return failure_case('queued-config', prepare, 2, True, timeout=3, fail_set=True, hook=hook, after=after)
+    finally:
+        stop.set()
 
 @case
 def ipc_error_load_queued():

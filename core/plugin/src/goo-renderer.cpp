@@ -348,6 +348,7 @@ struct renderer_t::impl
     }
     bool resize(int w, int h)
     {
+        new_generation();
         width = w;
         height = h;
         wave_tiles.clear();
@@ -431,12 +432,16 @@ struct renderer_t::impl
         GLuint pbo = 0;
         GLsync fence = nullptr;
         bool busy = false;
-        uint64_t issued_ns = 0, step = 0, invalidation = 0;
+        uint64_t issued_ns = 0, step = 0, invalidation = 0, generation = 0;
         int w = 0, h = 0;
     };
     std::array<energy_slot_t, 4> energy_slots;
     bool readback_failed = false;
-    struct reading_t { unsigned char value[4]; uint64_t step, invalidation; int w, h; };
+    // The simulation's incarnation: every resize (and output change) starts a new one, retiring
+    // the readings in flight, so a reading never applies across one even at equal dimensions.
+    uint64_t generation = 1;
+    std::string readback_fault;  // tests only (goo-state, SCOTTLAND_TEST_MODEL)
+    struct reading_t { unsigned char value[4]; uint64_t step, invalidation, generation; int w, h; };
     static uint64_t mono_ns()
     {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -447,6 +452,13 @@ struct renderer_t::impl
         if (slot.fence) glDeleteSync(slot.fence);
         slot.fence = nullptr;
         slot.busy = false;
+    }
+    /** A new simulation incarnation: nothing issued before it applies. In a GL context. */
+    void new_generation()
+    {
+        generation++;
+        for (auto &slot : energy_slots)
+            if (slot.busy) retire(slot);
     }
     void release_readback()
     {
@@ -487,7 +499,15 @@ struct renderer_t::impl
         bind(copy_p, "image", 0, input);
         draw_to(copy_p, query);
     }
-    /** Issue a reading into a free slot (else skip: false). Never waits. */
+    /** Clear GL's error flags (bounded: a context that keeps failing is a failure). */
+    static bool clear_errors()
+    {
+        for (int i = 0; i < 8; i++)
+            if (glGetError() == GL_NO_ERROR) return true;
+        return false;
+    }
+    /** Issue a reading into a free slot (else skip: false). Never waits. A failure to allocate,
+     *  read or fence enters the timed fallback (GO10) and applies nothing. */
     bool issue(uint64_t step, uint64_t invalidation)
     {
         SCOTTLAND_LOOP_SCOPE(goo_energy_issue);
@@ -495,24 +515,70 @@ struct renderer_t::impl
         if (free == energy_slots.end()) return false;
         reduce();
         auto &slot = *free;
-        // Wayfire's own pack state is restored whatever happens here.
-        GLint previous_buffer = 0, previous_alignment = 4;
-        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous_buffer);
-        glGetIntegerv(GL_PACK_ALIGNMENT, &previous_alignment);
-        struct restore_t { GLint b, a; ~restore_t() { glBindBuffer(GL_PIXEL_PACK_BUFFER, b); glPixelStorei(GL_PACK_ALIGNMENT, a); } }
-            restore{previous_buffer, previous_alignment};
+        // The pack state the read depends on is normalized for a four-byte destination and
+        // Wayfire's is restored whatever happens here (any of it may legally be set).
+        struct pack_t { GLint buffer = 0, alignment = 4, row_length = 0, skip_pixels = 0, skip_rows = 0; } previous;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous.buffer);
+        glGetIntegerv(GL_PACK_ALIGNMENT, &previous.alignment);
+        glGetIntegerv(GL_PACK_ROW_LENGTH, &previous.row_length);
+        glGetIntegerv(GL_PACK_SKIP_PIXELS, &previous.skip_pixels);
+        glGetIntegerv(GL_PACK_SKIP_ROWS, &previous.skip_rows);
+        struct restore_t
+        {
+            pack_t p;
+            ~restore_t()
+            {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, p.buffer);
+                glPixelStorei(GL_PACK_ALIGNMENT, p.alignment);
+                glPixelStorei(GL_PACK_ROW_LENGTH, p.row_length);
+                glPixelStorei(GL_PACK_SKIP_PIXELS, p.skip_pixels);
+                glPixelStorei(GL_PACK_SKIP_ROWS, p.skip_rows);
+            }
+        } restore{previous};
+        auto fail = [&]
+        {
+            readback_failed = true;
+            loop::note(loop::note_id::goo_readback_failed, step);
+            return false;
+        };
+        if (!clear_errors()) return fail();
         if (!slot.pbo)
         {
             glGenBuffers(1, &slot.pbo);
-            if (!slot.pbo) { readback_failed = true; return false; }
+            if (!slot.pbo) return fail();
             glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
             glBufferData(GL_PIXEL_PACK_BUFFER, 4, nullptr, GL_STREAM_READ);
+            if (glGetError() != GL_NO_ERROR) return fail();
         } else
             glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        if (readback_fault == "prior-value")
+        {
+            // Tests: what an unwritten buffer would show (a settled reading), then a failing read.
+            const unsigned char settled[4] = {0, 0, 0, 0};
+            glBufferSubData(GL_PIXEL_PACK_BUFFER, 0, 4, settled);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 1);
+            glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);  // past the 4-byte buffer
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+        } else
+        {
+            if (readback_fault == "incoming-pack-state")
+            {
+                // Tests: legal incoming pack state (Astra's probe) that the normalization below undoes.
+                glPixelStorei(GL_PACK_SKIP_PIXELS, 1);
+                glPixelStorei(GL_PACK_SKIP_ROWS, 2);
+                glPixelStorei(GL_PACK_ROW_LENGTH, 7);
+                glPixelStorei(GL_PACK_ALIGNMENT, 8);
+            }
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        }
+        // A fence only says the commands completed, not that the read succeeded.
+        if (glGetError() != GL_NO_ERROR) return fail();
         slot.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        if (!slot.fence) { readback_failed = true; return false; }
+        if (!slot.fence) return fail();
         // Submitted now, even if no further frame is drawn.
         {
             SCOTTLAND_LOOP_SCOPE(goo_energy_flush);
@@ -522,6 +588,7 @@ struct renderer_t::impl
         slot.issued_ns = mono_ns();
         slot.step = step;
         slot.invalidation = invalidation;
+        slot.generation = generation;
         slot.w = width;
         slot.h = height;
         return true;
@@ -530,6 +597,7 @@ struct renderer_t::impl
     void collect(int &budget, std::vector<reading_t> &out)
     {
         SCOTTLAND_LOOP_SCOPE(goo_energy_collect);
+        if (readback_fault == "hold") return;  // tests: readings stay in flight until released
         GLint previous_buffer = 0;
         glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous_buffer);
         struct restore_t { GLint b; ~restore_t() { glBindBuffer(GL_PIXEL_PACK_BUFFER, b); } } restore{previous_buffer};
@@ -541,25 +609,37 @@ struct renderer_t::impl
         {
             auto &slot = *order[i];
             budget--;
-            GLenum status = glClientWaitSync(slot.fence, 0, 0);
+            GLenum status = readback_fault == "wait-failed" ? GL_WAIT_FAILED : glClientWaitSync(slot.fence, 0, 0);
             if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED)
             {
+                // A missing or corrupted value is never read as zero energy: any failure here
+                // retires the slot and enters the timed fallback without applying anything.
+                clear_errors();
                 glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
-                auto mapped = static_cast<const unsigned char *>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4, GL_MAP_READ_BIT));
+                auto mapped = readback_fault == "map-failed" ? nullptr :
+                    static_cast<const unsigned char *>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4, GL_MAP_READ_BIT));
                 if (!mapped)
                 {
                     retire(slot);
-                    readback_failed = true;  // a missing value is never read as zero energy
+                    readback_failed = true;
+                    loop::note(loop::note_id::goo_readback_failed, slot.step);
                     continue;
                 }
-                reading_t r{{mapped[0], mapped[1], mapped[2], mapped[3]}, slot.step, slot.invalidation, slot.w, slot.h};
-                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                reading_t r{{mapped[0], mapped[1], mapped[2], mapped[3]}, slot.step, slot.invalidation, slot.generation, slot.w, slot.h};
+                bool intact = glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE && readback_fault != "unmap-failed";
                 retire(slot);
+                if (!intact || glGetError() != GL_NO_ERROR)
+                {
+                    readback_failed = true;
+                    loop::note(loop::note_id::goo_readback_failed, slot.step);
+                    continue;
+                }
                 out.push_back(r);
             } else if (status == GL_WAIT_FAILED || mono_ns() - slot.issued_ns > 1000000000ull)
             {
                 retire(slot);  // an idle desktop never keeps the collection timer
                 readback_failed = true;
+                loop::note(loop::note_id::goo_readback_failed, slot.step);
             }
         }
     }
@@ -666,8 +746,10 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     if (!impulses.empty()) invalidation++;
     if (!timed_sleep())
     {
-        int budget = 2;
-        collect(budget);
+        // The dispatch's one allowance, shared by every output (main-loop Phase 3).
+        int own = 2;
+        collect(allowance ? allowance->left : own);
+        if (allowance && allowance->spent) allowance->spent();
         if (steps % 30 == 0)
         {
             if (p->issue(steps, invalidation)) readings_issued++;
@@ -1037,6 +1119,21 @@ bool renderer_t::readback_pending() const
 {
     return std::any_of(p->energy_slots.begin(), p->energy_slots.end(), [](auto &s) { return s.busy; });
 }
+void renderer_t::new_generation()
+{
+    p->new_generation();  // deletes fences only: no GL state to restore
+    last_applied_step = 0;
+}
+uint64_t renderer_t::generation() const { return p->generation; }
+void renderer_t::set_readback_fault(const std::string &fault)
+{
+    p->readback_fault = fault;
+    if (fault.empty()) p->readback_failed = false;  // tests: back to the asynchronous reading
+}
+int renderer_t::readback_in_flight() const
+{
+    return (int)std::count_if(p->energy_slots.begin(), p->energy_slots.end(), [](auto &s) { return s.busy; });
+}
 std::string renderer_t::readback_mode() const
 {
     return force_timed_sleep ? "timed (test)" : !p->es3 ? "timed (GLES 2)" : p->readback_failed ? "timed (readback failed)" : "async";
@@ -1044,12 +1141,15 @@ std::string renderer_t::readback_mode() const
 void renderer_t::collect(int &budget)
 {
     std::vector<impl::reading_t> readings;
+    int before = budget;
     p->collect(budget, readings);
+    if (allowance) allowance->examined += before - budget;  // tests: slots examined per dispatch
     if (p->readback_failed) return;
     for (auto &r : readings)
     {
         // Applied only if nothing changed since it was issued, in step order.
-        if (r.invalidation != invalidation || r.w != p->width || r.h != p->height || r.step <= last_applied_step)
+        if (r.generation != p->generation || r.invalidation != invalidation || r.w != p->width || r.h != p->height ||
+            r.step <= last_applied_step)
         {
             readings_stale++;
             continue;

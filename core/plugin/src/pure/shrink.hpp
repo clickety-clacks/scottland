@@ -4,6 +4,8 @@
 #pragma once
 #include "../goo-model.hpp"
 #include "worker.hpp"
+#include <atomic>
+#include <memory>
 #include <vector>
 
 namespace scottland::work
@@ -39,14 +41,39 @@ struct shrink_result_t : result_t
 constexpr uint64_t shrink_step_units = 60000;
 constexpr uint64_t shrink_cap_units = 9000000;
 
+/**
+ * Memory limits (design 3.2), checked before a snapshot is taken and again at submit. The
+ * snapshot counts allocated storage: the source and rectangle arrays and every distinct shape's
+ * pixels once (shapes are shared, but a retained shape is kept alive by the job). Scratch and
+ * result are the job's rectangle output and its result copy, both bounded by the rectangle
+ * count. Past any limit the goo keeps its loose bands (conservative: never less goo).
+ */
+constexpr size_t shrink_snapshot_limit = 8u << 20;
+constexpr size_t shrink_result_limit = 1u << 20;
+constexpr size_t shrink_max_sources = 256;
+constexpr size_t shrink_max_rects = 4096;
+
 class shrink_job_t : public job_t
 {
   public:
     explicit shrink_job_t(shrink_snapshot_t snapshot, uint64_t cap_units = shrink_cap_units);
     bool step(cancel_t& cancel) override;
     std::unique_ptr<result_t> result(outcome_t& outcome) override;
-    /** Snapshot bytes, for the 8 MB limit (shared shape pixels included). */
-    static size_t snapshot_bytes(const shrink_snapshot_t& snapshot);
+    // Tests (goo-state "shrink_hold"): while set, a step blocks the worker without working (until
+    // released or the worker stops), so a job can be observed running with a newer one pending.
+    std::shared_ptr<const std::atomic<bool>> hold;
+    bool admissible() const noexcept override { return within_limits(s.sources, s.rects.size(), s.rects.capacity()); }
+    /** Snapshot bytes, for the 8 MB limit: allocated storage, each distinct shape's pixels
+     *  once. No allocation (a linear scan: at most 256 sources). */
+    static size_t snapshot_bytes(const shrink_snapshot_t& snapshot) noexcept;
+    static size_t snapshot_bytes(const std::vector<goo::source_t>& sources, size_t rect_capacity) noexcept;
+    /** Scratch and result bytes for `rects` rectangles: the job's output and the result's copy. */
+    static size_t result_bytes(size_t rects) noexcept { return 2 * rects * sizeof(rect_t) + sizeof(shrink_result_t); }
+    static bool within_limits(const std::vector<goo::source_t>& sources, size_t rects, size_t rect_capacity) noexcept
+    {
+        return sources.size() <= shrink_max_sources && rects <= shrink_max_rects &&
+            result_bytes(rects) <= shrink_result_limit && snapshot_bytes(sources, rect_capacity) <= shrink_snapshot_limit;
+    }
 
   private:
     shrink_snapshot_t s;

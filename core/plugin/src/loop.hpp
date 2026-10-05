@@ -63,6 +63,7 @@ constexpr uint64_t ms = 1000000;
 constexpr uint64_t slow_callback_ns = 8 * ms;     // a ring record
 constexpr uint64_t budget_ns = 2 * ms;            // ML1
 constexpr uint64_t window_ns = 16700000;          // ML2's interval
+constexpr uint64_t ml2_budget_ns = 4 * ms;         // ML2: callbacks in any such interval
 constexpr uint64_t active_window_ns = 1000 * ms;  // the watchdog's fast rate lasts this long after work
 
 struct scope_stats_t { uint64_t calls = 0, total_ns = 0, max_ns = 0, over_budget = 0, outermost = 0; };
@@ -107,10 +108,24 @@ class monitor_t
     uint64_t notes = 0, slow_records = 0;
 
     // ML2: outermost intervals intersecting the last 16.7 ms; the sum of their clipped lengths.
+    struct ml2_interval_t { uint64_t start, end; uint32_t id; };
     static constexpr size_t ml2_capacity = 8192;
-    std::array<std::pair<uint64_t, uint64_t>, ml2_capacity> ml2{};
+    std::array<ml2_interval_t, ml2_capacity> ml2{};
     size_t ml2_head = 0, ml2_size = 0;
     uint64_t ml2_sum = 0, ml2_max = 0, ml2_max_at = 0;
+    // Each run of windows over ML2's budget (an episode), with the scopes that filled its worst
+    // window: an exception excuses an episode only if it was in it (tests/mainloop-latency-test).
+    struct ml2_episode_t
+    {
+        uint64_t peak = 0, at = 0;
+        std::array<std::pair<uint32_t, uint64_t>, 8> scopes{};  // the largest contributors, ns
+        uint64_t other = 0;                                     // the rest of the window, ns
+    };
+    bool ml2_over = false;
+    ml2_episode_t episode;
+    std::array<ml2_episode_t, 64> episodes{};
+    uint64_t episode_count = 0;
+    void ml2_compose(uint64_t window_start, ml2_episode_t& into) const;
 
     std::array<history_t, 256> history{};
     uint64_t history_count = 0;

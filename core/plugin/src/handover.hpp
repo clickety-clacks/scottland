@@ -7,12 +7,15 @@
 // Standard library and POSIX only; the plugin supplies the scene operations.
 #pragma once
 #include <algorithm>
+#include <climits>
+#include <cstdio>
+#include <cstring>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <fcntl.h>
 #include <fstream>
-#include <functional>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -25,23 +28,31 @@ namespace scottland::handover
 constexpr const char *environment = "SCOTTLAND_INTERNAL_HANDOVER";
 constexpr int format = 2;
 
-/** Is fd an open pidfd? */
-inline bool is_pidfd(int fd)
+/** Is fd an open pidfd? No allocation, no exception (it decides ownership). */
+inline bool is_pidfd(int fd) noexcept
 {
     if (fd < 0 || fcntl(fd, F_GETFD) < 0) return false;
-    char target[64] = {};
-    auto link = "/proc/self/fd/" + std::to_string(fd);
-    auto size = readlink(link.c_str(), target, sizeof(target) - 1);
-    return size > 0 && std::string(target, size) == "anon_inode:[pidfd]";
+    char link[64], target[64];
+    snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+    auto size = readlink(link, target, sizeof(target) - 1);
+    static const char pidfd[] = "anon_inode:[pidfd]";
+    return size == (ssize_t)(sizeof(pidfd) - 1) && memcmp(target, pidfd, size) == 0;
 }
 
-/** The Pid: line of a pidfd's fdinfo: the live pid, -1 once the process is reaped, nullopt if unreadable. */
-inline std::optional<long> pidfd_pid(int fd)
+/** The Pid: line of a pidfd's fdinfo: the live pid, -1 once the process is reaped, nullopt if
+ *  unreadable. No allocation, no exception. */
+inline std::optional<long> pidfd_pid(int fd) noexcept
 {
-    std::ifstream in("/proc/self/fdinfo/" + std::to_string(fd));
-    std::string line;
-    while (std::getline(in, line))
-        if (line.rfind("Pid:", 0) == 0) return std::strtol(line.c_str() + 4, nullptr, 10);
+    char path[64], text[1024];
+    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
+    int info = open(path, O_RDONLY | O_CLOEXEC);
+    if (info < 0) return std::nullopt;
+    ssize_t size = read(info, text, sizeof(text) - 1);
+    close(info);
+    if (size <= 0) return std::nullopt;
+    text[size] = 0;
+    for (const char *line = text; line && *line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : nullptr)
+        if (strncmp(line, "Pid:", 4) == 0) return strtol(line + 4, nullptr, 10);
     return std::nullopt;
 }
 
@@ -67,56 +78,77 @@ inline std::string random_id()
     return out.str();
 }
 
+/** Most widgets one reload transfers; the writer hands over no more (the rest unload normally). */
+constexpr size_t max_transfer = 256;
+
 /**
  * The environment list: "<id>;version=<model version>;fds=<n,…>;leases=<window id,…>". The
  * version is the model version the outgoing copy also leaves in SCOTTLAND_INTERNAL_MODEL_VERSION:
  * an older plugin build loaded in between (a rollback) publishes and changes it without consuming
- * the list, and a list that no longer matches is stale and owns nothing.
+ * the list, and a list that no longer matches is stale and owns nothing. Fixed capacity: reading
+ * it allocates nothing, so taking ownership of what it names can't fail half way.
  */
 struct list_t
 {
-    std::string id;
+    char id[65] = {};
     uint64_t version = 0;
-    std::vector<int> fds;
-    std::vector<uint64_t> leases;
+    std::array<int, max_transfer> fds{};
+    size_t fd_count = 0;
+    std::array<uint64_t, max_transfer> leases{};
+    size_t lease_count = 0;
+    bool add_fd(int fd) noexcept { if (fd_count == max_transfer) return false; fds[fd_count++] = fd; return true; }
+    bool add_lease(uint64_t w) noexcept { if (lease_count == max_transfer) return false; leases[lease_count++] = w; return true; }
 };
 
 inline std::string format_list(const list_t& list)
 {
     std::ostringstream out;
     out << list.id << ";version=" << list.version << ";fds=";
-    for (size_t i = 0; i < list.fds.size(); i++) out << (i ? "," : "") << list.fds[i];
+    for (size_t i = 0; i < list.fd_count; i++) out << (i ? "," : "") << list.fds[i];
     out << ";leases=";
-    for (size_t i = 0; i < list.leases.size(); i++) out << (i ? "," : "") << list.leases[i];
+    for (size_t i = 0; i < list.lease_count; i++) out << (i ? "," : "") << list.leases[i];
     return out.str();
 }
 
-inline std::optional<list_t> parse_list(const std::string& text)
+/** Parse without allocating. False for anything malformed (then nothing in it is trusted). */
+inline bool parse_list(const char *text, list_t& list) noexcept
 {
-    list_t list;
-    auto version = text.find(";version="), first = text.find(";fds="), second = text.find(";leases=");
-    if (version == std::string::npos || first == std::string::npos || second == std::string::npos ||
-        version == 0 || first < version || second < first) return std::nullopt;
-    list.id = text.substr(0, version);
-    auto number = text.substr(version + 9, first - version - 9);
-    if (number.empty() || number.find_first_not_of("0123456789") != std::string::npos) return std::nullopt;
-    list.version = std::strtoull(number.c_str(), nullptr, 10);
-    auto numbers = [] (const std::string& part, auto& out) -> bool
+    list = list_t{};
+    const char *at = strstr(text, ";version=");
+    if (!at || at == text || size_t(at - text) >= sizeof(list.id)) return false;
+    memcpy(list.id, text, at - text);
+    list.id[at - text] = 0;
+    auto number = [] (const char *&p, uint64_t& value) noexcept
     {
-        std::stringstream in(part);
-        for (std::string item; std::getline(in, item, ',');)
+        if (*p < '0' || *p > '9') return false;
+        value = 0;
+        for (; *p >= '0' && *p <= '9'; p++)
         {
-            if (item.empty() || item.find_first_not_of("0123456789") != std::string::npos) return false;
-            errno = 0;
-            auto value = std::strtoull(item.c_str(), nullptr, 10);
-            if (errno) return false;
-            out.push_back((typename std::decay_t<decltype(out)>::value_type)value);
+            if (value > (UINT64_MAX - 9) / 10) return false;
+            value = value * 10 + uint64_t(*p - '0');
         }
         return true;
     };
-    if (!numbers(text.substr(first + 5, second - first - 5), list.fds) ||
-        !numbers(text.substr(second + 8), list.leases)) return std::nullopt;
-    return list;
+    const char *p = at + 9;
+    if (!number(p, list.version) || strncmp(p, ";fds=", 5) != 0) return false;
+    p += 5;
+    while (*p != ';')
+    {
+        uint64_t fd;
+        if (!number(p, fd) || fd > INT32_MAX || !list.add_fd(int(fd))) return false;
+        if (*p == ',') p++;
+        else if (*p != ';') return false;
+    }
+    if (strncmp(p, ";leases=", 8) != 0) return false;
+    p += 8;
+    while (*p)
+    {
+        uint64_t window;
+        if (!number(p, window) || !list.add_lease(window)) return false;
+        if (*p == ',') p++;
+        else if (*p) return false;
+    }
+    return true;
 }
 
 /**
@@ -131,80 +163,147 @@ class pending_t
     pending_t(const pending_t&) = delete;
     pending_t& operator =(const pending_t&) = delete;
     // fini() disposes with the scene's enable; this only closes handles a failed load left.
-    ~pending_t() { dispose({}); }
+    ~pending_t() { dispose(nullptr, nullptr); }
 
-    /** Room for everything a list names, before anything is owned: owning can't fail afterwards. */
-    bool reserve(size_t fd_count, size_t lease_count) noexcept
-    {
-        try
-        {
-            fds.reserve(fds.size() + fd_count);
-            leases.reserve(leases.size() + lease_count);
-        } catch (...)
-        {
-            return false;
-        }
-        return true;
-    }
-
-    /** Take ownership of an open pidfd (refused if it isn't one or is already held). */
+    /** Take ownership of an open pidfd (refused if it isn't one, is already held, or the owner
+     *  is full). No allocation. */
     bool own_fd(int fd) noexcept
     {
-        if (!is_pidfd(fd) || holds_fd(fd)) return false;
-        try { fds.push_back(fd); } catch (...) { return false; }
+        if (fd_count == max_transfer || !is_pidfd(fd) || holds_fd(fd)) return false;
+        fds[fd_count++] = fd;
         return true;
     }
 
     bool own_lease(uint64_t window) noexcept
     {
-        if (holds_lease(window)) return false;
-        try { leases.push_back(window); } catch (...) { return false; }
+        if (lease_count == max_transfer || holds_lease(window)) return false;
+        leases[lease_count++] = window;
         return true;
     }
 
-    bool holds_fd(int fd) const noexcept { return std::find(fds.begin(), fds.end(), fd) != fds.end(); }
+    bool holds_fd(int fd) const noexcept
+    {
+        for (size_t i = 0; i < fd_count; i++) if (fds[i] == fd) return true;
+        return false;
+    }
     bool holds_lease(uint64_t window) const noexcept
     {
-        return std::find(leases.begin(), leases.end(), window) != leases.end();
+        for (size_t i = 0; i < lease_count; i++) if (leases[i] == window) return true;
+        return false;
     }
 
     /** An entry claims what this owner holds, once: the caller owns it afterwards. */
     int claim_fd(int fd) noexcept
     {
-        auto found = std::find(fds.begin(), fds.end(), fd);
-        if (found == fds.end()) return -1;
-        fds.erase(found);
-        return fd;
+        for (size_t i = 0; i < fd_count; i++)
+            if (fds[i] == fd)
+            {
+                fds[i] = fds[--fd_count];
+                return fd;
+            }
+        return -1;
     }
 
     bool claim_lease(uint64_t window) noexcept
     {
-        auto found = std::find(leases.begin(), leases.end(), window);
-        if (found == leases.end()) return false;
-        leases.erase(found);
-        return true;
+        for (size_t i = 0; i < lease_count; i++)
+            if (leases[i] == window)
+            {
+                leases[i] = leases[--lease_count];
+                return true;
+            }
+        return false;
     }
 
     /** Close every held handle and return every held lease with `enable` (once each). */
-    void dispose(const std::function<void(uint64_t)>& enable) noexcept
+    void dispose(void (*enable)(void *, uint64_t), void *context) noexcept
     {
-        for (int fd : fds) ::close(fd);
-        fds.clear();
-        auto returned = std::move(leases);
-        leases.clear();
-        for (auto window : returned)
+        for (size_t i = 0; i < fd_count; i++) ::close(fds[i]);
+        fd_count = 0;
+        auto count = lease_count;
+        lease_count = 0;  // each lease is returned once, even if `enable` re-enters
+        for (size_t i = 0; i < count; i++)
         {
             ++returned_leases;
-            if (enable)
-                try { enable(window); } catch (...) {}
+            if (enable) enable(context, leases[i]);
         }
     }
 
-    size_t size() const noexcept { return fds.size() + leases.size(); }
+    size_t size() const noexcept { return fd_count + lease_count; }
     size_t returned_leases = 0;
 
   private:
-    std::vector<int> fds;
-    std::vector<uint64_t> leases;
+    std::array<int, max_transfer> fds{};
+    size_t fd_count = 0;
+    std::array<uint64_t, max_transfer> leases{};
+    size_t lease_count = 0;
 };
+
+/**
+ * First thing in init(): own what the environment list names, then remove it. Nothing here
+ * allocates or throws, and the list is removed only once its contents are owned (or known not to
+ * be ours: malformed, or stale against the model version). Returns false if nothing was taken.
+ */
+inline bool acquire(pending_t& pending, list_t& list) noexcept
+{
+    const char *found = getenv(environment);
+    if (!found) return false;
+    bool parsed = parse_list(found, list);
+    const char *version = getenv("SCOTTLAND_INTERNAL_MODEL_VERSION");
+    bool current = parsed && version && strtoull(version, nullptr, 10) == list.version;
+    if (current)
+    {
+        for (size_t i = 0; i < list.fd_count; i++) pending.own_fd(list.fds[i]);
+        for (size_t i = 0; i < list.lease_count; i++) pending.own_lease(list.leases[i]);
+    }
+    unsetenv(environment);
+    return current;
+}
+
+/** Numbers already named by an entry of one handover file. */
+struct seen_t
+{
+    std::array<int, max_transfer> fds{};
+    size_t count = 0;
+};
+
+/** Both formats: a number names a handle only if it is an open pidfd that no other entry named,
+ *  and a live process behind it must be the recorded one (a recorded 0 never authorizes a live
+ *  handle). A reaped launcher (Pid: -1) is owned-dead. No allocation, no exception. */
+inline bool valid_descriptor(int fd, int64_t pid, seen_t& seen) noexcept
+{
+    if (fd < 0 || seen.count == seen.fds.size()) return false;
+    for (size_t i = 0; i < seen.count; i++) if (seen.fds[i] == fd) return false;
+    seen.fds[seen.count++] = fd;
+    if (!is_pidfd(fd)) return false;
+    auto live = pidfd_pid(fd);
+    return live && (*live == -1 || (*live > 0 && pid > 0 && *live == pid));
+}
+
+/** Duplicated handles the outgoing copy has made and not yet published: closed unless released. */
+struct duplicates_t
+{
+    std::array<int, max_transfer> fds{};
+    size_t count = 0;
+    duplicates_t() = default;
+    duplicates_t(const duplicates_t&) = delete;
+    duplicates_t& operator =(const duplicates_t&) = delete;
+    ~duplicates_t() { close_all(); }
+    /** Duplicate `fd` straight into this owner; -1 if the owner is full or dup failed. */
+    int dup(int fd) noexcept
+    {
+        if (count == max_transfer) return -1;
+        int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+        if (copy >= 0) fds[count++] = copy;
+        return copy;
+    }
+    void close_all() noexcept
+    {
+        for (size_t i = 0; i < count; i++) ::close(fds[i]);
+        count = 0;
+    }
+    /** Published: the next copy owns them now. */
+    void release() noexcept { count = 0; }
+};
+
 }
