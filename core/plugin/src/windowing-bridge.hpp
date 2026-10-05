@@ -1269,9 +1269,13 @@
                     auto& pass = *state.pass;
                     const size_t before = pass.units;
                     auto slice_started = std::chrono::steady_clock::now();
-                    bool output_complete = scottland::windowing::peek_step(pass,
-                        scottland::windowing::peek_slice_units, std::min(exposure_deadline, exposure_started +
-                            std::chrono::microseconds(scottland::windowing::peek_pause_us)));
+                    bool output_complete;
+                    {
+                        SCOTTLAND_LOOP_SCOPE(peek_step);  // one output's slice of the peek-strip pass
+                        output_complete = scottland::windowing::peek_step(pass,
+                            scottland::windowing::peek_slice_units, std::min(exposure_deadline, exposure_started +
+                                std::chrono::microseconds(scottland::windowing::peek_pause_us)));
+                    }
                     exposure_search_ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - slice_started).count();
                     exposure_search_max_ms = std::max(exposure_search_max_ms, exposure_search_ms);
