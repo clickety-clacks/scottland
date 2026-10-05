@@ -409,6 +409,27 @@ static void fixtures()
         for (auto [a, b] : r.overlaps) reported |= a == 1 && b == 0;
         CHECK(reported, "W2: the overlap with the solo target is not listed");
     }
+    // Astra's witnesses (implementation review): a step curve where one pixel outward halves the
+    // scale; a pinned full-scale resident must move vertically at its own x, keeping its pin.
+    {
+        snapshot_t s;
+        s.screen_width = 1000; s.screen_height = 600; s.workarea = {0, 0, 1000, 600};
+        s.padding = 16; s.center_half = 100; s.rail_width = 40;
+        s.scale = [] (double x) { return std::abs(x - 500) <= 100 ? 1.0 : 0.5; };
+        s.solo = {398, 250, 750, 350};
+        s.windows = {window(1, role_t::resident, 200, 200, 300, 300, 1, true)};
+        auto r = solve(s);
+        check_invariants(s, r, "Astra same-x");
+        bool ok = false;
+        for (const auto& m : r.moves) ok = m.id == 1 && m.cx == 300 && m.scale == 1 && m.pin;
+        CHECK(ok, "Astra same-x: the pinned resident did not move vertically at full scale");
+        // A resident spanning the side vertically cannot leave a larger solo: not "clear".
+        s.solo = {100, 0, 850, 600};
+        s.windows = {window(1, role_t::resident, 200, 1136, 66, 300, 0.5)};
+        r = solve(s);
+        CHECK(r.status != status_t::clear && !r.overlaps.empty(), "Astra status: %s with %zu overlaps",
+            status_name(r.status), r.overlaps.size());
+    }
     // A widget protruding into the periphery is avoided like any fixed thing.
     {
         auto s = screen(2560, 1440);
@@ -535,6 +556,37 @@ static void starved()
                 }
         }
     }
+}
+
+// Astra's crowding search: the spacing pass never leaves a pair closer than it was at contact
+// or than the clearance it reports (scene 3030 of this stream once went from 11.7 to 3.8 pt).
+static void crowding(int scenes)
+{
+    std::mt19937 rng(900);
+    int spaced = 0;
+    for (int t = 0; t < scenes; ++t)
+    {
+        auto s = random_scene(rng, 2 + t % 5, 2 + (t / 5) % 6);
+        auto contact = s; contact.halo = 0;
+        auto r0 = solve(contact), r = solve(s);
+        if (r.spacing <= 0) continue;
+        ++spaced;
+        auto before = final_layout(s, r0), after = final_layout(s, r);
+        for (size_t i = 0; i < s.windows.size(); ++i)
+            for (size_t j = i + 1; j < s.windows.size(); ++j)
+            {
+                const auto& a = s.windows[i], &b = s.windows[j];
+                auto gap = [] (box x, box y) {
+                    double dx = std::max(x.x0, y.x0) - std::min(x.x1, y.x1), dy = std::max(x.y0, y.y0) - std::min(x.y1, y.y1);
+                    return dx < 0 && dy < 0 ? std::max(dx, dy) : std::hypot(std::max(0.0, dx), std::max(0.0, dy));
+                };
+                double c0 = gap(rect_of(a, before[a.id]), rect_of(b, before[b.id]));
+                double c = gap(rect_of(a, after[a.id]), rect_of(b, after[b.id]));
+                CHECK(!(c0 >= 0 && c < std::min(r.spacing, c0) - 1e-6), "crowding scene %d: %llu-%llu %.3f -> %.3f (spacing %.2f)",
+                    t, (unsigned long long)a.id, (unsigned long long)b.id, c0, c, r.spacing);
+            }
+    }
+    std::printf("crowding search: %d scenes, %d spaced, none crowded\n", scenes, spaced);
 }
 
 // A cut during the first arrangement delivers the arrivals placed so far, not the seed pile.
@@ -681,6 +733,7 @@ int main(int argc, char **argv)
     fixtures();
     fuzz(bench ? 200 : 600);
     starved();
+    crowding(bench ? 500 : 4000);
     anytime();
     cancellation();
     timing();

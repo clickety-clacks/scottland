@@ -289,7 +289,9 @@ try:
     true_before = {i: geometry(i) for i in ids}
     start_drag(S, (1280, 700)); time.sleep(3.4)
     check(wait(lambda: spread()['audition']['offered'], 2, 'offer'), 'Shift at the drop: the offer shows')
-    key('LEFTSHIFT', True); time.sleep(.2); end_drag(); key('LEFTSHIFT', False); settle(ids)
+    key('LEFTSHIFT', True); time.sleep(.3)
+    check(not spread()['audition']['offered'], 'Shift without moving: the offer is refused before the drop')
+    end_drag(); key('LEFTSHIFT', False); settle(ids)
     check(all(geometry(i) == true_before[i] for i in (A1, A2, R)), 'Shift at the drop: the offer is refused, nothing else moves',
           str({i: (true_before[i], geometry(i)) for i in (A1, A2, R) if geometry(i) != true_before[i]}))
 
@@ -308,6 +310,52 @@ try:
     else:
         print('NOTE dragged resize: the client did not take the new size during the drag; check skipped', flush=True)
     pointer(1280 + 200, 300); time.sleep(.2); end_drag(); settle(ids)
+
+    # 6d. A zone setting changed while the offer shows ends it; the drop commits nothing.
+    setup(drag_scene, A2)
+    true_before = {i: geometry(i) for i in ids}
+    start_drag(S, (1280, 700)); time.sleep(3.4)
+    check(wait(lambda: spread()['audition']['offered'], 2, 'offer'), 'zone change: the offer shows')
+    ipc('wayfire/set-config-options', {'scottland/center_width': 40}); time.sleep(.4)
+    check(not spread()['audition']['offered'], 'zone change: changing the center width ends the offer')
+    end_drag(); settle(ids)
+    check(all(geometry(i) == true_before[i] for i in (A1, A2, R)), 'zone change: the drop commits nothing')
+    ipc('wayfire/set-config-options', {'scottland/center_width': 33.333}); time.sleep(.5)
+
+    # 6e. A window still gliding when the offer starts: its glide is suspended, it is shown exactly
+    # where the offer puts it, and a refusal resumes the glide to its own destination.
+    ipc('wayfire/set-config-options', {'scottland/solo_audition_delay': 150})
+    setup(drag_scene, A2)
+    start_drag(S, (1280, 700)); time.sleep(.3)
+    ipc('scottland/present', {'window': R})   # R glides into the center (300 ms) and joins the solve
+    st = wait(lambda: (lambda a: a['offered'] and a)(spread()['audition']), 2, 'offer during a glide')
+    suspended = st.get('suspended', 0)
+    time.sleep(.45)
+    target = {a['id']: a['to'] for a in spread()['audition']['actors']}
+    def at_target(i):
+        x1, y1, x2, y2 = shown(i); t = target[i]; g = geometry(i)
+        return abs((x1 + x2) / 2 - t[0]) < 1.5 and abs((y1 + y2) / 2 - t[1]) < 1.5 and abs((x2 - x1) - g['width'] * t[2]) < 2
+    check(suspended >= 1, 'glide: the running glide was suspended under the offer', str(st))
+    check(all(at_target(i) for i in target), 'glide: every offered window is drawn exactly at its offered spot and scale',
+          str({i: (shown(i), target[i]) for i in target}))
+    pointer(1280 + 200, 700); time.sleep(.2)
+    end_drag(); settle(ids, 6)
+    x1, y1, x2, y2 = shown(R); g = geometry(R)
+    check(abs((x1 + x2) / 2 - (g['x'] + g['width'] / 2)) < 1.5 and abs((y1 + y2) / 2 - (g['y'] + g['height'] / 2)) < 1.5,
+          'glide: after the refusal the suspended glide finishes at its own destination')
+    ipc('wayfire/set-config-options', {'scottland/solo_audition_delay': 3000})
+
+    # 6f. With always-on window avoidance, offered windows still end exactly at their targets.
+    ipc('wayfire/set-config-options', {'scottland/window_avoidance_always': True})
+    setup(drag_scene, A2)
+    start_drag(S, (1280, 700)); time.sleep(3.4)
+    check(wait(lambda: spread()['audition']['offered'], 2, 'offer'), 'avoidance on: the offer shows')
+    time.sleep(1.0)
+    target = {a['id']: a['to'] for a in spread()['audition']['actors']}
+    check(all(at_target(i) for i in target), 'avoidance on: offered windows are drawn exactly at their targets',
+          str({i: (shown(i), target[i]) for i in target}))
+    pointer(1280 + 200, 300); time.sleep(.2); end_drag(); settle(ids)
+    ipc('wayfire/set-config-options', {'scottland/window_avoidance_always': False}); time.sleep(.5)
 
     # 7. A Shift drag keeps its scale (L31) and never auditions.
     setup(drag_scene, A2)

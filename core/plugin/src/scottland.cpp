@@ -1736,7 +1736,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     #include "widget-spawn.hpp"
     #include "widget-presentation.hpp"
     #include "widget-peek.hpp"
-    #include "spread-bridge.hpp"
 
     bool needs_attention(uint64_t window) const
     {
@@ -5372,6 +5371,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<true> glide_tick;
     wf::option_wrapper_t<double> cycle_overshoot{"scottland/cycle_overshoot"};
     static constexpr double CYCLE_MS = 300;
+    #include "spread-bridge.hpp"  // after glide_t: an audition suspends running glides
 
     void start_cycle_glide(wayfire_toplevel_view view, wf::pointf_t from, double from_scale,
         wf::pointf_t to, double to_scale)

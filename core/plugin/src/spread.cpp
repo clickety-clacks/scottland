@@ -170,6 +170,7 @@ struct checkpoint_t
     score_t score;
     std::string name;
     double spacing = 0;
+    result_t result;   // built within the work budget when it became the best: delivered as is
 };
 
 class solver_t
@@ -339,10 +340,12 @@ class solver_t
         };
         if (!(W > 0) || !(S.screen_height > 0) || !S.scale)
             return fail(status_t::unavailable, "no screen");
+        // Caps first, in constant time, before any per-window work.
+        if (S.windows.size() + S.fixed.size() + 1 > MAX_OBSTACLES)
+            return fail(status_t::unavailable, "more windows than spread considers");
         size_t movable = 0;
         for (const auto& w : S.windows) movable += w.role != role_t::fixed;
-        if (movable > MAX_MOVABLE || S.windows.size() + S.fixed.size() + 1 > MAX_OBSTACLES)
-            return fail(status_t::unavailable, "more windows than spread considers");
+        if (movable > MAX_MOVABLE) return fail(status_t::unavailable, "more windows than spread considers");
         double inner = S.center_half + EDGE_MARGIN, outer = W / 2 - S.rail_width - EDGE_MARGIN;
         if (outer <= inner) return fail(status_t::unavailable, "no periphery");
         double arrival_inner = S.center_half + std::max(EDGE_MARGIN, S.arrival_inset);
@@ -575,15 +578,26 @@ class solver_t
             hw[k] = w.width * scale_at(q.win, sx[k]) / 2;
         }
         struct bracket_t { int k; double target; double sign; double dist; };
+        // Only the brackets nearest the origin are bisected: keep at most that many, in order,
+        // while generating (bounded work per bracket; no sort of an input-sized list).
+        size_t budget = S.probe_cap > 24 ? S.probe_cap - 24 : 8;
+        const size_t keep = budget / 2;
         std::vector<bracket_t> brackets;
+        brackets.reserve(keep + 1);
         auto edges = [&] (double target) {
             // sign +1: right edge (x + hw) meets target; -1: left edge (x - hw) meets target.
             for (double sign : {1.0, -1.0})
                 for (int k = 0; k < samples; ++k)
                 {
                     double f0 = sx[k] + sign * hw[k] - target, f1 = sx[k + 1] + sign * hw[k + 1] - target;
-                    if ((f0 <= 0) != (f1 <= 0))
-                        brackets.push_back({k, target, sign, std::abs((sx[k] + sx[k + 1]) / 2 - q.ox)});
+                    if ((f0 <= 0) == (f1 <= 0)) continue;
+                    bracket_t b{k, target, sign, std::abs((sx[k] + sx[k + 1]) / 2 - q.ox)};
+                    work.charge();
+                    if (brackets.size() >= keep && !(b.dist < brackets.back().dist)) continue;
+                    auto at = std::upper_bound(brackets.begin(), brackets.end(), b,
+                        [] (const bracket_t& x, const bracket_t& y) { return x.dist < y.dist; });
+                    brackets.insert(at, b);
+                    if (brackets.size() > keep) brackets.pop_back();
                 }
         };
         const auto& a = S.workarea;
@@ -594,10 +608,7 @@ class solver_t
         };
         if (q.hard) for (const auto& b : *q.hard) obstacle_edges(b);
         if (q.soft) for (const auto& s : *q.soft) obstacle_edges(s.r);
-        work.charge(brackets.size());
-        std::stable_sort(brackets.begin(), brackets.end(), [] (auto& x, auto& y) { return x.dist < y.dist; });
-        size_t budget = S.probe_cap > 24 ? S.probe_cap - 24 : 8;
-        for (size_t n = 0; n < brackets.size() && n < budget / 2; ++n)
+        for (size_t n = 0; n < brackets.size(); ++n)
         {
             const auto& br = brackets[n];
             double lo = sx[br.k], hi = sx[br.k + 1];
@@ -794,6 +805,7 @@ class solver_t
             consider(ylo, f_lo);
             for (auto [e, d] : events)
             {
+                work.charge();
                 if (e <= ylo) { slope += d; continue; }
                 double y = std::min(e, yhi);
                 if (!oy_done && oy <= y) { consider(oy, f + slope * (oy - at)); oy_done = true; }
@@ -1119,36 +1131,34 @@ class solver_t
     // replaces the layout it started from (it is not ranked: it changes only travel).
     std::optional<checkpoint_t> offer(const layout_t& L, const std::string& name, double spacing = 0)
     {
-        checkpoint_t c{L, score_of(L), name, spacing};
+        checkpoint_t c{L, score_of(L), name, spacing, {}};
         if (!c.score.legal) return std::nullopt;
         if (!best || compare(c.score, best->score) < 0 || spacing > 0)
         {
-            best = c;
-            if (publish)
-            {
-                result_t r;
-                fill(r);
-                publish(r);
-            }
+            // Built privately and charged; a stop in the middle leaves the previous best whole.
+            fill(c.result, c);
+            best = std::move(c);
+            if (publish) publish(best->result);
+            return best;
         }
         return c;
     }
 
-    void fill(result_t& r) const
+    void fill(result_t& r, const checkpoint_t& c)
     {
         r.moves.clear();
         r.overlaps.clear();
-        if (!best) return;
-        const auto& L = best->layout;
-        r.score = best->score;
-        r.checkpoint = best->name;
-        r.spacing = best->spacing;
+        const auto& L = c.layout;
+        r.score = c.score;
+        r.checkpoint = c.name;
+        r.spacing = c.spacing;
         r.arrangements = arrangements;
         r.work = work.used;
         std::vector<box> rects(S.windows.size());
         std::vector<uint8_t> affected(S.windows.size(), 0);
         for (size_t i = 0; i < S.windows.size(); ++i)
         {
+            work.charge();
             rects[i] = rect(i, L.pos[i]);
             bool moved = !same_pos(L.pos[i], original.pos[i]);
             affected[i] = win(i).role == role_t::arrival || moved;
@@ -1166,10 +1176,16 @@ class solver_t
             if (win(i).role != role_t::fixed && real_overlap(rects[i], S.solo)) r.overlaps.emplace_back(win(i).id, 0);
             if (!affected[i]) continue;
             for (size_t j = 0; j < S.windows.size(); ++j)
+            {
+                work.charge();
                 if (j != i && !(affected[j] && j < i) && real_overlap(rects[i], rects[j]))
                     r.overlaps.emplace_back(win(i).id, win(j).id);
+            }
             for (const auto& b : S.fixed)
+            {
+                work.charge();
                 if (real_overlap(rects[i], b)) r.overlaps.emplace_back(win(i).id, UINT64_MAX);
+            }
         }
     }
 
@@ -1187,7 +1203,13 @@ class solver_t
             }
             return result;
         }
-        fill(result);
+        // The best checkpoint's result was built when it was offered: nothing is enumerated
+        // here, so a stopped solve finishes without further work.
+        auto reason = result.reason;
+        result = best->result;
+        result.reason = reason;
+        result.work = work.used;
+        result.arrangements = arrangements;
         result.complete = complete;
         bool clear = result.overlaps.empty();
         result.status = clear ? status_t::clear :

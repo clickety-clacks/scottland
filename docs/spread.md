@@ -56,7 +56,11 @@ cut delivers the progress made. Measured in the real build (nacelle headless,
 `tests/spread-load-test.py`, 2026-10-04): 12, 24 and 40 windows took 1, 5 and 5 slices, longest
 1.53, 2.00 and 2.00 ms; the 40-window solve was cut at 10 ms of solving with 10 of 13 arrivals
 placed, delivered after 78 ms because one event-loop turn spent 64 ms drawing 40 windows in
-software between two slices (spread itself never held the loop longer than a slice). Inside that
+software between two slices (spread itself never held the loop longer than a slice). Every unit
+operation is charged before it runs: the longest CPU time between two charges was 13.5 µs over 40
+scenes of 50 windows on nacelle. Each checkpoint's result is built inside the budget when it becomes
+the best, so a stopped or cancelled solve delivers it without further work; the input caps are
+checked before anything is collected. Inside that
 session the kernel did about 31 units/µs against 112 in the unit suite on the same host, so its
 12 ms reach less far there; this is still to be measured on a real GPU session. Unit operations
 measure under 40 µs of CPU; longer wall-clock slices seen on plumbus were preemption under load.
@@ -85,7 +89,7 @@ plugin refuses an offer before it releases the drag.
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
 | SP5 | Every unit operation is charged; the solve runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. | verified (unit suite; real-build slices measured on plumbus) |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (plumbus and nacelle headless) |
-| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc or on a client change (never rolling that change back), returns every window exactly, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (plumbus and nacelle headless, real stipc drags) |
+| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots even over running glides or avoidance, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (nacelle headless, real stipc drags, 59 checks, 2026-10-04) |
 | SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (plumbus and nacelle headless reload rehearsal) |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared plumbus session was not
@@ -107,9 +111,15 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
   anywhere else it takes the natural scale there and loses the pin.
 - The work cap is 1,000,000 of this kernel's units (about 12 ms on plumbus); final.md's 150,000 was a
   starting value for a prototype that counted coarser units.
-- Running glides are not paused under an offer: they and the offer are both relative to the same
-  unchanged true geometry, so they compose and the restoration baseline cannot drift. Hint-avoidance
-  offsets of offered windows are held still (as for a pair) rather than suspended.
+- A glide running on a window when the offer starts is suspended at its current sample and resumed
+  on refusal (a cycle glide keeps its clock; another restarts from the sample to its own
+  destination). The offer layer is computed every frame against what lies under it, so at full
+  progress each window is drawn exactly at its offered spot and scale even while a scale animation
+  runs underneath, and easing back ends on the live state. A window still coasting, or gliding
+  away, delays the offer. Hint-avoidance offsets of offered windows ease to zero while the offer
+  shows (they are held still, as for a pair) and are recomputed after: the offered spot is exact
+  once they settle (Astra's review asked for suspension; this is the equivalent contract, tested
+  with avoidance on).
 - A solo whose solve moves nothing (unchanged, unavailable) still takes the solo window to the center.
 - The spacing pass may also run when the seed checkpoint wins.
 
