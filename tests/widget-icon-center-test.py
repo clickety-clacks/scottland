@@ -50,8 +50,16 @@ def measure(pixel, frame, background):
     body = [(x, y) for y in range(y0, y1) for x in range(x0, x1) if near(pixel(x, y), background, 6)]
     if not body:
         return None
-    bx0, bx1 = min(x for x, _ in body), max(x for x, _ in body) + 1
-    by0, by1 = min(y for _, y in body), max(y for _, y in body) + 1
+    # The body's extent is the rows and columns that are mostly its color: the goo's shine
+    # highlights in the halo around it can match a light card's color pixel by pixel.
+    rows, cols = {}, {}
+    for x, y in body:
+        rows[y] = rows.get(y, 0) + 1
+        cols[x] = cols.get(x, 0) + 1
+    rows = [y for y, n in rows.items() if n >= max(rows.values()) / 2]
+    cols = [x for x, n in cols.items() if n >= max(cols.values()) / 2]
+    bx0, bx1 = min(cols), max(cols) + 1
+    by0, by1 = min(rows), max(rows) + 1
     # Leave the body's antialiased edges and its rounded corners (radius 16, where the halo
     # shows through) out of the icon search; the icon's straight sides lie between them.
     corner = lambda x, y: (x < bx0 + 18 or x >= bx1 - 18) and (y < by0 + 18 or y >= by1 - 18)
