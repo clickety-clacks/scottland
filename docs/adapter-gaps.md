@@ -8,7 +8,7 @@ The highest-impact gaps are **display/input configuration that silently does not
 window rules**, including password-manager capture exclusions and game idle inhibition.
 Stock users also encounter failures Mike's replacements can conceal: **F9 push-to-talk loses
 its press action**, and **the stock screensaver's launch command reports success without
-launching**. Both were reproduced in an isolated Scottland session on plumbus.
+launching**. Both were reproduced in an isolated Scottland session on the test machine.
 
 Changing from Ghostty to Foot, Alacritty or Kitty, or from Chromium to Firefox, is not by itself
 the big incompatibility. The standard launch paths preserve those choices. What does not
@@ -32,7 +32,7 @@ lost. **Works** is limited to the stated path and evidence; it is not an applica
 
 - **S — source verified:** producer and consumer were inspected. The stated missing translation
   is established; the end-user symptom is an inference unless backed by H or L.
-- **H — headless observed on plumbus:** exact observations H1–H3 are recorded below. H1 used
+- **H — headless observed on the test machine:** exact observations H1–H3 are recorded below. H1 used
   real `stipc` key press/release input; H2/H3 were IPC probes. None is a physical-hardware test.
 - **L — existing log:** a read-only observation from Mike's retained shim log. Its lines have
   times but no dates or build IDs; historical entries alone do not prove current behavior.
@@ -103,15 +103,15 @@ state queries, events or Wayland protocols.
 
 ## What the tests actually established
 
-**H1 — F9 regression, real input on plumbus.** Built this checkout with
-`SCOTTLAND_DEPLOY_DIR=Projects/scottland-adapter-gaps tests/deploy.sh plumbus --tests-only`.
+**H1 — F9 regression, real input on the test machine.** Built this checkout with
+`SCOTTLAND_DEPLOY_DIR=Projects/scottland-adapter-gaps tests/deploy.sh <test machine> --tests-only`.
 A fresh session used `build/headless-adapter-gaps` as its unique `SCOTTLAND_HEADLESS_DIR`,
 a private D-Bus, a fixture HOME under this checkout's `build/research/home`, and the shipped
 Scottland base config. No personal layout or overrides were loaded. The tiny Hyprland fixture
 loaded the installed `default/hypr/bindings/voxtype.lua` unchanged through an `o.bind` wrapper
 that forwards string commands to `hl.dsp.exec_cmd`, like Omarchy's helper. Its `cmd_present`
 returned true. A fixture `voxtype` executable recorded arguments rather than using a microphone
-or the real daemon. The source file SHA-256 matched on osanwe and plumbus:
+or the real daemon. The source file SHA-256 matched on the daily machine and the test machine:
 `ff39dcab7a834082abc12a5563c3b37ce434a39a1969a1ecb2f025553b69c446`.
 
 `stipc/feed_key {"key":"KEY_F9","state":true}` produced **zero command calls**.
@@ -136,7 +136,7 @@ not test Voxtype speech recognition, output injection or its OSD.
 
 Monitor JSON before/after was identical (1280×720, scale 1, DPMS true). These stub replies
 cannot independently prove physical output state; the source's absence of a Wayfire operation
-establishes the no-op. We did not send any of these mutations to Mike's session or plumbus's
+establishes the no-op. We did not send any of these mutations to Mike's session or the test machine's
 shared session.
 
 **H3 — capture smoke check and cleanup.** `grim` inside the isolated session produced a
@@ -200,7 +200,7 @@ broken. Likewise, Hyprlock/Hypridle references in upgrade/migration material are
 that 4.0.4's stock lock still uses them. Remaining uncertainty includes CJK engines, third-party
 launchers/plugins, all optional-app rendering, portal selection and end-to-end capture,
 password-window masking, lock recovery, lid/suspend, mixed-DPI docks, and NVIDIA/Apple/Framework
-hardware. No additional Wayfire/Quickshell process or test ran on osanwe.
+hardware. No additional Wayfire/Quickshell process or test ran on the daily machine.
 
 Recommended order, based on user impact rather than the number of unsupported calls:
 
