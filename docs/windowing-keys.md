@@ -1589,7 +1589,7 @@ count and largest gap.
 `hint-settle-test` 101/15: the front window's hint goes and comes back in three of the four entries,
 and the widget circles are drawn before their widgets settle (an earlier run with the fix's rule
 switched off also showed the sliced pass's stale side-window hints: drawn, removed, drawn). With
-the fix it passes 116/0 in every run (four). Measured from Window-mode entry: before, the widget and
+the fix it passes 116/0 in every run (three). Measured from Window-mode entry: before, the widget and
 front hints showed at 1–33 ms, the front one vanished at 100–185 ms and came back at 400–610 ms;
 after, every hint appears once, at 436–650 ms, with nothing removed. Run side by side with the
 unfixed commit, unchanged: `hint-pop` 19/0, `hint-front-center` 28/0, `hint-outline` 47/0,
