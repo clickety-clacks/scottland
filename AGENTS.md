@@ -42,6 +42,8 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/settings.md](docs/settings.md): Scottland Settings (S1–S19): zone sliders and overlay with draggable borders, Goo and Window mode tabs, hint popouts, and the planned Widgets tab.
 - [docs/desktop-model.md](docs/desktop-model.md): the single reactive desktop state model and its snapshots.
 - [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
+- [docs/main-loop.md](docs/main-loop.md): the main-loop budget (ML1-ML8): per-callback timing, the diagnostic
+  ring and watchdog (`scottland-ctl loop`), the named exceptions still owed, and the reload handover protocol.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
 

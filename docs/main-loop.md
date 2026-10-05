@@ -1,0 +1,234 @@
+# The main loop
+
+Wayfire dispatches input, IPC, timers, rendering and every plugin callback on one thread. Anything
+long that Scottland does there freezes the pointer (P8). This doc is the rule for that budget, how it
+is measured and enforced, what still misses it (each with a number and an owner), and how a
+reload hands the running plugin's state to the next copy. Design and review history:
+`~/.local/state/scottland-jobs/mainloop/design.md` and `review-astra-1..6.md` (signed off for
+Phases 0, 1, 2 and 4 on 2026-10-03; Mike decided the two Phase 3 questions the same day).
+
+## Invariants
+
+| ID | Rule | Status |
+|---|---|---|
+| ML1 | Target: no Scottland callback on the main loop runs longer than **2 ms** (optimized build, test host, 30-window fixture). A callback is one entry from Wayfire, including one whole event-source dispatch. What misses it is a named exception in the table below, with a number and an owner; an exception is an open delivery risk, not a met target. | measured; open exceptions below |
+| ML2 | Target: Scottland's outermost callbacks occupy at most **4 ms of any 16.7 ms** of wall time, all outputs together, frames or not. | measured (`ml2_max_ms`); open where the exceptions run |
+| ML3 | Work that cannot meet ML1 becomes a worker job or stays a named exception until its design is signed off. No job runs on the main loop as a fallback. | rule |
+| ML4 | No callback after `init()` calls `fork`, `system`, `sleep`, `waitpid`, a GPU read that waits, or file I/O, except the named exceptions: `core_run` (D3), the alpha-shape and energy readbacks and the hit-test sample (D2, Phase 3), the wallpaper capture (GO20), one procfs gather per new process, fonts (D4). | rule; exceptions measured |
+| ML5 | Every Scottland entry point is timed (`SCOTTLAND_LOOP_SCOPE`); slow callbacks and unresponsive periods are recorded in the diagnostic ring. Nothing in the plugin writes to stderr or Wayfire's log after `init()`. | implemented (Phase 1) |
+| ML6 | No plugin thread, event source or callback outlives `fini()`. | implemented: the watchdog and its eventfd source stop last in `fini()`; reload tests count descriptors |
+| ML7 | A late result never overrides a newer state. | rule (worker, Phase 4) |
+| ML8 | Window mode entry (Alt held: `alt_hold` → `begin_window_keys`, including the first badge raster of a session) is an acceptance target of this work: today about 50-60 ms the first time (cold font) and 7-20 ms after, on the test hosts. | open: see "Window mode entry" |
+
+## Timing every entry point
+
+`core/plugin/src/loop.hpp`. Each entry from Wayfire opens a scope named in
+`core/plugin/src/loop-table.def` (signal handlers, timers, idle calls, IPC methods, bindings,
+render hooks and render instances, hit tests and input interactions, event-loop fd sources,
+option callbacks). Scopes nest: per name the monitor keeps calls, total, maximum and calls over
+2 ms; only the outermost scope counts toward ML2 and the history. Nested scopes inside entry points
+attribute known costs (`hint_solve`, `hint_raster`, `goo_energy_readback`, `goo_sample_at`,
+`goo_shape_update`, `goo_wallpaper_capture`, `widget_capture`, `core_run`, `publish_model`, ...).
+Pure accessors Wayfire calls per node (bounding boxes, transformer getters) are not scoped.
+
+- `scottland/loop-stats` (IPC, `scottland-ctl loop-stats [--reset]`): per-scope counters, the ML2
+  maximum, the last 256 outermost callbacks, watchdog counters, and the reload state
+  (`reload.load`, `reload.nonce`, `reload.outcome`).
+- ML2 is exact for every window ending at a callback exit: a queue of the outermost intervals that
+  intersect the last 16.7 ms, the oldest clipped.
+- Cost of a scope: two monotonic clock reads and, for an outermost scope, a handful of atomic
+  stores; measured in the latency test (scopes compiled in, against the same build without them).
+
+## Diagnostic ring and watchdog
+
+`$XDG_RUNTIME_DIR/scottland/$WAYLAND_DISPLAY.loop` (64 KB, `loop-abi.hpp`), mapped and locked
+in memory at `init()`. Every word is a lock-free 64-bit atomic, stored and loaded `seq_cst` by
+every party; two rings with one producer each (A: the main thread, B: the watchdog), records with a
+per-slot sequence, a record of the plugin copy (`instance`) that wrote it, and a shared sample of
+what the main thread is doing. The names file beside it (`.loop.names`) belongs to one instance and
+build; a reader uses names only when the header agrees before and after reading it.
+
+- A callback over 8 ms writes a `slow` record (with its slowest inner scope).
+- Former log lines are `note` records with up to four numbers (`NOTE` rows in `loop-table.def`).
+- The watchdog thread wakes every 100 ms while Scottland is working (a work scope running or one
+  ended within 1 s) and every 2 s otherwise. It records `stuck` when one scope has run for 100 ms
+  (again at 1 s, 5 s, then every 10 s) and `unresponsive` when its heartbeat (one outstanding at a
+  time, through an eventfd) is unanswered for 100 ms with no Scottland scope running: the loop is
+  busy elsewhere (Wayfire, another plugin, the GPU driver).
+- `scottland-loop-read` (built with the plugin; `scottland-ctl loop [--follow] [--json]`) is the
+  only external reader. It never writes, so a slow or stopped reader cannot affect the compositor,
+  and it works while the compositor is stuck: that is when it is needed.
+- If the file can't be created or mapped the ring and watchdog are off and only the in-memory
+  counters remain; a failed `mlock` is recorded in the header. Remaining risk: without the lock, a
+  record write can page-fault under memory pressure.
+- One compositor wakeup every 2 s on a still desktop (the heartbeat).
+
+## Reload
+
+`scottland-reload` swaps the plugin in place; widgets stay (WG5). Two kinds of resource cross a
+reload: duplicated launcher pidfds, and leases (Scottland's one disable on a widgetized app's root
+node; the node's enabled state is a reference count shared with Wayfire's minimize and other
+plugins). Each is adopted or returned exactly once, by number or window id, from a list whose
+ownership is established outside the handover file.
+
+- **The script** (Python) takes a lock and keeps one attempt record per compositor process. A fresh
+  attempt writes the receipt (nonce, compositor pid and start time, model session) and the
+  `.reloading` mark before anything that can make Wayfire swap the plugin, then sets the plugin
+  list and waits up to 30 s for the new copy's acknowledgment or `fini()`'s failure record. Once a
+  swap may have started, an error or a timeout is an unresolved outcome: receipt, handover and mark
+  stay, and the next invocation decides by evidence. While a Scottland copy answers: it is resolved
+  if that copy consumed this receipt, or is a later load than the one that answered when the attempt
+  began (it loaded without the receipt and imported nothing), or is still that same load after the
+  whole timeout (Wayfire swaps right after a config change, so none was started); otherwise it
+  refuses. With no answer it changes nothing. With no Scottland copy loaded it resumes the attempt
+  with `wayfire/reload-plugins` (setting the same plugin list again loads nothing).
+- **The outgoing copy** hands over only if its `init()` completed and the mark exists. It publishes
+  completely or not at all: duplicated handles, the file (envelope: format 2, an id, compositor pid
+  and start time, session) and the environment list
+  `SCOTTLAND_INTERNAL_HANDOVER=<id>;version=<model version>;fds=...;leases=...`. On any failure the
+  widgets are torn down as in an ordinary unload.
+- **The incoming copy**, first thing in `init()`, owns what the environment list names. The list is
+  bound to the model version the outgoing copy also leaves in the environment: an older build loaded
+  in between (a rollback) changes it, and a stale list owns nothing. It then consumes the receipt
+  (renamed to `.reload-importing`; only one naming this compositor process), and imports a file
+  whose id matches the list, or a legacy file (the installed writer's) of the receipt's session.
+  A handle needs an open pidfd that no other entry named and, if its process is alive, the recorded
+  pid; a reaped launcher is owned-dead. Whatever is not adopted is closed or returned once.
+- **Failed `init()`**: `fini()` never hands over, returns what was owned and writes the failure
+  record.
+- Stated exceptions (not recoveries): a corrupted legacy file leaves its handles open and its apps
+  hidden until the session restarts; a reload started by an old `scottland-reload` (no receipt)
+  imports nothing, with the same effect. Neither occurs once both sides are this build.
+- Pending launches at reload: a launch whose card hasn't mapped is not handed over (the app is
+  restored, the launch stopped through the broker, which drains queued stops even after a reset);
+  a card mapped before the broker's reply is carried with its unit and no process handle.
+- Tests: `tests/reload-handover-test.py [--from INSTALLED_CHECKOUT]` (headless; the upgrade
+  rehearsal starts from the installed build). Test sessions reload with
+  `SCOTTLAND_TEST_RELOAD_DIR` so plugin copies and config stay out of the machine's real runtime
+  directory.
+
+## Window mode entry (ML8)
+
+Attribution on nacelle (aarch64, Asahi GPU, 10 windows, Phase 1 scopes): the first Alt hold of a
+session spends 40-53 ms in `begin_window_keys`, of which the first badge raster (`hint_raster`,
+cold font) is 25-38 ms and the bounded solve (`hint_solve`) 1.9 ms; a later entry spends 7-20 ms,
+about 1 ms per window creating badges, outlines and dyes (`hint_visual`). The acceptance target is
+that entry, cold or warm, stays inside ML1 or is listed with its number; the font miss leaves with
+a warm-up at `init()` (Phase 2) and the per-window badge work with bounded per-tick creation.
+
+## Exceptions
+
+Measured numbers, with the build and host, are in "Baselines". An entry leaves only when its phase
+closes or its owner's design ships. Ceilings for the latency test are in
+`tests/mainloop-exceptions.json`.
+
+Measured on nacelle (aarch64, Asahi GPU; plumbus was busy), optimized build with the Phase 1
+scopes, headless 2560x1600, real stipc input, 2026-10-04. Maxima over every scenario of
+`tests/mainloop-latency-test.sh`. Nested scopes are listed with the entry points that contain them,
+so one cost can appear on several rows. Also listed without a scope of its own: `core_run` at the
+sites the broker does not cover (focus hook, pop sound, key-release commands, broker start, stop
+fallback; 6-13 ms each on plumbus) and the `fini()` wait loop (up to 0.5 s) (D3); a font miss on a
+font family other than the one warmed at `init()` (D4); pathological user regexes (D5);
+`place_rectangle` at 60+ obstacles (D6); `init()`/`fini()` file I/O on reload.
+
+| Scope | 10 windows | 30 windows (Mike's goo) | What | Leaves in |
+|---|---|---|---|---|
+| `goo_sample_at` | 25.3 ms | 65.3 ms | pointer hit test reads one pixel of wave height back from the GPU; runs inside frame_find_node_at, and inside every scene change that refocuses the pointer | Phase 3 |
+| `frame_find_node_at` | 25.3 ms | 65.3 ms | the halo hit test (contains goo_sample_at) | Phase 3 |
+| `goo_energy_readback` | 23.6 ms | 44 ms | every 30th simulation step waits for a 1-pixel energy read | Phase 3 |
+| `goo_render` | 28.8 ms | 58.3 ms | simulation step (contains goo_energy_readback); the first frame of a newly loaded copy also builds its renderer: 200-400 ms on nacelle after a reload | Phase 3 |
+| `goo_shape_update` | 14.3 ms | 31.1 ms | widget alpha-shape readbacks | D2 |
+| `frame_render` | 16.8 ms | 31.1 ms | window render instance (contains goo_shape_update) | D2 |
+| `hints_tick` | 18.3 ms | 287.2 ms | Window mode tick at 30 windows: each badge, outline or offset changes the scene and Wayfire's pointer refocus runs the hit test readback; the solve itself stays at 2.2 ms | Phase 3, ML8, D1 |
+| `step_hints` | 40.9 ms | 287.2 ms | same work as hints_tick, also run from Window mode entry | Phase 3, ML8, D1 |
+| `alt_hold` | 41.2 ms | 91.7 ms | Window mode entry: first badge raster (cold font) and badge creation | ML8 (Phase 2 warm-up), Phase 3 |
+| `begin_window_keys` | 41.2 ms | 91.7 ms | Window mode entry (inside alt_hold) | ML8 (Phase 2 warm-up), Phase 3 |
+| `hint_visual` | 28.4 ms | 80 ms | one window's badge, outline and offset step (scene updates trigger hit-test readbacks) | Phase 3, ML8 |
+| `hint_raster` | 27.9 ms | 19.5 ms | badge text raster: first use of a font | ML8 (Phase 2 warm-up), D4 |
+| `on_window_key` | 0.8 ms | 85.4 ms | a Window mode key that changes hints | Phase 3, ML8 |
+| `keyboard_tick` | 11.2 ms | 67.3 ms | keyboard motion; each move refocuses the pointer (hit-test readback) | Phase 3 |
+| `on_motion` | 7.1 ms | 22.9 ms | pointer motion bookkeeping (contains hit tests) | Phase 3, Phase 2.4 |
+| `track_pointer` | 7.1 ms | 22.9 ms | visual proximity per pointer event | Phase 3, Phase 2.4 |
+| `widget_transition_tick` | 21.5 ms | 51.5 ms | window/widget transition animation tick | open: attribution (Phase 1 item) |
+| `live_drag_render` | 8 ms | 30.9 ms | the dragged subtree's texture render | open: attribution (Phase 1 item) |
+| `option_layout` | 19.2 ms | 46.9 ms | a layout option callback (apply_all per option) | Phase 2.6 |
+| `publish_model` | 12.3 ms | 2.2 ms | model publication (2,806 per settings-slider run before coalescing) | Phase 2.1 |
+| `goo_prepare` | 9.8 ms | 15.4 ms | per-frame goo sources and bands | Phase 2.5 (sources cache); bands stay exact |
+| `goo_settle_tick` | 6.1 ms | 12.4 ms | GO19 breathing shrink slice (2.5 ms on plumbus, slower on nacelle) | Phase 4 |
+| `tighten_breathing` | 6.1 ms | 12.4 ms | inside goo_settle_tick | Phase 4 |
+| `on_mapped` | 4.4 ms | 12.3 ms | widget adoption procfs gather and placement | Phase 2.2, D6 |
+| `on_move` | 4.6 ms | 10.4 ms | drag start: /proc reads and publishes | Phase 2.1, 2.2 |
+| `live_drag_pointer_button` | 8.1 ms | 8.8 ms | drop handling | Phase 2.1, 2.2 |
+| `on_drag_done` | 5.8 ms | 6.2 ms | drop handling | Phase 2.1 |
+| `on_drag_output` | 2.3 ms | 5.3 ms | drag output change | Phase 2.1 |
+| `window_entries` | 18.1 ms | 2.5 ms | window list for hints: /proc reads per window | Phase 2.2 |
+| `goo_tick` | 9.1 ms | 2.8 ms | goo tick (damage; contains readbacks when it renders) | Phase 3 |
+| `transition_tick` | 7.2 ms | 0.2 ms | zone transition tick (publishes) | Phase 2.1 |
+| `on_focus` | 0.6 ms | 4.3 ms | focus change (publishes) | Phase 2.1 |
+| `held_above_timer` | 0.2 ms | 3.5 ms | drop chain timer | Phase 2.1 |
+| `attention_method` | 1.8 ms | 3.4 ms | attention IPC | Phase 2.1 |
+| `hint_render` | 3.3 ms | 3.3 ms | badge texture upload on first draw | ML8 |
+| `hints_state` | 1 ms | 3.1 ms | hints IPC (re-reads /proc) | Phase 2.2 |
+| `frame_gen_render_instances` | 0.7 ms | 3 ms | render instance creation on scene changes | open |
+| `goo_option` | 3.5 ms | 0.8 ms | goo option callback | Phase 2.6 |
+| `live_drag_pointer_motion` | 3.4 ms | 2.8 ms | drag motion (publishes) | Phase 2.1 |
+| `on_drag_motion` | 3.4 ms | 2.7 ms | drag motion (publishes) | Phase 2.1 |
+| `goo_schedule` | 2.6 ms | 1 ms | goo damage scheduling | open |
+| `on_geometry` | 1.3 ms | 2.3 ms | geometry change (publishes) | Phase 2.1 |
+| `hint_solve` | 3.6 ms | 2.2 ms | Luna's bounded avoidance solve | D1 (Phase 0: bounded at 2 ms + overshoot) |
+
+Not over 2 ms in any scenario: widget and morph captures (`widget_capture`, the retained-pixel
+path), the wallpaper capture, `core_run` (not exercised), the broker reply. The design's capture
+exception therefore leaves the table for the paths measured here.
+
+Phase 0 (Luna's bounded avoidance, on main since `b6955db`): the solve itself (`hint_solve`) is at
+most 2.2 ms at 30 windows and 3.6 ms at 10 (first entry). Window mode as a whole is not: its ticks
+reach 287 ms at 30 windows on nacelle, and the cost is not the solve. Each badge, outline or offset
+it creates changes the scene, Wayfire refocuses the pointer, and the halo hit test waits for a GPU
+readback (`goo_sample_at`, up to 65 ms each). Phase 3 removes that readback from the hit test; the
+first-entry font miss leaves with the warm-up at `init()` (Phase 2).
+
+## Baselines
+
+Ping lateness p99/max in ms per scenario (the probe pings Wayfire IPC at 1 kHz; a late ping means
+the main loop was busy). "main" is `5a2fb5d` without scopes, "Phase 1" this build; same host, one
+run each, host load 3-6 from other agents. The differences between the columns are within the
+run-to-run spread of this shared host; the scopes' direct cost is 0.1 µs per scope pair
+(`tests/loop-unit.sh`, measured), against callbacks of 1-300 ms. The spread of the host itself: a
+second run of main at 10 windows (load 1.6) measured pointer-halo 58.6/71.3 ms against 12.9/20.6 in
+the first, window-mode-entry 64.6/85.4 against 30.7/51.6, settings-slider 33.3/64.9 against
+36.5/57.2. (The other repeat runs lost their ping channel to a harness bug, since fixed.)
+
+| Scenario | main 10 | Phase 1 10 | main 30 | Phase 1 30 |
+|---|---|---|---|---|
+| idle | 2.07/4.00 | 2.61/5.57 | 2.11/3.20 | 2.37/3.56 |
+| window-mode-entry | 30.73/51.55 | 46.57/66.62 | 257.75/278.60 | 284.05/301.67 |
+| ipc-queries | 8.97/8.97 | 7.05/7.05 | 12.39/12.83 | 23.95/27.28 |
+| pointer-sweep | 10.22/21.97 | 14.27/24.19 | 158.31/299.35 | 170.29/251.16 |
+| pointer-halo | 12.91/20.61 | 42.15/73.29 | 71.83/118.60 | 123.88/248.61 |
+| drag | 6.22/10.78 | 10.89/22.94 | 108.70/122.37 | 92.49/101.81 |
+| after-drag-settle | 6.40/11.89 | 7.66/17.53 | 20.85/30.78 | 23.46/44.11 |
+| window-mode | 22.42/33.48 | 12.92/22.74 | 186.43/221.48 | 202.04/234.43 |
+| window-mode-arrows | 22.22/38.47 | 14.32/24.57 | 234.84/293.27 | 136.08/189.95 |
+| always-avoid-drag | 15.81/33.69 | 29.55/56.77 | 137.62/220.70 | 74.26/108.64 |
+| map-unmap | 8.44/22.79 | 12.10/23.13 | 28.30/49.42 | 30.83/57.49 |
+| long-title | 8.30/16.21 | 13.92/24.40 | 507.77/535.38 | 194.42/225.77 |
+| attention-breath-sleep | 4.83/14.60 | 8.31/28.57 | 23.55/46.16 | 17.80/31.33 |
+| slow-subscriber | 9.55/15.61 | 9.49/16.68 | 31.46/42.37 | 28.12/36.45 |
+| widgetize | 14.69/18.66 | 16.88/32.71 | 48.61/58.98 | 73.24/93.19 |
+| widgets-8 | 20.43/36.33 | 27.81/45.03 | 92.19/135.38 | 81.18/128.42 |
+| widget-attention-sleep | 10.87/26.54 | 14.41/31.17 | 84.09/185.76 | 44.40/76.36 |
+| settings-slider | 36.53/57.17 | 61.58/93.39 | 90.11/115.98 | 65.58/113.31 |
+| scale-change | 64.04/80.36 | 91.61/121.48 | 87.41/157.42 | 126.10/144.67 |
+
+
+## Tests
+
+- `tests/mainloop-latency-test.sh LABEL [--windows N] [--mike] [--widgets] [--outputs 2] [--gate]`:
+  the scenarios of the design at 10 and 30 windows, with paced, pipelined input (pings at 1 kHz,
+  pointer at 500 Hz) and per-scenario scope maxima, ML2 and host load. Every number is labelled
+  measured, ceiling or open exception.
+- `tests/loop-watchdog-test.py`: stuck and unresponsive separately, idle rounds 2 s apart, the
+  external reader during a stuck scope and across a reload, failure injection.
+- `tests/reload-handover-test.py`: the reload matrix above.
+- `tests/widget-spawn-test.py`: the broker's disconnect cases.

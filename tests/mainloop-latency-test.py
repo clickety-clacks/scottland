@@ -36,7 +36,8 @@ class Channel:
     """One IPC connection. call() waits for its reply; send() pipelines and a reader thread records
     each reply's latency (replies come back in order)."""
     def __init__(self, deadline=10):
-        self.sock = socket.socket(socket.AF_UNIX); self.sock.connect(os.environ['WAYFIRE_SOCKET'])
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(os.environ['WAYFIRE_SOCKET'])
         self.sock.settimeout(deadline)
         self.pending = collections.deque(); self.done = []; self.lock = threading.Lock()
         self.reader = None; self.closed = False; self.sent = 0
@@ -83,6 +84,7 @@ class Channel:
 control = Channel()
 pings = Channel(); pings.sock.settimeout(30); pings.start_reader()
 inputs = Channel(); inputs.sock.settimeout(30); inputs.start_reader()
+dropped = []
 stop_pinging = threading.Event()
 def pinger():
     period, nxt = .001, time.monotonic()
@@ -101,7 +103,16 @@ def paced(method, data=None, period=.002):
     delay = pace['next'] - time.monotonic()
     if delay > 0: time.sleep(delay)
     pace['next'] = max(pace['next'] + period, time.monotonic() - .02)
-    inputs.send(method, data)
+    global inputs
+    try:
+        inputs.send(method, data)
+    except OSError:
+        # Wayfire drops a client whose replies it can't write at once (it never waits for
+        # one): record it and carry on with a new connection.
+        dropped.append(time.monotonic())
+        old = inputs; inputs = Channel(); inputs.sock.settimeout(30); inputs.start_reader()
+        inputs.done = old.done; inputs.sent = old.sent
+        inputs.send(method, data)
 def pointer(x, y): paced('stipc/move_cursor', {'x': round(x), 'y': round(y)})
 def key(name, down): paced('stipc/feed_key', {'key': 'KEY_' + name, 'state': down})
 def tap(name): key(name, True); key(name, False)

@@ -1,7 +1,396 @@
 {
-  "comment": "Named exceptions to ML1 (docs/main-loop.md). A scope listed here is an open delivery risk, not a met target; its ceiling is the measured number it may not exceed in tests/mainloop-latency-test.sh. Every other scope's ceiling is budget_ms.",
-  "budget_ms": 2.0,
-  "ml2_ms": 4.0,
-  "noise_load": 3.0,
-  "scopes": {}
+ "comment": "Named exceptions to ML1 (docs/main-loop.md). A scope listed here is an open delivery risk, not a met target; its ceiling is the measured number it may not exceed in tests/mainloop-latency-test.sh. Every other scope's ceiling is budget_ms.",
+ "budget_ms": 2.0,
+ "ml2_ms": 4.0,
+ "noise_load": 3.0,
+ "scopes": {
+  "goo_sample_at": {
+   "ceiling_ms": 99,
+   "measured_ms": {
+    "nacelle_10": 25.3,
+    "nacelle_30": 65.3
+   },
+   "owner": "Phase 3",
+   "what": "pointer hit test reads one pixel of wave height back from the GPU; runs inside frame_find_node_at, and inside every scene change that refocuses the pointer"
+  },
+  "frame_find_node_at": {
+   "ceiling_ms": 99,
+   "measured_ms": {
+    "nacelle_10": 25.3,
+    "nacelle_30": 65.3
+   },
+   "owner": "Phase 3",
+   "what": "the halo hit test (contains goo_sample_at)"
+  },
+  "goo_energy_readback": {
+   "ceiling_ms": 67,
+   "measured_ms": {
+    "nacelle_10": 23.6,
+    "nacelle_30": 44.0
+   },
+   "owner": "Phase 3",
+   "what": "every 30th simulation step waits for a 1-pixel energy read"
+  },
+  "goo_render": {
+   "ceiling_ms": 88,
+   "measured_ms": {
+    "nacelle_10": 28.8,
+    "nacelle_30": 58.3
+   },
+   "owner": "Phase 3",
+   "what": "simulation step (contains goo_energy_readback); the first frame of a newly loaded copy also builds its renderer: 200-400 ms on nacelle after a reload"
+  },
+  "goo_shape_update": {
+   "ceiling_ms": 48,
+   "measured_ms": {
+    "nacelle_10": 14.3,
+    "nacelle_30": 31.1
+   },
+   "owner": "D2",
+   "what": "widget alpha-shape readbacks"
+  },
+  "frame_render": {
+   "ceiling_ms": 48,
+   "measured_ms": {
+    "nacelle_10": 16.8,
+    "nacelle_30": 31.1
+   },
+   "owner": "D2",
+   "what": "window render instance (contains goo_shape_update)"
+  },
+  "hints_tick": {
+   "ceiling_ms": 432,
+   "measured_ms": {
+    "nacelle_10": 18.3,
+    "nacelle_30": 287.2
+   },
+   "owner": "Phase 3, ML8, D1",
+   "what": "Window mode tick at 30 windows: each badge, outline or offset changes the scene and Wayfire's pointer refocus runs the hit test readback; the solve itself stays at 2.2 ms"
+  },
+  "step_hints": {
+   "ceiling_ms": 432,
+   "measured_ms": {
+    "nacelle_10": 40.9,
+    "nacelle_30": 287.2
+   },
+   "owner": "Phase 3, ML8, D1",
+   "what": "same work as hints_tick, also run from Window mode entry"
+  },
+  "alt_hold": {
+   "ceiling_ms": 139,
+   "measured_ms": {
+    "nacelle_10": 41.2,
+    "nacelle_30": 91.7
+   },
+   "owner": "ML8 (Phase 2 warm-up), Phase 3",
+   "what": "Window mode entry: first badge raster (cold font) and badge creation"
+  },
+  "begin_window_keys": {
+   "ceiling_ms": 139,
+   "measured_ms": {
+    "nacelle_10": 41.2,
+    "nacelle_30": 91.7
+   },
+   "owner": "ML8 (Phase 2 warm-up), Phase 3",
+   "what": "Window mode entry (inside alt_hold)"
+  },
+  "hint_visual": {
+   "ceiling_ms": 121,
+   "measured_ms": {
+    "nacelle_10": 28.4,
+    "nacelle_30": 80.0
+   },
+   "owner": "Phase 3, ML8",
+   "what": "one window's badge, outline and offset step (scene updates trigger hit-test readbacks)"
+  },
+  "hint_raster": {
+   "ceiling_ms": 43,
+   "measured_ms": {
+    "nacelle_10": 27.9,
+    "nacelle_30": 19.5
+   },
+   "owner": "ML8 (Phase 2 warm-up), D4",
+   "what": "badge text raster: first use of a font"
+  },
+  "on_window_key": {
+   "ceiling_ms": 129,
+   "measured_ms": {
+    "nacelle_10": 0.8,
+    "nacelle_30": 85.4
+   },
+   "owner": "Phase 3, ML8",
+   "what": "a Window mode key that changes hints"
+  },
+  "keyboard_tick": {
+   "ceiling_ms": 102,
+   "measured_ms": {
+    "nacelle_10": 11.2,
+    "nacelle_30": 67.3
+   },
+   "owner": "Phase 3",
+   "what": "keyboard motion; each move refocuses the pointer (hit-test readback)"
+  },
+  "on_motion": {
+   "ceiling_ms": 35,
+   "measured_ms": {
+    "nacelle_10": 7.1,
+    "nacelle_30": 22.9
+   },
+   "owner": "Phase 3, Phase 2.4",
+   "what": "pointer motion bookkeeping (contains hit tests)"
+  },
+  "track_pointer": {
+   "ceiling_ms": 35,
+   "measured_ms": {
+    "nacelle_10": 7.1,
+    "nacelle_30": 22.9
+   },
+   "owner": "Phase 3, Phase 2.4",
+   "what": "visual proximity per pointer event"
+  },
+  "widget_transition_tick": {
+   "ceiling_ms": 78,
+   "measured_ms": {
+    "nacelle_10": 21.5,
+    "nacelle_30": 51.5
+   },
+   "owner": "open: attribution (Phase 1 item)",
+   "what": "window/widget transition animation tick"
+  },
+  "live_drag_render": {
+   "ceiling_ms": 47,
+   "measured_ms": {
+    "nacelle_10": 8.0,
+    "nacelle_30": 30.9
+   },
+   "owner": "open: attribution (Phase 1 item)",
+   "what": "the dragged subtree's texture render"
+  },
+  "option_layout": {
+   "ceiling_ms": 71,
+   "measured_ms": {
+    "nacelle_10": 19.2,
+    "nacelle_30": 46.9
+   },
+   "owner": "Phase 2.6",
+   "what": "a layout option callback (apply_all per option)"
+  },
+  "publish_model": {
+   "ceiling_ms": 19,
+   "measured_ms": {
+    "nacelle_10": 12.3,
+    "nacelle_30": 2.2
+   },
+   "owner": "Phase 2.1",
+   "what": "model publication (2,806 per settings-slider run before coalescing)"
+  },
+  "goo_prepare": {
+   "ceiling_ms": 24,
+   "measured_ms": {
+    "nacelle_10": 9.8,
+    "nacelle_30": 15.4
+   },
+   "owner": "Phase 2.5 (sources cache); bands stay exact",
+   "what": "per-frame goo sources and bands"
+  },
+  "goo_settle_tick": {
+   "ceiling_ms": 20,
+   "measured_ms": {
+    "nacelle_10": 6.1,
+    "nacelle_30": 12.4
+   },
+   "owner": "Phase 4",
+   "what": "GO19 breathing shrink slice (2.5 ms on plumbus, slower on nacelle)"
+  },
+  "tighten_breathing": {
+   "ceiling_ms": 20,
+   "measured_ms": {
+    "nacelle_10": 6.1,
+    "nacelle_30": 12.4
+   },
+   "owner": "Phase 4",
+   "what": "inside goo_settle_tick"
+  },
+  "on_mapped": {
+   "ceiling_ms": 19,
+   "measured_ms": {
+    "nacelle_10": 4.4,
+    "nacelle_30": 12.3
+   },
+   "owner": "Phase 2.2, D6",
+   "what": "widget adoption procfs gather and placement"
+  },
+  "on_move": {
+   "ceiling_ms": 17,
+   "measured_ms": {
+    "nacelle_10": 4.6,
+    "nacelle_30": 10.4
+   },
+   "owner": "Phase 2.1, 2.2",
+   "what": "drag start: /proc reads and publishes"
+  },
+  "live_drag_pointer_button": {
+   "ceiling_ms": 14,
+   "measured_ms": {
+    "nacelle_10": 8.1,
+    "nacelle_30": 8.8
+   },
+   "owner": "Phase 2.1, 2.2",
+   "what": "drop handling"
+  },
+  "on_drag_done": {
+   "ceiling_ms": 10,
+   "measured_ms": {
+    "nacelle_10": 5.8,
+    "nacelle_30": 6.2
+   },
+   "owner": "Phase 2.1",
+   "what": "drop handling"
+  },
+  "on_drag_output": {
+   "ceiling_ms": 9,
+   "measured_ms": {
+    "nacelle_10": 2.3,
+    "nacelle_30": 5.3
+   },
+   "owner": "Phase 2.1",
+   "what": "drag output change"
+  },
+  "window_entries": {
+   "ceiling_ms": 28,
+   "measured_ms": {
+    "nacelle_10": 18.1,
+    "nacelle_30": 2.5
+   },
+   "owner": "Phase 2.2",
+   "what": "window list for hints: /proc reads per window"
+  },
+  "goo_tick": {
+   "ceiling_ms": 15,
+   "measured_ms": {
+    "nacelle_10": 9.1,
+    "nacelle_30": 2.8
+   },
+   "owner": "Phase 3",
+   "what": "goo tick (damage; contains readbacks when it renders)"
+  },
+  "transition_tick": {
+   "ceiling_ms": 12,
+   "measured_ms": {
+    "nacelle_10": 7.2,
+    "nacelle_30": 0.2
+   },
+   "owner": "Phase 2.1",
+   "what": "zone transition tick (publishes)"
+  },
+  "on_focus": {
+   "ceiling_ms": 7,
+   "measured_ms": {
+    "nacelle_10": 0.6,
+    "nacelle_30": 4.3
+   },
+   "owner": "Phase 2.1",
+   "what": "focus change (publishes)"
+  },
+  "held_above_timer": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 0.2,
+    "nacelle_30": 3.5
+   },
+   "owner": "Phase 2.1",
+   "what": "drop chain timer"
+  },
+  "attention_method": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 1.8,
+    "nacelle_30": 3.4
+   },
+   "owner": "Phase 2.1",
+   "what": "attention IPC"
+  },
+  "hint_render": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 3.3,
+    "nacelle_30": 3.3
+   },
+   "owner": "ML8",
+   "what": "badge texture upload on first draw"
+  },
+  "hints_state": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 1.0,
+    "nacelle_30": 3.1
+   },
+   "owner": "Phase 2.2",
+   "what": "hints IPC (re-reads /proc)"
+  },
+  "frame_gen_render_instances": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 0.7,
+    "nacelle_30": 3.0
+   },
+   "owner": "open",
+   "what": "render instance creation on scene changes"
+  },
+  "goo_option": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 3.5,
+    "nacelle_30": 0.8
+   },
+   "owner": "Phase 2.6",
+   "what": "goo option callback"
+  },
+  "live_drag_pointer_motion": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 3.4,
+    "nacelle_30": 2.8
+   },
+   "owner": "Phase 2.1",
+   "what": "drag motion (publishes)"
+  },
+  "on_drag_motion": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 3.4,
+    "nacelle_30": 2.7
+   },
+   "owner": "Phase 2.1",
+   "what": "drag motion (publishes)"
+  },
+  "goo_schedule": {
+   "ceiling_ms": 5,
+   "measured_ms": {
+    "nacelle_10": 2.6,
+    "nacelle_30": 1.0
+   },
+   "owner": "open",
+   "what": "goo damage scheduling"
+  },
+  "on_geometry": {
+   "ceiling_ms": 4,
+   "measured_ms": {
+    "nacelle_10": 1.3,
+    "nacelle_30": 2.3
+   },
+   "owner": "Phase 2.1",
+   "what": "geometry change (publishes)"
+  },
+  "hint_solve": {
+   "ceiling_ms": 6,
+   "measured_ms": {
+    "nacelle_10": 3.6,
+    "nacelle_30": 2.2
+   },
+   "owner": "D1 (Phase 0: bounded at 2 ms + overshoot)",
+   "what": "Luna's bounded avoidance solve"
+  }
+ },
+ "measured": "nacelle (aarch64, Asahi GPU), 2026-10-04, Phase 1 build, optimized, headless 2560x1600, real stipc input; ceilings are 1.5x the larger measurement + 1 ms"
 }

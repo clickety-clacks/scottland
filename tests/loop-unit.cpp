@@ -150,6 +150,7 @@ int main(int argc, char **argv)
         // A scope lasting 5 s: reports at 100 ms, 1 s and 5 s.
         if (timing)
         {
+            auto long_start = loop::now_ns();
             {
                 SCOTTLAND_LOOP_SCOPE(test_loop);
                 busy(5200);
@@ -158,10 +159,13 @@ int main(int argc, char **argv)
             b = records(map.base, abi::ring_b, abi::w_head_b);
             std::vector<uint64_t> reports;
             for (auto& r : b)
-                if (r.kind == abi::k_stuck) reports.push_back(r.value / loop::ms);
-            check("a 5 s scope is reported at 100 ms, 1 s and 5 s", reports.size() == 4 &&
-                reports[1] >= 100 && reports[1] < 300 && reports[2] >= 1000 && reports[2] < 1300 &&
-                reports[3] >= 5000 && reports[3] < 5300);
+                if (r.kind == abi::k_stuck && r.time_ns >= long_start) reports.push_back(r.value / loop::ms);
+            check("a 5 s scope is reported at 100 ms, 1 s and 5 s", reports.size() == 3 &&
+                reports[0] >= 100 && reports[0] < 300 && reports[1] >= 1000 && reports[1] < 1300 &&
+                reports[2] >= 5000 && reports[2] < 5300);
+            bool sane = true;
+            for (auto& r : b) sane &= r.kind != abi::k_stuck || r.value < 60000 * loop::ms;
+            check("every stuck record has a plausible age", sane);
 
             // Idle: only heartbeats, rounds 2 s apart.
             pump(events, 9000);
@@ -180,6 +184,20 @@ int main(int argc, char **argv)
                 values[values.size() - 1] > 1900 && values[values.size() - 2] > 1900 && values[values.size() - 3] > 1900);
             check("heartbeat scopes are diagnostic: they do not keep the watchdog fast",
                 json_number(stats, "heartbeats_acked") > 0);
+        }
+
+        if (timing)
+        {
+            // Overhead of a scope: an outermost scope with a nested one inside, a million times.
+            auto t0 = loop::now_ns();
+            for (int i = 0; i < 1000000; i++)
+            {
+                SCOTTLAND_LOOP_SCOPE(frame_find_node_at);
+                SCOTTLAND_LOOP_SCOPE(goo_sample_at);
+            }
+            auto per = double(loop::now_ns() - t0) / 1000000;
+            printf("measured: an outermost scope with one nested scope costs %.0f ns\n", per);
+            check("scope overhead stays under 1 us per outermost+nested pair", per < 1000);
         }
 
         // Paused producer: a slot being written is skipped by every reader.

@@ -426,6 +426,9 @@ void monitor_t::watch()
             record(abi::k_unavailable, 0, now, 0);
         } else
         {
+            // The clock after the sample: a scope that began after an earlier reading would
+            // otherwise have a negative age.
+            now = std::max(now_ns(), last.start);
             if (last.current && now - last.start >= 100 * ms)
             {
                 if (stuck_start != last.start)
