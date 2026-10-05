@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Reload with a spread solve in flight, and with an audition offer showing (final.md section 4:
-part of the headless reload rehearsal). Runs inside a headless session; argv: ARTIFACTS PLUGIN_SO."""
-import importlib.util, json, shutil, sys, time
+"""Reload with a spread solve in flight (final.md section 4: part of the headless reload
+rehearsal). Runs inside a headless session; argv: ARTIFACTS PLUGIN_SO."""
+import importlib.util, shutil, sys, time
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('spread_test_helpers', Path(__file__).with_name('spread-test.py'))
@@ -32,7 +32,7 @@ def alive():
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/window_hold_delay': 500,
         'scottland/window_avoidance_always': False, 'scottland/hint_avoidance_always': False,
-        'scottland/solo_audition_delay': 3000, 'output:HEADLESS-1/mode': '2560x1440@60000'})
+        'output:HEADLESS-1/mode': '2560x1440@60000'})
     time.sleep(1)
     ids = [h.launch(f'Reload{i}') for i in range(10)]
     S = ids[0]
@@ -57,29 +57,7 @@ try:
           str({i: (before[i], after[i]) for i in ids if before[i] != after[i]}))
     h.shot('reload-solve.png')
 
-    # 2. An audition offer showing, mid-drag, when the plugin is swapped: every window is drawn
-    # at its true geometry afterwards (the offer's presentation died with the old plugin).
-    h.setup([(ids[1], 60, 80, 600, 400), (ids[5], 900, 100, 500, 350), (ids[6], 1300, 650, 500, 400),
-             (S, 120, 600, 700, 500)], ids[6])
-    true_before = {i: geometry(i) for i in ids}
-    x1, y1, x2, y2 = h.footprint(S); x, y = (x1 + x2) / 2, (y1 + y2) / 2
-    h.pointer(x, y); time.sleep(.1); h.key('LEFTMETA', True); h.button(True); time.sleep(.1)
-    for i in range(1, 21): h.pointer(x + (1280 - x) * i / 20, y + (700 - y) * i / 20); time.sleep(.02)
-    time.sleep(3.4)
-    check(wait(lambda: spread()['audition']['offered'], 2, 'offer'), 'reload: the offer shows before the swap')
-    reload()
-    h.button(False); h.key('LEFTMETA', False); time.sleep(1)
-    check(alive(), 'reload with an offer showing mid-drag: the session survives')
-    h.settle(ids)
-    others = [i for i in ids if i != S]
-    check(all(geometry(i) == true_before[i] for i in others), 'reload: no offered move was committed',
-          str({i: (true_before[i], geometry(i)) for i in others if geometry(i) != true_before[i]}) + ' moves: ' + json.dumps((spread()['last'] or {}).get('moves')))
-    drawn = {i: h.shown(i) for i in others}
-    off = {i: (drawn[i], h.footprint(i)) for i in others if max(abs(a - b) for a, b in zip(drawn[i], h.footprint(i))) > 1.5}
-    check(not off, 'reload: every window is drawn at its true geometry (no leftover offer offsets)', str(off))
-    h.shot('reload-offer.png')
-
-    # 3. The new plugin solos normally.
+    # 2. The new plugin solos normally.
     ipc('scottland/spread-state', {'slow': False})
     h.setup(scene, S)
     n = spread()['solves']

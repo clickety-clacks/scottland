@@ -1098,9 +1098,8 @@
             << ";anchor:" << (focused ? focused->get_id() : 0) << ";live:" << live
             << ";text:" << hints_palette.text_scale;
         for (auto [id, geometry] : pair_anchors) signature << ";pair:" << id;
-        // Spread holds still for peeking too: the solo window, and the windows an audition shows.
+        // Spread holds still for peeking too: the solo window.
         if (solo_anchor) signature << ";solo:" << solo_anchor->first;
-        for (const auto& actor : audition.actors) signature << ";audition:" << actor.id;
         auto current_signature = signature.str();
         auto solve_now = std::chrono::steady_clock::now();
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
@@ -1222,9 +1221,8 @@
                         else { input.zone_x1 = width / 2 + center_half + .5; input.zone_x2 = width - rail; }
                         input.center_y1 = area.y; input.center_y2 = area.y + area.height;
                         // Focused and paired windows (WK36) are fixed: others peek around them. So
-                        // are the solo window and the windows a solo audition shows (docs/spread.md).
-                        input.anchored = view == focused || pair_anchored(view) || solo_anchored(view) ||
-                            audition_holds(view);
+                        // is the solo window (docs/spread.md).
+                        input.anchored = view == focused || pair_anchored(view) || solo_anchored(view);
                         input.full_hint = hint_size(view);
                         input.minimum_hint = 48 * text;
                         input.target = visual.target;
@@ -1809,10 +1807,8 @@
             // Whether the window holds still for avoidance as a pair member (WK36).
             item["pair_anchored"] = std::any_of(pair_anchors.begin(), pair_anchors.end(),
                 [&] (auto& anchor) { return anchor.first == e.id; });
-            // ... or as the solo window, or as a window a solo audition shows (docs/spread.md).
+            // ... or as the solo window (docs/spread.md).
             item["solo_anchored"] = solo_anchor && solo_anchor->first == e.id;
-            item["audition_held"] = std::any_of(audition.actors.begin(), audition.actors.end(),
-                [&] (auto& actor) { return actor.id == e.id; });
             item["target_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.x : 0.0;
             item["target_dy"] = hint_visuals.count(e.id) ? hint_visuals[e.id].target.y : 0.0;
             item["label_dx"] = hint_visuals.count(e.id) ? hint_visuals[e.id].label_offset.x : 0.0;

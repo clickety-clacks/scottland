@@ -2,20 +2,13 @@
 // The solver is pure (spread.hpp). This bridge builds its snapshot from the desktop model, runs it
 // in measured slices on the event loop (spread-job.hpp) until the main-loop worker takes the job
 // over, and applies a result: committed outright for a hint hold or three-finger hold on the
-// focused window (WK35), or offered as a presentation layer while a drag rests in the center and
-// committed by the drop (the audition). Nothing else ever spreads (P4).
-
-    wf::option_wrapper_t<int> solo_audition_delay{"scottland/solo_audition_delay"};
-    wf::option_wrapper_t<double> solo_audition_hotspot{"scottland/solo_audition_hotspot"};
+// focused window (WK35). Nothing else ever spreads (P4).
 
     // P8: 2 ms of solving per slice, then the event loop runs (input, frames) for at least 1 ms.
     // A keyboard solo commits the best checkpoint after 12 ms of solving or 30 ms of waiting.
     static constexpr auto SPREAD_SLICE = std::chrono::microseconds(2000);
     static constexpr auto SOLO_COMPUTE = std::chrono::milliseconds(12);
     static constexpr auto SOLO_WALL = std::chrono::milliseconds(30);
-    static constexpr double AUDITION_SETTLE = 8;       // stillness radius, logical px (final.md 3)
-    static constexpr int AUDITION_PRECOMPUTE_MS = 1000;
-    static constexpr int AUDITION_EASE_MS = 240;
 
     // CPU time of the compositor's main thread: what Scottland itself spent, apart from any
     // time the machine gave to other processes (wall-clock figures on a shared host include it).
@@ -256,8 +249,8 @@
     }
 
     // ------------------------------------------------------------------ committing moves
-    // One transaction: every moved window glides from where it is drawn now (mid-glide or
-    // mid-audition included) to its destination and destination scale. Pins follow the result
+    // One transaction: every moved window glides from where it is drawn now (mid-glide
+    // included) to its destination and destination scale. Pins follow the result
     // (cleared unless kept); memories are recorded for moved windows only.
     void commit_spread_moves(const std::vector<scottland::spread::move_t>& moves)
     {
@@ -274,9 +267,9 @@
             {
                 auto drawn = frame->screen_rect();
                 from = {(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
-                from_scale = frame->scale_x * frame->drag_layout_scale;
+                from_scale = frame->scale_x;
             }
-            set_drag_layout_offset(view, 0, 0, 1);
+            set_drag_layout_offset(view, 0, 0);
             keyboard_motions.erase(m.id);
             stop_glide(view);
             pin_scale(view, m.pin);
@@ -398,7 +391,7 @@
             {
                 auto drawn = frame->screen_rect();
                 from = {(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
-                from_scale = frame->scale_x * frame->drag_layout_scale;
+                from_scale = frame->scale_x;
             }
             keyboard_motions.erase(id);
             stop_glide(window);
@@ -418,430 +411,6 @@
         publish_model();
     }
 
-    // ------------------------------------------------------------------ the drag audition
-    struct audition_actor_t
-    {
-        uint64_t id = 0;
-        double ox = 0, oy = 0, os = 1;  // true center and scale (never an animation sample)
-        double tx = 0, ty = 0, ts = 1;  // where the solve puts it
-    };
-    struct audition_t
-    {
-        bool watching = false;              // a drag that may audition: stillness is being timed
-        wf::pointf_t still{0, 0};           // where the pointer stopped (layout coordinates)
-        std::chrono::steady_clock::time_point still_since;
-        wf::output_t *output = nullptr;
-        uint64_t dragged = 0;
-        bool solving = false, offered = false;
-        wf::pointf_t anchor{0, 0};          // pointer when the solve was armed (layout)
-        std::string signature;              // everything but the dragged window
-        wf::dimensions_t dragged_size{0, 0};  // the dragged window's size when it was armed
-        double radius = 50;                 // the hotspot radius the reservation was built with
-        scottland::spread::box reserved;
-        std::optional<scottland::spread::result_t> result;
-        std::string cache_key;              // an identical snapshot and reservation reuse it
-        std::optional<scottland::spread::result_t> cached;
-        std::vector<audition_actor_t> actors;
-        struct suspended_t { uint64_t id; glide_t glide; std::chrono::steady_clock::time_point at; };
-        std::vector<suspended_t> suspended;   // glides paused under the offer
-        double progress = 0, ease_from = 0, ease_to = 0;
-        std::chrono::steady_clock::time_point ease_started;
-        unsigned offers = 0, denials = 0, accepts = 0;
-        std::string last_event;
-    } audition;
-    wf::wl_timer<false> audition_timer;
-    wf::wl_timer<true> audition_tick;
-    wf::wl_timer<true> audition_watch;  // validity while an offer shows, with or without motion
-
-    double audition_hotspot() const { return std::clamp((double)solo_audition_hotspot, 8.0, 400.0); }
-
-    bool audition_holds(wayfire_toplevel_view view) const
-    {
-        if (!view || audition.actors.empty()) return false;
-        return std::any_of(audition.actors.begin(), audition.actors.end(),
-            [&] (const auto& a) { return a.id == view->get_id(); });
-    }
-
-    // Draw the audition-owned layer at `progress` (0: true layout, 1: the offered one).
-    // Draw the audition-owned layer at `progress` (0: as it is, 1: the offered layout). It is
-    // computed every frame against what lies under it (the true geometry plus any glide or
-    // scale animation), so at 1 each window is drawn exactly at its offered spot and scale
-    // whatever runs underneath, and easing back ends on the live state with no jump.
-    void audition_present()
-    {
-        double p = audition.progress;
-        for (const auto& a : audition.actors)
-        {
-            auto view = wf::toplevel_cast(view_by_id(a.id));
-            auto frame = view ? frame_of(view, false) : nullptr;
-            if (!frame) continue;
-            auto g = view->get_geometry();
-            double ux = g.x + g.width / 2.0 + frame->translation_x, uy = g.y + g.height / 2.0 + frame->translation_y;
-            double us = std::max(0.05, (double)frame->scale_x);
-            set_drag_layout_offset(view, p * (a.tx - ux), p * (a.ty - uy), (us + p * (a.ts - us)) / us);
-        }
-    }
-
-    bool audition_step()
-    {
-        double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-            audition.ease_started).count();
-        double t = std::clamp(elapsed / AUDITION_EASE_MS, 0.0, 1.0);
-        double eased = t * t * (3 - 2 * t);
-        audition.progress = audition.ease_from + (audition.ease_to - audition.ease_from) * eased;
-        audition_present();
-        if (t < 1 || (audition.ease_to > 0 && audition.offered)) return true;  // keep tracking while shown
-        if (audition.ease_to == 0)
-        {
-            for (const auto& a : audition.actors) set_drag_layout_offset(wf::toplevel_cast(view_by_id(a.id)), 0, 0, 1);
-            audition.actors.clear();
-            refresh_layout_avoidance();
-        }
-        return false;
-    }
-
-    // Resume glides the offer suspended, from the sample where they stopped, to their own
-    // (unchanged) destination.
-    void audition_resume_glides()
-    {
-        for (auto& paused : audition.suspended)
-        {
-            auto view = wf::toplevel_cast(view_by_id(paused.id));
-            if (!view || !view->is_mapped() || glides.count(paused.id)) continue;
-            auto glide = paused.glide;
-            if (glide.cycle)
-                glide.started += std::chrono::steady_clock::now() - paused.at;
-            else if (auto frame = frame_of(view, false))
-            {
-                glide.dx = frame->translation_x; glide.dy = frame->translation_y;
-                glide.progress.animate(0.0, 1.0);
-            }
-            glides[paused.id] = glide;
-            if (!glide_tick.is_connected()) glide_tick.set_timeout(8, [=] () { return step_glides(); });
-        }
-        audition.suspended.clear();
-    }
-
-    void audition_ease(double to)
-    {
-        audition.ease_from = audition.progress;
-        audition.ease_to = to;
-        audition.ease_started = std::chrono::steady_clock::now();
-        if (!audition_tick.is_connected()) audition_tick.set_timeout(8, [=] () { return audition_step(); });
-    }
-
-    // Stop solving and forget the result (the windows return if an offer was showing).
-    void audition_reset(const char *why)
-    {
-        if (audition.solving) spread_cancel();
-        audition.solving = false;
-        audition.result.reset();
-        audition_timer.disconnect();
-        if (audition.offered)
-        {
-            audition.offered = false;
-            ++audition.denials;
-            audition.last_event = why;
-            LOGI("scottland: solo audition refused (", why, "): ", audition.actors.size(), " windows return");
-            audition_resume_glides();
-            audition_ease(0);
-        }
-    }
-
-    // The drag ended or can no longer audition: nothing is offered or pending.
-    void audition_end(const char *why)
-    {
-        audition_reset(why);
-        audition.watching = false;
-        audition.output = nullptr;
-        audition.dragged = 0;
-    }
-
-    void audition_restart(wf::pointf_t pointer)
-    {
-        audition.still = pointer;
-        audition.still_since = std::chrono::steady_clock::now();
-        audition_schedule();
-    }
-
-    void audition_schedule()
-    {
-        int delay = solo_audition_delay;
-        if (delay <= 0 || !audition.watching || audition.offered) return;
-        int precompute = std::min(AUDITION_PRECOMPUTE_MS, delay / 3);
-        int elapsed = int(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-            audition.still_since).count());
-        int next = (!audition.solving && !audition.result) ? precompute : delay;
-        audition_timer.set_timeout(std::max(1, next - elapsed), [=] () { audition_due(); });
-    }
-
-    // The dragged window's drawn center, output-local, and whether it may audition now.
-    std::optional<wf::pointf_t> audition_center(wayfire_toplevel_view view, wf::output_t *output)
-    {
-        if (!view || !output || view->get_output() != output || is_widget(view) || view->pending_fullscreen()) return {};
-        if (model.drag.morph && model.drag.morph->dragged.lock().get() == view.get() && model.drag.morph->toward) return {};
-        if (shift_held()) return {};  // a Shift drag keeps its scale (L31): no audition
-        auto r = scene_rectangle(view, output);
-        wf::pointf_t c{(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2};
-        if (place_at(c.x, output->get_relative_geometry().width).zone != zone_t::center) return {};
-        return c;
-    }
-
-    // Drag motion (on_drag_motion): time the pause, and refuse an offer when the pointer leaves
-    // the hotspot or the window leaves the center zone.
-    void audition_motion(wayfire_toplevel_view view, wf::output_t *output, wf::pointf_t pointer)
-    {
-        if (solo_audition_delay <= 0) { audition_end("off"); return; }
-        auto center = audition_center(view, output);
-        if (audition.offered)
-        {
-            if (!center || view->get_id() != audition.dragged || output != audition.output)
-            {
-                audition_reset("left the center zone");
-                if (center) audition_restart(pointer);
-                return;
-            }
-            if (std::hypot(pointer.x - audition.anchor.x, pointer.y - audition.anchor.y) > audition.radius)
-            {
-                audition_reset("left the hotspot");
-                audition_restart(pointer);
-            } else if (spread_signature(output, audition.dragged) != audition.signature)
-            {
-                audition_reset("the desktop changed");  // e.g. zone settings: no signal reaches here
-                audition_restart(pointer);
-            }
-            return;
-        }
-        if (!center) { audition_end("not eligible"); return; }
-        if (!audition.watching || audition.output != output || audition.dragged != view->get_id() ||
-            std::hypot(pointer.x - audition.still.x, pointer.y - audition.still.y) > AUDITION_SETTLE)
-        {
-            audition_reset("moved");
-            audition.watching = true;
-            audition.output = output;
-            audition.dragged = view->get_id();
-            audition_restart(pointer);
-        }
-    }
-
-    void audition_due()
-    {
-        auto view = drag->view ? wf::toplevel_cast(drag->view) : nullptr;
-        auto output = drag->current_output;
-        if (!audition.watching || !view || view->get_id() != audition.dragged || output != audition.output)
-        { audition_end("drag ended"); return; }
-        auto center = audition_center(view, output);
-        if (!center) { audition_end("not eligible"); return; }
-        int delay = solo_audition_delay;
-        int elapsed = int(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-            audition.still_since).count());
-        if (!audition.solving && !audition.result)
-        {
-            // Arm: freeze the anchor and reserve the union of the window's full-scale footprints
-            // over every position the hotspot allows, so any accepted drop is honest (P14).
-            audition.anchor = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
-            auto g = view->get_geometry();
-            double r = audition.radius = audition_hotspot();  // the reservation's radius, fixed for this offer
-            audition.reserved = {center->x - g.width / 2.0 - r, center->y - g.height / 2.0 - r,
-                center->x + g.width / 2.0 + r, center->y + g.height / 2.0 + r};
-            audition.signature = spread_signature(output, audition.dragged);
-            audition.dragged_size = {g.width, g.height};
-            std::ostringstream key;
-            key << audition.signature << '|' << audition.reserved.x0 << ',' << audition.reserved.y0 << ',' <<
-                audition.reserved.x1 << ',' << audition.reserved.y1;
-            if (audition.cached && audition.cache_key == key.str())
-            {
-                audition.result = audition.cached;
-            } else if (auto snapshot = spread_snapshot(output, audition.dragged, audition.reserved))
-            {
-                audition.solving = true;
-                auto wall = std::chrono::milliseconds(std::max(1, delay - elapsed));
-                spread_start(std::move(*snapshot), "audition", std::chrono::nanoseconds(0), wall,
-                    [=, k = key.str()] (const scottland::spread::result_t& result) {
-                        audition.solving = false;
-                        audition.result = result;
-                        audition.cache_key = k;
-                        audition.cached = result;
-                    });
-            }
-        }
-        if (elapsed >= delay)
-        {
-            if (audition.solving) spread_deliver();  // the best checkpoint so far
-            audition_offer();
-            return;
-        }
-        audition_schedule();
-    }
-
-    void audition_offer()
-    {
-        if (!audition.result || audition.offered) return;
-        const auto& result = *audition.result;
-        if (spread_signature(audition.output, audition.dragged) != audition.signature)
-        {
-            audition.result.reset();
-            audition.still_since = std::chrono::steady_clock::now();
-            audition_schedule();
-            return;
-        }
-        using S = scottland::spread::status_t;
-        if (result.moves.empty() || result.status == S::unchanged_budget || result.status == S::unchanged_exhausted ||
-            result.status == S::unavailable)
-        {
-            LOGI("scottland: solo audition: nothing to offer (", scottland::spread::status_name(result.status), ")");
-            return;
-        }
-        // A window still coasting or gliding away is changing its true state: not an offer yet.
-        for (const auto& m : result.moves)
-        {
-            auto found = glides.find(m.id);
-            if (keyboard_motions.count(m.id) || (found != glides.end() && found->second.outward))
-            {
-                audition.result.reset();
-                audition.still_since = std::chrono::steady_clock::now();
-                audition_schedule();
-                return;
-            }
-        }
-        if (!audition.actors.empty()) for (const auto& a : audition.actors)
-            set_drag_layout_offset(wf::toplevel_cast(view_by_id(a.id)), 0, 0, 1);
-        audition.actors.clear();
-        audition_resume_glides();
-        for (const auto& m : result.moves)
-        {
-            auto view = wf::toplevel_cast(view_by_id(m.id));
-            if (!view || !view->is_mapped()) continue;
-            auto g = view->get_geometry();
-            audition_actor_t actor{m.id, g.x + g.width / 2.0, g.y + g.height / 2.0,
-                std::clamp(scale_for(view), 0.05, 1.0), m.cx, m.cy, m.scale};
-            // A running glide is suspended at its current sample (true destination kept) and the
-            // offer starts from what is drawn, so the offered spot is exact (final.md section 3).
-            auto frame = frame_of(view, false);
-            auto glide = glides.find(m.id);
-            if (frame && glide != glides.end())
-            {
-                actor.ox += frame->translation_x;
-                actor.oy += frame->translation_y;
-                actor.os = std::max(0.05, (double)frame->scale_x);
-                audition.suspended.push_back({m.id, glide->second, std::chrono::steady_clock::now()});
-                glides.erase(glide);
-            }
-            audition.actors.push_back(actor);
-        }
-        audition.progress = 0;
-        audition.offered = true;
-        ++audition.offers;
-        audition.last_event = "offered";
-        LOGI("scottland: solo audition offered: ", audition.actors.size(), " windows move (",
-            scottland::spread::status_name(result.status), ")");
-        audition_ease(1);
-        refresh_layout_avoidance();
-        audition_watch.set_timeout(100, [=] () { return audition_valid_tick(); });
-    }
-
-    // The offer stays only while it is still the offer it was: the same dragged window, size,
-    // output and drag mode (no Shift), and an unchanged desktop and zone configuration. Checked
-    // every 100 ms as well as on motion, since a key press or a setting moves no pointer.
-    bool audition_valid_tick()
-    {
-        if (!audition.offered) return false;
-        auto view = drag->view ? wf::toplevel_cast(drag->view) : nullptr;
-        const char *why = nullptr;
-        if (!view || view->get_id() != audition.dragged || drag->current_output != audition.output) why = "the drag changed";
-        else if (shift_held()) why = "Shift";
-        else if (audition_hotspot() != audition.radius) why = "the hotspot setting changed";
-        else if (view->get_geometry().width != audition.dragged_size.width ||
-            view->get_geometry().height != audition.dragged_size.height) why = "the window was resized";
-        else if (spread_signature(audition.output, audition.dragged) != audition.signature) why = "the desktop changed";
-        if (!why) return true;
-        audition_reset(why);
-        if (view) audition_restart(model.drag.input_override.value_or(wf::get_core().get_cursor_position()));
-        return false;
-    }
-
-    // The drop (on_drag_done): inside the hotspot with the window still in the center zone, the
-    // offer is accepted and committed where it stands; anything else refuses it. True: accepted
-    // (the dropped window stays exactly where it was dropped, so it does not coast).
-    bool audition_drop(wayfire_toplevel_view main, wf::pointf_t released)
-    {
-        // Still the offer it was: inside the hotspot, not a Shift drop (L31), nothing changed since.
-        bool accept = audition.offered && main && main->get_id() == audition.dragged && main->get_output() == audition.output &&
-            std::hypot(released.x - audition.anchor.x, released.y - audition.anchor.y) <= audition.radius &&
-            audition_hotspot() == audition.radius &&
-            !shift_held() && spread_signature(audition.output, audition.dragged) == audition.signature &&
-            main->get_geometry().width == audition.dragged_size.width &&
-            main->get_geometry().height == audition.dragged_size.height;
-        if (accept)
-        {
-            // Defensively: the dropped window, at full scale, lies inside the reservation the
-            // offer was solved for (P14: the drop stays put, so the room must be there).
-            auto g = main->get_geometry();
-            const auto& rv = audition.reserved;
-            accept = place_at(g.x + g.width / 2.0, main->get_output()->get_relative_geometry().width).zone == zone_t::center &&
-                g.x >= rv.x0 - 0.5 && g.y >= rv.y0 - 0.5 && g.x + g.width <= rv.x1 + 0.5 && g.y + g.height <= rv.y1 + 0.5;
-        }
-        if (!accept) { audition_end("dropped outside the offer"); return false; }
-        ++audition.accepts;
-        audition.last_event = "accepted";
-        LOGI("scottland: solo audition accepted: ", audition.result->moves.size(), " windows move");
-        auto moves = audition.result->moves;
-        audition.suspended.clear();  // the commit rebases each window from where it is drawn
-        audition_tick.disconnect();
-        audition.actors.clear();
-        audition.offered = false;
-        audition_end("accepted");
-        commit_spread_moves(moves);
-        wf::get_core().default_wm->focus_raise_view(main);
-        anchor_solo(main);
-        refresh_layout_avoidance();
-        publish_model();
-        return true;
-    }
-
-    // A client mapped, closed or resized, or the zones changed: an offer ends as a refusal (an
-    // independent change is never rolled back) and the pause is timed again.
-    void audition_invalidate(wayfire_view view, bool resized = false)
-    {
-        if (!audition.watching || (!audition.solving && !audition.result && !audition.offered)) return;
-        // The dragged window moving is the drag itself; resizing it voids the reservation.
-        if (view && view->get_id() == audition.dragged && !resized) return;
-        audition_reset("the desktop changed");
-        audition.still_since = std::chrono::steady_clock::now();
-        audition_schedule();
-    }
-
-    wf::json_t audition_state()
-    {
-        wf::json_t a;
-        a["watching"] = audition.watching;
-        a["solving"] = audition.solving;
-        a["offered"] = audition.offered;
-        a["has_result"] = audition.result.has_value();
-        a["anchor"] = wf::json_t::array();
-        a["anchor"].append(audition.anchor.x); a["anchor"].append(audition.anchor.y);
-        a["reserved"] = wf::json_t::array();
-        for (double v : {audition.reserved.x0, audition.reserved.y0, audition.reserved.x1, audition.reserved.y1})
-            a["reserved"].append(v);
-        a["progress"] = audition.progress;
-        a["offers"] = (int64_t)audition.offers;
-        a["denials"] = (int64_t)audition.denials;
-        a["accepts"] = (int64_t)audition.accepts;
-        a["last_event"] = audition.last_event;
-        a["suspended"] = (int64_t)audition.suspended.size();
-        wf::json_t actors = wf::json_t::array();
-        for (const auto& x : audition.actors)
-        {
-            wf::json_t item;
-            item["id"] = (int64_t)x.id;
-            item["from"] = wf::json_t::array(); item["from"].append(x.ox); item["from"].append(x.oy); item["from"].append(x.os);
-            item["to"] = wf::json_t::array(); item["to"].append(x.tx); item["to"].append(x.ty); item["to"].append(x.ts);
-            actors.append(item);
-        }
-        a["actors"] = actors;
-        return a;
-    }
-
     wf::ipc::method_callback spread_state = [=] (wf::json_t data) -> wf::json_t
     {
         if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("slow") && data["slow"].is_bool())
@@ -852,7 +421,6 @@
         reply["running_slices"] = spread_run ? (int64_t)spread_run->job->slices : (int64_t)0;
         reply["solves"] = (int64_t)spread_solves;
         reply["cancel_ms"] = spread_cancel_ms;
-        reply["audition"] = audition_state();
         return reply;
     };
 
@@ -864,11 +432,5 @@
     void fini_spread()
     {
         ipc_repo->unregister_method("scottland/spread-state");
-        audition_end("unloading");  // refused: only the user's drop accepts (P5)
-        audition_timer.disconnect();
-        audition_tick.disconnect();
-        audition_watch.disconnect();
-        for (const auto& a : audition.actors) set_drag_layout_offset(wf::toplevel_cast(view_by_id(a.id)), 0, 0, 1);
-        audition.actors.clear();
         spread_cancel();  // joins nothing: the job runs only inside step(); this unwinds it
     }

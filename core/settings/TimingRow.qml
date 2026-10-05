@@ -10,8 +10,8 @@ FocusScope {
   property real opening:300
   property bool doubleTap:false
   property bool hintHold:false
-  // A row for another range or unit (the solo audition's pause and hotspot): the defaults are the
-  // 1 ms to 3 s timing rows above. 0 as minimum lets a setting be turned off.
+  // A row for another range or unit: the defaults are the 1 ms to 3 s timing rows. 0 as minimum
+  // lets a setting be turned off.
   property real minimum:1
   property real maximum:3000
   property real step:10

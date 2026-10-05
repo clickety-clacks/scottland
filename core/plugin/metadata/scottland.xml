@@ -185,20 +185,6 @@
             <min>1</min>
             <max>3000</max>
         </option>
-        <option name="solo_audition_delay" type="int">
-            <_short>Solo audition pause (ms)</_short>
-            <_long>While dragging a window, resting it in the center zone this long shows the solo: the other center windows move to the periphery, which makes room for them. Dropping the window there accepts it; moving on refuses it and every window returns exactly. 0 turns the audition off.</_long>
-            <default>3000</default>
-            <min>0</min>
-            <max>10000</max>
-        </option>
-        <option name="solo_audition_hotspot" type="double">
-            <_short>Solo audition hotspot (pt)</_short>
-            <_long>Once the solo is shown, moving the pointer this far from where it rested refuses it. Smaller movements are not a refusal, and a drop anywhere within this distance is accepted exactly where it is dropped.</_long>
-            <default>50</default>
-            <min>8</min>
-            <max>400</max>
-        </option>
         <option name="cycle_overshoot" type="double">
             <_short>Hint cycle overshoot (%)</_short>
             <_long>Elastic settlement of position and scale when a keyboard hint moves a window. Higher gives a larger overshoot; zero keeps the original motion. Screen edges limit the overshoot. Drags, coasts and widget morphs are unaffected.</_long>
