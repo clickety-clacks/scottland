@@ -79,13 +79,15 @@ try:
     palette = runtime / f'{display}.palette.json'
     old = palette.read_text() if palette.exists() else None
     data = json.loads(old) if old else {}
-    data['accent'] = '#12ab34'
+    data['accent'] = '#12ab34'  # a partial palette must not take the compositor down either
     stats(True)
     tmp = palette.with_suffix('.tmp'); tmp.write_text(json.dumps(data)); os.replace(tmp, palette)
     time.sleep(.5)
     check('a palette file change is read once, when it changes', scope(stats(), 'palette_read')['calls'] == 1, stats()['scopes'].get('palette_read'))
     if old is not None:
         tmp.write_text(old); os.replace(tmp, palette)
+    else:
+        palette.unlink(missing_ok=True)  # nothing of this test outlives its session
 
     # 2.4: visual proximity runs once per frame, not per pointer event.
     stats(True)

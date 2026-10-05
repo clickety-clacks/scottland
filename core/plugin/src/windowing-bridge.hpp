@@ -118,11 +118,17 @@
             scottland::windowing::hint_rgb{0.847, 0.871, 0.914};
         wf::json_t colors;
         if (palette_text.empty() || wf::json_t::parse_string(palette_text, colors) || !colors.is_object()) return;
-        hints_reduced_motion = colors.has_member("reduced_motion") && colors["reduced_motion"].as_bool();
-        if (colors["scheme"].as_string() == "light") hints_palette.light = true;
-        else if (colors["scheme"].as_string() == "dark") hints_palette.light = false;
+        // Any field may be missing or mistyped: a palette file never takes the compositor down
+        // (wf::json_t asserts on a wrong-typed read).
+        auto text = [&] (const char *name) {
+            return colors.has_member(name) && colors[name].is_string() ? colors[name].as_string() : std::string();
+        };
+        hints_reduced_motion = colors.has_member("reduced_motion") && colors["reduced_motion"].is_bool() &&
+            colors["reduced_motion"].as_bool();
+        if (text("scheme") == "light") hints_palette.light = true;
+        else if (text("scheme") == "dark") hints_palette.light = false;
         auto read = [&] (const char *name, scottland::windowing::hint_rgb& color) {
-            auto value = colors[name].as_string();
+            auto value = text(name);
             if (value.size() != 7 || value[0] != '#' ||
                 value.find_first_not_of("0123456789abcdefABCDEF", 1) != std::string::npos) return;
             unsigned rgb = std::stoul(value.substr(1), nullptr, 16);
@@ -316,18 +322,20 @@
     static scottland::windowing::window_memory read_memory(wf::json_t r)
     {
         scottland::windowing::window_memory memory;
-        memory.hint_slot = r["slot"].as_int();
-        for (size_t z = 0; z < memory.positions.size(); ++z) if (r["positions"][z]["set"].as_bool())
+        memory.hint_slot = (unsigned)json_int(r, "slot");
+        auto positions = json_array(r, "positions");
+        for (size_t z = 0; z < memory.positions.size() && z < positions.size(); ++z)
         {
-            auto spot = r["positions"][z];
+            auto spot = positions[z];
+            if (!json_bool(spot, "set")) continue;
             std::optional<double> pin;
             if (spot.has_member("pin") && (spot["pin"].is_double() || spot["pin"].is_int()))
-                pin = spot["pin"].is_double() ? spot["pin"].as_double() : double(spot["pin"].as_int());
+                pin = json_double(spot, "pin");
             scottland::windowing::remember_spot(memory, scottland::windowing::zone(z),
-                {spot["x"].as_double(), spot["y"].as_double()}, pin);
+                {json_double(spot, "x"), json_double(spot, "y")}, pin);
         }
         // remember_spot tracks the side as it goes; the record's own side is authoritative.
-        memory.last_side = r["side"].as_int();
+        memory.last_side = (int)json_int(r, "side", memory.last_side);
         return memory;
     }
     #include "keyboard-motion.hpp"

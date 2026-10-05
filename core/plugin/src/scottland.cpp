@@ -127,6 +127,39 @@ struct custom_event_signal_t
 
 namespace
 {
+// Reading JSON from files Scottland does not fully control (a handover file, a palette):
+// wf::json_t asserts on a wrong-typed read, which aborts the compositor; these never do.
+int64_t json_int(wf::json_t o, const char *key, int64_t fallback = 0)
+{
+    if (!o.is_object() || !o.has_member(key)) return fallback;
+    auto v = o[key];
+    return v.is_int64() ? v.as_int64() : v.is_int() ? v.as_int() : v.is_uint() ? int64_t(v.as_uint()) :
+        v.is_double() ? int64_t(v.as_double()) : fallback;
+}
+double json_double(wf::json_t o, const char *key, double fallback = 0)
+{
+    if (!o.is_object() || !o.has_member(key)) return fallback;
+    auto v = o[key];
+    return v.is_double() ? v.as_double() : v.is_int64() ? double(v.as_int64()) : v.is_int() ? double(v.as_int()) : fallback;
+}
+bool json_bool(wf::json_t o, const char *key, bool fallback = false)
+{
+    return o.is_object() && o.has_member(key) && o[key].is_bool() ? o[key].as_bool() : fallback;
+}
+std::string json_string(wf::json_t o, const char *key, const std::string& fallback = "")
+{
+    return o.is_object() && o.has_member(key) && o[key].is_string() ? o[key].as_string() : fallback;
+}
+wf::json_t json_array(wf::json_t o, const char *key)
+{
+    if (o.is_object() && o.has_member(key) && o[key].is_array())
+    {
+        wf::json_t value = o[key];
+        return value;
+    }
+    return wf::json_t::array();
+}
+
 /** Every command Scottland starts in the compositor process forks it (an ML4 exception, D3). */
 pid_t run_command(const std::string& command)
 {
@@ -2931,6 +2964,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         bool new_format = entries.is_object() && entries.has_member("format");
+        if (entries.is_array()) entries = wf::json_t{};  // a pre-model format: nothing to trust
         if (new_format)
         {
             auto number = [] (const wf::json_t& v) -> int64_t { return v.is_int64() ? v.as_int64() : v.is_int() ? v.as_int() : -1; };
@@ -2957,52 +2991,55 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::vector<handover_entry_t> links;
         try
         {
-            model.version = std::max(model.version, (uint64_t)entries["version"].as_int64());
-            model.collapsed = entries["collapsed"].as_bool();
-            if (entries.has_member("hint_width")) model.hint_width = std::clamp(entries["hint_width"].as_int(), 1, 7);
-            auto windows = entries["windows"];
+            model.version = std::max(model.version, (uint64_t)json_int(entries, "version"));
+            model.collapsed = json_bool(entries, "collapsed");
+            if (entries.has_member("hint_width")) model.hint_width = std::clamp<int>(json_int(entries, "hint_width", 1), 1, 7);
+            auto windows = json_array(entries, "windows");
             for (size_t i = 0; i < windows.size(); i++)
             {
                 auto entry = windows[i];
-                auto found = model.windows.find((uint64_t)entry["id"].as_int64());
+                auto found = model.windows.find((uint64_t)json_int(entry, "id"));
                 if (found == model.windows.end())
                 {
                     continue;
                 }
-                found->second.scale = entry["scale"].as_double();
-                if (entry.has_member("placement")) found->second.placement = read_memory(entry["placement"]);
-                if (entry.has_member("pending_rail")) found->second.pending_rail = scottland::windowing::point{
-                    entry["pending_rail"]["x"].as_double(), entry["pending_rail"]["y"].as_double()};
+                found->second.scale = json_double(entry, "scale", found->second.scale);
+                if (entry.has_member("placement") && entry["placement"].is_object())
+                    found->second.placement = read_memory(entry["placement"]);
+                if (entry.has_member("pending_rail") && entry["pending_rail"].is_object())
+                    found->second.pending_rail = scottland::windowing::point{
+                        json_double(entry["pending_rail"], "x"), json_double(entry["pending_rail"], "y")};
                 if (entry.has_member("pinned_scale") && entry["pinned_scale"].is_double())
                     found->second.pinned_scale = scottland::windowing::valid_pin(entry["pinned_scale"].as_double());
-                auto sources = entry["attention"];
+                auto sources = json_array(entry, "attention");
                 for (size_t j = 0; j < sources.size(); j++)
                 {
-                    found->second.attention.insert(sources[j].as_string());
+                    if (sources[j].is_string()) found->second.attention.insert(sources[j].as_string());
                 }
             }
 
             // Parse every link into plain values before anything is owned or adopted.
-            auto list = entries["links"];
+            auto list = json_array(entries, "links");
             for (size_t i = 0; i < list.size(); i++)
             {
                 auto entry = list[i];
+                if (!entry.is_object()) continue;
                 handover_entry_t e;
-                e.window = (uint64_t)entry["window"].as_int64();
-                e.widget = (uint64_t)entry["widget"].as_int64();
-                e.pid = entry["pid"].as_int64();
-                e.pidfd = entry.has_member("pidfd") ? (int)entry["pidfd"].as_int64() : -1;
-                e.unit = entry["unit"].as_string();
-                e.rail = entry["rail"].as_string();
-                e.x = entry["x"].as_double();
-                e.y = entry["y"].as_double();
-                e.minimized = entry["minimized"].as_bool();
-                e.touch_drag = entry.has_member("touch_drag") && entry["touch_drag"].as_bool();
-                e.has_desktop = entry.has_member("desktop");
-                e.desktop = e.has_desktop ? entry["desktop"].as_string() : "";
-                e.name = entry.has_member("name") ? entry["name"].as_string() : "";
-                e.icon = entry.has_member("icon") ? entry["icon"].as_string() : "";
-                e.card = entry.has_member("card") && entry["card"].as_bool();
+                e.window = (uint64_t)json_int(entry, "window");
+                e.widget = (uint64_t)json_int(entry, "widget");
+                e.pid = json_int(entry, "pid");
+                e.pidfd = (int)json_int(entry, "pidfd", -1);
+                e.unit = json_string(entry, "unit");
+                e.rail = json_string(entry, "rail", "right");
+                e.x = json_double(entry, "x");
+                e.y = json_double(entry, "y");
+                e.minimized = json_bool(entry, "minimized");
+                e.touch_drag = json_bool(entry, "touch_drag");
+                e.has_desktop = entry.has_member("desktop") && entry["desktop"].is_string();
+                e.desktop = json_string(entry, "desktop");
+                e.name = json_string(entry, "name");
+                e.icon = json_string(entry, "icon");
+                e.card = json_bool(entry, "card");
                 links.push_back(std::move(e));
             }
         } catch (...)
