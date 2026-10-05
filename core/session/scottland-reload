@@ -185,7 +185,9 @@ def main():
             if str(old) != target:
                 old.unlink(missing_ok=True)
         # Integrations restart their own session helpers (reload.d/*, e.g. the adapter's Lua host).
-        for helper in sorted((hooks / "reload.d").glob("*")):
+        # Not in test sessions (unless asked): helpers they start outlive the session's stop.
+        helpers = [] if test_dir and not os.environ.get("SCOTTLAND_TEST_RELOAD_HOOKS") else sorted((hooks / "reload.d").glob("*"))
+        for helper in helpers:
             if helper.is_file() and os.access(helper, os.X_OK):
                 subprocess.run([str(helper)], check=False)
         if shutil.which("notify-send"):
