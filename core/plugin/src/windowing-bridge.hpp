@@ -30,6 +30,8 @@
         scottland::windowing::hint_rgb color{};
     };
     std::map<uint64_t, hint_flash_t> hint_flashes;
+    struct pending_overlay_t { std::vector<wf::scene::node_ptr> badges, outlines; };
+    std::map<wf::output_t*, pending_overlay_t> pending_overlay;  // within one step_hints only
     wf::wl_timer<true> hint_flash_tick;
     struct hint_visual
     {
@@ -1183,8 +1185,7 @@
                 {
                     visual.hint_output = view->get_output();
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
-                    SCOTTLAND_LOOP_SCOPE(hint_add_node);
-                    wf::scene::add_front(view->get_output()->node_for_layer(wf::scene::layer::OVERLAY), visual.hint);
+                    pending_overlay[visual.hint_output].badges.push_back(visual.hint);  // added below, in one update
                     hint_order_dirty = true;
                 }
                 auto anchor = hint_anchor(view);
@@ -1215,17 +1216,11 @@
                     if (!visual.outline)
                     {
                         // Like the hint circles, at the front of the overlay layer: above every
-                        // window and every surface already shown there, so nothing occludes it.
-                        // The circles and flashes on this output are re-raised to stay on top.
-                        auto overlay = output->node_for_layer(wf::scene::layer::OVERLAY);
+                        // window and every surface already shown there, so nothing occludes it,
+                        // and just behind this output's circles and flashes so they stay on top.
                         visual.outline = std::make_shared<scottland::windowing::hint_outline_node>();
                         visual.outline_output = output;
-                        wf::scene::add_front(overlay, visual.outline);
-                        for (auto& [other_id, other] : hint_visuals)
-                            if (other.hint && other.hint_output == output) wf::scene::readd_front(overlay, other.hint);
-                        for (auto& [flash_id, flash] : hint_flashes)
-                            if (flash.node && flash.output == output) wf::scene::readd_front(overlay, flash.node);
-                        hint_order_dirty = true; // WK31: put the re-added circles back in stacking order
+                        pending_overlay[output].outlines.push_back(visual.outline);  // added below
                     }
                     auto r = scene_rectangle(view, output);
                     auto frame = frame_of(view, false);
@@ -1263,6 +1258,33 @@
         // never draws over the front window's centered one. Only the hints' own slots in the
         // overlay layer are reordered; other overlay nodes keep their places. Anything that
         // re-adds a hint node to the overlay sets hint_order_dirty.
+        // New circles go to the front of the overlay and new outlines just behind this
+        // output's circles and flashes, all in one scene update per output: one update per node
+        // (and two more per circle re-raised for each outline) rebuilt every window's render
+        // instances each time, about 200 ms per Window mode tick at 30 windows (ML8).
+        for (auto& [output, pending] : pending_overlay)
+        {
+            SCOTTLAND_LOOP_SCOPE(hint_add_node);
+            auto overlay = output->node_for_layer(wf::scene::layer::OVERLAY);
+            auto children = overlay->get_children();
+            children.insert(children.begin(), pending.badges.begin(), pending.badges.end());
+            size_t at = 0;
+            for (size_t k = 0; k < children.size(); ++k)
+            {
+                bool ours = false;
+                for (auto& [other_id, other] : hint_visuals)
+                    ours |= other.hint && other.hint_output == output && other.hint.get() == children[k].get();
+                for (auto& [flash_id, flash] : hint_flashes)
+                    ours |= flash.node && flash.output == output && flash.node.get() == children[k].get();
+                if (ours) at = k + 1;
+            }
+            children.insert(children.begin() + at, pending.outlines.begin(), pending.outlines.end());
+            overlay->set_children_list(children);
+            wf::scene::update(overlay, wf::scene::update_flag::CHILDREN_LIST);
+            for (auto& node : pending.badges) wf::scene::damage_node(node, node->get_bounding_box());
+            for (auto& node : pending.outlines) wf::scene::damage_node(node, node->get_bounding_box());
+        }
+        pending_overlay.clear();
         if (window_keys.active && std::exchange(hint_order_dirty, false))
             for (auto& [output, ids] : by_output)
             {
