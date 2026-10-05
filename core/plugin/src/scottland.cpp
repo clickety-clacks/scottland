@@ -7193,6 +7193,7 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         if (handed.empty())
         {
             announce_widgets();  // the widget service drops its objects
+            flush_model();       // now: no publication timer outlives this copy
         }
         end_due_processes(true);
         ending_timer.disconnect();
