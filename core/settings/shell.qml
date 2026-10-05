@@ -44,7 +44,8 @@ ShellRoot {
     { name: "goo_overlap_film", hint: "Width of goo over windows behind. Higher covers a wider strip; zero hides the film.", title: "Overlap film", initial: 4, low: 0, high: 20, step: 0.5 },
     { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
     { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },
-    { name: "goo_hover_distance", hint: "How far away a control starts highlighting. Higher responds sooner; zero responds only over it.", title: "Control proximity", initial: 48, low: 0, high: 150, step: 1 }]
+    { name: "goo_hover_distance", hint: "How far away a control starts highlighting. Higher responds sooner; zero responds only over it.", title: "Control proximity", initial: 48, low: 0, high: 150, step: 1 },
+    { name: "goo_dye_strength", hint: "Scales focus, attention and Window mode hint colors in goo and fallback halos. One keeps today's look; higher values strengthen state colors, capped at full opacity. The unfocused neutral edge keeps its separate strength.", title: "Dye strength", initial: 1, low: 0, high: 1.5, step: 0.01 }]
   readonly property var edgeControls: [
     { name: root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark",
       hint: "Gray of an unfocused edge in the active color scheme. Lower is black; higher is white.",
@@ -53,7 +54,7 @@ ShellRoot {
       hint: "How strongly an unfocused gray tint shows on the edge. Zero leaves clear glass; one uses the full tint.",
       title: "Unfocused edge strength", initial: 1, low: 0, high: 1, step: 0.01 }]
   function gooDefaults() {
-    const values = { goo: true, goo_falloff: "", unfocused_edge_tone_light: 0.08,
+    const values = { goo: true, goo_falloff: "", attention_color_family: "theme", unfocused_edge_tone_light: 0.08,
       unfocused_edge_tone_dark: 0.92, unfocused_edge_strength: 1 }
     for (const c of gooControls) values[c.name] = c.initial
     return values
@@ -63,15 +64,15 @@ ShellRoot {
   readonly property bool gooTab: tab === 1
   readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
     resize_impulse:335, resize_friction:608, key_max_velocity:6000,
-    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300,
-    window_avoidance_always:false, window_mode_tint:7})
+    cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300, window_hold_delay:500,
+    window_avoidance_always:false, window_mode_tint:7, solo_audition_delay:3000, solo_audition_hotspot:50})
   property var motionValues: Object.assign({}, motionDefaults)
   readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
     side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
     window_mode_opacity_focused:1,window_mode_opacity_unfocused:1})
   property var opacityValues: Object.assign({},opacityDefaults)
   readonly property var widgetDefaults: ({widget_bounce:0.04,widget_peek_enter_delay:150,
-    widget_peek_leave_delay:100,widget_attention_peek_duration:5000})
+    widget_peek_leave_delay:100,widget_attention_peek_duration:5000,widget_make_room_dwell:350,minimize_hold_delay:300})
   property var widgetValues: Object.assign({},widgetDefaults)
   readonly property var solarDefaults: ({enabled:true,allow_ip:true,location_set:false,latitude:0,longitude:0})
   property var solarValues: Object.assign({},solarDefaults)
@@ -131,8 +132,10 @@ ShellRoot {
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
     resize_impulse:"Resize strength",resize_friction:"Resize deceleration",
     key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", window_mode_tint:"Hint color overlay", alt_hold_delay:"Alt hold timing",
-    window_double_tap_delay:"Double-tap timing", unfocused_edge_tone_light:"Unfocused edge tone (light)",
-    unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength" })
+    window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing", solo_audition_delay:"Solo audition pause",
+    solo_audition_hotspot:"Solo audition hotspot", unfocused_edge_tone_light:"Unfocused edge tone (light)",
+    unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength",
+    attention_color_family:"Attention color family", goo_dye_strength:"Dye strength" })
 
   // The session palette carries theme colors and the desktop's interface font/text scale.
   property var palette: ({})
@@ -261,7 +264,7 @@ ShellRoot {
         for (const key of Object.keys(goo)) {
           if (values[key] !== undefined) goo[key] = values[key]
           else if (key === "goo") goo[key] = root.savedText(key) === "true"
-          else if (key === "goo_falloff") goo[key] = root.savedText(key)
+          else if (typeof goo[key] === "string") goo[key] = root.savedText(key) || goo[key]
           else goo[key] = root.savedValue(key, goo[key])
         }
         root.original = Object.assign({}, root.original, { goo: goo })
@@ -382,10 +385,11 @@ ShellRoot {
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
       goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint,
         edgeControls:root.edgeControls,rowHeight:gooSettings.rowHeight,rows:gooSettings.rows.map(row=>row.id)}),
+      attentionColor:{theme:root.testRect(attentionTheme),warm:root.testRect(attentionWarm),cool:root.testRect(attentionCool)},
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
-      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloPause:root.testRect(soloPause),soloHotspot:root.testRect(soloHotspot),
       alwaysAvoidance:root.testRect(alwaysAvoidance),
       opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
       windowTintSettings:Object.assign(root.testRect(windowTintSettings),{rowHeight:windowTintSettings.rowHeight}),
@@ -712,6 +716,59 @@ ShellRoot {
           checked: root.gooValues.goo
           onClicked: root.setGoo("goo", !root.gooValues.goo)
         }
+        ColumnLayout {
+          id: attentionColorChoice
+          visible: root.gooTab
+          Layout.fillWidth: true
+          spacing: 8
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Text {
+              Layout.preferredWidth: 150
+              text: "Attention color"
+              color: root.textColor
+              font.family: theme.family
+              font.pixelSize: 14 * theme.textScale
+              font.weight: Font.DemiBold
+            }
+            SettingAction {
+              id: attentionTheme
+              design: theme
+              Layout.fillWidth: true
+              text: "Theme"
+              checked: root.gooValues.attention_color_family === "theme"
+              onClicked: root.setGoo("attention_color_family", "theme")
+              onAcceptRequested: root.setGoo("attention_color_family", "theme")
+            }
+            SettingAction {
+              id: attentionWarm
+              design: theme
+              Layout.fillWidth: true
+              text: "Warm"
+              checked: root.gooValues.attention_color_family === "warm"
+              onClicked: root.setGoo("attention_color_family", "warm")
+              onAcceptRequested: root.setGoo("attention_color_family", "warm")
+            }
+            SettingAction {
+              id: attentionCool
+              design: theme
+              Layout.fillWidth: true
+              text: "Cool"
+              checked: root.gooValues.attention_color_family === "cool"
+              onClicked: root.setGoo("attention_color_family", "cool")
+              onAcceptRequested: root.setGoo("attention_color_family", "cool")
+            }
+          }
+          Text {
+            Layout.fillWidth: true
+            text: "Theme follows your palette. Warm shifts from red to amber; Cool shifts from olive to yellow-green."
+            color: root.dimText
+            wrapMode: Text.WordWrap
+            font.family: theme.family
+            font.pixelSize: 12 * theme.textScale
+          }
+        }
         ParameterStack {
           id: gooSettings
           visible: root.gooTab
@@ -849,6 +906,32 @@ ShellRoot {
             value:root.motionValues.window_double_tap_delay;opening:root.original?.motion?.window_double_tap_delay || 300
             onEdited:value=>root.setMotion("window_double_tap_delay",value)
           }
+          TimingRow {
+            id:hintHoldTiming
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Hold a hint";hintHold:true
+            value:root.motionValues.window_hold_delay;opening:root.original?.motion?.window_hold_delay || 500
+            onEdited:value=>root.setMotion("window_hold_delay",value)
+          }
+          // Spread's drag audition (docs/spread.md): how long a drag rests in the center before the
+          // solo is shown, and how far the pointer may then move before that counts as a refusal.
+          TimingRow {
+            id:soloPause
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Pause to solo"
+            minimum:0;maximum:10000;step:100;bigStep:1000;endLabel:"10 s"
+            explanation:"While dragging a window, resting it in the center zone this long shows the solo: the other center windows move to the periphery, which makes room for them. Dropping the window there accepts it; moving on refuses it and every window returns exactly. All the way left turns it off."
+            footer:"drag rests in the center → the solo is shown"
+            value:root.motionValues.solo_audition_delay;opening:root.original?.motion?.solo_audition_delay ?? 3000
+            onEdited:value=>root.setMotion("solo_audition_delay",value)
+          }
+          TimingRow {
+            id:soloHotspot
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Solo hotspot"
+            minimum:8;maximum:400;step:1;bigStep:10;unit:"pt";endLabel:"400 pt"
+            explanation:"Once the solo is shown, moving the pointer this far from where it rested refuses it. Smaller movements are not a refusal, and a drop anywhere within this distance is accepted exactly where it lands. Larger leaves the other windows less room."
+            footer:"pointer moves this far → the solo is refused"
+            value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? 50
+            onEdited:value=>root.setMotion("solo_audition_hotspot",value)
+          }
         }
         ParameterStack {
           id:opacitySettings
@@ -882,7 +965,9 @@ ShellRoot {
             {id:"widget_bounce",label:"Expand / contract bounce",min:0,max:0.1,step:0.005,largeStep:0.02,decimals:3,hint:"Elastic size overshoot when a widget expands or contracts. Higher adds a larger pop; zero removes it."},
             {id:"widget_peek_enter_delay",label:"Hover intent",min:0,max:3000,step:10,largeStep:100,suffix:" ms",hint:"How long the pointer rests on a collapsed widget before it peeks. Higher asks for more intent; lower peeks sooner."},
             {id:"widget_peek_leave_delay",label:"Hover leave",min:0,max:3000,step:10,largeStep:100,suffix:" ms",hint:"How long an expanded hover peek waits before closing after the pointer leaves. Higher gives more time to return."},
-            {id:"widget_attention_peek_duration",label:"Attention peek",min:100,max:30000,step:100,largeStep:1000,suffix:" ms",hint:"How long a collapsed widget stays expanded when it asks for attention. Higher keeps it open longer."}
+            {id:"widget_attention_peek_duration",label:"Attention peek",min:100,max:30000,step:100,largeStep:1000,suffix:" ms",hint:"How long a collapsed widget stays expanded, or a hidden one comes in, when it asks for attention. Higher keeps it open longer."},
+            {id:"widget_make_room_dwell",label:"Rail make-room pause",min:100,max:1500,step:10,largeStep:100,suffix:" ms",hint:"How long a rail drag must pause within a few pixels before neighboring widgets move. Higher waits for a clearer pause; lower rearranges sooner."},
+            {id:"minimize_hold_delay",label:"Super+M hold",min:100,max:2000,step:10,largeStep:100,suffix:" ms",hint:"How long Super+M must be held to show the other mode only until it's released, instead of a tap that changes the mode. Higher leaves more time for a tap."}
           ]
           values:root.widgetValues;opening:root.original?.widgets || ({})
           onChanged:(name,value)=>root.setWidget(name,value)

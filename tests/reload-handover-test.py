@@ -48,9 +48,15 @@ class Session:
         if started.returncode or not (self.dir / 'display').exists():
             raise RuntimeError(f'headless start failed: {started.stdout[-600:]}')
         if self.checkout != repo:
-            # What dev-install does: the session's helpers become the new build's.
+            # What dev-install does: the session's helpers become the new build's, and so does its
+            # settings metadata (new options), which scottland-reload registers before the swap.
             subprocess.run(['make', '--no-print-directory', '-C', str(repo), 'hooks',
                             f'HOOKS_DIR={self.checkout}/build/hooks'], check=True, stdout=subprocess.DEVNULL)
+            xml = self.checkout / 'core/plugin/metadata/scottland.xml'
+            saved = work / f'scottland.xml.{self.name}.old'
+            if not saved.exists(): shutil.copy(xml, saved)
+            shutil.copy(repo / 'core/plugin/metadata/scottland.xml', xml)
+            self.restore_xml = (saved, xml)
         self.display = (self.dir / 'display').read_text().strip()
         self.state = self.dir / 'state'
         entries = (runtime / f'{self.display}.env').read_bytes().split(b'\0')
@@ -245,7 +251,10 @@ class Session:
         except (OSError, EOFError):
             return None
 
+    restore_xml = None
     def stop(self):
+        if self.restore_xml:
+            shutil.copy(*self.restore_xml); self.restore_xml[0].unlink()
         keep = work / 'artifacts' / self.name; keep.mkdir(parents=True, exist_ok=True)
         try:
             ring = subprocess.run([str(repo / 'build/scottland-loop-read'), '--file', str(runtime / f'{self.display}.loop')],
@@ -380,25 +389,109 @@ cases = {}
 def case(fn): cases[fn.__name__] = fn; return fn
 
 
+def plugin_identity(s):
+    """The Scottland plugin files the compositor has mapped now: (path, sha256), deleted ones marked."""
+    import hashlib
+    found = set()
+    for line in Path(f'/proc/{s.compositor()}/maps').read_text().splitlines():
+        parts = line.split(None, 5)
+        if len(parts) == 6 and 'libscottland' in parts[5]:
+            found.add(parts[5])
+    out = []
+    for path in sorted(found):
+        live = path.endswith(' (deleted)') is False and Path(path).exists()
+        out.append((path, hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16] if live else 'deleted'))
+    return out
+
+
+def sha(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+
+
+def hold_gestures(s, view_id):
+    """Start a Super+drag on the window (button held) and put a finger down elsewhere; both stay
+    held across the reload that follows."""
+    f = next(v for v in s.views() if v['id'] == view_id)['frame']
+    cx, cy = f['x'] + f['width'] / 2, f['y'] + f['height'] / 2
+    s.pointer(cx, cy); time.sleep(.2)
+    s.ipc('stipc/feed_key', {'key': 'KEY_LEFTMETA', 'state': True})
+    s.ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    for i in range(1, 6): s.pointer(cx + 12 * i, cy + 6 * i); time.sleep(.03)
+    s.ipc('stipc/touch', {'finger': 0, 'x': 200, 'y': 200})
+    return cx + 60, cy + 30
+
+
+def release_gestures(s, x, y):
+    for i in range(1, 6): s.pointer(x + 10 * i, y); time.sleep(.03)
+    s.ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    s.ipc('stipc/feed_key', {'key': 'KEY_LEFTMETA', 'state': False})
+    s.ipc('stipc/touch_release', {'finger': 0})
+    time.sleep(.5)
+
+
 @case
 def upgrade():
-    """The installed build (--from) to this build, then this build to itself."""
+    """The installed build (--from) to this build, then this build to itself, each swap with a
+    Super+drag and a touch held through it and goo work in flight (the second with readings and a
+    shrink job held by test switches). Both builds' identities are checked in the compositor."""
     t = Case('upgrade'); s = Session('upgrade')
     try:
         ids = standard(s)
+        held = s.app('upgrade-held')['id']
+        raise_window(s, held)
+        starting = plugin_identity(s)
+        t.check(f'the session runs the starting build ({origin.name}: {sha(origin / "build/libscottland.so")})',
+                any(h == sha(origin / 'build/libscottland.so') for _, h in starting), starting)
         before = s.pidfds(); links_before = s.links()
+        # Goo work in flight: a window moved just before the swap wakes the goo.
+        s.ipc('window-rules/configure-view', {'id': held, 'geometry': {'x': 420, 'y': 260, 'width': 400, 'height': 300}})
+        x, y = hold_gestures(s, held)
         code, out = s.reload()
-        t.check('reload from the starting build succeeds and carries every widget', code == 0 and 'imported 3 of 3' in out, out)
+        new_build = sha(repo / 'build/libscottland.so')
+        live = [(p, h) for p, h in plugin_identity(s) if h != 'deleted']
+        t.check(f'reload from the starting build succeeds and carries every widget (now {new_build})',
+                code == 0 and 'imported 3 of 3' in out, out)
+        t.check('the compositor now maps exactly one live plugin copy, this build', [h for _, h in live] == [new_build], live)
+        release_gestures(s, x, y)
+        t.check('the held drag and touch end normally after the swap: the compositor answers', s.loaded() is True)
+        f0 = next(v for v in s.views() if v['id'] == held)['frame']
+        s.super_drag(f0['x'] + f0['width'] / 2, f0['y'] + f0['height'] / 2, f0['x'] + f0['width'] / 2 + 80, f0['y'] + f0['height'] / 2)
+        time.sleep(1)
+        f1 = next(v for v in s.views() if v['id'] == held)['frame']
+        t.check('a new drag after the swap moves the window (no stale grab)', abs(f1['x'] - f0['x']) > 30, (f0, f1))
+        raise_window(s, held)
+        t.check('the held window is on screen in pixels after the swap', s.shown(held) is True, s.painted(held))
         t.check('the same widget windows stay linked', {k: v['widget_view'] for k, v in s.links().items()} ==
                 {k: v['widget_view'] for k, v in links_before.items()})
         t.check('no reload records are left', not s.records(), s.records())
         after = s.pidfds()
         t.check('the same number of pidfds, for the same processes', sorted(before.values()) == sorted(after.values()), (before, after))
         check_balance(t, s, ids, True, 'after the upgrade')
+        threads = [Path(f'/proc/{s.compositor()}/task/{x}/comm').read_text().strip() for x in os.listdir(f'/proc/{s.compositor()}/task')]
+        t.check('one shrink worker and one watchdog thread after the upgrade',
+                threads.count('scottland-shrin') == 1 and threads.count('scottland-wd') == 1, threads)
+
+        # This build to itself, with readings and a shrink job held in flight.
+        s.ipc('scottland/goo-state', {'readback_fault': 'hold', 'shrink_hold': True})
+        s.ipc('window-rules/configure-view', {'id': held, 'geometry': {'x': 380, 'y': 240, 'width': 400, 'height': 300}})
+        time.sleep(1.5)
+        g = s.ipc('scottland/goo-state')['screens'][0]
+        t.check('before the second swap: goo readings are in flight', g.get('readings_in_flight', 0) >= 1, g.get('readings_in_flight'))
+        x, y = hold_gestures(s, held)
         code, out = s.reload()
         t.check('a second reload (this build to itself) carries every widget', code == 0 and 'imported 3 of 3' in out, out)
+        release_gestures(s, x, y)
+        end = time.monotonic() + 30
+        while time.monotonic() < end and not s.ipc('scottland/goo-state')['screens'][0]['sleeping']: time.sleep(.2)
+        g = s.ipc('scottland/goo-state')['screens'][0]
+        t.check('the new copy starts fresh (no held switch) and the goo settles on its own readings',
+                g['sleeping'] and g['readback'] == 'async' and g['readings_applied'] >= 1, (g['sleeping'], g['readback'], g['readings_applied']))
         check_balance(t, s, ids, True, 'after the second reload')
         t.check('pidfds unchanged again', sorted(s.pidfds().values()) == sorted(after.values()))
+        threads = [Path(f'/proc/{s.compositor()}/task/{x}/comm').read_text().strip() for x in os.listdir(f'/proc/{s.compositor()}/task')]
+        t.check('still one shrink worker and one watchdog thread',
+                threads.count('scottland-shrin') == 1 and threads.count('scottland-wd') == 1, threads)
         finish_balance(t, s, ids)
     finally:
         s.stop()

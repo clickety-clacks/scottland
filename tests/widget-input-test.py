@@ -15,6 +15,7 @@ import re
 import os
 from pathlib import Path
 import select
+import shutil
 import socket
 import struct
 import subprocess
@@ -213,11 +214,30 @@ def return_behavior():
            "widgetized": app(title)["widgetized"], "received_keypad_enter": claim_marker.exists()})
 
 
-def toggle():
+def tap_mode_key():
+    """A real Super+M tap: expanded -> collapsed -> hidden -> expanded (WG16)."""
     key("LEFTMETA", True)
     key("M", True)
     key("M", False)
     key("LEFTMETA", False)
+
+
+def widget_mode():
+    return ipc.call("scottland/widget-mode")
+
+
+def set_widget_mode(mode):
+    return ipc.call("scottland/widget-mode", {"mode": mode})
+
+
+def toggle():
+    """Alternate expanded and collapsed, as the two-mode Super+M did. Expanded -> collapsed is a
+    real tap; collapsed -> expanded is now two taps through hidden (WG16), so that direction
+    uses the same mode change through scottland/widget-mode. modes() covers the real cycle."""
+    if widget_mode()["mode"] == "expanded":
+        tap_mode_key()
+    else:
+        set_widget_mode("expanded")
 
 
 def move(x, y):
@@ -403,7 +423,7 @@ def peeking():
 
     over(title); shown(title, True)
     toggle(); away(); time.sleep(.6)
-    check("WG19 Super+M changes intent and ends peek", not link(title)["collapsed"] and not link(title)["peek"])
+    check("WG19 a mode change changes intent and ends peek", not link(title)["collapsed"] and not link(title)["peek"])
     toggle(); time.sleep(.5)
     over(title); time.sleep(.03)
     ipc.call("window-rules/close-view", {"id": window})
@@ -429,9 +449,11 @@ def trace_available():
 def held_key():
     title = "press-regression"
     launch(title)
-    # A fresh mode for this case, without bypassing the binding under test.
-    if minimized(title):
-        toggle()
+    # A fresh mode for this case, without bypassing the binding under test. A long hold delay
+    # keeps these injected presses taps however slowly the machine delivers them.
+    set_widget_mode("expanded")
+    ipc.call("wayfire/set-config-options", {"scottland/minimize_hold_delay": 2000})
+    mode = lambda: widget_mode()["mode"]
     if trace_available():
         log_start = len(diagnostics())
         key("M", True)
@@ -447,35 +469,33 @@ def held_key():
     log_start = len(diagnostics()) if trace_available() else 0
     key("LEFTMETA", True)
     key("M", True)
-    check("WG20 first press activates", minimized(title))
+    check("WG16 a press is judged on release (tap) or after the hold delay", mode() == "expanded")
     key("M", True)  # duplicate down from the same physical/injected key
-    check("WG20 duplicate down while held does not toggle", minimized(title))
     key("LEFTMETA", False)
     key("LEFTMETA", True)
     key("M", True)
-    check("WG20 releasing the modifier does not rearm M", minimized(title))
     key("M", False)
-    key("M", True)
-    check("WG20 releasing M rearms immediately", not minimized(title))
-    key("M", False)
+    check("WG20 duplicate downs and a modifier release make one tap", mode() == "collapsed", mode())
     # No sleeps: separate presses must survive even well below an animation duration.
     states = []
     for _ in range(4):
         key("M", True)
-        states.append(minimized(title))
         key("M", False)
-    check("WG20 four rapid intentional presses all activate", states == [True, False, True, False], states)
+        states.append(mode())
+    check("WG20 four rapid intentional taps all cycle",
+          states == ["hidden", "expanded", "collapsed", "hidden"], states)
     key("LEFTMETA", False)
     if trace_available():
         trace = diagnostics()[log_start:]
         edges = [line for line in trace.splitlines() if "minimize-key edge=" in line]
         check("WG20 diagnostics record tracked binding edges with device, time and state",
-              len(edges) == 14 and all(all(field in line for field in
-                  ("device=0x", "time_msec=", "received_msec=", "key=50", "state=",
-                   "held_devices=", "activated=", "collapsed=")) for line in edges), edges)
-        check("WG20 diagnostics distinguish six activations and two ignored duplicates",
-              trace.count("minimize-key activation ") == 6 and
-              trace.count("minimize-key ignored-duplicate ") == 2, trace)
+              len(edges) == 12 and all(all(field in line for field in
+                  ("device=", "time_msec=", "received_msec=", "key=50", "state=",
+                   "held_devices=", "activated=", "mode=")) for line in edges), edges)
+        check("WG20 diagnostics distinguish five activations, two ignored duplicates and five taps",
+              trace.count("minimize-key activation ") == 5 and
+              trace.count("minimize-key ignored-duplicate ") == 2 and
+              trace.count("minimize-key tap ") == 5, trace)
         log_start = len(diagnostics())
         key("LEFTMETA", True)
         key("M", True)
@@ -485,6 +505,378 @@ def held_key():
         edges = [line for line in trace.splitlines() if "minimize-key edge=" in line]
         check("WG20 tracked M release is logged after Super is released",
               len(edges) == 2 and "state=release" in edges[-1] and "held_devices=0" in edges[-1], edges)
+        check("WG16 that release still ends the press as a tap", mode() == "expanded", mode())
+    ipc.call("wayfire/set-config-options", {"scottland/minimize_hold_delay": 300})
+    set_widget_mode("expanded")
+
+
+def modes():
+    """WG16's three modes with real stipc keys: tap vs hold timing, Window mode (Alt) in each
+    mode, attention while hidden (peeking in at the edge), full screen, reload and arrivals."""
+    artifacts = (args.log.parent.with_name(args.log.parent.name + ".results") / "modes") if args.log else None
+    if artifacts:
+        artifacts.mkdir(parents=True, exist_ok=True)
+
+    def shot(name):
+        if artifacts:
+            subprocess.run(["grim", str(artifacts / (name + ".png"))], check=True)
+
+    def link(title):
+        return next(w for w in widgets() if w["title"] == title)
+
+    def mode():
+        return widget_mode()["mode"]
+
+    def press(seconds):
+        key("LEFTMETA", True)
+        key("M", True)
+        time.sleep(seconds)
+        key("M", False)
+        key("LEFTMETA", False)
+
+    def hold_m():
+        key("LEFTMETA", True)
+        key("M", True)
+
+    def release_m():
+        key("M", False)
+        key("LEFTMETA", False)
+
+    def placed(title, where, hidden=None):
+        def ok():
+            row, view = link(title), card(title)
+            if not view or row["place"] != where or view["frame"].get("presentation"):
+                return False
+            if where == "away":
+                return view["hidden"] and row["away"]
+            return not view["hidden"] and not row["away"]
+        try:
+            wait_for(ok, timeout=3)
+        except AssertionError:
+            pass
+        return ok()
+
+    def wide(title):
+        f = card(title)["frame"]
+        return f["width"] > 120 and not f.get("presentation")
+
+    def icon(title):
+        f = card(title)["frame"]
+        return abs(f["width"] - 96) < 1 and not f.get("presentation")
+
+    def settled(fn, timeout=3):
+        try:
+            return bool(wait_for(fn, timeout=timeout))
+        except AssertionError:
+            return False
+
+    away = lambda: move(screen["width"] / 2, 50)
+    titles = ("mode-left", "mode-right")
+    set_widget_mode("expanded")
+    launch("mode-left", rail="left", y=250)
+    launch("mode-right", rail="right", y=420)
+    launch("mode-focus", rail=None)  # keeps focus off the widgets, so attention isn't answered
+    away()
+    ipc.call("wayfire/set-config-options", {"scottland/minimize_hold_delay": 300,
+                                            "scottland/widget_attention_peek_duration": 1500})
+    check("WG16 starts expanded and in place", all(placed(t, "in") and wide(t) for t in titles),
+          [link(t) for t in titles])
+
+    # Taps at human timing cycle expanded -> collapsed -> hidden -> expanded.
+    press(.12)
+    check("WG16 tap: expanded -> collapsed", mode() == "collapsed" and
+          all(settled(lambda t=t: icon(t)) and placed(t, "in") for t in titles), mode())
+    start = card("mode-right")["frame"]["x"]
+    press(.12)
+    track = []
+    began = time.monotonic()
+    while time.monotonic() - began < .5:
+        view = card("mode-right")
+        if not view["hidden"]:
+            track.append(view["frame"]["x"])
+        time.sleep(.01)
+    check("WG16 tap: collapsed -> hidden slides widgets off their edges", mode() == "hidden" and
+          all(placed(t, "away") for t in titles) and len(track) > 3 and
+          all(b >= a - .5 for a, b in zip(track, track[1:])) and track[-1] > start + 40, (mode(), track))
+    shot("hidden")
+    press(.12)
+    check("WG16 tap: hidden -> expanded slides them back expanded", mode() == "expanded" and
+          all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles),
+          [(link(t), card(t)["frame"]) for t in titles])
+
+    # A slow tap (200 ms) is still a tap at the 300 ms default.
+    press(.2)
+    check("WG16 a 200 ms press is a tap", mode() == "collapsed", mode())
+    set_widget_mode("expanded")
+    time.sleep(.5)
+    # Near the 300 ms boundary; the key events' own times decide.
+    press(.25)
+    check("WG16 a 250 ms press is still a tap", mode() == "collapsed", mode())
+    set_widget_mode("expanded")
+    time.sleep(.5)
+    press(.35)
+    check("WG16 a 350 ms press is a hold: released, nothing changed", mode() == "expanded" and
+          widget_mode()["shown"] == "expanded" and all(placed(t, "in") for t in titles), widget_mode())
+    # Rapid reversals mid-slide: each slide starts from where the widget is drawn, and the last
+    # mode wins with every widget exactly in its place.
+    def at_rest():
+        a = {t: card(t)["frame"]["x"] for t in titles}
+        time.sleep(.1)
+        return a == {t: card(t)["frame"]["x"] for t in titles} and a
+    rest = wait_for(at_rest)
+    for _ in range(2):
+        press(.03); time.sleep(.05)   # collapsed
+        press(.03); time.sleep(.08)   # hidden: sliding away
+        press(.03); time.sleep(.08)   # expanded: sliding back mid-way
+    track = []
+    began = time.monotonic()
+    while time.monotonic() - began < .6:
+        track.append(card("mode-right")["frame"]["x"])
+        time.sleep(.01)
+    check("WG16 rapid reversals mid-slide end in place, without a jump", mode() == "expanded" and
+          all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles) and
+          all(abs(card(t)["frame"]["x"] - rest[t]) < .5 for t in titles) and
+          max(abs(b - a) for a, b in zip(track, track[1:])) < 60,
+          (rest, {t: card(t)["frame"]["x"] for t in titles}, track))
+
+    # Holding is momentary: from expanded it hides; release returns.
+    hold_m()
+    time.sleep(.7)
+    check("WG16 hold from expanded hides until release", mode() == "expanded" and
+          widget_mode()["shown"] == "hidden" and all(placed(t, "away") for t in titles),
+          (widget_mode(), [link(t) for t in titles]))
+    shot("hold-hidden")
+    release_m()
+    check("WG16 releasing the hold brings them back expanded", mode() == "expanded" and
+          widget_mode()["shown"] == "expanded" and all(placed(t, "in") and wide(t) for t in titles),
+          (widget_mode(), [(link(t), card(t)) for t in titles]))
+
+    press(.12)  # collapsed
+    settled(lambda: all(icon(t) for t in titles))
+    hold_m()
+    time.sleep(.7)
+    check("WG16 hold from collapsed expands them; the mode stays collapsed", mode() == "collapsed" and
+          all(settled(lambda t=t: wide(t)) and link(t)["collapsed"] and not link(t)["minimized"]
+              for t in titles), [link(t) for t in titles])
+    shot("hold-from-collapsed")
+    release_m()
+    check("WG16 releasing it collapses them again", mode() == "collapsed" and
+          all(settled(lambda t=t: icon(t)) and link(t)["minimized"] for t in titles))
+
+    press(.12)  # hidden
+    settled(lambda: all(placed(t, "away") for t in titles))
+    hold_m()
+    time.sleep(.7)
+    check("WG16 hold from hidden brings them in expanded", mode() == "hidden" and
+          all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles), [link(t) for t in titles])
+    shot("hold-from-hidden")
+    release_m()
+    check("WG16 releasing it hides them again", mode() == "hidden" and all(placed(t, "away") for t in titles))
+
+    # Window mode (Alt) expands collapsed and hidden widgets until Alt is released.
+    def alt_hold():
+        key("LEFTALT", True)
+        settled(lambda: ipc.call("scottland/hints")["active"], timeout=2)
+
+    alt_hold()
+    check("WG16 Alt in hidden mode brings widgets in expanded",
+          all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles), [link(t) for t in titles])
+    check("WG16 widgets brought in by Alt have their hints",
+          all(any(h["window"] == link(t)["window"] and h["visible"] for h in ipc.call("scottland/hints")["hints"])
+              for t in titles), ipc.call("scottland/hints")["hints"])
+    shot("alt-hidden")
+    key("LEFTALT", False)
+    check("WG16 Alt release hides them again", mode() == "hidden" and all(placed(t, "away") for t in titles))
+    press(.12)  # expanded
+    settled(lambda: all(placed(t, "in") for t in titles))
+    alt_hold()
+    check("WG16 Alt in expanded mode leaves widgets in place and expanded",
+          all(placed(t, "in") and wide(t) for t in titles))
+    key("LEFTALT", False)
+    time.sleep(.3)
+    press(.12)  # collapsed
+    settled(lambda: all(icon(t) for t in titles))
+    alt_hold()
+    check("WG16 Alt in collapsed mode expands widgets; intent stays collapsed",
+          all(settled(lambda t=t: wide(t)) and link(t)["collapsed"] for t in titles) and mode() == "collapsed",
+          [link(t) for t in titles])
+    shot("alt-collapsed")
+    key("LEFTALT", False)
+    check("WG16 Alt release collapses them again",
+          all(settled(lambda t=t: icon(t)) and link(t)["minimized"] for t in titles))
+
+    # Attention while hidden: the widget comes in for the attention peek, then keeps a strip
+    # at its edge (breathing) until answered; hovering the strip brings it in.
+    press(.12)  # hidden
+    settled(lambda: all(placed(t, "away") for t in titles))
+    window = app("mode-right")["id"]
+    attention = lambda on: ipc.call("scottland/attention", {"window": window, "attention": on, "source": "mode-test"})
+    attention(True)
+    check("WG16 attention while hidden brings the widget in", placed("mode-right", "in") and
+          link("mode-right")["peek"] and link("mode-right")["urgent"], link("mode-right"))
+    check("WG16 the other hidden widget stays away", placed("mode-left", "away"))
+    shot("attention-in")
+    strip = 24 * ipc.call("scottland/hints").get("hint_text_scale", 1)
+    check("WG16 after the attention peek it peeks in at its edge",
+          settled(lambda: link("mode-right")["place"] == "peeking" and
+                  not card("mode-right")["frame"].get("presentation"), timeout=3) and
+          not card("mode-right")["hidden"] and
+          abs(screen["width"] - card("mode-right")["frame"]["x"] - strip) < 1,
+          (link("mode-right"), card("mode-right")["frame"], strip))
+    shot("attention-peeking")
+    if artifacts:
+        # Measured on screen: the card's body shows at the screen edge. The strip counts the
+        # widget's surface; the default card keeps 6 px of it for its badge, inward.
+        raw = subprocess.check_output(["grim", "-t", "ppm", "-"])
+        header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
+        width, pixels = int(header[1]), raw[header.end():]
+        f = card("mode-right")["frame"]
+        y = round(f["y"] + f["height"] / 2)
+        at = lambda x: tuple(pixels[(y * width + x) * 3:(y * width + x) * 3 + 3])
+        body = at(width - 1)
+        run = 0
+        while run < 200 and sum(abs(a - b) for a, b in zip(at(width - 1 - run), body)) <= 6:
+            run += 1
+        check("WG16 the attention strip shows the card's body at the edge, measured in pixels",
+              strip - 6 - 1.5 <= run <= strip + 1, (run, strip, body))
+    f = card("mode-right")["frame"]
+    move(screen["width"] - strip / 2, f["y"] + f["height"] / 2)
+    check("WG16 hovering the strip brings it in", placed("mode-right", "in"), link("mode-right"))
+    away()
+    check("WG16 leaving returns it to its strip", settled(lambda: link("mode-right")["place"] == "peeking"))
+    # Full screen wins (FS1, tenet 6): attention waits; it peeks in again afterwards.
+    fs = app("mode-focus")
+    ipc.call("window-rules/focus-view", {"id": fs["id"]})
+    key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
+    check("WG16 full screen sends a peeking widget away", placed("mode-right", "away"), link("mode-right"))
+    key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
+    check("WG16 leaving full screen, it peeks in again", settled(lambda: link("mode-right")["place"] == "peeking"),
+          link("mode-right"))
+    attention(False)
+    check("WG16 answered attention sends it away", placed("mode-right", "away"), link("mode-right"))
+
+    # A window put on a rail while hidden lands, then slides off with the others.
+    launch("mode-new", rail=None)
+    view = app("mode-new")
+    drag_begin(view, screen["width"] - 6, 560)
+    check("WG16 a window dragged onto a rail while hidden shows its widget during the drag",
+          settled(lambda: card("mode-new") is not None and card("mode-new")["preview"] and
+                  ipc.call("scottland/desktop-model")["drag"].get("morph", {}).get("toward")),
+          ipc.call("scottland/desktop-model")["drag"])
+    drag_end()
+    check("WG16 a widget docked while hidden then slides away", placed("mode-new", "away"), link("mode-new"))
+
+    # The mode survives a reload; hidden widgets stay away across it.
+    if args.log:
+        fresh = artifacts / "libscottland-modes-reload.so"
+        shutil.copyfile("build/libscottland.so", fresh)
+        plugins = ipc.call("wayfire/get-config-option", {"option": "core/plugins"})["value"]
+        changed = " ".join(str(fresh) if p == "scottland" or "/libscottland-" in p else p for p in plugins.split())
+        mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+        def reload_to(value):
+            mark.touch()
+            try:
+                ipc.call("wayfire/set-config-options", {"core/plugins": value})
+                time.sleep(1)
+            finally:
+                mark.unlink(missing_ok=True)
+        reload_to(changed)
+        check("WG16 hidden mode survives a reload", mode() == "hidden" and
+              all(placed(t, "away") for t in titles + ("mode-new",)), (widget_mode(), widgets()))
+        reload_to(plugins)  # back to the session's own plugin entry, for the cases that follow
+    press(.12)
+    check("WG16 after that a tap brings every widget back expanded", mode() == "expanded" and
+          all(placed(t, "in") and settled(lambda t=t: wide(t)) for t in titles + ("mode-new",)))
+    shot("expanded-again")
+    ipc.call("wayfire/set-config-options", {"scottland/widget_attention_peek_duration": 5000})
+
+
+def outputs():
+    """WG16 with two screens: hidden widgets on a rail between the screens slide off their own
+    screen and never show on the other one, peeking included. Needs SCOTTLAND_TEST_OUTPUTS=2."""
+    screens = sorted(ipc.call("window-rules/list-outputs"), key=lambda o: o["geometry"]["x"])
+    if len(screens) < 2:
+        raise AssertionError("the outputs case needs a two-output session")
+    first, second = screens[0]["geometry"], screens[1]["geometry"]
+    artifacts = (args.log.parent.with_name(args.log.parent.name + ".results") / "outputs") if args.log else None
+    if artifacts:
+        artifacts.mkdir(parents=True, exist_ok=True)
+
+    def link(title):
+        return next(w for w in widgets() if w["title"] == title)
+
+    def put(title, x, y, widget=True):
+        process = subprocess.Popen(["foot", "-T", title, "-W", "40x8", "sh", "-c", "exec sleep 600"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owned.append((title, process))
+        wait_for(lambda: app(title))
+        time.sleep(.4)
+        f = app(title)["frame"]
+        move(f["x"] + f["width"] / 2, f["y"] + f["height"] / 2)
+        time.sleep(.1)
+        key("LEFTMETA", True)
+        ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+        sx, sy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
+        for i in range(1, 21):
+            move(sx + (x - sx) * i / 20, sy + (y - sy) * i / 20)
+            time.sleep(.025)
+        time.sleep(.4)
+        drag_end()
+        if widget:
+            wait_for(lambda: card(title) and not card(title)["preview"])
+        time.sleep(.7)
+
+    set_widget_mode("expanded")
+    # The first screen's right rail borders the second screen; the second's left rail too.
+    put("two-a", first["x"] + first["width"] - 6, 250)
+    put("two-b", second["x"] + 6, 420)
+    put("two-focus", first["x"] + first["width"] / 2, 300, widget=False)
+    wait_for(lambda: card("two-a") and card("two-b"))
+    move(first["x"] + first["width"] / 2, 40)
+
+    def grab():
+        raw = subprocess.check_output(["grim", "-t", "ppm", "-"])
+        header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
+        width, pixels = int(header[1]), raw[header.end():]
+        return lambda x, y: pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
+
+    # The neighbor screen's band along the shared edge, beside each widget, while nothing of
+    # theirs should be there: every later screenshot must match it.
+    y_a = round(card("two-a")["frame"]["y"]); y_b = round(card("two-b")["frame"]["y"])
+    sx, fx = round(second["x"]), round(first["x"] + first["width"])
+    bands = {"two-a": (sx, sx + 140, y_a - 20, y_a + 116), "two-b": (fx - 140, fx, y_b - 20, y_b + 116)}
+    reference = grab()
+
+    def band_clear(pixel):
+        return all(pixel(x, y) == reference(x, y) for x0, x1, y0, y1 in bands.values()
+                   for y in range(max(0, y0), y1, 3) for x in range(x0, x1, 3))
+
+    ipc.call("window-rules/focus-view", {"id": card("two-a")["id"]})  # a focused widget goes away too
+    tap_mode_key(); tap_mode_key()  # expanded -> collapsed -> hidden
+    samples = []
+    for _ in range(8):
+        samples.append(band_clear(grab()))
+        time.sleep(.03)
+    wait_for(lambda: link("two-a")["away"] and link("two-b")["away"])
+    check("WG16 two screens: hidden widgets slide off their own screen's edge, never onto the other",
+          all(samples), samples)
+    focused = ipc.call("window-rules/get-focused-view")["info"]
+    check("WG16 a focused widget that slides away passes keyboard focus on",
+          focused and focused["id"] not in (card("two-a")["id"], card("two-b")["id"]), focused)
+    window = app("two-a")["id"]
+    ipc.call("scottland/attention", {"window": window, "attention": True, "source": "two-screens"})
+    try:
+        wait_for(lambda: link("two-a")["place"] == "peeking", timeout=8)
+    except AssertionError:
+        print("two-a did not peek:", link("two-a"), widget_mode(), flush=True)
+    time.sleep(.5)
+    check("WG16 two screens: a peeking widget shows only on its own screen",
+          band_clear(grab()) and not card("two-a")["hidden"], card("two-a")["frame"])
+    if artifacts:
+        subprocess.run(["grim", str(artifacts / "two-screens-peeking.png")], check=True)
+    ipc.call("scottland/attention", {"window": window, "attention": False, "source": "two-screens"})
+    set_widget_mode("expanded")
+    wait_for(lambda: not link("two-a")["away"] and not link("two-b")["away"])
 
 
 def gravity():
@@ -538,6 +930,8 @@ def previews():
         toggle()
     for collapsed in (True, False):
         title = "preview-collapse" if collapsed else "preview-expand"
+        # The tap below goes expanded -> collapsed, then hidden -> expanded.
+        set_widget_mode("expanded" if collapsed else "hidden")
         launch(title, rail=None)
         drag_begin(app(title), screen["width"] - 6, 420)
         wait_for(lambda: card(title) and card(title)["preview"])
@@ -562,6 +956,7 @@ def previews():
                 f"/org/scottland/widget/{wid}", "org.scottland.Widget", "Minimized"], text=True).strip()
         check(f"WG16 committed preview D-Bus mode agrees ({collapsed=})",
               prop == "b " + str(collapsed).lower(), prop)
+    set_widget_mode("expanded")
 
 
 def shortcuts():
@@ -577,6 +972,7 @@ def shortcuts():
     # the fixtures must be the only imports in play, or pressing their keys runs the user's commands.
     fixture_base = re.sub(r"(?m)^(repeatable_)?(binding|command)_omarchy_\w+ = .*\n", "", original)
     launch("shortcut-regression")
+    move(screen["width"] / 2, 50)  # a pointer resting on the widget would peek it (WG19)
     # Honor the test runner's TMPDIR so fixture artifacts need not occupy runtime tmpfs.
     with tempfile.TemporaryDirectory(prefix="scottland-shortcuts-") as work:
         work = Path(work)
@@ -619,12 +1015,15 @@ def shortcuts():
                 if shift:
                     key("LEFTSHIFT", False)
                 time.sleep(0.6)
-                check(f"O5 real input toggles widgets ({name})", minimized("shortcut-regression") != before)
+                check(f"O5 real input toggles widgets ({name})", minimized("shortcut-regression") != before,
+                      (before, widget_mode(), [w for w in widgets() if w["title"] == "shortcut-regression"]))
                 check(f"O5 real input does not run the displaced import ({name})", not marker.exists())
                 if minimized("shortcut-regression") != before:
                     if shift:
                         key("LEFTSHIFT", True)
                     toggle()  # back as it was for the next case, with the same keys
+                    if shift:
+                        key("LEFTSHIFT", False)
                     if shift:
                         key("LEFTSHIFT", False)
                     time.sleep(0.4)
@@ -788,16 +1187,17 @@ remap_from_browser_close =
 
 if __name__ == "__main__":
     cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts,
-             "peek": peeking, "return": return_behavior}
+             "peek": peeking, "return": return_behavior, "modes": modes}
+    extra = {"outputs": outputs}  # only when asked for: needs a two-output session
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
-    parser.add_argument("cases", nargs="*", choices=list(cases))
+    parser.add_argument("cases", nargs="*", choices=list(cases) + list(extra))
     args = parser.parse_args()
     try:
         ipc.call("wayfire/set-config-options", {"scottland/sounds": False})
         for name in args.cases or cases:
             try:
-                cases[name]()
+                {**cases, **extra}[name]()
             finally:
                 cleanup()
     finally:

@@ -12,6 +12,8 @@ FloatingWindow {
     readonly property int iconSize: 56
     readonly property int gap: 14
     readonly property int maxWidth: 320
+    // Room kept above and inward of the body for the count badge's overhang (WG10).
+    readonly property int badgeRoom: 6
     readonly property bool hasText: appName !== "" || appTitle !== ""
     property var state: ({})
     readonly property bool minimized: state.minimized === true
@@ -20,8 +22,9 @@ FloatingWindow {
     // animated by Scottland itself, from a snapshot, as the window/widget morph is; a card resizing
     // its own window every frame is choppy and can stop short.)
     readonly property real expansion: showsText ? 1 : 0
-    // The icon's inset from the screen edge: centered in the square, the card's padding when open.
-    readonly property real rowPad: (implicitHeight - iconSize) / 2 * (1 - expansion) + pad * expansion
+    // The icon's inset from the screen edge: centered on the card's body (not the badge room
+    // beside it) when collapsed, the card's padding when open.
+    readonly property real rowPad: (implicitHeight - badgeRoom - iconSize) / 2 * (1 - expansion) + pad * expansion
     // Measured from the strings, not the Text items: a card that starts collapsed has never shown
     // its text, and a Text that has never been visible isn't laid out (its width reads 0).
     readonly property bool showsName: appName !== "" && appName !== appTitle
@@ -122,10 +125,11 @@ FloatingWindow {
         // Keep the badge's overhang inside the client surface, including at the top of a rail.
         // Reserve it even with no count, so updates never move the card or its contents.
         Rectangle {
+            id: body
             anchors.fill: parent
-            anchors.topMargin: 6
-            anchors.leftMargin: root.rail === "right" ? 6 : 0
-            anchors.rightMargin: root.rail === "left" ? 6 : 0
+            anchors.topMargin: root.badgeRoom
+            anchors.leftMargin: root.rail === "right" ? root.badgeRoom : 0
+            anchors.rightMargin: root.rail === "left" ? root.badgeRoom : 0
             radius: 16
             color: root.background
         }
@@ -139,9 +143,10 @@ FloatingWindow {
 
         // The icon sits on the screen-edge side: left of the text on the left rail, right of it on
         // the right rail (RightToLeft lays the row out mirrored), following the rail live.
-        // Hugs the screen-edge side, with the card's padding, whatever the card's width.
+        // Hugs the screen-edge side, with the card's padding, whatever the card's width, and is
+        // centered on the body: collapsed, the icon is at the card's center.
         Row {
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenter: body.verticalCenter
             x: root.rail === "right" ? parent.width - width - root.rowPad : root.rowPad
             spacing: root.gap
             layoutDirection: root.rail === "right" ? Qt.RightToLeft : Qt.LeftToRight

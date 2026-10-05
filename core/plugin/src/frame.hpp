@@ -18,6 +18,7 @@
 #include "loop.hpp"
 #include "goo-shape.hpp"
 #include "edge-style.hpp"
+#include "state-dye.hpp"
 #include <wayfire/view-transform.hpp>
 #include <wayfire/opengl.hpp>
 #include <wayfire/core.hpp>
@@ -73,6 +74,7 @@ struct palette_t
     float unfocused_edge_tone_dark = .92f;
     float unfocused_edge_strength = 1.f;
     float hint_tint = .07f;             // WK38 Window mode overlay strength (0 = off)
+    float dye_strength = 1.f;
 
     glm::vec3 unfocused_edge_tone() const
     {
@@ -403,7 +405,12 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     std::shared_ptr<widget_morph_t> presentation;
     // Generic drag-owned layout audition. Independent of glides, widget morphs and the live
     // transform on the dragged view; committed moves clear this after real geometry applies.
-    double drag_layout_x = 0, drag_layout_y = 0;
+    // The scale factor multiplies the layout's own scale (a solo audition shows each window at
+    // the scale of where it would land, docs/spread.md); the rail audition leaves it at 1.
+    double drag_layout_x = 0, drag_layout_y = 0, drag_layout_scale = 1;
+    // A widget sliding off or peeking in at its screen edge (FS1, WG16's hidden mode). Owned by
+    // the rail slides alone, so glides and morphs never reset it.
+    double rail_slide_x = 0;
     std::function<bool(wayfire_toplevel_view)> is_widget;
 
     bool can_resize() const
@@ -512,7 +519,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     // which the plugin sets): everything that draws or hit-tests asks these.
     float get_scale_x() const override
     {
-        double own = scale_x * (1.0 + bulge);
+        double own = scale_x * drag_layout_scale * (1.0 + bulge);
         if (presentation && window_geometry().width > 0)
             own = presentation->width / window_geometry().width;
         return std::abs(morph.shape) > 0.0005 ? blend_size(own, morph.w, window_geometry().width) : own;
@@ -520,7 +527,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     float get_scale_y() const override
     {
-        double own = scale_y * (1.0 + bulge);
+        double own = scale_y * drag_layout_scale * (1.0 + bulge);
         if (presentation && window_geometry().height > 0)
             own = presentation->height / window_geometry().height;
         return std::abs(morph.shape) > 0.0005 ? blend_size(own, morph.h, window_geometry().height) : own;
@@ -530,7 +537,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     {
         // The base transformer scales about the center. Cancel its movement of the
         // rail-side edge, without stealing the translation owned by a glide.
-        return translation_x + drag_layout_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
+        return translation_x + drag_layout_x + rail_slide_x + (presentation ? presentation->dx + (presentation->right ? 1 : -1) *
             (window_geometry().width - presentation->width) * 0.5 : 0);
     }
 
@@ -725,9 +732,11 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
     }
 
-    /** The cursor moved to p. Only the frame nearest the cursor gets this; others get leave(). */
-    void track(wf::pointf_t p)
+    /** The cursor moved to `shown` (output coordinates, where things are drawn). Only the frame
+     *  nearest the cursor gets this; others get leave(). */
+    void track(wf::pointf_t shown)
     {
+        auto p = unpresented(shown);  // this frame's own coordinates, as screen_rect()
         last_track = p;
         auto r = screen_rect();
         double t = thickness();
@@ -755,7 +764,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             double d = std::max(0.0, band_distance(p));
             double range = goo_hover_distance();
             double strength = range > 0 ? nearness(d, range) : (d <= 0 ? 1 : 0);
-            if (goo_handle(*this, p) != handle_t::none) strength = 1;
+            if (goo_handle(*this, shown) != handle_t::none) strength = 1;
             if ((top || bottom) && (left || right))
             {
                 if (resizable) cloud_target[(bottom ? 2 : 0) + (right ? 1 : 0)] = strength;
@@ -807,6 +816,30 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         }
     }
 
+    /** p (in this frame's parent coordinates) where it is shown: through the transforms between
+     *  this frame and the view (window avoidance's peek offset, a live drag), as the goo places
+     *  its islands. A peeking window's halo is grabbed where it is drawn. */
+    wf::pointf_t presented(wf::pointf_t p) const
+    {
+        auto v = toplevel();
+        if (!v) return p;
+        auto top = v->get_transformed_node().get();
+        for (auto n = parent(); n && n != top; n = n->parent()) p = n->to_global(p);
+        return p;
+    }
+
+    /** The reverse: a point where it is shown, in this frame's parent coordinates. */
+    wf::pointf_t unpresented(wf::pointf_t p) const
+    {
+        auto v = toplevel();
+        if (!v) return p;
+        auto top = v->get_transformed_node().get();
+        std::vector<wf::scene::node_t*> chain;
+        for (auto n = parent(); n && n != top; n = n->parent()) chain.push_back(n);
+        for (auto n = chain.rbegin(); n != chain.rend(); ++n) p = (*n)->to_local(p);
+        return p;
+    }
+
     /** What's under p: the close dot, a corner, the halo, or nothing. */
     handle_t handle_at(wf::pointf_t p) const
     {
@@ -816,7 +849,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
             return handle_t::none;
         }
 
-        if (goo_enabled()) return goo_handle(*this, p);
+        if (goo_enabled()) return goo_handle(*this, presented(p));
 
         auto dot = dot_center();
         if ((dot_glow > 0.2) && (std::hypot(p.x - dot.x, p.y - dot.y) <= DOT_RADIUS + 3))
@@ -1576,6 +1609,8 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         float density     = edge_style::halo_neutral_density(edge_strength, focus) * alpha;
         float attention   = self->attention_mix;
         tone    = glm::mix(tone, palette.attention, attention);
+        if (palette.dye_strength != 1.f)
+            tone = state_dye::tone(neutral, tone, palette.dye_strength);
         density = density + (0.5f * alpha - density) * attention;
 
         program.use(wf::TEXTURE_TYPE_RGBA);
@@ -1588,8 +1623,10 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("ripple", std::min(4.0, std::abs(self->swell_velocity) * travel * 0.3));
         program.uniform1f("phase", self->phase);
         program.uniform1f("aa", aa);
-        if (self->hint_dye) tone = *self->hint_dye;
-        program.uniform4f("hint_dye", self->hint_dye ? glm::vec4{*self->hint_dye, alpha} : glm::vec4{0});
+        if (self->hint_dye)
+            tone = palette.dye_strength == 1.f ? *self->hint_dye :
+                state_dye::tone(neutral, *self->hint_dye, palette.dye_strength);
+        program.uniform4f("hint_dye", self->hint_dye ? glm::vec4{tone, alpha} : glm::vec4{0});
         program.uniform1f("hint_border", windowing::hint_border_width);
         program.uniform3f("tone", tone.r, tone.g, tone.b);
         program.uniform1f("density", density);

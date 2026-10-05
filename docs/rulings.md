@@ -35,12 +35,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | "Look far apart, then go deep" applies only to searching for a hint spot, never to choosing where a window moves; windows never avoid by moving to the other side. | WK13, WK31 |
 | 10-03 | Keep continuous motion during drags (no pause-then-glide). | WK13 |
 | 10-03 | One engine, two tests: always-on peeking needs a strip; on Alt, hints get room. | P12 |
-| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | peek-strip design |
-| 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | peek-strip design |
-| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | peek-strip design |
-| 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | peek-strip design |
+| 10-04 | Peek strip: at least 24 pt deep and about 100 pt long; pt are logical points (independent of display scale, not shrunk by zone scale) and grow with the system text size. | WK13 |
+| 10-04 | Peek through whichever edge needs the smallest move; interior patches count. | WK13 |
+| 10-04 | Peeking direction is best effort: prefer peeking toward the window's position relative to the one covering it; if that's not possible any direction is fine, bottom included. No hard top/bottom limit. | WK13 |
+| 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | WK13 |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
-| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | peek-strip design |
+| 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13, WK27 |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 
@@ -52,6 +52,9 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Hold on the focused window's hint solos; hold on an unfocused window's hint pairs it. | WK35, WK36 |
 | 10-04 | A three-finger hold on an unfocused window pairs it with the focused window (touchpad equivalent of the hint hold). | WK36 |
 | 10-04 | A three-finger hold on the focused window solos it (built with solo). | WK35 |
+| 10-04 | General rule: every gesture that drags a window (Super + drag, Super + double-tap drag lock, three-finger drag) has a hold form: the same gesture held still instead of dragged solos the focused window or pairs an unfocused one. | WK35, WK36 |
+| 10-04 | Holding the halo counts as a hold form too. While any hold is in progress, a timing circle fills around the hint (or at the pointer), as Vimarchy does, completing when the hold fires. | WK35, WK36, WK39 |
+| 10-05 | A pointer or touchpad hold that has fired is an offer while the fingers or button stay down, like the drag audition: dragging out of the hotspot cancels it (everything returns, the drag carries on); releasing inside commits. | WK35, WK36 |
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
 
@@ -84,6 +87,8 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Return on a focused widget always opens its window; nothing inside the widget gets it. | WG25 |
 | 10-04 | Super+M taps cycle expanded -> collapsed -> hidden; holding is momentary (hide from expanded, expand otherwise). | WG16 |
 | 10-04 | Entering Window mode temporarily expands collapsed and hidden widgets until Alt is released; hidden widgets still show attention. | WG16 |
+| 10-04 | Attention while widgets are hidden: the widget slides in for the usual attention peek, then leaves a 24 pt strip at the screen edge breathing the attention color until the user goes to it; hovering the strip brings it in. | WG16 |
+| 10-04 | The Super+M hold delay is 300 ms (same as the Alt hold), adjustable in Settings. | WG16 |
 
 ## Zones and scale
 
@@ -120,3 +125,30 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
 | 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
+| 10-04 | Gooarchy patterns after Omarchy but starts clean: nothing is borrowed to fill a gap (no bar yet means no bar), so the distro's deficit is clearly defined once it is built. | distro-notes |
+| 10-04 | Gooarchy will have its own custom bar and its own notification system; until they exist it ships neither. | distro-notes |
+
+## Knocks (concept in discussion; docs/knocks.md)
+
+| Date | Ruling |
+|---|---|
+| 10-04 | Attention generalizes beyond agents: objects exist whether or not they're on the desktop; windows/widgets are representations of the ones that are forefront; an object asks for the user with a knock (ephemeral, not a window or widget, with a message and optionally an answer UI). |
+| 10-04 | A knock's look is organic to what it is (the attention goo, a vignette), not just another window. |
+| 10-04 | From a knock the user can answer directly with its UI, or invite the object in (find or open its window, bring it center, and tell the object to focus on that knock). |
+| 10-04 | Mapping a knock to its sender's window must be dependable. |
+| 10-04 | The bigger frame is attention regimes: center, periphery, widgets, and the ether (objects not on the desktop that still exist and can be promoted). Scottland models and visualizes all of it. | P15 |
+| 10-04 | The ether is a mental place, not a spot on screen: closed things still exist and can keep running. Knocks must be reachable and actionable in every form a sender takes on the desktop: window, scaled window, widget. | docs/knocks.md |
+| 10-04 | The breathing border is the direct representation of a knock; the hover swell of a border is the interaction to reach it. | docs/knocks.md |
+| 10-04 | Knocks from objects on the desktop matter most (the user elected them to be there). Knock priority comes from another system; Scottland only renders it. | docs/knocks.md |
+| 10-04 | Knocks have many channels, not one: every window is a channel for its object's knocks, and knocks from objects not on the desktop coexist with them; nothing is ranked against anything else. | docs/knocks.md |
+
+## Testing
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-04 | Testing standard: real input and an independently observable result; wait on state, not sleeps; check the screen for rendering claims; no wall-clock budgets in functional gates (benchmarks separate); count checks honestly; own your session and clean up exactly what you create; no source-text assertions; no retrying the action under test. Ineffective tests are deleted, not kept as gates; what still needs a real test is listed. | AGENTS.md "Testing standard"; docs/tests-todo.md |
+| 10-05 | Esc returns the object you are holding to where its move began. A re-grab of the same object continues that move whatever form it now has (a window that became a widget, or a widget that became a window); grabbing a different object starts a new move. (Replaces an earlier 10-05 entry that wrongly limited chaining to the same form.) | L27, L23, WG14 |
+| 10-05 | Super+arrows navigate between windows: focus moves to the neighboring window in that direction. They replace Wayfire's stock grid snapping on those keys. | WK40 |
+| 10-05 | Watercolor goo is one dye, not segregated kinds. Focus and attention color dye all of a window's goo, not a band at its wall. Dye density, swirl and spread are settings. The goo picks up the color of whatever is under it (wallpaper or window content) and mixes it into the dye already there, like mixing watercolors; picked-up color spreads and swirls like any dye, smearing the material beneath. Supersedes the wall-band and wallpaper-only parts of GO15/GO24. | GO28 |
+| 10-05 | Dye release is the rate at which dye enters the goo. The setting called dye strength is dye density, and is named that. | GO23, GO28 |
+| 10-05 | Drag solo audition: moving out of the hotspot cancels the offer, and it stays cancelled while the window keeps moving. The solo timer restarts only when the motion that cancelled it comes to rest: pause, solo offer, move out of the hotspot, cancel, the cancelling motion comes to rest, timer restarts. | SP7 |

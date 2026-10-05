@@ -35,17 +35,29 @@ a doc there and leave a one-line pointer in the invariants file. Current docs:
 - [docs/widgets.md](docs/widgets.md): rail widgets (WG1-WG27): what a widget is, how it's chosen,
   its launch context and D-Bus interface, the default card, the live morph while dragging, Esc,
   attention on widgets, and elastic expansion/contraction.
-- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints and live focused-window-anchored avoidance (WK1–WK31),
-  remembered zones and contention-aware placement (WP1–WP7).
+- [docs/windowing-keys.md](docs/windowing-keys.md): Window mode: hints, theme colors, cycles, keyboard inertia, exterior widget hints, live focused-window-anchored avoidance, hint holds and pairing (WK1–WK39),
+  remembered zones and contention-aware placement (WP1–WP8).
 - [docs/goo.md](docs/goo.md): the goo (GO1-GO27): the halo as one liquid for the whole screen,
   dye for state colors, live tuning, overlap film, control highlight, antialiasing, GPU cost (implemented; on by default, with a per-window halo fallback).
 - [docs/settings.md](docs/settings.md): Scottland Settings (S1–S19): zone sliders and overlay with draggable borders, Goo and Window mode tabs, hint popouts, and the planned Widgets tab.
 - [docs/desktop-model.md](docs/desktop-model.md): the single reactive desktop state model and its snapshots.
 - [docs/key-layers.md](docs/key-layers.md): focused-surface shortcut layers (KL1–KL8), IPC and fall-through.
+- [docs/spread.md](docs/spread.md): spread and solo (SP1–SP8: keyboard and three-finger solo, the
+  drag audition, the bounded solver) and the WG26 rail make-room profile (SM1–SM4), with the shared
+  drag presentation they use.
 - [docs/main-loop.md](docs/main-loop.md): the main-loop budget (ML1-ML8): per-callback timing, the diagnostic
   ring and watchdog (`scottland-ctl loop`), the named exceptions still owed, and the reload handover protocol.
 - [docs/attention.md](docs/attention.md): attention (AT1-AT6): sources, per-app configuration,
   pluggable and networked sources (mostly not built yet).
+
+## Privacy of developer networks (Mike, 2026-10-04)
+
+This repository is public. Never reveal the internal topology or identifiers of any developer's network:
+no host names, IP addresses, tailnet or domain names, user names, device names or home paths, in code,
+docs, comments, commit messages, test fixtures or logs. Say "the test machine" or "the daily machine";
+which machine that is lives in private environment docs. If a component needs to reach a machine, its
+address is a configurable field set at install time, never a constant. Existing mentions in current files
+are being removed (names already in git history stay); don't add new ones.
 
 ## Where does a request belong?
 
@@ -166,3 +178,33 @@ Useful tools: `tests/headless.sh`, `tests/deploy.sh`, `tests/shell-probe.sh` (st
 against the shim, headless and sandboxed), `tests/nested.sh` (Scottland in a window on
 Hyprland), `scottland-ctl`, `scottland-exec`, and the logs in `~/.local/state/scottland/`
 (`wayfire.log`, `hyprshim.log`, `handover.log`, `luahost.log`, `watch-config.log`).
+
+## Testing standard (Mike, 2026-10-04)
+
+Every new or changed test meets these. Existing tests that don't yet are listed, with what each
+still needs, in [docs/tests-todo.md](docs/tests-todo.md).
+
+- **Real input and an independently observable result.** Drive the behavior through the path a
+  user's input takes (stipc keys, buttons, pointer, touch), and judge it by something the code
+  under test does not merely report about itself: what the client received, the mapped geometry,
+  the pixels. A flag, counter or the solver's own verdict is a diagnostic, not proof. Test hooks
+  are fine for setup and fault injection; say which input layers they bypass.
+- **Wait on state, not sleeps.** After one action, poll a bounded predicate for the newer state,
+  event or frame; a deadline that expires is a failure, reported with the last observation. Sleeps
+  may pace a gesture or make an intended hold, never stand in for readiness.
+- **Check what is on screen for rendering claims.** Visible, hidden, tinted or drawn is checked
+  against captured pixels. A saved screenshot is evidence to inspect, not an assertion.
+- **No wall-clock budgets in functional gates; benchmarks are separate.** Exact timing boundaries
+  are unit-tested with supplied timestamps. Performance contracts (P8's 2 ms and the like) live in
+  benchmarks that record machine, renderer, load and sample count. A generous hang deadline is fine.
+- **Count checks honestly.** Report named scenarios and properties apart from iterations,
+  generated cases and assertion evaluations. A check that cannot fail (`check(True)`, a count of
+  the test's own loop) is not a check. Fuzz volume, soaks and calibration stay out of default runs.
+- **Own your session and clean up exactly what you create.** A unique directory under the
+  checkout's `build/`, the session's recorded environment, checkout-built helpers. Never attach to
+  the newest socket or to a session you did not start. On success, failure or interrupt, release
+  held input, stop and reap your processes, and remove only the paths you created.
+- **No source-text assertions.** Don't grep code, shaders, QML or help prose to claim a behavior;
+  test what it does. Checking metadata or schema membership is fine.
+- **No retrying the action under test.** Send it once and wait for its result; a retry hides the
+  miss the test exists to catch.

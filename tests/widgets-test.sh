@@ -571,10 +571,16 @@ sleep 2.5
 card2_width() { views | python3 -c "import json,sys; print([round(v['frame']['width']) for v in json.load(sys.stdin)['views'] if v['widget'] and v['title'].endswith('mini2-app')][0])"; }
 check "WG16 a window widgetized while widgets are collapsed is collapsed too" \
   [ "$(ipc scottland/widgets | python3 -c "import json,sys; print([w['minimized'] for w in json.load(sys.stdin)['widgets'] if w['title']=='mini2-app'][0])")/$(card2_width)" = "True/96" ]
+# The next tap hides the widgets (WG16's third mode); the one after brings them back expanded.
 h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key":"KEY_M","state":true}'
 h stipc/feed_key '{"key":"KEY_M","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
 sleep 1.5
-check "WG16 Super+M again: the card again" [ "$(card_width)" = "$wide" ]
+check "WG16 Super+M again hides the widgets off the screen edge" \
+  [ "$(ipc scottland/widget-mode | python3 -c "import json,sys; print(json.load(sys.stdin)['mode'])")/$(views | python3 -c "import json,sys; print(all(v['hidden'] for v in json.load(sys.stdin)['views'] if v['widget']))")" = "hidden/True" ]
+h stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'; h stipc/feed_key '{"key":"KEY_M","state":true}'
+h stipc/feed_key '{"key":"KEY_M","state":false}'; h stipc/feed_key '{"key":"KEY_LEFTMETA","state":false}'
+sleep 1.5
+check "WG16 Super+M a third time: the card again" [ "$(card_width)" = "$wide" ]
 # Its text was never shown before: it must still be measured (its title is longer than mini-app's).
 check "WG16 ...the new one too, with its title" [ "$(card2_width)" -ge "$wide" ]
 h window-rules/close-view "{\"id\": $(view_field mini2-app "v['id']")}"

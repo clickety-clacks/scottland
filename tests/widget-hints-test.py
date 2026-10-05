@@ -228,6 +228,12 @@ try:
     capture('custom-left-rail')
     release()
     drag(widget(right), 10, 230)
+    # Window mode shows collapsed widgets expanded (WG16), and their clients resize then: lay
+    # out the stacked fixture expanded, where Alt changes no widget's size or placement.
+    ipc('scottland/widget-mode', {'mode': 'expanded'})
+    ipc('window-rules/focus-view', {'id': widget(custom)})
+    tap('SPACE')
+    time.sleep(.8)
     # WG26 commits space made during the real rail drop, so this sequence no longer
     # leaves stacked cards. Recreate a pre-existing overlap with fixture-only
     # geometry setup to keep exercising hint decluttering for overlapping widgets.
@@ -235,12 +241,13 @@ try:
     left_frame = next(v for v in views() if v['id'] == left_card)['frame']
     right_frame = next(v for v in views() if v['id'] == right_card)['frame']
     ipc('window-rules/configure-view', {'id': left_card, 'geometry': {
-        'x': right_frame['x'], 'y': right_frame['y'],
+        'x': right_frame['x'] if right_frame['x'] < 640 else  # rail-side edges aligned
+             right_frame['x'] + right_frame['width'] - left_frame['width'], 'y': right_frame['y'],
         'width': left_frame['width'], 'height': left_frame['height']}})
     wait(lambda: abs(next(v for v in views() if v['id'] == left_card)['frame']['y'] -
                      right_frame['y']) < .1)
     hold()
-    before = capture('stacked-collapsed')
+    before = capture('stacked-expanded')
     check(any(abs(h['dy']) > 5 for h in before if h['window'] in (left,right)),
           'stacked widgets declutter vertically')
     geometry = {v['id']: tuple(v['frame'][k] for k in ('x', 'y', 'width', 'height'))
@@ -254,13 +261,6 @@ try:
     check(memories == after_memories, 'declutter/release never changes remembered placement')
     check(not any(h['visible'] or abs(h['dx']) > .01 or abs(h['dy']) > .01 for h in hints()),
           'Alt release removes hints and visual displacement')
-    key('LEFTMETA', True); tap('M'); key('LEFTMETA', False)
-    ipc('window-rules/focus-view', {'id': widget(custom)})
-    tap('SPACE')
-    time.sleep(.8)
-    hold()
-    capture('stacked-expanded')
-    release()
     # Live text scale while Alt stays down: no restart, and corners remain clear.
     hold()
     for scale in (1.5, 3):
@@ -297,17 +297,21 @@ try:
     peek_started = time.monotonic()
     wait_hint_settled(left)
     capture('wk34-hint-peek-expanded', 3)
+    # Window mode itself shows collapsed widgets expanded until Alt is released (WG16); the
+    # hint peek is what keeps this one expanded afterwards, for the rest of its five seconds.
+    release()
     time.sleep(max(0, peek_started + 3.8 - time.monotonic()))
     check(next(v for v in views() if v['id'] == widget(left))['frame']['width'] > 100 and
         next(w for w in links() if int(w['id']) == left)['peek'],
         'WK34 selected collapsed widget stays expanded during its five-second hint peek')
+    check(next(v for v in views() if v['id'] == widget(right))['frame']['width'] <= 97,
+        'WG16 the other collapsed widget collapsed again when Alt was released')
     wait(lambda: next(v for v in views() if v['id'] == widget(left))['frame']['width'] <= 97 and
         not next(w for w in links() if int(w['id']) == left)['peek'])
     peek_elapsed = time.monotonic() - peek_started
-    wait_hint_settled(left)
-    capture('wk34-hint-peek-collapsed', 3)
     check(4.8 <= peek_elapsed <= 6.2,
         f'WK34 timed hint peek collapses on its own after about five seconds ({peek_elapsed:.2f}s)')
+    hold()
 
     ipc('wayfire/set-config-options', {'scottland/window_double_tap_delay': 3000})
     right_label = next(h['hint'] for h in hints() if h['window'] == right)

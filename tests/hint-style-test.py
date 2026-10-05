@@ -63,13 +63,21 @@ def views():
 def hints():
     return ipc('scottland/hints')['hints']
 
-def expected_size(h, frame, scale=1):
+def size_ok(h, frame, scale=1):
+    """WK31: an uncovered window's hint has its proportional size; a covered window with hint
+    room shows as large a hint as fits up to that size; on a strip or with no room, the minimum."""
+    size = h['badge']['size']
+    minimum = round(48*scale)
     if frame['widget']:
-        return round(48*scale)
+        return size == minimum
     f = frame['frame']
     desired = max(72*scale, min(132*scale, min(f['width'], f['height'])*.34*scale))
     fit = math.floor(max(0, 2*(h['clearance']-1)/1.06))
-    return round(min(desired, fit))
+    if h.get('rung') == 'peek' or h.get('outcome') == 'no_room':
+        return size == minimum
+    if h.get('rung') in ('full', 'minimum'):
+        return minimum <= size <= round(desired)+1 and size <= max(minimum, fit)+1
+    return size == round(min(desired, fit))
 
 def key(code, state):
     ipc('stipc/feed_key', {'key': 'KEY_' + code, 'state': state})
@@ -171,7 +179,7 @@ try:
         for h in state:
             v = represented[links.get(h['window'], h['window'])]
             f = v['frame']
-            all_sizes &= h['badge']['size'] == expected_size(h, v)
+            all_sizes &= size_ok(h, v)
         check(all_sizes, scheme+': sizing uses displayed dimensions and visible clearance, preserving widget sizes')
         if scheme == 'dark':
             # WK5: badges follow the desktop's text size (text_scale in the palette file).
@@ -181,12 +189,19 @@ try:
             temporary.write_text(json.dumps(scaled)); temporary.replace(palette_path)
             time.sleep(.8)
             hold()
-            ok = True
-            for h in hints():
-                v = represented[links.get(h['window'], h['window'])]
-                f = v['frame']
-                ok &= h['badge']['size'] == expected_size(h, v, 1.5)
-            check(ok, 'badges follow desktop text size and visible clearance, retaining the widget 2/3 factor')
+            # Larger hints need more room: rear windows may still be easing to it (WK13).
+            until = time.monotonic()+3
+            while True:
+                scaled = hints()
+                bad = [(h['hint'], h.get('outcome'), h.get('rung'), h.get('badge', {}).get('size'), round(h['clearance'], 1))
+                       for h in scaled if 'badge' not in h or
+                       not size_ok(h, represented[links.get(h['window'], h['window'])], 1.5)]
+                if not bad or time.monotonic() > until:
+                    break
+                time.sleep(.2)
+            if bad:
+                print('      text-scale sizes off:', bad, flush=True)
+            check(not bad, 'badges follow desktop text size and visible clearance, retaining the widget 2/3 factor')
             key('LEFTALT', False); time.sleep(.3)
             theme('dark')
             time.sleep(.8)

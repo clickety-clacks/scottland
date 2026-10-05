@@ -178,7 +178,7 @@ void begin_widget_transition(widget_link_t& link, bool target)
     }
     pixels->from = frame->presentation ? scottland::widget_morph_renderer().freeze(
         *frame->presentation, view->get_output()->handle->scale) :
-        scottland::widget_image_t::capture(view, link.card ? (view->get_geometry().width == 96 ? 20 : 16) : 0);
+        scottland::widget_image_t::capture(view, link.card ? (view->get_geometry().width == 96 ? 17 : 16) : 0);
     if (!pixels->from) return;
     pixels->width = pixels->from.width;
     pixels->height = pixels->from.height;
@@ -334,7 +334,7 @@ bool step_widget_transitions()
             p.fallback = !(transition.buffer_applied && size_ready);
             p.response_ms = now - p.requested;
             p.to = scottland::widget_image_t::capture(view,
-                transition.card ? (g.width == 96 ? 20 : 16) : 0);
+                transition.card ? (g.width == 96 ? 17 : 16) : 0);
             if (!p.to) { frame->presentation.reset(); it = widget_transitions.erase(it); continue; }
             p.waiting = false;
             p.started = now;

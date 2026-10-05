@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <chrono>
+#include <map>
 #include <cstring>
 #include <wayfire/scene-render.hpp>
 #include <wayfire/util/log.hpp>
@@ -24,14 +25,32 @@ using gl::state_t;
 using gl::target_t;
 namespace
 {
-int breath_key_count(const settings_t &s, float scale)
+// GO26: how many keys of the breath to cache. Only as many as the swing needs at half a
+// device pixel of shore travel per interval; never more than the ceiling. A swing that
+// needs more keeps the ceiling and widens the interval just enough to cover it: the key
+// count alone never sends the breath to the exact path.
+//
+// The ceiling is not a memory limit. Whatever the count, only the two keys around the
+// current breath are held, in two layers of two RGBA8 output-sized textures (127 MiB in
+// all for a 3840x2160 framebuffer, 4K at any scale; 63 MiB of that is the second layer).
+// What grows with the count is work: each key the breath crosses re-renders one layer
+// over the strips, and a breath crosses every key twice, against 125 exact renders in
+// the same five seconds. With both cache textures written in one pass (GLES 3), 48 keys
+// cost at most 96 renders a breath; where each refresh takes two passes (GLES 2), 24 do.
+constexpr int breath_key_ceiling_one_pass = 48, breath_key_ceiling_two_pass = 24;
+struct breath_plan_t
 {
-    // The approximation is bounded to half a device pixel per interval. Extreme
-    // settings use the exact direct strip path instead of silently widening it.
+    int keys = 1;
+    float spacing = 0;  // device pixels of shore travel per interval
+};
+breath_plan_t breath_key_plan(const settings_t &s, float scale, int ceiling)
+{
     float swell = breath_swell(s.thickness, s.reach, s.swell);
     float travel = s.reach * std::log1p(std::max(swell, 0.f)) * std::max(scale, 1.f);
-    int required = std::max(1, int(std::ceil(travel / .5f)));
-    return required <= 16 ? required : 0;
+    breath_plan_t plan;
+    plan.keys = std::clamp(int(std::ceil(travel / .5f)), 1, std::max(ceiling, 1));
+    plan.spacing = travel / plan.keys;
+    return plan;
 }
 float breath_key_value(int key, int keys, float swell)
 {
@@ -74,6 +93,34 @@ struct renderer_t::impl
     bool layer_b_available = true, requested_keyframes = false, use_keyframes = false;
     std::vector<source_t> sources;
     OpenGL::program_t field_p, mask_p, wave_p, dye_p, render_p, energy_p, query_p, copy_p, backdrop_p;
+    // GO26: both cache textures of a layer as two attachments of one framebuffer.
+    bool mrt = false, layer_fail_seen = false, cache_fail_seen = false;
+    OpenGL::program_t cache_p;
+    GLuint cache_fb[2] = {0, 0}, cache_fb_tex[2][2] = {{0, 0}, {0, 0}};
+    GLuint cache_framebuffer(int layer)
+    {
+        if (!mrt)
+            return 0;
+        GLuint color = (layer ? intrinsic_b : intrinsic).texture, params = (layer ? refraction_b : refraction).texture;
+        if (!color || !params)
+            return 0;
+        if (cache_fb[layer] && cache_fb_tex[layer][0] == color && cache_fb_tex[layer][1] == params)
+            return cache_fb[layer];
+        if (!cache_fb[layer])
+            glGenFramebuffers(1, &cache_fb[layer]);
+        glBindFramebuffer(GL_FRAMEBUFFER, cache_fb[layer]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, params, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        {
+            LOGI("scottland goo: single-pass cache refresh unavailable; using two passes");
+            mrt = false;
+            return 0;
+        }
+        cache_fb_tex[layer][0] = color;
+        cache_fb_tex[layer][1] = params;
+        return cache_fb[layer];
+    }
     OpenGL::program_t intrinsic_p, refraction_p, composite_p, composite_mix_p;
     OpenGL::program_t field_fast, mask_fast, wave_fast, dye_fast, render_fast;
     target_t field, mask, wave[2], dye[2], source, curve, background, query, atlas;
@@ -142,8 +189,14 @@ struct renderer_t::impl
         release_readback();
         if (timer)
             glDeleteQueries(1, &timer);
+        for (auto &fb : cache_fb)
+        {
+            if (fb)
+                glDeleteFramebuffers(1, &fb);
+            fb = 0;
+        }
         for (auto p : {&field_p, &mask_p, &wave_p, &dye_p, &render_p, &energy_p, &query_p, &copy_p, &backdrop_p,
-                       &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p,
+                       &intrinsic_p, &refraction_p, &composite_p, &composite_mix_p, &cache_p,
                        &field_fast, &mask_fast, &wave_fast, &dye_fast, &render_fast})
             p->free_resources();
         for (auto p : {&field, &mask, &wave[0], &wave[1], &dye[0], &dye[1], &source, &curve, &background, &query,
@@ -152,31 +205,16 @@ struct renderer_t::impl
         for (auto &t : reduction)
             t.release();
     }
-    void compile(OpenGL::program_t &program, std::string vs, std::string fs, bool derivatives = false)
+    // Compiles one program variant (goo-shaders.hpp) and reports, by name, a variant that
+    // does not link.
+    bool build(OpenGL::program_t &program, const program_variant &variant)
     {
-        auto replace = [](std::string &s, const std::string &from, const std::string &to)
-        {
-            size_t at = 0;
-            while ((at = s.find(from, at)) != std::string::npos)
-            {
-                s.replace(at, from.size(), to);
-                at += to.size();
-            }
-        };
-        if (es3)
-        {
-            replace(vs, "attribute ", "in ");
-            replace(vs, "varying ", "out ");
-            replace(fs, "varying ", "in ");
-            replace(fs, "texture2D(", "texture(");
-            replace(fs, "gl_FragColor", "goo_color");
-            replace(fs, "i<1024", "i<uCount");
-            program.compile("#version 300 es\n" + vs,
-                            "#version 300 es\nprecision highp float; out vec4 goo_color;\n" + fs);
-        }
-        else
-            program.compile("#version 100\n" + vs, std::string("#version 100\n") +
-                (derivatives ? "#extension GL_OES_standard_derivatives : require\n" : "") + fs);
+        program.compile(vertex_source(es3), fragment_source(variant, es3));
+        GLint linked = 0;
+        glGetProgramiv(program.get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
+        if (!linked)
+            LOGE("scottland goo: the ", variant.name, " shader did not link");
+        return linked;
     }
     bool support()
     {
@@ -204,75 +242,40 @@ struct renderer_t::impl
         }
         field.release();
         loop::note(loop::note_id::goo_targets, packed);
-        const std::array programs{std::make_pair(&field_p, &field_shader), std::make_pair(&mask_p, &mask_shader), std::make_pair(&wave_p, &wave_shader),
-                          std::make_pair(&dye_p, &dye_shader), std::make_pair(&render_p, &render_shader),
-                          std::make_pair(&energy_p, &energy_shader), std::make_pair(&query_p, &query_shader)};
-        for (auto pair : programs)
+        const std::map<std::string, OpenGL::program_t*> programs{
+            {"field", &field_p}, {"mask", &mask_p}, {"wave", &wave_p}, {"dye", &dye_p}, {"render", &render_p},
+            {"energy", &energy_p}, {"query", &query_p}, {"field_fast", &field_fast}, {"mask_fast", &mask_fast},
+            {"wave_fast", &wave_fast}, {"dye_fast", &dye_fast}, {"render_fast", &render_fast},
+            {"intrinsic", &intrinsic_p}, {"refraction", &refraction_p}, {"cache_both", &cache_p},
+            {"composite", &composite_p}, {"composite_mix", &composite_mix_p},
+            {"backdrop", &backdrop_p}, {"copy", &copy_p}};
+        mrt = false;
+        for (auto &variant : program_variants())
         {
-            compile(*pair.first, vertex, *pair.second, pair.second == &render_shader);
-            GLint linked = 0;
-            glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
-            if (!linked)
+            auto program = programs.find(variant.name);
+            if (program == programs.end())
+            {
+                LOGE("scottland goo: no program for the ", variant.name, " shader");
+                available = false;
+                continue;
+            }
+            if (variant.es3_only && !es3)
+                continue;
+            bool linked = build(*program->second, variant);
+            if (program->second == &cache_p)
+            {
+                // GO26: one pass writes both caches; otherwise each refresh takes two passes.
+                mrt = linked;
+                if (!mrt)
+                    LOGI("scottland goo: single-pass cache refresh unavailable; using two passes");
+            } else if (!linked && variant.required)
                 available = false;
         }
-        // Specialize the common resting/breathing path. Uniform branches alone
-        // retain the overlap/hover loop state on Xe, even when both are absent.
-        const std::array fast_programs{std::make_pair(&field_fast, &field_shader),
-            std::make_pair(&mask_fast, &mask_shader), std::make_pair(&wave_fast, &wave_shader),
-            std::make_pair(&dye_fast, &dye_shader), std::make_pair(&render_fast, &render_shader)};
-        for (auto pair : fast_programs)
+        if (programs.size() != program_variants().size())
         {
-            auto shader = *pair.second;
-            const std::string decl = "uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls;";
-            shader.replace(shader.find(decl), decl.size(),
-                "uniform float uFilm,uCloudiness,uEmissivity; const float uOverlap=0.,uControls=0.;");
-            // A float round-trip of uCount keeps a second dynamic loop bound in
-            // some GLES compilers. In this specialization every source is eligible.
-            auto replace = [&](const std::string &from, const std::string &to)
-            {
-                size_t at = 0;
-                while ((at = shader.find(from, at)) != std::string::npos)
-                {
-                    shader.replace(at, from.size(), to);
-                    at += to.size();
-                }
-            };
-            replace("if(back.x==0.)back=vec2(1.,0.);", "");
-            replace("if(i>=int(back.x))break;", "if(i>=uCount)break;");
-            replace("if(i>=int(hintBack.x))break;", "if(i>=uCount)break;");
-            compile(*pair.first, vertex, shader, pair.second == &render_shader);
-            GLint linked = 0;
-            glGetProgramiv(pair.first->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
-            if (!linked) available = false;
+            LOGE("scottland goo: shader table and programs differ");
+            available = false;
         }
-        auto cached_shader = [&](bool params)
-        {
-            std::string shader = render_shader;
-            const std::string background = "vec3 bg=texture2D(uBackground,bgUV).rgb,dye=";
-            shader.replace(shader.find(background), background.size(), "vec3 bg=vec3(0.),dye=");
-            const std::string result = "gl_FragColor=vec4(clamp(color,0.,1.)*a,a);";
-            shader.replace(shader.find(result), result.size(), params ?
-                "gl_FragColor=vec4(clamp((refr-p)/32.+.5,0.,1.),"
-                "clamp((1.-dyeBlend)*(film?1.:1.4)*diff/1.5,0.,1.),1.);" :
-                // The background term is nonnegative, so clamping intrinsic
-                // light before compositing gives the same final clamp.
-                "gl_FragColor=vec4(clamp(color,0.,1.),a);");
-            return shader;
-        };
-        compile(intrinsic_p, vertex, cached_shader(false), true);
-        compile(refraction_p, vertex, cached_shader(true), true);
-        compile(composite_p, vertex, cached_composite_shader);
-        compile(composite_mix_p, vertex, cached_composite_mix_shader);
-        for (auto p : {&intrinsic_p, &refraction_p, &composite_p, &composite_mix_p})
-        {
-            GLint linked = 0;
-            glGetProgramiv(p->get_program_id(wf::TEXTURE_TYPE_RGBA), GL_LINK_STATUS, &linked);
-            if (!linked) available = false;
-        }
-        compile(backdrop_p, vertex, backdrop_shader);
-        compile(copy_p, vertex,
-                "precision highp float; uniform sampler2D image; void "
-                "main(){gl_FragColor=texture2D(image,vec2(.5));}");
         if (!available)
             loop::note(loop::note_id::goo_shader_unavailable);
         return available;
@@ -287,6 +290,7 @@ struct renderer_t::impl
         glUniform2f(glGetUniformLocation(id, "uRes"), width, height);
         glUniform2f(glGetUniformLocation(id, "uSize"), w, h);
         one("uTime", time);
+        one("uDyeStrength", settings.dye_strength);
         one("uReach", settings.reach);
         one("uThickness", settings.thickness);
         one("uOverlap", overlap ? 1 : 0);
@@ -398,7 +402,8 @@ struct renderer_t::impl
             data.push_back(glm::vec4{s.hinted ? (s.hint_circle ? std::min(s.scale, 1.f) : 1.f) : 0.f, s.control_extent,
                 overlap_film_width(s, settings), s.hint_circle ? 1.f : 0.f});
             data.push_back(s.sides);
-            data.emplace_back(s.attention && s.emitter ? 1.f : 0.f, s.dye_strength, 0, 0);
+            data.emplace_back(s.attention && s.emitter ? 1.f : 0.f, s.dye_strength,
+                s.state_mix, s.neutral_strength);
             data.push_back(shape_tiles[i]);
             data.push_back(s.shape ? s.shape->bounds : glm::vec4{});
             data.push_back(s.shape_body);
@@ -425,6 +430,23 @@ struct renderer_t::impl
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         }
         return true;
+    }
+    // One pass of the dye: advection, spread, state release and wallpaper pickup.
+    void dye_pass(OpenGL::program_t &dye_program, wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map,
+                  float flow, float step, bool wet_only)
+    {
+        common(dye_program, dye[1].width, dye[1].height);
+        dye_program.uniform1f("uSpread", settings.spread);
+        dye_program.uniform1f("uSwirl", settings.swirl);
+        dye_program.uniform1f("uRelease", settings.release);
+        dye_program.uniform1f("uSoak", wallpaper ? settings.soak : 0);
+        dye_program.uniform1f("uFlow", flow);
+        dye_program.uniform1f("uStep", step);
+        dye_program.uniform1f("uWetOnly", wet_only ? 1 : 0);
+        dye_program.uniformMatrix4f("uWallpaperMap", wallpaper_map);
+        bind(dye_program, "uWallpaper", 5, wallpaper ? wf::gles_texture_t::from_aux(*wallpaper).tex_id : 0);
+        draw_to(dye_program, dye[1]);
+        std::swap(dye[0], dye[1]);
     }
     // Asynchronous energy readings (main-loop Phase 3): a ring of four pixel buffers with fences.
     struct energy_slot_t
@@ -644,6 +666,15 @@ struct renderer_t::impl
         }
     }
 };
+// The ring's code for a GO26 exact-path reason (NOTE goo_breath_exact names them).
+static uint64_t breath_reason_code(const std::string &reason)
+{
+    static const char *reasons[] = {"test override", "keyframes are switched off (scottland/goo_breath_keys)",
+        "the second cache layer could not be allocated", "the surface cache is unavailable"};
+    for (uint64_t i = 0; i < 4; i++)
+        if (reason == reasons[i]) return i;
+    return 4;
+}
 renderer_t::renderer_t() : p(std::make_unique<impl>()) {}
 renderer_t::~renderer_t()
 {
@@ -663,7 +694,7 @@ bool renderer_t::supported()
 }
 bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &s, int w, int h, float time,
                         const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area,
-                        wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map)
+                        wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map, float flow)
 {
     state_t guard;
     if (!p->support())
@@ -732,15 +763,7 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         p->simulate(wave_program, p->wave[1], wave_area);
         std::swap(p->wave[0], p->wave[1]);
     }
-    p->common(dye_program, p->dye[1].width, p->dye[1].height);
-    dye_program.uniform1f("uSpread", s.spread);
-    dye_program.uniform1f("uSwirl", s.swirl);
-    dye_program.uniform1f("uRelease", s.release);
-    dye_program.uniform1f("uSoak", wallpaper ? s.soak : 0);
-    dye_program.uniformMatrix4f("uWallpaperMap", wallpaper_map);
-    bind(dye_program, "uWallpaper", 5, wallpaper ? wf::gles_texture_t::from_aux(*wallpaper).tex_id : 0);
-    p->draw_to(dye_program, p->dye[1]);
-    std::swap(p->dye[0], p->dye[1]);
+    p->dye_pass(dye_program, wallpaper, wallpaper_map, flow, 1, false);
     packed = p->packed;
     steps++;
     if (!impulses.empty()) invalidation++;
@@ -761,9 +784,24 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return true;
 }
+void renderer_t::flow_dye(wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map, float flow,
+                          float step, int passes)
+{
+    if (!p->ready)
+        return;
+    state_t guard;
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    p->has_wallpaper = wallpaper && p->settings.soak > 0;
+    for (int i = 0; i < passes; i++)
+        p->dye_pass(p->fast ? p->dye_fast : p->dye_p, wallpaper, wallpaper_map, flow, step, true);
+    p->sampled_step = UINT64_MAX;  // a dye readback is stale now
+    ++dye_flows;
+}
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
                       const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
-              bool reuse_backdrop, const wf::regionf_t *dry, const wf::regionf_t *dry_content)
+              bool reuse_backdrop, const wf::regionf_t *dry, const wf::regionf_t *dry_content,
+              const wf::regionf_t *reuse_area)
 {
     if (!p->ready)
         return;
@@ -781,6 +819,9 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         capture_area |= wf::geometry_t{double(r.x1) - refract_margin, double(r.y1) - refract_margin,
             double(r.x2 - r.x1) + 2 * refract_margin,
             double(r.y2 - r.y1) + 2 * refract_margin};
+    // A reused frame restores only inside `area` (GO27), which this already covers, so the
+    // reuse region (`reuse_area`: the breathing strips or GO24's motion area) needs no copy of its
+    // own: its parts in dry content or open desktop are never restored.
     auto capture = data.damage & capture_area;
     // Window content no goo lies on is never sampled as backdrop either.
     if (dry)
@@ -855,7 +896,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         // Only inside the goo's own area and never over dry window content (GO27): no
         // backdrop is kept elsewhere, and the scene beneath painted it this frame.
         auto restore = data.target.framebuffer_region_from_geometry_region(data.damage) &
-            data.target.framebuffer_region_from_geometry_region(breath_area) &
+            data.target.framebuffer_region_from_geometry_region(reuse_area ? *reuse_area : breath_area) &
             data.target.framebuffer_region_from_geometry_region(area);
         if (dry_content)
             restore ^= data.target.framebuffer_region_from_geometry_region(*dry_content);
@@ -900,12 +941,42 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     };
     // An active simulation already redraws the surface for a new field every
     // step. Keep that path direct; populate the cache once it settles.
+    if (surface_cache_fail != p->cache_fail_seen)
+    {
+        // Tests: lose the surface cache, or try for it again.
+        p->cache_fail_seen = surface_cache_fail;
+        p->intrinsic.release();
+        p->refraction.release();
+        p->intrinsic_b.release();
+        p->refraction_b.release();
+        p->cache_available = true;
+        p->cache_valid = false;
+        p->layer_key[0] = p->layer_key[1] = -1;
+        p->cache_fb_tex[0][0] = p->cache_fb_tex[0][1] = p->cache_fb_tex[1][0] = p->cache_fb_tex[1][1] = 0;
+    }
+    // New cache storage has undefined contents (zero on some drivers, not on others). Give
+    // it the value of "no goo here", so a pixel composited before it was ever shaded draws nothing.
+    auto clear_cache = [&] (target_t &color, target_t &params)
+    {
+        GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, color.fb);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_FRAMEBUFFER, params.fb);
+        glClearColor(.5f, .5f, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        if (scissor)
+            glEnable(GL_SCISSOR_TEST);
+    };
     if (settled && p->cache_available &&
         (p->intrinsic.width != viewport[2] || p->intrinsic.height != viewport[3]))
     {
         p->cache_valid = false;
-        bool ok = p->intrinsic.allocate(viewport[2], viewport[3], true, p->es3);
-        ok = p->refraction.allocate(viewport[2], viewport[3], true, p->es3) && ok;
+        bool ok = !surface_cache_fail && p->intrinsic.allocate(viewport[2], viewport[3], true, p->es3);
+        ok = !surface_cache_fail && p->refraction.allocate(viewport[2], viewport[3], true, p->es3) && ok;
+        // New storage, possibly under a reused texture name: attach it again.
+        p->cache_fb_tex[0][0] = p->cache_fb_tex[0][1] = 0;
         if (!ok)
         {
             p->intrinsic.release();
@@ -913,12 +984,38 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             p->cache_available = false;
             loop::note(loop::note_id::goo_cache_unavailable);
         }
+        else
+            clear_cache(p->intrinsic, p->refraction);
+    }
+    if (settled && !p->cache_available)
+    {
+        // GO26: the whole goo draws directly; say so where the other exact-path reasons are.
+        breath_keyframes_active = false;
+        std::string reason = (breath_area & area).empty() ? "" : "the surface cache is unavailable";
+        if (reason != breath_exact_reason)
+        {
+            if (!reason.empty())
+                loop::note(loop::note_id::goo_breath_exact, breath_reason_code(reason));
+            breath_exact_reason = reason;
+        }
     }
     if (settled && p->cache_available)
     {
         auto strips = breath_area & area;
-        int key_intervals = strips.empty() ? 0 : breath_key_count(p->settings, data.target.scale);
+        breath_key_ceiling = p->mrt ? breath_key_ceiling_one_pass : breath_key_ceiling_two_pass;
+        auto plan = breath_key_plan(p->settings, data.target.scale, breath_key_ceiling);
+        int key_intervals = strips.empty() ? 0 : plan.keys;
+        breath_key_spacing = strips.empty() ? 0 : plan.spacing;
         bool requested_keys = breath_keys && !breath_exact && key_intervals > 0;
+        if (breath_layer_fail != p->layer_fail_seen)
+        {
+            // Tests: lose the second layer, or try for it again.
+            p->layer_fail_seen = breath_layer_fail;
+            p->intrinsic_b.release();
+            p->refraction_b.release();
+            p->layer_b_available = true;
+            p->layer_key[0] = p->layer_key[1] = -1;
+        }
         if (requested_keys != p->requested_keyframes)
         {
             p->requested_keyframes = requested_keys;
@@ -933,18 +1030,36 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         if (requested_keys && p->layer_b_available &&
             (p->intrinsic_b.width != viewport[2] || p->intrinsic_b.height != viewport[3]))
         {
-            bool a_ok = p->intrinsic_b.allocate(viewport[2], viewport[3], true, p->es3);
-            bool b_ok = p->refraction_b.allocate(viewport[2], viewport[3], true, p->es3);
+            bool a_ok = !breath_layer_fail && p->intrinsic_b.allocate(viewport[2], viewport[3], true, p->es3);
+            bool b_ok = !breath_layer_fail && p->refraction_b.allocate(viewport[2], viewport[3], true, p->es3);
+            p->cache_fb_tex[1][0] = p->cache_fb_tex[1][1] = 0;
             if (!a_ok || !b_ok)
             {
                 p->intrinsic_b.release();
                 p->refraction_b.release();
                 p->layer_b_available = false;
-                loop::note(loop::note_id::goo_keyframes_unavailable);
             }
+            else
+                clear_cache(p->intrinsic_b, p->refraction_b);
         }
         int keys = requested_keys && p->layer_b_available ? key_intervals : 0;
         breath_keyframes_active = keys > 0;
+        // The exact path (the full surface shader over the strips on every tick) is for
+        // these cases only, never for the number of keys. Say which, in goo-state always
+        // and in the log once each time it changes.
+        std::string reason = strips.empty() || keys > 0 ? "" :
+            breath_exact ? "test override" :
+            !breath_keys ? "keyframes are switched off (scottland/goo_breath_keys)" :
+            !p->layer_b_available ? "the second cache layer could not be allocated" : "unknown";
+        if (reason != breath_exact_reason)
+        {
+            if (!reason.empty())
+                loop::note(loop::note_id::goo_breath_exact, breath_reason_code(reason));
+            else if (!strips.empty())
+                loop::note(loop::note_id::goo_breath_keyframes, keys, uint64_t(std::lround(breath_key_spacing)),
+                    uint64_t(std::lround(breath_key_ceiling)));
+            breath_exact_reason = reason;
+        }
         if ((keys > 0) != p->use_keyframes)
         {
             p->layer_key[0] = p->layer_key[1] = -1;
@@ -979,6 +1094,30 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         {
             if (region.empty()) return;
             glDisable(GL_BLEND);
+            if (GLuint fb = p->cache_framebuffer(layer))
+            {
+                // Both cache textures in one pass of the surface shader.
+                const GLenum both[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+                const GLfloat clear_color[] = {0, 0, 0, 0}, clear_params[] = {.5f, .5f, 0, 0};
+                auto &target = layer ? p->intrinsic_b : p->intrinsic;
+                glBindFramebuffer(GL_FRAMEBUFFER, fb);
+                glDrawBuffers(2, both);
+                glViewport(0, 0, target.width, target.height);
+                setup_surface(p->cache_p, value);
+                each_pixel_rect(region, [&]
+                {
+                    GLint box[4];
+                    glGetIntegerv(GL_SCISSOR_BOX, box);
+                    surface_pixels += uint64_t(box[2]) * box[3];
+                    glScissor(box[0] - viewport[0], box[1] - viewport[1], box[2], box[3]);
+                    glClearBufferfv(GL_COLOR, 0, clear_color);
+                    glClearBufferfv(GL_COLOR, 1, clear_params);
+                    p->cache_p.attrib_pointer("position", 2, 0, vertices);
+                    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+                });
+                p->cache_p.deactivate();
+                return;
+            }
             const std::array passes{
                 std::make_pair(layer ? &p->intrinsic_b : &p->intrinsic, &p->intrinsic_p),
                 std::make_pair(layer ? &p->refraction_b : &p->refraction, &p->refraction_p)};
@@ -1053,6 +1192,8 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             bind(program, "uIntrinsic", 0, p->intrinsic.texture);
             bind(program, "uRefraction", 1, p->refraction.texture);
             bind(program, "uBackground", 5, bg.texture);
+            bind(program, "uDyeTex", 4, p->dye[0].texture);
+            program.uniform2f("uRes", p->width, p->height);
             if (&program == &p->composite_mix_p)
             {
                 bind(program, "uIntrinsicB", 2, p->intrinsic_b.texture);

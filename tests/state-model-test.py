@@ -101,6 +101,15 @@ def combo(modifier, code):
     key(modifier, False)
 
 
+def collapse_toggle():
+    """Expanded <-> collapsed: a real Super+M tap collapses; expanding is two taps through
+    hidden now (WG16), so it uses the same mode change through scottland/widget-mode."""
+    if ipc.call("scottland/widget-mode")["mode"] == "expanded":
+        combo("KEY_LEFTMETA", "KEY_M")
+    else:
+        ipc.call("scottland/widget-mode", {"mode": "expanded"})
+
+
 def shown(app_id):
     model = ipc.call("scottland/desktop-model")
     link = next((w for w in model["widgets"] if w["window"] == app_id), None)
@@ -216,14 +225,14 @@ try:
     unit = shown(a)[1]["widget_unit"]
     wrong["rendered"][unit]["width"] += 100
     check("checker rejects an incorrect card render report", not ipc.call("scottland/audit-model", {"service": wrong})["ok"])
-    combo("KEY_LEFTMETA", "KEY_M")
+    collapse_toggle()
     time.sleep(0.6)
     audit("collapsed")
     b = open_app()
     drag(b, 6)
     audit("new card starts collapsed")
     check("card started collapsed", shown(b)[1]["minimized"])
-    combo("KEY_LEFTMETA", "KEY_M")
+    collapse_toggle()
     time.sleep(0.6)
     audit("cards expanded, including the one started collapsed")
     subprocess.run(["grim", str(artifacts / f"seed-{seed}-expanded.png")], check=True)
@@ -269,7 +278,7 @@ try:
     old_y = f["y"]
     drag(b, 6, f["y"] + f["height"] / 2 + 45)
     audit("widget moved before collapsed re-grab")
-    combo("KEY_LEFTMETA", "KEY_M")
+    collapse_toggle()
     time.sleep(0.5)
     audit("collapsed during re-grab chain")
     drag(b, width / 2, cancel=True)
@@ -277,7 +286,7 @@ try:
     restored, link = shown(b)
     check("Esc restored the original rail and vertical anchor", link["rail"] == "left"
           and abs(restored["frame"]["y"] - old_y) < 1.5)
-    combo("KEY_LEFTMETA", "KEY_M")
+    collapse_toggle()
     time.sleep(0.5)
     audit("expanding after Esc retains the restored anchor")
 
@@ -366,7 +375,7 @@ try:
         elif op == "undock":
             drag(window, width / 2, rng.randint(160, 480))
         elif op == "collapse":
-            combo("KEY_LEFTMETA", "KEY_M")
+            collapse_toggle()
             time.sleep(0.5)
         elif op == "title":
             clients[window][1].write_text(rng.choice(["", "Short", "A title that gets much longer"]) + f" {step}")
@@ -398,7 +407,6 @@ try:
             time.sleep(0.7)
         audit(f"seed {seed} step {step} {op}")
     subprocess.run(["grim", str(artifacts / f"seed-{seed}-final.png")], check=True)
-    check("headless scene renders after randomized inputs")
     print(f"{passes} checks passed; seed={seed}, steps={len(sequence)}", flush=True)
 except Exception:
     print(f"FAIL seed={seed} replay: tests/state-model-test.sh {seed} {steps}\ntrace={json.dumps(trace)}", file=sys.stderr)
