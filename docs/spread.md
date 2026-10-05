@@ -56,11 +56,19 @@ cut delivers the progress made. Measured in the real build (nacelle headless,
 `tests/spread-load-test.py`, 2026-10-04): 12, 24 and 40 windows took 1, 5 and 5 slices, longest
 1.53, 2.00 and 2.00 ms; the 40-window solve was cut at 10 ms of solving with 10 of 13 arrivals
 placed, delivered after 78 ms because one event-loop turn spent 64 ms drawing 40 windows in
-software between two slices (spread itself never held the loop longer than a slice). Every unit
-operation is charged before it runs: the longest CPU time between two charges was 13.5 µs over 40
-scenes of 50 windows on nacelle. Each checkpoint's result is built inside the budget when it becomes
-the best, so a stopped or cancelled solve delivers it without further work; the input caps are
-checked before anything is collected. Inside that
+software between two slices (the solve itself never held the loop longer than a slice). Work is
+charged before it runs, item by item, except sorts of at most 256 intervals (the obstacle cap),
+which run as one batch charged by their length in advance: the longest CPU time between two
+charges was 13.5 µs over 40 scenes of 50 windows on nacelle (Astra measured 35.7 µs at 50 windows
+and 19.8 µs at the 128-window cap). Each checkpoint's result is built inside the budget when it
+becomes the best, so a stopped or cancelled solve delivers it without further work; the input caps
+are checked before anything is collected. Outside the slices, delivering a solo (the result copy,
+the record, freeing the job and the commit) took 1.2, 8.1 and 8.9 ms of compositor CPU for 12, 24
+and 40 windows (`deliver_cpu_ms`; wall-clock figures on a shared host add preemption), nearly all of
+it Wayfire moving each window (about 0.4 ms per moved window); the model is published once per
+commit, not per window. The job's `step(allowance)` is not yet the worker's `step(cancel_t)`: the
+worker will wrap it with a cancellation adapter, and a job stays on the thread that started it
+(destroying an unfinished one resumes it there to unwind). Inside that
 session the kernel did about 31 units/µs against 112 in the unit suite on the same host, so its
 12 ms reach less far there; this is still to be measured on a real GPU session. Unit operations
 measure under 40 µs of CPU; longer wall-clock slices seen on plumbus were preemption under load.
@@ -89,7 +97,7 @@ plugin refuses an offer before it releases the drag.
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
 | SP5 | Every unit operation is charged; the solve runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. | verified (unit suite; real-build slices measured on plumbus) |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (plumbus and nacelle headless) |
-| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots even over running glides or avoidance, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (nacelle headless, real stipc drags, 59 checks, 2026-10-04) |
+| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots over running glides (and once avoidance offsets have settled), refuses on a change of the hotspot setting, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (nacelle headless, real stipc drags, 59 checks, 2026-10-04) |
 | SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced. | verified (plumbus and nacelle headless reload rehearsal) |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared plumbus session was not
@@ -118,8 +126,15 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
   runs underneath, and easing back ends on the live state. A window still coasting, or gliding
   away, delays the offer. Hint-avoidance offsets of offered windows ease to zero while the offer
   shows (they are held still, as for a pair) and are recomputed after: the offered spot is exact
-  once they settle (Astra's review asked for suspension; this is the equivalent contract, tested
+  once they have settled, not during that easing, and the earlier avoidance state is recomputed
+  rather than restored (Astra's review asked for suspension and accepted this equivalent; tested
   with avoidance on).
+- The hotspot radius is fixed when the offer arms (its reservation is built with it); changing the
+  setting during an offer refuses it, and a drop is accepted only if the dropped window lies inside
+  the reservation.
+- After its exact restorations, the return pass also tries a moved resident's own column at its own
+  scale before the four shortening samples (Fable's round-2 note: a same-x spot can come free after
+  the resident moved).
 - A solo whose solve moves nothing (unchanged, unavailable) still takes the solo window to the center.
 - The spacing pass may also run when the seed checkpoint wins.
 

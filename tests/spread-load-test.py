@@ -38,7 +38,7 @@ try:
         h.alt(True); h.press_hint(S, hold=.75); h.alt(False)
         r = h.wait_solve(n)
         records.append({k: r[k] for k in ('windows', 'status', 'checkpoint', 'complete', 'work', 'slices',
-            'longest_slice_ms', 'solving_ms', 'waited_ms', 'longest_gap_ms')})
+            'longest_slice_ms', 'solving_ms', 'waited_ms', 'longest_gap_ms', 'deliver_ms', 'deliver_cpu_ms', 'snapshot_ms', 'commit_ms', 'commit_cpu_ms')})
         print(json.dumps(records[-1]), flush=True)
         check(r['longest_slice_ms'] < 4, f'{r["windows"]} windows: every slice is short (longest {r["longest_slice_ms"]:.2f} ms; 2 ms allowance)')
         # Delivery happens at the first event-loop turn after the limit; the loop's own work between
@@ -46,6 +46,8 @@ try:
         bound = r['wall_limit_ms'] + r['longest_gap_ms'] + 2.5
         check(r['waited_ms'] <= bound, f'{r["windows"]} windows: delivered in {r["waited_ms"]:.1f} ms, within the {r["wall_limit_ms"]:.0f} ms '
               f'limit plus one event-loop turn ({r["longest_gap_ms"]:.1f} ms) ({r["status"]} via {r["checkpoint"]})')
+        check(r['deliver_cpu_ms'] < 25, f'{r["windows"]} windows: delivering and committing took {r["deliver_cpu_ms"]:.1f} ms of '
+              f'compositor CPU ({r["deliver_ms"]:.1f} ms wall)')
         h.shot(f'load-{count}.png')
         time.sleep(1)
     (art / 'load.json').write_text(json.dumps(records, indent=2))

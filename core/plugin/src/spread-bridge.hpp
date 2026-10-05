@@ -17,6 +17,15 @@
     static constexpr int AUDITION_PRECOMPUTE_MS = 1000;
     static constexpr int AUDITION_EASE_MS = 240;
 
+    // CPU time of the compositor's main thread: what Scottland itself spent, apart from any
+    // time the machine gave to other processes (wall-clock figures on a shared host include it).
+    static double thread_cpu_ms()
+    {
+        timespec t;
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
+        return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+    }
+
     struct spread_run_t
     {
         std::unique_ptr<scottland::spread::job_t> job;
@@ -148,10 +157,15 @@
         if (spread_step()) spread_tick.set_timeout(1, [=] () { return spread_step(); });
     }
 
+    double spread_cancel_ms = 0;  // the last cancellation, unwinding included
+
     void spread_cancel()
     {
         spread_tick.disconnect();
+        auto started = std::chrono::steady_clock::now();
+        bool had = spread_run.has_value();
         spread_run.reset();  // an unfinished job unwinds its solve and frees its stack
+        if (had) spread_cancel_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     }
 
     // One slice. False when the run was delivered (or is gone).
@@ -183,6 +197,8 @@
     void spread_deliver()
     {
         if (!spread_run) return;
+        auto entered = std::chrono::steady_clock::now();
+        double entered_cpu = thread_cpu_ms();
         spread_tick.disconnect();
         auto run = std::move(*spread_run);
         spread_run.reset();
@@ -233,6 +249,10 @@
         spread_last = record;
         run.job.reset();
         if (run.deliver) run.deliver(result);
+        // The whole delivery callback on the event loop: result copy, record, the job's
+        // destruction and the caller's commit (apart from the slices themselves).
+        spread_last["deliver_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - entered).count();
+        spread_last["deliver_cpu_ms"] = thread_cpu_ms() - entered_cpu;
     }
 
     // ------------------------------------------------------------------ committing moves
@@ -241,6 +261,7 @@
     // (cleared unless kept); memories are recorded for moved windows only.
     void commit_spread_moves(const std::vector<scottland::spread::move_t>& moves)
     {
+        publish_batch_t batch(this);
         for (const auto& m : moves)
         {
             auto view = wf::toplevel_cast(view_by_id(m.id));
@@ -328,7 +349,9 @@
                     return;
                 }
                 auto started = std::chrono::steady_clock::now();
+                double started_cpu = thread_cpu_ms();
                 commit_solo(id, at, result);
+                spread_last["commit_cpu_ms"] = thread_cpu_ms() - started_cpu;
                 spread_last["snapshot_ms"] = snapshot_ms;
                 spread_last["commit_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             });
@@ -339,6 +362,7 @@
     // (unchanged, unavailable) still takes the solo window where it was asked to go.
     void commit_solo(uint64_t id, wf::pointf_t at, const scottland::spread::result_t& result)
     {
+        publish_batch_t batch(this);
         auto window = wf::toplevel_cast(view_by_id(id));
         if (!window || !window->is_mapped()) return;
         commit_spread_moves(result.moves);
@@ -391,6 +415,7 @@
         wf::pointf_t anchor{0, 0};          // pointer when the solve was armed (layout)
         std::string signature;              // everything but the dragged window
         wf::dimensions_t dragged_size{0, 0};  // the dragged window's size when it was armed
+        double radius = 50;                 // the hotspot radius the reservation was built with
         scottland::spread::box reserved;
         std::optional<scottland::spread::result_t> result;
         std::string cache_key;              // an identical snapshot and reservation reuse it
@@ -555,7 +580,7 @@
                 if (center) audition_restart(pointer);
                 return;
             }
-            if (std::hypot(pointer.x - audition.anchor.x, pointer.y - audition.anchor.y) > audition_hotspot())
+            if (std::hypot(pointer.x - audition.anchor.x, pointer.y - audition.anchor.y) > audition.radius)
             {
                 audition_reset("left the hotspot");
                 audition_restart(pointer);
@@ -595,7 +620,7 @@
             // over every position the hotspot allows, so any accepted drop is honest (P14).
             audition.anchor = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
             auto g = view->get_geometry();
-            double r = audition_hotspot();
+            double r = audition.radius = audition_hotspot();  // the reservation's radius, fixed for this offer
             audition.reserved = {center->x - g.width / 2.0 - r, center->y - g.height / 2.0 - r,
                 center->x + g.width / 2.0 + r, center->y + g.height / 2.0 + r};
             audition.signature = spread_signature(output, audition.dragged);
@@ -704,6 +729,7 @@
         const char *why = nullptr;
         if (!view || view->get_id() != audition.dragged || drag->current_output != audition.output) why = "the drag changed";
         else if (shift_held()) why = "Shift";
+        else if (audition_hotspot() != audition.radius) why = "the hotspot setting changed";
         else if (view->get_geometry().width != audition.dragged_size.width ||
             view->get_geometry().height != audition.dragged_size.height) why = "the window was resized";
         else if (spread_signature(audition.output, audition.dragged) != audition.signature) why = "the desktop changed";
@@ -720,14 +746,19 @@
     {
         // Still the offer it was: inside the hotspot, not a Shift drop (L31), nothing changed since.
         bool accept = audition.offered && main && main->get_id() == audition.dragged && main->get_output() == audition.output &&
-            std::hypot(released.x - audition.anchor.x, released.y - audition.anchor.y) <= audition_hotspot() &&
+            std::hypot(released.x - audition.anchor.x, released.y - audition.anchor.y) <= audition.radius &&
+            audition_hotspot() == audition.radius &&
             !shift_held() && spread_signature(audition.output, audition.dragged) == audition.signature &&
             main->get_geometry().width == audition.dragged_size.width &&
             main->get_geometry().height == audition.dragged_size.height;
         if (accept)
         {
+            // Defensively: the dropped window, at full scale, lies inside the reservation the
+            // offer was solved for (P14: the drop stays put, so the room must be there).
             auto g = main->get_geometry();
-            accept = place_at(g.x + g.width / 2.0, main->get_output()->get_relative_geometry().width).zone == zone_t::center;
+            const auto& rv = audition.reserved;
+            accept = place_at(g.x + g.width / 2.0, main->get_output()->get_relative_geometry().width).zone == zone_t::center &&
+                g.x >= rv.x0 - 0.5 && g.y >= rv.y0 - 0.5 && g.x + g.width <= rv.x1 + 0.5 && g.y + g.height <= rv.y1 + 0.5;
         }
         if (!accept) { audition_end("dropped outside the offer"); return false; }
         ++audition.accepts;
@@ -798,6 +829,7 @@
         reply["running"] = spread_run.has_value();
         reply["running_slices"] = spread_run ? (int64_t)spread_run->job->slices : (int64_t)0;
         reply["solves"] = (int64_t)spread_solves;
+        reply["cancel_ms"] = spread_cancel_ms;
         reply["audition"] = audition_state();
         return reply;
     };

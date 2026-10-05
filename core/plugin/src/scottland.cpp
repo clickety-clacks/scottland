@@ -3587,10 +3587,34 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool installing_model = true;  // no partial init/handover snapshots escape
     std::map<std::string, std::string> published_slices;
     std::map<std::string, uint64_t> published_versions;
+    // A transaction that changes many windows at once (a spread commit) publishes the model once
+    // at its end instead of once per change: each publish serializes the whole desktop.
+    int publish_batch = 0;
+    bool publish_pending = false;
+    struct publish_batch_t
+    {
+        scottland_plugin_t *self;
+        explicit publish_batch_t(scottland_plugin_t *self) : self(self) { ++self->publish_batch; }
+        ~publish_batch_t()
+        {
+            if (--self->publish_batch == 0 && self->publish_pending)
+            {
+                self->publish_pending = false;
+                self->publish_model();
+            }
+        }
+    };
+
     void publish_model()
     {
         if (installing_model)
         {
+            return;
+        }
+
+        if (publish_batch)
+        {
+            publish_pending = true;
             return;
         }
 

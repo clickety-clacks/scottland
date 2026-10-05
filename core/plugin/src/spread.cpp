@@ -663,6 +663,7 @@ class solver_t
         double cur = ylo;
         for (auto [p, r] : blocked)
         {
+            work.charge();
             if (r <= cur) continue;
             if (p >= yhi) break;
             if (p >= cur) free_segments.emplace_back(cur, p);
@@ -719,8 +720,8 @@ class solver_t
         {
             starts.clear(); ends.clear();
             for (auto [p, r] : soft_blocked) { starts.push_back(p); ends.push_back(r); }
+            work.charge(ends.size());
             std::sort(ends.begin(), ends.end());
-            work.charge(starts.size());
             auto count_at = [&] (double y) {
                 // open intervals: p < y < r
                 size_t started = std::lower_bound(starts.begin(), starts.end(), y - EPS) - starts.begin();
@@ -1063,6 +1064,20 @@ class solver_t
             }
         };
         restore_closure();
+        // Decision 4 once more: a resident that went outward takes a clear spot in its own column
+        // at its own scale if one has come free since it moved (a later move may have opened it).
+        for (size_t j : moved_residents())
+        {
+            const auto& o = original.pos[j];
+            if (std::abs(L.pos[j].cx - o.cx) < 1e-6) continue;
+            hard_scratch = base_hard;
+            for (size_t k : arrivals) if (L.placed[k]) hard_scratch.push_back(rect(k, L.pos[k]));
+            for (size_t k : residents) if (k != j) hard_scratch.push_back(rect(k, L.pos[k]));
+            auto q = resident_request(j, hard_scratch);
+            q.xlo = q.xhi = o.cx;
+            auto p = pick(q);
+            if (p.any.ok && std::abs(p.any.cx - o.cx) < 1e-6) L.pos[j] = {p.any.cx, p.any.cy, p.any.s, p.any.pin};
+        }
         // Shorten: four samples back toward the original, the nearest clear one.
         for (size_t j : moved_residents())
         {

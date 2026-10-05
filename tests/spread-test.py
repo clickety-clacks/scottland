@@ -357,6 +357,18 @@ try:
     pointer(1280 + 200, 300); time.sleep(.2); end_drag(); settle(ids)
     ipc('wayfire/set-config-options', {'scottland/window_avoidance_always': False}); time.sleep(.5)
 
+    # 6g. Raising the hotspot setting during an offer cannot widen it past its reservation
+    # (Astra, round 2): the offer ends, and a drop 150 pt away commits nothing.
+    setup(drag_scene, A2)
+    true_before = {i: geometry(i) for i in ids}
+    start_drag(S, (1280, 700)); time.sleep(3.4)
+    check(wait(lambda: spread()['audition']['offered'], 2, 'offer'), 'hotspot change: the offer shows')
+    ipc('wayfire/set-config-options', {'scottland/solo_audition_hotspot': 200}); time.sleep(.3)
+    check(not spread()['audition']['offered'], 'hotspot change: changing the hotspot ends the offer')
+    pointer(1280 + 150, 700); time.sleep(.2); end_drag(); settle(ids)
+    check(all(geometry(i) == true_before[i] for i in (A1, A2, R)), 'hotspot change: the drop commits nothing')
+    ipc('wayfire/set-config-options', {'scottland/solo_audition_hotspot': 50}); time.sleep(.3)
+
     # 7. A Shift drag keeps its scale (L31) and never auditions.
     setup(drag_scene, A2)
     start_drag(S, (1280, 700)); key('LEFTSHIFT', True); pointer(1281, 700); time.sleep(3.6)
