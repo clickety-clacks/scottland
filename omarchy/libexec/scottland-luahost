@@ -6,7 +6,8 @@
 -- scottland-lua-call. Commands run directly; any other dispatch goes to `hyprctl dispatch`, which
 -- the Hyprland shim translates, so all Hyprland-to-Wayfire translation lives in one place.
 --
--- Ids match 50-omarchy-shortcuts: sorted modifiers, "+", key (e.g. "SHIFT SUPER+TAB").
+-- Ids match 50-omarchy-shortcuts: sorted modifiers, "+", key (e.g. "SHIFT SUPER+TAB"), and
+-- ":release" for a key-release binding, which is a separate shortcut from a press on the same keys.
 -- A line "reload" re-reads the config (the shortcut generator sends it after config changes).
 
 local runtime = os.getenv("XDG_RUNTIME_DIR") or ("/run/user/" .. io.popen("id -u"):read("l"))
@@ -41,7 +42,7 @@ local function literal(value)
   return "nil"
 end
 
-local function normalize(keys)
+local function normalize(keys, release)
   local mods, key = {}, ""
   for part in string.gmatch(tostring(keys or ""), "[^+]+") do
     local value = part:gsub("^%s+", ""):gsub("%s+$", "")
@@ -53,7 +54,7 @@ local function normalize(keys)
     end
   end
   table.sort(mods)
-  return table.concat(mods, " ") .. "+" .. key
+  return table.concat(mods, " ") .. "+" .. key .. (release and ":release" or "")
 end
 
 -- Minimal reader for the fields binds ask about; hyprctl output is pretty-printed JSON.
@@ -123,6 +124,7 @@ end
 
 -- A disabled shortcut still grabbed its keys in the compositor; hand them to the focused window.
 local function pass_through(id)
+  if id:match(":release$") then return end  -- its press half already reached the window
   local mods, key = id:match("^(.-)%+(.+)$")
   mods = (mods or ""):gsub(" ", " ")
   for _, state in ipairs({ "down", "up" }) do
@@ -135,7 +137,7 @@ local function stand_in()
     dsp = dsp_proxy("hl.dsp"),
     bind = function(keys, action, opts)
       local entry = { action = action, opts = opts or {}, enabled = true, keys = keys }
-      binds[normalize(keys)] = entry
+      binds[normalize(keys, entry.opts.release)] = entry
       return bind_handle(entry)
     end,
     on = function(event, callback)
@@ -143,7 +145,11 @@ local function stand_in()
       table.insert(handlers[event], callback)
       return noop
     end,
-    unbind = function(keys) binds[normalize(keys)] = nil; return noop end,
+    unbind = function(keys)
+      binds[normalize(keys)] = nil
+      binds[normalize(keys, true)] = nil
+      return noop
+    end,
     exec_cmd = function(command) spawn(command) end,
     env = function(name, value)
       if type(name) == "string" and value ~= nil then envs[#envs + 1] = { name, tostring(value) } end

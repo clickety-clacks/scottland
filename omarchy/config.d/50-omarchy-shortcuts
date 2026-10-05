@@ -110,7 +110,9 @@ hl = setmetatable({
   bind = function(keys, action, opts)
     opts = opts or {}
     local mods, key = normalize(keys)
-    local id = mods .. "+" .. key
+    -- A press and a release binding on the same keys are two shortcuts (e.g. push-to-talk:
+    -- start on press, stop on release), as in Hyprland; neither may replace the other.
+    local id = mods .. "+" .. key .. (opts.release and ":release" or "")
     local kind, arg, signature = "", "", ""
     if type(action) == "table" and action.__scottland then kind, arg = action.kind, action.arg
     elseif type(action) == "string" then kind, arg = "exec", action
@@ -131,6 +133,7 @@ hl = setmetatable({
   unbind = function(keys)
     local mods, key = normalize(keys)
     binds[mods .. "+" .. key] = nil
+    binds[mods .. "+" .. key .. ":release"] = nil
     return noop
   end,
   get_config = function() return nil end,
@@ -957,12 +960,13 @@ def main():
                         omission_report_group(kind, arg, description, "Hyprland-only command"),
                         kind=kind, action=arg)
                 continue
+            command = arg if kind == "exec" else (
+                '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
+                + shlex.quote(f"{mods}+{key}:release"))
             if mods:
                 omitted(label, description, "release with modifiers not supported yet",
                         kind=kind, action=arg)
                 continue
-            command = arg if kind == "exec" else (
-                '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call ' + shlex.quote(f"{mods}+{key}"))
             releases.append((description or label, key, command))
             kept += 1
             continue
