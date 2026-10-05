@@ -738,7 +738,7 @@ class goo_node_t : public wf::scene::node_t
         auto allocation = wallpaper.allocate(wf::dimensions(g), .25);
         if (allocation == wf::buffer_reallocation_result_t::FAILED) return;
         if (allocation == wf::buffer_reallocation_result_t::SAME && !wallpaper_dirty) return;
-        wf::render_target_t target{wallpaper};
+        auto target = aux_target(wallpaper);
         target.geometry = g;
         target.scale = .25;
         wf::render_pass_params_t params;
