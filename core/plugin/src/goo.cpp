@@ -658,6 +658,9 @@ class goo_node_t : public wf::scene::node_t
             water_tick.disconnect();
             water_due = false;
             water_running = false;
+            // Awake, the dye picks up what lies beneath on every step: nothing waits (GO28).
+            pickup_pending = false;
+            pickup_timer.disconnect();
             set_breath_area(breath_support);
             breath_loose = true;
             }
@@ -718,7 +721,7 @@ class goo_node_t : public wf::scene::node_t
     static constexpr double pickup_coast = 6, pickup_gap_first = 20, pickup_gap_most = 300;
     static constexpr int pickup_tolerated = 16;
     double pickup_next = 0, pickup_gap = pickup_gap_first, last_check = 0, last_activity = -1e9;
-    bool pickup_pending = false, check_wanted = false, seen_due = false;
+    bool pickup_pending = false, seen_due = false;
     uint64_t pickup_coasts = 0, pickup_deferred = 0, backdrop_changes = 0;
     wf::wl_timer<false> pickup_timer, check_timer;
     // `repainted`: something other than the goo repainted under the liquid this frame.
