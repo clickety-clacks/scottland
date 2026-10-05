@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The Hyprland shim runs what callers ask (adapter-gaps AG19).
+"""The Hyprland shim and Lua host do what callers ask or say they can't (adapter-gaps AG19 and
+the visible-failure rule for unsupported requests).
 
 Isolated headless --omarchy session with a fixture HOME (tests/omarchy_fixture.py). Requests go
 through the real `hyprctl`, as Omarchy's scripts send them; shortcuts are pressed with stipc keys.
@@ -21,7 +22,7 @@ root = REPO / "build/omarchy-shim-fixture"
 marks = root / "marks"
 fixture = Fixture(
     root,
-    modules=["default.hypr.bindings.voxtype"],
+    modules=[],
     recorders=["mark"],
     lua=f'''
 -- An unsupported call while the config loads must not stop the bindings after it.
@@ -71,5 +72,43 @@ with Session(fixture, "hl-omarchy-shim") as session:
           (launch_log.read_text()[-400:] if launch_log.exists() else "",
            [v.get("app-id") for v in views(session)]))
     session.run("pkill", "-f", "[o]rg.omarchy.screensaver")
+
+    # Unsupported requests fail visibly: hyprctl exits non-zero with the shim's error.
+    for args in (["dispatch", 'hl.dsp.focus({ monitor = "NOWHERE-1" })'],
+                 ["keyword", "monitor", "NOWHERE-1,disable"],
+                 ["eval", 'hl.monitor({ output = "NOWHERE-1", scale = 1.5 })'],
+                 ["switchxkblayout", "all", "next"],
+                 ["binds"], ["cursorpos"], ["-j", "layers"],
+                 ["getoption", "cursor:zoom_factor"]):
+        result = session.hyprctl(*args)
+        check(f"unsupported `hyprctl {' '.join(args)}` fails visibly",
+              result.returncode != 0 and result.stdout.startswith("error:"),
+              (result.returncode, result.stdout[:120]))
+    for args in (["-j", "monitors"], ["-j", "clients"], ["-j", "getoption", "general:gaps_out"]):
+        result = session.hyprctl(*args)
+        valid = False
+        try:
+            json.loads(result.stdout)
+            valid = True
+        except ValueError:
+            pass
+        check(f"supported `hyprctl {' '.join(args)}` still succeeds", result.returncode == 0 and valid,
+              (result.returncode, result.stdout[:120]))
+
+    # The Lua host: an unsupported call at load time didn't stop later bindings; at run time a
+    # shortcut sees unsupported calls and refused dispatches fail, and supported ones succeed.
+    session.key("KEY_LEFTMETA", True)
+    session.tap("KEY_F6")
+    session.key("KEY_LEFTMETA", False)
+    expected = {("mark", "config-failed"), ("mark", "get-config-failed"),
+                ("mark", "dispatch-failed"), ("mark", "exec-ok"), ("mark", "exec-ran")}
+    ok, calls = fixture.wait_calls(lambda c: expected <= set(c))
+    check("a binding after a load-time hl.config still loads", ("mark", "config-failed") in calls,
+          calls)
+    check("a shortcut sees unsupported hl.config / hl.get_config fail",
+          {("mark", "config-failed"), ("mark", "get-config-failed")} <= set(calls), calls)
+    check("a shortcut sees a refused dispatch fail", ("mark", "dispatch-failed") in calls, calls)
+    check("a shortcut's supported exec dispatch succeeds and runs",
+          {("mark", "exec-ok"), ("mark", "exec-ran")} <= set(calls), calls)
 
 sys.exit(check.summary())

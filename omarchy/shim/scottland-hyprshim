@@ -9,7 +9,9 @@ work unmodified. It never talks to a real Hyprland.
   $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock  event stream ("activewindow>>...")
 
 Scottland has no workspaces, so each output is presented as one workspace. Requests the shim
-cannot translate answer "ok" (or an error for queries) and are logged, so gaps are easy to find:
+cannot translate fail visibly: they answer "error: unsupported in Scottland: ...", which makes
+`hyprctl` exit non-zero (status 7) as it does for Hyprland's own errors, rather than claiming a
+success that did nothing. They are also logged, so gaps are easy to find:
   $XDG_STATE_HOME/scottland/hyprshim.log
 """
 
@@ -77,6 +79,11 @@ class Log:
 
 
 log = Log()
+
+
+def unsupported(request):
+    """The reply for a request with no Scottland translation; hyprctl exits 7 on "error:"."""
+    return f"error: unsupported in Scottland: {request[:200]}"
 
 
 class Wayfire:
@@ -435,16 +442,17 @@ class Translator:
             })
             if reply.get("error"):
                 log(f"send-key failed: {reply['error']} ({text[:120]})")
+                return f"error: {reply['error']}"
             return "ok"
         match = self.WINDOW_ADDRESS.search(text)
         if match and ("window.close" in text or "closewindow" in text):
-            self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})
-            return "ok"
+            reply = self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})
+            return f"error: {reply['error']}" if reply.get("error") else "ok"
         if match and ("focus" in text):
-            self.wf.call("window-rules/focus-view", {"id": view_id_from_address(match.group(1))})
-            return "ok"
+            reply = self.wf.call("window-rules/focus-view", {"id": view_id_from_address(match.group(1))})
+            return f"error: {reply['error']}" if reply.get("error") else "ok"
         log.unsupported(f"dispatch {text}")
-        return "ok"
+        return unsupported(f"dispatch {text}")
 
     # --- Requests ------------------------------------------------------------------------
 
@@ -464,7 +472,7 @@ class Translator:
             reply = self.query(command, args, as_json)
         except Exception as error:  # noqa: BLE001 - one bad request must not kill the shim
             log(f"error handling {request!r}: {error!r}")
-            return "error"
+            return f"error: {error}"
 
         if isinstance(reply, str):
             return reply
@@ -486,8 +494,6 @@ class Translator:
             return self.active_window()
         if command == "devices":
             return self.devices()
-        if command == "layers":
-            return {}
         if command == "plugin" and args.split(" ", 1)[0] == "list":
             return [] if as_json else "no plugins loaded"
         if command == "configerrors":
@@ -500,15 +506,13 @@ class Translator:
             if args in OPTIONS:
                 return {"option": args, **OPTIONS[args], "set": True}
             log.unsupported(f"getoption {args}")
-            return "no such option"
+            return unsupported(f"getoption {args}")
         if command == "dispatch":
             return self.dispatch(args)
-        if command in ("keyword", "eval", "reload", "switchxkblayout", "submap", "notify",
-                       "dismissnotify", "setcursor", "output", "plugin", "kill", "setprop"):
-            log.unsupported(f"{command} {args}")
-            return "ok"
+        # Everything else (keyword, eval, switchxkblayout, layers, binds, cursorpos, ...) has no
+        # translation yet. Report that to the caller instead of answering a false "ok".
         log.unsupported(f"{command} {args}")
-        return "unknown request"
+        return unsupported(f"{command} {args}")
 
     @staticmethod
     def plain(command, reply):

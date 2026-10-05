@@ -76,7 +76,8 @@ local noop
 noop = setmetatable({}, { __index = function() return noop end, __call = function() return noop end })
 
 local binds = {}
-local handlers = {}  -- hl.on(event, fn): only "window.active" matters for shortcuts today
+local handlers = {}  -- hl.on(event, fn); only HANDLED_EVENTS ever run
+local HANDLED_EVENTS = { ["window.active"] = true }
 local envs = {}      -- hl.env(name, value), in order: the session environment Hyprland would get
 
 local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
@@ -94,7 +95,42 @@ local function dsp_proxy(path)
   })
 end
 
-local function run(action)
+-- While the config loads, an hl call Scottland can't carry out is ignored (and logged once), so
+-- one hl.config or hl.window_rule can't stop the rest of the config from loading. When a shortcut
+-- runs, the same call is an error the shortcut sees, as is a dispatch the shim refuses: a
+-- shortcut never looks as if it worked when it did nothing.
+local loading = false
+local ignored_at_load = {}
+
+local function unsupported(path)
+  if loading then
+    if not ignored_at_load[path] then
+      ignored_at_load[path] = true
+      log("ignored while loading the config (unsupported in Scottland): " .. path)
+    end
+    return noop
+  end
+  error("unsupported in Scottland: " .. path, 3)
+end
+
+local function unsupported_proxy(path)
+  return setmetatable({}, {
+    __index = function(_, key) return unsupported_proxy(path .. "." .. tostring(key)) end,
+    __call = function() return unsupported(path) end,
+  })
+end
+
+-- Dispatch through the shim and wait for its answer; false and the reply when it refused.
+local function dispatch(expression)
+  local handle = io.popen("hyprctl dispatch " .. shell_quote(expression) .. " 2>&1")
+  local reply = handle and handle:read("a") or ""
+  local ok = handle and handle:close()
+  if not ok or reply:match("^error") then return false, (reply:gsub("%s+$", "")) end
+  return true
+end
+
+-- raise: report a failure to the calling Lua code (hl.dispatch) instead of only logging it.
+local function run(action, raise)
   if type(action) == "function" then
     local ok, err = pcall(action)
     if not ok then log("bind failed: " .. tostring(err)) end
@@ -102,7 +138,11 @@ local function run(action)
     if action.kind == "exec" then
       spawn(action.arg)
     else
-      spawn("hyprctl dispatch " .. shell_quote(action.arg))
+      local ok, reply = dispatch(action.arg)
+      if not ok then
+        log("dispatch failed: " .. action.arg .. ": " .. reply)
+        if raise then error("dispatch failed: " .. reply, 3) end
+      end
     end
   elseif type(action) == "string" then
     spawn(action)
@@ -141,6 +181,10 @@ local function stand_in()
       return bind_handle(entry)
     end,
     on = function(event, callback)
+      if not HANDLED_EVENTS[event] and not ignored_at_load["hl.on:" .. tostring(event)] then
+        ignored_at_load["hl.on:" .. tostring(event)] = true
+        log("event never delivered in Scottland: " .. tostring(event))
+      end
       handlers[event] = handlers[event] or {}
       table.insert(handlers[event], callback)
       return noop
@@ -155,7 +199,7 @@ local function stand_in()
       if type(name) == "string" and value ~= nil then envs[#envs + 1] = { name, tostring(value) } end
       return noop
     end,
-    dispatch = function(action) run(action) end,
+    dispatch = function(action) run(action, true) end,
     timer = function(callback, opts)
       -- Timers here are short (key up/down spacing), so run them in line after the delay.
       local timeout = (opts and opts.timeout or 0) / 1000
@@ -165,8 +209,12 @@ local function stand_in()
       return noop
     end,
     get_active_window = active_window,
-    get_config = function() return nil end,
-  }, { __index = function() return noop end })
+    get_config = function(name)
+      -- No Hyprland options to read here; configs fall back to their own default at load time.
+      if loading then return nil end
+      return unsupported("hl.get_config(" .. literal(name) .. ")")
+    end,
+  }, { __index = function(_, key) return unsupported_proxy("hl." .. tostring(key)) end })
 end
 
 local function load_config()
@@ -185,7 +233,9 @@ local function load_config()
   for name in pairs(package.loaded) do
     if name:match("^hypr") or name:match("^default") then package.loaded[name] = nil end
   end
+  loading = true
   local ok, err = pcall(dofile, config)
+  loading = false
   require = real_require
   if not ok then log("config load stopped: " .. tostring(err)) end
   local count = 0
