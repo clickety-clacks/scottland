@@ -1,5 +1,5 @@
-// Included inside scottland_plugin_t. WG19 trigger state belongs to model.widgets;
-// this timer is only an input resource and never survives a plugin reload.
+// Included inside scottland_plugin_t. WG19 trigger state belongs to model.widgets, WG28's to
+// model.edge_reveals; this timer is only an input resource and never survives a plugin reload.
 wf::option_wrapper_t<int> widget_peek_enter_delay{"scottland/widget_peek_enter_delay"};
 wf::option_wrapper_t<int> widget_peek_leave_delay{"scottland/widget_peek_leave_delay"};
 wf::option_wrapper_t<int> widget_attention_peek_duration{"scottland/widget_attention_peek_duration"};
@@ -23,11 +23,59 @@ void reset_widget_peek(widget_link_t& link)
     link.peek_attention_due.reset(); link.peek_hint_due.reset();
 }
 
+/** Does another screen continue past this screen's left or right edge at height `y`? The
+ *  pointer crosses such an edge instead of hitting it. */
+bool screen_beyond(wf::output_t *output, bool left, double y)
+{
+    auto box = output->get_layout_geometry();
+    wf::pointf_t past{left ? box.x - 0.5 : box.x + box.width + 0.5, y};
+    for (auto other : wf::get_core().output_layout->get_outputs())
+    {
+        auto g = other->get_layout_geometry();
+        if ((other != output) && (past.x >= g.x) && (past.x < g.x + g.width) && (past.y >= g.y) &&
+            (past.y < g.y + g.height))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/** WG28: the pointer hitting a screen's left or right edge reveals that rail's widgets until
+ *  the pointer leaves the rail. Full screen still wins (FS1). */
+void step_edge_reveals(wf::output_t *output, wf::pointf_t cursor)
+{
+    if (!output)
+    {
+        model.edge_reveals.clear();
+        return;
+    }
+
+    auto box = output->get_layout_geometry();
+    double x = cursor.x - box.x, width = box.width;
+    bool left = x < width / 2;
+    bool in_rail = place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget;
+    for (auto it = model.edge_reveals.begin(); it != model.edge_reveals.end();)
+    {
+        bool stays = in_rail && (it->first == output) && (it->second == left);
+        it = stays ? std::next(it) : model.edge_reveals.erase(it);
+    }
+
+    // The cursor is clamped to the layout: at an edge it is within a pixel of it.
+    bool at_edge = left ? (x < 1) : (x >= width - 1);
+    if (at_edge && in_rail && !in_focus_mode(output) && !screen_beyond(output, left, cursor.y))
+    {
+        model.edge_reveals.insert({output, left});
+    }
+}
+
 bool step_widget_peeks()
 {
     auto now = now_msec();
     auto cursor = wf::get_core().get_cursor_position();
     auto output = wf::get_core().output_layout->find_closest_output(cursor);
+    step_edge_reveals(output, cursor);
     uint64_t hit = 0;
     if (output && !in_focus_mode(output))
     {

@@ -51,6 +51,73 @@ verification of the stock move path does not verify this new path.
 | WG18 | A widget whose manifest sets `touch_drag = true` moves with a single-finger drag anywhere on it, at once (no long press), while a tap is still the widget's. For widgets that drag nothing themselves; the default card sets it. Off by default, so a widget's own finger drags (sliders, drawing) stay its own, and it's lifted with a long press as any window. The launcher tells Scottland over IPC (`scottland/widget-traits`). | implemented (headless) |
 | WG19 | Peeking at a collapsed widget: after `scottland/widget_peek_enter_delay` (default 150 ms, range 0–3000) over its visible card or goo/handles it shows expanded (title and app); leaving for `widget_peek_leave_delay` (default 100 ms, range 0–3000) collapses it again. Sweeps and brief departures do not flicker. A collapsed widget receiving attention shows expanded for `widget_attention_peek_duration` (default 5000 ms, range 100–30000); each renewed attention request restarts that interval, including the same source. S19 edits all three timings live in the Widgets tab. A pointer over it at expiry keeps it expanded until leaving. Held drags preserve the current presentation until release. Collapsed intent and Super+M's mode never change: trigger state and temporary presentation belong to the desktop model. Super+M and reload end temporary peeks; fullscreen widgets never peek into view. | implemented (isolated headless); validation below |
 | WG20 | The collapse binding activates once per held key. Duplicate downs, including overlapping devices, do not toggle it again; only release of that key on all held devices rearms it (device removal clears that device). Releasing a modifier does not rearm it. No time debounce discards rapid intentional presses. Edges are tracked and logged only while the binding modifiers are held or a tracked press is in progress (including its release after the modifier); plain typing emits no collapse diagnostics. Those edges record device, input/receipt time, key and latch/mode state; activations and ignored duplicate callbacks are distinct. | verified (plumbus headless 2026-10-01: 10 input/diagnostic checks, including quiet plain-M/Shift+M typing and the tracked release after Super; duplicate down failed before the fix; device overlap/removal not exercised) |
+| WG28 | Edge reveal (Mike, 2026-10-05: "hitting the mouse on the right and left edges of the screen reveal hidden or compacted widgets. they do not rehide or recompact until the mouse moves out of the rail."). When the pointer hits a screen's left or right edge, that screen's rail on that side shows its widgets: hidden ones come back in with WG16's rail slide, collapsed ones show expanded with WG19's peek presentation (and WG23's bounce). They stay that way while the pointer is anywhere in that rail (the rail zone, `rail_width`), for as long as it stays there, and hide or collapse again as soon as it leaves the rail. Only that rail: the other side and other screens are unaffected, and so are expanded widgets. Entering the rail without reaching the edge reveals nothing. The widget mode never changes (it is temporary presentation, like WG19's peeks). Past the rail, WG19's hover still applies: a pointer that has rested on a revealed widget (its halo reaches into the rail) keeps it while on it. Edges another screen continues past are crossed, not hit, and reveal nothing; full screen still wins (FS1). Both are open questions for Mike, with the others in [Edge reveal](#edge-reveal-wg28-2026-10-05). | implemented (headless on the aarch64 test machine, 2026-10-05: real stipc pointer, pixel oracles; see [validation](#wg28-validation-2026-10-05-headless)); no physical-screen verification |
+
+
+## Edge reveal (WG28, 2026-10-05)
+
+Mike's ruling, his words: "hitting the mouse on the right and left edges of the screen reveal
+hidden or compacted widgets. they do not rehide or recompact until the mouse moves out of the
+rail." Built as exactly that, with the existing presentations: the desktop model holds the rails
+whose edge was hit (`edge_reveals`, a screen and a side), and a widget on such a rail counts as
+revealed exactly like Window mode reveals it (WG16): a collapsed one peeks expanded, a hidden one
+returns from away and slides in. Each pointer motion re-evaluates it (the same step as WG19's
+hover). "Hitting" is the pointer within a pixel of the screen's outer column; since the cursor is
+clamped to the screens, pushing against an edge keeps it there. "The rail" is the rail zone
+(`rail_width`, default 2% of the screen width). The reveal is temporary presentation: a Super+M tap
+or a hold doesn't clear it (the ruling says only leaving the rail does), and it is not carried
+over a reload.
+
+Two edges are left as they were rather than decided, pending Mike:
+
+- **Shared edges.** Where another screen continues past an edge the pointer crosses it instead of
+  stopping, so it never "hits" it. Built: a shared edge reveals nothing; only edges at the outside
+  of the screen layout do.
+- **Full screen (FS1).** Built: full screen still wins, as it does for every peek (WG19); hitting
+  the edge over a fullscreen window brings nothing in.
+
+Open questions for Mike, not decided here:
+
+1. The rail zone is narrower than the widgets (about 26-38 px against a 96 px collapsed card or a
+   card up to 320 pt wide). Moving off the rail onto a revealed widget ends the reveal, so the
+   widget only stays if WG19's hover has already caught the pointer (it has, if the pointer rested
+   on the widget's halo inside the rail for the 150 ms enter delay). Should "the rail" instead
+   reach to the revealed widgets' inner side, as WG1 counts a widget as on its rail?
+2. Shared edges between screens: reveal nothing (built), or reveal when the pointer reaches them?
+3. Full screen: should hitting the edge reveal widgets over a fullscreen window (built: no)?
+4. During a drag (a window dragged toward a rail, or a widget dragged along one): built, the reveal
+   applies as anywhere else, so hidden widgets come in while dragging into that rail. Keep that, or
+   suppress the reveal while dragging?
+5. A Super+M tap while revealed (built: the mode changes but the revealed rail stays shown until
+   the pointer leaves it, per "do not rehide until the mouse moves out of the rail"). Should a tap
+   end the reveal, as it ends WG19 peeks?
+
+### WG28 validation (2026-10-05, headless)
+
+Headless sessions on the aarch64 test machine, each in its own `SCOTTLAND_HEADLESS_DIR` under the
+checkout's `build/`. Input is real stipc pointer motion (absolute moves, pushed past the edge so the
+cursor's clamp holds it there); every reveal and every return is judged in screenshot pixels against
+a reference of that presentation (the expanded cards, the hidden rail, the collapsed cards), polled
+until it matches or a 3 s deadline expires. The `edge` case is in `tests/widget-input-test.py` and so
+runs inside `tests/widgets-test.sh`; `edge-outputs` needs `SCOTTLAND_TEST_OUTPUTS=2`.
+
+| Run | This branch | Same tests on the base plugin (`9245a54`) |
+|---|---|---|
+| `widget-input-test.py edge` (20 checks) | **20/20**, twice (the earlier 18-check version: 18/18 three times, once inside `widgets-test.sh`) | 8/20: every reveal and every return-after-reveal fails |
+| `widget-input-test.py edge-outputs` (5 checks) | **5/5**, twice | 1/5: only the shared-edge check passes |
+| `tests/widgets-test.sh` (includes `edge`) | **254/0** | not run |
+| `tests/widget-hints-test.sh` | **193/0** | not run |
+| `tests/windowing-test.sh` | **103/0** | not run |
+
+The `edge` case covers, on both rails: hidden mode (entering the rail without reaching the edge
+reveals nothing; hitting the edge brings that rail's widget in expanded and leaves the other rail's
+away; moving about in the rail for longer than the slide and WG19's leave delay keeps it; leaving the
+rail hides it; reaching the widget along the rail and onto it keeps it, through WG19's hover) and
+collapsed mode (hitting the edge shows that rail's widget expanded, the other stays collapsed; it
+stays while in the rail and collapses on leaving). Guards that pass on the base plugin too, since
+they check what must not change: setup references, the mode staying put, full screen (FS1) and the
+shared edge. Screenshots of the hidden, collapsed and revealed states were inspected. No
+physical-screen run (D2), so WG28 is not "verified".
 
 ## Focused widget Return (WG25)
 

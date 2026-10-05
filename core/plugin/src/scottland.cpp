@@ -1626,6 +1626,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<wf::output_t*> goo_outputs;          // screens with an available goo surface
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
+        // Rails whose screen edge the pointer hit, (screen, left?): their hidden and collapsed
+        // widgets show until the pointer leaves the rail (WG28). Temporary; never survives a reload.
+        std::set<std::pair<wf::output_t*, bool>> edge_reveals;
     } model;
     struct rail_layout_motion_t
     {
@@ -2145,8 +2148,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     bool widget_revealed(const widget_link_t& link) const
     {
-        return (link.docked() || link.previewing()) && widgets_revealed() &&
+        return (link.docked() || link.previewing()) && (widgets_revealed() || edge_revealed(link)) &&
             (link.collapsed || (shown_widget_mode() == widget_mode_t::hidden));
+    }
+
+    /** Its rail's screen edge was hit and the pointer hasn't left the rail since (WG28).
+     *  Full screen still wins (FS1, tenet 6). */
+    bool edge_revealed(const widget_link_t& link) const
+    {
+        return !in_focus_mode(link.output) && model.edge_reveals.count({link.output, link.rail == "left"});
     }
 
     /** Bring every widget's presentation and place in line with the mode. A mode change
@@ -6028,6 +6038,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         fullscreen_watch.erase(output);
         model.focused_outputs.erase(output);
+        model.edge_reveals.erase({output, true});
+        model.edge_reveals.erase({output, false});
         run_focus_hooks();
     }
 

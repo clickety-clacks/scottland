@@ -867,6 +867,309 @@ def outputs():
     wait_for(lambda: not link("two-a")["away"] and not link("two-b")["away"])
 
 
+def screenshot():
+    """The whole layout as drawn now: a pixel lookup (x, y) -> RGB bytes."""
+    raw = subprocess.check_output(["grim", "-t", "ppm", "-"])
+    header = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", raw)
+    width, pixels = int(header[1]), raw[header.end():]
+    return lambda x, y: pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
+
+
+def same_pixels(a, b, box, step=3):
+    """The share of sampled pixels in box (x0, y0, x1, y1) that look the same in a and b."""
+    x0, y0, x1, y1 = (round(v) for v in box)
+    samples = [(x, y) for y in range(y0, y1, step) for x in range(x0, x1, step)]
+    same = sum(sum(abs(p - q) for p, q in zip(a(x, y), b(x, y))) <= 24 for x, y in samples)
+    return same / max(1, len(samples))
+
+
+def steady_screenshot(boxes, timeout=4):
+    """A screenshot once two in a row agree over every box (slides and morphs have settled)."""
+    deadline = time.monotonic() + timeout
+    last = screenshot()
+    while time.monotonic() < deadline:
+        time.sleep(.1)
+        shot = screenshot()
+        if all(same_pixels(last, shot, b) == 1 for b in boxes):
+            return shot
+        last = shot
+    raise AssertionError("the screen did not settle over " + repr(boxes))
+
+
+def edge_reveal_pixels(name, boxes, want, timeout=3):
+    """Poll screenshots until each named box looks like its reference (share >= its threshold).
+    Returns the last observation; a deadline that expires reports it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        shot = screenshot()
+        seen = {k: round(same_pixels(shot, ref, boxes[k]), 3) for k, (ref, _) in want.items()}
+        if all(seen[k] >= least for k, (_, least) in want.items()):
+            return True, seen
+        if time.monotonic() >= deadline:
+            print(f"{name}: last observation {seen}", flush=True)
+            return False, seen
+        time.sleep(.05)
+
+
+def edge():
+    """WG28: the pointer hitting the left or right screen edge reveals that rail's hidden or
+    collapsed widgets, until the pointer leaves the rail; the mode never changes. Real stipc
+    pointer motion; judged by screenshot pixels against references of each presentation."""
+    artifacts = (args.log.parent.with_name(args.log.parent.name + ".results") / "edge") if args.log else None
+    if artifacts:
+        artifacts.mkdir(parents=True, exist_ok=True)
+
+    def link(title):
+        return next(w for w in widgets() if w["title"] == title)
+
+    def save(name):
+        if artifacts:
+            subprocess.run(["grim", str(artifacts / (name + ".png"))], check=True)
+
+    W, H = screen["width"], screen["height"]
+    rail = W * float(ipc.call("wayfire/get-config-option", {"option": "scottland/rail_width"})["value"]) / 100
+    set_widget_mode("expanded")
+    launch("edge-left", rail="left", y=200)
+    launch("edge-right", rail="right", y=380)
+    launch("edge-focus", rail=None)  # an ordinary window, for full screen
+    home = (W / 2, 40)
+    move(*home)
+    wait_for(lambda: all(card(t)["frame"]["width"] > 120 and not card(t)["frame"].get("presentation")
+                         for t in ("edge-left", "edge-right")))
+    # Each card's body as drawn expanded, inset past its halo; and the part of it that only the
+    # expanded card covers (its title and app), well clear of the collapsed icon and its halo.
+    frames = {t: card(t)["frame"] for t in ("edge-left", "edge-right")}
+    body = {t: (f["x"] + 8, f["y"] + 8, f["x"] + f["width"] - 8, f["y"] + f["height"] - 8)
+            for t, f in frames.items()}
+    fl, fr = frames["edge-left"], frames["edge-right"]
+    text = {"edge-left": (fl["x"] + 140, fl["y"] + 12, fl["x"] + fl["width"] - 8, fl["y"] + fl["height"] - 12),
+            "edge-right": (fr["x"] + 8, fr["y"] + 12, fr["x"] + fr["width"] - 140, fr["y"] + fr["height"] - 12)}
+    # Where the pointer meets the edges: on the rails, away from both cards (so WG19 hover can't
+    # be what shows them).
+    y_empty = min(H - 30, max(fl["y"] + fl["height"], fr["y"] + fr["height"]) + 160)
+    expanded = steady_screenshot(list(body.values()))
+    save("edge-expanded")
+
+    # --- Hidden mode ---------------------------------------------------------------------
+    set_widget_mode("hidden")
+    wait_for(lambda: all(link(t)["away"] for t in body))
+    hidden = steady_screenshot(list(body.values()))
+    save("edge-hidden")
+    check("WG28 setup: hidden widgets are not drawn in their places",
+          all(same_pixels(hidden, expanded, body[t]) < .5 for t in body),
+          {t: same_pixels(hidden, expanded, body[t]) for t in body})
+
+    move(rail / 2, y_empty)
+    time.sleep(.6)  # an intended hold: entering the rail without hitting the edge reveals nothing
+    shot = screenshot()
+    check("WG28 entering the left rail without hitting the edge reveals nothing",
+          all(same_pixels(shot, hidden, body[t]) == 1 for t in body),
+          {t: same_pixels(shot, hidden, body[t]) for t in body})
+
+    move(-10, y_empty)  # pushed against the left edge (the cursor stops there)
+    ok, seen = edge_reveal_pixels("left", body, {"edge-left": (expanded, .9), "edge-right": (hidden, 1)})
+    check("WG28 hitting the left edge brings the left rail's hidden widget in, expanded", ok, seen)
+    save("edge-hidden-left-revealed")
+    check("WG28 the right rail's hidden widget stays away", seen["edge-right"] == 1, seen)
+    shown = ok
+
+    for x, y in ((rail / 2, y_empty), (rail - 3, y_empty - 120), (rail * .7, 30), (2, H - 10)):
+        move(x, y)
+        time.sleep(.05)
+    time.sleep(.6)  # an intended hold, past the slide and WG19's leave delay
+    shot = screenshot()
+    check("WG28 moving within the rail keeps it revealed",
+          same_pixels(shot, expanded, body["edge-left"]) >= .9 and same_pixels(shot, hidden, body["edge-right"]) == 1,
+          {t: same_pixels(shot, expanded, body[t]) for t in body})
+    check("WG28 the mode is still hidden while revealed", widget_mode()["mode"] == "hidden", widget_mode())
+
+    move(rail + 20, y_empty)  # just out of the rail
+    ok, seen = edge_reveal_pixels("left-gone", body, {"edge-left": (hidden, 1), "edge-right": (hidden, 1)})
+    check("WG28 leaving the rail hides it again", shown and ok, seen if shown else "it was never revealed")
+
+    # Reaching a revealed widget: along the rail to it (over its halo, still in the rail), then
+    # into it, past the rail; WG19's hover keeps it while the pointer is on it.
+    move(rail / 2, y_empty)
+    move(-10, y_empty)
+    shown, seen = edge_reveal_pixels("reach", body, {"edge-left": (expanded, .9)})
+    ys = [y_empty + (fl["y"] + fl["height"] / 2 - y_empty) * i / 10 for i in range(1, 11)]
+    for y in ys:
+        move(min(rail - 3, fl["x"] - 4), y)
+        time.sleep(.03)
+    time.sleep(.4)  # an intended hold over its halo, past WG19's enter delay
+    move(fl["x"] + fl["width"] / 2, fl["y"] + fl["height"] / 2)
+    time.sleep(.6)  # an intended hold on the card, outside the rail
+    shot = screenshot()
+    check("WG28 a revealed hidden widget reached along the rail stays while the pointer is on it",
+          shown and same_pixels(shot, expanded, body["edge-left"]) >= .9,
+          (seen, same_pixels(shot, expanded, body["edge-left"])))
+    move(*home)
+    ok, seen = edge_reveal_pixels("reach-gone", body, {"edge-left": (hidden, 1)})
+    check("WG28 leaving the widget then hides it", shown and ok, seen if shown else "it was never revealed")
+
+    move(W - rail / 2, y_empty)
+    move(W + 10, y_empty)  # pushed against the right edge
+    ok, seen = edge_reveal_pixels("right", body, {"edge-right": (expanded, .9), "edge-left": (hidden, 1)})
+    check("WG28 hitting the right edge brings the right rail's hidden widget in; the left stays away", ok, seen)
+    shown = ok
+    save("edge-hidden-right-revealed")
+    move(*home)  # straight out of the rail
+    ok, seen = edge_reveal_pixels("right-gone", body, {"edge-right": (hidden, 1), "edge-left": (hidden, 1)})
+    check("WG28 leaving the right rail hides it again", shown and ok, seen if shown else "it was never revealed")
+    check("WG28 the mode is still hidden after", widget_mode()["mode"] == "hidden", widget_mode())
+
+    # --- Collapsed mode --------------------------------------------------------------------
+    set_widget_mode("collapsed")
+    wait_for(lambda: all(abs(card(t)["frame"]["width"] - 96) < 1 and not card(t)["frame"].get("presentation")
+                         and not link(t)["away"] for t in body))
+    collapsed = steady_screenshot(list(text.values()))
+    save("edge-collapsed")
+    check("WG28 setup: collapsed widgets draw no title area",
+          all(same_pixels(collapsed, expanded, text[t]) < .5 for t in text),
+          {t: same_pixels(collapsed, expanded, text[t]) for t in text})
+
+    move(rail / 2, y_empty)
+    move(-10, y_empty)
+    ok, seen = edge_reveal_pixels("collapsed-left", text, {"edge-left": (expanded, .9), "edge-right": (collapsed, 1)})
+    check("WG28 hitting the left edge shows the left rail's collapsed widget expanded; the right stays collapsed",
+          ok, seen)
+    shown = ok
+    save("edge-collapsed-left-revealed")
+    for x, y in ((rail / 2, y_empty), (rail - 3, H - 10), (3, 30)):
+        move(x, y)
+        time.sleep(.05)
+    time.sleep(.6)  # an intended hold
+    shot = screenshot()
+    check("WG28 moving within the rail keeps it expanded",
+          same_pixels(shot, expanded, text["edge-left"]) >= .9, same_pixels(shot, expanded, text["edge-left"]))
+    move(rail + 20, 30)
+    ok, seen = edge_reveal_pixels("collapsed-left-gone", text, {"edge-left": (collapsed, 1), "edge-right": (collapsed, 1)})
+    check("WG28 leaving the rail collapses it again", shown and ok, seen if shown else "it was never revealed")
+
+    move(W + 10, y_empty)
+    ok, seen = edge_reveal_pixels("collapsed-right", text, {"edge-right": (expanded, .9), "edge-left": (collapsed, 1)})
+    check("WG28 hitting the right edge shows the right rail's collapsed widget expanded", ok, seen)
+    shown = ok
+    move(*home)
+    ok, seen = edge_reveal_pixels("collapsed-right-gone", text, {"edge-right": (collapsed, 1), "edge-left": (collapsed, 1)})
+    check("WG28 leaving the right rail collapses it again", shown and ok, seen if shown else "it was never revealed")
+    check("WG28 the mode is still collapsed", widget_mode()["mode"] == "collapsed" and
+          all(link(t)["collapsed"] for t in text), widget_mode())
+
+    # --- Full screen still wins (FS1) --------------------------------------------------------
+    set_widget_mode("hidden")
+    wait_for(lambda: all(link(t)["away"] for t in body))
+    ipc.call("window-rules/focus-view", {"id": app("edge-focus")["id"]})
+    key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
+    wait_for(lambda: ipc.call("scottland/desktop-model").get("focus"))
+    full = steady_screenshot(list(body.values()))
+    move(-10, y_empty)
+    time.sleep(.6)  # an intended hold: nothing may come in
+    shot = screenshot()
+    check("WG28 over full screen, hitting the edge brings nothing in (FS1)",
+          same_pixels(shot, full, body["edge-left"]) == 1, same_pixels(shot, full, body["edge-left"]))
+    move(*home)
+    key("LEFTMETA", True); key("F", True); key("F", False); key("LEFTMETA", False)
+    wait_for(lambda: not ipc.call("scottland/desktop-model").get("focus"))
+    set_widget_mode("expanded")
+    wait_for(lambda: not any(link(t)["away"] for t in body))
+
+
+def edge_outputs():
+    """WG28 with two screens side by side (SCOTTLAND_TEST_OUTPUTS=2): the outer edges reveal
+    their rails; the shared edge is crossed, not hit, and reveals nothing."""
+    screens = sorted(ipc.call("window-rules/list-outputs"), key=lambda o: o["geometry"]["x"])
+    if len(screens) < 2:
+        raise AssertionError("the edge-outputs case needs a two-output session")
+    first, second = screens[0]["geometry"], screens[1]["geometry"]
+
+    def link(title):
+        return next(w for w in widgets() if w["title"] == title)
+
+    def screen_of(view):  # frames are relative to their screen
+        output = next(v["output-id"] for v in ipc.call("window-rules/list-views") if v["id"] == view["id"])
+        return next(o["geometry"] for o in screens if o["id"] == output)
+
+    def put(title, x, y):
+        process = subprocess.Popen(["foot", "-T", title, "-W", "40x8", "sh", "-c", "exec sleep 600"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owned.append((title, process))
+        wait_for(lambda: app(title))
+        time.sleep(.4)
+        f, target = app(title)["frame"], screen_of(app(title))
+        sx, sy = target["x"] + f["x"] + f["width"] / 2, target["y"] + f["y"] + f["height"] / 2
+        move(sx, sy)
+        time.sleep(.1)
+        key("LEFTMETA", True)
+        ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+        for i in range(1, 21):
+            move(sx + (x - sx) * i / 20, sy + (y - sy) * i / 20)
+            time.sleep(.025)
+        time.sleep(.4)
+        drag_end()
+        try:
+            wait_for(lambda: card(title) and not card(title)["preview"])
+        except AssertionError:
+            print("no widget for", title, (x, y), f, views(), flush=True)
+            raise
+        time.sleep(.7)
+
+    set_widget_mode("expanded")
+    rail_pct = float(ipc.call("wayfire/get-config-option", {"option": "scottland/rail_width"})["value"]) / 100
+    # Outer left (first screen), both sides of the shared edge, outer right (second screen).
+    places = {"two-outer-l": (first["x"] + 6, 200), "two-inner-l": (first["x"] + first["width"] - 6, 200),
+              "two-inner-r": (second["x"] + 6, 380), "two-outer-r": (second["x"] + second["width"] - 6, 380)}
+    for title, (x, y) in places.items():
+        put(title, x, y)
+    home = (first["x"] + first["width"] / 2, 40)
+    move(*home)
+    wait_for(lambda: all(card(t)["frame"]["width"] > 120 and not card(t)["frame"].get("presentation") for t in places))
+    def box(title):  # the card's body on the whole layout (frames are relative to their screen)
+        f, at = card(title)["frame"], screen_of(card(title))
+        return (at["x"] + f["x"] + 8, at["y"] + f["y"] + 8,
+                at["x"] + f["x"] + f["width"] - 8, at["y"] + f["y"] + f["height"] - 8)
+    body = {t: box(t) for t in places}
+    expanded = steady_screenshot(list(body.values()))
+    set_widget_mode("hidden")
+    wait_for(lambda: all(link(t)["away"] for t in places))
+    hidden = steady_screenshot(list(body.values()))
+    y_empty = min(first["height"] - 30, 600)
+
+    def only(shown):
+        return {t: ((expanded, .9) if t in shown else (hidden, 1)) for t in places}
+
+    move(first["x"] + first["width"] * rail_pct / 2, y_empty)
+    move(first["x"] - 10, y_empty)
+    ok, seen = edge_reveal_pixels("outer-left", body, only({"two-outer-l"}))
+    check("WG28 two screens: the first screen's outer left edge reveals only its left rail", ok, seen)
+    shown = ok
+    move(*home)
+    ok, seen = edge_reveal_pixels("outer-left-gone", body, only(set()))
+    check("WG28 two screens: leaving that rail hides it again", shown and ok, seen if shown else "it was never revealed")
+
+    # Cross the shared edge both ways, pausing on its last pixel column each side.
+    shared = second["x"]
+    for x in (shared - 40, shared - 1, shared + 1, shared + 40, shared, shared - 1, shared - 40):
+        move(x, y_empty)
+        time.sleep(.1)
+    time.sleep(.5)  # an intended hold
+    shot = screenshot()
+    seen = {t: same_pixels(shot, hidden, body[t]) for t in places}
+    check("WG28 two screens: the shared edge is crossed, not hit; nothing is revealed",
+          all(v == 1 for v in seen.values()), seen)
+
+    move(second["x"] + second["width"] * (1 - rail_pct / 2), y_empty)
+    move(second["x"] + second["width"] + 10, y_empty)
+    ok, seen = edge_reveal_pixels("outer-right", body, only({"two-outer-r"}))
+    check("WG28 two screens: the second screen's outer right edge reveals only its right rail", ok, seen)
+    shown = ok
+    move(*home)
+    ok, seen = edge_reveal_pixels("outer-right-gone", body, only(set()))
+    check("WG28 two screens: leaving it hides it again", shown and ok, seen if shown else "it was never revealed")
+    set_widget_mode("expanded")
+    wait_for(lambda: not any(link(t)["away"] for t in places))
+
+
 def gravity():
     title = "gravity-regression"
     events = Ipc()
@@ -1175,8 +1478,8 @@ remap_from_browser_close =
 
 if __name__ == "__main__":
     cases = {"key": held_key, "gravity": gravity, "previews": previews, "shortcuts": shortcuts,
-             "peek": peeking, "return": return_behavior, "modes": modes}
-    extra = {"outputs": outputs}  # only when asked for: needs a two-output session
+             "peek": peeking, "return": return_behavior, "modes": modes, "edge": edge}
+    extra = {"outputs": outputs, "edge-outputs": edge_outputs}  # only when asked for: need two outputs
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, help="this headless session's wayfire.log")
     parser.add_argument("cases", nargs="*", choices=list(cases) + list(extra))
