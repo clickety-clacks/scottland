@@ -454,6 +454,23 @@ class Translator:
         log.unsupported(f"dispatch {text}")
         return unsupported(f"dispatch {text}")
 
+    @staticmethod
+    def reload():
+        """Re-read the Hyprland config now, as far as Scottland translates it: rebuild the session's
+        config (imported shortcuts, Lua host), the same rebuild its config watcher runs when the
+        files change. Omarchy runs `hyprctl reload` after changes the watcher can't see, such as
+        installing Voxtype, whose F9 shortcuts depend on the command being present."""
+        hooks = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+        try:
+            result = subprocess.run([os.path.join(hooks, "libexec/scottland-build-config")],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                    timeout=60)
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"error: config rebuild failed: {error}"
+        if result.returncode != 0:
+            return f"error: config rebuild failed: {result.stderr.strip()[:200]}"
+        return "ok"
+
     # --- Requests ------------------------------------------------------------------------
 
     def handle(self, raw):
@@ -509,6 +526,8 @@ class Translator:
             return unsupported(f"getoption {args}")
         if command == "dispatch":
             return self.dispatch(args)
+        if command == "reload":
+            return self.reload()
         # Everything else (keyword, eval, switchxkblayout, layers, binds, cursorpos, ...) has no
         # translation yet. Report that to the caller instead of answering a false "ok".
         log.unsupported(f"{command} {args}")

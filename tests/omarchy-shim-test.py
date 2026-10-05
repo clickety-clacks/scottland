@@ -22,7 +22,7 @@ root = REPO / "build/omarchy-shim-fixture"
 marks = root / "marks"
 fixture = Fixture(
     root,
-    modules=[],
+    modules=["default.hypr.bindings.voxtype"],
     recorders=["mark"],
     lua=f'''
 -- An unsupported call while the config loads must not stop the bindings after it.
@@ -110,5 +110,28 @@ with Session(fixture, "hl-omarchy-shim") as session:
     check("a shortcut sees a refused dispatch fail", ("mark", "dispatch-failed") in calls, calls)
     check("a shortcut's supported exec dispatch succeeds and runs",
           {("mark", "exec-ok"), ("mark", "exec-ran")} <= set(calls), calls)
+
+    # `hyprctl reload` re-reads the config now: Voxtype installed after login gets its F9 keys,
+    # as omarchy-voxtype-install expects.
+    before = len(fixture.calls())
+    session.tap("KEY_F9")
+    time.sleep(0.5)  # an intended hold: nothing is bound to F9 yet
+    check("F9 does nothing before Voxtype is installed",
+          not [c for c in fixture.calls()[before:] if c[0] == "voxtype"], fixture.calls()[before:])
+    fixture.command("voxtype")
+    result = session.hyprctl("reload", timeout=60)
+    check("hyprctl reload succeeds", result.returncode == 0 and result.stdout.strip() == "ok",
+          (result.returncode, result.stdout))
+    ok, _ = session.wait(lambda: "voxtype record start" in session.config())
+    check("reload rebuilt this session's config (not the machine's live one)", ok)
+    # Readiness: Wayfire has applied the rebuilt file once its own copy of the option has it.
+    ok, _ = session.wait(lambda: "KEY_F9" in json.dumps(
+        session.ipc("wayfire/get-config-option", {"option": "command/bindings"})), timeout=10)
+    session.key("KEY_F9", True)
+    ok, calls = fixture.wait_calls(lambda c: ("voxtype", "record start") in c[before:])
+    check("after reload, F9 runs voxtype record start", ok, calls[before:])
+    session.key("KEY_F9", False)
+    ok, calls = fixture.wait_calls(lambda c: ("voxtype", "record stop") in c[before:])
+    check("after reload, F9 release runs voxtype record stop", ok, calls[before:])
 
 sys.exit(check.summary())
