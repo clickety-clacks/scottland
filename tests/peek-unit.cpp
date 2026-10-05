@@ -1,5 +1,5 @@
 // Window avoidance, the peeking strip (WK13, P12, P13): the pure engine in core/plugin/src/peek.cpp.
-// Numbered as in the peek-strip design's test list; the engram case is the osanwe regression of
+// Numbered as in the peek-strip design's test list; the engram case is the daily machine's regression of
 // 2026-10-04.
 #include "peek.hpp"
 #include <algorithm>
@@ -611,7 +611,7 @@ int main()
             d12 >= need - 1e-6 && d01 >= need0 - 1e-6 && d02 >= need0 - 1e-6,
             "13 concentric no_room hints clear each other and the front hint by the collision gap");
     }
-    // The osanwe engram case (2026-10-04, osanwe-engram-sliver-20261004.png): in Window mode the
+    // The engram case on the daily machine (2026-10-04, a screenshot of a top sliver): in Window mode the
     // engram window is covered except a sliver along its top (it is at the top of the screen; the
     // focused front window covers the rest). Its hint was drawn near its center, under the front
     // window. Decision 5: make room; if there is none, the hint goes on the sliver, overlapping the

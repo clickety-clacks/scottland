@@ -25,13 +25,15 @@ inline constexpr double peek_switch_margin = 6; // m: another way must be this m
 // Soft: a move in any other direction counts this many times its length.
 inline constexpr double peek_direction_weight = 2;
 // One slice of a pass spends at most this many work units (one obstacle range, one candidate
-// coordinate or one candidate cell). Calibrated 2026-10-04 with tests/peek-unit.sh: plumbus
-// (x86_64, loaded) 117,600 units/ms, so 1.45 ms; nacelle (aarch64) 138,600 units/ms, 1.23 ms.
+// coordinate or one candidate cell). Calibrated 2026-10-04 with tests/peek-unit.sh: the x86 test machine
+// (loaded) 117,600 units/ms, so 1.45 ms; the ARM test machine 138,600 units/ms, 1.23 ms.
 // A slice stops between queries, so it may overrun by one query: at most (2k + 6)^2 cells.
 inline constexpr size_t peek_slice_units = 170000;
-// P8: one refresh stops its slice at this wall-clock time on the compositor thread. It only
-// pauses the pass: results never depend on it.
+// P8: one refresh stays within avoidance_solve_budget_us on the compositor thread. Its peek
+// slice pauses at peek_pause_us, leaving room for the one query a slice may overrun by and the
+// occlusion pass. Pausing never changes a result.
 inline constexpr int avoidance_solve_budget_us = 2000;
+inline constexpr int peek_pause_us = 1500;
 // The hint pass keeps hint circles this far apart (after the WK28 pop).
 inline constexpr double hint_collision_gap = 6.0;
 inline constexpr double hint_pop_scale = 1.06;

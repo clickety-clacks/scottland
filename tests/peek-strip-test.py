@@ -5,7 +5,7 @@ Each window is a solid color, so what a window shows is measured from screenshot
 solver state: a rear window must show a strip of at least 24 x 100 pt x text scale of its own
 color. Also: Window mode makes room for full hints and returns to the peek layout, 1 px drags stay
 calm, dense stacks hide nothing, zone limits hold, a window with no room shows only its hint, and
-the osanwe engram case (a top sliver) gets its hint out from under the front window.
+the engram case (a top sliver) gets its hint out from under the front window.
 """
 import json
 import math
@@ -303,8 +303,12 @@ try:
                 check(h['rung'] == 'peek' and not inside and not clear,
                       f'B Window mode, text {s}: {title} has no room for a hint; its hint is on its strip over the front edge',
                       f'rung {h["rung"]} rule {h["rule"]} badge at ({c[0]:.0f},{c[1]:.0f}) target ({h["target_dx"]:.1f},{h["target_dy"]:.1f})')
-            check(h['rung'] != 'full' or abs(b['size'] - h['hint_size']) < 1,
-                  f'B Window mode, text {s}: {title} full rung shows its full-size hint', f'{b["size"]:.1f} vs {h["hint_size"]:.1f}')
+            minimum = 48*s
+            sized = (abs(b['size'] - h['hint_size']) < 1 if h['rung'] == 'full' else
+                     minimum - 1 <= b['size'] <= h['hint_size'] + 1 if h['rung'] == 'minimum' else
+                     abs(b['size'] - minimum) < 1)
+            check(sized, f'B Window mode, text {s}: {title} hint is the size its rung ({h["rung"]}) allows',
+                  f'{b["size"]:.1f}; full {h["hint_size"]:.1f}, minimum {minimum:.1f}')
         key('LEFTALT', False)
         time.sleep(.5)
         hs = settled()
@@ -312,6 +316,44 @@ try:
                    for t, i in ids.items())
         check(back, f'B Alt up, text {s}: every window returns to its peek offset within 1 px',
               str({t: (round(hs[i]['target_dx'], 1), round(hs[i]['target_dy'], 1)) for t, i in ids.items()}))
+
+        # B2. Full room: a front window narrower than the rear one, with space at the sides
+        # inside the rear window's zone. (The stack above leaves 60 px above and below and 190 px
+        # at the sides of a 900 x 600 front window: full room would push the rear window's center
+        # out of the center zone, so minimum room is right there.)
+        close_all()
+        ids = {'Rear': spawn('Rear', 600, 400, colors['Back'])}
+        drag(ids['Rear'], 640, 360)
+        ids['Narrow'] = spawn('Narrow', 500, 400, colors['Front'])
+        drag(ids['Narrow'], 640, 360)
+        settled()
+        key('LEFTALT', True)
+        wait(lambda: state()['active'])
+        time.sleep(1.2)
+        hs = settled()
+        screenshot(f'B2-full-room-{s}')
+        h, front = hs[ids['Rear']], drawn(hs[ids['Narrow']])
+        b = h['badge']
+        c = (b['x']+b['size']/2, b['y']+b['size']/2)
+        clear = math.dist(c, (min(max(c[0], front[0]), front[0]+front[2]),
+                              min(max(c[1], front[1]), front[1]+front[3]))) >= b['size']/2 - .5
+        check(h['rung'] == 'full' and abs(b['size'] - h['hint_size']) < 1 and clear,
+              f'B2 Window mode, text {s}: with space, the rear window gets full room and a full-size hint clear of the front',
+              f'rung {h["rung"]} badge {b["size"]:.1f} of {h["hint_size"]:.1f}, target ({h["target_dx"]:.1f},{h["target_dy"]:.1f})')
+        key('LEFTALT', False)
+        time.sleep(.5)
+        hs = settled()
+        check(hs[ids['Rear']]['rung'] == 'peek' or hs[ids['Rear']]['outcome'] in ('visible', 'moved'),
+              f'B2 Alt up, text {s}: back to the peek layout', f"{hs[ids['Rear']]['outcome']}/{hs[ids['Rear']]['rung']}")
+        close_all()
+        if s == 1.64:
+            # Rebuild the three-window stack for the drag cases.
+            ids = {}
+            for title, w, h_, x, y in [('Back', 600, 400, 630, 350), ('Mid', 700, 460, 650, 370),
+                                       ('Front', 900, 600, 640, 360)]:
+                ids[title] = spawn(title, w, h_, colors[title])
+                drag(ids[title], x, y)
+            hs = settled()
 
         if s == 1.64:
             # C. 1 px drags of the front window across the rear ones: calm.
@@ -433,6 +475,53 @@ try:
             if mode == 'Window mode':
                 key('LEFTALT', False)
                 time.sleep(.8)
+        # P8 from outside: a second connection pings the compositor about every millisecond while
+        # the front window is dragged 1 px at a time across the dense stack; a ping can only come
+        # back when the main loop is free.
+        pings, stop = [], [False]
+        def pinger():
+            with socket.socket(socket.AF_UNIX) as ping:
+                ping.connect(socket_path)
+                body = json.dumps({'method': 'stipc/ping', 'data': {}}).encode()
+                message = struct.pack('<I', len(body))+body
+                def read(n):
+                    out = b''
+                    while len(out) < n:
+                        out += ping.recv(n-len(out))
+                    return out
+                while not stop[0]:
+                    started = time.monotonic()
+                    ping.sendall(message)
+                    read(struct.unpack('<I', read(4))[0])
+                    pings.append((time.monotonic()-started)*1000)
+                    time.sleep(.001)
+        import threading
+        thread = threading.Thread(target=pinger, daemon=True)
+        thread.start()
+        front_id = order(hs)[0]
+        fd = drawn(hints()[front_id])
+        fx, fy = fd[0]+fd[2]/2, fd[1]+fd[3]/2
+        ipc('window-rules/focus-view', {'id': front_id})
+        ipc('stipc/move_cursor', {'x': round(fx), 'y': round(fy)})
+        key('LEFTMETA', True)
+        ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+        solve_max_before = state()['avoidance_solve_max_ms']
+        for step in range(1, 201):
+            ipc('stipc/move_cursor', {'x': round(fx+step), 'y': round(fy)})
+            time.sleep(.008)
+        ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+        key('LEFTMETA', False)
+        ipc('stipc/move_cursor', {'x': 640, 'y': 715})
+        stop[0] = True
+        thread.join(timeout=2)
+        settled(20)
+        ordered = sorted(pings)
+        p50 = ordered[len(ordered)//2] if ordered else 0
+        p99 = ordered[int(len(ordered)*.99)] if ordered else 0
+        worst = ordered[-1] if ordered else 0
+        check(ordered and worst < 100, f'D {count}: during a 200-step live drag over the stack the main loop answers within 100 ms',
+              f'{len(ordered)} pings: median {p50:.2f} ms, p99 {p99:.2f} ms, worst {worst:.2f} ms; '
+              f'avoidance refresh max {state()["avoidance_solve_max_ms"]:.3f} ms')
         s_ = state()
         print(f'      D {count}: outcomes {outcomes}; last pass {s_["avoidance_pass_units"]} units in '
               f'{s_["avoidance_pass_slices"]} slice(s); slice max {s_["avoidance_solve_max_ms"]:.3f} ms', flush=True)
@@ -491,7 +580,7 @@ try:
     time.sleep(.5)
     close_all()
 
-    # F. The osanwe engram case: a window at the top of the screen, covered by the focused front
+    # F. The engram case from the daily machine: a window at the top of the screen, covered by the focused front
     # window except a sliver along its top. Window mode makes room for its hint; with no room,
     # its hint sits on the sliver over the front window's edge, not at its center.
     set_palette(1.64)
