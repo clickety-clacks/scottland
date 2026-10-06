@@ -1024,6 +1024,7 @@
             model.windows[window->get_id()].paired_placement = paired_placement_t{
                 placed_geometry(window), window->get_output()->to_string(), model.windows[window->get_id()].pinned_scale};
             remember_window(window);
+            apply_opacity(window);  // fully opaque, once (WK36)
             publish_model();
         };
         if (auto link = link_of_window(window))
