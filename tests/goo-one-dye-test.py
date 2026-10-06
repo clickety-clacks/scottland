@@ -110,13 +110,16 @@ def shot(name):
 
 def spawn(title, x, y, w, h, background=None, animate=False):
     cmd = ['foot', '-c', '/dev/null', '-o', 'resize-by-cells=no', '-T', title]
-    if background: cmd[3:3] = ['-o', 'colors.background=' + background]
     if animate:
         # Flips green/magenta until art/stop exists, then rests on green; turns blue once
         # art/next exists.
         cmd += ['python3', '-u', '-c', "import os,time\nstop,nxt=%r,%r\ndef bg(c): print('\\033]11;'+c+'\\007',end='',flush=True)\n"
                 "while not os.path.exists(stop):\n bg('#d02090'); time.sleep(.1); bg('#20c040'); time.sleep(.1)\n"
                 "bg('#20c040')\nwhile not os.path.exists(nxt): time.sleep(.1)\nbg('#2040e0')\ntime.sleep(900)" % (str(art/'stop'), str(art/'next'))]
+    elif background:
+        # OSC 11 works with both Foot config generations; an obsolete colors section
+        # otherwise produces a gray error window instead of the intended fixture.
+        cmd += ['python3', '-u', '-c', "import time; print('\\033]11;#' + %r + '\\007', end='', flush=True); time.sleep(900)" % background]
     else:
         cmd += ['sleep', '900']
     clients.append(subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))

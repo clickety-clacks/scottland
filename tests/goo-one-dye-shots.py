@@ -56,7 +56,9 @@ try:
     geometry = {'shot-magenta': (760, 430, 520, 380, 'd02090'), 'shot-front': (420, 230, 560, 400, None),
                 'shot-attention': (1120, 90, 380, 260, None), 'shot-apart': (120, 560, 360, 260, None)}
     for title, (x, y, w, h, bg) in geometry.items():
-        cmd = ['foot', '-c', '/dev/null', '-o', 'resize-by-cells=no'] + (['-o', 'colors.background=' + bg] if bg else []) + ['-T', title, 'sleep', '3600']
+        cmd = ['foot', '-c', '/dev/null', '-o', 'resize-by-cells=no', '-T', title]
+        cmd += (['python3', '-u', '-c', "import time; print('\\033]11;#' + %r + '\\007', end='', flush=True); time.sleep(3600)" % bg]
+                if bg else ['sleep', '3600'])
         clients.append(subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
         for _ in range(100):
             if any(v['title'] == title for v in views()): break
