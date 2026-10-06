@@ -26,7 +26,7 @@ with his blessing. Scottland is an independent project, not his.
 | `omarchy/bin/` | `scottland-omarchy` | `scottland-switch` and setup for per-user menu entries and default themes |
 | `omarchy/themes/` | `scottland-omarchy` | Watercolor Dream Light and Dark Omarchy themes, installed per user when their names are available |
 | `omarchy/switch-dialog/` | `scottland-omarchy` | The Switch Desktop dialog (Quickshell, Omarchy theme) |
-| `omarchy/helper/` | `scottland-omarchy` | Root helper + polkit rule: sets the autologin session, starts sessions on their own VT |
+| `omarchy/helper/` | `scottland-omarchy` | Root helper + polkit rule: sets the autologin session, ends one desktop and starts the other |
 | `omarchy/hooks/` | `scottland-omarchy` | Crash guard: a Scottland session that dies in seconds boots Hyprland next time |
 | `packaging/` | | Arch PKGBUILDs now; other distros later |
 
@@ -35,10 +35,9 @@ Rule: nothing under `core/` knows Omarchy exists. Omarchy integration lives only
 ## Running it
 
 On Omarchy, install `scottland-omarchy`, run `scottland-omarchy-setup` once, then use
-Omarchy menu > System > Switch Desktop (Super+Escape inside Scottland). The dialog's
-"Close … when switching" checkbox (on by default) ends the current session; unchecked, both
-sessions keep running on separate VTs, and some apps may not work correctly. The machine
-boots into whichever session was used last.
+Omarchy menu > System > Switch Desktop (Super+Escape inside Scottland). Switching closes the
+current session and all its windows; the dialog warns about this. The machine boots into
+whichever session was used last.
 
 The adapter opens a plain-text report when it changes or cannot import shortcuts. By default it
 stays at `~/.local/state/scottland/omarchy-overrides.txt` (under `$XDG_STATE_HOME` when set); see

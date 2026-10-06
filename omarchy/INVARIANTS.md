@@ -19,16 +19,20 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | ID | Invariant | Status |
 |---|---|---|
 | W1 | Omarchy menu > System > "Switch Desktop" opens the switch dialog; Super+Escape in Scottland opens the Omarchy System menu, which has it. | implemented |
-| W2 | The dialog has a checkbox "Close <current desktop> when switching", checked by default, with a note below it that some apps may not work correctly when both run at once. The choice is remembered. | implemented |
+| W2 | Switching always closes the current desktop and all its windows; there is no option to keep both desktops running. The dialog has no checkbox; it warns that switching WILL close all windows in the current desktop ("Switching will close all windows in <current desktop>."). A choice remembered from the former keep option is ignored (switching closes) and deleted the next time the switcher runs. (Mike, 2026-10-06) | implemented |
 | W3 | Switching needs no password. | verified |
 | W4 | The machine boots into whichever desktop was used last. | implemented |
 | W5 | Close mode, Hyprland to Scottland: Hyprland's apps get to close cleanly first; Scottland starts as the only desktop with the user's graphical-session services (Yoohoo, Voxtype, portals, 1Password, ClipMesh, …) running in it. | verified |
 | W6 | Close mode, Scottland to Hyprland: Hyprland starts cleanly (no stale session state blocks uwsm) and its services come back attached to it. | verified |
-| W7 | Keep mode: both desktops keep running on separate VTs; switching flips between them without closing anything. | verified |
-| W8 | Keep mode: the graphical-session services follow whichever desktop is on screen, including plain Ctrl+Alt+F-key switches, restarting as needed. Switches may be slow; a fully capable desktop matters more than speed. | verified |
-| W9 | Quitting Scottland in keep mode hands everything back to Hyprland. | verified |
 | W10 | If Scottland dies within seconds of starting, the next boot goes to Hyprland (crash guard). | implemented |
-| W11 | Session services exit cleanly on a switch (no crash reports from apps losing their display). | implemented (1Password still crashes on keep-mode handover restarts; proposed: exclude it from the handover) |
+| W11 | Session services exit cleanly on a switch (no crash reports from apps losing their display). | implemented |
+
+Keep mode (W7–W9: both desktops running on separate VTs, services handed to whichever is on screen,
+and back to Hyprland when Scottland quits) was removed on 2026-10-06 (Mike: "switching between the
+two just closes all the windows, keeps it clean"); its 1Password handover crash went with it. A
+second desktop started some other way (Scottland from a text console beside Hyprland) is not
+managed: as core does for any second session, the user's graphical-session services and startup
+handlers stay with the desktop that was already running.
 
 ## Omarchy environment inside Scottland
 
@@ -50,7 +54,7 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | O8 | Injected shortcuts reach the focused window with only their own modifiers; a physically held Super does not leak in (universal copy sends plain Ctrl+C / Ctrl+Insert). | implemented (headless) |
 | O13 | Shortcuts a Hyprland config switches on and off (`:set_enabled()`, e.g. Ctrl+W remapped only while Chromium is focused) follow the focused window; while off, their keys pass through to the app unchanged (terminals keep Ctrl+W = delete word). | implemented |
 | O14 | Apps in Scottland get the environment Omarchy's Hyprland config sets with `hl.env` (e.g. `QT_QPA_PLATFORMTHEME=gtk3` for native file dialogs in Qt apps, Electron/Chromium Wayland hints, cursor size, compose file, theme colors, the user's own variables), read from the same config by the Lua host, and handed to user services as uwsm does; the variables naming the desktop stay Scottland's. | implemented |
-| O24 | The Hyprland config's startup handlers (`hl.on("hyprland.start")`, Omarchy's `o.exec_on_start` / `o.launch_on_start`: Sunshine's installer, udiskie, power profiles, the monitor watcher, post-boot hooks) run once per Scottland session, at its start, when Scottland is the user's only graphical session; never again on `hyprctl reload`, config changes or a Lua host restart. Startup commands Scottland's own hooks already perform (environment import, launching the Omarchy shell) are skipped. Beside a running Hyprland (keep mode) they do not run: open question for Mike. (AG20) | implemented (ARM test machine, headless, `tests/omarchy-startup-test.py`, 2026-10-05) |
+| O24 | The Hyprland config's startup handlers (`hl.on("hyprland.start")`, Omarchy's `o.exec_on_start` / `o.launch_on_start`: Sunshine's installer, udiskie, power profiles, the monitor watcher, post-boot hooks) run once per Scottland session, at its start, when Scottland is the user's only graphical session; never again on `hyprctl reload`, config changes or a Lua host restart. Startup commands Scottland's own hooks already perform (environment import, launching the Omarchy shell) are skipped. Beside a desktop that is still running (Scottland started some other way, e.g. from a text console) they do not run; that desktop has run them. (AG20; the keep-mode question is moot since keep mode was removed, 2026-10-06) | implemented (ARM test machine, headless, `tests/omarchy-startup-test.py`, 2026-10-05) |
 | O15 | Scottland's palette (widgets such as the default card) follows the Omarchy theme: background, foreground, muted, accent, alert and attention colors from the current theme, switching live with `omarchy theme set` (the `accent.d` provider's `--palette`). Attention reads the optional `attention = "#rrggbb"` key from `colors.toml` and falls back to `yellow`; the shipped Watercolor themes omit this key. | implemented (Plumbus isolated palette checks, 2026-10-03) |
 | O18 | When core Sunlight (S21) requests a day/night mode, the adapter checks the current Omarchy theme with `omarchy-theme-color --file <current>/theme/colors.toml mode` and runs `omarchy theme set` only if that mode is wrong. Adapter defaults are Watercolor Dream Light by day and Watercolor Dream Dark by night; `~/.config/scottland/omarchy-solar.ini` can override either choice, and an omitted value uses that shipped default. A matching user-picked theme stays selected. | implemented (Plumbus isolated test, 2026-10-03) |
 | O19 | `scottland-omarchy-setup` installs Watercolor Dream Light and Dark into the user's Omarchy theme directory only when each destination name is absent; an existing same-named theme is kept intact. The adapter package and dev-install snapshot ship the themes, including their `.aether-managed` markers; dev-install links the matching setup command from its snapshot. | implemented (Plumbus isolated config check, 2026-10-03) |

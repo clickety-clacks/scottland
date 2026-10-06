@@ -4,9 +4,8 @@
 #
 #   switch <scottland|hyprland> close [session-id]
 #       set the autologin session; if the target is already running, switch to it and end the
-#       caller's session, otherwise restart the login manager so autologin starts the target
-#   switch <scottland|hyprland> keep [session-id]
-#       set the autologin session, then start or activate the target on its own VT
+#       caller's session, otherwise restart the login manager so autologin starts the target.
+#       Switching always closes the caller's desktop; "close" is the only mode.
 #   boot   <scottland|hyprland>         only set the autologin session (crash guard)
 #
 # Internal: `relogin <user>` is what `switch … close` hands to systemd so it outlives the session
@@ -70,14 +69,6 @@ session_file() {
   esac
 }
 
-desktop_exec() {
-  local name=$1 dir
-  for dir in /usr/local/share/wayland-sessions /usr/share/wayland-sessions; do
-    [[ -f $dir/$name ]] && { sed -n 's/^Exec=//p' "$dir/$name" | head -1; return; }
-  done
-  echo "no session file: $name" >&2; exit 3
-}
-
 set_boot() {
   printf '# Written by scottland-switch: the session autologin starts.\n[Autologin]\nSession=%s\n' \
     "$(session_file)" >"$conf.tmp"
@@ -86,8 +77,8 @@ set_boot() {
 
 # The user's session on seat0 whose desktop matches the target, if one is running.
 is_scottland_session() {
-  # SDDM reports the desktop as "Scottland:Wayfire:wlroots"; a session started on its own VT by
-  # this helper reports "scottland". Match either, case-insensitively.
+  # SDDM reports the desktop as "Scottland:Wayfire:wlroots"; a session started some other way may
+  # report "scottland". Match either, case-insensitively.
   local desktop
   desktop=$(loginctl show-session "$1" -p Desktop --value)
   [[ ${desktop,,} == *scottland* ]]
@@ -112,53 +103,24 @@ running_vt() {
   done
 }
 
-start_on_vt() {
-  local vt=7 unit
-  [[ $target == hyprland ]] && vt=8
-  unit=scottland-session-tty$vt
-  systemctl is-active --quiet "$unit" && { chvt "$vt"; return; }
-  # When this session ends, return to the VT it was started from instead of a blank console.
-  local back=1
-  [[ -n $source_session ]] && back=$(loginctl show-session "$source_session" -p VTNr --value)
-  [[ $back =~ ^[0-9]+$ && $back -gt 0 ]] || back=1
-  # shellcheck disable=SC2046
-  systemd-run --unit="$unit" --collect --quiet \
-    -p PAMName=login -p User="$user_name" -p WorkingDirectory="~" \
-    -p TTYPath=/dev/tty$vt -p TTYReset=yes -p TTYVHangup=yes \
-    -p StandardInput=tty -p StandardOutput=journal -p StandardError=journal \
-    -p UtmpIdentifier=tty$vt -p UtmpMode=user \
-    -p "ExecStopPost=+/usr/bin/chvt $back" \
-    --setenv=XDG_SESSION_TYPE=wayland --setenv=XDG_SESSION_CLASS=user \
-    --setenv=XDG_SEAT=seat0 --setenv=XDG_VTNR=$vt \
-    --setenv=XDG_SESSION_DESKTOP="$target" \
-    /bin/sh -c "exec $(desktop_exec "$(session_file)")"
-  chvt "$vt"
-}
-
 case ${1:-} in
   boot)
     set_boot ;;
   switch)
+    [[ $mode == close ]] || { echo "mode must be close" >&2; exit 2; }
     set_boot
-    case $mode in
-      close)
-        vt=$(running_vt)
-        if [[ -n $vt ]]; then
-          chvt "$vt"
-          [[ -n $source_session ]] && loginctl terminate-session "$source_session"
-        else
-          # Restart the login manager so autologin starts the target. It ends this session first;
-          # clear the session services before the next desktop starts.
-          # Runs as a transient system unit so it survives this session being torn down.
-          systemd-run --no-block --collect --quiet --unit="scottland-relogin-$(date +%s)" \
-            /usr/lib/scottland/scottland-session-helper relogin "$user_name"
-        fi ;;
-      keep)
-        vt=$(running_vt)
-        if [[ -n $vt ]]; then chvt "$vt"; else start_on_vt; fi ;;
-      *) echo "mode must be close or keep" >&2; exit 2 ;;
-    esac ;;
+    vt=$(running_vt)
+    if [[ -n $vt ]]; then
+      chvt "$vt"
+      [[ -n $source_session ]] && loginctl terminate-session "$source_session"
+    else
+      # Restart the login manager so autologin starts the target. It ends this session first;
+      # clear the session services before the next desktop starts.
+      # Runs as a transient system unit so it survives this session being torn down.
+      systemd-run --no-block --collect --quiet --unit="scottland-relogin-$(date +%s)" \
+        /usr/lib/scottland/scottland-session-helper relogin "$user_name"
+    fi ;;
   *)
-    echo "usage: scottland-session-helper switch <scottland|hyprland> <close|keep> | boot <scottland|hyprland>" >&2
+    echo "usage: scottland-session-helper switch <scottland|hyprland> close [session-id] | boot <scottland|hyprland>" >&2
     exit 2 ;;
 esac
