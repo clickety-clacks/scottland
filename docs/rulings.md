@@ -119,6 +119,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
 | 10-04 | Gooarchy patterns after Omarchy but starts clean: nothing is borrowed to fill a gap (no bar yet means no bar), so the distro's deficit is clearly defined once it is built. | distro-notes |
 | 10-04 | Gooarchy will have its own custom bar and its own notification system; until they exist it ships neither. | distro-notes |
+| 10-06 | Agent skills: the core `scottland` skill covers Scottland-specific things and doesn't recommend Omarchy-related things ("in the distro scottland stands alone"); the Omarchy adapter has its own skill ("on the adapter version omarchy is still involved"); Gooarchy will get its own too. | E6, O30 |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 

@@ -9,4 +9,4 @@ After the short explanation, lead with these own shortcuts, one at a time. Expla
 
 Personal Scottland shortcut overrides live in ~/.config/scottland/overrides.ini. Before suggesting a key, check Scottland's defaults and the user's overrides to verify that key is free. Never edit Hyprland or Omarchy files without the user's explicit OK. Ask before making any change and wait for the answer.
 
-Use the installed Scottland agent skill at /usr/share/scottland/agents/skills/scottland/SKILL.md for Scottland shortcut behavior and its configuration. The skill is linked into your agent's skills.
+Use the installed Scottland agent skill at /usr/share/scottland/agents/skills/scottland/SKILL.md for Scottland shortcut behavior and its configuration, and the Omarchy adapter's skill at /usr/share/scottland/agents/skills/scottland-omarchy/SKILL.md for imported shortcuts, this report and moving a shortcut to a free key. Both skills are linked into your agent's skills.

@@ -34,7 +34,7 @@ package_scottland() {
   install -Dm755 "$_root/core/libexec/scottland-exec" "$pkgdir/usr/lib/scottland/libexec/scottland-exec"
   ln -s /usr/lib/scottland/libexec/scottland-exec "$pkgdir/usr/bin/scottland-exec"
   ln -s /usr/lib/scottland/libexec/scottland-ctl "$pkgdir/usr/bin/scottland-ctl"
-  install -Dm644 "$_root/core/agents/skills/scottland/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland/SKILL.md"
+  (cd "$_root/core/agents/skills" && find scottland -type f -exec install -Dm644 {} "$pkgdir/usr/share/scottland/agents/skills/{}" \;)
   install -Dm755 "$_root/core/autostart.d/02-link-agent-skills" "$pkgdir/usr/lib/scottland/autostart.d/02-link-agent-skills"
   install -Dm755 "$_root/core/libexec/scottland-widget-spawn" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-spawn"
   install -Dm755 "$_root/core/libexec/scottland-widget-launch" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-launch"
@@ -100,6 +100,8 @@ package_scottland-omarchy() {
   install -Dm755 "$o/libexec/scottland-handover" "$pkgdir/usr/lib/scottland/libexec/scottland-handover"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
   install -Dm644 "$o/prompts/omarchy-overrides-agent.txt" "$pkgdir/usr/lib/scottland/prompts/omarchy-overrides-agent.txt"
+  # The adapter's agent skill, beside Scottland's: linked into coding agents only while this package is installed.
+  (cd "$o/agents/skills" && find scottland-omarchy -type f -exec install -Dm644 {} "$pkgdir/usr/share/scottland/agents/skills/{}" \;)
   install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
   install -Dm755 "$o/reload.d/10-hyprshim" "$pkgdir/usr/lib/scottland/reload.d/10-hyprshim"
   install -Dm755 "$o/autostart.d/20-omarchy-shell" "$pkgdir/usr/lib/scottland/autostart.d/20-omarchy-shell"
