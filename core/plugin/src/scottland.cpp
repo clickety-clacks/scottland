@@ -923,7 +923,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<int> widget_make_room_dwell{"scottland/widget_make_room_dwell"};
     wf::option_wrapper_t<double> window_mode_tint{"scottland/window_mode_tint"};
     wf::option_wrapper_t<bool> window_avoidance_always{"scottland/window_avoidance_always"};
-    wf::option_wrapper_t<double> goo_dye_strength{"scottland/goo_dye_strength"};
+    wf::option_wrapper_t<double> goo_dye_density{"scottland/goo_dye_density"};
     // Keep parsing the historical key so existing user config still opts in.
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
@@ -940,7 +940,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
         scottland::palette.unfocused_edge_strength = unfocused_edge_strength;
         scottland::palette.hint_tint = window_mode_tint_strength();
-        scottland::palette.dye_strength = std::clamp(float(goo_dye_strength), 0.f, 1.5f);
+        scottland::palette.dye_strength = std::clamp(float(goo_dye_density), 0.f, 1.5f);
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
         wf::color_t attention = attention_color;
@@ -7401,7 +7401,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_tone_light.set_callback([=] { load_color_scheme(); });
         unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
-        goo_dye_strength.set_callback([=] { load_color_scheme(); });
+        goo_dye_density.set_callback([=] { load_color_scheme(); });
         window_mode_tint.set_callback([=] { load_color_scheme(); refresh_layout_avoidance(); });
         auto avoidance_setting_changed = [=] {
             declutter_signature.clear();

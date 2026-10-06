@@ -86,11 +86,15 @@
             <default>0.65</default><min>0</min><max>1</max>
         </option>
         <option name="goo_soak" type="double">
-            <_short>Wallpaper soak</_short><_long>Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.</_long>
+            <_short>Wallpaper pickup</_short><_long>How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off.</_long>
             <default>0.12</default><min>0</min><max>1</max>
         </option>
-        <option name="goo_dye_strength" type="double">
-            <_short>Dye strength</_short><_long>Scales focus, attention and Window mode hint colors in goo and fallback halos. One keeps today's look; higher values strengthen state colors, capped at full opacity. The unfocused neutral edge keeps its separate strength.</_long>
+        <option name="goo_pickup_balance" type="double">
+            <_short>Pickup balance</_short><_long>Share of picked-up color in the goo at full Wallpaper pickup. Zero keeps a window's own color (focus, attention); one shows only what is picked up from beneath.</_long>
+            <default>0.45</default><min>0</min><max>1</max>
+        </option>
+        <option name="goo_dye_density" type="double">
+            <_short>Dye density</_short><_long>How much dye the goo holds: its window colors and the colors it picks up alike (focus, attention and hint colors in fallback halos). Higher is denser, capped at full opacity; zero leaves clear liquid.</_long>
             <default>1</default><min>0</min><max>1.5</max>
         </option>
 

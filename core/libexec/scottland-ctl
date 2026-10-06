@@ -20,8 +20,8 @@ import sys
 NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", "blend_width")
 GOO = ("goo", "goo_breath_keys", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
-       "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak",
-       "goo_dye_strength", "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance",
+       "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak", "goo_pickup_balance",
+       "goo_dye_density", "goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity", "goo_hover_distance",
        "attention_color_family")
 WIDGETS = ("widget_bounce", "widget_peek_enter_delay", "widget_peek_leave_delay", "widget_attention_peek_duration",
            "widget_make_room_dwell", "minimize_hold_delay")
@@ -33,14 +33,22 @@ NAMES += GOO + UNFOCUSED_EDGE + ("cycle_overshoot", "key_impulse", "key_friction
                 "key_max_velocity", "alt_hold_delay", "window_double_tap_delay", "window_mode_tint", "window_hold_delay") + WIDGETS + OPACITY
 NAMES += ("window_avoidance_always", "solo_audition_hotspot")
 TEXT = ("scale_curve", "goo_falloff", "attention_color_family")
-LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always"}
+# Renamed settings: the old name is still accepted (Mike, 2026-10-05: dye strength is dye density).
+LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always", "goo_dye_strength": "goo_dye_density"}
 ACCEPTED_NAMES = set(NAMES) | set(LEGACY_OPTIONS)
 
-def setting_updates(name, value):
+LIVE_OPTIONS = {}
+
+def setting_updates(name, value, sock=None):
     name = LEGACY_OPTIONS.get(name, name)
     updates = {f"scottland/{name}": value}
     if name == "window_avoidance_always":
         updates["scottland/hint_avoidance_always"] = value
+    if name == "goo_dye_density" and sock is not None:
+        if name not in LIVE_OPTIONS:
+            live = call(sock, "wayfire/get-config-option", {"option": f"scottland/{name}"})
+            LIVE_OPTIONS[name] = name if "value" in live else "goo_dye_strength"
+        updates = {f"scottland/{LIVE_OPTIONS[name]}": value}
     return updates
 
 
@@ -90,12 +98,18 @@ def main():
                         values[name] = str(legacy["value"]).lower() in ("true", "1")
                     else:
                         unsupported.append(name)
+                elif name == "goo_dye_density":
+                    legacy = call(sock, "wayfire/get-config-option", {"option": "scottland/goo_dye_strength"})
+                    if "value" in legacy:
+                        values[name] = float(legacy["value"])
+                    else:
+                        unsupported.append(name)
                 else:
                     unsupported.append(name)
         values["unsupported"] = unsupported
         print(json.dumps(values))
     elif command == "set" and len(sys.argv) == 4 and sys.argv[2] in ACCEPTED_NAMES:
-        print(json.dumps(call(sock, "wayfire/set-config-options", setting_updates(sys.argv[2], sys.argv[3]))))
+        print(json.dumps(call(sock, "wayfire/set-config-options", setting_updates(sys.argv[2], sys.argv[3], sock))))
     elif command == "option" and len(sys.argv) == 3:
         reply = call(sock, "wayfire/get-config-option", {"option": sys.argv[2]})
         print(json.dumps(reply.get("value", reply)))
@@ -115,7 +129,7 @@ def main():
                 values = json.loads(line[6:])
                 updates = {}
                 for key, value in values.items():
-                    if key in ACCEPTED_NAMES: updates.update(setting_updates(key, value))
+                    if key in ACCEPTED_NAMES: updates.update(setting_updates(key, value, sock))
                 reply = call(sock, "wayfire/set-config-options", updates)
                 if reply.get("error"):
                     print(reply["error"], file=sys.stderr, flush=True)
@@ -123,7 +137,7 @@ def main():
             parts = line.strip().split(None, 1)
             if parts and parts[0] in ACCEPTED_NAMES:
                 parts = parts + [""] if len(parts) == 1 else parts
-                reply = call(sock, "wayfire/set-config-options", setting_updates(parts[0], parts[1]))
+                reply = call(sock, "wayfire/set-config-options", setting_updates(parts[0], parts[1], sock))
                 if reply.get("error"):
                     print(f"{parts[0]}: {reply['error']}", file=sys.stderr, flush=True)
     else:
