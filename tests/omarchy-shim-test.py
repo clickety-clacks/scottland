@@ -125,8 +125,9 @@ with Session(fixture, "hl-omarchy-shim") as session:
     ok, _ = session.wait(lambda: "voxtype record start" in session.config())
     check("reload rebuilt this session's config (not the machine's live one)", ok)
     # Readiness: Wayfire has applied the rebuilt file once its own copy of the option has it.
-    ok, _ = session.wait(lambda: "KEY_F9" in json.dumps(
-        session.ipc("wayfire/get-config-option", {"option": "command/bindings"})), timeout=10)
+    ok, _ = session.wait(lambda: all("KEY_F9" in json.dumps(
+        session.ipc("wayfire/get-config-option", {"option": option}))
+        for option in ("command/bindings", "scottland/shortcuts")), timeout=10)
     session.key("KEY_F9", True)
     ok, calls = fixture.wait_calls(lambda c: ("voxtype", "record start") in c[before:])
     check("after reload, F9 runs voxtype record start", ok, calls[before:])

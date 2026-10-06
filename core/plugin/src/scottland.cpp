@@ -74,6 +74,7 @@ extern "C" {
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
 #include "session.hpp"
+#include "shortcuts.hpp"
 #include "attention-color.hpp"
 #include "state-dye.hpp"
 
@@ -900,6 +901,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 {
     scottland::key_layers_t key_layers;
     scottland::session_t session_state;
+    scottland::shortcuts_t shortcuts;
 
     static constexpr const char *TRANSFORMER = "scottland-scale";
     scottland::goo_t goo;
@@ -7110,8 +7112,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
 
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
-    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string>> release_bindings{
-        "scottland/release_bindings"};
 
     wf::ipc::method_callback send_key = [] (wf::json_t data) -> wf::json_t
     {
@@ -7316,33 +7316,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     };
 
-    wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
-        [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
-    {
-        if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
-        if (key_layers.handles(ev) || (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED))
-        {
-            return;
-        }
-
-        // Shortcuts belong to the unlocked session; the lock screen gets the keys.
-        if (scottland::session_locked())
-        {
-            return;
-        }
-
-        auto keyboard = wlr_seat_get_keyboard(wf::get_core().get_current_seat());
-        xkb_keymap *keymap = keyboard ? keyboard->keymap : nullptr;
-        for (const auto& [name, key, command] : release_bindings.value())
-        {
-            auto code = evdev_keycode(keymap, key);
-            if (code && (*code == ev->event->keycode))
-            {
-                wf::get_core().run(command);
-            }
-        }
-    };
-
   public:
     void init() override
     {
@@ -7421,7 +7394,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_minimize_edge);
         wf::get_core().connect(&on_minimize_device_removed);
         wf::get_core().connect(&on_cancel_key);
-        wf::get_core().connect(&on_key);
+        shortcuts.init([this] (auto *ev) { return key_layers.handles(ev); });
         wf::get_core().connect(&on_remap_key);
         // Wayfire's promotion manager disables each output's TOP node while fullscreen is
         // promoted. Read that compositor fact for every screen, regardless of keyboard focus.
@@ -7512,7 +7485,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/layout-state");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
-        on_key.disconnect();
+        shortcuts.fini();
         on_axis.disconnect();
         on_remap_key.disconnect();
         on_mapped.disconnect();

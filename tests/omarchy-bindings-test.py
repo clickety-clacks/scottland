@@ -6,6 +6,8 @@ loads the installed, unchanged Omarchy binding files (voxtype.lua, media.lua). O
 bound commands actually ran, recorded by stand-ins for voxtype and friends
 (tests/omarchy_fixture.py). The lock-screen cases use a real ext-session-lock client
 (tests/session-lock-fixture.qml); the lock is confirmed by its magenta surface in a screencopy.
+Lock-screen cases: Omarchy's repeating+locked volume keys repeat there, a user's locked release
+shortcut runs there on release, and unlocked-only shortcuts (F9, Super+F7, F8) don't run.
 
   SCOTTLAND_HEADLESS_DIR is chosen by the test (build/hl-omarchy-bindings).
   tests/omarchy-bindings-test.py
@@ -29,6 +31,8 @@ hl.bind("F8", function() os.execute("{root}/bin/mark fn-press") end)
 hl.bind("F8", function() os.execute("{root}/bin/mark fn-release") end, {{ release = true }})
 -- A release chord with a modifier (Hyprland bindr on SUPER + F7).
 o.bind("SUPER + F7", "Modified release", "mark mod-release", {{ release = true }})
+-- A user's locked release shortcut (Hyprland bindrl): on release, also on the lock screen.
+o.bind("F5", "Locked release", "mark locked-release", {{ release = true, locked = true }})
 ''')
 
 
@@ -72,6 +76,24 @@ with Session(fixture, "hl-omarchy-bindings") as session:
     check("Super+F7 release runs once", fixture.calls().count(("mark", "mod-release")) == 1,
           fixture.calls())
 
+    # A release shortcut runs only for a press it matched: Ctrl+F9 (F9 let go before Ctrl) is not
+    # F9, so neither half of the plain F9 push-to-talk runs, as in Hyprland.
+    before = len(fixture.calls())
+    session.key("KEY_LEFTCTRL", True)
+    session.tap("KEY_F9")
+    session.key("KEY_LEFTCTRL", False)
+    time.sleep(0.3)  # an intended hold: a wrong run would show up here
+    check("Ctrl+F9 runs neither half of plain F9 push-to-talk",
+          not [c for c in fixture.calls()[before:] if c[0] == "voxtype"], fixture.calls()[before:])
+
+    # A locked release shortcut, unlocked: runs on release, not on press.
+    session.key("KEY_F5", True)
+    ok, calls = fixture.wait_calls(ran("mark", "locked-release"), timeout=1.0)
+    check("F5 locked release shortcut does not run on press", not ok, calls)
+    session.key("KEY_F5", False)
+    ok, calls = fixture.wait_calls(ran("mark", "locked-release"))
+    check("F5 locked release shortcut runs on release", ok, calls)
+
     # AG10: Omarchy's media keys are repeating and locked. Held, a repeating key repeats.
     volume_up = ("omarchy-audio-output-volume", "raise")
     mute = ("omarchy-audio-output-volume", "mute-toggle")
@@ -91,9 +113,7 @@ with Session(fixture, "hl-omarchy-bindings") as session:
           fixture.calls().count(mute))
 
     # Lock the session with a real lock client; the lock surface must cover the screen.
-    lock = session.harness("run", "sh", "-c",
-                           f"exec qs -p {REPO}/tests/session-lock-fixture.qml >/dev/null 2>&1 &",
-                           check=False)
+    lock = session.spawn(f"exec qs -p {REPO}/tests/session-lock-fixture.qml")
     locked_ok, image = session.wait(
         lambda: (lambda shot: shot if shot and pixel(shot, 10, 10) == (255, 0, 255) else None)(
             screenshot(session, "locked")), timeout=15, interval=0.3)
@@ -106,17 +126,25 @@ with Session(fixture, "hl-omarchy-bindings") as session:
     session.tap("KEY_F7")
     session.key("KEY_LEFTMETA", False)
     session.tap("KEY_F8")
+    session.key("KEY_F5", True)
+    ok, calls = fixture.wait_calls(lambda c: ("mark", "locked-release") in c[before:], timeout=1.0)
+    check("on the lock screen, F5 locked release shortcut does not run on press", not ok, calls[before:])
+    session.key("KEY_F5", False)
+    ok, calls = fixture.wait_calls(lambda c: ("mark", "locked-release") in c[before:])
+    check("on the lock screen, F5 locked release shortcut runs on release", ok, calls[before:])
     session.key("KEY_VOLUMEUP", True)
-    ok, calls = fixture.wait_calls(lambda c: volume_up in c[before:])
-    check("locked volume-up runs on the lock screen", ok, calls[before:])
-    time.sleep(1.0)  # an intended hold past the repeat delay
+    ok, calls = fixture.wait_calls(lambda c: c[before:].count(volume_up) >= 3, timeout=5)
+    check("held locked volume-up repeats on the lock screen", ok, calls[before:].count(volume_up))
     session.key("KEY_VOLUMEUP", False)
-    time.sleep(0.3)  # an intended hold: anything late shows up here
+    settled = fixture.calls()[before:].count(volume_up)
+    time.sleep(0.5)  # an intended hold: repeats must stop with the key
     after = fixture.calls()[before:]
-    check("locked volume-up runs once while locked (no repeat there)",
-          after.count(volume_up) == 1, after)
+    check("locked volume-up stops repeating on release", after.count(volume_up) == settled,
+          (settled, after.count(volume_up)))
     check("unlocked-only shortcuts do not run on the lock screen (F9, Super+F7, F8)",
-          not [c for c in after if c[0] in ("voxtype", "mark")], after)
+          not [c for c in after if c[0] == "voxtype" or c in (("mark", "mod-release"),
+                                                              ("mark", "fn-press"), ("mark", "fn-release"))],
+          after)
 
     session.tap("KEY_ENTER")
     unlocked, image = session.wait(
@@ -127,5 +155,6 @@ with Session(fixture, "hl-omarchy-bindings") as session:
     session.tap("KEY_F9")
     ok, calls = fixture.wait_calls(lambda c: ("voxtype", "record stop") in c[before:])
     check("shortcuts run again after unlock", ok, calls[before:])
+    session.terminate(lock)
 
 sys.exit(check.summary())

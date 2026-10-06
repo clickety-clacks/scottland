@@ -6,7 +6,8 @@ Isolated headless --omarchy session loading the installed, unchanged utilities.l
 omarchy-hyprland-monitor-clamshell) plus a user binding on either change. Input: core's
 test-only virtual switch device (scottland/test-switch), which takes Wayfire's own switch path;
 only libinput is bypassed. Oracle: which stand-in commands ran. The lid-close command must also
-run on the lock screen (a real ext-session-lock client), as Omarchy marks it locked.
+run on the lock screen (a real ext-session-lock client), as Omarchy marks it locked; a switch
+binding without locked must not.
 
   tests/omarchy-lid-test.py
 """
@@ -52,15 +53,19 @@ with Session(fixture, "hl-omarchy-lid") as session:
           count("omarchy-hyprland-monitor-clamshell") == 0 and "Lid Switch (off)" in report,
           [line for line in report.splitlines() if "Lid Switch" in line])
 
-    # Locked, as Omarchy marks it: lid close still runs on the lock screen.
-    session.run("sh", "-c", f"exec qs -p {REPO}/tests/session-lock-fixture.qml >/dev/null 2>&1 </dev/null &")
+    # Locked, as Omarchy marks it: lid close still runs on the lock screen. The user's binding
+    # has no locked flag, so it does not run there (as in Hyprland).
+    lock = session.spawn(f"exec qs -p {REPO}/tests/session-lock-fixture.qml")
     ok, _ = session.wait(lambda: (lambda shot: shot and pixel(shot, 10, 10) == (255, 0, 255))(
         screenshot(session, "lid-locked")), timeout=15, interval=0.3)
     check("session locked by a real lock client", ok)
     lid(session, True)
     ok, calls = fixture.wait_calls(lambda c: c.count(("omarchy-system-lid-close", "")) == 2)
     check("closing the lid on the lock screen still runs omarchy-system-lid-close", ok, calls)
+    time.sleep(0.3)  # an intended hold: a wrong run would show up here
+    check("the user's unlocked-only switch binding does not run on the lock screen",
+          count("mark", "lid-changed") == 2, fixture.calls())
     session.tap("KEY_ENTER")
-    session.run("pkill", "-f", "session-lock-fixture.qml")
+    session.terminate(lock)
 
 sys.exit(check.summary())

@@ -12,9 +12,10 @@ bool session_locked();
 /** Session state for integrations, and hardware switch bindings.
  *
  *  IPC scottland/session-state -> {locked: bool}
- *  [scottland] switch_device_<n> / switch_state_<n> / switch_command_<n>: run a command when a
- *    switch (the libinput device name, e.g. "Lid Switch") turns on, off, or either ("toggle").
- *    Switches are hardware state, not keystrokes, so they run whether or not the session is locked.
+ *  [scottland] switch_device_<n> / switch_state_<n> / switch_locked_<n> / switch_command_<n>: run
+ *    a command when a switch (the libinput device name, e.g. "Lid Switch") turns on, off, or
+ *    either ("toggle"). Like any shortcut, a switch binding runs while the session is locked only
+ *    when switch_locked_<n> is true (default false).
  *  Test sessions only (SCOTTLAND_TEST_MODEL=1): IPC scottland/test-switch {device, state:bool}
  *    adds a virtual switch device to the compositor's input (as stipc adds its keyboard) and
  *    toggles it, so the event takes Wayfire's own switch path; only libinput is bypassed. */

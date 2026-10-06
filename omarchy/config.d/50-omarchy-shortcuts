@@ -337,8 +337,6 @@ REPORT_GROUPS = {
               "Scottland takes Omarchy's touchpad scroll speed and its per-app speeds (window rules "
               "matching the app); speeds that depend on a particular device or on another window "
               "property have no equivalent."),
-    "partial": ("Works with a limitation in Scottland",
-                "Scottland runs these shortcuts, but not in every situation Hyprland did."),
     "unsupported": ("Unsupported in Scottland",
                     "Scottland has no equivalent for these actions, so they have no shortcut here."),
 }
@@ -346,7 +344,7 @@ REPORT_GROUPS = {
 REPORT_GROUP_ORDER = {name: index for index, name in enumerate((
     "capture", "workspaces", "layout", "window_navigation", "groups", "window_mode",
     "widget_controls", "window_controls", "settings", "reload", "other_feature",
-    "app_remaps", "super_w", "input", "partial", "unsupported"))}
+    "app_remaps", "super_w", "input", "unsupported"))}
 
 
 def evdev_names():
@@ -1053,8 +1051,8 @@ def main():
     report_overrides = []
     reported_remaps = set()
     activators = {}  # (section, option) -> [(description, combo)]; one option can take several keys
-    releases = []  # (description, keysym, command) for key-release shortcuts
-    switches = []  # (description, device, on|off|toggle, command) for hardware switches (lid)
+    shortcuts = []  # (description, combo, command, flags) for core shortcuts (release, locked+repeat)
+    switches = []  # (description, device, on|off|toggle, locked, command) for hardware switches (lid)
 
     def omitted(label, description, note, group="unsupported", now="No shortcut in Scottland",
                 kind="", action=""):
@@ -1095,7 +1093,8 @@ def main():
                     now="Holding Alt now enters Scottland's Window mode and shows window hints.")
             continue
         if release == "1" and kind in ("exec", "function"):
-            # The Scottland plugin runs these when the key is let go (Hyprland release binds).
+            # Hyprland release binds run when the pressed chord's key is let go; core shortcuts keep
+            # that together with the locked flag (core/plugin/src/shortcuts.hpp).
             if kind == "exec" and HYPRLAND_ONLY.search(arg):
                 omitted(label, description, f"Hyprland-only: {arg[:60]}",
                         omission_report_group(kind, arg, description, "Hyprland-only command"),
@@ -1104,17 +1103,6 @@ def main():
             command = arg if kind == "exec" else (
                 '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
                 + shlex.quote(f"{mods}+{key}:release"))
-            if locked == "1":
-                # Neither release mechanism runs while the session is locked.
-                report_overrides.append(report_entry(
-                    "partial", label, omarchy_action_description(description, kind, arg, "partial"),
-                    "Runs on release while the session is unlocked, not on the lock screen."))
-            if not mods:
-                releases.append((description or label, key, command))
-                kept += 1
-                continue
-            # With modifiers: Wayfire's release binding, run when the key of the pressed chord is
-            # let go (Hyprland's bindr on a modified chord).
             wanted = combo(mods, key)
             if not wanted:
                 omitted(label, description, "key has no Wayfire name", kind=kind, action=arg)
@@ -1127,16 +1115,15 @@ def main():
                         now="Scottland uses these keys for one of its own features.",
                         kind=kind, action=arg)
                 continue
-            name = f"omarchy_{kept}"
-            sections.setdefault("command", []).append(
-                (f"# {description or label} (on release)", f"release_binding_{name} = {wanted}",
-                 f"command_{name} = {command}"))
+            shortcuts.append((f"{description or label} (on release)", wanted, command,
+                              {"locked": locked == "1", "release": True}))
             kept += 1
             continue
         switch = SWITCH_KEY.fullmatch(key) if not mods else None
         if switch:
             # Hyprland's switch:on:<device> / switch:off:<device> / switch:<device> (either way),
-            # e.g. the laptop lid; core's switch bindings run them (also on the lock screen).
+            # e.g. the laptop lid; core's switch bindings run them, on the lock screen only when
+            # the binding is marked locked, as in Hyprland.
             if kind == "exec" and HYPRLAND_ONLY.search(arg):
                 omitted(label, description, f"Hyprland-only: {arg[:60]}", kind=kind, action=arg)
                 continue
@@ -1147,7 +1134,7 @@ def main():
                 '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
                 + shlex.quote(f"{mods}+{key}"))
             switches.append((description or label, switch.group(2).strip(),
-                             (switch.group(1) or "toggle").lower(), command))
+                             (switch.group(1) or "toggle").lower(), locked == "1", command))
             kept += 1
             continue
 
@@ -1270,21 +1257,18 @@ def main():
             kept += 1
             continue
 
-        if target[0] == "command":
+        if target[0] == "command" and repeat == "1" and locked == "1":
+            # Wayfire's command plugin has no binding that both repeats and runs on the lock
+            # screen; a core shortcut keeps both flags.
+            shortcuts.append((description or label, wanted, target[1], {"repeat": True, "locked": True}))
+        elif target[0] == "command":
             # Hyprland's flags: repeating repeats while held; locked also works on the lock
-            # screen (Wayfire's always binding). Both: the repeatable binding runs while unlocked
-            # and holds the key, so the always binding only runs (once) while locked.
-            prefixes = []
-            if repeat == "1" or locked != "1":
-                prefixes.append("repeatable_binding" if repeat == "1" else "binding")
-            if locked == "1":
-                prefixes.append("always_binding")
+            # screen (Wayfire's always binding).
+            prefix = ("always_binding" if locked == "1" else
+                      "repeatable_binding" if repeat == "1" else "binding")
             name = f"omarchy_{kept}"
-            entry = [f"# {description or label}"]
-            for index, prefix in enumerate(prefixes):
-                option = name if index == 0 else f"{name}_locked"
-                entry += [f"{prefix}_{option} = {wanted}", f"command_{option} = {target[1]}"]
-            sections.setdefault("command", []).append(tuple(entry))
+            sections.setdefault("command", []).append(
+                (f"# {description or label}", f"{prefix}_{name} = {wanted}", f"command_{name} = {target[1]}"))
         else:
             activators.setdefault(target, []).append((description or label, wanted))
         kept += 1
@@ -1329,16 +1313,20 @@ def main():
         for index, (regex, factor) in enumerate(reversed(scroll_rules)):
             print(f"touchpad_scroll_apps_omarchy_{index:03d} = {regex}")
             print(f"touchpad_scroll_factor_omarchy_{index:03d} = {factor}")
-    if releases or switches:
+    if shortcuts or switches:
         print("\n[scottland]")
-        for index, (description, key, command) in enumerate(releases):
-            print(f"# {description} (on release)")
-            print(f"release_key_omarchy_{index} = {key}")
-            print(f"release_command_omarchy_{index} = {command}")
-        for index, (description, device, state, command) in enumerate(switches):
-            print(f"# {description} ({device} {state})")
+        for index, (description, keys, command, flags) in enumerate(shortcuts):
+            print(f"# {description}")
+            print(f"shortcut_keys_omarchy_{index} = {keys}")
+            print(f"shortcut_command_omarchy_{index} = {command}")
+            for flag in ("repeat", "locked", "release"):
+                if flags.get(flag):
+                    print(f"shortcut_{flag}_omarchy_{index} = true")
+        for index, (description, device, state, locked, command) in enumerate(switches):
+            print(f"# {description} ({device} {state}{', also locked' if locked else ''})")
             print(f"switch_device_omarchy_{index} = {device}")
             print(f"switch_state_omarchy_{index} = {state}")
+            print(f"switch_locked_omarchy_{index} = {'true' if locked else 'false'}")
             print(f"switch_command_omarchy_{index} = {command}")
     if command_overrides:
         print("\n[command]")

@@ -89,7 +89,7 @@ struct test_switches_t
 struct session_t::impl
 {
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc;
-    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string, std::string>>
+    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string, bool, std::string>>
     switch_bindings{"scottland/switch_bindings"};
     std::unique_ptr<test_switches_t> test_switches;
 
@@ -104,9 +104,10 @@ struct session_t::impl
     {
         auto handle = ev->device ? ev->device->get_wlr_handle() : nullptr;
         std::string device = (handle && handle->name) ? handle->name : "";
-        for (const auto& [_, name, when, command] : switch_bindings.value())
+        bool locked = session_locked();
+        for (const auto& [_, name, when, on_lock_screen, command] : switch_bindings.value())
         {
-            if ((name != device) || command.empty())
+            if ((name != device) || command.empty() || (locked && !on_lock_screen))
             {
                 continue;
             }
