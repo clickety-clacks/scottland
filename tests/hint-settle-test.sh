@@ -23,4 +23,6 @@ for i in $(seq 60); do
   sleep 1
 done
 $ready || { echo 'compositor IPC never became ready' >&2; exit 1; }
-timeout --signal=TERM --kill-after=45s 15m tests/headless.sh run python3 "$PWD/tests/hint-settle-test.py" "$artifacts"
+timeout --signal=TERM --kill-after=45s 15m tests/headless.sh run env \
+  SCOTTLAND_TEST_RECORDER="${SCOTTLAND_TEST_RECORDER:-wf-recorder}" \
+  python3 "$PWD/tests/hint-settle-test.py" "$artifacts"

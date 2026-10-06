@@ -38,7 +38,8 @@ from pathlib import Path
 art = Path(sys.argv[1]).resolve()
 art.mkdir(parents=True, exist_ok=True)
 assert os.environ.get('SCOTTLAND_TEST_MODEL') == '1', 'private headless session required'
-for tool in ('wf-recorder', 'ffmpeg', 'ffprobe'):
+recorder_tool = os.environ.get('SCOTTLAND_TEST_RECORDER', 'wf-recorder')
+for tool in (recorder_tool, 'ffmpeg', 'ffprobe'):
     assert shutil.which(tool), tool + ' is required to record frames'
 
 sock = socket.socket(socket.AF_UNIX)
@@ -315,7 +316,7 @@ def record_entry(label, count):
     video = art / (label + '.mkv')
     log = art / (label + '-recorder.log')
     with log.open('w') as recorder_log:
-        recorder = subprocess.Popen(['wf-recorder', '-c', 'ffv1', '-x', 'bgr0', '-y', '-f', str(video)],
+        recorder = subprocess.Popen([recorder_tool, '-c', 'ffv1', '-x', 'bgr0', '-y', '-f', str(video)],
             stdout=subprocess.DEVNULL, stderr=recorder_log)
     # The recorder opens its output once the first frame has been copied.
     wait(lambda: 'Output #0' in log.read_text(), 'the recorder to start')
