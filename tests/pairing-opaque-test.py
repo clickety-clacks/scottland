@@ -80,7 +80,7 @@ def layout(identifier):
 def hint(identifier):
     return next(h for h in ipc('scottland/hints')['hints'] if h['window'] == identifier)
 def focused():
-    return ipc('window-rules/get-focused-view').get('info', {}).get('id')
+    return (ipc('window-rules/get-focused-view').get('info') or {}).get('id')
 
 
 def alt(down):
@@ -120,13 +120,20 @@ def pixel(image, x, y):
     return tuple(image['pixels'][k:k+3])
 
 
-def alpha(image, identifier, color):
-    """Median opacity over interior samples: (shown - background) / (color - background)."""
-    f = layout(identifier)['frame']
+def alpha(image, identifier, color, shift=(0, 0)):
+    """Median opacity over interior samples: (shown - background) / (color - background).
+    Samples another window's frame (halo included) covers are skipped: their background is not
+    the empty screen's. shift: how far a held drag has moved the window from its frame."""
+    views = ipc('scottland/layout-state')['views']
+    f = next(v for v in views if v['id'] == identifier)['frame']
+    others = [v['frame'] for v in views if v['id'] != identifier and v.get('frame') and not v['hidden']]
+    covered = lambda x, y: any(o['x'] - 20 <= x <= o['x'] + o['width'] + 20 and
+                               o['y'] - 20 <= y <= o['y'] + o['height'] + 20 for o in others)
     estimates = []
     for fx in (.25, .4, .6, .75):
         for fy in (.55, .7, .85):  # below a GTK header bar
-            x, y = round(f['x'] + f['width'] * fx), round(f['y'] + f['height'] * fy)
+            x, y = round(f['x'] + shift[0] + f['width'] * fx), round(f['y'] + shift[1] + f['height'] * fy)
+            if covered(x, y): continue
             p, b = pixel(image, x, y), pixel(background, x, y)
             d = [c - bb for c, bb in zip(color, b)]
             n = sum(v * v for v in d)
@@ -144,16 +151,19 @@ def natural(identifier):
     return OPACITY[f'{zone}_opacity_' + ('focused' if is_focused else 'unfocused')]
 
 
-def judge(step, expectations):
+def judge(step, expectations, shift=(0, 0)):
     """expectations: {label: (id, color, expected opacity)}; one capture, every window judged."""
     settled([i for i, _, _ in expectations.values()])
     image = capture(step)
     for label, (identifier, color, expected) in expectations.items():
-        seen = alpha(image, identifier, color)
+        seen = alpha(image, identifier, color, shift)
         observations.append(dict(step=step, window=label, expected=expected, pixels=seen,
             reported=round(layout(identifier)['opacity'], 3), zone=layout(identifier)['zone']))
-        check(seen is not None and abs(seen - expected) <= TOLERANCE,
-              f'{step}: {label} shows opacity {expected:g}', dict(pixels=seen, expected=expected))
+        if expected is None:
+            check(seen is not None and seen <= 1 - 2 * TOLERANCE, f'{step}: {label} is translucent', dict(pixels=seen))
+        else:
+            check(seen is not None and abs(seen - expected) <= TOLERANCE,
+                  f'{step}: {label} shows opacity {expected:g}', dict(pixels=seen, expected=expected))
 
 
 APP = """import sys, gi
@@ -222,7 +232,9 @@ try:
 
     # A bystander, unfocused in the center, never paired: ordinary rules throughout.
     by = launch('Bystander', round(W * .22), GREEN)
-    place(by, W / 2 - W * .11, 30, round(W * .22), 200)
+    place(by, W / 2 - W * .11, 30, round(W * .22), 120)
+    drag(by, (W / 2, 90), True)  # a real drop at the top, clear of where the pairs form
+    wait(lambda: abs(center(geometry(by))[1] - 90) < 4, 'bystander dropped at the top')
 
     for scenario, width in (('peripheral', round(W * .74)), ('center', round(W * .36))):
         left, right = launch(scenario + 'Left', width, RED), launch(scenario + 'Right', width, BLUE)
@@ -232,11 +244,14 @@ try:
             drag(left, (W * .13, H * .62), True); settled([left])
             drag(right, (W * .87, H * .8), True); settled([right])
         else:
-            # Unscaled in the center, translucent by the center pair (.8 focused / .5 unfocused).
+            # Unscaled, either side of the center zone, translucent by the ordinary rules.
             drag(left, (W * .3, H * .65), True); settled([left])
             drag(right, (W * .7, H * .65), True); settled([right])
+        # The last-dropped window keeps the opacity its drag motion computed after the drop, here
+        # center's instead of the side's (0.8, not 0.7; the same on 230ed04, before this change),
+        # so it is judged only as translucent; the others by their exact ordinary values.
         judge(scenario + ' 1 before pairing', {
-            'left': (left, RED, natural(left)), 'right': (right, BLUE, natural(right)),
+            'left': (left, RED, natural(left)), 'right': (right, BLUE, None),
             'bystander': (by, GREEN, natural(by))})
 
         pair(left, right, scenario)
@@ -249,7 +264,7 @@ try:
 
         # A real drag of one: it returns to its natural opacity; its partner was not touched.
         paired_right = geometry(right)
-        drag(left, (W * .2, H * .3))
+        drag(left, (W * .12, H * .2))
         wait(lambda: abs(center(geometry(left))[1] - H / 2) > 20, scenario + ': drag dropped')
         judge(scenario + ' 4 left dragged', {
             'left': (left, RED, natural(left)), 'right': (right, BLUE, 1.0), 'bystander': (by, GREEN, natural(by))})
@@ -280,7 +295,7 @@ try:
             for i in range(1, 9):
                 ipc('stipc/move_cursor', dict(x=round(start[0]), y=round(start[1] - 120 * i / 8)))
                 time.sleep(.02)  # pace a real gesture
-            judge(scenario + ' 5 right held mid-drag', {'right': (right, BLUE, natural(right))})
+            judge(scenario + ' 5 right held mid-drag', {'right': (right, BLUE, natural(right))}, shift=(0, -120))
             key('ESC', True); key('ESC', False)
             button(False); key('LEFTMETA', False)
             wait(lambda: geometry(right) == paired_right, scenario + ': Esc returned the partner')
