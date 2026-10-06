@@ -343,6 +343,8 @@ void main(){
 )";
 // GO28: liquid texels whose backdrop differs from the copy the dye last saw (more than 4
 // levels in a channel), summed in 1/255 steps over 2x2 blocks; later levels sum their inputs.
+// A block past an odd edge skips its missing taps: clamped to the edge, they would count that
+// texel or partial sum again.
 inline const std::string change_shader = R"(
 precision highp float;
 uniform sampler2D uUnder,uSeen,uMask,uReduce;
@@ -351,7 +353,9 @@ uniform vec2 uInputSize;
 void main(){
   float n=0.;vec2 start=(gl_FragCoord.xy-.5)*2.;
   for(int y=0;y<2;y++)for(int x=0;x<2;x++){
-    vec2 uv=(start+vec2(float(x),float(y))+.5)/uInputSize;
+    vec2 t=start+vec2(float(x),float(y));
+    if(t.x>=uInputSize.x||t.y>=uInputSize.y)continue;
+    vec2 uv=(t+.5)/uInputSize;
     if(uFirst==1){
       vec4 a=texture2D(uUnder,uv),b=texture2D(uSeen,uv);vec3 d=abs(a.rgb-b.rgb);
       n+=texture2D(uMask,uv).r>0.&&a.a>.5&&max(max(d.r,d.g),d.b)>4.5/255.?1./255.:0.;
