@@ -70,11 +70,11 @@ def measure(label):
     r = {'case': label, 'seconds': round(t1 - t0, 2),
          'counters': {k: (b[k] - a[k]) if k in a and k in b else None for k in COUNTERS},
          'draw_gpu_ms_median': med(draw_ms), 'step_gpu_ms_median': med(step_ms),
-         'gpu_timing_available': b.get('gpu_timing', False),
+         'gpu_timing_available': b.get('gpu_timing'),
          'sampled_added_gpu_ms': {k: b[k] - a[k] if k in a and k in b and b.get('gpu_timing') else None
                           for k in ('flow_gpu_ms', 'check_gpu_ms', 'seen_gpu_ms')},
-         'gpu_scope_coverage': {scope: {'completed_samples': b.get(samples, 0)-a.get(samples, 0),
-                                          'calls': b.get(calls, 0)-a.get(calls, 0)}
+         'gpu_scope_coverage': {scope: {'completed_samples': b[samples]-a[samples] if samples in a and samples in b else None,
+                                          'calls': b[calls]-a[calls] if calls in a and calls in b else None}
                                 for scope, samples, calls in [('flow', 'flow_gpu_samples', 'dye_flows'),
                                                               ('check', 'check_gpu_samples', 'backdrop_checks'),
                                                               ('seen', 'seen_gpu_samples', 'seen_calls')]},
