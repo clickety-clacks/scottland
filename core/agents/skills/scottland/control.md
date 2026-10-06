@@ -67,7 +67,7 @@ Replace your copy with each newer `version`; a new `session` replaces everything
 | Method and data | Effect |
 |---|---|
 | `scottland/present {"window": 42}` | Same as `scottland-ctl present` |
-| `scottland/widget-action {"id": "42", "action": "open"}` | `open`, `restore`, `close`, `focus`, or `minimize` (collapse/expand that widget) |
+| `scottland/widget-action {"id": "42", "action": "open"}` | `open` (the window to the center, as a click on the card), `close`, `focus`, `minimize` (collapse/expand that widget), or `restore` (the window shown where it's parked on the rail; prefer `open`) |
 | `scottland/widget-mode {"mode": "collapsed"}` | `expanded`, `collapsed`, `hidden` or `next`: the same as tapping Super+M |
 | `scottland/attention {"window": 42, "attention": true, "source": "name"}` | Turn attention on or off under your own source name ([`widgets.md`](widgets.md#attention-sources)) |
 | `scottland/key-layer {...}` | Temporary shortcut layers (below) |

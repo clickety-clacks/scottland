@@ -66,7 +66,7 @@ While Alt is held:
 
 | Keys | Effect |
 |---|---|
-| A window's hint letters | First press selects and focuses it; further presses cycle it through the zones (to the center first, then the rail or periphery, then back). |
+| A window's hint letters | First press selects and focuses it; further presses cycle it through the other two zones (center, periphery, rail; toward the center first) and back to where it started. A widget's first press selects it without opening. |
 | The same hint twice quickly | Sends the window straight to its rail as a widget. |
 | Hold the focused window's hint | **Solo**: it takes the center; the other center windows go to the periphery. Commits at once. |
 | Hold an unfocused window's hint | **Pair**: that window and the focused one are placed side by side in the center at their own sizes (shrunk together only if they don't fit). Entering a pair doesn't change the windows' remembered periphery spots. |

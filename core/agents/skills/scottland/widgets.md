@@ -161,9 +161,11 @@ and replace your copy each time; never merge. Fields: `id`, `app_id`, `desktop`,
 widgets are collapsed: draw a compact form; the card becomes a square around its icon), `focused`,
 `urgent`, `data` (the app's mailbox payload, below), `version`, `revision`.
 
-**Palette** (`SCOTTLAND_PALETTE`): JSON with `scheme` (`light`/`dark`), `background`,
-`foreground`, `muted`, `accent`, `alert`, as `#rrggbb`. It follows the desktop's light/dark
-setting and accent (and an integration's theme) live; watch the file.
+**Palette** (`SCOTTLAND_PALETTE`): JSON with `scheme` (`light`/`dark`) and the colors
+`background`, `foreground`, `muted`, `accent`, `alert` and `attention` as `#rrggbb`, plus
+`text_scale`, `font_family` and `reduced_motion`. It follows the desktop's light/dark setting and
+accent (and an integration's theme) live; watch the file. Keep a fallback for every key: a file
+written by an older Scottland may lack some.
 
 Scottland draws around the widget: its frame and halo (at 100%), the attention breath, the morph
 between window and widget, collapse and expand. A widget doesn't need to do any of that. Keep the
@@ -180,8 +182,8 @@ On the session bus, service `org.scottland.Widgets`:
 
   | Method | Effect |
   |---|---|
-  | `Open()` | Open the window in the center, as clicking the card does |
-  | `Restore()` | Bring the window back and focus it; the widget goes |
+  | `Open()` | Open the window in the center, as clicking the card does. Use this to bring the window back. |
+  | `Restore()` | End the widget and show the window where it is parked, on the rail at rail scale, focused. Not a way to bring it to the user. |
   | `Close()` | Close the window and the widget (the window is shown first, so a "save changes?" question is visible) |
   | `Focus()` | Focus the widget |
 

@@ -51,8 +51,8 @@ open or close, or a window is missing.
 5. Each widget runs in its own systemd scope: `systemctl --user list-units 'scottland-widget-*'`.
 
 What to offer the user, with their go-ahead: drag the widget off the rail (brings the window back),
-or open it (`IPC scottland/widget-action {"id": "<id>", "action": "open"}`); a reload hands widgets
-over to the new plugin and recovers windows left on a rail.
+or open it (`IPC scottland/widget-action {"id": "<id>", "action": "open"}`). Don't reload the
+session to fix a widget.
 
 ## Suspected leak or growing memory
 

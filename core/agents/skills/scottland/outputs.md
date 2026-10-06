@@ -11,7 +11,8 @@ scottland-exec -- wlr-randr        # if wlr-randr is installed
 ```
 
 or call the IPC method `window-rules/list-outputs {}` ([`control.md`](control.md#calling-scottlands-ipc)):
-each output's `name` (such as `eDP-1`, `DP-2`, `HDMI-A-1`), its geometry and its current settings.
+each output's `name` (such as `eDP-1`, `DP-2`, `HDMI-A-1`) and its logical geometry. Read a
+setting's live value with `scottland-ctl option output:eDP-1/transform` (or `/scale`, ...).
 
 ## Settings
 
