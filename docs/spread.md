@@ -26,11 +26,8 @@ spread.
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
-scale, in front. Afterwards it holds still for window avoidance like a pair member (WK36): the
-peek-strip engine treats it as anchored, so the windows behind it peek out around it and it is never
-nudged off the spot the user asked for (P14), until it moves, is resized or becomes a widget. A drop
-that accepts an audition anchors the dropped window the same way, and while an offer shows, the
-windows it moves are anchored too (they are drawn where the offer puts them).
+scale, in front. It gets no special status in window avoidance: like any window, if something
+later covers it, it peeks (WK13; Mike, 2026-10-05: peeking never moves its true location).
 
 **The solve** (`core/plugin/src/spread.{hpp,cpp}`, pure, no Wayfire). Windows whose center is in the
 center zone are *arrivals*; periphery windows are *residents*; widgets and rail windows are fixed.
@@ -135,11 +132,8 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
   destination). The offer layer is computed every frame against what lies under it, so at full
   progress each window is drawn exactly at its offered spot and scale even while a scale animation
   runs underneath, and easing back ends on the live state. A window still coasting, or gliding
-  away, delays the offer. Hint-avoidance offsets of offered windows ease to zero while the offer
-  shows (the peek-strip engine treats them as anchored, as it does pair members) and are recomputed after: the offered spot is exact
-  once they have settled, not during that easing, and the earlier avoidance state is recomputed
-  rather than restored (Astra's review asked for suspension and accepted this equivalent; tested
-  with avoidance on).
+  away, delays the offer. Offered windows get no special status in window avoidance (Mike,
+  2026-10-05): one that something covers peeks like any window.
 - The hotspot radius is fixed when the offer arms (its reservation is built with it); changing the
   setting during an offer refuses it, and a drop is accepted only if the dropped window lies inside
   the reservation.
