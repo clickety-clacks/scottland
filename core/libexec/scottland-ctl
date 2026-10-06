@@ -30,7 +30,7 @@ OPACITY = ("center_opacity_focused", "center_opacity_unfocused", "side_opacity_f
            "widget_opacity_focused", "widget_opacity_unfocused", "window_mode_opacity_focused", "window_mode_opacity_unfocused")
 UNFOCUSED_EDGE = ("unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfocused_edge_strength")
 NAMES += GOO + UNFOCUSED_EDGE + ("cycle_overshoot", "key_impulse", "key_friction", "resize_impulse", "resize_friction",
-                "key_max_velocity", "alt_hold_delay", "window_double_tap_delay", "window_mode_tint", "window_hold_delay") + WIDGETS + OPACITY
+                "key_max_velocity", "alt_hold_delay", "window_double_tap_delay", "window_mode_tint", "hint_background_opacity", "window_hold_delay") + WIDGETS + OPACITY
 NAMES += ("window_avoidance_always", "solo_audition_delay", "solo_audition_hotspot")
 TEXT = ("scale_curve", "goo_falloff", "attention_color_family")
 LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always"}

@@ -1488,6 +1488,7 @@
                         hints_palette.font_family, color,
                         view->get_output()->get_scale(), widget ?
                             std::optional{hints_palette.background} : std::nullopt,
+                        std::clamp(double(hint_background_opacity), 0.0, 100.0) / 100,
                         model.goo_outputs.count(view->get_output()), hints_reduced_motion);
                     moving |= hint_moving;
                     animation_moving |= hint_moving;

@@ -65,7 +65,7 @@ ShellRoot {
   readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
     resize_impulse:335, resize_friction:608, key_max_velocity:6000,
     cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300, window_hold_delay:500,
-    window_avoidance_always:false, window_mode_tint:7, solo_audition_delay:3000, solo_audition_hotspot:50})
+    window_avoidance_always:false, window_mode_tint:7, hint_background_opacity:100, solo_audition_delay:3000, solo_audition_hotspot:50})
   property var motionValues: Object.assign({}, motionDefaults)
   readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
     side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
@@ -126,7 +126,7 @@ ShellRoot {
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
     resize_impulse:"Resize strength",resize_friction:"Resize deceleration",
-    key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", window_mode_tint:"Hint color overlay", alt_hold_delay:"Alt hold timing",
+    key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", window_mode_tint:"Hint color overlay", hint_background_opacity:"Hint background opacity", alt_hold_delay:"Alt hold timing",
     window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing", solo_audition_delay:"Solo audition pause",
     solo_audition_hotspot:"Solo audition hotspot", unfocused_edge_tone_light:"Unfocused edge tone (light)",
     unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength",
@@ -879,7 +879,8 @@ ShellRoot {
             hintFontFamily:root.hintFontFamily;textScale:root.textScale
             viewport:gooScroll;scrollOffset:gooScroll.contentY
             rows:[
-              {id:"window_mode_tint",label:"Hint color overlay",min:0,max:30,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles and outlines are unaffected."}
+              {id:"window_mode_tint",label:"Hint color overlay",min:0,max:30,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles and outlines are unaffected."},
+              {id:"hint_background_opacity",label:"Hint background opacity",min:0,max:100,step:1,largeStep:10,decimals:0,suffix:"%",hint:"Opacity of the backgrounds behind hint letters. Higher makes the backing more visible; 100% keeps the usual window and widget hint backgrounds, and zero removes their fill. Letters, hint rims and window opacity are unchanged."}
             ]
             values:root.motionValues;opening:root.original?.motion || ({})
             onChanged:(name,value)=>root.setMotion(name,value)

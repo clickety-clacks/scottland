@@ -135,7 +135,7 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 
 ## Layout configurator (`scottland-settings`)
 
-The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight tabs, zone overlay and hints): see [docs/settings.md](../docs/settings.md) (S1–S22).
+The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight tabs, zone overlay and hints): see [docs/settings.md](../docs/settings.md) (S1–S23, including independent hint-background opacity).
 
 ## Desktop state
 
@@ -163,7 +163,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK39 (window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK39 and WK41 (window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing, exterior widget attachment and independent hint-background opacity,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints)
 and WP1–WP8 (zone memory, side choice, shared rectangle placement, and which zone a spot reads as). Statuses and verification are recorded there.
 
