@@ -1195,11 +1195,10 @@
                         else if (z == Z::left_periphery) { input.zone_x1 = rail; input.zone_x2 = width / 2 - center_half - .5; }
                         else { input.zone_x1 = width / 2 + center_half + .5; input.zone_x2 = width - rail; }
                         input.center_y1 = area.y; input.center_y2 = area.y + area.height;
-                        // The focused window never moves for avoidance; during a drag that is the
-                        // window under the user's hand (WK13, 10-02). Peeking never moves a window's true
-                        // location, so solo, pair and audition history give no special status: any
-                        // other covered window peeks (Mike, 2026-10-05).
-                        input.anchored = view == focused;
+                        // Only the window under the user's hand never moves. Peeking never moves a
+                        // window's true location, so the focused window and solo, pair and audition
+                        // history give no special status: any covered window peeks (WK13).
+                        input.anchored = drag->view == view;
                         input.full_hint = hint_size(view);
                         input.minimum_hint = 48 * text;
                         input.target = visual.target;
