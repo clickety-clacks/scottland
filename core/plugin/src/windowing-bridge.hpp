@@ -1105,6 +1105,11 @@
                     output_signature[output->to_string()] += "z:" + std::to_string(id) + ';';
                 }
             }
+        // Front-to-back rank. A view the loop skipped (minimized, or a widget slid away) is not
+        // drawn: it ranks behind everything, so it is nobody's obstacle or cover. Never index
+        // stacking with [], which would insert it at the front.
+        auto rank = [&] (uint64_t id) { auto found = stacking.find(id);
+            return found == stacking.end() ? stacking.size() : found->second; };
         bool avoidance_active = window_keys.active || bool(window_avoidance_always) ||
             bool(hint_avoidance_always);
         // Live: something is moving under the user's hand or by inertia. The calm rules differ
@@ -1152,7 +1157,7 @@
             output_signature[name] += common.str();
             auto ordered = ids;
             std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
-                return stacking[a] < stacking[b]; });
+                return rank(a) < rank(b); });
             std::string foreground = common.str();
             for (auto id : ordered)
             {
@@ -1260,10 +1265,7 @@
                     std::vector<uint64_t> window_ids;
                     auto ordered = ids;
                     std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
-                        auto rank = [&] (auto id) { auto found = stacking.find(id);
-                            return found == stacking.end() ? stacking.size() : found->second; };
-                        return rank(a) < rank(b);
-                    });
+                        return rank(a) < rank(b); });
                     // P13: a displayed center stays in its own zone. Zone extents as the layout
                     // model draws them (center_width, rail_width); a periphery excludes its rail.
                     const double width = screen.width;
@@ -1535,7 +1537,7 @@
                     // offsets to settle; the minimum-size fallback appears even if the
                     // settled region still cannot contain the circle.
                     auto& other = hint_visuals[other_id];
-                    if (other_id != it->first && stacking[other_id] >= stacking[it->first]) continue;
+                    if (other_id != it->first && rank(other_id) >= rank(it->first)) continue;
                     badge_ready &= std::hypot(other.target.x - other.offset->translation_x,
                         other.target.y - other.offset->translation_y) < .1;
                     placement_ready &= !animating(other_id);
@@ -1644,9 +1646,7 @@
                     auto found = hint_visuals.find(id);
                     if (found == hint_visuals.end() || !found->second.hint ||
                         found->second.hint->parent() != parent.get()) continue;
-                    auto rank = stacking.find(id);
-                    drawn.emplace_back(rank == stacking.end() ? stacking.size() : rank->second,
-                        found->second.hint);
+                    drawn.emplace_back(rank(id), found->second.hint);
                 }
                 std::stable_sort(drawn.begin(), drawn.end(),
                     [] (const auto& a, const auto& b) { return a.first < b.first; });
