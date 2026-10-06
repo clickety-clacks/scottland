@@ -187,7 +187,7 @@ def open_panel(ctl=None, initial=None):
     for _ in range(100):
         try:
             q = snapshot(panel)
-            if q.get('panel'): break
+            if q.get('loaded') and q.get('panel'): break
         except (subprocess.CalledProcessError, RuntimeError):
             pass
         time.sleep(.1)
@@ -351,6 +351,7 @@ try:
     check('Defaults puts Pickup balance back at 0.45', abs(wait_option('goo_pickup_balance', lambda v: abs(v - .45) < .001,
           'Defaults') - .45) < .001)
     tap('KEY_ESC')                                  # Cancel: the opening values
+    wait_until(lambda: panel.poll() is not None, 'Cancel closed Settings')
     back = wait_option('goo_pickup_balance', lambda v: abs(v - .45) < .001, 'Cancel')
     soak_back = wait_option('goo_soak', lambda v: abs(v - soak) < .001, 'Cancel')
     rest('balance cancelled')
@@ -403,13 +404,20 @@ try:
     quiet('window pickup')
 
     # 5. Never the goo itself: pickup coasts over an unchanged backdrop leave the dye in place.
-    before = [dye(x, y) for x, y in band('dye-a', distances['middle'])] + [dye(*film)]
+    feedback_points = band('dye-a', distances['middle']) + [film]
+    feedback_before = shot('5-before-repeat')
+    before_px = [feedback_before(x, y) for x, y in feedback_points]
+    before = [dye(x, y) for x, y in feedback_points]
     for _ in range(3):
         ipc('scottland/goo-state', {'water_coast': 6})
         rest('repeated pickup')
     after = [dye(x, y) for x, y in band('dye-a', distances['middle'])] + [dye(*film)]
     drift = max(abs(x - y) for p, q in zip(before, after) for x, y in zip(p, q))
-    check('three pickup coasts over an unchanged backdrop leave the dye where it was', drift < .02, {'drift': drift})
+    feedback_after = shot('5-after-repeat')
+    after_px = [feedback_after(x, y) for x, y in feedback_points]
+    pixel_drift = max(abs(a-b) for p, q in zip(before_px, after_px) for a, b in zip(p, q))
+    check('three pickup coasts over an unchanged backdrop leave the dye where it was',
+          drift < .02 and pixel_drift <= 8, {'dye_drift': drift, 'pixel_drift': pixel_drift})
 
     # 4. Spread and swirl smear the paper: red above, blue below, along a band crossing it.
     stop(paper)

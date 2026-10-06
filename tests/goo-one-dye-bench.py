@@ -23,6 +23,7 @@ from pathlib import Path
 
 ap = argparse.ArgumentParser()
 ap.add_argument('session', type=Path); ap.add_argument('artifacts', type=Path)
+ap.add_argument('--build-ref', help='renderer build revision when benchmarking another checkout')
 ap.add_argument('--width', type=int, default=2560); ap.add_argument('--height', type=int, default=1600)
 ap.add_argument('--seconds', type=float, default=30); ap.add_argument('--rounds', type=int, default=4)
 args = ap.parse_args()
@@ -93,7 +94,7 @@ try:
         if 'scottland goo:' in line and ('OpenGL' in line or 'simulation targets' in line): renderer += line.split('scottland goo:')[1].strip() + '; '
     meta = {'machine': platform.machine(), 'kernel': platform.release(), 'renderer': renderer, 'cpus': os.cpu_count(), 'output': [args.width, args.height],
             'sampling': 'GPU completed query counts; wall totals include waits; maxima are lifetime values',
-            'build': subprocess.run(['git', '-C', str(repo), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()}
+            'build': args.build_ref or subprocess.run(['git', '-C', str(repo), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()}
     print(json.dumps(meta), flush=True); (out / 'meta.json').write_text(json.dumps(meta, indent=1))
     ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': f'{args.width}x{args.height}@60000'})
     preset = {'goo_thickness': 22., 'goo_thinning': .27, 'goo_noise': .38, 'goo_lump': 315., 'goo_drift': .39,

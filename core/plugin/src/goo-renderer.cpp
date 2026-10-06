@@ -294,7 +294,9 @@ struct renderer_t::impl
         es3 = version && (strstr(version, "OpenGL ES 3") || strstr(version, "OpenGL ES 4"));
         available = es3 || (extension(extensions, "GL_OES_texture_float") &&
             extension(extensions, "GL_OES_standard_derivatives"));
-        LOGI("scottland goo: ", version ? version : "no GL context", ", float textures and derivatives ", available);
+        const char *renderer = (const char *)glGetString(GL_RENDERER);
+        LOGI("scottland goo: ", version ? version : "no GL context", ", renderer ",
+            renderer ? renderer : "unavailable", ", float textures and derivatives ", available);
         if (!available)
             return false;
         // GLES 2 uses the EGL fence extension where available; completion is still
