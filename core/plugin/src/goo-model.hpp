@@ -52,7 +52,8 @@ struct settings_t
     float wave_speed = .28, wave_damp = .985, wave_height = .55;
     float spread = .45, swirl = .9, release = .06, shine = .75, relief = 5;
     float depth = 6, profile = .65, soak = .12;
-    float dye_density = 1;  // GO23/GO28: how much pigment state release carries
+    float pickup_balance = .45;  // GO28: share of picked-up color at full pickup
+    float dye_density = 1;  // GO23/GO28: amount of all visible dye, including pickup
     float overlap_film = 4, hover_cloudiness = .65, hover_emissivity = .35, hover_distance = 48;
     // Empty means the prototype's exact exponential; custom curves span four reaches.
     std::array<float, 256> falloff{};

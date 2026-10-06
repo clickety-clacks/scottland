@@ -2,6 +2,7 @@
 #include "attention-breath.hpp"
 #include "frame.hpp"
 #include "goo-runtime.hpp"
+#include "goo-pickup-policy.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -518,9 +519,13 @@ class goo_node_t : public wf::scene::node_t
             if (water_pace() <= 0)
             {
                 // Came to rest: back to the breathing strips alone (or to no damage at all).
-                // What lies beneath now is what the dye has seen (GO28).
+                // Compare against the backdrop at coast START. A new final frame may
+                // have arrived after useful dye work; never acknowledge it here.
                 water_running = false;
-                state.renderer.backdrop_seen();
+                // A synchronous compatibility check may immediately start another coast.
+                // Run it after this repeating timer has retired, never from its callback.
+                if (!idle_check.is_connected())
+                    idle_check.run_once([this] { backdrop_copied(std::exchange(idle_foreign, false)); });
                 set_breath_area(settled_ready ? whole_pixels(breath_support & settled_area) : breath_support);
                 return false;
             }
@@ -662,7 +667,7 @@ class goo_node_t : public wf::scene::node_t
             water_due = false;
             water_running = false;
             // Awake, the dye picks up what lies beneath on every step: nothing waits (GO28).
-            pickup_pending = false;
+            pickup.pending = false;
             pickup_timer.disconnect();
             set_breath_area(breath_support);
             breath_loose = true;
@@ -721,73 +726,92 @@ class goo_node_t : public wf::scene::node_t
     // under the liquid for 20 s. A change inside a cool-down waits for its end. Checks run at
     // most twice a second, after frames that copied backdrop under the liquid, and not while
     // one is already waiting.
-    static constexpr double pickup_coast = 6, pickup_gap_first = 20, pickup_gap_most = 300;
+    static constexpr double pickup_coast = 6;
     static constexpr int pickup_tolerated = 16;
-    double pickup_next = 0, pickup_gap = pickup_gap_first, last_check = 0, last_activity = -1e9;
-    bool pickup_pending = false, seen_due = false;
+    goo::pickup_policy_t pickup;
+    bool seen_due = false;
     uint64_t pickup_coasts = 0, pickup_deferred = 0, backdrop_changes = 0;
     wf::wl_timer<false> pickup_timer, check_timer;
     wf::wl_idle_call idle_check;
     bool idle_foreign = false;
     // `repainted`: something other than the goo repainted under the liquid this frame.
+    double pickup_callback_ms = 0, pickup_callback_max_ms = 0;
+    uint64_t pickup_callbacks = 0;
     void backdrop_copied(bool repainted = false)
     {
         if (repainted)
         {
             double t = now();
-            if (t - last_activity > pickup_gap_first && (pickup_gap > pickup_gap_first || t < pickup_next))
+            if (pickup.activity(t))
             {
-                // A still backdrop for a while: the backoff is over.
-                pickup_gap = pickup_gap_first;
-                pickup_next = std::min(pickup_next, t);
-                if (pickup_pending)
-                {
-                    pickup_pending = false;
-                    pickup_timer.disconnect();
-                    if (state.sleeping && watercolor() && !water_running)
-                        start_pickup();
-                }
+                pickup_timer.disconnect();
+                if (state.sleeping && watercolor() && !water_running)
+                    start_pickup();
             }
-            last_activity = t;
         }
-        if (!state.sleeping || !watercolor() || water_running || pickup_pending)
+        if (!state.sleeping || !watercolor() || water_running || pickup.pending)
             return;
-        if (now() - last_check < .5)
+        if (pickup.check_wait(now()) > 0)
         {
             if (!check_timer.is_connected())
-                check_timer.set_timeout(std::max(1, int((.5 - (now() - last_check)) * 1000) + 1),
+                check_timer.set_timeout(std::max(1, int(pickup.check_wait(now()) * 1000) + 1),
                     [this] { backdrop_copied(); });
             return;
         }
-        last_check = now();
-        if (state.renderer.backdrop_changes() > pickup_tolerated)
+        pickup.last_check = now();
+        collect_backdrop_check();
+    }
+    void collect_backdrop_check()
+    {
+        double started = now();
+        collect_backdrop_result();
+        double elapsed = (now() - started) * 1000;
+        pickup_callback_ms += elapsed;
+        pickup_callback_max_ms = std::max(pickup_callback_max_ms, elapsed);
+        ++pickup_callbacks;
+    }
+    void collect_backdrop_result()
+    {
+        int changed = state.renderer.backdrop_changes();
+        if (changed < 0)
+        {
+            check_timer.set_timeout(10, [this] {
+                if (state.sleeping && watercolor() && !water_running && !pickup.pending)
+                    collect_backdrop_check();
+            });
+        }
+        else if (changed > pickup_tolerated && state.sleeping && watercolor() && !water_running && !pickup.pending)
             backdrop_changed();
     }
     void backdrop_changed()
     {
         ++backdrop_changes;
         double t = now();
-        if (t < pickup_next)
+        if (!pickup.change(t))
         {
-            pickup_pending = true;
+            pickup.pending = true;
             ++pickup_deferred;
             if (!pickup_timer.is_connected())
-                pickup_timer.set_timeout(std::max(1, int((pickup_next - t) * 1000)), [this]
-                {
-                    pickup_pending = false;
-                    // The change waited a whole cool-down: the next one is twice as long.
-                    pickup_gap = std::min(pickup_gap * 2, pickup_gap_most);
-                    if (state.sleeping && watercolor() && attached)
-                        start_pickup();
-                });
+                arm_pickup_wait();
             return;
         }
         start_pickup();
     }
+    void arm_pickup_wait()
+    {
+        pickup_timer.set_timeout(std::max(1, int((pickup.next - now()) * 1000) + 1), [this]
+        {
+            // Timers may fire early: preserve the deadline and rearm, not the action.
+            if (!pickup.expire(now())) { arm_pickup_wait(); return; }
+            if (state.sleeping && watercolor() && attached)
+                start_pickup();
+        });
+    }
     void start_pickup()
     {
-        pickup_next = now() + pickup_gap;
+        pickup.start(now());
         ++pickup_coasts;
+        state.renderer.backdrop_seen();
         start_water(pickup_coast);
         set_breath_area(settled_ready ? whole_pixels(breath_support & settled_area) : breath_support);
     }
@@ -1009,7 +1033,7 @@ struct goo_t::impl
         {"release", &goo::settings_t::release},     {"shine", &goo::settings_t::shine},
         {"relief", &goo::settings_t::relief},
         {"depth", &goo::settings_t::depth}, {"profile", &goo::settings_t::profile},
-        {"soak", &goo::settings_t::soak},
+        {"soak", &goo::settings_t::soak}, {"pickup_balance", &goo::settings_t::pickup_balance},
         {"overlap_film", &goo::settings_t::overlap_film},
         {"hover_cloudiness", &goo::settings_t::hover_cloudiness},
         {"hover_emissivity", &goo::settings_t::hover_emissivity},
@@ -1142,6 +1166,14 @@ struct goo_t::impl
                     n->start_water(data["water_coast"].as_double());
                     n->set_breath_area(n->settled_ready ? n->whole_pixels(n->breath_support & n->settled_area) : n->breath_support);
                 }
+                if (data.has_member("pickup_reset") && data["pickup_reset"].is_bool() && data["pickup_reset"].as_bool())
+                {
+                    n->pickup_timer.disconnect();
+                    n->check_timer.disconnect();
+                    n->pickup = goo::pickup_policy_t{};
+                }
+                if (data.has_member("water_elapsed") && (data["water_elapsed"].is_int() || data["water_elapsed"].is_double()))
+                    n->water_started = now() - data["water_elapsed"].as_double();
                 if (data.has_member("water_freeze") && data["water_freeze"].is_bool())
                     n->water_frozen = data["water_freeze"].as_bool();
                 if (data.has_member("reuse_deaf") && data["reuse_deaf"].is_bool())
@@ -1161,6 +1193,7 @@ struct goo_t::impl
             }
             if (test_changed)
                 n->damage();
+            n->state.renderer.poll_timing();
             s["output"] = o->handle->name;
             s["sleeping"] = n->state.sleeping;
             wf::json_t wakes;
@@ -1176,14 +1209,31 @@ struct goo_t::impl
             s["backdrop_changes"] = (int64_t)n->backdrop_changes;
             s["pickup_coasts"] = (int64_t)n->pickup_coasts;
             s["pickup_deferred"] = (int64_t)n->pickup_deferred;
-            s["pickup_pending"] = n->pickup_pending;
-            s["pickup_gap"] = n->pickup_gap;
-            s["pickup_wait"] = std::max(0., n->pickup_next - now());
+            s["pickup_pending"] = n->pickup.pending;
+            s["pickup_gap"] = n->pickup.gap;
+            s["pickup_wait"] = std::max(0., n->pickup.next - now());
             s["breath_keys_enabled"] = n->breath_keys;
             s["steps"] = (int64_t)n->state.renderer.steps;
             s["step_ms"] = n->state.renderer.last_step_ms;
             s["gpu_ms"] = n->state.renderer.last_gpu_ms;
             s["draw_gpu_ms"] = n->state.renderer.last_draw_gpu_ms;
+            s["gpu_timing"] = n->state.renderer.gpu_timing;
+            s["flow_gpu_ms"] = n->state.renderer.flow_gpu_ms;
+            s["check_gpu_ms"] = n->state.renderer.check_gpu_ms;
+            s["seen_gpu_ms"] = n->state.renderer.seen_gpu_ms;
+            s["seen_gpu_samples"] = (int64_t)n->state.renderer.seen_gpu_samples;
+            s["flow_gpu_samples"] = (int64_t)n->state.renderer.flow_gpu_samples;
+            s["check_gpu_samples"] = (int64_t)n->state.renderer.check_gpu_samples;
+            s["flow_wall_ms"] = n->state.renderer.flow_wall_ms;
+            s["flow_wall_max_ms"] = n->state.renderer.flow_wall_max_ms;
+            s["check_wall_ms"] = n->state.renderer.check_wall_ms;
+            s["check_wall_max_ms"] = n->state.renderer.check_wall_max_ms;
+            s["seen_wall_ms"] = n->state.renderer.seen_wall_ms;
+            s["seen_wall_max_ms"] = n->state.renderer.seen_wall_max_ms;
+            s["seen_calls"] = (int64_t)n->state.renderer.seen_calls;
+            s["pickup_callback_ms"] = n->pickup_callback_ms;
+            s["pickup_callback_max_ms"] = n->pickup_callback_max_ms;
+            s["pickup_callbacks"] = (int64_t)n->pickup_callbacks;
             s["draws"] = (int64_t)n->state.renderer.draws;
             s["breath_tightens"] = (int64_t)n->breath_tightens;
             s["tick_ms"] = n->tick_ms;

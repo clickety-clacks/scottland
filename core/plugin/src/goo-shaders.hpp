@@ -12,6 +12,19 @@ varying vec2 pos;
 uniform mat4 MVP;
 void main() { pos = position; gl_Position = MVP * vec4(position, 0, 1); }
 )";
+// Sample four encoded texel centers, decode each, then interpolate pigment absorbance.
+// Hardware interpolation of sqrt(K/6) would systematically lighten transported boundaries.
+inline const std::string dye_filter = R"(
+uniform vec2 uDyeSize;
+vec3 dyeK(vec4 stored){return 6.*stored.rgb*stored.rgb;}
+vec3 sampleDyeK(sampler2D tex,vec2 uv){
+  vec2 grid=uv*uDyeSize-.5,lo=floor(grid),f=fract(grid);
+  vec2 a=(lo+.5)/uDyeSize,b=(lo+1.5)/uDyeSize;
+  vec3 aa=dyeK(texture2D(tex,a)),ba=dyeK(texture2D(tex,vec2(b.x,a.y)));
+  vec3 ab=dyeK(texture2D(tex,vec2(a.x,b.y))),bb=dyeK(texture2D(tex,b));
+  return mix(mix(aa,ba,f.x),mix(ab,bb,f.x),f.y);
+}
+)";
 inline const std::string common = R"(
 precision highp float;
 varying vec2 pos;
@@ -32,16 +45,18 @@ uniform float uOverlap,uFilm,uCloudiness,uEmissivity,uControls,uDyeStrength;
 #endif
 // GO28: the dye is one field of pigment absorbance (K = -ln color), stored as sqrt(K/6) so
 // RGBA8 keeps its precision at the light end. Mixing absorbances is subtractive, like pigment.
-// uPickup is the pickup rate relative to release (0 off); uOpenPickup is 0 when open desktop has
+// uPickup is the pickup rate relative to release (0 off; soak and pickup balance), uPickupRich
+// soak^0.25 (0 off); uOpenPickup is 0 when open desktop has
 // no background-layer client (nothing to pick up there).
-uniform float uPickup,uOpenPickup;
-vec3 dyeK(vec4 stored){return 6.*stored.rgb*stored.rgb;}
+uniform float uPickup,uOpenPickup,uPickupRich;
+)" + dye_filter + R"(
 vec4 storeK(vec3 k){return vec4(sqrt(clamp(k/6.,0.,1.)),1.);}
 vec3 absorb(vec3 c){return -log(clamp(c,.0025,1.));}
 vec3 dyeColor(vec4 stored){return exp(-dyeK(stored));}
-// How much pigment a source's release carries: A16 neutral strength for its neutral share,
-// GO23 dye strength for its state share (0 is clear water).
-float sourceAmount(vec4 c7){return c7.w*(1.-c7.z)+uDyeStrength*c7.z;}
+// How much pigment a source's release carries: A16 neutral strength for its neutral share, all of
+// it for its state share (0 is clear water). Dye density scales all of the goo's dye together,
+// picked-up color included (Mike, 2026-10-05), so it enters the amount below, not the mix.
+float sourceAmount(vec4 c7){return c7.w*(1.-c7.z)+c7.z;}
 vec4 source(int i, float column) { return texture2D(uSources, vec2((column+.5)/11., (float(i)+.5)/max(float(uCount),1.))); }
 float hash(vec2 p) { p = fract(p * vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p) {
@@ -149,10 +164,10 @@ vec4 gooField(vec2 p) {
     float local=1.-smoothstep(3.*uReach,4.*uReach,max(shore,0.));
     breathing+=contribution*source(i,7.).x*local;
   }
-  // GO28: the pigment amount here is the equilibrium of release and pickup. Stored /1.5
-  // (state amounts reach 1.5) so the packed field keeps it.
+  // GO28: the pigment amount here is the equilibrium of release and pickup, scaled by dye
+  // density (up to 1.5). Stored /1.5 so the packed field keeps it.
   float pick=uPickup*(back.x<float(uCount)?1.:uOpenPickup);
-  float amount=(tinted/max(F,.0001)+pick)/(1.+pick);
+  float amount=uDyeStrength*(tinted/max(F,.0001)+pick)/(1.+pick);
   return vec4(F,amount/1.5,cloud/max(weight,.0001),breathing/max(F,.0001));
 }
 vec2 off(int k){return k==0?vec2(1,0):k==1?vec2(-1,0):k==2?vec2(0,1):vec2(0,-1);}
@@ -244,7 +259,7 @@ void main(){
     vec2 vel=vec2(gy,-gx)*uSwirl;
     // Watercolor runs along the liquid: most of the flow follows the band (across the
     // field's gradient), so pigment travels down an edge instead of stalling at its sides.
-    if(uPickup>0.){
+    if(uPickupRich>0.){
       vec2 fp=1./uRes*4.;
       vec2 grad=vec2(field(uv+vec2(fp.x,0.))-field(uv-vec2(fp.x,0.)),field(uv+vec2(0.,fp.y))-field(uv-vec2(0.,fp.y)));
       float gl=length(grad);
@@ -258,11 +273,11 @@ void main(){
     }
     vec2 adv=uv-vel*uStep/uRes;
     // Both ends must contain goo: backtracing cannot pull color across a dry gap.
-    c=dyeK(texture2D(uDyeTex,mix(uv,adv,gooMask(adv)*m)));
+    c=sampleDyeK(uDyeTex,mix(uv,adv,gooMask(adv)*m));
   }
   if(m>0.){
     vec3 acc=c;float ws=1.;
-    for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=dyeK(texture2D(uDyeTex,u2))*w;ws+=w;}
+    for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=sampleDyeK(uDyeTex,u2)*w;ws+=w;}
     c=mix(c,acc/ws,uSpread);
   }
   float ksum=1e-4,maxK=0.,nearEdge=1e5;vec2 back=backdrop(p);
@@ -306,7 +321,7 @@ void main(){
     // Wet pigment is a little richer than the paper it lifted from. (Subtractive mixing keeps
     // saturation; a stronger boost turns complementary colors to mud where they meet.)
     vec3 paper=under.rgb;
-    paper=clamp(mix(vec3(dot(paper,vec3(.299,.587,.114))),paper,1.+.35*sqrt(uPickup/1.25)),0.,1.);
+    paper=clamp(mix(vec3(dot(paper,vec3(.299,.587,.114))),paper,1.+.35*uPickupRich),0.,1.);
     load+=pick*absorb(paper);rate+=pick;
   }
   if(rate>0.)c=mix(c,load/rate,clamp(often(rate)*m+(1.-m)*.25,0.,1.));
@@ -408,7 +423,7 @@ void main(){
     vec4 r=source(i,0.),g=source(i,1.);float contribution=g.x*fall(max(sourceSdf(p,i),0.));
     hintDye+=source(i,2.).rgb*contribution;hintAmount+=contribution;
   }
-  // GO28: how much pigment is here (release and pickup), up to 1.5 for strong state dye.
+  // GO28: how much pigment is here (release and pickup), up to 1.5 at maximum dye density.
   float amount=clamp(value.g,0.,1.)*1.5;
   float cloud=uControls>.5?value.b:0.;
   vec3 n=normalize(vec3(-slope,1.));
@@ -421,7 +436,7 @@ void main(){
   // carries the dye's share of the color (below). The composite multiplies the live dye in.
   vec3 bg=vec3(0.),dye=vec3(0.);
 #else
-  vec3 bg=texture2D(uBackground,bgUV).rgb,dye=dyeColor(texture2D(uDyeTex,uv));
+  vec3 bg=texture2D(uBackground,bgUV).rgb,dye=exp(-sampleDyeK(uDyeTex,uv));
 #endif
   if(hintAmount>0.)dye=hintDye/hintAmount;
   vec3 L=normalize(vec3(-.45,-.55,.7));float diff=.6+.4*dot(n,L);
@@ -479,7 +494,7 @@ uniform vec2 uRes;
 // GO24: the surface's color is its own light plus a share of the dye. The cache keeps
 // the two apart (refraction alpha is the dye's share), and the dye is read here, so
 // the dye can move without the surface being rendered again.
-vec3 dyeColor(vec4 stored){return exp(-6.*stored.rgb*stored.rgb);} // GO28 absorbance
+)" + dye_filter + R"(
 void main(){
   vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
   vec4 intrinsic=texture2D(uIntrinsic,uv);
@@ -488,7 +503,7 @@ void main(){
   vec2 shifted=pos+(refr.rg-.5)*32.;
   vec2 bgUV=(uBackgroundMap*vec4(shifted,0.,1.)).xy*.5+.5;
   vec3 bg=texture2D(uBackground,bgUV).rgb;
-  vec3 color=clamp(intrinsic.rgb+refr.a*1.5*dyeColor(texture2D(uDyeTex,pos/uRes))+refr.b*1.5*bg,0.,1.);
+  vec3 color=clamp(intrinsic.rgb+refr.a*1.5*exp(-sampleDyeK(uDyeTex,pos/uRes))+refr.b*1.5*bg,0.,1.);
   gl_FragColor=vec4(color*intrinsic.a,intrinsic.a);
 }
 )";
@@ -502,7 +517,7 @@ uniform sampler2D uIntrinsic,uRefraction,uIntrinsicB,uRefractionB,uBackground,uD
 uniform mat4 uBackgroundMap;
 uniform vec2 uRes;
 uniform float uMix;
-vec3 dyeColor(vec4 stored){return exp(-6.*stored.rgb*stored.rgb);} // GO28 absorbance
+)" + dye_filter + R"(
 vec3 dye;
 vec4 layer(vec4 intrinsic,vec4 refr){
   if(intrinsic.a<=0.)return vec4(0.);
@@ -512,7 +527,7 @@ vec4 layer(vec4 intrinsic,vec4 refr){
   return vec4(color*intrinsic.a,intrinsic.a);
 }
 void main(){
-  dye=dyeColor(texture2D(uDyeTex,pos/uRes));
+  dye=exp(-sampleDyeK(uDyeTex,pos/uRes));
   vec2 uv=(uBackgroundMap*vec4(pos,0.,1.)).xy*.5+.5;
   vec4 a=texture2D(uIntrinsic,uv),b=texture2D(uIntrinsicB,uv);
   if(a.a<=0.&&b.a<=0.)discard;
@@ -550,7 +565,7 @@ inline const std::string query_shader = common + R"(
 uniform sampler2D uWave;
 uniform vec2 uPoint;
 uniform sampler2D uDyeTex;
-void main(){float h=decode(texture2D(uWave,uPoint/uRes)).x;gl_FragColor=vec4(dyeColor(texture2D(uDyeTex,uPoint/uRes)),h/8.+128./255.);}
+void main(){float h=decode(texture2D(uWave,uPoint/uRes)).x;gl_FragColor=vec4(exp(-sampleDyeK(uDyeTex,uPoint/uRes)),h/8.+128./255.);}
 )";
 inline const std::string copy_shader =
     "precision highp float; uniform sampler2D image; void main(){gl_FragColor=texture2D(image,vec2(.5));}";

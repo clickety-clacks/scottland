@@ -12,8 +12,10 @@ wallpaper. A focused window lies in front of a window that redraws under its ove
 Cases: at rest (the back window still), then the back window redrawing, sampled in
 consecutive rounds so a growing pickup cool-down shows. Each sample reports the goo's own
 work counters over the interval (simulation steps, dye passes, draws, composited and
-pickup pixels, backdrop checks, pickup coasts), the median goo GPU time per draw and per
-step from its timer queries, and the compositor's CPU. Older builds lack some counters;
+pickup pixels, backdrop checks, pickup coasts), GPU query totals and completed sample counts
+for dye-only flow, backdrop refresh/reduction and baseline copies, callback and renderer wall
+time including readback waits, maximum callback duration, and compositor CPU. Draw/step GPU
+medians describe those older scopes separately. Unsupported GPU timing is null, never zero. Older builds lack some counters;
 they read as None. This is a benchmark, not a gate: it records machine, renderer and load.
 """
 import argparse, json, os, platform, signal, socket, struct, subprocess, sys, time
@@ -21,6 +23,7 @@ from pathlib import Path
 
 ap = argparse.ArgumentParser()
 ap.add_argument('session', type=Path); ap.add_argument('artifacts', type=Path)
+ap.add_argument('--width', type=int, default=2560); ap.add_argument('--height', type=int, default=1600)
 ap.add_argument('--seconds', type=float, default=30); ap.add_argument('--rounds', type=int, default=4)
 args = ap.parse_args()
 repo = Path(__file__).resolve().parents[1]
@@ -53,7 +56,7 @@ def rest(deadline=240):
     print(json.dumps({'warning': 'did not come to rest'}), flush=True)
 
 COUNTERS = ('steps', 'dye_flows', 'draws', 'composite_pixels', 'surface_pixels', 'capture_pixels', 'under_pixels',
-            'backdrop_checks', 'backdrop_changes', 'pickup_coasts', 'water_ticks')
+            'backdrop_checks', 'backdrop_changes', 'pickup_coasts', 'water_ticks', 'flow_gpu_samples', 'check_gpu_samples', 'seen_gpu_samples', 'seen_calls', 'pickup_callbacks')
 def measure(label):
     a = state(); c0, t0 = cpu_ticks(), time.monotonic(); draw_ms, step_ms = [], []
     last_draws = a['draws']; last_steps = a['steps']
@@ -66,6 +69,12 @@ def measure(label):
     r = {'case': label, 'seconds': round(t1 - t0, 2),
          'counters': {k: (b[k] - a[k]) if k in a and k in b else None for k in COUNTERS},
          'draw_gpu_ms_median': med(draw_ms), 'step_gpu_ms_median': med(step_ms),
+         'gpu_timing_available': b.get('gpu_timing', False),
+         'added_gpu_ms': {k: b[k] - a[k] if k in a and k in b and b.get('gpu_timing') else None
+                          for k in ('flow_gpu_ms', 'check_gpu_ms', 'seen_gpu_ms')},
+         'added_wall_ms': {k: b[k] - a[k] if k in a and k in b else None
+                          for k in ('flow_wall_ms', 'check_wall_ms', 'seen_wall_ms', 'pickup_callback_ms')},
+         'lifetime_wall_max_ms': {k: b.get(k) for k in ('flow_wall_max_ms', 'check_wall_max_ms', 'seen_wall_max_ms', 'pickup_callback_max_ms')},
          'compositor_cpu_percent': round(100*(c1 - c0)/os.sysconf('SC_CLK_TCK')/(t1 - t0), 2),
          'coasting_at_end': b.get('water_running'), 'pickup_gap': b.get('pickup_gap'),
          'load': os.getloadavg()}
@@ -77,10 +86,11 @@ try:
     renderer = ''
     for line in (args.session / 'wayfire.log').read_text(errors='replace').splitlines():
         if 'scottland goo:' in line and ('OpenGL' in line or 'simulation targets' in line): renderer += line.split('scottland goo:')[1].strip() + '; '
-    meta = {'machine': platform.machine(), 'kernel': platform.release(), 'renderer': renderer, 'cpus': os.cpu_count(),
+    meta = {'machine': platform.machine(), 'kernel': platform.release(), 'renderer': renderer, 'cpus': os.cpu_count(), 'output': [args.width, args.height],
+            'sampling': 'GPU completed query counts; wall totals include waits; maxima are lifetime values',
             'build': subprocess.run(['git', '-C', str(repo), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()}
     print(json.dumps(meta), flush=True); (out / 'meta.json').write_text(json.dumps(meta, indent=1))
-    ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': '2560x1600@60000'})
+    ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': f'{args.width}x{args.height}@60000'})
     preset = {'goo_thickness': 22., 'goo_thinning': .27, 'goo_noise': .38, 'goo_lump': 315., 'goo_drift': .39,
               'goo_wave_speed': .16, 'goo_wave_damp': .958, 'goo_wave_height': .76, 'goo_spread': .83, 'goo_swirl': 3.,
               'goo_release': .3, 'goo_shine': .89, 'goo_relief': 5.6, 'goo_depth': 4., 'goo_profile': .45, 'goo_soak': 1.,
@@ -101,7 +111,7 @@ try:
         for _ in range(100):
             if any(v['title'] == title for v in views()): break
             time.sleep(.05)
-        ipc('window-rules/configure-view', {'id': view(title)['id'], 'geometry': dict(zip(('x', 'y', 'width', 'height'), geom))})
+        ipc('window-rules/configure-view', {'id': view(title)['id'], 'geometry': dict(zip(('x', 'y', 'width', 'height'), tuple(round(v * (args.width/2560 if i % 2 == 0 else args.height/1600)) for i, v in enumerate(geom))))})
         time.sleep(.3)
     clients.append(subprocess.Popen(['quickshell', '-p', str(repo / 'tests/GooWallpaper.qml')], env=dict(os.environ, GOO_WALLPAPER_PATCHES='dark'),
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
@@ -121,4 +131,9 @@ finally:
     for c in clients:
         try: os.killpg(c.pid, signal.SIGTERM)
         except ProcessLookupError: pass
+        try: c.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try: os.killpg(c.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            c.wait()
     sock.close()

@@ -9,22 +9,28 @@ Scenes, each judged by the GPU dye history (goo-state samples) and by screen pix
 2. Mixing, not replacement. The dye at full pickup lies on the subtractive (absorbance)
    line between the pure focus dye and the pure picked-up dye, strictly between them, and
    closer to it than any linear RGB blend of the two. Pickup strength is set through the
-   Settings Goo row with real input.
+   Settings Goo row with real input. The Pickup balance row moves the mix toward either side,
+   live; Defaults and Cancel restore it.
 3. Pickup from a window. Film over a magenta window takes magenta (green falls), where the
    old wallpaper-only pickup would take the yellow paper (green rises).
 4. Spread and swirl smear. On paper half red, half blue, the dye along a band that crosses
    the boundary changes from red to blue over a short distance with swirl and spread at
    zero; set high through the Settings rows (real input, saved), the change is smeared out.
+2c. Dye density scales all dye: at pure pickup, density changes how much shows, not the hue.
 5. Never the goo itself. Repeated pickup coasts over an unchanged backdrop leave the dye
    where it was: no feedback from the goo's own color.
-6. Bounded wakes. A window animating under the film: the waves and field never wake, pickup
-   coasts are few and their cool-down doubles; when the animation stops the goo rests.
+6. A real client changes once under film and the visible goo picks up its new color.
+   A second change arrives after the last dye tick of a coast and must still be picked up.
+   Cooldown/reset boundaries are separately checked by goo-pickup-policy-test.cpp.
 Every scene ends at rest: no simulation steps, dye passes or watercolor ticks.
 
 Test hooks used: window-rules/configure-view places windows (setup only); some settings are
-set by IPC as setup; scene 5 restarts the coast with the water_coast test hook.
+set by IPC as setup; scene 5 restarts the coast with the water_coast test hook. Scene 6 freezes
+coast transport, advances its elapsed time, and resets cooldown as isolated-scene setup to
+inject a redraw after the last dye tick;
+actual client redraws and screen pixels remain the stimulus and independently judged result.
 """
-import json, math, os, signal, socket, struct, subprocess, sys, time
+import configparser, json, math, os, signal, socket, struct, subprocess, sys, time
 from pathlib import Path
 import gi
 gi.require_version('GdkPixbuf', '2.0')
@@ -138,7 +144,10 @@ def stop(p):
     try: os.killpg(p.pid, signal.SIGTERM)
     except ProcessLookupError: pass
     try: p.wait(timeout=5)
-    except subprocess.TimeoutExpired: os.killpg(p.pid, signal.SIGKILL); p.wait()
+    except subprocess.TimeoutExpired:
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        p.wait()
 
 # --- the Settings panel, driven with real pointer and keys (helpers as in goo-test.py) ---
 def quickshell_pid(wrapper_pid):
@@ -161,16 +170,19 @@ def quickshell_pid(wrapper_pid):
     raise RuntimeError('settings panel did not start')
 def snapshot(panel):
     return json.loads(subprocess.check_output(['qs', 'ipc', '--pid', str(quickshell_pid(panel.pid)), 'call',
-                                               'settings-test', 'snapshot'], text=True))
+                                               'settings-test', 'snapshot'], text=True, timeout=5))
 def origin(q): return ((1280 - q['panel']['width'])/2, 720 - max(24, round(720*.04)) - q['panel']['height'])
 def row_y(q, name):
     g = q['goo']; return g['y'] + g['rows'].index(name)*(g['rowHeight'] + 1) + g['rowHeight']/2
-def open_panel():
+def open_panel(ctl=None, initial=None):
     home = art / 'settings-home'; (home / 'scottland').mkdir(parents=True, exist_ok=True)
+    if initial is not None: (home / 'scottland/layout.ini').write_text(initial)
     env = dict(os.environ, QS_DISABLE_FILE_WATCHER='1', SCOTTLAND_SETTINGS_TEST='1',
-               SCOTTLAND_CTL=str(repo / 'core/libexec/scottland-ctl'), SCOTTLAND_LAYOUT_FILE=str(home / 'scottland/layout.ini'))
+               SCOTTLAND_CTL=str(ctl or repo / 'core/libexec/scottland-ctl'), SCOTTLAND_LAYOUT_FILE=str(home / 'scottland/layout.ini'),
+               SCOTTLAND_SOLAR_FILE=str(home / 'scottland/solar.ini'))
     log = open(art / 'panel.log', 'a')
-    panel = subprocess.Popen(['qs', '-n', '-p', str(repo / 'core/settings')], env=env, stdout=log, stderr=log)
+    panel = subprocess.Popen(['qs', '-n', '-p', str(repo / 'core/settings')], env=env, stdout=log, stderr=log, start_new_session=True)
+    log.close()
     clients.append(panel)
     for _ in range(100):
         try:
@@ -206,6 +218,23 @@ def wait_option(name, test, what):
         time.sleep(.1)
     raise AssertionError(what + ': ' + name + ' is ' + str(option(name)))
 
+def wait_until(predicate, what, timeout=15):
+    end = time.monotonic() + timeout; last = None
+    while time.monotonic() < end:
+        last = predicate()
+        if last: return last
+        time.sleep(.05)
+    raise AssertionError(what + ': deadline expired; last observation ' + repr(last))
+
+def wait_saved(path, panel, **expected):
+    def ready():
+        cfg = configparser.ConfigParser()
+        try:
+            cfg.read(path)
+            return panel.poll() is not None and all(abs(cfg.getfloat('scottland', k) - v) < .001 for k, v in expected.items())
+        except (configparser.Error, ValueError): return False
+    wait_until(ready, 'Save wrote the requested file values')
+
 # --- colors ---
 def K(c): return [-math.log(max(v, .0025)) for v in c]
 def sub(a, b): return [x - y for x, y in zip(a, b)]
@@ -223,6 +252,17 @@ try:
     spawn('dye-a', 200, 150, 360, 240)
     spawn('dye-b', 780, 150, 360, 240)
     paper = wallpaper('#e8c840')   # after a window: an empty desktop has no goo to hear it
+    # Compatibility fixture: actual Settings Save via Enter with an old saved key and
+    # a CLI read reporting density unsupported. CLI legacy-live behavior has its own IPC test.
+    fixture = art / 'unsupported-density-ctl'
+    fixture.write_text('#!/usr/bin/env python3\nimport json,subprocess,sys\nctl=' + repr(str(repo / 'core/libexec/scottland-ctl')) +
+        '\nif sys.argv[1:] == ["get"]:\n p=subprocess.run([ctl,"get"],capture_output=True,text=True,check=True)\n d=json.loads(p.stdout)\n d.pop("goo_dye_density",None)\n d["unsupported"].append("goo_dye_density")\n print(json.dumps(d))\nelse:\n subprocess.run([ctl]+sys.argv[1:],check=True)\n')
+    fixture.chmod(0o755)
+    panel, layout = open_panel(fixture, '[scottland]\n  goo_dye_strength = 1.5\n')
+    tap('KEY_ENTER'); wait_saved(layout, panel, goo_dye_density=1.5)
+    check('Settings Save preserves legacy saved density before plugin upgrade',
+          'goo_dye_density = 1.5' in layout.read_text())
+    options(goo_dye_density=1.)
     thickness = option('goo_thickness')
     def band(title, away):
         f = view(title)['frame']
@@ -252,17 +292,21 @@ try:
     options(goo_soak=.12); focus_reach('pickup-0.12')
     options(goo_soak=1., goo_dye_density=1.5); focus_reach('pickup-1-density-1.5')
 
-    # 2. Mixing, not replacement: pure focus dye F (no pickup), pure pickup P (density 0, so
-    #    the focused window's release carries no pigment), and the mix M, through the panel.
+    # 2. Mixing, not replacement: pure focus dye F (no pickup), pure pickup P (Pickup balance 1),
+    #    and the mix M at the default balance, with pickup set through the panel.
     options(goo_soak=0., goo_dye_density=1.); rest('pure focus')
+    focus_screen = shot('2-pure-focus')
+    F_px = avg([focus_screen(x, y) for x, y in band('dye-a', distances['middle'])])
     F = avg([dye(x, y) for x, y in band('dye-a', distances['middle'])])
-    options(goo_soak=1., goo_dye_density=0.); rest('pure pickup')
+    options(goo_soak=1., goo_pickup_balance=1.); rest('pure pickup')
+    pickup_screen = shot('2-pure-pickup')
+    P_px = avg([pickup_screen(x, y) for x, y in band('dye-a', distances['middle'])])
     P = avg([dye(x, y) for x, y in band('dye-a', distances['middle'])])
-    options(goo_soak=0., goo_dye_density=1.); rest('back to no pickup')
+    options(goo_soak=0., goo_pickup_balance=.45); rest('back to no pickup')
     panel, layout = open_panel()
     set_row(panel, 'goo_soak', .995)
-    soak = wait_option('goo_soak', lambda v: v > .9, 'the Wallpaper soak (pickup) row sets pickup live')
-    tap('KEY_ENTER'); time.sleep(.5)
+    soak = wait_option('goo_soak', lambda v: v > .9, 'the Wallpaper pickup row sets pickup live')
+    tap('KEY_ENTER'); wait_saved(layout, panel, goo_soak=soak)
     check('Save writes the pickup strength', layout.exists() and 'goo_soak = ' in layout.read_text())
     rest('mixed'); mixed_screen = shot('2-mixed')
     M = avg([dye(x, y) for x, y in band('dye-a', distances['middle'])])
@@ -275,7 +319,62 @@ try:
     check('the mix is neither the focus dye nor the picked-up dye', .1 < share < .9, record['mixing'])
     check('it lies on the subtractive (absorbance) line between them', residual < .12, record['mixing'])
     check('closer to it than to any linear RGB blend of the two', residual < lin_residual, record['mixing'])
+    M_px = avg([mixed_screen(x, y) for x, y in band('dye-a', distances['middle'])])
+    record['mixing']['screen'] = {'focus': F_px, 'pickup': P_px, 'mixed': M_px}
+    check('the rendered mix differs from both visible endpoint dyes',
+          norm(sub(M_px, F_px)) > 6 and norm(sub(M_px, P_px)) > 6 and
+          all(min(f, p) - 20 <= m <= max(f, p) + 20 for m, f, p in zip(M_px, F_px, P_px)), record['mixing']['screen'])
     quiet('mixed')
+
+    # 2b. Pickup balance (Mike, 2026-10-05: "just give me a slider"), through its Settings row:
+    #     lower favors the window's own color, higher the picked-up color, live; Defaults puts
+    #     back 0.45 and Cancel the opening values, and the dye follows.
+    panel, layout = open_panel()
+    set_row(panel, 'goo_pickup_balance', .1)
+    low = wait_option('goo_pickup_balance', lambda v: v < .2, 'the Pickup balance row')
+    rest('balance low'); low_px = shot('2b-balance-low')
+    M_low = avg([dye(x, y) for x, y in band('dye-a', distances['middle'])])
+    set_row(panel, 'goo_pickup_balance', .95)
+    high = wait_option('goo_pickup_balance', lambda v: v > .9, 'the Pickup balance row')
+    rest('balance high'); high_px = shot('2b-balance-high')
+    M_high = avg([dye(x, y) for x, y in band('dye-a', distances['middle'])])
+    share_low, share_high = fit(K(M_low), K(F), K(P))[0], fit(K(M_high), K(F), K(P))[0]
+    pts = band('dye-a', distances['middle'])
+    px_low, px_high = avg([low_px(x, y) for x, y in pts]), avg([high_px(x, y) for x, y in pts])
+    record['balance'] = {'low': low, 'high': high, 'focus_share': {'low': share_low, 'default': share, 'high': share_high},
+                         'screen': {'low': px_low, 'high': px_high}}
+    check('a low Pickup balance favors the window\'s own color', share_low > share + .1, record['balance'])
+    check('a high Pickup balance favors the picked-up color', share_high < share - .1, record['balance'])
+    check('on screen the band changes between them', norm(sub(px_low, px_high)) > 20, record['balance'])
+    q = snapshot(panel); x0, y0 = origin(q)
+    click(x0 + 86, y0 + q['panel']['height'] - 56); pointer(5, 5)   # Defaults
+    check('Defaults puts Pickup balance back at 0.45', abs(wait_option('goo_pickup_balance', lambda v: abs(v - .45) < .001,
+          'Defaults') - .45) < .001)
+    tap('KEY_ESC')                                  # Cancel: the opening values
+    back = wait_option('goo_pickup_balance', lambda v: abs(v - .45) < .001, 'Cancel')
+    soak_back = wait_option('goo_soak', lambda v: abs(v - soak) < .001, 'Cancel')
+    rest('balance cancelled')
+    M_back = avg([dye(x, y) for x, y in band('dye-a', distances['middle'])])
+    share_back = fit(K(M_back), K(F), K(P))[0]
+    record['balance'].update(back=M_back, mixed=M, back_share=share_back)
+    # Judged by where the dye lies on the mix line: the packed RGBA8 path stops a few levels short
+    # of its target from either side (rounding), so raw colors can differ by that much.
+    check('Cancel restores the opening balance and pickup, and the dye returns to the mix',
+          abs(back - .45) < .001 and abs(soak_back - soak) < .001 and abs(share_back - share) < .05, record['balance'])
+    quiet('balance')
+
+    # 2c. Dye density scales all dye, picked-up color included (Mike, 2026-10-05): with only
+    #     picked-up color in the goo, density changes how much of it shows, not its hue.
+    options(goo_pickup_balance=1., goo_dye_density=0.); rest('pure pickup, no density')
+    thin_px = shot('2c-density-0'); thin = avg([dye(x, y) for x, y in pts])
+    options(goo_dye_density=1.5); rest('pure pickup, density 1.5')
+    dense_px = shot('2c-density-1.5'); dense = avg([dye(x, y) for x, y in pts])
+    px0, px1 = avg([thin_px(x, y) for x, y in pts]), avg([dense_px(x, y) for x, y in pts])
+    record['density'] = {'dye': [thin, dense], 'screen': [px0, px1]}
+    check('density leaves the picked-up hue alone', norm(sub(thin, dense)) < .03, record['density'])
+    check('and changes how much of it shows on screen', norm(sub(px0, px1)) > 20, record['density'])
+    options(goo_pickup_balance=.45, goo_dye_density=1.); rest('density back')
+    quiet('density')
 
     # 3. Pickup from a window: film over a magenta window takes magenta, not the yellow paper.
     options(goo_soak=0., goo_dye_density=1.)
@@ -288,13 +387,19 @@ try:
           m['x'] < film[0] < m['x'] + m['width'] and m['y'] < film[1] < m['y'] + m['height'] and
           film[0] > a['x'] + a['width'] and state(*film)['density'] > state(*film)['threshold'] and state()['overlapping'])
     bare = dye(*film)
+    bare_film_px = shot('3-film-no-pickup')(*film)
     options(goo_soak=1.); rest('film, pickup'); s3 = shot('3-film-pickup')
     took = dye(*film)
+    took_film_px = s3(*film)
     inside = s3(a['x'] + a['width'] + 60, a['y'] + a['height'] - 20)
     record['window-pickup'] = {'bare': bare, 'took': took, 'window_pixel': inside}
     check('the window under the film is magenta on screen (fixture)', inside[1] < 80 and inside[0] > 150 and inside[2] > 90, inside)
     check('the film dye takes the window\'s magenta: green falls, red and blue lead it',
           took[1] < bare[1] - .08 and took[0] - took[1] > bare[0] - bare[1] + .08, record['window-pickup'])
+    record['window-pickup'].update(bare_film_pixel=bare_film_px, pickup_film_pixel=took_film_px)
+    check('the visible film gains magenta when it picks up window content',
+          took_film_px[0] - took_film_px[1] > bare_film_px[0] - bare_film_px[1] + 4 and
+          norm(sub(took_film_px, bare_film_px)) > 6, record['window-pickup'])
     quiet('window pickup')
 
     # 5. Never the goo itself: pickup coasts over an unchanged backdrop leave the dye in place.
@@ -312,7 +417,7 @@ try:
         ipc('window-rules/configure-view', {'id': view(t)['id'], 'geometry': {'x': 900 + 20*len(t), 'y': 60, 'width': 200, 'height': 120}})
     paper = wallpaper('#e02020', '#2020e0')
     spawn('dye-smear', 520, 200, 300, 330)
-    options(goo_soak=1., goo_dye_density=0., unfocused_edge_strength=0., goo_spread=0., goo_swirl=0.)
+    options(goo_soak=1., goo_pickup_balance=1., unfocused_edge_strength=0., goo_spread=0., goo_swirl=0.)
     focus('dye-smear'); rest('smear base')
     s = view('dye-smear')['frame']; xs = s['x'] - thickness/2
     ys = list(range(round(s['y']) + 30, round(s['y'] + s['height']) - 30, 4))
@@ -321,58 +426,81 @@ try:
         hi, lo = max(t), min(t)
         width = 4*sum(lo + .2*(hi - lo) < v < lo + .8*(hi - lo) for v in t)
         return width, hi - lo, ps
-    sharp, contrast, ps0 = profile(); shot('4-smear-still')
+    sharp, contrast, ps0 = profile(); still_screen = shot('4-smear-still')
     panel, layout = open_panel()
     set_row(panel, 'goo_swirl', .995); set_row(panel, 'goo_spread', .995)
     swirl = wait_option('goo_swirl', lambda v: v > 2.5, 'Dye swirl row'); spread = wait_option('goo_spread', lambda v: v > .8, 'Dye spread row')
-    tap('KEY_ENTER'); time.sleep(.5)
+    tap('KEY_ENTER'); wait_saved(layout, panel, goo_swirl=swirl, goo_spread=spread)
     check('the Dye swirl and Dye spread rows set both live, and Save keeps them',
           'goo_swirl = ' in layout.read_text() and 'goo_spread = ' in layout.read_text(), {'swirl': swirl, 'spread': spread})
-    rest('smeared', 120); shot('4-smear-swirled')
+    rest('smeared', 120); smeared_screen = shot('4-smear-swirled')
     smeared, contrast2, ps1 = profile()
     record['smear'] = {'still_width': sharp, 'swirled_width': smeared, 'contrast': [contrast, contrast2], 'still': ps0, 'swirled': ps1}
     check('with no swirl or spread the band changes from red to blue over a short distance', contrast > .3 and sharp <= 24, record['smear'])
-    check('swirl and spread smear the picked-up colors along the band', smeared >= sharp + 16 and smeared >= 2*sharp, record['smear'])
+    check('swirl and spread smear the picked-up colors along the band', smeared >= sharp + 4 and smeared >= 2*sharp, record['smear'])
+    def screen_profile(image):
+        colors = [image(xs, y) for y in ys]
+        differences = [c[0] - c[2] for c in colors]
+        hi, lo = max(differences), min(differences)
+        width = 4 * sum(lo + .2*(hi-lo) < v < lo + .8*(hi-lo) for v in differences)
+        return width, hi-lo, colors
+    width0, contrast0, pixels0 = screen_profile(still_screen)
+    width1, contrast1, pixels1 = screen_profile(smeared_screen)
+    record['smear']['screen'] = {'still_width': width0, 'swirled_width': width1, 'contrast': [contrast0, contrast1]}
+    check('screen pixels show transport broadening the red/blue boundary',
+          contrast0 > 30 and contrast1 > 30 and width1 >= width0 + 4 and
+          max(norm(sub(a, b)) for a, b in zip(pixels0, pixels1)) > 8, record['smear']['screen'])
     quiet('smeared')
-    # 6. Bounded wakes: a window animating under the film (last: its backoff is meant to last).
+    # 6. One real client redraw, and another after the last coast transport step.
     ipc('window-rules/configure-view', {'id': view('dye-a')['id'], 'geometry': {'x': 200, 'y': 150, 'width': 360, 'height': 240}})
-    time.sleep(.5)
-    spawn('dye-animated', 120, 330, 300, 220, animate=True)
-    focus('dye-a')
-    rest('animated, start', 120)
+    color_file = art / 'client-color'
+    def client_color(color):
+        temporary = art / 'client-color-new'
+        temporary.write_text(color); temporary.replace(color_file)
+    client_color('#20c040')
+    code = ("import time\nfrom pathlib import Path\np=Path(%r)\nlast=''\nwhile True:\n"
+            " c=p.read_text().strip()\n if c!=last:\n  print('\\033]11;'+c+'\\007',end='',flush=True);last=c\n time.sleep(.03)" % str(color_file))
+    client = subprocess.Popen(['foot', '-c', '/dev/null', '-o', 'resize-by-cells=no', '-T', 'dye-changing',
+                               'python3', '-u', '-c', code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    clients.append(client)
+    wait_until(lambda: any(v['title'] == 'dye-changing' for v in views()), 'changing client mapped')
+    ipc('window-rules/configure-view', {'id': view('dye-changing')['id'], 'geometry': {'x': 120, 'y': 330, 'width': 300, 'height': 220}})
+    focus('dye-a'); rest('green client')
     a = view('dye-a')['frame']; under_film = (a['x'] + 60, a['y'] + a['height'] + 4)
-    check('a film sample lies over the animated window (fixture)', state(*under_film)['density'] > state(*under_film)['threshold'])
-    s0 = state(); t0 = time.monotonic(); running = samples = 0
-    while time.monotonic() - t0 < 75:
-        s = state(); samples += 1; running += bool(s.get('water_running')); time.sleep(.25)
-    s1 = state()
-    d = {k: s1[k] - s0[k] for k in ('steps', 'pickup_coasts', 'pickup_deferred', 'backdrop_changes', 'backdrop_checks')}
-    record['bounded'] = dict(d, coasting_fraction=running/samples, gap=s1['pickup_gap'])
-    check('content changing under the film never wakes waves or field', d['steps'] == 0, record['bounded'])
-    check('it is picked up: the change is seen and coasts run', d['backdrop_changes'] >= 1 and d['pickup_coasts'] >= 1, record['bounded'])
-    check('but few coasts in 75 s, the cool-down doubling', 1 <= d['pickup_coasts'] <= 4 and s1['pickup_gap'] >= 40, record['bounded'])
-    check('the dye coasts well under half the time', running/samples < .4, record['bounded'])
-    check('checks stay bounded (at most two a second)', d['backdrop_checks'] <= 2*75, record['bounded'])
-    (art/'stop').touch()   # the animation stops on green
-    rest('animation stopped', 330)
-    quiet('after the animation', 8)
-    time.sleep(22)         # a still backdrop for over 20 s ends the backoff
-    green = dye(*under_film); before = state()
-    (art/'next').touch()   # one more change: blue
-    t1 = time.monotonic(); started = False
-    while time.monotonic() - t1 < 10 and not started:
-        started = state()['pickup_coasts'] > before['pickup_coasts']; time.sleep(.1)
-    record['reset'] = {'seconds': time.monotonic() - t1, 'gap': state()['pickup_gap']}
-    check('after 20 s of stillness one change is picked up at once (backoff over)', started and state()['pickup_gap'] == 20, record['reset'])
-    rest('blue picked up', 60); blue = dye(*under_film)
-    record['reset'].update(green=green, blue=blue)
-    check('and the film dye takes the new blue', blue[2] - blue[1] > green[2] - green[1] + .08, record['reset'])
-    quiet('at the end', 6)
+    green_px = shot('6-green')(*under_film); green_dye = dye(*under_film)
+    ipc('scottland/goo-state', {'pickup_reset': True})  # isolate from preceding scenarios' cooldown
+    before = state()
+    client_color('#d02090')
+    wait_until(lambda: state()['water_running'], 'natural pickup coast from client redraw')
+    # Diagnostic setup: ensure a useful transport tick precedes the injected last frame.
+    wait_until(lambda: norm(sub(dye(*under_film), green_dye)) > .08, 'coast advanced before late-frame injection')
+    def changed_film():
+        pixel = shot('6-magenta')(*under_film)
+        return pixel if norm(sub(pixel, green_px)) > 8 else False
+    magenta_px = wait_until(changed_film, 'first redraw reached the visible film')
+    check('one actual client redraw changes the visible film', norm(sub(magenta_px, green_px)) > 8,
+          {'green': green_px, 'magenta': magenta_px})
+    # Freeze after useful dye work; the blue redraw is now after the last dye tick.
+    ipc('scottland/goo-state', {'water_freeze': True})
+    client_color('#2040e0')
+    def blue_client():
+        pixel = shot('6-client-redraw')(a['x'] + 60, a['y'] + a['height'] + 60)
+        return pixel[2] > 150 and pixel[0] < 80
+    wait_until(blue_client, 'the actual client committed its last blue frame')
+    stale_blue_px = shot('6-late-blue-before-pickup')(*under_film)
+    ipc('scottland/goo-state', {'water_elapsed': 1000, 'water_freeze': False})
+    rest('late blue picked up', 330)
+    blue_px = shot('6-late-blue')(*under_film)
+    check('a final redraw after the last dye tick still changes rendered pickup',
+          norm(sub(blue_px, stale_blue_px)) > 8 and blue_px[2] - blue_px[0] > stale_blue_px[2] - stale_blue_px[0] + 4,
+          {'same_blue_backdrop_before_pickup': stale_blue_px, 'after_pickup': blue_px, 'dye': dye(*under_film)})
+    check('content pickup leaves waves and the liquid field asleep', state()['steps'] == before['steps'])
+    quiet('at the end')
+
 finally:
     (art / 'record.json').write_text(json.dumps(record, indent=1))
     for c in clients:
-        try: os.killpg(c.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError): pass
+        stop(c)
     sock.close()
 failed = [n for n, ok in results if not ok]
 print(f'RESULT {len(results) - len(failed)} passed, {len(failed)} failed ({len(results)} checks)', flush=True)

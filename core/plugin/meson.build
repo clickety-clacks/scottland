@@ -6,6 +6,7 @@ wlroots = dependency('wlroots-0.20')
 xkbcommon = dependency('xkbcommon')
 libinput = dependency('libinput')
 cairo = dependency('cairo')
+egl = dependency('egl')
 
 # wlroots' installed layer-shell header requires this generated protocol header.
 layer_shell_header = custom_target('layer-shell-header',
@@ -17,7 +18,7 @@ shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declu
   'src/goo.cpp', 'src/goo-model.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/goo-shape.cpp',
   'src/key-layers.cpp', 'src/inertia.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp',
   'src/pairing.cpp', 'src/spread.cpp'],
-  dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo],
+  dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo, egl],
 
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become
   # process-wide "unique" symbols, so a plugin reloaded in place (scottland-reload) would share

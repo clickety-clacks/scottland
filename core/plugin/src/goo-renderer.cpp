@@ -9,6 +9,8 @@
 #include <wayfire/scene-render.hpp>
 #include <wayfire/util/log.hpp>
 #include <drm_fourcc.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 extern "C" {
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/render/dmabuf.h>
@@ -73,7 +75,23 @@ struct renderer_t::impl
 {
     bool checked = false, available = false, es3 = false, packed = false, ready = false;
     int width = 0, height = 0;
-    GLuint timer = 0;
+    GLuint timer = 0, auxiliary_timer[3] = {};
+    GLsync check_fence = nullptr;
+    EGLSyncKHR check_egl_fence = EGL_NO_SYNC_KHR;
+    PFNEGLCREATESYNCKHRPROC create_egl_sync = nullptr;
+    PFNEGLCLIENTWAITSYNCKHRPROC wait_egl_sync = nullptr;
+    PFNEGLDESTROYSYNCKHRPROC destroy_egl_sync = nullptr;
+    target_t change_read;
+    void cancel_check()
+    {
+        if (check_fence) { glDeleteSync(check_fence); check_fence = nullptr; }
+        if (check_egl_fence != EGL_NO_SYNC_KHR)
+        {
+            destroy_egl_sync(eglGetCurrentDisplay(), check_egl_fence);
+            check_egl_fence = EGL_NO_SYNC_KHR;
+        }
+    }
+    bool auxiliary_pending[3] = {};
     bool timing = false, timer_pending = false, timer_open = false, timer_draw = false;
     float time = 0;
     uint64_t sampled_step = UINT64_MAX;
@@ -197,8 +215,44 @@ struct renderer_t::impl
             }
         }
     }
+    void poll_auxiliary(renderer_t &owner)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!auxiliary_pending[i]) continue;
+            GLuint available = 0;
+            glGetQueryObjectuiv(auxiliary_timer[i], GL_QUERY_RESULT_AVAILABLE, &available);
+            if (!available) continue;
+            GLuint ns = 0;
+            GLint disjoint = 0;
+            glGetQueryObjectuiv(auxiliary_timer[i], GL_QUERY_RESULT, &ns);
+            glGetIntegerv(0x8FBB, &disjoint);
+            if (!disjoint)
+            {
+                (i == 0 ? owner.flow_gpu_ms : i == 1 ? owner.check_gpu_ms : owner.seen_gpu_ms) += ns / 1e6;
+                ++(i == 0 ? owner.flow_gpu_samples : i == 1 ? owner.check_gpu_samples : owner.seen_gpu_samples);
+            }
+            auxiliary_pending[i] = false;
+        }
+    }
+    bool begin_auxiliary(int kind, renderer_t &owner)
+    {
+        poll_auxiliary(owner);
+        if (!timing || timer_open || auxiliary_pending[kind]) return false;
+        glBeginQuery(0x88BF, auxiliary_timer[kind]);
+        return true;
+    }
+    void end_auxiliary(int kind, bool measured)
+    {
+        if (!measured) return;
+        glEndQuery(0x88BF);
+        auxiliary_pending[kind] = true;
+    }
     void release()
     {
+        cancel_check();
+        change_read.release();
+        if (auxiliary_timer[0]) glDeleteQueries(3, auxiliary_timer);
         if (timer)
             glDeleteQueries(1, &timer);
         for (auto &fb : cache_fb)
@@ -243,9 +297,21 @@ struct renderer_t::impl
         LOGI("scottland goo: ", version ? version : "no GL context", ", float textures and derivatives ", available);
         if (!available)
             return false;
+        // GLES 2 uses the EGL fence extension where available; completion is still
+        // polled with timeout zero. No worker may migrate the compositor's GL context.
+        if (extension(eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS), "EGL_KHR_fence_sync"))
+        {
+            create_egl_sync = reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(eglGetProcAddress("eglCreateSyncKHR"));
+            wait_egl_sync = reinterpret_cast<PFNEGLCLIENTWAITSYNCKHRPROC>(eglGetProcAddress("eglClientWaitSyncKHR"));
+            destroy_egl_sync = reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(eglGetProcAddress("eglDestroySyncKHR"));
+            if (!wait_egl_sync || !destroy_egl_sync) create_egl_sync = nullptr;
+        }
         timing = es3 && extension(extensions, "GL_EXT_disjoint_timer_query");
         if (timing)
+        {
             glGenQueries(1, &timer);
+            glGenQueries(3, auxiliary_timer);
+        }
         state_t guard;
         bool half_filter = es3 || extension(extensions, "GL_OES_texture_half_float_linear");
         packed = !half_filter || !field.allocate(2, 2, false, es3);
@@ -302,6 +368,7 @@ struct renderer_t::impl
         auto one = [id](const char *name, float v) { glUniform1f(glGetUniformLocation(id, name), v); };
         glUniform1i(glGetUniformLocation(id, "uCount"), sources.size());
         glUniform2f(glGetUniformLocation(id, "uRes"), width, height);
+        glUniform2f(glGetUniformLocation(id, "uDyeSize"), dye[0].width, dye[0].height);
         glUniform2f(glGetUniformLocation(id, "uSize"), w, h);
         one("uTime", time);
         one("uDyeStrength", settings.dye_density);
@@ -318,7 +385,15 @@ struct renderer_t::impl
         one("uT", settings.threshold());
         one("uPacked", packed ? 1 : 0);
         // GO28: pickup relative to release; the dye mixes it subtractively with what is there.
-        one("uPickup", settings.soak > 0 ? 1.25f * std::sqrt(settings.soak) : 0);
+        // Pickup balance (Mike, 2026-10-05: "just give me a slider") is the share of picked-up
+        // color at full pickup, in the middle of an ordinary band: there a window releases at
+        // about 0.75 and pickup lands at about 0.8 of its rate, so this rate gives that share.
+        // Wallpaper pickup follows soak^0.25 below that (GO24's curve), so the shipped 0.12 stays
+        // clearly visible.
+        float balance = std::clamp(settings.pickup_balance, 0.f, .99f);
+        float soak = settings.soak > 0 ? std::pow(settings.soak, .25f) : 0;
+        one("uPickup", .94f * soak * balance / (1 - balance));
+        one("uPickupRich", soak);
         one("uOpenPickup", open_pickup ? 1 : 0);
         bind(program, "uSources", 0, source.texture);
         bind(program, "uShapes", 6, atlas.texture);
@@ -548,11 +623,20 @@ renderer_t::~renderer_t()
             p->release();
         });
 }
+void renderer_t::poll_timing()
+{
+    if (!p->timing) return;
+    wf::gles::run_in_context_if_gles([&] {
+        p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
+        p->poll_auxiliary(*this);
+    });
+}
 bool renderer_t::supported()
 {
     bool ok = false;
     wf::gles::run_in_context_if_gles([&] { ok = p->support(); });
     packed = p->packed;
+    gpu_timing = p->timing;
     return ok;
 }
 bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &s, int w, int h, float time,
@@ -561,7 +645,9 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     state_t guard;
     if (!p->support())
         return false;
+    gpu_timing = p->timing;
     p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
+    p->poll_auxiliary(*this);
     if (!p->es3 && sources.size() > 1024)
     {
         LOGE("scottland goo: too many sources for GLES 2; retaining halo");
@@ -641,6 +727,8 @@ void renderer_t::flow_dye(float flow, float step, int passes)
     if (!p->ready)
         return;
     state_t guard;
+    auto started = std::chrono::steady_clock::now();
+    bool measured = p->begin_auxiliary(0, *this);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     p->open_pickup = open_pickup;
@@ -649,6 +737,10 @@ void renderer_t::flow_dye(float flow, float step, int passes)
         p->dye_pass(p->fast ? p->dye_fast : p->dye_p, flow, step, true);
     p->sampled_step = UINT64_MAX;  // a dye readback is stale now
     ++dye_flows;
+    p->end_auxiliary(0, measured);
+    double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    flow_wall_ms += elapsed;
+    flow_wall_max_ms = std::max(flow_wall_max_ms, elapsed);
 }
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
                       const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
@@ -683,6 +775,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
     ++draws;
     state_t guard(p->es3);
     p->poll_timer(last_gpu_ms, last_draw_gpu_ms);
+    p->poll_auxiliary(*this);
     if (!p->timer_open && p->timing && !p->timer_pending)
     {
         p->timer_draw = true;
@@ -1053,6 +1146,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
             bind(program, "uBackground", 5, bg.texture);
             bind(program, "uDyeTex", 4, p->dye[0].texture);
             program.uniform2f("uRes", p->width, p->height);
+            program.uniform2f("uDyeSize", p->dye[0].width, p->dye[0].height);
             if (&program == &p->composite_mix_p)
             {
                 bind(program, "uIntrinsicB", 2, p->intrinsic_b.texture);
@@ -1144,9 +1238,38 @@ int renderer_t::backdrop_changes()
     if (!p->ready || !p->under.fb)
         return 0;
     int count = 0;
+    auto started = std::chrono::steady_clock::now();
     wf::gles::run_in_context_if_gles([&]
     {
         state_t guard;
+        // ES3: completion is polled without waiting on the compositor main loop. The
+        // dedicated one-pixel target cannot be overwritten by diagnostic dye queries.
+        if (p->check_fence || p->check_egl_fence != EGL_NO_SYNC_KHR)
+        {
+            bool ready = false, failed = false;
+            if (p->check_fence)
+            {
+                GLenum status = glClientWaitSync(p->check_fence, 0, 0);
+                ready = status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED;
+                failed = status == GL_WAIT_FAILED;
+            }
+            else
+            {
+                EGLint status = p->wait_egl_sync(eglGetCurrentDisplay(), p->check_egl_fence, 0, 0);
+                ready = status == EGL_CONDITION_SATISFIED_KHR;
+                failed = status == EGL_FALSE;
+            }
+            if (!ready && !failed) { count = -1; return; }
+            p->cancel_check();
+            if (failed) { count = 255; return; }
+            glBindFramebuffer(GL_FRAMEBUFFER, p->change_read.fb);
+            unsigned char value[4];
+            glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, value);
+            count = value[0];
+            p->poll_auxiliary(*this);
+            return;
+        }
+        bool measured = p->begin_auxiliary(1, *this);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
         under_pixels += p->flush_under();
@@ -1171,13 +1294,48 @@ int renderer_t::backdrop_changes()
         }
         p->copy_p.use(wf::TEXTURE_TYPE_RGBA);
         p->copy_p.uniformMatrix4f("MVP", glm::ortho(0.f, 1.f, 0.f, 1.f, -1.f, 1.f));
+        if (!p->change_read.fb && !p->change_read.allocate(1, 1, true, p->es3))
+        {
+            p->end_auxiliary(1, measured);
+            count = 255;
+            return;
+        }
         bind(p->copy_p, "image", 0, input);
-        p->draw_to(p->copy_p, p->query);
+        p->draw_to(p->copy_p, p->change_read);
+        ++backdrop_checks;
+        if (p->es3)
+        {
+            p->end_auxiliary(1, measured);
+            p->check_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            if (p->check_fence)
+            {
+                glFlush();
+                count = -1;
+                return;
+            }
+        }
+        if (!p->es3 && p->create_egl_sync)
+        {
+            p->end_auxiliary(1, measured);
+            measured = false;
+            p->check_egl_fence = p->create_egl_sync(eglGetCurrentDisplay(), EGL_SYNC_FENCE_KHR, nullptr);
+            if (p->check_egl_fence != EGL_NO_SYNC_KHR)
+            {
+                glFlush();
+                count = -1;
+                return;
+            }
+        }
+        // Drivers without a fence facility retain the synchronous compatibility path;
+        // benchmark wall time includes its completion wait. P8 must be measured there.
         unsigned char value[4];
         glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, value);
         count = value[0];
+        if (!p->es3) p->end_auxiliary(1, measured);
     });
-    ++backdrop_checks;
+    double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    check_wall_ms += elapsed;
+    check_wall_max_ms = std::max(check_wall_max_ms, elapsed);
     p->sampled_step = UINT64_MAX;
     return count;
 }
@@ -1185,16 +1343,24 @@ void renderer_t::backdrop_seen()
 {
     if (!p->ready || !p->under.fb)
         return;
+    auto started = std::chrono::steady_clock::now();
     wf::gles::run_in_context_if_gles([&]
     {
         state_t guard;
+        p->cancel_check();
+        bool measured = p->begin_auxiliary(2, *this);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
         under_pixels += p->flush_under();
         glBindFramebuffer(GL_FRAMEBUFFER, p->under.fb);
         glBindTexture(GL_TEXTURE_2D, p->seen.texture);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, p->under.width, p->under.height);
+        p->end_auxiliary(2, measured);
     });
+    double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    seen_wall_ms += elapsed;
+    seen_wall_max_ms = std::max(seen_wall_max_ms, elapsed);
+    ++seen_calls;
 }
 bool renderer_t::overlapping() const { return p->overlap; }
 bool renderer_t::under_waiting() const { return !p->under_pending.empty(); }
