@@ -586,7 +586,7 @@ int main()
             d12 >= need - 1e-6 && d01 >= need0 - 1e-6 && d02 >= need0 - 1e-6,
             "13 concentric no_room hints clear each other and the front hint by the collision gap");
     }
-    // An anchored window (the focused one; during a drag, the dragged one) never moves; any other
+    // An anchored window (the one under the user's hand) never moves; any other
     // covered window peeks (Mike, 2026-10-05: peeking never moves a window's true location).
     {
         peek_request r; r.screen = screen;
