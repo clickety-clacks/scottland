@@ -9,8 +9,9 @@ file, which Wayfire re-reads: an old value is ignored harmlessly.
 
 Every drag, pause and drop is real stipc pointer and key input; fixture geometry and focus are set
 over IPC (configure-view and focus-view, bypassing input), and so is the output mode. The drag is
-proven by S's true geometry (the compositor's, as the client is configured) and by S's own color
-drawn at the pause spot. What is drawn is judged from captured pixels against each window's known
+proven by pixels before the hold (S's own color drawn at the pause spot and gone from where S
+started; a drag changes S's true geometry only at the drop) and by S's true geometry after the drop
+(centered on the pause spot). What is drawn is judged from captured pixels against each window's known
 solid color: a probe patch of each neighbor's true area that S never covers (A1, A2, R) must stay
 in that neighbor's color. Usage: drag-pause-test.py ARTIFACTS WAYFIRE_INI
 """
@@ -118,8 +119,10 @@ DRAWN = .9  # share of a probe in its window's color while that window is drawn 
 SCENE = {'R': (60, 900, 600, 400), 'A1': (900, 100, 600, 450), 'A2': (1300, 650, 500, 400), 'S': (120, 150, 700, 500)}
 PAUSE = (1280, 700)
 # Probe patches: inside each window's own content (below its title bar), clear of S and of S's halo.
-PROBES = {'A1': (950, 200, 500, 170), 'A2': (1680, 720, 100, 300), 'R': (100, 1000, 500, 250),
+# R is in the periphery, drawn scaled down about its center (360, 1100): its patch stays near that.
+PROBES = {'A1': (950, 200, 500, 170), 'A2': (1680, 720, 100, 300), 'R': (320, 1070, 80, 60),
           'S': (1080, 560, 400, 300)}  # S's patch is where S is drawn once it reaches PAUSE
+S_START = (430, 370, 80, 60)  # near S's scaled center (470, 400), uncovered after it moves
 NEIGHBORS = ('A1', 'A2', 'R')
 
 def start_drag(id, to):
@@ -168,19 +171,14 @@ try:
               str(home))
         before = {n: geometry(ids[n]) for n in NEIGHBORS}
         n_solves = solves()
+        check(share(S_START, 'S') >= DRAWN, f'{name}: before the drag S is drawn where it starts')
         start_drag(S, PAUSE)
-        # The drag happened: S's true geometry is centered on the pause spot, and S is drawn there.
+        # The drag happened: S is drawn at the pause spot and no longer where it started.
         try:
-            g = wait(lambda: (lambda g: abs(g['x'] + g['width'] / 2 - PAUSE[0]) <= 1 and
-                              abs(g['y'] + g['height'] / 2 - PAUSE[1]) <= 1 and g)(geometry(S)), 3, 'S at the pause spot')
-            check(True, f'{name}: the drag brings S to the pause spot (true geometry)', str(g))
+            wait(lambda: share(PROBES['S'], 'S') >= DRAWN and share(S_START, 'S') <= .05, 3, 'S drawn at the pause spot')
+            check(True, f'{name}: the drag draws S at the pause spot, away from where it started')
         except RuntimeError as e:
-            check(False, f'{name}: the drag brings S to the pause spot (true geometry)', str(e))
-        try:
-            wait(lambda: share(PROBES['S'], 'S') >= DRAWN, 3, 'S drawn at the pause spot')
-            check(True, f'{name}: S is drawn at the pause spot in its own color')
-        except RuntimeError as e:
-            check(False, f'{name}: S is drawn at the pause spot in its own color', str(e))
+            check(False, f'{name}: the drag draws S at the pause spot, away from where it started', str(e))
         # Hold still 4.5 s, longer than the removed audition's 3 s default pause (an intended hold).
         moved = []; hold_end = time.monotonic() + 4.5; samples = 0
         while time.monotonic() < hold_end:
@@ -199,6 +197,9 @@ try:
             check(all(v >= DRAWN for v in sig), f'{name}: after the drop every window is drawn where it was', str(sig))
         except RuntimeError as e:
             check(False, f'{name}: after the drop every window is drawn where it was', str(e))
+        g = geometry(S)
+        check(abs(g['x'] + g['width'] / 2 - PAUSE[0]) <= 1 and abs(g['y'] + g['height'] / 2 - PAUSE[1]) <= 1,
+              f'{name}: the drop leaves S centered on the pause spot (true geometry)', str(g))
         after = {n: geometry(ids[n]) for n in NEIGHBORS}
         check(after == before, f'{name}: dropping where it paused moves no other window (true geometry)',
               str({n: (before[n], after[n]) for n in after if after[n] != before[n]}))
@@ -236,6 +237,12 @@ try:
 finally:
     try: end_drag()
     except Exception: pass
-    for c in clients: c.terminate()
+    for c in clients:
+        if c.poll() is None: c.terminate()
+    for c in clients:
+        try: c.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            c.kill(); c.wait()
+    sock.close()
     print(f'{passed} passed, {failed} failed (2 scenarios)', flush=True)
 sys.exit(1 if failed else 0)
