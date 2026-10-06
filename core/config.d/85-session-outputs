@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Append this session's output settings (scottland-output set) as Wayfire [output:NAME] sections.
+
+After the integrations' generators, so a change made during the session wins over their display
+config; before the user's overrides.ini, which still wins over everything. An output turned off is
+"mode = off"; its other settings stay, so it comes back as it was.
+"""
+import json
+import os
+import re
+import sys
+
+config = os.environ.get("SCOTTLAND_CONFIG_OUTPUT")
+directory = os.path.dirname(config) if config else os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+path = os.path.join(directory, "session-outputs.json")
+if sys.argv[1:2] == ["--watch-paths"]:
+    sys.exit(0)  # scottland-output rebuilds the config itself
+try:
+    with open(path) as handle:
+        settings = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(0)
+if not isinstance(settings, dict):
+    sys.exit(0)
+for name, values in sorted(settings.items()):
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or not isinstance(values, dict):
+        continue
+    lines = []
+    if values.get("enabled") is False:
+        lines.append("mode = off")
+    elif values.get("mode"):
+        lines.append(f"mode = {values['mode']}")
+    for key in ("position", "scale", "transform"):
+        if key in values:
+            lines.append(f"{key} = {values[key]}")
+    if lines:
+        print(f"[output:{name}]\n# set during this session (scottland-output)")
+        print("\n".join(lines) + "\n")
