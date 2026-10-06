@@ -586,6 +586,22 @@ int main()
             d12 >= need - 1e-6 && d01 >= need0 - 1e-6 && d02 >= need0 - 1e-6,
             "13 concentric no_room hints clear each other and the front hint by the collision gap");
     }
+    // An anchored window (the focused one; during a drag, the dragged one) never moves; any other
+    // covered window peeks (Mike, 2026-10-05: peeking never moves a window's true location).
+    {
+        peek_request r; r.screen = screen;
+        auto front = window({200, 200, 600, 400});
+        auto covered = window({300, 300, 300, 200});
+        r.windows = {front, covered};
+        auto res = solve(r);
+        check(res[1].outcome == peek_outcome::moved && res[1].rung == peek_rung::peek,
+            "anchors: a covered window peeks");
+        auto dragged = covered; dragged.anchored = true;
+        r.windows = {front, dragged};
+        res = solve(r);
+        check(res[1].outcome == peek_outcome::no_room && near(res[1].target, {}),
+            "anchors: an anchored window never moves");
+    }
     // The engram case on the daily machine (2026-10-04, a screenshot of a top sliver): in Window mode the
     // engram window is covered except a sliver along its top (it is at the top of the screen; the
     // focused front window covers the rest). Its hint was drawn near its center, under the front

@@ -421,10 +421,14 @@ def widget_cover():
     time.sleep(1)
     widget = next(w for w in views().values() if w["widget"])
     wf_ = widget["frame"]
-    small = open_window("Under", (round(wf_["x"] + wf_["width"] / 2 - 60), round(wf_["y"] + wf_["height"] / 2 - 40), 120, 80))
-    # Focused, so window avoidance leaves it under the card (WK13: an unfocused window this
-    # small would be nudged wholly clear of it to give its hint room).
-    ipc("window-rules/focus-view", dict(id=small))
+    # Right of the other windows, its top 100 px above the card: room for its hint there, so window
+    # avoidance leaves it where it is (WK13), and the card is the only thing covering it.
+    small = open_window("Under", (1100 - 150, round(wf_["y"]) - 110, 300, 220))
+    shown = wait(lambda: (lambda v: v if "frame" in v else None)(views()[small]))["frame"]
+    ipc("window-rules/configure-view", dict(id=small, geometry=dict(
+        x=1100 - 150, y=round(wf_["y"] - 100 + shown["height"] / 2 - 110), width=300, height=220)))
+    wait(lambda: abs(views()[small]["frame"]["y"] - (wf_["y"] - 100)) < 2)
+    ipc("window-rules/focus-view", dict(id=front))
     time.sleep(.6)
     hold()
     state = hints()
@@ -436,12 +440,35 @@ def widget_cover():
     expected = union_visible(u, [cover])
     image = Shot("09-widget-cover")
     got = st(small)
+    # From the pixels: sample the window's drawn rectangle (inset past its frame and corners, off its
+    # hint badge); a point shows the client when it has the client's own color, sampled from a
+    # visible point above the card. Compare with the points the card leaves uncovered.
+    ux, uy, uw, uh = u
+    inset = 8
+    points = [(x, y) for y in range(int(uy + inset), int(uy + uh - inset), 3)
+              for x in range(int(ux + inset), int(ux + uw - inset), 3) if off_badges(state, x, y, 4)]
+    under_card = lambda x, y: cover[0] <= x < cover[0] + cover[2] and cover[1] <= y < cover[1] + cover[3]
+    references = [p for p in points if not under_card(*p)]
+    ref = image.pixel(*references[len(references) // 2]) if references else (0, 0, 0)
+    shown_points = sum(near(image.pixel(x, y), ref, 12) for x, y in points)
+    open_points = len(references)
+    pixel_fraction = shown_points / max(1, len(points))
+    # An outline ring (WK37) is opaque hint color on the frame's edges; look where the card isn't.
+    color = tuple(round(c * 255) for c in state[small]["color"])
+    edge = [(ux + uw * t, uy + 1) for t in (.2, .5, .8)] + [(ux + uw * t, uy + uh - 1.5) for t in (.2, .5, .8)] + \
+           [(ux + 1, uy + uh * t) for t in (.2, .5, .8)] + [(ux + uw - 1.5, uy + uh * t) for t in (.2, .5, .8)]
+    ring = sum(any(near(image.pixel(x + dx, y + dy), color, 8) for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+               for x, y in edge if not under_card(x, y) and off_badges(state, x, y))
     release()
-    print("widget cover", got, "expected", round(expected, 3), "under", [round(x, 1) for x in u],
+    print("widget cover", got, "expected", round(expected, 3), "pixels", round(pixel_fraction, 3), "of",
+          round(open_points / max(1, len(points)), 3), "ring points", ring, "under", [round(x, 1) for x in u],
           "card", [round(x, 1) for x in cover], flush=True)
-    check("widget as cover: the card counts toward the window's occlusion",
+    check("widget as cover: in the pixels, the card hides its share of the window",
+          len(points) > 100 and pixel_fraction < .97 and abs(shown_points - open_points) / len(points) < .06)
+    check("widget as cover: the occlusion measure counts the card (diagnostic)",
           got[0] < 1 and abs(got[0] - expected) < .05)
-    check("widget as cover: outlined exactly when less than half visible", got[1] == (got[0] < .5))
+    check("widget as cover: in the pixels, outlined exactly when less than half visible",
+          (ring >= 3) == (pixel_fraction < .5))
 
 
 def second_output():

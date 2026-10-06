@@ -255,8 +255,8 @@ try:
     area_free = visible_area(C, (A, B))
     check(area_free >= 40 * 40, 'part of the covered window is actually visible beside the pair', str(area_free))
     ha, hb = hint(A), hint(B)
-    check(abs(ha['dx']) + abs(ha['dy']) + abs(hb['dx']) + abs(hb['dy']) < .5 and ha['pair_anchored'] and hb['pair_anchored'],
-          'window avoidance holds the pair still', json.dumps([ha['dx'], ha['dy'], hb['dx'], hb['dy']]))
+    check(abs(ha['dx']) + abs(ha['dy']) + abs(hb['dx']) + abs(hb['dy']) < .5,
+          'the pair, in front, has no avoidance offset (offset diagnostic)', json.dumps([ha['dx'], ha['dy'], hb['dx'], hb['dy']]))
     # Its badge waits for the offset to settle (WK31), then sits on the part that shows.
     def badge_on_patch():
         e = hint(C); b = e.get('badge')

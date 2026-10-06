@@ -183,16 +183,16 @@ try:
     time.sleep(1.5)
     check({i: geometry(i) for i in ids} == after, 'keyboard solo: committed, nothing returns (no undo)')
 
-    # 1b. With always-on window avoidance, the solo window holds still for peeking like a pair
-    # member: it is anchored, never nudged off its spot (P14), and the others peek around it.
+    # 1b. With always-on window avoidance, the solo window in front is drawn at its own spot and
+    # stays there (P14); the others peek around it.
     ipc('wayfire/set-config-options', {'scottland/window_avoidance_always': True})
     setup(scene, S)
     n = solves()
     alt(True); press_hint(S, hold=.75); alt(False)
     wait_solve(n); settle(ids, 6); time.sleep(.8)
     solo_spot = geometry(S); h = hint(S)
-    check(h.get('solo_anchored') and abs(h['dx']) < .5 and abs(h['dy']) < .5,
-          'peeking: the solo window is anchored and drawn at its own spot', str(h))
+    check(abs(h['dx']) < .5 and abs(h['dy']) < .5,
+          'peeking: the solo window has no avoidance offset (offset diagnostic)', str(h))
     others_zone = {i: zone_of(center(i)[0]) for i in (A1, A2, R)}
     shifted = {i: (lambda x1, y1, x2, y2: zone_of((x1 + x2) / 2))(*shown(i)) for i in (A1, A2, R)}
     check(others_zone == shifted, 'peeking: every other window peeks within its own zone (P13)', f'{others_zone} {shifted}')
@@ -371,8 +371,6 @@ try:
     target = {a['id']: a['to'] for a in spread()['audition']['actors']}
     check(all(at_target(i) for i in target), 'avoidance on: offered windows are drawn exactly at their targets',
           str({i: (shown(i), target[i]) for i in target}))
-    held = [hint(i).get('audition_held') for i in target]
-    check(all(held), 'avoidance on: the windows the offer shows are anchored for peeking', str(held))
     pointer(1280 + 200, 300); time.sleep(.2); end_drag(); settle(ids)
     ipc('wayfire/set-config-options', {'scottland/window_avoidance_always': False}); time.sleep(.5)
 

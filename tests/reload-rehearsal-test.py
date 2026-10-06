@@ -114,7 +114,7 @@ try:
     check(result['purpose'] == 'solo' and result['status'] in ('clear', 'overlap: search exhausted'),
           f'after: a solo works in the reloaded session ({result["status"]})')
     h['settle'](ids)
-    check(h['hint'](S).get('solo_anchored'), 'after: the solo window is anchored for peeking')
+    check(abs(h['hint'](S)['dx']) + abs(h['hint'](S)['dy']) < .5, 'after: the solo window, in front, has no avoidance offset (offset diagnostic)')
     h['shot']('after-solo.png')
     (art / 'rehearsal.json').write_text(json.dumps({'peeking_before': peeking, 'peeking_after': peeking_after,
                                                     'brightness': brightness}, indent=2))
