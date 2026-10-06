@@ -922,6 +922,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
     wf::option_wrapper_t<int> widget_make_room_dwell{"scottland/widget_make_room_dwell"};
     wf::option_wrapper_t<double> window_mode_tint{"scottland/window_mode_tint"};
+    wf::option_wrapper_t<double> hint_background_opacity{"scottland/hint_background_opacity"};
     wf::option_wrapper_t<bool> window_avoidance_always{"scottland/window_avoidance_always"};
     wf::option_wrapper_t<double> goo_dye_density{"scottland/goo_dye_density"};
     // Keep parsing the historical key so existing user config still opts in.
@@ -7440,6 +7441,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
         goo_dye_density.set_callback([=] { load_color_scheme(); });
         window_mode_tint.set_callback([=] { load_color_scheme(); refresh_layout_avoidance(); });
+        hint_background_opacity.set_callback([=] { refresh_layout_avoidance(); });
         auto avoidance_setting_changed = [=] {
             declutter_signature.clear();
             refresh_layout_avoidance();

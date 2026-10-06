@@ -147,6 +147,11 @@
             <_long>How strongly Window mode tints each window and widget card with its hint color. Zero turns the overlay off. Hint circles, borders and outlines are unaffected.</_long>
             <default>7</default><min>0</min><max>30</max>
         </option>
+        <option name="hint_background_opacity" type="double">
+            <_short>Hint background opacity (%)</_short>
+            <_long>Opacity of the backgrounds behind hint letters. One hundred keeps the usual window and widget hint backgrounds; zero removes their fill. Letters, hint rims and window opacity are unchanged.</_long>
+            <default>100</default><min>0</min><max>100</max>
+        </option>
         <option name="window_avoidance_always" type="bool">
             <_short>Window avoidance outside Window mode</_short>
             <_long>Keep windows visually shifted to reserve space for Window mode hints outside Window mode. This affects no geometry, zone, scale, placement memory or widget state.</_long>
