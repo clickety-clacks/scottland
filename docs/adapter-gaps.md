@@ -273,7 +273,7 @@ real screen or real hardware; statuses are **implemented**.
 | AG10 | `repeating` repeats while held, also on the lock screen when `locked`; `locked` runs on the lock screen; a release shortcut runs on release, on the lock screen too when `locked`, and only for a press it matched with the same modifiers still held (Ctrl+F9 runs neither half of F9); other shortcuts don't run while locked. Combinations Wayfire can't express go through core shortcuts (E13). Scottland's own volume/brightness bindings step aside so Omarchy's flags hold. | `tests/omarchy-bindings-test.py` with a real lock client | — |
 | AG20 | Startup handlers run once per session when Scottland is the only graphical session; never on reload or Lua host restart; the stock environment import and shell launch are left to Scottland's own hooks. | `tests/omarchy-startup-test.py` | Keep mode: not run (question 1). |
 | Visible failure | Unsupported shim requests answer `error: …` (hyprctl exits 7); the Lua host raises unsupported `hl.*` calls and refused dispatches inside shortcuts. `hyprctl reload` rebuilds the translated config; if the Hyprland config can't be read, it answers an error naming it and the session keeps its shortcuts. | `tests/omarchy-shim-test.py` | Stock scripts now see these failures; most already fall back or ignore them. |
-| AG02 | ScreenCast and Screenshot go to xdg-desktop-portal-wlr (`scottland-portals.conf`); GlobalShortcuts/InputCapture/Inhibit unavailable rather than routed to Hyprland's backend. | `tests/portal-test.py`: screenshot and PipeWire frames show the expected pixels; before, Hyprland's backend never answered | **Streams are unreliable with Arch's xdg-desktop-portal-wlr 0.8.4**: it failed most runs (a duplicate-frame protocol error, or a stream frozen after one frame). Ruled 10-05: fix it, get the fixes accepted upstream, ship a patched copy until a release has them. Two fixes are written and pass every run so far; they are proposed, not yet submitted upstream. Gooarchy's installer installs its patched build (`xdg-desktop-portal-wlr-gooarchy`, Gooarchy repository `docs/xdg-desktop-portal-wlr.md`); Omarchy-adapter users still get Arch's 0.8.4 (question 8). Whole outputs only, picked in its slurp chooser; no meeting app or OBS tested. |
+| AG02 | ScreenCast and Screenshot go to xdg-desktop-portal-wlr (`scottland-portals.conf`); GlobalShortcuts/InputCapture/Inhibit unavailable rather than routed to Hyprland's backend. | `tests/portal-test.py`: screenshot and PipeWire frames show the expected pixels; before, Hyprland's backend never answered | **Arch's xdg-desktop-portal-wlr fails most runs** (the stream stalls or drops: 0.8.4 failed 4 of 6, and 0.8.2, which Omarchy's package mirror served, 3 of 6, 2026-10-06). We maintain our own fork with two fixes (clickety-clacks/xdg-desktop-portal-wlr; ruled 10-06, not sent upstream); Gooarchy's `xdg-desktop-portal-wlr-gooarchy` builds its release `v0.8.4-gooarchy.1` and passed 20 of 20 (Gooarchy repository `docs/xdg-desktop-portal-wlr.md`). Gooarchy's installer installs it, and so does the adapter's setup (O29), replacing Arch's and saying so; both build it on the user's machine until Gooarchy has a package repository. Whole outputs only, picked in its slurp chooser; no meeting app or OBS tested. |
 | AG01 | Not enforceable (section above). Every `no_screen_share` rule is listed in the O20 report as not enforced. | `tests/omarchy-capture-exclusion-test.py`: report entries, and a matching window does appear in a capture | Ruled 10-05: report only, no exclusion built. |
 | AG17 | `omarchy-hyprland-session-locked` answers locked while a lock holds, including a crashed lock client's stand-in. | `tests/omarchy-lock-power-test.py` | — |
 | AG18 | DPMS dispatches are applied (wlr-output-power-management) and `dpmsStatus` is real, so `omarchy-brightness-display on` wakes the screen. | same test: screencopy fails while off, works after on | No physical panel tested. |
@@ -288,7 +288,7 @@ through a reload, and a Quickshell Hyprland client (the Omarchy shell) does not 
 shim is restarted, so the shim fixes (AG17, AG18, AG19, visible failure, reload) reach a running
 session at its next start.
 
-Questions for Mike (no choice made; 2, 3 and 7 have since been ruled):
+Questions for Mike (no choice made; 2, 3, 7, 8 and 9 have since been ruled):
 
 1. Keep mode and startup apps (AG20): with Hyprland still running, should Scottland start its own
    copies of startup apps (Sunshine, udiskie, ...) or leave Hyprland's? Today: neither changes.
@@ -301,14 +301,13 @@ Questions for Mike (no choice made; 2, 3 and 7 have since been ruled):
    shell's bar and menus reload), or keep shim changes for the next session start?
 6. Screen sharing picks an output by clicking it (xdg-desktop-portal-wlr's slurp chooser). Keep,
    or configure another chooser behavior?
-7. ~~xdg-desktop-portal-wlr's stream failures~~: ruled 10-05, fix it, upstream, patched copy meanwhile.
-8. Omarchy-adapter users and the patched xdg-desktop-portal-wlr: there is no package repository to
-   serve it from, so they get Arch's broken 0.8.4. Have the adapter's setup build and install the
-   Gooarchy package (replacing Arch's, reported), wait for a package repository, or document the
-   manual build only?
-9. Sending the xdg-desktop-portal-wlr fixes upstream: the maintainer accepts LLM-assisted patches
-   only in a human contributor's own words with sign-off and disclosure. Submit them as pull
-   requests in your words, file an issue with the diagnosis for a maintainer to fix, or both?
+7. ~~xdg-desktop-portal-wlr's stream failures~~: ruled 10-05, fix it, upstream, patched copy meanwhile
+   (upstream part superseded by 9).
+8. ~~Omarchy-adapter users and the patched xdg-desktop-portal-wlr~~: ruled 10-06, the adapter's setup
+   builds and installs Gooarchy's package, replacing Arch's, reported (O29); once Gooarchy has a
+   package repository, it installs from there instead.
+9. ~~Sending the xdg-desktop-portal-wlr fixes upstream~~: ruled 10-06, not sent; we maintain our own
+   fork, clickety-clacks/xdg-desktop-portal-wlr.
 10. Monitor settings Scottland does not apply (AG03): Hyprland's automatic scale (`scale = "auto"`,
     Omarchy's default, which picks e.g. 2 on a HiDPI laptop) stays at 1 in Scottland, and bitdepth,
     vrr and colour management are ignored. Today they are named only in a comment in the generated
