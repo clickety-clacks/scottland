@@ -67,9 +67,12 @@ def measure(label):
         if s['steps'] != last_steps: step_ms.append(s['gpu_ms']); last_steps = s['steps']
     b = state(); c1, t1 = cpu_ticks(), time.monotonic()
     med = lambda v: sorted(v)[len(v)//2] if v else None
+    timing = b.get('gpu_timing')
+    # Older builds have no capability flag. A zero placeholder is not a measured duration.
+    timed_med = lambda v: med(v) if timing is not False and any(x > 0 for x in v) else None
     r = {'case': label, 'seconds': round(t1 - t0, 2),
          'counters': {k: (b[k] - a[k]) if k in a and k in b else None for k in COUNTERS},
-         'draw_gpu_ms_median': med(draw_ms), 'step_gpu_ms_median': med(step_ms),
+         'draw_gpu_ms_median': timed_med(draw_ms), 'step_gpu_ms_median': timed_med(step_ms),
          'gpu_timing_available': b.get('gpu_timing'),
          'sampled_added_gpu_ms': {k: b[k] - a[k] if k in a and k in b and b.get('gpu_timing') else None
                           for k in ('flow_gpu_ms', 'check_gpu_ms', 'seen_gpu_ms')},
