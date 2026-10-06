@@ -62,6 +62,24 @@ with Session(fixture, "hl-omarchy-shim") as session:
     check("exec_cmd with a [[long string]] runs its command", ok and result.returncode == 0,
           (result.returncode, result.stdout))
 
+    # AG19: Lua strings are bytes. Decimal and hex escapes are the bytes of a UTF-8 name (é, è),
+    # \u{...} is UTF-8, and a long string's CR LF line break is one newline (two commands).
+    escapes = root / "escapes"
+    escapes.mkdir(exist_ok=True)
+    cases = {"decimal": (f'hl.dsp.exec_cmd("touch {escapes}/\\195\\169")', ["é"]),
+             "hex": (f"hl.dsp.exec_cmd('touch {escapes}/\\xc3\\xa8')", ["è"]),
+             "unicode": (f'hl.dsp.exec_cmd("touch {escapes}/\\u{{EA}}")', ["ê"]),
+             "long CR LF": (f"hl.dsp.exec_cmd([[touch {escapes}/one\r\ntouch {escapes}/two]])",
+                            ["one", "two"])}
+    for name, (request, made) in cases.items():
+        result = session.hyprctl("dispatch", request)
+        ok, _ = session.wait(lambda: all((escapes / m).exists() for m in made))
+        check(f"exec_cmd with {name} escapes runs the command Lua would ({', '.join(made)})",
+              ok and result.returncode == 0, (result.returncode, sorted(p.name for p in escapes.iterdir())))
+    expected = {"é", "è", "ê", "one", "two"}
+    check("...and nothing else (no mis-encoded or CR-suffixed names)",
+          {p.name for p in escapes.iterdir()} == expected, sorted(p.name for p in escapes.iterdir()))
+
     # AG19: the stock screensaver launcher opens its terminal.
     launch_log = root / "launch-screensaver.log"
     session.run("sh", "-c", f"omarchy-launch-screensaver force >{launch_log} 2>&1 </dev/null &")

@@ -65,7 +65,8 @@ class Log:
         state = (os.environ.get("SCOTTLAND_TEST_STATE") or os.environ.get("XDG_STATE_HOME")
                  or os.path.expanduser("~/.local/state"))
         os.makedirs(os.path.join(state, "scottland"), exist_ok=True)
-        self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1)
+        self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1,
+                         errors="backslashreplace")
         self.seen = set()
 
     def __call__(self, message):
@@ -181,16 +182,37 @@ class Wayfire:
                     pass
 
 
-LUA_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
-               "\\": "\\", '"': '"', "'": "'", "\n": "\n"}
+LUA_ESCAPES = {"a": b"\a", "b": b"\b", "f": b"\f", "n": b"\n", "r": b"\r", "t": b"\t", "v": b"\v",
+               "\\": b"\\", '"': b'"', "'": b"'"}
+LUA_NEWLINE = re.compile(r"\r\n|\n\r|\r|\n")
+
+
+def lua_utf8(code):
+    """Lua's UTF-8 encoding of a \\u{XXX} escape (code points up to 2^31, as Lua allows)."""
+    if code < 0x80:
+        return bytes([code])
+    out, first_max = [], 0x3F
+    while True:
+        out.append(0x80 | (code & 0x3F))
+        code >>= 6
+        first_max >>= 1
+        if code <= first_max:
+            break
+    out.append(((~first_max << 1) & 0xFF) | code)
+    return bytes(reversed(out))
 
 
 def lua_string(text, pos=0):
     """Read the Lua string literal at text[pos:] (after spaces): "...", '...', [[...]] or [==[...]==].
 
-    Returns (value, end) or None. Omarchy writes commands in any of these forms, e.g. the
-    screensaver's hl.dsp.exec_cmd([[...]]).
+    Returns (value, end) or None, the value as the bytes Lua would make of it: escapes such as
+    \\195\\169 or \\xC3 are bytes, \\u{E9} is UTF-8, and every line break in a long string is
+    one \\n. text is the request as received (decoded with surrogateescape, so any byte survives).
+    Omarchy writes commands in any of these forms, e.g. the screensaver's hl.dsp.exec_cmd([[...]]).
     """
+    def raw(chars):
+        return chars.encode("utf-8", "surrogateescape")
+
     while pos < len(text) and text[pos].isspace():
         pos += 1
     long = re.compile(r"\[(=*)\[").match(text, pos)
@@ -200,22 +222,21 @@ def lua_string(text, pos=0):
         if end < 0:
             return None
         value = text[long.end():end]
-        if value.startswith("\r\n"):  # Lua skips a newline right after the opening bracket
-            value = value[2:]
-        elif value[:1] in ("\n", "\r"):
-            value = value[1:]
-        return value, end + len(close)
+        first = LUA_NEWLINE.match(value)  # Lua skips a line break right after the opening bracket
+        if first:
+            value = value[first.end():]
+        return raw(LUA_NEWLINE.sub("\n", value)), end + len(close)
     if pos >= len(text) or text[pos] not in "\"'":
         return None
-    quote, out, index = text[pos], [], pos + 1
+    quote, out, index = text[pos], bytearray(), pos + 1
     while index < len(text):
         char = text[index]
         if char == quote:
-            return "".join(out), index + 1
-        if char == "\n":
+            return bytes(out), index + 1
+        if char in "\r\n":
             return None  # unfinished string
         if char != "\\":
-            out.append(char)
+            out += raw(char)
             index += 1
             continue
         index += 1
@@ -223,24 +244,32 @@ def lua_string(text, pos=0):
             return None
         char = text[index]
         if char in LUA_ESCAPES:
-            out.append(LUA_ESCAPES[char])
+            out += LUA_ESCAPES[char]
             index += 1
+        elif char in "\r\n":  # a backslash before a line break: one \n
+            index += LUA_NEWLINE.match(text, index).end() - index
+            out += b"\n"
         elif char == "z":  # skip the following whitespace
             index += 1
             while index < len(text) and text[index].isspace():
                 index += 1
-        elif char == "x" and re.fullmatch(r"[0-9A-Fa-f]{2}", text[index + 1:index + 3]):
-            out.append(chr(int(text[index + 1:index + 3], 16)))
+        elif char == "x":
+            digits = text[index + 1:index + 3]
+            if not re.fullmatch(r"[0-9A-Fa-f]{2}", digits):
+                return None
+            out.append(int(digits, 16))
             index += 3
-        elif char.isdigit():
-            digits = re.match(r"\d{1,3}", text[index:]).group(0)
-            out.append(chr(int(digits)))
+        elif char in "0123456789":
+            digits = re.match(r"[0-9]{1,3}", text[index:]).group(0)
+            if int(digits) > 255:
+                return None  # Lua: decimal escape too large
+            out.append(int(digits))
             index += len(digits)
         elif char == "u":
             code = re.match(r"u\{([0-9A-Fa-f]+)\}", text[index:])
-            if not code:
+            if not code or int(code.group(1), 16) > 0x7FFFFFFF:
                 return None
-            out.append(chr(int(code.group(1), 16)))
+            out += lua_utf8(int(code.group(1), 16))
             index += len(code.group(0))
         else:
             return None  # Lua rejects unknown escapes
@@ -462,7 +491,8 @@ class Translator:
 
     @classmethod
     def exec_command(cls, text):
-        """The command of an exec dispatch: hl.dsp.exec_cmd(<Lua string>, ...) or classic `exec`."""
+        """The command (bytes) of an exec dispatch: hl.dsp.exec_cmd(<Lua string>, ...) or classic
+        `exec`."""
         text = text.strip()
         match = cls.EXEC_LUA.match(text)
         if match:
@@ -470,7 +500,7 @@ class Translator:
             if literal and re.match(r"\s*[,)]", text[literal[1]:]):
                 return literal[0]
             return None
-        return text[5:] if text.startswith("exec ") else None
+        return text[5:].encode("utf-8", "surrogateescape") if text.startswith("exec ") else None
 
     def dispatch(self, text):
         """Translate the window dispatches the shell uses; everything else is a logged no-op."""
@@ -663,8 +693,9 @@ class Server:
     def answer(self, conn):
         try:
             conn.settimeout(2)
-            request = conn.recv(65536).decode(errors="replace")
-            conn.sendall(self.translator.handle(request).encode())
+            # surrogateescape: bytes that aren't UTF-8 (e.g. in a command) reach handlers intact.
+            request = conn.recv(65536).decode(errors="surrogateescape")
+            conn.sendall(self.translator.handle(request).encode(errors="surrogateescape"))
         except OSError:
             pass
         finally:
