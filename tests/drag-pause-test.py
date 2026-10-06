@@ -160,8 +160,17 @@ try:
         for name in order: place(ids[name], *SCENE[name])
         for name in order: ipc('window-rules/focus-view', {'id': ids[name]}); time.sleep(.05)
         ipc('window-rules/focus-view', {'id': ids['A2']})
-        wait(lambda: all((lambda g: (g['x'], g['y'], g['width'], g['height']) == SCENE[n])(geometry(ids[n]))
-                         for n in order), 5, 'fixture')
+        # A newly mapped client may acknowledge its initial size after the first configure.
+        # Reconcile fixture setup once after stacking, before sending the single tested drag.
+        for name in order:
+            g = geometry(ids[name])
+            if (g['x'], g['y'], g['width'], g['height']) != SCENE[name]:
+                place(ids[name], *SCENE[name])
+        try:
+            wait(lambda: all((lambda g: (g['x'], g['y'], g['width'], g['height']) == SCENE[n])(geometry(ids[n]))
+                             for n in order), 5, 'fixture')
+        except RuntimeError as e:
+            raise RuntimeError(f'{e}; actual geometries { {n: geometry(ids[n]) for n in order} }') from e
         settled()
 
     def scenario(name):
