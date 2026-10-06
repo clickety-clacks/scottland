@@ -348,13 +348,13 @@ def axis_recorder():
 class Recorder:
     """An axis-recorder client in a session: what scroll its surface received."""
 
-    def __init__(self, session, name, color, layer=False):
+    def __init__(self, session, name, color, layer=False, new_app_id=None):
+        """new_app_id: a pointer button press on it makes the client change its app-id to this."""
         self.session, self.name = session, name
         self.log = session.dir.parent / f"{session.dir.name}-axis-{name}.log"
         self.log.unlink(missing_ok=True)
-        args = ["--layer", name] if layer else [name]
-        session.run("sh", "-c", f"exec {axis_recorder()} {' '.join(args)} {color} "
-                                f">{self.log} 2>&1 </dev/null &")
+        args = ["--layer", name, color] if layer else [name, color] + ([new_app_id] if new_app_id else [])
+        self.pid = session.spawn(f"exec {axis_recorder()} {' '.join(args)}", self.log)
 
     def lines(self):
         return self.log.read_text().splitlines() if self.log.exists() else []

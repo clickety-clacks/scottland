@@ -193,15 +193,15 @@ hl = setmetatable({
       window_rules[#window_rules + 1] = { table.concat(parts, ", "), rule_origin() }
     end
     if tonumber(rules.scroll_touchpad) then
-      -- Scottland matches app-ids: a rule on class / initial_class carries over exactly.
-      local translatable, patterns = true, {}
-      for k, v in pairs(match) do
-        if k == "class" or k == "initial_class" then patterns[#patterns + 1] = tostring(v)
-        else translatable = false end
+      -- Scottland matches app-ids: class is the window's app-id now, initial_class the one it
+      -- mapped with; a rule on either or both carries over exactly.
+      local translatable = true
+      for k in pairs(match) do
+        if k ~= "class" and k ~= "initial_class" then translatable = false end
       end
-      if translatable and #patterns > 0 then
-        table.sort(patterns)
-        scroll_rules[#scroll_rules + 1] = { table.concat(patterns, "\31"), tonumber(rules.scroll_touchpad) }
+      if translatable and (match.class or match.initial_class) then
+        scroll_rules[#scroll_rules + 1] = { tostring(match.class or ""), tostring(match.initial_class or ""),
+                                            tonumber(rules.scroll_touchpad) }
       else
         scroll_skipped[#scroll_skipped + 1] = { "window rule " .. table.concat(parts, ", ") ..
           " scroll_touchpad " .. tostring(rules.scroll_touchpad), rule_origin() }
@@ -266,7 +266,8 @@ for _, rule in ipairs(window_rules) do
 end
 if scroll_factor then print("@scroll\t" .. string.format("%.15g", scroll_factor)) end
 for _, rule in ipairs(scroll_rules) do
-  print("@scrollrule\t" .. rule[1]:gsub("[\t\n]", " ") .. "\t" .. string.format("%.15g", rule[2]))
+  print("@scrollrule\t" .. rule[1]:gsub("[\t\n]", " ") .. "\t" .. rule[2]:gsub("[\t\n]", " ") .. "\t" ..
+        string.format("%.15g", rule[3]))
 end
 for _, skipped in ipairs(scroll_skipped) do
   print("@scrollskip\t" .. skipped[1]:gsub("[\t\n]", " ") .. "\t" .. skipped[2])
@@ -632,18 +633,14 @@ def feature_report_group(section, option):
     return "other_feature"
 
 
-def app_id_regex(patterns):
-    """One app-id regex for Hyprland class / initial_class patterns, all of which must match
-    (RE2 FullMatch; "negative:" inverts), for core's touchpad_scroll_apps (a whole-app-id match)."""
-    parts = []
-    for pattern in patterns:
-        if pattern.startswith("negative:"):
-            parts.append(f"(?!(?:{pattern[9:]})$)")
-        else:
-            parts.append(f"(?=(?:{pattern})$)")
-    if len(parts) == 1 and not patterns[0].startswith("negative:"):
-        return patterns[0]
-    return "".join(parts) + ".*"
+def app_id_regex(pattern):
+    """A whole-app-id regex (core's touchpad_scroll_apps / _initial_apps) for a Hyprland class or
+    initial_class pattern (RE2 FullMatch; "negative:" inverts); any app-id when there is none."""
+    if not pattern:
+        return ".*"
+    if pattern.startswith("negative:"):
+        return f"(?!(?:{pattern[9:]})$).*"
+    return pattern
 
 
 def omission_report_group(kind, action, description, note):
@@ -1077,8 +1074,8 @@ def main():
             scroll_speed = line.split("\t")[1]
             continue
         if line.startswith("@scrollrule\t"):
-            _, patterns, factor = (line.split("\t") + ["", ""])[:3]
-            scroll_rules.append((app_id_regex(patterns.split("\x1f")), factor))
+            _, current, initial, factor = (line.split("\t") + ["", "", ""])[:4]
+            scroll_rules.append((app_id_regex(current), app_id_regex(initial), factor))
             continue
         if line.startswith("@scrollskip\t"):
             _, what, origin = (line.split("\t") + ["", ""])[:3]
@@ -1321,8 +1318,10 @@ def main():
         # Hyprland: the last matching scroll_touchpad rule sets the speed. Core: the first entry by
         # name. So the last rule gets the first name.
         print("\n[scottland]\n# Omarchy's per-app touchpad scroll speeds (scroll_touchpad window rules)")
-        for index, (regex, factor) in enumerate(reversed(scroll_rules)):
-            print(f"touchpad_scroll_apps_omarchy_{index:03d} = {regex}")
+        for index, (current, initial, factor) in enumerate(reversed(scroll_rules)):
+            print(f"touchpad_scroll_apps_omarchy_{index:03d} = {current}")
+            if initial != ".*":
+                print(f"touchpad_scroll_initial_apps_omarchy_{index:03d} = {initial}")
             print(f"touchpad_scroll_factor_omarchy_{index:03d} = {factor}")
     if shortcuts or switches:
         print("\n[scottland]")

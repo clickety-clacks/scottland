@@ -395,10 +395,15 @@
 		</option>
 		<option name="touchpad_scroll_speeds" type="dynamic-list" type-hint="dict">
 			<_short>Touchpad scroll speed per app</_short>
-			<_long>Two-finger scrolling speed for particular apps, replacing the input touchpad scroll speed for the window under the pointer. The first entry (by name) whose regex matches the whole app-id applies.</_long>
+			<_long>Two-finger scrolling speed for particular apps, replacing the input touchpad scroll speed for the window under the pointer. The first entry (by name) whose regexes match the whole app-id (and the app-id the window opened with) applies.</_long>
 			<entry prefix="touchpad_scroll_apps_" type="string" name="apps">
 				<_short>Apps</_short>
 				<_long>Regex matching the whole app-id, e.g. (foot|kitty).</_long>
+			</entry>
+			<entry prefix="touchpad_scroll_initial_apps_" type="string" name="initial">
+				<_short>Initial apps</_short>
+				<_long>Regex matching the whole app-id the window had when it opened (apps may change theirs later). Default: any.</_long>
+				<default>.*</default>
 			</entry>
 			<entry prefix="touchpad_scroll_factor_" type="double" name="factor">
 				<_short>Speed</_short>

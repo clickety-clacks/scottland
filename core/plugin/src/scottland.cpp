@@ -7160,12 +7160,46 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // once the upstream fix ships (the ABI check below turns it off for newer Wayfire builds).
     wf::option_wrapper_t<double> touchpad_scroll_speed{"input/touchpad_scroll_speed"};
     // Per-app speeds: [scottland] touchpad_scroll_apps_<name> = <regex matching the whole app-id>,
-    // touchpad_scroll_factor_<name> = <speed>. The window under the pointer takes the first entry
-    // (by name) whose regex matches its app-id; that speed replaces touchpad_scroll_speed for it.
-    // Anything else (no match, a panel or other layer surface) scrolls at touchpad_scroll_speed.
-    wf::option_wrapper_t<wf::config::compound_list_t<std::string, double>> touchpad_scroll_apps{
+    // touchpad_scroll_initial_apps_<name> = <regex matching the whole app-id the window had when it
+    // mapped> (default .*: any), touchpad_scroll_factor_<name> = <speed>. The window under the
+    // pointer takes the first entry (by name) whose regexes both match; that speed replaces
+    // touchpad_scroll_speed for it. Anything else (no match, a panel or other layer surface)
+    // scrolls at touchpad_scroll_speed.
+    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string, double>> touchpad_scroll_apps{
         "scottland/touchpad_scroll_speeds"};
     std::map<std::string, std::optional<std::regex>> touchpad_scroll_regexes;  // pattern -> compiled
+    // The app-id each window had when it mapped; apps may change theirs later. A window already
+    // mapped when the plugin loaded counts the app-id it had then.
+    std::map<uint32_t, std::string> initial_app_ids;
+
+    wf::signal::connection_t<wf::view_mapped_signal> on_initial_app_id = [=] (wf::view_mapped_signal *ev)
+    {
+        initial_app_ids[ev->view->get_id()] = ev->view->get_app_id();
+    };
+    wf::signal::connection_t<wf::view_unmapped_signal> on_forget_app_id = [=] (wf::view_unmapped_signal *ev)
+    {
+        initial_app_ids.erase(ev->view->get_id());
+    };
+
+    bool touchpad_scroll_matches(const std::string& name, const std::string& pattern, const std::string& app_id)
+    {
+        auto cached = touchpad_scroll_regexes.find(pattern);
+        if (cached == touchpad_scroll_regexes.end())
+        {
+            std::optional<std::regex> compiled;  // stays empty for a bad pattern, logged once
+            try
+            {
+                compiled = std::regex(pattern);
+            } catch (const std::regex_error&)
+            {
+                LOGE("scottland: bad touchpad_scroll regex for ", name, ": ", pattern);
+            }
+
+            cached = touchpad_scroll_regexes.emplace(pattern, std::move(compiled)).first;
+        }
+
+        return cached->second && std::regex_match(app_id, *cached->second);
+    }
 
     /** The touchpad scroll speed for the window under the pointer, and whether an app entry set it. */
     std::pair<double, bool> touchpad_scroll_factor()
@@ -7178,24 +7212,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         std::string app_id = view->get_app_id();
-        for (const auto& [name, pattern, factor] : touchpad_scroll_apps.value())
+        auto initial = initial_app_ids.find(view->get_id());
+        const std::string& initial_app_id = (initial != initial_app_ids.end()) ? initial->second : app_id;
+        for (const auto& [name, pattern, initial_pattern, factor] : touchpad_scroll_apps.value())
         {
-            auto cached = touchpad_scroll_regexes.find(pattern);
-            if (cached == touchpad_scroll_regexes.end())
-            {
-                std::optional<std::regex> compiled;  // stays empty for a bad pattern, logged once
-                try
-                {
-                    compiled = std::regex(pattern);
-                } catch (const std::regex_error&)
-                {
-                    LOGE("scottland: bad touchpad_scroll_apps_", name, " regex: ", pattern);
-                }
-
-                cached = touchpad_scroll_regexes.emplace(pattern, std::move(compiled)).first;
-            }
-
-            if (cached->second && std::regex_match(app_id, *cached->second))
+            if (touchpad_scroll_matches(name, pattern, app_id) &&
+                touchpad_scroll_matches(name, initial_pattern, initial_app_id))
             {
                 return {std::max(0.0, factor), true};
             }
@@ -7347,6 +7369,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_axis);
+        wf::get_core().connect(&on_initial_app_id);
+        wf::get_core().connect(&on_forget_app_id);
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            if (view->is_mapped())
+            {
+                initial_app_ids[view->get_id()] = view->get_app_id();
+            }
+        }
+
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
@@ -7487,6 +7519,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_minimize_device_removed.disconnect();
         shortcuts.fini();
         on_axis.disconnect();
+        on_initial_app_id.disconnect();
+        on_forget_app_id.disconnect();
         on_remap_key.disconnect();
         on_mapped.disconnect();
         on_geometry.disconnect();

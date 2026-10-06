@@ -1,10 +1,11 @@
 // A Wayland client that prints the scroll it receives, for scroll-speed tests.
 //
-//   axis-recorder APP_ID RRGGBB            an xdg toplevel with that app-id
-//   axis-recorder --layer NAMESPACE RRGGBB a layer-shell surface (top layer), like a shell panel
+//   axis-recorder APP_ID RRGGBB [NEW_APP_ID]  an xdg toplevel with that app-id; with NEW_APP_ID,
+//                                            a pointer button press makes it change its app-id
+//   axis-recorder --layer NAMESPACE RRGGBB   a layer-shell surface (top layer), like a shell panel
 //
 // Fills itself with the color (400x300) and prints, unbuffered, one line per event:
-//   ready | enter | source N | axis AXIS VALUE | stop AXIS | frame
+//   ready | enter | source N | axis AXIS VALUE | stop AXIS | frame | app-id NEW_APP_ID
 // VALUE is the wl_pointer.axis value exactly as delivered (surface-local units).
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -24,6 +25,8 @@ static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_surface *surface;
 static uint32_t color;
 static int width = 400, height = 300;
+static struct xdg_toplevel *toplevel;
+static const char *new_app_id;
 
 static void attach_buffer(void)
 {
@@ -90,7 +93,16 @@ static void p_leave(void *d, struct wl_pointer *p, uint32_t s, struct wl_surface
 static void p_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl_fixed_t y)
 { (void)d; (void)p; (void)t; (void)x; (void)y; }
 static void p_button(void *d, struct wl_pointer *p, uint32_t s, uint32_t t, uint32_t b, uint32_t st)
-{ (void)d; (void)p; (void)s; (void)t; (void)b; (void)st; }
+{
+    (void)d; (void)p; (void)s; (void)t; (void)b;
+    if (st == WL_POINTER_BUTTON_STATE_PRESSED && new_app_id && toplevel)
+    {
+        xdg_toplevel_set_app_id(toplevel, new_app_id);
+        wl_surface_commit(surface);
+        printf("app-id %s\n", new_app_id);
+        new_app_id = NULL;
+    }
+}
 static void p_axis(void *d, struct wl_pointer *p, uint32_t t, uint32_t axis, wl_fixed_t value)
 { (void)d; (void)p; (void)t; printf("axis %u %.4f\n", axis, wl_fixed_to_double(value)); }
 static void p_frame(void *d, struct wl_pointer *p) { (void)d; (void)p; printf("frame\n"); }
@@ -141,14 +153,15 @@ static const struct wl_registry_listener registry_listener = {global, global_rem
 int main(int argc, char **argv)
 {
     int layer = argc == 4 && !strcmp(argv[1], "--layer");
-    if (argc != 3 && !layer)
+    if (argc != 3 && argc != 4)
     {
-        fprintf(stderr, "usage: axis-recorder APP_ID RRGGBB | --layer NAMESPACE RRGGBB\n");
+        fprintf(stderr, "usage: axis-recorder APP_ID RRGGBB [NEW_APP_ID] | --layer NAMESPACE RRGGBB\n");
         return 64;
     }
 
     setvbuf(stdout, NULL, _IOLBF, 0);
-    color = strtoul(argv[argc - 1], NULL, 16);
+    color = strtoul(argv[layer ? 3 : 2], NULL, 16);
+    if (!layer && argc == 4) new_app_id = argv[3];
     struct wl_display *display = wl_display_connect(NULL);
     if (!display) return 2;
     struct wl_registry *registry = wl_display_get_registry(display);
@@ -171,7 +184,7 @@ int main(int argc, char **argv)
         xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
         struct xdg_surface *xdg = xdg_wm_base_get_xdg_surface(wm_base, surface);
         xdg_surface_add_listener(xdg, &xdg_listener, NULL);
-        struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg);
+        toplevel = xdg_surface_get_toplevel(xdg);
         xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
         xdg_toplevel_set_app_id(toplevel, argv[1]);
         xdg_toplevel_set_title(toplevel, argv[1]);
