@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hints appear only once settled (ruling 2026-10-05, WK40): judged frame by frame from pixels.
+"""Hints appear only once settled (ruling 2026-10-05, WK41): judged frame by frame from pixels.
 
 Run inside a private --widgets headless session via tests/hint-settle-test.sh. Real input: the
 layout is made with Super-drags, the widgets collapse with Super+M, Front is focused by a click,
@@ -42,6 +42,7 @@ for tool in ('wf-recorder', 'ffmpeg', 'ffprobe'):
     assert shutil.which(tool), tool + ' is required to record frames'
 
 sock = socket.socket(socket.AF_UNIX)
+sock.settimeout(8)
 sock.connect(os.environ['WAYFIRE_SOCKET'])
 clients = []
 recorder = None
@@ -50,6 +51,7 @@ button_down = False
 passed = failed = 0
 W, H = 1280, 720
 APP = str(Path(__file__).with_name('hint-style-app.py'))
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
 
 def ipc(method, data=None):
@@ -65,7 +67,7 @@ def ipc(method, data=None):
             out += part
         return out
     result = json.loads(read(struct.unpack('<I', read(4))[0]))
-    if isinstance(result, dict) and result.get('result') == 'error':
+    if isinstance(result, dict) and (result.get('result') == 'error' or 'error' in result):
         raise RuntimeError(result)
     return result
 
@@ -150,12 +152,19 @@ def frames(video):
     process = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', str(video), '-fps_mode', 'passthrough',
         '-f', 'rawvideo', '-pix_fmt', 'rgb0', '-'], stdout=subprocess.PIPE)
     size = W * H * 4
-    while True:
-        frame = process.stdout.read(size)
-        if len(frame) < size:
-            break
-        yield frame
-    process.wait()
+    try:
+        while True:
+            frame = process.stdout.read(size)
+            if not frame: break
+            if len(frame) != size: raise RuntimeError('incomplete decoded frame')
+            yield frame
+        if process.wait(timeout=8): raise RuntimeError('frame decoder failed')
+    finally:
+        process.stdout.close()
+        if process.poll() is None: process.terminate()
+        try: process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill(); process.wait()
 
 
 def frame_times(video):
@@ -210,7 +219,26 @@ def letter_pixels(frame, colors):
             for name, s in found.items()}
 
 
-def judge(label, video, final):
+def outline_pixels(frame, hint, discs):
+    """Known hint-color pixels on straight outline edges, outside every hint circle."""
+    f = hint['outline_frame']
+    color = tuple(round(c * 255) for c in hint['color'])
+    x1, y1, x2, y2 = f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height']
+    points = set()
+    for t in (.2, .3, .4, .5, .6, .7, .8):
+        for x, y in ((x1 + (x2 - x1) * t, y1 + 1), (x1 + (x2 - x1) * t, y2 - 1),
+                     (x1 + 1, y1 + (y2 - y1) * t), (x2 - 1, y1 + (y2 - y1) * t)):
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    px, py = round(x + dx), round(y + dy)
+                    if 0 <= px < W and 0 <= py < H and all(
+                            (px - cx) ** 2 + (py - cy) ** 2 > (r + 4) ** 2 for cx, cy, r in discs.values()):
+                        points.add((px, py))
+    return sum(max(abs(a - b) for a, b in zip(pixel(frame, x, y), color)) <= TOLERANCE
+               for x, y in points)
+
+
+def judge(label, video, final, baseline):
     """Every recorded frame, by its pixels, against where each hint settled."""
     hints = {h['hint']: h for h in final['hints']}
     times = frame_times(video)
@@ -227,42 +255,68 @@ def judge(label, video, final):
             colors[name] = color
     discs = {name: (h['badge']['x'] + h['badge']['size'] / 2, h['badge']['y'] + h['badge']['size'] / 2,
                     h['badge']['size'] / 2) for name, h in hints.items()}
+    # Calibrate absence before pressing Alt, against the same measured final letter colors.
+    absent = letter_pixels(baseline, colors)
+    noise = {name: sum((i % W - discs[name][0]) ** 2 + (i // W - discs[name][1]) ** 2 <= discs[name][2] ** 2
+                      for i in pixels) for name, pixels in absent.items()}
+    outside_noise = {name: len(pixels) - noise[name] for name, pixels in absent.items()}
     inside_series = {name: [] for name in colors}
     outside_series = {name: [] for name in colors}
+    outlines = {name: h for name, h in hints.items() if h.get('outline') and h.get('outline_frame')}
+    check(bool(outlines), f'{label}: fixture includes an occluded window outline')
+    outline_series = {name: [] for name in outlines}
+    outline_noise = {name: outline_pixels(baseline, h, discs) for name, h in outlines.items()}
     for frame in frames(video):
         for name, pixels in letter_pixels(frame, colors).items():
             cx, cy, r = discs[name]
             inside = sum((i % W - cx) ** 2 + (i // W - cy) ** 2 <= r * r for i in pixels)
             inside_series[name].append(inside)
             outside_series[name].append(len(pixels) - inside)
+        for name, h in outlines.items():
+            outline_series[name].append(outline_pixels(frame, h, discs))
     report = {'times': times, 'colors': {k: list(v) for k, v in colors.items()},
-              'inside': inside_series, 'outside': outside_series}
+              'inside': inside_series, 'outside': outside_series, 'absence': noise,
+              'outline': outline_series, 'outline_absence': outline_noise}
     (art / (label + '-pixels.json')).write_text(json.dumps(report))
-    ok_all = True
+    ok_all = bool(outlines)
     for name in colors:
         inside, outside = inside_series[name], outside_series[name]
         settled = inside[-1]
         check(settled >= 8, f'{label}: hint {name.upper()} letter is measurable when settled', f'{settled} px')
-        first = next((i for i, n in enumerate(inside) if n >= settled / 2), None)
-        dips = [i for i in range(first or 0, len(inside)) if inside[i] < settled / 2] if first is not None else []
+        threshold = noise[name] + 3  # at least four thick pixels above the calibrated absence
+        first = next((i for i, n in enumerate(inside) if n > threshold), None)
+        dips = [i for i in range(first or 0, len(inside)) if inside[i] <= threshold] if first is not None else []
         ok = first is not None and not dips
         ok_all &= ok
         check(ok, f'{label}: hint {name.upper()} appears once at its settled place and stays',
-              f'first full frame {first}, frames below half after it: {dips[:8]}')
-        stray = [(i, n) for i, n in enumerate(outside) if n > max(3, settled // 10)]
+              f'first visible frame {first}, absence threshold {threshold}, disappearances: {dips[:8]}')
+        stray = [(i, n) for i, n in enumerate(outside) if n > outside_noise[name] + 3]
         ok_all &= not stray
         check(not stray, f'{label}: hint {name.upper()} is never drawn anywhere else',
               f'frames with its letter elsewhere: {stray[:8]}')
+    for name, series in outline_series.items():
+        threshold = outline_noise[name] + 3
+        first = next((i for i, n in enumerate(series) if n > threshold), None)
+        dips = [i for i in range(first or 0, len(series)) if series[i] <= threshold] if first is not None else []
+        ok = first is not None and series[-1] > threshold and not dips
+        ok_all &= ok
+        check(ok, f'{label}: outline {name.upper()} appears once on its settled edges and stays',
+              f'first visible frame {first}, absence threshold {threshold}, disappearances: {dips[:8]}')
     return ok_all
 
 
 def record_entry(label, count):
     """Hold Alt with a lossless recording running; stop it once everything has settled."""
     global recorder
+    wait(lambda: not any(h.get('visible') for h in ipc('scottland/hints')['hints']), 'previous hints to leave')
+    baseline_path = art / (label + '-before.png')
+    subprocess.run(['grim', str(baseline_path)], check=True, timeout=8)
+    baseline = next(frames(baseline_path))
     video = art / (label + '.mkv')
     log = art / (label + '-recorder.log')
-    recorder = subprocess.Popen(['wf-recorder', '-c', 'ffv1', '-x', 'bgr0', '-y', '-f', str(video)],
-        stdout=subprocess.DEVNULL, stderr=open(log, 'w'))
+    with log.open('w') as recorder_log:
+        recorder = subprocess.Popen(['wf-recorder', '-c', 'ffv1', '-x', 'bgr0', '-y', '-f', str(video)],
+            stdout=subprocess.DEVNULL, stderr=recorder_log)
     # The recorder opens its output once the first frame has been copied.
     wait(lambda: 'Output #0' in log.read_text(), 'the recorder to start')
     key('LEFTALT', True)
@@ -280,7 +334,7 @@ def record_entry(label, count):
     key('LEFTALT', False)
     wait(lambda: not ipc('scottland/hints')['active'], 'Window mode to end')
     (art / (label + '-final.json')).write_text(json.dumps(final, indent=1))
-    return video, final
+    return video, final, baseline
 
 
 try:
@@ -330,29 +384,33 @@ try:
             # Test hook (fault injection): a pass of a few work units per tick, as under load.
             ipc('scottland/hints', {'slice_units': 4 if sliced else 0})
             wait(lambda: at_rest() and collapsed(), 'the desktop to come to rest')
-            video, final = record_entry(label, len(layout))
-            if judge(label, video, final):
+            video, final, baseline = record_entry(label, len(layout))
+            if judge(label, video, final, baseline):
                 video.unlink()  # kept only when a check failed
             scenarios += 1
     ipc('scottland/hints', {'slice_units': 0})
     print(f'{scenarios} scenarios (always-on avoidance on/off x whole/sliced solve), '
           f'{len(layout)} hints each: {passed} checks passed, {failed} failed', flush=True)
 finally:
-    if recorder:
-        recorder.send_signal(signal.SIGINT)
-        try:
-            recorder.wait(timeout=30)
+    # Each cleanup step continues even when the compositor or recorder has already gone.
+    if recorder and recorder.poll() is None:
+        try: recorder.send_signal(signal.SIGINT)
+        except ProcessLookupError: pass
+        try: recorder.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            recorder.kill()
+            recorder.kill(); recorder.wait()
     for name in list(held):
-        key(name, False)
+        try: key(name, False)
+        except Exception: pass
     if button_down:
-        ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+        try: ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+        except Exception: pass
     for client in clients:
-        client.terminate()
+        if client.poll() is None: client.terminate()
     for client in clients:
         try:
-            client.wait(timeout=10)
+            client.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            client.kill()
+            client.kill(); client.wait()
+    sock.close()
 sys.exit(bool(failed))
