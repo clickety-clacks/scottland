@@ -737,7 +737,20 @@ class goo_node_t : public wf::scene::node_t
     // `repainted`: something other than the goo repainted under the liquid this frame.
     double pickup_callback_ms = 0, pickup_callback_max_ms = 0;
     uint64_t pickup_callbacks = 0;
+    void record_pickup_callback(double started)
+    {
+        double elapsed = (now() - started) * 1000;
+        pickup_callback_ms += elapsed;
+        pickup_callback_max_ms = std::max(pickup_callback_max_ms, elapsed);
+        ++pickup_callbacks;
+    }
     void backdrop_copied(bool repainted = false)
+    {
+        double started = now();
+        handle_backdrop_copied(repainted);
+        record_pickup_callback(started);
+    }
+    void handle_backdrop_copied(bool repainted)
     {
         if (repainted)
         {
@@ -759,16 +772,13 @@ class goo_node_t : public wf::scene::node_t
             return;
         }
         pickup.last_check = now();
-        collect_backdrop_check();
+        collect_backdrop_result();
     }
     void collect_backdrop_check()
     {
         double started = now();
         collect_backdrop_result();
-        double elapsed = (now() - started) * 1000;
-        pickup_callback_ms += elapsed;
-        pickup_callback_max_ms = std::max(pickup_callback_max_ms, elapsed);
-        ++pickup_callbacks;
+        record_pickup_callback(started);
     }
     void collect_backdrop_result()
     {
@@ -801,10 +811,11 @@ class goo_node_t : public wf::scene::node_t
     {
         pickup_timer.set_timeout(std::max(1, int((pickup.next - now()) * 1000) + 1), [this]
         {
+            double started = now();
             // Timers may fire early: preserve the deadline and rearm, not the action.
-            if (!pickup.expire(now())) { arm_pickup_wait(); return; }
-            if (state.sleeping && watercolor() && attached)
-                start_pickup();
+            if (!pickup.expire(now())) arm_pickup_wait();
+            else if (state.sleeping && watercolor() && attached) start_pickup();
+            record_pickup_callback(started);
         });
     }
     void start_pickup()

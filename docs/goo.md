@@ -2743,5 +2743,6 @@ synchronous compatibility path. None of these changes proves a 2 ms budget witho
 GPU probes, builds or benchmarks were run for this revision. The current required matrix is shader
 compilation, filter probe, timestamp policy, CLI migration, config builder and Settings/GO28 input
 on both GPU paths, followed by GO27 strip, exact, watercolor, depth and state-color regressions.
-The benchmark needs representative sizes/load and physical x86 GPU runs before P8/GO10/GO19/GO20
+GPU totals cover measured scopes only; compare completed samples against calls before
+extrapolating to interval cost. The benchmark needs representative sizes/load and physical x86 GPU runs before P8/GO10/GO19/GO20
 cost claims can be restored. Physical-display appearance and motion still need independent review.

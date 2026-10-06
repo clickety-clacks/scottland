@@ -70,8 +70,13 @@ def measure(label):
          'counters': {k: (b[k] - a[k]) if k in a and k in b else None for k in COUNTERS},
          'draw_gpu_ms_median': med(draw_ms), 'step_gpu_ms_median': med(step_ms),
          'gpu_timing_available': b.get('gpu_timing', False),
-         'added_gpu_ms': {k: b[k] - a[k] if k in a and k in b and b.get('gpu_timing') else None
+         'sampled_added_gpu_ms': {k: b[k] - a[k] if k in a and k in b and b.get('gpu_timing') else None
                           for k in ('flow_gpu_ms', 'check_gpu_ms', 'seen_gpu_ms')},
+         'gpu_scope_coverage': {scope: {'completed_samples': b.get(samples, 0)-a.get(samples, 0),
+                                          'calls': b.get(calls, 0)-a.get(calls, 0)}
+                                for scope, samples, calls in [('flow', 'flow_gpu_samples', 'dye_flows'),
+                                                              ('check', 'check_gpu_samples', 'backdrop_checks'),
+                                                              ('seen', 'seen_gpu_samples', 'seen_calls')]},
          'added_wall_ms': {k: b[k] - a[k] if k in a and k in b else None
                           for k in ('flow_wall_ms', 'check_wall_ms', 'seen_wall_ms', 'pickup_callback_ms')},
          'lifetime_wall_max_ms': {k: b.get(k) for k in ('flow_wall_max_ms', 'check_wall_max_ms', 'seen_wall_max_ms', 'pickup_callback_max_ms')},
