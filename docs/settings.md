@@ -265,7 +265,8 @@ The Window mode slider is separate from window opacity and hint-color overlay st
 It is one absolute opacity for the background behind hint letters, applied to window hints
 and exterior widget hints alike: 100% is a solid backing, 0% no backing, default 21%.
 Every hint's backing is the same color, the theme background under a 21% hint-color tint,
-so letters drawn in the hint color keep their contrast at every value.
+the color hint letters are chosen to contrast with. At low values what lies beneath shows
+through, so over wallpaper a widget hint's letter contrast depends on the setting.
 
 The first version (same day) scaled each kind's own fill instead, so 100% meant a 21%
 hint-color fill on window hints and an opaque themed fill on widget hints. Mike: "why
