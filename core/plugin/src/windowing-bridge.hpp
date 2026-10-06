@@ -63,6 +63,8 @@
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
     std::string declutter_signature;
+    // The same layout key per output, so a change on one screen restarts only its own pass.
+    std::map<std::string, std::string> declutter_output_signatures;
     // Hint draw order needs recomputing: stacking changed or a hint node was (re)added.
     bool hint_order_dirty = true;
     std::chrono::steady_clock::time_point last_exposure_solve{};
@@ -83,12 +85,16 @@
         std::optional<scottland::windowing::peek_pass> pass;
         std::string order;
         std::vector<uint64_t> ids;
+        std::map<uint64_t, std::string> placement_keys;
         bool newer = false;
     };
     std::map<std::string, peek_output_t> peek_by_output;
     uint64_t avoidance_pass_count = 0;
     size_t avoidance_pass_units = 0, avoidance_pass_slices = 0, avoidance_pass_slices_max = 0;
     size_t avoidance_slice_units = 0, avoidance_slice_units_max = 0;
+    // Test sessions only (SCOTTLAND_TEST_MODEL): a smaller slice budget, so a pass spreads over
+    // several ticks as it does on a loaded machine. 0 keeps peek_slice_units.
+    size_t avoidance_test_slice_units = 0;
     // WK37 occlusion pass, resumable per output like the solve it follows: the next window (in
     // front-to-back order) still to measure; absent means start over, SIZE_MAX means done.
     std::map<std::string, size_t> occlusion_next_by_output;
@@ -1071,6 +1077,9 @@
         std::set<uint64_t> represented;
         std::map<wf::output_t*, std::vector<uint64_t>> by_output;
         std::ostringstream signature;
+        std::map<std::string, std::string> output_signature;
+        std::map<uint64_t, std::string> entry_signature, placement_keys;
+        std::map<std::string, bool> output_live;
         for (auto e : entries)
         {
             auto view = represented_view(e.id);
@@ -1108,11 +1117,15 @@
                 visual.offset_attached = true;
             }
             auto g = view->get_geometry();
-            signature << e.id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' << view->get_output()->to_string() << ';';
             auto r = hint_rectangle(view, true);
             auto anchor = hint_anchor(view, true);
-            signature << ':' << std::round(anchor.x) << ',' << std::round(anchor.y) << ',' << std::round(r.height())
+            std::ostringstream entry;
+            entry << e.id << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' << view->get_output()->to_string() << ';';
+            entry << ':' << std::round(anchor.x) << ',' << std::round(anchor.y) << ',' << std::round(r.height())
                 << ',' << std::round(hint_size(view)) << ';';
+            signature << entry.str();
+            entry_signature[e.id] = entry.str();
+            output_signature[view->get_output()->to_string()] += entry.str();
             by_output[view->get_output()].push_back(e.id);
         }
         auto focused = drag->view ? drag->view : wf::toplevel_cast(wf::get_core().seat->get_active_view());
@@ -1125,16 +1138,71 @@
             {
                 if (!view->get_root_node()->is_enabled()) continue;
                 for (auto id : ids) if (represented_view(id) == view)
-                { stacking[id] = stacking.size(); signature << "z:" << id << ';'; }
+                {
+                    stacking[id] = stacking.size(); signature << "z:" << id << ';';
+                    output_signature[output->to_string()] += "z:" + std::to_string(id) + ';';
+                }
             }
+        // Front-to-back rank. A view the loop skipped (minimized, or a widget slid away) is not
+        // drawn: it ranks behind everything, so it is nobody's obstacle or cover. Never index
+        // stacking with [], which would insert it at the front.
+        auto rank = [&] (uint64_t id) { auto found = stacking.find(id);
+            return found == stacking.end() ? stacking.size() : found->second; };
         bool avoidance_active = window_keys.active || bool(window_avoidance_always) ||
             bool(hint_avoidance_always);
         // Live: something is moving under the user's hand or by inertia. The calm rules differ
         // (WK13), so live to rest is a layout change that requests one rest pass.
         const bool live = bool(drag->view) || inertia_active() || !glides.empty();
-        signature << "active:" << window_keys.active << ";avoidance:" << avoidance_active
+        std::ostringstream shared;
+        shared << "active:" << window_keys.active << ";avoidance:" << avoidance_active
             << ";anchor:" << (focused ? focused->get_id() : 0) << ";live:" << live
             << ";text:" << hints_palette.text_scale;
+        signature << shared.str();
+        // Focus, anchors and the live/rest rule belong to the output using them. A glide
+        // on another screen must not invalidate this screen's completed placement.
+        for (auto& [output, ids] : by_output)
+        {
+            const auto name = output->to_string();
+            bool local_live = drag->view && drag->view->get_output() == output;
+            for (const auto& [id, glide] : glides)
+                if (auto view = glide.view.lock(); view && view->get_output() == output) local_live = true;
+            for (const auto& [id, motion] : keyboard_motions)
+                if (auto view = motion.view.lock(); view && view->get_output() == output &&
+                    (motion.vx.velocity || motion.vy.velocity || motion.vw.velocity || motion.vh.velocity))
+                    local_live = true;
+            output_live[name] = local_live;
+            auto bounds = output->get_relative_geometry();
+            auto area = output->workarea->get_workarea();
+            std::ostringstream common;
+            common << "active:" << window_keys.active << ";avoidance:" << avoidance_active
+                << ";live:" << local_live << ";text:" << hints_palette.text_scale
+                << ";center:" << double(center_width) << ";rail:" << double(rail_width)
+                << ";screen:" << bounds.width << ',' << bounds.height
+                << ";workarea:" << area.x << ',' << area.y << ',' << area.width << ',' << area.height;
+            // The same anchoring predicate the solver uses (input.anchored below, WK13).
+            for (auto id : ids)
+            {
+                const bool anchored = represented_view(id) == focused;
+                entry_signature[id] += ";anchored:" + std::to_string(anchored);
+                output_signature[name] += ";anchor:" + std::to_string(id) + ':' + std::to_string(anchored);
+            }
+            output_signature[name] += common.str();
+            auto ordered = ids;
+            std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
+                return rank(a) < rank(b); });
+            std::string foreground = common.str();
+            for (auto id : ordered)
+            {
+                foreground += entry_signature[id];
+                // Widget declutter uses every anchor on this output; windows behind it use
+                // that widget's placement as foreground. Other rear windows are irrelevant.
+                if (link_of_widget(represented_view(id))) foreground += output_signature[name];
+                placement_keys[id] = foreground;
+            }
+        }
+        // Every output's own key requests a solve: its zone widths, work area or local live
+        // state can change while nothing global does, and its hints wait on a matching key.
+        for (const auto& [name, key] : output_signature) signature << "|output:" << name << '=' << key;
         auto current_signature = signature.str();
         auto solve_now = std::chrono::steady_clock::now();
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
@@ -1148,13 +1216,23 @@
         {
             // A pass in progress finishes on its snapshot; the newest layout gets the next one
             // (WK13: rear windows lag a moving front window by at most one pass). The WK37
-            // occlusion measurement restarts.
-            for (auto& [name, state] : peek_by_output) state.newer = true;
-            occlusion_next_by_output.clear();
+            // occlusion measurement restarts. Only outputs whose own layout changed are stale,
+            // unless the key was cleared to force a full solve.
+            const bool forced = declutter_signature.empty();
+            for (auto& [name, state] : peek_by_output)
+            {
+                auto key = output_signature.find(name);
+                if (!forced && key != output_signature.end() && declutter_output_signatures[name] == key->second)
+                    continue;
+                state.newer = true;
+                occlusion_next_by_output.erase(name);
+            }
+            if (forced) occlusion_next_by_output.clear();
         }
         if (solve_requested && (!avoidance_active || force_solve || !within_tick_budget))
         {
             declutter_signature = std::move(current_signature);
+            declutter_output_signatures = output_signature;
             std::map<uint64_t, scottland::windowing::point> previous_labels;
             for (auto& [id, visual] : hint_visuals)
                 previous_labels[id] = visual.label_offset;
@@ -1218,14 +1296,11 @@
                     request.strip_depth = scottland::windowing::peek_strip_depth * text;
                     request.strip_length = scottland::windowing::peek_strip_length * text;
                     request.window_mode = window_keys.active;
-                    request.live = live;
+                    request.live = output_live[output->to_string()];
                     std::vector<uint64_t> window_ids;
                     auto ordered = ids;
                     std::stable_sort(ordered.begin(), ordered.end(), [&] (auto a, auto b) {
-                        auto rank = [&] (auto id) { auto found = stacking.find(id);
-                            return found == stacking.end() ? stacking.size() : found->second; };
-                        return rank(a) < rank(b);
-                    });
+                        return rank(a) < rank(b); });
                     // P13: a displayed center stays in its own zone. Zone extents as the layout
                     // model draws them (center_width, rail_width); a periphery excludes its rail.
                     const double width = screen.width;
@@ -1277,14 +1352,21 @@
                     {
                         state.pass.emplace(std::move(request));
                         state.order = order.str(); state.ids = window_ids; state.newer = false;
+                        state.placement_keys.clear();
+                        for (auto id : ids) state.placement_keys[id] = placement_keys[id];
                         occlusion_next_by_output.erase(output->to_string());
                         ++avoidance_pass_count;
                     }
                     auto& pass = *state.pass;
+                    // Widget declutter above is completed in this invocation, independent of
+                    // whether the resumable window pass still has rear windows left to visit.
+                    for (auto id : ids) if (link_of_widget(represented_view(id)))
+                        state.placement_keys[id] = placement_keys[id];
                     const size_t before = pass.units;
                     auto slice_started = std::chrono::steady_clock::now();
                     bool output_complete = scottland::windowing::peek_step(pass,
-                        scottland::windowing::peek_slice_units, std::min(exposure_deadline, exposure_started +
+                        avoidance_test_slice_units ? avoidance_test_slice_units : scottland::windowing::peek_slice_units,
+                        std::min(exposure_deadline, exposure_started +
                             std::chrono::microseconds(scottland::windowing::peek_pause_us)));
                     exposure_search_ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - slice_started).count();
@@ -1384,6 +1466,34 @@
             }
             if (avoidance_active) last_exposure_solve = std::chrono::steady_clock::now();
         }
+        // WK41: a hint appears only once its own placement has settled: its output's avoidance
+        // pass for the current layout has reached it, and nothing it depends on is animating on
+        // its own timer (itself, the windows in front of it and its output's widgets: widgets
+        // changing form on entry, rail slides, glides, make-room eases). Otherwise a hint drawn
+        // from the previous targets, or before collapsed widgets finish expanding, is removed by
+        // the next result and drawn again once that has eased. Motion elsewhere doesn't hold it.
+        auto animating = [&] (uint64_t id) {
+            auto shown = represented_view(id);
+            const uint64_t view_id = shown ? shown->get_id() : 0;
+            auto slide = rail_slides.find(id);
+            return glides.count(view_id) || widget_transitions.count(view_id) || widget_transitions.count(id) ||
+                rail_layout_motions.count(view_id) || (slide != rail_slides.end() && slide->second.running);
+        };
+        auto solved = [&] (uint64_t id, wf::output_t *output) {
+            auto found = peek_by_output.find(output->to_string());
+            if (found == peek_by_output.end() || (deferred_solve && declutter_signature.empty())) return false;
+            const auto& state = found->second;
+            auto key = state.placement_keys.find(id);
+            if (key == state.placement_keys.end() || key->second != placement_keys[id]) return false;
+            auto at = std::find(state.ids.begin(), state.ids.end(), id);
+            // Widgets are not in the pass: their declutter runs whole with every solve. A window
+            // not in it yet waits for the next pass.
+            if (at == state.ids.end()) return bool(link_of_widget(represented_view(id)));
+            return state.pass && size_t(at - state.ids.begin()) < state.pass->next;
+        };
+        // Keep stepping until waiting hints can appear: a glide or a make-room ease ends on its
+        // own timer, without a layout change to wake this one.
+        bool awaiting_settle = false;
         bool moving = false, animation_moving = false;
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
         {
@@ -1447,23 +1557,31 @@
                 // Exposure always supplies the readable minimum at its best available spot.
                 // Lack of clear space is never a reason to suppress an ordinary window hint.
                 bool badge_ready = true;
-                if (!widget)
+                // WK41: what can still move this hint. A widget's circle rides its own widget,
+                // whose declutter relaxes every anchor on the output, windows' and widgets'.
+                bool placement_ready = solved(it->first, view->get_output()) && !animating(it->first) &&
+                    (!widget || !unsettled);
+                for (auto other_id : by_output[view->get_output()])
                 {
+                    if (widget)
+                    {
+                        placement_ready &= !animating(other_id);
+                        continue;
+                    }
                     // A rear window can start fully covered. Wait for its and foreground
                     // offsets to settle; the minimum-size fallback appears even if the
                     // settled region still cannot contain the circle.
-                    for (auto other_id : by_output[view->get_output()])
-                    {
-                        auto& other = hint_visuals[other_id];
-                        if (other_id != it->first && !link_of_widget(represented_view(other_id)) &&
-                            stacking[other_id] >= stacking[it->first]) continue;
-                        badge_ready &= std::hypot(other.target.x - other.offset->translation_x,
-                            other.target.y - other.offset->translation_y) < .1;
-                    }
+                    auto& other = hint_visuals[other_id];
+                    if (other_id != it->first && rank(other_id) >= rank(it->first)) continue;
+                    badge_ready &= std::hypot(other.target.x - other.offset->translation_x,
+                        other.target.y - other.offset->translation_y) < .1;
+                    placement_ready &= !animating(other_id);
                 }
                 if (!badge_ready && visual.hint)
                 { wf::scene::remove_child(visual.hint); visual.hint.reset(); }
-                if (badge_ready && !visual.hint)
+                // A widget's circle is never removed for motion: it rides its widget.
+                awaiting_settle |= !visual.hint && (!placement_ready || !badge_ready);
+                if (badge_ready && placement_ready && !visual.hint)
                 {
                     visual.hint_output = view->get_output();
                     visual.hint = std::make_shared<scottland::windowing::hint_node>();
@@ -1494,7 +1612,12 @@
                 {
                     auto output = view->get_output();
                     if (visual.outline && visual.outline_output != output) remove_hint_outline(visual);
-                    if (!visual.outline)
+                    // WK41: an outline appears only from its settled layout's finished measurement.
+                    auto measured = occlusion_next_by_output.find(output->to_string());
+                    const bool outline_ready = badge_ready && placement_ready && measured != occlusion_next_by_output.end() &&
+                        measured->second == SIZE_MAX;
+                    awaiting_settle |= !visual.outline && !outline_ready;
+                    if (!visual.outline && outline_ready)
                     {
                         // Like the hint circles, at the front of the overlay layer: above every
                         // window and every surface already shown there, so nothing occludes it.
@@ -1509,11 +1632,14 @@
                             if (flash.node && flash.output == output) wf::scene::readd_front(overlay, flash.node);
                         hint_order_dirty = true; // WK31: put the re-added circles back in stacking order
                     }
-                    auto r = scene_rectangle(view, output);
-                    auto frame = frame_of(view, false);
-                    visual.outline->update(r.x1, r.y1, r.width(), r.height(),
-                        frame ? frame->screen_radius() : 0.0, color,
-                        scottland::windowing::hint_outline_width);
+                    if (visual.outline)
+                    {
+                        auto r = scene_rectangle(view, output);
+                        auto frame = frame_of(view, false);
+                        visual.outline->update(r.x1, r.y1, r.width(), r.height(),
+                            frame ? frame->screen_radius() : 0.0, color,
+                            scottland::windowing::hint_outline_width);
+                    }
                 } else remove_hint_outline(visual);
                 if (visual.hint)
                 {
@@ -1555,9 +1681,7 @@
                     auto found = hint_visuals.find(id);
                     if (found == hint_visuals.end() || !found->second.hint ||
                         found->second.hint->parent() != parent.get()) continue;
-                    auto rank = stacking.find(id);
-                    drawn.emplace_back(rank == stacking.end() ? stacking.size() : rank->second,
-                        found->second.hint);
+                    drawn.emplace_back(rank(id), found->second.hint);
                 }
                 std::stable_sort(drawn.begin(), drawn.end(),
                     [] (const auto& a, const auto& b) { return a.first < b.first; });
@@ -1580,7 +1704,7 @@
         hint_step_offset = moving && !animation_moving;
         const bool widget_presentation_moving = window_keys.active && widget_transition_tick.is_connected();
         return moving || bool(drag->view) || inertia_active() || deferred_solve ||
-            exposure_solve_pending || widget_presentation_moving;
+            exposure_solve_pending || widget_presentation_moving || awaiting_settle;
     }
     void refresh_layout_avoidance(bool immediate = false)
     {
@@ -1755,8 +1879,10 @@
             }
         }
     };
-    wf::ipc::method_callback hints_state = [=] (wf::json_t) -> wf::json_t
+    wf::ipc::method_callback hints_state = [=] (wf::json_t data) -> wf::json_t
     {
+        if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("slice_units") && data["slice_units"].is_int())
+            avoidance_test_slice_units = std::max(0, data["slice_units"].as_int());
         auto reply = wf::ipc::json_ok(); reply["active"] = window_keys.active;
         reply["hint_text_scale"] = hints_palette.text_scale;
         reply["minimum_window_hint_size"] = 48 * hints_palette.text_scale;
@@ -1769,7 +1895,8 @@
         reply["avoidance_solve_budget_ms"] =
             scottland::windowing::avoidance_solve_budget_us / 1000.0;
         // WK13 peek passes: work units of the last slice and the last completed pass.
-        reply["avoidance_slice_budget_units"] = int64_t(scottland::windowing::peek_slice_units);
+        reply["avoidance_slice_budget_units"] = int64_t(avoidance_test_slice_units ?
+            avoidance_test_slice_units : scottland::windowing::peek_slice_units);
         reply["avoidance_slice_units"] = int64_t(avoidance_slice_units);
         reply["avoidance_slice_units_max"] = int64_t(avoidance_slice_units_max);
         reply["avoidance_pass_units"] = int64_t(avoidance_pass_units);
