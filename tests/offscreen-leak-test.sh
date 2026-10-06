@@ -1,6 +1,6 @@
 #!/bin/bash
-# E9: offscreen renders release what they allocate, path by path (census preloaded into Wayfire),
-# in a caller-owned isolated session.
+# E9: avoidance, live drag, subsurface snapshot capture and reload allocation lifetime,
+# with an independent census in a caller-owned isolated session. Other capture paths are not gates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${SCOTTLAND_HEADLESS_DIR:?set an isolated headless test directory}"

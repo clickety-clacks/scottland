@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""E9: every offscreen render Scottland causes releases what it allocates, path by path, and model
-changes leave nothing in the environment.
+"""E9: allocation lifetime for avoidance, live drag, subsurface snapshot capture and reload,
+plus model-version environment writes during a terminal workload.
 
 Invoked by offscreen-leak-test.sh inside its own headless session, whose Wayfire preloads
 tests/transform-census.c: an independent census of wlroots color transforms (created, referenced
@@ -12,13 +12,18 @@ plugin unloads. glibc keeps every value ever given to setenv; the version is wri
 Each phase drives one path with real input (stipc pointer and keys; clients drawing) and checks:
 the census shows that path built render targets (the mechanism ran), Scottland never holds more
 than one live transform, and the screen or the compositor's geometry shows the input took effect.
-  redraw   terminals redraw and one retitles under window avoidance (frame and hint-offset
-           transformers; a model version per retitle, none written to the environment)
+  redraw   terminals redraw and one retitles under window avoidance (hint-offset references
+           are required; at least fifty model versions, none written to the environment)
   drag     a live drag of a redrawing terminal
   morph    a window with a subsurface becomes a widget and is dragged back out: the morph
            captures the window every other tick through the snapshot fallback
   reload   the plugin is replaced in place: the old copy's transform is freed, a new one made,
            and the version is written to the environment once, for the new copy
+
+Reference counts include render-target copies; they are not counts of snapshots or renders.
+Goo shape/wallpaper capture and morph blend freezing are not required by this test. Captured
+pixels establish redraw and the final dropped window, not all intermediate morph pixels.
+configure-view is setup only and bypasses input; the drag and widget transitions use real input.
 """
 import json
 import os
@@ -70,7 +75,7 @@ def ipc(method, data=None):
     return reply
 
 
-def wait_until(predicate, what, deadline=DEADLINE):
+def wait_until(predicate, what, deadline=DEADLINE, observation=None):
     end = time.monotonic() + deadline
     last = None
     while time.monotonic() < end:
@@ -78,7 +83,7 @@ def wait_until(predicate, what, deadline=DEADLINE):
         if last:
             return last
         time.sleep(.1)
-    raise AssertionError(f'timed out waiting for {what}; last: {last}')
+    raise AssertionError(f'timed out waiting for {what}; last: {observation() if observation else last}')
 
 
 def census():
@@ -138,6 +143,39 @@ def center(frame):
     return frame['x'] + frame['width'] / 2, frame['y'] + frame['height'] / 2
 
 
+def settled_frame(get_view, what):
+    """Wait for positive frame bounds to agree across three consecutive observations."""
+    previous = None
+    matching = 0
+    last = None
+    def ready():
+        nonlocal previous, matching, last
+        last = get_view()
+        frame = last and last.get('frame')
+        bounds = frame and tuple(frame[k] for k in ('x', 'y', 'width', 'height'))
+        if not bounds or bounds[2] <= 0 or bounds[3] <= 0:
+            previous, matching = None, 0
+            return False
+        matching = matching + 1 if bounds == previous else 1
+        previous = bounds
+        return last if matching >= 3 else False
+    return wait_until(ready, what, observation=lambda: last)
+
+
+def place(client, geometry):
+    """One setup request, then observe the mapped geometry and settled frame."""
+    ipc('window-rules/configure-view', {'id': client['id'], 'geometry': geometry})
+    last = None
+    def placed():
+        nonlocal last
+        last = next((v for v in ipc('window-rules/list-views') if v['id'] == client['id']), None)
+        actual = last and last.get('geometry')
+        return actual and all(abs(actual[k] - value) <= 1 for k, value in geometry.items())
+    wait_until(placed, 'the configured client geometry', observation=lambda: last)
+    return settled_frame(lambda: next((v for v in views() if v['id'] == client['id']), None),
+                         'the configured frame to settle')
+
+
 def terminal(title, retitle=False):
     shown = f'{title} {{n}}' if retitle else title
     code = ('import sys,time\nn=0\nwhile True:\n'
@@ -154,16 +192,29 @@ def phase(name):
     """Census at the start of a phase; returns a function giving its deltas and the latest census."""
     start = newer_census(time.time())
     start_version = ipc('scottland/desktop-model')['version']
-    def end():
-        latest = newer_census(time.time())
+    def progress(latest=None):
+        latest = census() if latest is None else latest
         delta = {k: latest['ref_tags'][k] - start['ref_tags'][k] for k in latest['ref_tags']}
         delta['refs_scottland'] = latest['refs_scottland'] - start['refs_scottland']
         delta['created_scottland'] = latest['created_scottland'] - start['created_scottland']
         delta['version_setenv'] = latest['version_setenv'] - start['version_setenv']
         delta['versions'] = ipc('scottland/desktop-model')['version'] - start_version
+        return delta, latest
+    def end():
+        delta, latest = progress(newer_census(time.time()))
         (artifacts / f'census-{name}.json').write_text(json.dumps({'start': start, 'end': latest, 'delta': delta}, indent=1))
         return delta, latest
+    end.progress = progress
     return end
+
+
+def wait_for_work(end, tag=None, versions=0):
+    """Wait for a work count, without requiring any work rate or leak-free outcome."""
+    def ready():
+        delta, latest = end.progress()
+        return (delta, latest) if delta['versions'] >= versions and (not tag or delta[tag] > 0) else False
+    return wait_until(ready, f'phase work (versions >= {versions}, reference tag {tag})', deadline=120,
+                      observation=lambda: end.progress()[0])
 
 
 def held(latest, name):
@@ -180,16 +231,16 @@ try:
     end = phase('redraw')
     terms = [terminal(f'leak-term-{i}') for i in range(3)]
     retitler = terminal('leak-retitle', retitle=True)
-    ipc('window-rules/configure-view', {'id': retitler['id'], 'geometry': {'x': 100, 'y': 1000, 'width': 500, 'height': 400}})
+    place(retitler, {'x': 100, 'y': 1000, 'width': 500, 'height': 400})
     for t, x in zip(terms, (500, 900, 1300)):
-        ipc('window-rules/configure-view', {'id': t['id'], 'geometry': {'x': x, 'y': 300, 'width': 700, 'height': 600}})
+        place(t, {'x': x, 'y': 300, 'width': 700, 'height': 600})
     first = view('leak-term-0')['frame']
     shot = lambda: region(first['x'] + 20, first['y'] + 40, 300, 200)
     before = shot()
     wait_until(lambda: shot() != before, 'a terminal redraw to reach the screen')
-    time.sleep(3)   # an interval of redraws to count
+    wait_for_work(end, tag='9view_2d_t10instance_t', versions=50)
     delta, latest = end()
-    check(delta['9view_2d_t10instance_t'] > 0, f'redraw: hint offsets rendered {delta["9view_2d_t10instance_t"]} targets', delta)
+    check(delta['9view_2d_t10instance_t'] > 0, f'redraw: {delta["9view_2d_t10instance_t"]} hint-offset reference events', delta)
     held(latest, 'redraw')
     check(delta['versions'] >= 50 and delta['version_setenv'] == 0,
           f'redraw: {delta["versions"]} model versions, none written to the environment', delta)
@@ -201,8 +252,9 @@ try:
     super_drag(start_xy, (start_xy[0] - 400, start_xy[1] + 250), steps=60, pause=.03)
     moved = wait_until(lambda: (f := view('leak-term-1')['frame']) and abs(center(f)[0] - start_xy[0] + 400) < 40 and f,
                        'the dragged terminal to land')
+    wait_for_work(end, tag='live_drag_transform_t')
     delta, latest = end()
-    check(delta['live_drag_transform_t'] > 0, f'drag: the live drag rendered {delta["live_drag_transform_t"]} targets', delta)
+    check(delta['live_drag_transform_t'] > 0, f'drag: {delta["live_drag_transform_t"]} live-drag reference events', delta)
     check(abs(center(moved)[1] - start_xy[1] - 250) < 40, 'drag: the window followed the pointer', moved)
     held(latest, 'drag')
 
@@ -212,25 +264,31 @@ try:
                                     stderr=subprocess.DEVNULL, start_new_session=True))
     app = wait_until(lambda: view('leak-subsurface') and 'frame' in view('leak-subsurface') and view('leak-subsurface'),
                      'the subsurface client')
-    ipc('window-rules/configure-view', {'id': app['id'], 'geometry': {'x': 1000, 'y': 500, 'width': 480, 'height': 320}})
-    time.sleep(.5)
-    frame = view('leak-subsurface')['frame']
+    frame = place(app, {'x': 1000, 'y': 500, 'width': 480, 'height': 320})['frame']
     super_drag(center(frame), (2550, 400), steps=30, pause=.03)
     def card_view():
         link = next((w for w in widgets() if int(w['id']) == app['id'] and w.get('widget_view')), None)
         return link and next((v for v in views() if v['id'] == int(link['widget_view']) and 'frame' in v), None)
-    card = wait_until(card_view, 'the window to become a widget with its card shown')
-    time.sleep(1)
+    card = settled_frame(card_view, 'the window to become a widget with a settled card')
     # Back out, slowly: every other morph tick captures the window, which has a subsurface.
     super_drag(center(card['frame']), (1300, 700), steps=80, pause=.05)
     wait_until(lambda: not any(int(w['id']) == app['id'] for w in widgets()), 'the widget to become a window again')
-    back = wait_until(lambda: (v := view('leak-subsurface')) and 'frame' in v and v['frame'], 'the window frame')
-    time.sleep(1)
-    pixels = region(back['x'], back['y'], back['width'], back['height'])
-    blue = count_color(pixels, (0x20, 0x50, 0xc0))
+    last_pixels = None
+    def dropped_pixels():
+        global last_pixels
+        v = view('leak-subsurface')
+        back = v and v.get('frame')
+        if not back or back['width'] <= 0 or back['height'] <= 0:
+            last_pixels = {'frame': back}
+            return False
+        blue = count_color(region(back['x'], back['y'], back['width'], back['height']), (0x20, 0x50, 0xc0))
+        last_pixels = {'frame': back, 'blue': blue}
+        return (back, blue) if blue > back['width'] * back['height'] * .3 else False
+    back, blue = wait_until(dropped_pixels, 'the dropped window blue pixels', observation=lambda: last_pixels)
+    wait_for_work(end, tag='widget_image_t7capture')
     delta, latest = end()
     check(delta['widget_image_t7capture'] > 0,
-          f'morph: the capture fallback rendered {delta["widget_image_t7capture"]} snapshots of a subsurface window', delta)
+          f'morph: {delta["widget_image_t7capture"]} capture-fallback reference events for a subsurface window', delta)
     check(blue > back['width'] * back['height'] * .3, f'morph: the window is drawn where it was dropped ({blue} blue pixels)', back)
     held(latest, 'morph')
 
@@ -258,7 +316,7 @@ try:
     first = view('leak-term-0')['frame']
     before = shot()
     wait_until(lambda: shot() != before, 'redraws to reach the screen after the reload')
-    time.sleep(2)
+    wait_for_work(end, tag='refs_scottland')
     delta, latest = end()
     fresh.unlink()
     check(delta['created_scottland'] == 1 and delta['refs_scottland'] > 0,
