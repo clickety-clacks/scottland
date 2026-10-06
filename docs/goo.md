@@ -2591,7 +2591,9 @@ where nothing was picked up. GO24's ramp to a fully opaque body at the wall goes
 - A change beneath sleeping liquid: on a frame whose copy touched the liquid, at most twice a
   second and only when no change is already pending, a reduction counts liquid texels of the pickup
   texture that differ from the copy the dye last saw by more than 4 levels in any channel (GO20's
-  threshold); more than 16 is a change. A change never wakes waves or the field: it restarts the
+  threshold); more than 16 is a change. The count is exact: a 2x2 block past an odd edge of a
+  reduction level skips its missing taps (`tests/goo-change-count-test.sh`: one to 17 changed
+  texels at corners, edges and center on five output sizes, both dialects). A change never wakes waves or the field: it restarts the
   dye's coast (GO24's slow dye-only tick on the cached composite, about 6 s, easing out), which picks
   the new colors up and smears them. One such restart per cool-down: 20 s, doubling each time the
   cool-down ends with another change waiting (to at most 5 minutes). A change inside a cool-down
@@ -2795,6 +2797,15 @@ were 1.538 ms and 1.208 ms respectively. Both returned to zero work at idle. The
 include synchronous completion waits, but describe forced fallback on this GPU, not every driver
 that lacks fences. The measured callback maxima stay under 2 ms in these scenes; they do not
 establish a universal frame or hardware budget.
+
+**Review follow-ups (2026-10-06, x86 test machine, integration branch).** The change count
+over-counted texels near odd reduction edges (one changed texel near the bottom-right corner
+counted 64, so small repaints started pickup coasts GO28 says to tolerate); the shader now skips
+taps past the edge. `tests/goo-change-count-test.sh` passes 45/0 on each dialect and fails 37 of 45
+on the previous shader. The OneDye suite now judges transport at the default Pickup balance (0.45,
+density 1.5) and requires at least 12 pt of graded color: measured 0 to 24 pt (GLES 3) and 0 to
+20 pt (packed GLES 2) in both dye and screen pixels; it passes 49/49 on both paths. Its first
+client-redraw check is labelled a fixture check (it mostly sees the client beneath).
 
 Physical-display appearance/motion, Intel Xe, and naturally unfenced drivers remain unverified.
 The finite redraw run does not reach the five-minute cooldown ceiling; exact supplied-timestamp
