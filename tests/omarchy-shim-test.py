@@ -94,7 +94,7 @@ with Session(fixture, "hl-omarchy-shim") as session:
     # Unsupported requests fail visibly: hyprctl exits non-zero with the shim's error.
     for args in (["dispatch", 'hl.dsp.focus({ monitor = "NOWHERE-1" })'],
                  ["keyword", "monitor", "NOWHERE-1,disable"],
-                 ["eval", 'hl.monitor({ output = "NOWHERE-1", scale = 1.5 })'],
+                 ["eval", 'hl.config({ general = { gaps_in = 3 } })'],
                  ["switchxkblayout", "all", "next"],
                  ["binds"], ["cursorpos"], ["-j", "layers"],
                  ["getoption", "cursor:zoom_factor"]):

@@ -20,6 +20,7 @@ records binds instead of applying them. This one also honours hl.unbind.
 """
 
 import fcntl
+import json
 import hashlib
 import os
 import re
@@ -31,11 +32,17 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+# Hyprland monitor rules in Scottland's terms, shared with the Hyprland shim (hyprctl eval).
+sys.path.insert(0, os.path.join(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"), "libexec"))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "libexec"))  # running from a checkout
+import scottland_hyprland_monitor as hyprmonitor  # noqa: E402
+
 HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
 
 LUA_SCAN = r'''
 local order, binds, window_rules = {}, {}, {}
 local scroll_factor, scroll_rules, scroll_skipped = nil, {}, {}
+local monitors = {}
 local baseline = os.getenv("SCOTTLAND_OMARCHY_BASELINE_SCAN") == "1"
 
 local function normalize(keys)
@@ -173,6 +180,20 @@ hl = setmetatable({
     walk(settings, "")
     return noop
   end,
+  -- Monitor rules (hl.monitor), in config order: Scottland writes them as Wayfire output
+  -- settings. Printed as "@monitor" rows, one key, type and value triple per field.
+  monitor = function(rule)
+    if type(rule) ~= "table" then return noop end
+    local parts = {}
+    for key, value in pairs(rule) do
+      local kind = ({ string = "s", number = "n", boolean = "b" })[type(value)] or "t"
+      local text = kind == "n" and string.format("%.15g", value) or (kind == "t" and "" or tostring(value))
+      parts[#parts + 1] = (tostring(key):gsub("[\t\n]", " ")) .. "\t" .. kind .. "\t" .. (text:gsub("[\t\n]", " "))
+    end
+    table.sort(parts)
+    monitors[#monitors + 1] = table.concat(parts, "\t")
+    return noop
+  end,
   -- Per-device scroll factors (hl.device): Scottland has no per-device speed, so report them.
   device = function(settings)
     if type(settings) == "table" and settings.scroll_factor ~= nil then
@@ -272,6 +293,9 @@ end
 for _, skipped in ipairs(scroll_skipped) do
   print("@scrollskip\t" .. skipped[1]:gsub("[\t\n]", " ") .. "\t" .. skipped[2])
 end
+for _, rule in ipairs(monitors) do
+  print("@monitor\t" .. rule)
+end
 '''
 
 MODIFIERS = {"SUPER": "<super>", "SHIFT": "<shift>", "CTRL": "<ctrl>", "ALT": "<alt>"}
@@ -302,6 +326,13 @@ KEYSYMS = {
 # Commands that only act on Hyprland itself. hyprpicker is not one: it uses the screencopy and
 # layer-shell protocols Wayfire has (tests/omarchy-color-picker-test.py).
 HYPRLAND_ONLY = re.compile(r"hyprctl|omarchy-hyprland-|hyprsunset|workspace")
+# Hyprland-named commands whose Hyprland requests the shim translates, so they run unmodified:
+# the lid's clamshell reconcile (monitor rules, monitors -j, reload, eval, DPMS; AG03/AG04).
+TRANSLATED_HYPRLAND = re.compile(r"\s*omarchy-hyprland-monitor-clamshell\s*")
+
+
+def hyprland_only(command):
+    return bool(HYPRLAND_ONLY.search(command)) and not TRANSLATED_HYPRLAND.fullmatch(command)
 
 # Hyprland dispatchers with a Wayfire equivalent: expression prefix -> (section, option)
 DISPATCHERS = {
@@ -1070,8 +1101,17 @@ def main():
         was = omarchy_action_description(description, kind, action, group)
         report_overrides.append(report_entry(group, label, was, now))
 
-    scroll_speed, scroll_rules = None, []
+    scroll_speed, scroll_rules, monitor_rules = None, [], []
     for line in scan_stdout.splitlines():
+        if line.startswith("@monitor\t"):
+            values = line.split("\t")[1:]
+            fields = {}
+            for index in range(0, len(values) - 2, 3):
+                key, kind, text = values[index:index + 3]
+                fields[key] = (text if kind == "s" else float(text) if kind == "n" else
+                               text == "true" if kind == "b" else "(a table)")
+            monitor_rules.append(fields)
+            continue
         if line.startswith("@scroll\t"):
             scroll_speed = line.split("\t")[1]
             continue
@@ -1106,7 +1146,7 @@ def main():
         if release == "1" and kind in ("exec", "function"):
             # Hyprland release binds run when the pressed chord's key is let go; core shortcuts keep
             # that together with the locked flag (core/plugin/src/shortcuts.hpp).
-            if kind == "exec" and HYPRLAND_ONLY.search(arg):
+            if kind == "exec" and hyprland_only(arg):
                 omitted(label, description, f"Hyprland-only: {arg[:60]}",
                         omission_report_group(kind, arg, description, "Hyprland-only command"),
                         kind=kind, action=arg)
@@ -1136,7 +1176,7 @@ def main():
             # Hyprland's switch:on:<device> / switch:off:<device> / switch:<device> (either way),
             # e.g. the laptop lid; core's switch bindings run them, on the lock screen only when
             # the binding is marked locked, as in Hyprland.
-            if kind == "exec" and HYPRLAND_ONLY.search(arg):
+            if kind == "exec" and hyprland_only(arg):
                 omitted(label, description, f"Hyprland-only: {arg[:60]}", kind=kind, action=arg)
                 continue
             if kind not in ("exec", "function"):
@@ -1157,7 +1197,7 @@ def main():
 
         target = None
         if kind == "exec":
-            if HYPRLAND_ONLY.search(arg):
+            if hyprland_only(arg):
                 omitted(label, description, f"Hyprland-only: {arg[:60]}",
                         omission_report_group(kind, arg, description, "Hyprland-only command"),
                         kind=kind, action=arg)
@@ -1327,6 +1367,7 @@ def main():
             if initial != ".*":
                 print(f"touchpad_scroll_initial_apps_omarchy_{index:03d} = {initial}")
             print(f"touchpad_scroll_factor_omarchy_{index:03d} = {factor}")
+    print_monitor_sections(monitor_rules)
     if shortcuts or switches:
         print("\n[scottland]")
         for index, (description, keys, command, flags) in enumerate(shortcuts):
@@ -1359,6 +1400,65 @@ def main():
         print(f"# Lua scan: {warning[:200]}")
     if show_after or os.environ.get("WAYFIRE_SOCKET"):
         show_pending_report()
+
+
+def known_outputs():
+    """The outputs a catch-all or desc: monitor rule can apply to now: the running session's (with
+    make, model and serial) and, before the compositor runs (session start), the connected
+    connectors the kernel lists. The Hyprland shim rebuilds the config when another one appears."""
+    outputs = {}
+    if os.environ.get("WAYFIRE_SOCKET"):
+        heads = os.path.join(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"),
+                             "libexec/scottland-output-heads")
+        try:
+            result = subprocess.run([heads], capture_output=True, text=True, timeout=5,
+                                    stdin=subprocess.DEVNULL)
+            if result.returncode == 0:
+                outputs = {head["name"]: head for head in json.loads(result.stdout)}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if not outputs:
+        for status in sorted(Path("/sys/class/drm").glob("card*-*/status")):
+            try:
+                if status.read_text().strip() == "connected":
+                    name = status.parent.name.split("-", 1)[1]
+                    outputs.setdefault(name, {"name": name})
+            except OSError:
+                pass
+    return list(outputs.values())
+
+
+def print_monitor_sections(rules):
+    """Hyprland monitor rules as Wayfire [output:NAME] sections (AG03). As in Hyprland, the last
+    rule naming an output (by name or desc:) is the whole rule for it, and the last catch-all
+    (output "") is the rule for every other output; a later rule for the laptop panel with
+    disabled = true (Omarchy's clamshell and display toggles) turns it off."""
+    if not rules:
+        return
+    translated, notes = [], []
+    for fields in rules:
+        output, settings, rule_notes = hyprmonitor.translate(fields)
+        notes += [f"{output or 'every output'}: {note}" for note in rule_notes]
+        if output and not output.startswith("desc:") and not hyprmonitor.NAME.fullmatch(output):
+            notes.append(f"{output}: not an output name; not applied")
+            continue
+        translated.append((output, settings))
+    sections = {}
+    for output, settings in translated:  # named outputs, whether or not they are connected now
+        if output and not output.startswith("desc:"):
+            sections[output] = settings
+    for head in known_outputs():
+        matching = [settings for output, settings in translated
+                    if output and hyprmonitor.matches(output, head)]
+        catch_all = [settings for output, settings in translated if not output]
+        if matching or catch_all:
+            sections[head["name"]] = (matching or catch_all)[-1]
+    print("\n# Display settings from the Hyprland config's monitor rules (hl.monitor)")
+    for note in notes:
+        print(f"# not translated: {note}")
+    for name, settings in sorted(sections.items()):
+        print(f"[output:{name}]")
+        print("\n".join(hyprmonitor.ini_lines(settings)))
 
 
 def reload_lua_host():

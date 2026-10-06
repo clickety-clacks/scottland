@@ -277,7 +277,8 @@ real screen or real hardware; statuses are **implemented**.
 | AG01 | Not enforceable (section above). Every `no_screen_share` rule is listed in the O20 report as not enforced. | `tests/omarchy-capture-exclusion-test.py`: report entries, and a matching window does appear in a capture | Ruled 10-05: report only, no exclusion built. |
 | AG17 | `omarchy-hyprland-session-locked` answers locked while a lock holds, including a crashed lock client's stand-in. | `tests/omarchy-lock-power-test.py` | — |
 | AG18 | DPMS dispatches are applied (wlr-output-power-management) and `dpmsStatus` is real, so `omarchy-brightness-display on` wakes the screen. | same test: screencopy fails while off, works after on | No physical panel tested. |
-| AG04 | Lid close runs `omarchy-system-lid-close`, also on the lock screen (Omarchy marks it locked); a switch binding without `locked` doesn't run while locked. | `tests/omarchy-lid-test.py`, virtual switch through Wayfire's switch path | Docked clamshell (laptop panel off) needs monitor config (AG03, not approved); lid open's clamshell reconcile is reported, not run (question 3). Real lid untested. |
+| AG04 | Lid close runs `omarchy-system-lid-close`, also on the lock screen (Omarchy marks it locked); a switch binding without `locked` doesn't run while locked. Ruled 10-06: Omarchy's unmodified `omarchy-hyprland-monitor-clamshell` runs on lid open too and works: a docked lid close turns the laptop panel off (Omarchy's toggle file and `hyprctl reload`), lid open turns it back on at its configured scale and position, a laptop display turned off by hand stays off while docked, an undocked lid close locks and leaves the panel on. | `tests/omarchy-lid-test.py`, virtual switch through Wayfire's switch path; `tests/omarchy-monitors-test.py`: Wayfire's own output list and geometry, screencopy of the panel, Omarchy's toggle files | Real lid and dock untested (needs a laptop). The stock monitor watcher (`omarchy-hyprland-monitor-watch`: re-runs the clamshell script on display hotplug and every 2 s while docked) still gets no `monitoradded`/`monitorremoved` events from the shim, so undocking with the lid closed brings the panel back only when the lid opens. Omarchy's laptop-display toggle (Super+Ctrl+Delete) and mirroring toggle would now work but stay unimported (Hyprland-only commands); not ruled. |
+| AG03 | Monitor rules (`hl.monitor`) apply as Wayfire output settings (core E14): on/off, mode, position, numeric scale, transform, mirror; the last rule per output wins, the catch-all covers the rest; `hyprctl eval "hl.monitor(...)"` applies live until the next reload; `monitors`/`monitors all` report real scale, transform, refresh, modes, make/model/serial, enabled and position. | `tests/omarchy-monitors-test.py`, `tests/output-control-test.py`: Wayfire's output list and geometry, screencopy sizes | `scale = "auto"` (Omarchy's default) is not reproduced: outputs stay at scale 1 unless a number is set (L15). bitdepth, vrr, colour management and reserved areas are not applied; untranslated parts are named in a comment in the generated config only, not in the O20 report (question 10). Hyprland's directional `auto-*` positions are placed as plain auto. No physical display tested. |
 | AG22, AG07 (scroll) | Omarchy's touchpad scroll factor (0.4) and per-app `scroll_touchpad` rules (1.5 terminals, 0.2 Ghostty), including the user's own, apply per window under the pointer; class matches the current app-id and initial_class the one the window mapped with; edits apply live. | `tests/omarchy-scroll-speed-test.py`: delivered axis values per client, before and after a live edit and an app-id change; without the import every surface got 0.2 | Per-device factors and rules on other window properties are reported, not applied. The rest of AG07 (device disable, other input settings) is not part of this. No physical touchpad tested. |
 
 Reload: `tests/omarchy-reload-rehearsal-test.py` and `tests/reload-rehearsal-test.sh` reload a
@@ -287,14 +288,13 @@ through a reload, and a Quickshell Hyprland client (the Omarchy shell) does not 
 shim is restarted, so the shim fixes (AG17, AG18, AG19, visible failure, reload) reach a running
 session at its next start.
 
-Questions for Mike (no choice made; 2 and 7 have since been ruled):
+Questions for Mike (no choice made; 2, 3 and 7 have since been ruled):
 
 1. Keep mode and startup apps (AG20): with Hyprland still running, should Scottland start its own
    copies of startup apps (Sunshine, udiskie, ...) or leave Hyprland's? Today: neither changes.
 2. ~~Capture exclusion (AG01)~~: ruled 10-05, report only.
-3. Lid (AG04): a docked lid close (laptop panel off) and lid open's reconcile
-   (`omarchy-hyprland-monitor-clamshell`, panel back on) both need monitor config translation
-   (AG03): approve that work, or keep lid open reported and not run?
+3. ~~Lid (AG04)~~: ruled 10-06, make Omarchy's clamshell script run unmodified (monitor
+   translation, AG03, for it); Gooarchy ships its own copy.
 4. Screensaver (AG19): should it open full screen (translating its window rule), or stay out of
    scope for now?
 5. Shim updates: should `scottland-reload` restart the shim and the Omarchy shell together (the
@@ -309,3 +309,8 @@ Questions for Mike (no choice made; 2 and 7 have since been ruled):
 9. Sending the xdg-desktop-portal-wlr fixes upstream: the maintainer accepts LLM-assisted patches
    only in a human contributor's own words with sign-off and disclosure. Submit them as pull
    requests in your words, file an issue with the diagnosis for a maintainer to fix, or both?
+10. Monitor settings Scottland does not apply (AG03): Hyprland's automatic scale (`scale = "auto"`,
+    Omarchy's default, which picks e.g. 2 on a HiDPI laptop) stays at 1 in Scottland, and bitdepth,
+    vrr and colour management are ignored. Today they are named only in a comment in the generated
+    config. Should they appear in the O20 report (every Omarchy user would see the auto-scale
+    entry once), should Scottland reproduce Hyprland's automatic scale, or neither?
