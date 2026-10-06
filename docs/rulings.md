@@ -157,3 +157,4 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-05 | Gooarchy kernel: build our own from Omarchy's linux-omarchy patch set plus our own fixes (first the Cirrus spk-id fix), default once it passes the VM test and real hardware; no dependency on Omarchy's package repository. | distro-notes |
 | 10-05 | Hitting the pointer against the left or right edge of the screen reveals hidden or collapsed widgets. They don't hide or collapse again until the pointer moves out of the rail. | WG16, WG19 |
 | 10-05 | Goo: the balance between focus/attention color and picked-up color is a slider. The "Wallpaper soak" setting is labeled "Wallpaper pickup". | GO28 |
+| 10-05 | Dye density scales all dye in the goo, picked-up color included, not only focus and attention color. | GO23, GO28 |
