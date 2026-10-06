@@ -1578,3 +1578,18 @@ so it never violates "stays put"), solo, pair and audition anchoring is removed;
 (the dragged one during a drag) still never moves. While window avoidance is active, any change to
 the scene's stacking or enabled state requests an avoidance check (it re-solves only if the layout
 signature changed).
+
+
+### Peek review recovery verification (2026-10-05)
+
+With the pending focused-window policy commit excluded, the authorized review fix builds
+and passes the revised peek regression (53/0 across eleven real-input cases), pure peek
+checks (57/0), and one-output outline/tint regression (45/0). The widget coverage oracle
+uses a distinct known client color with tint disabled: exposed client pixels remain,
+card-covered samples contain none of that client color, and outline edge pixels appear
+only in the mostly-covered fixture. Both above-half and below-half cases are required.
+The glossy surround is excluded from the client-identity requirement; the geometric
+coverage telemetry remains a separate diagnostic. The old single-reference color sample
+was invalid when it landed on the glossy surround. Physical-display verification remains
+pending. The focused-window behavior choice is still isolated in a separate top commit
+and is not approved by these results.
