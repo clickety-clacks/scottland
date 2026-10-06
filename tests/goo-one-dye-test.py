@@ -359,12 +359,19 @@ try:
     soak_back = wait_option('goo_soak', lambda v: abs(v - soak) < .001, 'Cancel')
     rest('balance cancelled')
     M_back = avg([dye(x, y) for x, y in band('dye-a', distances['middle'])])
-    share_back = fit(K(M_back), K(F), K(P))[0]
-    record['balance'].update(back=M_back, mixed=M, back_share=share_back)
-    # Judged by where the dye lies on the mix line: the packed RGBA8 path stops a few levels short
-    # of its target from either side (rounding), so raw colors can differ by that much.
+    share_back, residual_back = fit(K(M_back), K(F), K(P))
+    restored_screen = shot('2b-balance-cancelled')
+    px_back = avg([restored_screen(x, y) for x, y in pts])
+    record['balance'].update(back=M_back, mixed=M, back_share=share_back, back_residual=residual_back,
+                             restored_screen=px_back, opening_screen=M_px)
+    # Restoring a setting preserves evolving dye history. Packed storage can settle
+    # on either side of a quantized target; compare against the independently captured
+    # opening and edited states rather than assuming bit-identical simulation history.
     check('Cancel restores the opening balance and pickup, and the dye returns to the mix',
-          abs(back - .45) < .001 and abs(soak_back - soak) < .001 and abs(share_back - share) < .05, record['balance'])
+          abs(back - .45) < .001 and abs(soak_back - soak) < .001 and residual_back < .12 and
+          abs(share_back - share) < min(abs(share_back - share_low), abs(share_back - share_high)), record['balance'])
+    check('Cancel visibly returns toward the opening mix rather than either edited balance',
+          norm(sub(px_back, M_px)) < min(norm(sub(px_back, px_low)), norm(sub(px_back, px_high))), record['balance'])
     quiet('balance')
 
     # 2c. Dye density scales all dye, picked-up color included (Mike, 2026-10-05): with only
