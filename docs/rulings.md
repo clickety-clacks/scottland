@@ -67,6 +67,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Keep current left/right order; vertically centered; pair centered; halo gap given up first. |
 | 10-04 | Nothing is locked afterwards. Pairing is an explicit request, so shrinking center windows is a granted exception to tenet 4. |
 | 2026-10-06 | "going into pairing mode does NOT overwrite a window's saved position in the periphery." |
+| 2026-10-06 | "can we make it so when paired neither of the paired windows is translucent, like a one-time override. dragging the window or otherwise repositioning it/manipulating it doesn't continue this lock. don't know if we need to set a separate flag on it, just set it to opaque once and any other subsequent manipulation does its natural thing." |
 
 Specified in windowing-keys.md WK36 and WP1.
 

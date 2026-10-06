@@ -1031,7 +1031,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
-        if (window_keys.active)
+        if (untouched_since_pairing(view))
+            target = 1.0;  // pairing shows both fully opaque, once (WK36)
+        else if (window_keys.active)
             target = focused ? double(window_mode_opacity_focused) : double(window_mode_opacity_unfocused);
         else if (is_widget(view))
             target = focused ? double(widget_opacity_focused) : double(widget_opacity_unfocused);
@@ -1044,6 +1046,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 (focused ? double(side_opacity_focused) : double(side_opacity_unfocused));
         }
         frame->set_configured_opacity(target);
+    }
+
+    // Pairing makes both windows fully opaque once (Mike, 2026-10-06; WK36). Opacity is recomputed
+    // on every focus change, Window mode entry and exit, and setting change, so "once" is kept by the
+    // pair's existing placement record rather than a new flag: a window still exactly where pairing
+    // put it, at the pair's scale, and not being dragged. Any move, resize, rescale or drag ends it.
+    bool untouched_since_pairing(wayfire_toplevel_view view)
+    {
+        auto found = model.windows.find(view->get_id());
+        if (found == model.windows.end() || !found->second.paired_placement || drag->view == view ||
+            is_widget(view) || !view->get_output()) return false;
+        auto& paired = *found->second.paired_placement;
+        return paired.geometry == placed_geometry(view) && paired.output == view->get_output()->to_string() &&
+            paired.pin == found->second.pinned_scale;
     }
 
     void apply_all_opacity()
