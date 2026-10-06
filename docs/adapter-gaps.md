@@ -268,17 +268,17 @@ real screen or real hardware; statuses are **implemented**.
 | Row | Now | Evidence | Remaining |
 |---|---|---|---|
 | AG09 | F9 press runs `voxtype record start`, release `record stop`; a Lua-function press/release pair keeps both. | `tests/omarchy-bindings-test.py`; fails on the previous adapter as H1 did | Real dictation untested. |
-| AG19 | `exec_cmd` with any Lua string literal runs; the stock `omarchy-launch-screensaver` maps its terminal. | `tests/omarchy-shim-test.py` | The screensaver opens as an ordinary window: its fullscreen rule and monitor focus are untranslated (AG28 territory). |
+| AG19 | `exec_cmd` runs the bytes any Lua string literal makes (byte escapes, `\u{…}`, long strings' line breaks); the stock `omarchy-launch-screensaver` maps its terminal. | `tests/omarchy-shim-test.py` | The screensaver opens as an ordinary window: its fullscreen rule and monitor focus are untranslated (AG28 territory). |
 | AG15 | Super+Print starts hyprpicker; a click puts the picked color on the clipboard. | `tests/omarchy-color-picker-test.py` | — |
-| AG10 | `repeating` repeats while held; `locked` also runs on the lock screen (once there); other shortcuts, including release ones, don't run while locked; modified release chords run on release. Scottland's own volume/brightness bindings step aside so Omarchy's flags hold. | `tests/omarchy-bindings-test.py` with a real lock client | A `locked` release shortcut runs only unlocked (reported in O20). |
+| AG10 | `repeating` repeats while held, also on the lock screen when `locked`; `locked` runs on the lock screen; a release shortcut runs on release, on the lock screen too when `locked`, and only for a press it matched with the same modifiers still held (Ctrl+F9 runs neither half of F9); other shortcuts don't run while locked. Combinations Wayfire can't express go through core shortcuts (E13). Scottland's own volume/brightness bindings step aside so Omarchy's flags hold. | `tests/omarchy-bindings-test.py` with a real lock client | — |
 | AG20 | Startup handlers run once per session when Scottland is the only graphical session; never on reload or Lua host restart; the stock environment import and shell launch are left to Scottland's own hooks. | `tests/omarchy-startup-test.py` | Keep mode: not run (question 1). |
-| Visible failure | Unsupported shim requests answer `error: …` (hyprctl exits 7); the Lua host raises unsupported `hl.*` calls and refused dispatches inside shortcuts. `hyprctl reload` rebuilds the translated config instead of failing. | `tests/omarchy-shim-test.py` | Stock scripts now see these failures; most already fall back or ignore them. |
-| AG02 | ScreenCast and Screenshot go to xdg-desktop-portal-wlr (`scottland-portals.conf`); GlobalShortcuts/InputCapture/Inhibit unavailable rather than routed to Hyprland's backend. | `tests/portal-test.py`: screenshot and PipeWire frames show the expected pixels; before, Hyprland's backend never answered | **Streams are unreliable**: with the final test, the packaged xdg-desktop-portal-wlr 0.8.4 failed 5 of 8 runs, 4 from its known duplicate-frame bug with ext-image-copy-capture (upstream PR #380, closed unmerged), which ended 13 of all 29 packaged runs. A build with that one-line guard never hit it in 41 runs, but failed 2 of 9 final-test runs from PipeWire buffer starvation after the first frame (consumer: GStreamer's pipewiresrc) and crashed 5 times when a session closed (its buffer-retry timer, during teardown): one line does not fix 0.8.4. Whole outputs only, picked in its slurp chooser; no meeting app or OBS tested; the package must be installed. Question 7. |
-| AG01 | Not enforceable (section above). Every `no_screen_share` rule is listed in the O20 report as not enforced. | `tests/omarchy-capture-exclusion-test.py`: report entries, and a matching window does appear in a capture | Question 2. |
+| Visible failure | Unsupported shim requests answer `error: …` (hyprctl exits 7); the Lua host raises unsupported `hl.*` calls and refused dispatches inside shortcuts. `hyprctl reload` rebuilds the translated config; if the Hyprland config can't be read, it answers an error naming it and the session keeps its shortcuts. | `tests/omarchy-shim-test.py` | Stock scripts now see these failures; most already fall back or ignore them. |
+| AG02 | ScreenCast and Screenshot go to xdg-desktop-portal-wlr (`scottland-portals.conf`); GlobalShortcuts/InputCapture/Inhibit unavailable rather than routed to Hyprland's backend. | `tests/portal-test.py`: screenshot and PipeWire frames show the expected pixels; before, Hyprland's backend never answered | **Streams are unreliable with Arch's xdg-desktop-portal-wlr 0.8.4**: it failed most runs (a duplicate-frame protocol error, or a stream frozen after one frame). Ruled 10-05: fix it, get the fixes accepted upstream, ship a patched copy until a release has them. Two fixes are written and pass every run so far; they are proposed, not yet submitted upstream. Gooarchy's installer installs its patched build (`xdg-desktop-portal-wlr-gooarchy`, Gooarchy repository `docs/xdg-desktop-portal-wlr.md`); Omarchy-adapter users still get Arch's 0.8.4 (question 8). Whole outputs only, picked in its slurp chooser; no meeting app or OBS tested. |
+| AG01 | Not enforceable (section above). Every `no_screen_share` rule is listed in the O20 report as not enforced. | `tests/omarchy-capture-exclusion-test.py`: report entries, and a matching window does appear in a capture | Ruled 10-05: report only, no exclusion built. |
 | AG17 | `omarchy-hyprland-session-locked` answers locked while a lock holds, including a crashed lock client's stand-in. | `tests/omarchy-lock-power-test.py` | — |
 | AG18 | DPMS dispatches are applied (wlr-output-power-management) and `dpmsStatus` is real, so `omarchy-brightness-display on` wakes the screen. | same test: screencopy fails while off, works after on | No physical panel tested. |
-| AG04 | Lid close runs `omarchy-system-lid-close` (also on the lock screen). | `tests/omarchy-lid-test.py`, virtual switch through Wayfire's switch path | Docked clamshell (laptop panel off) needs monitor config (AG03, not approved); lid open's clamshell reconcile is reported, not run. Real lid untested. |
-| AG22, AG07 (scroll) | Omarchy's touchpad scroll factor (0.4) and per-app `scroll_touchpad` rules (1.5 terminals, 0.2 Ghostty), including the user's own, apply per window under the pointer; edits apply live. | `tests/omarchy-scroll-speed-test.py`: delivered axis values per client, before and after a live edit; without the import every surface got 0.2 | Per-device factors and rules on other window properties are reported, not applied. The rest of AG07 (device disable, other input settings) is not part of this. No physical touchpad tested. |
+| AG04 | Lid close runs `omarchy-system-lid-close`, also on the lock screen (Omarchy marks it locked); a switch binding without `locked` doesn't run while locked. | `tests/omarchy-lid-test.py`, virtual switch through Wayfire's switch path | Docked clamshell (laptop panel off) needs monitor config (AG03, not approved); lid open's clamshell reconcile is reported, not run (question 3). Real lid untested. |
+| AG22, AG07 (scroll) | Omarchy's touchpad scroll factor (0.4) and per-app `scroll_touchpad` rules (1.5 terminals, 0.2 Ghostty), including the user's own, apply per window under the pointer; class matches the current app-id and initial_class the one the window mapped with; edits apply live. | `tests/omarchy-scroll-speed-test.py`: delivered axis values per client, before and after a live edit and an app-id change; without the import every surface got 0.2 | Per-device factors and rules on other window properties are reported, not applied. The rest of AG07 (device disable, other input settings) is not part of this. No physical touchpad tested. |
 
 Reload: `tests/omarchy-reload-rehearsal-test.py` and `tests/reload-rehearsal-test.sh` reload a
 session started on the installed build (bb821e3) into this one; it survives and renders, and the
@@ -287,18 +287,25 @@ through a reload, and a Quickshell Hyprland client (the Omarchy shell) does not 
 shim is restarted, so the shim fixes (AG17, AG18, AG19, visible failure, reload) reach a running
 session at its next start.
 
-Questions for Mike (no choice made):
+Questions for Mike (no choice made; 2 and 7 have since been ruled):
 
 1. Keep mode and startup apps (AG20): with Hyprland still running, should Scottland start its own
    copies of startup apps (Sunshine, udiskie, ...) or leave Hyprland's? Today: neither changes.
-2. Capture exclusion (AG01): pursue one of the three options above, or keep the report only?
-3. Docked lid close (AG04) needs monitor config translation (AG03): approve that work?
+2. ~~Capture exclusion (AG01)~~: ruled 10-05, report only.
+3. Lid (AG04): a docked lid close (laptop panel off) and lid open's reconcile
+   (`omarchy-hyprland-monitor-clamshell`, panel back on) both need monitor config translation
+   (AG03): approve that work, or keep lid open reported and not run?
 4. Screensaver (AG19): should it open full screen (translating its window rule), or stay out of
    scope for now?
 5. Shim updates: should `scottland-reload` restart the shim and the Omarchy shell together (the
    shell's bar and menus reload), or keep shim changes for the next session start?
 6. Screen sharing picks an output by clicking it (xdg-desktop-portal-wlr's slurp chooser). Keep,
    or configure another chooser behavior?
-7. xdg-desktop-portal-wlr's duplicate-frame bug drops screen shares under Wayfire, and the
-   one-line guard exposes a teardown crash (AG02 row). Fix and ship a patched
-   xdg-desktop-portal-wlr (Gooarchy packaging), push upstream, or look at another backend?
+7. ~~xdg-desktop-portal-wlr's stream failures~~: ruled 10-05, fix it, upstream, patched copy meanwhile.
+8. Omarchy-adapter users and the patched xdg-desktop-portal-wlr: there is no package repository to
+   serve it from, so they get Arch's broken 0.8.4. Have the adapter's setup build and install the
+   Gooarchy package (replacing Arch's, reported), wait for a package repository, or document the
+   manual build only?
+9. Sending the xdg-desktop-portal-wlr fixes upstream: the maintainer accepts LLM-assisted patches
+   only in a human contributor's own words with sign-off and disclosure. Submit them as pull
+   requests in your words, file an issue with the diagnosis for a maintainer to fix, or both?

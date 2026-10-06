@@ -149,9 +149,9 @@ Every suite runs through these; an excellent assertion is worthless against the 
   (`scottland/test-switch`), not libinput or a real lid; DPMS is judged by screencopy on a headless
   output, not a physical panel; dictation, keyboard media hardware and real password managers are
   stand-ins. Each needs a physical acceptance check on the test machine.
-- `tests/portal-test.py` fails in most runs (5 of 8 with the packaged backend) because of xdg-desktop-portal-wlr's
-  duplicate-frame bug (docs/adapter-gaps.md, AG02): a real defect, not a flaky test; keep it
-  failing until the backend is fixed or replaced. It needs xdg-desktop-portal-wlr installed or
+- `tests/portal-test.py` fails in most runs with Arch's xdg-desktop-portal-wlr 0.8.4 (a frozen
+  stream or a duplicate-frame disconnect; docs/adapter-gaps.md, AG02): a real defect in that build,
+  not a flaky test. It passes with Gooarchy's patched build. It needs xdg-desktop-portal-wlr installed or
   `XDPW_ROOT` (and `GST_PLUGIN_PATH` for GStreamer's pipewiresrc) pointing at extracted packages.
 
 ## On unlanded branches (fix there before landing; not edited by the cleanup)
