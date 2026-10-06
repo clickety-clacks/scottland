@@ -135,4 +135,24 @@ with Session(fixture, "hl-omarchy-shim") as session:
     ok, calls = fixture.wait_calls(lambda c: ("voxtype", "record stop") in c[before:])
     check("after reload, F9 release runs voxtype record stop", ok, calls[before:])
 
+    # A Hyprland config that no longer parses: `hyprctl reload` says so, and the session keeps
+    # the shortcuts it had (the config builder keeps its last config).
+    hypr = fixture.home / ".config/hypr/hyprland.lua"
+    good = hypr.read_text()
+    hypr.write_text("this is not valid lua !!!!\n")
+    result = session.hyprctl("reload", timeout=60)
+    check("hyprctl reload of a broken config fails visibly",
+          result.returncode != 0 and result.stdout.startswith("error:") and "hyprland.lua" in result.stdout,
+          (result.returncode, result.stdout))
+    check("the session's config still has the F9 shortcuts", "voxtype record start" in session.config())
+    before = len(fixture.calls())
+    session.tap("KEY_F9")
+    ok, calls = fixture.wait_calls(lambda c: {("voxtype", "record start"), ("voxtype", "record stop")}
+                                   <= set(c[before:]))
+    check("F9 push-to-talk still works after the failed reload", ok, calls[before:])
+    hypr.write_text(good)
+    result = session.hyprctl("reload", timeout=60)
+    check("with the config fixed, hyprctl reload succeeds again",
+          result.returncode == 0 and result.stdout.strip() == "ok", (result.returncode, result.stdout))
+
 sys.exit(check.summary())

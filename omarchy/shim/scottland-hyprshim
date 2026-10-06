@@ -518,7 +518,9 @@ class Translator:
         except (OSError, subprocess.SubprocessError) as error:
             return f"error: config rebuild failed: {error}"
         if result.returncode != 0:
-            return f"error: config rebuild failed: {result.stderr.strip()[:200]}"
+            # The builder's own last line says what it kept; the generator's reason comes before it.
+            lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
+            return "error: config rebuild failed: " + " | ".join(lines[-2:])[:400]
         return "ok"
 
     # --- Requests ------------------------------------------------------------------------

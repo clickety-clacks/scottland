@@ -244,8 +244,13 @@ else
     package.loaded[name] = noop
     return noop
   end
+  -- The config itself failing (a syntax error, an error at its top level) is not partial: say so
+  -- and print nothing, so the caller keeps the shortcuts it has rather than losing them.
   local ok, err = pcall(dofile, os.getenv("HOME") .. "/.config/hypr/hyprland.lua")
-  if not ok then io.stderr:write("scan failed: " .. tostring(err) .. "\n") end
+  if not ok then
+    io.stderr:write("scan failed: " .. tostring(err) .. "\n")
+    os.exit(3)
+  end
 end
 local printed = {}
 for _, id in ipairs(order) do
@@ -1032,8 +1037,14 @@ def main():
     defaults_scan = None
     if os.path.exists(HYPR_CONFIG):
         scan = run_lua_scan()
-        if scan.returncode == 0:
-            defaults_scan = run_lua_scan(baseline=True)
+        if scan.returncode != 0:
+            # The Hyprland config could not be read at all: fail, so the config builder keeps the
+            # session's current shortcuts and `hyprctl reload` reports the error (O23).
+            reason = scan.stderr.strip().splitlines()[-1:] or [f"exit status {scan.returncode}"]
+            print(f"50-omarchy-shortcuts: cannot read ~/.config/hypr/hyprland.lua: {reason[0][:300]}",
+                  file=sys.stderr)
+            sys.exit(1)
+        defaults_scan = run_lua_scan(baseline=True)
     defaults_complete = bool(defaults_scan and defaults_scan.returncode == 0 and
                              not defaults_scan.stderr.strip())
     live_complete = bool(scan and scan.returncode == 0 and not scan.stderr.strip())

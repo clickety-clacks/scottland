@@ -42,7 +42,10 @@ echo "$fresh" >"$runtime/plugins/current"
 # Rewrite the config (new settings take their saved values; the plugin list names the fresh
 # copy), register any new settings, then swap the plugin. The plugin list is also set over IPC:
 # values set over IPC (e.g. by the settings app) take precedence over the file.
-"$hooks/libexec/scottland-build-config" >/dev/null
+# A failing generator (e.g. a Hyprland config that no longer parses) keeps the previous config and
+# says so; the code reload goes ahead either way.
+"$hooks/libexec/scottland-build-config" >/dev/null ||
+  echo "scottland-reload: config rebuild failed (above); the session keeps its previous config" >&2
 # Widgets stay through a reload: the outgoing plugin sees this mark and hands them over.
 reloading="$runtime/${WAYLAND_DISPLAY:-wayland}.reloading"
 touch "$reloading"
