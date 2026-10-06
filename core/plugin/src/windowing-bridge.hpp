@@ -1666,8 +1666,7 @@
                         anchor.y + offset->translation_y + visual.label_offset.y, text,
                         widget ? hint_size(view) : visual.label_size,
                         hints_palette.font_family, color,
-                        view->get_output()->get_scale(), widget ?
-                            std::optional{hints_palette.background} : std::nullopt,
+                        view->get_output()->get_scale(), hints_palette.background,
                         std::clamp(double(hint_background_opacity), 0.0, 100.0) / 100,
                         model.goo_outputs.count(view->get_output()), hints_reduced_motion);
                     moving |= hint_moving;

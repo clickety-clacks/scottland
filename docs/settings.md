@@ -27,7 +27,7 @@ Super+, opens Scottland Settings: Layout, Goo, Window mode, Translucency, Widget
 | S21 | Sunlight follows local sunrise and sunset when enabled, changing the standard light/dark preference only if its current mode is wrong, leaving a matching user-picked theme alone. System Geoclue city-level location comes first, followed by coordinates saved once in Settings; IP location is the last fallback. On by default, location included (Mike, 2026-10-02: he didn't ask for this panel but keeps it); both can be turned off; Save/Cancel/Defaults apply to `solar.ini`. The distro's cross-app theme engine and named day/night defaults stay outside core. | implemented (headless) |
 | S22 | The Goo settings appearance rows tune the unfocused edge on both render paths: the active scheme's neutral gray level (with separate saved light/dark values) and its continuous tint strength from clear refraction to the existing look. Changes preview live; this A16 control leaves focus, attention and Window mode hint colors at full strength, while the separate GO23 Dye strength control scales them. Defaults, Save and Cancel include both tone values and strength. | implemented; plumbus headless two-output slider, save/reset coverage (2026-10-03) |
 
-| S23 | Window mode has a distinct “Hint background opacity” slider (WK42), 0–100%, default 100. It previews the fill behind window and widget hint letters live; 100 preserves their existing backgrounds and 0 removes the fill. Letter foreground and window opacity are unchanged. It uses the existing parameter row, help, saved/current value readback and Save/Cancel/Defaults transaction. (Mike, 2026-10-06.) | verified: real Settings input and pixel checks, fallback 20/0 and Goo 18/0, 2026-10-06 |
+| S23 | Window mode has one “Hint background opacity” slider (WK42), 0–100%, default 21. It sets the absolute opacity of the background behind window and widget hint letters alike, previewed live: 100% is a solid backing, 0% none. Letter foreground and window opacity are unchanged. It uses the existing parameter row, help, saved/current value readback and Save/Cancel/Defaults transaction. (Mike, 2026-10-06; made absolute and shared by both hint kinds the same day: "it should set both. having them different is a bug.") | implemented (plumbus headless, 2026-10-06) |
 
 ## Preview and help
 
@@ -175,7 +175,7 @@ Constant deceleration gives `position(t) = impulse*t - deceleration*t²/2` until
 so the default impulse travels 92.29 pt. Movement arrows and drag releases share movement
 deceleration; Ctrl+arrow resize uses the resize pair. The axis integrator includes the exact
 partial stopping frame. The speed cap and hint timings remain Settings controls, and WK29's
-`cycle_overshoot` has its own Window mode row. WK38's `window_mode_tint` (0–30%, default 7%) has its own row below the Window mode opacity pair; 0 turns the overlay off. WK42's `hint_background_opacity` has a separate row beside it in the same stack; its 0–100% value scales the usual window/widget backing, with 100% preserving the default appearance.
+`cycle_overshoot` has its own Window mode row. WK38's `window_mode_tint` (0–30%, default 7%) has its own row below the Window mode opacity pair; 0 turns the overlay off. WK42's `hint_background_opacity` has a separate row beside it in the same stack; its 0–100% value is the absolute opacity of every hint's backing, window and widget alike (default 21%).
 
 The playground uses those same equations: flick its sample or press arrows, with Ctrl for
 resize. It draws the travelled path, vertical stops and the side-contact widget morph, and reports
@@ -262,18 +262,27 @@ Geoclue was unavailable: it changed `prefer-dark` to `prefer-light` for daylight
 ## Hint background opacity (S23 / WK42, 2026-10-06)
 
 The Window mode slider is separate from window opacity and hint-color overlay strength.
-Its 100% default retains both existing backing styles: a 21% hint-color fill on window
-hints and an opaque theme-backed fill on exterior widget hints. The value scales only
-that fill; zero leaves the letters and existing rims, with no filled circle. This keeps
-the usual appearance at the default rather than changing widget contrast or window ink.
+It is one absolute opacity for the background behind hint letters, applied to window hints
+and exterior widget hints alike: 100% is a solid backing, 0% no backing, default 21%.
+Every hint's backing is the same color, the theme background under a 21% hint-color tint,
+so letters drawn in the hint color keep their contrast at every value.
 
-`tests/hint-background-opacity-test.sh` uses an owned isolated headless session. Real
-pointer/keyboard input opens the tab and edits the row live while Alt is held; a real
-Super-drag produces the rail widget. Read-only snapshots locate controls, and geometry
-IPC arranges fixtures. Captured pixels verify the original default fills, changed
-backgrounds at 0/50/100, unchanged opaque letter ink and window content, and unchanged
-opaque fallback rim ink. Antialiased edges blend over the changing backing, so opaque
-ink is the foreground comparison. Save persists a separate value, the config generator
-consumes it, reopening reads it, and Cancel and Defaults exercise the existing transaction
-without unintended file writes. Final results: 20/0 with fallback halos and 18/0 with
-Goo enabled; screenshots were inspected. No installed or shared session was changed.
+The first version (same day) scaled each kind's own fill instead, so 100% meant a 21%
+hint-color fill on window hints and an opaque themed fill on widget hints. Mike: "why
+does 100% mean 21% that makes no sense" and "it should set both. having them different
+is a bug." The default is provisional at 21% pending his confirmation; it is the option's
+metadata default, mirrored by the Settings defaults table.
+
+`tests/hint-background-opacity-test.sh` uses an owned isolated headless session. A light
+window fixture and a real Super-dragged rail widget carry one hint each. Real pointer and
+keyboard input opens the tab and edits the row live while Alt is held. Pixel oracles,
+independent of the plugin's reported state: at 0% the fill shows exactly the surface
+beneath (the window's own surface, or the wallpaper beside the widget hint); at 100% every
+fill pixel is the themed backing color computed from the palette and hint color; at 50% and
+at the default, a least-squares fit of the fill pixels gives the backing's opacity, which
+must be 0.5 and 0.21 and equal for both kinds. Opaque letter ink, fallback rim ink and
+window content are unchanged. A lone `scottland-ctl set hint_background_opacity` while
+hints show must redraw them (this fails without the option's live callback; the Settings
+batch write alone would refresh hints through another option). Save persists a separate
+value, the config generator consumes it, reopening reads it, and Cancel and Defaults
+(the plugin's own default) exercise the existing transaction without unintended writes.

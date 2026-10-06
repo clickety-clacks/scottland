@@ -149,8 +149,8 @@
         </option>
         <option name="hint_background_opacity" type="double">
             <_short>Hint background opacity (%)</_short>
-            <_long>Opacity of the backgrounds behind hint letters. One hundred keeps the usual window and widget hint backgrounds; zero removes their fill. Letters, hint rims and window opacity are unchanged.</_long>
-            <default>100</default><min>0</min><max>100</max>
+            <_long>Opacity of the background behind hint letters, the same for window and widget hints. One hundred is a solid background; zero is none. Letters, hint rims and window opacity are unchanged.</_long>
+            <default>21</default><min>0</min><max>100</max>
         </option>
         <option name="window_avoidance_always" type="bool">
             <_short>Window avoidance outside Window mode</_short>
