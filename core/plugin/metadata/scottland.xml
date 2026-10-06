@@ -187,7 +187,7 @@
         </option>
         <option name="solo_audition_hotspot" type="double">
             <_short>Hold hotspot (pt)</_short>
-            <_long>While a pointer hold shows its solo or pair, moving the pointer farther than this from where the hold fired counts as starting to drag: the audition is cancelled and the window drags as normal. Smaller movements keep it.</_long>
+            <_long>For pointer-hold auditions, which are not built yet: while a pointer hold shows its solo or pair, moving the pointer farther than this from where the hold fired will count as starting to drag, cancelling the audition. Until then this setting has no effect.</_long>
             <default>50</default>
             <min>8</min>
             <max>400</max>
