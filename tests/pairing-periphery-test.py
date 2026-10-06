@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 
+assert os.environ.get('SCOTTLAND_TEST_MODEL') == '1', 'caller-owned headless session required'
 art = Path(sys.argv[1]).resolve(); art.mkdir(parents=True, exist_ok=True)
 sock = socket.socket(socket.AF_UNIX); sock.settimeout(8); sock.connect(os.environ['WAYFIRE_SOCKET'])
 clients, held, observations = [], set(), []
