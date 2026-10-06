@@ -20,9 +20,13 @@ hint inside its window.
 ## Spread and solo
 
 **Triggers (P4).** Only explicit requests solo: holding the focused window's hint in Window mode
-or a three-finger hold on the focused window (WK35, committed outright, no undo, P5), and the drag
-audition below (committed by the drop). Present, card clicks, zone cycling and ordinary drops never
-spread.
+or a three-finger hold on the focused window (WK35, committed outright, no undo, P5). Present, card
+clicks, zone cycling and ordinary drops never spread, and neither does pausing during a drag: the
+drag audition that offered a solo there is removed, with its pause setting (ruling 10-05: the
+three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (50 pt), stays: moving
+the pointer beyond it is what counts as starting to drag, which cancels a pointer hold's audition
+(ruling 10-05; WK39). Pointer-hold auditions are not built on this branch, so nothing reads the
+setting yet; its metadata and Settings help say so until they land.
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
@@ -81,35 +85,21 @@ session the kernel did about 31 units/µs against 112 in the unit suite on the s
 12 ms reach less far there; this is still to be measured on a real GPU session. Unit operations
 measure under 40 µs of CPU; longer wall-clock slices seen on the x86 test machine were preemption under load.
 
-**The drag audition.** A drag of a window (not a widget, not a Shift drag, L31) whose center is in
-the center zone, with the pointer resting within 8 pt for `solo_audition_delay` (3000 ms; 0 turns it
-off), is offered the solo. At 1 s the anchor is frozen and the solve runs against a reservation: the
-window's full-scale footprint grown by the hotspot on every side, so any accepted drop is honest. At
-the delay the result is shown as a presentation layer only (a translation and scale per window on the
-shared drag layer); no true geometry, zone, memory, pin or widget state changes. Moving the pointer
-more than `solo_audition_hotspot` (50 pt) from the anchor, leaving the center zone, Esc, or a client
-mapping, closing or resizing refuses it: every window eases back to exactly where it was (its true
-geometry never changed) and the pause is timed again. A drop inside the hotspot accepts it: each
-window glides from where it is drawn to its spot, and the dropped window stays exactly where it was
-dropped (no settle, no coast, P14). A Shift drop, a changed desktop or zone setting (rechecked on
-every motion and at the drop) and a resize of the dragged window refuse it too. Unloading the
-plugin refuses an offer before it releases the drag.
-
 ### Invariants
 
 | ID | Invariant | Status |
 |---|---|---|
-| SP1 | Only the focused window's hint hold, its three-finger hold and an accepted audition solo; nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04) |
+| SP1 | Only the focused window's hint hold and its three-finger hold; nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04; re-run on the ARM test machine after the audition's removal, 2026-10-05) |
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
 | SP3 | A resident moves only if the solo target covers it or an arrival would otherwise land below its band (P6); it stays on its side (P1), never grows, never moves inward, ends clear when pushed, and returns when its spot is free again (P2). | verified (unit fuzz and fixtures; headless) |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
 | SP5 | The solve's work is charged (item by item, except the cap-bounded batches listed under "Bounded") and runs in measured 2 ms slices; the delivered result is always a complete validated checkpoint or no change; a completed solve and a fixed-work cut are deterministic, and sliced equals synchronous. The commit after a solve is one block outside the slice bound (about 0.4 ms of compositor CPU per moved window). | verified (unit suite; real-build slices and delivery CPU measured headless on the x86 test machine and the ARM test machine); real-GPU latency not yet measured |
 | SP6 | A keyboard or three-finger solo commits outright, no undo (P5); the solo window ends in the center at full scale, in front. | verified (headless on both test machines) |
-| SP7 | The audition offers after the pause, changes no true state before the drop, refuses on leaving the hotspot or the center zone, on Esc, on Shift (with or without motion), on a zone-setting change, on a resize of the dragged window or a client change (never rolling that change back), returns every window exactly, draws offered windows exactly at their spots over running glides (and once avoidance offsets have settled), refuses on a change of the hotspot setting, and on a drop inside the hotspot commits with the dropped window exactly where it was dropped (P5, P14). | verified (the ARM test machine, headless, real stipc drags, 59 checks, 2026-10-04) |
-| SP8 | A reload with a solve in flight or an offer showing survives, applies nothing half-done and leaves no window displaced; a reload from the previous main build keeps every window, widget and peek. | verified (headless reload rehearsals on both test machines, 2026-10-04) |
+| SP7 | Pausing during a drag does nothing: held still in the center zone for any time, no other window is drawn anywhere but where it is, and dropping there moves no other window. A `solo_audition_delay` left in an older config is ignored (ruling 10-05: the drag audition is removed). | verified (the ARM test machine, headless, real stipc drags judged from pixels: 9 checks in 2 scenarios, shipped config and a stale 300 ms `solo_audition_delay`; the build before the removal fails 7 of them, 2026-10-05) |
+| SP8 | A reload with a solve in flight survives, applies nothing half-done and leaves no window displaced; a reload from the previous main build keeps every window, widget and peek. | verified (headless reload rehearsals on both test machines, 2026-10-04; re-run on the ARM test machine, from main into the build without the audition, 2026-10-05) |
 
 Not yet seen on a physical screen or with a physical touchpad (the shared test session was not
-reloaded). The two settings have no row in Scottland Settings yet; `scottland-ctl` sets them.
+reloaded).
 
 ### Implementation choices (for review against final.md)
 
@@ -127,16 +117,6 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
   anywhere else it takes the natural scale there and loses the pin.
 - The work cap is 1,000,000 of this kernel's units (about 12 ms on the x86 test machine); final.md's 150,000 was a
   starting value for a prototype that counted coarser units.
-- A glide running on a window when the offer starts is suspended at its current sample and resumed
-  on refusal (a cycle glide keeps its clock; another restarts from the sample to its own
-  destination). The offer layer is computed every frame against what lies under it, so at full
-  progress each window is drawn exactly at its offered spot and scale even while a scale animation
-  runs underneath, and easing back ends on the live state. A window still coasting, or gliding
-  away, delays the offer. Offered windows get no special status in window avoidance (Mike,
-  2026-10-05): one that something covers peeks like any window.
-- The hotspot radius is fixed when the offer arms (its reservation is built with it); changing the
-  setting during an offer refuses it, and a drop is accepted only if the dropped window lies inside
-  the reservation.
 - After its exact restorations, the return pass also tries a moved resident's own column at its own
   scale before the four shortening samples (Fable's round-2 note: a same-x spot can come free after
   the resident moved).
@@ -146,8 +126,10 @@ reloaded). The two settings have no row in Scottland Settings yet; `scottland-ct
 ### Tests
 
 `tests/spread-unit.sh` (fixtures, fuzz, determinism, slices, starved budgets, cancellation, timing),
-`tests/spread-test.sh` (46 real-input checks plus the load measurement),
-`tests/spread-reload-test.sh` (reload rehearsal with a solve in flight or an offer showing), and
+`tests/spread-test.sh` (26 real-input checks plus the load measurement),
+`tests/spread-reload-test.sh` (reload rehearsal with a solve in flight),
+`tests/drag-pause-test.sh` (SP7: a pause during a drag does nothing, judged from pixels, also with
+a stale `solo_audition_delay` in the config), and
 `tests/reload-rehearsal-test.sh OLD_CHECKOUT` (a session started on an older build, with widgets
 and peeking windows, reloaded in place into this one: the new settings metadata is registered first,
 as `scottland-reload` does; without that the new plugin cannot load its options and the session is
@@ -251,10 +233,8 @@ keeps responding).
 
 ## Shared drag presentation
 
-`drag_presentation_t` is independent of rails and serves both auditions. It records
-actor origins, supplies additive visual offsets (and, for the solo audition, a scale factor on the
-window's own scale; the rail leaves it at 1) while a gesture is active, and derives committed
-positions from those origins. Real geometry is unchanged during the audition. On drop, the caller
+`drag_presentation_t` is independent of rails. It records actor origins, supplies additive visual
+offsets while a gesture is active, and derives committed positions from those origins. Real geometry is unchanged during the gesture. On drop, the caller
 applies the target positions and retains the visual offsets until those geometry transactions
 apply. A widget's hidden app window and saved drop anchor follow the same committed vertical
 displacement. On cancel, the caller clears the offsets and discards the presentation; because the

@@ -65,7 +65,7 @@ ShellRoot {
   readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
     resize_impulse:335, resize_friction:608, key_max_velocity:6000,
     cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300, window_hold_delay:500,
-    window_avoidance_always:false, window_mode_tint:7, solo_audition_delay:3000, solo_audition_hotspot:50})
+    window_avoidance_always:false, window_mode_tint:7, solo_audition_hotspot:50})
   property var motionValues: Object.assign({}, motionDefaults)
   readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
     side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
@@ -127,8 +127,8 @@ ShellRoot {
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
     resize_impulse:"Resize strength",resize_friction:"Resize deceleration",
     key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", window_mode_tint:"Hint color overlay", alt_hold_delay:"Alt hold timing",
-    window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing", solo_audition_delay:"Solo audition pause",
-    solo_audition_hotspot:"Solo audition hotspot", unfocused_edge_tone_light:"Unfocused edge tone (light)",
+    window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing",
+    solo_audition_hotspot:"Hold hotspot", unfocused_edge_tone_light:"Unfocused edge tone (light)",
     unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength",
     attention_color_family:"Attention color family", goo_dye_strength:"Dye strength" })
 
@@ -379,7 +379,7 @@ ShellRoot {
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
-      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloPause:root.testRect(soloPause),soloHotspot:root.testRect(soloHotspot),
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloHotspot:root.testRect(soloHotspot),
       alwaysAvoidance:root.testRect(alwaysAvoidance),
       opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
       windowTintSettings:Object.assign(root.testRect(windowTintSettings),{rowHeight:windowTintSettings.rowHeight}),
@@ -902,23 +902,15 @@ ShellRoot {
             value:root.motionValues.window_hold_delay;opening:root.original?.motion?.window_hold_delay || 500
             onEdited:value=>root.setMotion("window_hold_delay",value)
           }
-          // Spread's drag audition (docs/spread.md): how long a drag rests in the center before the
-          // solo is shown, and how far the pointer may then move before that counts as a refusal.
-          TimingRow {
-            id:soloPause
-            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Pause to solo"
-            minimum:0;maximum:10000;step:100;bigStep:1000;endLabel:"10 s"
-            explanation:"While dragging a window, resting it in the center zone this long shows the solo: the other center windows move to the periphery, which makes room for them. Dropping the window there accepts it; moving on refuses it and every window returns exactly. All the way left turns it off."
-            footer:"drag rests in the center → the solo is shown"
-            value:root.motionValues.solo_audition_delay;opening:root.original?.motion?.solo_audition_delay ?? 3000
-            onEdited:value=>root.setMotion("solo_audition_delay",value)
-          }
+          // How far a pointer hold's audition lets the pointer move before that counts as starting
+          // to drag and cancels it (ruling 10-05; WK39). Kept by that ruling; nothing reads it
+          // until pointer-hold auditions land.
           TimingRow {
             id:soloHotspot
-            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Solo hotspot"
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Hold hotspot"
             minimum:8;maximum:400;step:1;bigStep:10;unit:"pt";endLabel:"400 pt"
-            explanation:"Once the solo is shown, moving the pointer this far from where it rested refuses it. Smaller movements are not a refusal, and a drop anywhere within this distance is accepted exactly where it lands. Larger leaves the other windows less room."
-            footer:"pointer moves this far → the solo is refused"
+            explanation:"Not used yet: pointer-hold auditions are not built. Once they are, moving the pointer this far from where a hold fired, while it shows its solo or pair, will count as starting to drag and cancel the audition. Smaller movements will keep it."
+            footer:"no effect until pointer-hold auditions are built"
             value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? 50
             onEdited:value=>root.setMotion("solo_audition_hotspot",value)
           }

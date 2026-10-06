@@ -404,9 +404,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     std::shared_ptr<widget_morph_t> presentation;
     // Generic drag-owned layout audition. Independent of glides, widget morphs and the live
     // transform on the dragged view; committed moves clear this after real geometry applies.
-    // The scale factor multiplies the layout's own scale (a solo audition shows each window at
-    // the scale of where it would land, docs/spread.md); the rail audition leaves it at 1.
-    double drag_layout_x = 0, drag_layout_y = 0, drag_layout_scale = 1;
+    double drag_layout_x = 0, drag_layout_y = 0;
     // A widget sliding off or peeking in at its screen edge (FS1, WG16's hidden mode). Owned by
     // the rail slides alone, so glides and morphs never reset it.
     double rail_slide_x = 0;
@@ -518,7 +516,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     // which the plugin sets): everything that draws or hit-tests asks these.
     float get_scale_x() const override
     {
-        double own = scale_x * drag_layout_scale * (1.0 + bulge);
+        double own = scale_x * (1.0 + bulge);
         if (presentation && window_geometry().width > 0)
             own = presentation->width / window_geometry().width;
         return std::abs(morph.shape) > 0.0005 ? blend_size(own, morph.w, window_geometry().width) : own;
@@ -526,7 +524,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     float get_scale_y() const override
     {
-        double own = scale_y * drag_layout_scale * (1.0 + bulge);
+        double own = scale_y * (1.0 + bulge);
         if (presentation && window_geometry().height > 0)
             own = presentation->height / window_geometry().height;
         return std::abs(morph.shape) > 0.0005 ? blend_size(own, morph.h, window_geometry().height) : own;
