@@ -165,7 +165,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK39 (window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints)
-and WP1–WP8 (zone memory, side choice, shared rectangle placement, and which zone a spot reads as). Statuses and verification are recorded there.
+and WP1–WP8 (zone memory, including saved peripheral positions preserved when entering pairing, side choice, shared rectangle placement, and which zone a spot reads as). Statuses and verification are recorded there.
 
 WK15–WK16 double-taps use the gap from the final key release to the first key press of
 the repeated complete hint. The 300 ms default therefore leaves the same repeat gap

@@ -66,6 +66,9 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Other center windows stay and peek via window avoidance; nothing goes to the periphery. |
 | 10-04 | Keep current left/right order; vertically centered; pair centered; halo gap given up first. |
 | 10-04 | Nothing is locked afterwards. Pairing is an explicit request, so shrinking center windows is a granted exception to tenet 4. |
+| 2026-10-06 | "going into pairing mode does NOT overwrite a window's saved position in the periphery." |
+
+Specified in windowing-keys.md WK36 and WP1.
 
 ## Spread and solo (docs/spread.md)
 

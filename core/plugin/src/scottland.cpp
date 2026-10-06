@@ -1517,6 +1517,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint32_t launched_at = 0;
     };
 
+    // A fitted pair is not a peripheral visit (WK36). Keep its exact placement provenance
+    // until this window moves, changes size/scale, or goes to another output.
+    struct paired_placement_t
+    {
+        wf::geometry_t geometry;
+        std::string output;
+        std::optional<double> pin;
+    };
+
     struct window_state_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -1529,6 +1538,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool above = false;
         std::optional<double> pinned_scale;          // kept by Shift during drag or arrow motion (L31)
         std::optional<scottland::windowing::window_memory> placement;
+        std::optional<paired_placement_t> paired_placement;
         std::optional<scottland::windowing::point> pending_rail; // refine on widget adoption
         std::set<std::string> attention;
     };
@@ -2987,6 +2997,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     entry["pending_rail"]["x"].as_double(), entry["pending_rail"]["y"].as_double()};
                 if (entry.has_member("pinned_scale") && entry["pinned_scale"].is_double())
                     found->second.pinned_scale = scottland::windowing::valid_pin(entry["pinned_scale"].as_double());
+                if (entry.has_member("paired_placement"))
+                {
+                    auto p = entry["paired_placement"];
+                    // Geometry coordinates serialize as doubles in the desktop snapshot.
+                    found->second.paired_placement = paired_placement_t{
+                        {p["x"].as_double(), p["y"].as_double(), p["width"].as_double(), p["height"].as_double()},
+                        p["output"].as_string(), p.has_member("pin") ?
+                            scottland::windowing::valid_pin(p["pin"].as_double()) : std::nullopt};
+                }
                 auto sources = entry["attention"];
                 for (size_t j = 0; j < sources.size(); j++)
                 {
@@ -4032,6 +4051,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                         entry["pending_rail"]["y"] = state.pending_rail->y;
                     }
                     if (state.pinned_scale) entry["pinned_scale"] = *state.pinned_scale;
+                    if (state.paired_placement)
+                    {
+                        auto& p = *state.paired_placement;
+                        auto& g = p.geometry;
+                        entry["paired_placement"]["x"] = g.x;
+                        entry["paired_placement"]["y"] = g.y;
+                        entry["paired_placement"]["width"] = g.width;
+                        entry["paired_placement"]["height"] = g.height;
+                        entry["paired_placement"]["output"] = p.output;
+                        if (p.pin) entry["paired_placement"]["pin"] = *p.pin;
+                    }
                     entry["zone"] = zone_name(state.zone);
                     entry["layer"] = state.above ? "above" : "normal";
                     entry["x"] = state.geometry.x;
@@ -6856,7 +6886,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             uint64_t app_window = link ? link->window_id : 0;
             handle_widget_drop(main, widget_shaped, released_at);
             auto dropped = represented_view(was_widget ? app_window : main->get_id());
-            if (dropped) remember_window(dropped);
+            if (dropped)
+            {
+                auto link = link_of_widget(dropped);
+                auto id = link ? link->window_id : dropped->get_id();
+                if (auto state = model.windows.find(id); state != model.windows.end())
+                    state->second.paired_placement.reset(); // a real drop establishes a new spot, even in place
+                remember_window(dropped);
+            }
             if (!was_widget && dropped == main && !widget_shaped.value_or(false) && !solo_accepted &&
                 std::hypot(released_at.x - model.drag.start_cursor.x,
                     released_at.y - model.drag.start_cursor.y) >= CLICK_SLOP)
