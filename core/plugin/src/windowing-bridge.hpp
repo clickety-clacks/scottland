@@ -8,6 +8,11 @@
     wf::wl_idle_call hint_hold_retry;
     wf::option_wrapper_t<wf::keybinding_t> center_switcher_next{"scottland/center_switcher_next"};
     wf::option_wrapper_t<wf::keybinding_t> center_switcher_previous{"scottland/center_switcher_previous"};
+    // WK40: Super+arrows by default.
+    wf::option_wrapper_t<wf::keybinding_t> navigate_left{"scottland/navigate_left"};
+    wf::option_wrapper_t<wf::keybinding_t> navigate_right{"scottland/navigate_right"};
+    wf::option_wrapper_t<wf::keybinding_t> navigate_up{"scottland/navigate_up"};
+    wf::option_wrapper_t<wf::keybinding_t> navigate_down{"scottland/navigate_down"};
     std::set<uint32_t> swallowed_keys, alt_keys, held_keys;
     // Return opens a focused widget once per physical press, before the widget or its key layer
     // can receive it. Keep its release from reaching the app window that replaced the widget.
@@ -573,6 +578,60 @@
             if (auto view = wf::toplevel_cast(view_by_id(selected)))
                 wf::get_core().default_wm->focus_raise_view(view);
     }
+    // WK40: focus and raise the neighboring window or widget in a direction, judged by where each
+    // is drawn (zone scale, avoidance offsets), across screens in layout coordinates. The pointer
+    // is untouched.
+    void navigate_windows(scottland::windowing::nav_direction direction)
+    {
+        auto focused = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+        auto drawn = [=] (wayfire_toplevel_view view) {
+            auto output = view->get_output();
+            auto r = scene_rectangle(view, output);
+            if (r.width() <= 0 || r.height() <= 0)
+            {
+                // No Scottland frame (full screen): the view's own displayed bounds.
+                auto b = view->get_transformed_node()->get_bounding_box();
+                r = {double(b.x), double(b.y), double(b.x + b.width), double(b.y + b.height)};
+            }
+            auto at = output->get_layout_geometry();
+            return scottland::windowing::rectangle{r.x1 + at.x, r.y1 + at.y, r.width(), r.height()};
+        };
+        std::optional<scottland::windowing::nav_candidate> origin;
+        if (focused && focused->get_output()) origin = {{focused->get_id(), drawn(focused)}};
+        if (!origin || origin->drawn.width <= 0 || origin->drawn.height <= 0)
+        {
+            // Nothing focused (or only a panel or launcher): start from the active screen's center.
+            auto output = wf::get_core().seat->get_active_output();
+            if (!output) return;
+            auto g = output->get_layout_geometry();
+            origin = {{0, {g.x + g.width / 2.0, g.y + g.height / 2.0, 0, 0}}};
+        }
+        std::vector<scottland::windowing::nav_candidate> candidates;
+        for (auto output : wf::get_core().output_layout->get_outputs())
+            for (auto view : output->wset()->get_views(
+                wf::WSET_MAPPED_ONLY | wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_SORT_STACKING))
+            {
+                // Windows and widgets that are drawn (not a desktop-role surface, not the app
+                // window a widget stands in for, not a widget slid away, not minimized).
+                if (view == focused || view->role != wf::VIEW_ROLE_TOPLEVEL ||
+                    !view->get_root_node()->is_enabled()) continue;
+                auto r = drawn(view);
+                if (r.width > 0 && r.height > 0) candidates.push_back({view->get_id(), r});
+            }
+        auto target = scottland::windowing::neighbor(*origin, direction, candidates);
+        LOGI("scottland: navigate direction=", int(direction), " from=", origin->id,
+            " candidates=", candidates.size(), " target=", target ? *target : 0);
+        if (target) if (auto view = wf::toplevel_cast(view_by_id(*target)))
+            wf::get_core().default_wm->focus_raise_view(view);
+    }
+    wf::key_callback on_navigate_left = [=] (const wf::keybinding_t&)
+    { navigate_windows(scottland::windowing::nav_direction::left); return true; };
+    wf::key_callback on_navigate_right = [=] (const wf::keybinding_t&)
+    { navigate_windows(scottland::windowing::nav_direction::right); return true; };
+    wf::key_callback on_navigate_up = [=] (const wf::keybinding_t&)
+    { navigate_windows(scottland::windowing::nav_direction::up); return true; };
+    wf::key_callback on_navigate_down = [=] (const wf::keybinding_t&)
+    { navigate_windows(scottland::windowing::nav_direction::down); return true; };
     std::optional<bool> center_switcher_direction(uint32_t code, wlr_keyboard *keyboard)
     {
         uint32_t relevant = modifier_mask(keyboard->keymap, "CTRL SHIFT ALT SUPER");
@@ -1061,7 +1120,8 @@
         // and fullscreen). Include it in the solve key so an explicit raise refreshes visibility.
         std::map<uint64_t, size_t> stacking;
         for (auto& [output, ids] : by_output)
-            for (auto view : output->wset()->get_views(wf::WSET_MAPPED_ONLY | wf::WSET_SORT_STACKING))
+            for (auto view : output->wset()->get_views(
+                wf::WSET_MAPPED_ONLY | wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_SORT_STACKING))
             {
                 if (!view->get_root_node()->is_enabled()) continue;
                 for (auto id : ids) if (represented_view(id) == view)

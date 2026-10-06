@@ -158,3 +158,4 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-05 | Hitting the pointer against the left or right edge of the screen reveals hidden or collapsed widgets. They don't hide or collapse again until the pointer moves out of the rail. | WG16, WG19 |
 | 10-05 | Goo: the balance between focus/attention color and picked-up color is a slider. The "Wallpaper soak" setting is labeled "Wallpaper pickup". | GO28 |
 | 10-05 | Dye density scales all dye in the goo, picked-up color included, not only focus and attention color. | GO23, GO28 |
+| 10-05 | Super+arrows reach widgets too: rail widgets are navigation targets like any window, judged by where they appear. No skip rules beyond what moving to the neighbor in that direction needs (not minimized-but-visible things, not widgets, not the periphery). | WK40 |

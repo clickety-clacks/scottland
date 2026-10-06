@@ -163,7 +163,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 
 ## Window keys and contention-aware placement
 
-See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK39 (window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
+See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK40 (Super+arrows navigation (WK40); window mode: Alt-alone hold, hint holds and pairing, theme-derived Vimarchy hints with desktop text sizing and exterior widget attachment,
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints)
 and WP1–WP8 (zone memory, side choice, shared rectangle placement, and which zone a spot reads as). Statuses and verification are recorded there.
 
