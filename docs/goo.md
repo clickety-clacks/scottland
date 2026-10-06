@@ -2611,7 +2611,7 @@ where nothing was picked up. GO24's ramp to a fully opaque body at the wall goes
 3. Film over a window takes that window's colors, and they spread into the open goo. (The ruling.)
 4. Balance at Mike's settings (soak 1, dye density 1.5): about 45% picked-up color against 55% of
    his focus color across the band; at the shipped soak 0.12, about 30%. Mike, 2026-10-05: "just
-   give me a slider": Pickup balance sets it, and its default (0.55) is this balance. Chosen so the shipped
+   give me a slider": Pickup balance sets it, and its default (0.45) is this balance. Chosen so the shipped
    default still shows pickup clearly (GO24) and full soak never hides the state color (GO28). (A
    first balance, 2 sqrt(soak), left Mike's focus color at 40% and read as subdued in the pictures.)
 5. A wallpaper change restarts only the dye's coast instead of three seconds of full simulation.

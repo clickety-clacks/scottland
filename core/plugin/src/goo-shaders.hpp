@@ -453,7 +453,7 @@ void main(){
   // stays; GO28 scales the body by the pigment that is here (0: clear water).
   float dyeBlend=.55+milk*.25;
   if(uSoak>0.)dyeBlend+=.22*pow(uSoak,.25);
-  // Hints are shown as they are, at full weight (WK14).
+  // Hints (WK14): the body scales with dye density alone, not with how much pigment is here.
   if(hintAmount<=0.)dyeBlend=clamp(dyeBlend*amount,0.,1.);
   else dyeBlend=clamp(dyeBlend*uDyeStrength,0.,1.);
   float rimTint=hintAmount>0.?uDyeStrength:min(amount,1.5);
