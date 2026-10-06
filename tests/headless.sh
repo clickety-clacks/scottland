@@ -21,6 +21,8 @@
 # XDG_RUNTIME_DIR. Put SCOTTLAND_HEADLESS_DIR and TMPDIR under the checkout's build/ directory.
 # Helpers come from this checkout (make test-hooks) if built, else the dev install. Set
 # SCOTTLAND_HEADLESS_DIR to run test sessions of several checkouts at once.
+# SCOTTLAND_TEST_WRAP: an executable the compositor command is passed to (it must exec it), for a
+# test's setup around the compositor, e.g. a mount namespace with a stand-in for a hardware file.
 #
 # Example: tests/headless.sh start --omarchy && tests/headless.sh run foot &
 #          tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
@@ -31,8 +33,9 @@ runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 # checkouts (e.g. agents on branches sharing a test machine) can run at once.
 dir=${SCOTTLAND_HEADLESS_DIR:-$repo/build/headless}
 # The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
-# package's.
-hooks=$repo/build/hooks
+# package's. SCOTTLAND_TEST_HOOKS: a test's own helper directory instead, e.g. a distro's test
+# adding its config.d generators to this checkout's helpers.
+hooks=${SCOTTLAND_TEST_HOOKS:-$repo/build/hooks}
 [[ -d $hooks/libexec ]] || hooks=${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev
 [[ -d $hooks/libexec ]] || hooks=/usr/lib/scottland
 exec_tool=$hooks/libexec/scottland-exec
@@ -81,7 +84,7 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_PATH|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|SCOTTLAND_TEST_PATH|SCOTTLAND_TEST_WRAP|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -141,7 +144,8 @@ WRAPPER
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
-        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" ${SCOTTLAND_TEST_WRAP:+"$SCOTTLAND_TEST_WRAP"} \
+        wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
     for _ in $(seq 100); do
