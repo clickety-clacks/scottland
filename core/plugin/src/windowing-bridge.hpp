@@ -1168,6 +1168,9 @@
                 placement_keys[id] = foreground;
             }
         }
+        // Every output's own key requests a solve: its zone widths, work area or local live
+        // state can change while nothing global does, and its hints wait on a matching key.
+        for (const auto& [name, key] : output_signature) signature << "|output:" << name << '=' << key;
         auto current_signature = signature.str();
         auto solve_now = std::chrono::steady_clock::now();
         bool within_tick_budget = last_exposure_solve.time_since_epoch().count() &&
