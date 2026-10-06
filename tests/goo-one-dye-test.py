@@ -429,13 +429,15 @@ try:
     check('three pickup coasts over an unchanged backdrop leave the dye where it was',
           drift < .02 and pixel_drift <= 8, {'dye_drift': drift, 'pixel_drift': pixel_drift})
 
-    # 4. Spread and swirl smear the paper: red above, blue below, along a band crossing it.
+    # 4. Spread and swirl smear the paper: red above, blue below, along a band crossing it. At the
+    # default Pickup balance (Mike's soak 1, density 1.5): at balance 1 near-instant re-pickup
+    # erases most of the smear, which made a 4 pt width pass.
     stop(paper)
     for t in ('dye-a', 'dye-b', 'dye-magenta'):
         ipc('window-rules/configure-view', {'id': view(t)['id'], 'geometry': {'x': 900 + 20*len(t), 'y': 60, 'width': 200, 'height': 120}})
     paper = wallpaper('#e02020', '#2020e0')
     spawn('dye-smear', 520, 200, 300, 330)
-    options(goo_soak=1., goo_pickup_balance=1., unfocused_edge_strength=0., goo_spread=0., goo_swirl=0.)
+    options(goo_soak=1., goo_pickup_balance=.45, goo_dye_density=1.5, unfocused_edge_strength=0., goo_spread=0., goo_swirl=0.)
     focus('dye-smear'); rest('smear base')
     s = view('dye-smear')['frame']; xs = s['x'] - thickness/2
     ys = list(range(round(s['y']) + 30, round(s['y'] + s['height']) - 30, 4))
@@ -455,7 +457,9 @@ try:
     smeared, contrast2, ps1 = profile()
     record['smear'] = {'still_width': sharp, 'swirled_width': smeared, 'contrast': [contrast, contrast2], 'still': ps0, 'swirled': ps1}
     check('with no swirl or spread the band changes from red to blue over a short distance', contrast > .3 and sharp <= 24, record['smear'])
-    check('swirl and spread smear the picked-up colors along the band', smeared >= sharp + 4 and smeared >= 2*sharp, record['smear'])
+    # 12 pt is three samples of graded color: still dye shows none (0 at the review's runs), the
+    # review measured 20 pt swirled on both paths.
+    check('swirl and spread smear the picked-up colors along the band', smeared >= max(12, sharp + 8) and smeared >= 2*sharp, record['smear'])
     def screen_profile(image):
         colors = [image(xs, y) for y in ys]
         differences = [c[0] - c[2] for c in colors]
@@ -466,9 +470,10 @@ try:
     width1, contrast1, pixels1 = screen_profile(smeared_screen)
     record['smear']['screen'] = {'still_width': width0, 'swirled_width': width1, 'contrast': [contrast0, contrast1]}
     check('screen pixels show transport broadening the red/blue boundary',
-          contrast0 > 30 and contrast1 > 30 and width1 >= width0 + 4 and
+          contrast0 > 30 and contrast1 > 30 and width1 >= max(12, width0 + 8) and
           max(norm(sub(a, b)) for a, b in zip(pixels0, pixels1)) > 8, record['smear']['screen'])
     quiet('smeared')
+    options(goo_pickup_balance=1., goo_dye_density=1.)  # scenario 6 runs as it did before
     # 6. One real client redraw, and another after the last coast transport step.
     ipc('window-rules/configure-view', {'id': view('dye-a')['id'], 'geometry': {'x': 200, 'y': 150, 'width': 360, 'height': 240}})
     color_file = art / 'client-color'
@@ -496,7 +501,9 @@ try:
         pixel = shot('6-magenta')(*under_film)
         return pixel if norm(sub(pixel, green_px)) > 8 else False
     magenta_px = wait_until(changed_film, 'first redraw reached the visible film')
-    check('one actual client redraw changes the visible film', norm(sub(magenta_px, green_px)) > 8,
+    # Mostly the client beneath showing through: this proves the redraw reached the screen, not
+    # pickup. The final-redraw check below judges pickup against an unchanged backdrop.
+    check('one actual client redraw reaches the screen under the film (fixture)', norm(sub(magenta_px, green_px)) > 8,
           {'green': green_px, 'magenta': magenta_px})
     # Freeze after useful dye work; the blue redraw is now after the last dye tick.
     ipc('scottland/goo-state', {'water_freeze': True})
