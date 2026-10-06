@@ -55,6 +55,9 @@ int main()
     check(picks(front, D::right, {rear, third}, 20) && picks(rear, D::right, {front, third}, 30) &&
         picks(third, D::right, {front, rear}, std::nullopt) && picks(third, D::left, {front, rear}, 20),
         "three on one center are walked in id order both ways");
+    check(picks(front, D::right, {third, rear}, 20) &&
+        picks(third, D::left, {rear, front}, 20),
+        "coincident navigation order does not depend on stacking order");
 
     // Drawn rectangles are what count: the caller passes drawn frames, so a scaled window's center is
     // where it shows. (A window whose true center is the origin's but which peeks out is reachable.)

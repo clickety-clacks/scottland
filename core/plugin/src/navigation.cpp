@@ -19,8 +19,12 @@ std::optional<uint64_t> neighbor(nav_candidate origin, nav_direction d, const st
         bool coincident = p.x == o.x && p.y == o.y;
         if (coincident ? (c.id > origin.id) != forward : !(along > 0)) continue;
         double distance = std::hypot(p.x - o.x, p.y - o.y);
-        // Strict comparison keeps the earlier (further in front) candidate on exact ties.
-        if (!best || distance < best_distance) { best = c.id; best_distance = distance; }
+        // Walk coincident centers in id order, independent of their stacking order. Other
+        // exact-distance ties keep the earlier (further in front) candidate.
+        bool next_coincident = coincident && best && best_distance == 0 &&
+            (forward ? c.id < *best : c.id > *best);
+        if (!best || distance < best_distance || next_coincident)
+        { best = c.id; best_distance = distance; }
     }
     return best;
 }
