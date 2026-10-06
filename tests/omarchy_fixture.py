@@ -9,10 +9,15 @@ desktop, microphone, lock screen or displays.
 
 A Session wraps tests/headless.sh (start --omarchy) with that HOME, its own
 SCOTTLAND_HEADLESS_DIR under this checkout's build/, and cleanup of exactly what it created.
+Processes a test starts in the session are recorded by PID (Session.spawn) and stopped by PID.
+pkill and pgrep on the fixture PATH (stock Omarchy commands call them, e.g. the color picker's
+`pkill hyprpicker || hyprpicker -a`) see only this session's processes, never the machine's.
 """
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -54,6 +59,8 @@ require("default.hypr.helpers")
             self.command(name)
         for name, body in (commands or {}).items():
             self.command(name, body)
+        for name in ("pkill", "pgrep"):
+            (self.bin / name).symlink_to(Path(__file__).resolve().parent / "session-pkill.py")
 
     def command(self, name, extra=""):
         path = self.bin / name
@@ -122,6 +129,69 @@ class Session:
 
     def run(self, *command, check=False, timeout=30, input=None):
         return self.harness("run", *command, check=check, timeout=timeout, input=input)
+
+    def spawn(self, command, log="/dev/null"):
+        """Start a shell command in the session in the background; returns its PID."""
+        result = self.run("sh", "-c", f"{command} >{log} 2>&1 </dev/null & echo $!")
+        return int(result.stdout.strip().splitlines()[-1])
+
+    def marker(self):
+        """An environment entry every process of this session (and only this session) carries:
+        tests/headless.sh gives each session its own XDG_CONFIG_HOME (older harnesses too)."""
+        return f"XDG_CONFIG_HOME={self.dir / 'config'}".encode()
+
+    def owns(self, pid):
+        try:
+            return self.marker() in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except OSError:
+            return False
+
+    def owned(self, pattern):
+        """PIDs of this session's processes whose command line matches the regex pattern."""
+        pids = []
+        for proc in Path("/proc").glob("[0-9]*"):
+            try:
+                cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            except OSError:
+                continue
+            if int(proc.name) != os.getpid() and re.search(pattern, cmdline) and self.owns(proc.name):
+                pids.append(int(proc.name))
+        return pids
+
+    def descendants(self, pid):
+        """This session's processes started under pid (e.g. the quickshell a sandbox wrapper runs)."""
+        children = {}
+        for proc in Path("/proc").glob("[0-9]*"):
+            try:
+                parent = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            children.setdefault(parent, []).append(int(proc.name))
+        found, queue = [], list(children.get(pid, []))
+        while queue:
+            child = queue.pop()
+            if self.owns(child):
+                found.append(child)
+                queue.extend(children.get(child, []))
+        return found
+
+    def terminate(self, *pids, sig=signal.SIGTERM, timeout=5.0):
+        """Stop processes this session owns, by PID, with the processes they started; returns the
+        PIDs still alive afterwards."""
+        pids = [p for pid in pids if self.owns(pid) for p in (pid, *self.descendants(pid))]
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        self.wait(lambda: not [p for p in pids if self.owns(p)], timeout)
+        alive = [p for p in pids if self.owns(p)]
+        for pid in alive:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        return alive
 
     def ipc(self, method, data=None):
         reply = self.harness("ipc", method, json.dumps(data or {}))

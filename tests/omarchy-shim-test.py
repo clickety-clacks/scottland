@@ -71,7 +71,7 @@ with Session(fixture, "hl-omarchy-shim") as session:
     check("omarchy-launch-screensaver maps an org.omarchy.screensaver window", ok,
           (launch_log.read_text()[-400:] if launch_log.exists() else "",
            [v.get("app-id") for v in views(session)]))
-    session.run("pkill", "-f", "[o]rg.omarchy.screensaver")
+    session.terminate(*session.owned("org[.]omarchy[.]screensaver"))
 
     # Unsupported requests fail visibly: hyprctl exits non-zero with the shim's error.
     for args in (["dispatch", 'hl.dsp.focus({ monitor = "NOWHERE-1" })'],

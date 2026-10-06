@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """A GTK window filled with one color, for pixel and picker tests.
 
-  solid-color-app.py NAME #RRGGBB [--tick]
+  solid-color-app.py NAME #RRGGBB [--tick] [--app-id ID]
 
 --tick redraws a small counter in the top-left corner ten times a second, so the window keeps
 changing (screen-sharing tests need new frames); the rest of the window stays the solid color.
+--app-id gives the mapped window another app-id (one a D-Bus application id can't be, such as
+1Password), as its client would.
 """
 import sys
 import gi
 gi.require_version('Gtk', '4.0')
-from gi.repository import Gdk, GLib, Gtk
+gi.require_version('GdkWayland', '4.0')
+from gi.repository import Gdk, GdkWayland, GLib, Gtk
 name, color = sys.argv[1], sys.argv[2]
 tick = "--tick" in sys.argv[3:]
+app_id = sys.argv[sys.argv.index("--app-id") + 1] if "--app-id" in sys.argv[3:] else None
 app = Gtk.Application(application_id='org.scottland.SolidColor.' + name)
 
 
@@ -34,6 +38,8 @@ def activate(application):
 
         GLib.timeout_add(100, advance)
         window.set_child(label)
+    if app_id:
+        window.connect("map", lambda w: GdkWayland.WaylandToplevel.set_application_id(w.get_surface(), app_id))
     window.present()
 
 

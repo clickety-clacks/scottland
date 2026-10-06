@@ -66,8 +66,10 @@ def plain(value):
 
 
 def write(path, data):
-    with open(path, "w") as out:
+    """Whole or not at all: a reader never sees a half-written file."""
+    with open(f"{path}.tmp", "w") as out:
         json.dump(data, out)
+    os.replace(f"{path}.tmp", path)
 
 
 def screenshot(out):

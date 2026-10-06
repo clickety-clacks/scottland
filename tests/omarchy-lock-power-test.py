@@ -13,6 +13,7 @@ the lock client died, Wayfire's stand-in, never the window underneath (#3366CC).
 
   tests/omarchy-lock-power-test.py
 """
+import signal
 import sys
 from pathlib import Path
 
@@ -47,7 +48,7 @@ def locked_status(session):
 
 
 def start_lock(session):
-    session.run("sh", "-c", f"exec qs -p {lock_qml} >/dev/null 2>&1 </dev/null &")
+    return session.spawn(f"exec qs -p {lock_qml}")
 
 
 with Session(fixture, "hl-omarchy-lock-power") as session:
@@ -77,7 +78,7 @@ with Session(fixture, "hl-omarchy-lock-power") as session:
           on.returncode == 0 and ok, (on.returncode, value))
 
     # AG17: a real lock, reported locked; display power works while locked.
-    start_lock(session)
+    first = start_lock(session)
     ok, _ = wait_capture(session, "locked", center, lambda p: p == LOCK)
     check("lock client covers the screen", ok)
     check("locked session reports locked (exit 0)", locked_status(session) == 0, locked_status(session))
@@ -94,17 +95,17 @@ with Session(fixture, "hl-omarchy-lock-power") as session:
     check("after unlock, reports unlocked (exit 1)", locked_status(session) == 1, locked_status(session))
 
     # AG17's case worth detecting: the lock client dies and the lock stays.
-    start_lock(session)
+    lock = start_lock(session)
     ok, _ = wait_capture(session, "locked-again", center, lambda p: p == LOCK)
     check("locked again", ok)
-    session.run("pkill", "-9", "-f", "session-lock-fixture.qml")
+    session.terminate(lock, sig=signal.SIGKILL)
     ok, value = wait_capture(session, "stranded", center, lambda p: p is not None and p != LOCK)
     check("lock client gone: Wayfire's stand-in replaces the lock surface", ok, value)
     check("stranded lock still hides the window", ok and value[0] != WINDOW, value)
     check("stranded lock reports locked (exit 0)", locked_status(session) == 0, locked_status(session))
 
     # Recovery as Omarchy does it: a new lock client takes over, then unlocks.
-    start_lock(session)
+    lock = start_lock(session)
     ok, _ = wait_capture(session, "relocked", center, lambda p: p == LOCK)
     check("a new lock client takes over the stranded lock", ok)
     session.tap("KEY_ENTER")
@@ -112,6 +113,6 @@ with Session(fixture, "hl-omarchy-lock-power") as session:
     check("unlocking it shows the window again", ok)
     check("recovered session reports unlocked (exit 1)", locked_status(session) == 1,
           locked_status(session))
-    session.run("pkill", "-f", "session-lock-fixture.qml")
+    session.terminate(first, lock)
 
 sys.exit(check.summary())

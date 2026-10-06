@@ -103,15 +103,13 @@ try:
         old_shim = shim_pid(session)
         events = REPO / "build/rehearsal-hyprland-events.log"
         events.unlink(missing_ok=True)
-        session.run("sh", "-c", f"exec qs -p {REPO}/tests/hyprland-events-probe.qml "
-                                f">{events} 2>&1 </dev/null &")
+        probe = session.spawn(f"exec qs -p {REPO}/tests/hyprland-events-probe.qml", events)
         ok, _ = session.wait(lambda: events.exists() and "probe ready" in events.read_text(), timeout=15)
         check("a Quickshell Hyprland client is connected to the old shim", ok)
-        session.run("sh", "-c", f"python3 {REPO}/tests/solid-color-app.py zero '#404040' "
-                                ">/dev/null 2>&1 </dev/null &")
+        zero = session.spawn(f"exec python3 {REPO}/tests/solid-color-app.py zero '#404040'")
         ok, _ = session.wait(lambda: "event openwindow" in events.read_text(), timeout=10)
         check("that client receives the old shim's events (openwindow)", ok)
-        session.run("pkill", "-f", "solid-color-app.py zero")
+        session.terminate(zero)
         session.wait(lambda: len(windows(session)) == 3, timeout=20)
 
         # --- The reload, as dev-install + scottland-reload do it. ---
@@ -190,7 +188,7 @@ try:
               f"{'still receives events' if ok else 'receives no events (does not reconnect)'}",
               flush=True)
         (REPO / "build/rehearsal-finding.json").write_text(json.dumps({"events_after_shim_restart": ok}))
-        session.run("pkill", "-f", "hyprland-events-probe.qml")
+        session.terminate(probe)
 finally:
     shutil.copy(saved_xml, session_xml)
     for leftover in (REPO / "build").glob("libscottland-rehearsal-*.so"):

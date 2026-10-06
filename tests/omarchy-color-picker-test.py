@@ -4,7 +4,9 @@
 Isolated headless --omarchy session loading the installed, unchanged utilities.lua (Super+Print:
 `pkill hyprpicker || hyprpicker -a`). Real input: Super+Print with stipc keys, then a stipc
 pointer click on a window filled with a known color. Oracle: the color hyprpicker put on the
-clipboard (read back with wl-paste), which it took from the screen's captured pixels.
+clipboard (read back with wl-paste), which it took from the screen's captured pixels. Setup waits
+until a screencopy shows that color where the click will land (hyprpicker freezes the screen as it
+starts, so a window still fading in would be picked mid-fade).
 
   tests/omarchy-color-picker-test.py
 """
@@ -13,9 +15,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from omarchy_fixture import REPO, Checks, Fixture, Session  # noqa: E402
+from omarchy_fixture import REPO, Checks, Fixture, Session, pixel, screenshot  # noqa: E402
 
 COLOR = "#12AB34"
+RGB = tuple(bytes.fromhex(COLOR[1:]))
 check = Checks()
 fixture = Fixture(REPO / "build/omarchy-color-picker-fixture",
                   modules=["default.hypr.bindings.utilities"])
@@ -28,8 +31,7 @@ def views(session):
 
 with Session(fixture, "hl-omarchy-color-picker") as session:
     check("shim answers", session.wait_shim()[0])
-    session.run("sh", "-c", f"python3 {REPO}/tests/solid-color-app.py picker '{COLOR}' "
-                            ">/dev/null 2>&1 </dev/null &")
+    app = session.spawn(f"exec python3 {REPO}/tests/solid-color-app.py picker '{COLOR}'")
     ok, found = session.wait(lambda: [v for v in views(session)
                                       if v.get("app-id") == "org.scottland.SolidColor.picker"
                                       and v.get("mapped")], timeout=20)
@@ -37,13 +39,17 @@ with Session(fixture, "hl-omarchy-color-picker") as session:
     if not ok:
         sys.exit(check.summary())
     box = found[0]["geometry"]
-    x, y = box["x"] + box["width"] // 2, box["y"] + box["height"] // 2
+    x, y = int(box["x"] + box["width"] // 2), int(box["y"] + box["height"] // 2)
     session.ipc("stipc/move_cursor", {"x": x, "y": y})
+    shown = {}
+    ok, _ = session.wait(lambda: shown.update(rgb=(lambda shot: pixel(shot, x + 3, y + 3) if shot else None)(
+        screenshot(session, "picker-ready"))) or shown["rgb"] == RGB, timeout=10, interval=0.2)
+    check(f"the screen shows {COLOR} where the click will land", ok, shown.get("rgb"))
 
     session.key("KEY_LEFTMETA", True)
     session.tap("KEY_SYSRQ")
     session.key("KEY_LEFTMETA", False)
-    ok, _ = session.wait(lambda: session.run("pgrep", "-x", "hyprpicker").returncode == 0, timeout=10)
+    ok, _ = session.wait(lambda: session.owned(r"(^|/)hyprpicker( |$)"), timeout=10)
     check("Super+Print starts hyprpicker", ok)
     # Readiness: hyprpicker's overlay surface has mapped (a non-toplevel view appears).
     ok, _ = session.wait(lambda: [v for v in views(session) if v.get("role") != "toplevel"
@@ -60,6 +66,6 @@ with Session(fixture, "hl-omarchy-color-picker") as session:
                              .upper() == COLOR, timeout=10)
     pasted = session.run("wl-paste", "--no-newline").stdout.strip()
     check(f"picked color reaches the clipboard ({COLOR})", ok, pasted)
-    session.run("pkill", "-x", "hyprpicker")
+    session.terminate(*session.owned(r"(^|/)hyprpicker( |$)"), app)
 
 sys.exit(check.summary())

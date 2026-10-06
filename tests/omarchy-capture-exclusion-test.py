@@ -7,7 +7,8 @@ composed screen. So the O20 report must list every such rule, and the claim it m
 
 Isolated headless --omarchy session loading the installed, unchanged apps/1password.lua and
 apps/bitwarden.lua plus a user's own rule. Oracles: the generated report, and a screencopy of a
-window whose app-id the 1Password rule matches (foot --app-id=1Password, a solid background).
+window whose app-id the 1Password rule matches (tests/solid-color-app.py --app-id 1Password, a
+window painted one known color).
 
   tests/omarchy-capture-exclusion-test.py
 """
@@ -43,17 +44,17 @@ with Session(fixture, "hl-omarchy-capture") as session:
     check("the user's own rule is called out first, as their own",
           "KeePassXC" in own and "[Your custom/changed shortcut]" in own, own)
 
-    session.run("sh", "-c", "foot --app-id=1Password -o colors.background=12ab34 "
-                            "-o cursor.color=12ab34\\ 12ab34 >/dev/null 2>&1 </dev/null &")
+    app = session.spawn(f"exec python3 {REPO}/tests/solid-color-app.py capture '#12AB34' --app-id 1Password")
     ok, found = session.wait(lambda: [v for v in views(session)
                                       if v.get("app-id") == "1Password" and v.get("mapped")], timeout=20)
     if check("a window the 1Password rule matches maps", ok):
         box = found[0]["geometry"]
         point = (int(box["x"] + box["width"] * 3 / 4), int(box["y"] + box["height"] * 3 / 4))
-        ok, shot = session.wait(lambda: (lambda s: s if s and pixel(s, *point) == COLOR else None)(
-            screenshot(session, "capture")), timeout=10, interval=0.3)
+        seen = {}
+        ok, _ = session.wait(lambda: seen.update(shot=screenshot(session, "capture")) or (
+            seen["shot"] is not None and pixel(seen["shot"], *point) == COLOR), timeout=10, interval=0.3)
         check("as the report says, that window appears in a screen capture", ok,
-              pixel(shot, *point) if shot else "no capture")
-    session.run("pkill", "-f", "app-id=1Password")
+              pixel(seen["shot"], *point) if seen.get("shot") else "no capture")
+    session.terminate(app)
 
 sys.exit(check.summary())
