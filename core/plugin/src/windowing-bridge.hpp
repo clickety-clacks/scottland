@@ -578,42 +578,48 @@
             if (auto view = wf::toplevel_cast(view_by_id(selected)))
                 wf::get_core().default_wm->focus_raise_view(view);
     }
-    // WK40: focus and raise the nearest window or widget in a direction, judged by where each is
-    // drawn (zone scale, avoidance offsets), across screens in layout coordinates. The pointer is
-    // untouched.
+    // WK40: focus and raise the neighboring window or widget in a direction, judged by where each
+    // is drawn (zone scale, avoidance offsets), across screens in layout coordinates. The pointer
+    // is untouched.
     void navigate_windows(scottland::windowing::nav_direction direction)
     {
         auto focused = wf::toplevel_cast(wf::get_core().seat->get_active_view());
         auto drawn = [=] (wayfire_toplevel_view view) {
             auto output = view->get_output();
             auto r = scene_rectangle(view, output);
+            if (r.width() <= 0 || r.height() <= 0)
+            {
+                // No Scottland frame (full screen): the view's own displayed bounds.
+                auto b = view->get_transformed_node()->get_bounding_box();
+                r = {double(b.x), double(b.y), double(b.x + b.width), double(b.y + b.height)};
+            }
             auto at = output->get_layout_geometry();
             return scottland::windowing::rectangle{r.x1 + at.x, r.y1 + at.y, r.width(), r.height()};
         };
-        std::optional<scottland::windowing::rectangle> origin;
-        if (focused && focused->get_output()) origin = drawn(focused);
-        if (!origin || origin->width <= 0 || origin->height <= 0)
+        std::optional<scottland::windowing::nav_candidate> origin;
+        if (focused && focused->get_output()) origin = {{focused->get_id(), drawn(focused)}};
+        if (!origin || origin->drawn.width <= 0 || origin->drawn.height <= 0)
         {
             // Nothing focused (or only a panel or launcher): start from the active screen's center.
             auto output = wf::get_core().seat->get_active_output();
             if (!output) return;
             auto g = output->get_layout_geometry();
-            origin = scottland::windowing::rectangle{g.x + g.width / 2.0, g.y + g.height / 2.0, 0, 0};
+            origin = {{0, {g.x + g.width / 2.0, g.y + g.height / 2.0, 0, 0}}};
         }
         std::vector<scottland::windowing::nav_candidate> candidates;
         for (auto output : wf::get_core().output_layout->get_outputs())
             for (auto view : output->wset()->get_views(
                 wf::WSET_MAPPED_ONLY | wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_SORT_STACKING))
             {
-                // Windows and widgets that are drawn somewhere (not a desktop-role surface, not
-                // an app window whose widget stands in for it, not minimized).
+                // Windows and widgets that are drawn (not a desktop-role surface, not the app
+                // window a widget stands in for, not a widget slid away, not minimized).
                 if (view == focused || view->role != wf::VIEW_ROLE_TOPLEVEL ||
                     !view->get_root_node()->is_enabled()) continue;
                 auto r = drawn(view);
                 if (r.width > 0 && r.height > 0) candidates.push_back({view->get_id(), r});
             }
         auto target = scottland::windowing::neighbor(*origin, direction, candidates);
-        LOGI("scottland: navigate direction=", int(direction), " from=", focused ? focused->get_id() : 0,
+        LOGI("scottland: navigate direction=", int(direction), " from=", origin->id,
             " candidates=", candidates.size(), " target=", target ? *target : 0);
         if (target) if (auto view = wf::toplevel_cast(view_by_id(*target)))
             wf::get_core().default_wm->focus_raise_view(view);

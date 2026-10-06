@@ -8,6 +8,7 @@ Window placement, minimizing and full screen are fixture setup through IPC.
 runs the scenarios on the reloaded build."""
 import json
 import os
+import signal
 from pathlib import Path
 import shutil
 import socket
@@ -21,7 +22,7 @@ out = Path(args.pop(0)).resolve(); out.mkdir(parents=True, exist_ok=True)
 reload_args = None
 if '--reload' in args:
     at = args.index('--reload'); reload_args = args[at + 1:at + 4]; args = args[:at] + args[at + 4:]
-scenarios = args or ['cross', 'zones', 'hidden', 'peek']
+scenarios = args or ['cross', 'zones', 'hidden', 'concentric', 'peek']
 sock = socket.socket(socket.AF_UNIX); sock.connect(os.environ['WAYFIRE_SOCKET']); sock.settimeout(8)
 
 
@@ -43,6 +44,7 @@ def ipc(method, data=None):
 
 
 passes = failures = 0
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
 
 def check(name, ok, detail=None):
@@ -63,7 +65,12 @@ def wait_for(fn, timeout=6, what=None):
     raise AssertionError(f'timed out waiting for {what or getattr(fn, "__name__", "state")}; last: {value!r}')
 
 
-def key(name, down): ipc('stipc/feed_key', {'key': 'KEY_' + name, 'state': down})
+held = set()  # keys this test holds down, released on any exit
+
+
+def key(name, down):
+    ipc('stipc/feed_key', {'key': 'KEY_' + name, 'state': down})
+    (held.add if down else held.discard)(name)
 def tap(name): key(name, True); key(name, False)
 def pointer(x, y): ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
 
@@ -103,11 +110,16 @@ def launch(title, color, w, h):
     return id
 
 
-def close_all():
+def stop_clients():
     for c in clients: c.terminate()
     for c in clients:
         try: c.wait(5)
-        except subprocess.TimeoutExpired: c.kill()
+        except subprocess.TimeoutExpired:
+            c.kill(); c.wait()
+
+
+def close_all():
+    stop_clients()
     titles = list(apps)
     clients.clear(); apps.clear()
     wait_for(lambda: not any(view(t) for t in titles), 8, 'windows to close')
@@ -238,7 +250,7 @@ try:
         set_options({'scottland/center_width': 80.0, 'scottland/window_avoidance_always': False})
         colors = {'M': '2050f0', 'L': 'e03020', 'R': '20a040', 'U': 'd0a000', 'D': '9030c0'}
         spec = {'M': (960, 540, 500, 340), 'L': (560, 560, 420, 300), 'R': (1440, 520, 360, 300),
-                'U': (960, 210, 420, 180), 'D': (990, 880, 420, 180)}
+                'U': (960, 210, 420, 180), 'D': (960, 880, 420, 180)}
         for t, c in colors.items(): launch('nav-' + t, c, *spec[t][2:])
         for t, (cx, cy, w, h) in spec.items(): place(apps['nav-' + t]['id'], cx, cy, w, h)
         for t in ('L', 'R', 'U', 'D', 'M'): focus('nav-' + t)
@@ -255,13 +267,13 @@ try:
         seen = shows('cross-raised-L', *overlap, colors['L'])
         check('cross: the focused window is raised (its color shows where it overlapped M)', seen == colors['L'], seen)
         navigate_case('cross', 'LEFT', None, 'nav-L')          # leftmost: no wrap-around
-        navigate_case('cross', 'RIGHT', 'nav-M', 'nav-L')      # M is nearer than R in the same row
+        navigate_case('cross', 'RIGHT', 'nav-M', 'nav-L')      # the nearest center to the right
         navigate_case('cross', 'RIGHT', 'nav-R')
         navigate_case('cross', 'RIGHT', None, 'nav-R')         # rightmost
         navigate_case('cross', 'LEFT', 'nav-M')
-        navigate_case('cross', 'UP', 'nav-U')
+        navigate_case('cross', 'UP', 'nav-U')                  # nearer than R, whose center is a little higher
         navigate_case('cross', 'UP', None, 'nav-U')
-        navigate_case('cross', 'DOWN', 'nav-M')                # nearer than D in the same column
+        navigate_case('cross', 'DOWN', 'nav-M')                # nearer than D, L and R below U
         navigate_case('cross', 'DOWN', 'nav-D')
         navigate_case('cross', 'DOWN', None, 'nav-D')
 
@@ -275,9 +287,8 @@ try:
         close_all()
 
     if 'zones' in scenarios:
-        # Shipped zones: a narrow center. Q sits in the center zone, P in the right periphery. P's
-        # true row contains O's center but its drawn (scaled) row does not, so judged as drawn Q is
-        # the nearer unaligned neighbor; judged by true geometry P would win as aligned.
+        # Shipped zones: a narrow center. Q sits in the center zone, P in the right periphery, K on
+        # the left rail as a widget.
         set_options({'scottland/center_width': 33.333, 'scottland/window_avoidance_always': False})
         colors = {'O': '2050f0', 'Q': 'e03020', 'P': '20a040', 'K': 'd0a000'}
         spec = {'O': (960, 540, 400, 300), 'Q': (1260, 740, 300, 200), 'P': (1700, 350, 360, 700), 'K': (300, 300, 300, 200)}
@@ -294,13 +305,9 @@ try:
         wait_for(lambda: by_id(K)['widgetized'], 6, 'K to become a widget')
         for t in ('P', 'Q', 'O'): focus('zone-' + t)
         wait_for(lambda: abs(view('zone-P')['applied_scale'] - view('zone-P')['target_scale']) < .01, 4, 'P scale')
-        o, p, q = drawn('zone-O'), drawn('zone-P'), drawn('zone-Q')
-        true_p = rect(geometry(apps['zone-P']['id']))
-        oc = center(o)
-        check('zones: fixture: P is scaled in the periphery, its true row holds O\'s center and its drawn row does not',
-              view('zone-P')['applied_scale'] < .6 and true_p[1] <= oc[1] <= true_p[3] and not p[1] <= oc[1] <= p[3] and
-              not o[1] <= center(p)[1] <= o[3], {'drawn': p, 'true': true_p, 'scale': view('zone-P')['applied_scale']})
-        navigate_case('zones', 'RIGHT', 'zone-Q', 'zone-O')     # judged as drawn
+        check('zones: fixture: P shows scaled down in the periphery', view('zone-P')['applied_scale'] < .9,
+              view('zone-P')['applied_scale'])
+        navigate_case('zones', 'RIGHT', 'zone-Q', 'zone-O')     # nearer than P
         navigate_case('zones', 'RIGHT', 'zone-P', 'zone-Q')     # center to periphery
         # Widgets are targets like windows, judged by where they show on their rail.
         widget = wait_for(lambda: next((v for v in views() if v['widget'] and 'scene_frame' in v), None), 10, 'K\'s widget')
@@ -356,6 +363,10 @@ try:
         navigate_case('hidden (A is full screen, B behind it)', 'LEFT', 'hidden-B', 'hidden-A')
         seen = shows('hidden-fullscreen-raised', *spec['B'][:2], colors['B'])
         check('hidden: B is raised over the full-screen window', seen == colors['B'], seen)
+        # Back again: the full-screen window is a destination too, centered on its screen.
+        navigate_case('hidden (back to the full-screen window)', 'RIGHT', 'hidden-A', 'hidden-B')
+        seen = shows('hidden-fullscreen-back', *spec['B'][:2], colors['A'])
+        check('hidden: the full-screen window is raised over B again', seen == colors['A'], seen)
         time.sleep(1.5)  # an intended hold: evidence of the settled scene, not a readiness wait
         subprocess.run(['grim', str(out / 'hidden-fullscreen-settled.png')], check=True)
         a = view('hidden-A')
@@ -375,6 +386,25 @@ try:
         navigate_case('screens', 'RIGHT', 'screen-2', 'screen-1')
         navigate_case('screens', 'RIGHT', None, 'screen-2')
         navigate_case('screens', 'LEFT', 'screen-1', 'screen-2')
+        close_all()
+
+    if 'concentric' in scenarios:
+        # Coincident centers, no avoidance: a larger rear window shows around a smaller front one.
+        # Neither center is on any side of the other, so they are ordered by id (opening order).
+        set_options({'scottland/center_width': 80.0, 'scottland/window_avoidance_always': False})
+        launch('same-front', '2050f0', 600, 400); launch('same-rear', 'e03020', 800, 600)
+        front, rear = apps['same-front']['id'], apps['same-rear']['id']
+        place(front, 960, 540, 600, 400); place(rear, 960, 540, 800, 600)
+        focus('same-rear'); focus('same-front')
+        band = (960, 540 - 250)  # inside the rear window, outside the front one
+        seen = shows('concentric-before', *band, 'e03020')
+        check('concentric: fixture: the rear window shows around the front one', seen == 'e03020', seen)
+        later, earlier = ('RIGHT', 'LEFT') if rear > front else ('LEFT', 'RIGHT')
+        navigate_case('concentric', earlier, None, 'same-front')
+        navigate_case('concentric', later, 'same-rear', 'same-front')
+        seen = shows('concentric-raised', 960, 540, 'e03020')
+        check('concentric: the rear window is raised over the front one', seen == 'e03020', seen)
+        navigate_case('concentric', earlier, 'same-front', 'same-rear')
         close_all()
 
     if 'peek' in scenarios:
@@ -409,6 +439,10 @@ try:
 except Exception as error:
     check('scenario ran to completion', False, repr(error))
 finally:
-    for c in clients: c.terminate()
+    # Independent steps: each runs even if the compositor is already gone.
+    for name in list(held):
+        try: key(name, False)
+        except Exception: pass
+    stop_clients()
     print(f'{passes} passed, {failures} failed', flush=True)
 sys.exit(1 if failures else 0)
