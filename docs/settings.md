@@ -286,3 +286,10 @@ hints show must redraw them (this fails without the option's live callback; the 
 batch write alone would refresh hints through another option). Save persists a separate
 value, the config generator consumes it, reopening reads it, and Cancel and Defaults
 (the plugin's own default) exercise the existing transaction without unintended writes.
+
+Results (plumbus headless, 2026-10-06, integration tree): 25/0 with fallback halos and 23/0
+with Goo. Fitted backing opacity, window / widget: default 0.211 / 0.206, 50% 0.506 / 0.496
+(Goo 0.495), 100% 1.003 / 0.997. With the option's live callback removed the test fails
+exactly the scottland-ctl check (22/1). `tests/hint-style-test.sh` (53 checks) passes with
+Goo; it measures the widget letter contrast over the dark headless wallpaper at the 21%
+default: 6.37:1 with the dark theme, 1.32:1 with the light one. Captures inspected.
