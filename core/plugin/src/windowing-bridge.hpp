@@ -452,6 +452,18 @@
         if (!model.windows.count(id)) return;
         auto z = memory_zone(view);
         auto g = placed_geometry(view); auto screen = view->get_output()->get_relative_geometry();
+        auto& state = model.windows[id];
+        if (auto& paired = state.paired_placement; paired)
+        {
+            if (!link && paired->geometry == g && paired->output == view->get_output()->to_string() &&
+                paired->pin == state.pinned_scale)
+            {
+                // Pairing must not overwrite a saved peripheral position, including when a
+                // later cycle remembers the source before leaving this unchanged fitted spot.
+                using Z = scottland::windowing::zone;
+                if (z == Z::left_periphery || z == Z::right_periphery) return;
+            } else paired.reset(); // an ordinary new placement can establish its own memory
+        }
         // The pin goes with the spot (WP1): a later return to this zone restores both.
         scottland::windowing::remember_spot(ensure_window_memory(id), z, {
             (g.x + g.width / 2.0) / screen.width, (g.y + g.height / 2.0) / screen.height},
@@ -1008,12 +1020,18 @@
             auto g = window->get_geometry();
             move_window(window, std::round(at.x - g.width / 2.0), std::round(at.y - g.height / 2.0));
         };
+        auto remember_pair = [&] () {
+            model.windows[window->get_id()].paired_placement = paired_placement_t{
+                placed_geometry(window), window->get_output()->to_string(), model.windows[window->get_id()].pinned_scale};
+            remember_window(window);
+            publish_model();
+        };
         if (auto link = link_of_window(window))
         {
             // A widget joins as its app window, opened from the rail into its place (tenet 3).
             restore_window(*link, wf::pointf_t{at.x, at.y}, true);
             if (window->get_output() != output) place();
-            remember_window(window);
+            remember_pair();
             return;
         }
         auto drawn = hint_rectangle(shown ? shown : window);
@@ -1026,7 +1044,7 @@
         }
         stop_glide(window);
         place();
-        remember_window(window);
+        remember_pair();
         start_cycle_glide(window, from, from_scale, {at.x, at.y}, scale);
     }
     // One clock for hint timing: presses and releases carry their input event time (WK15), and
