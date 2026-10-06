@@ -33,6 +33,10 @@ hl.bind("F8", function() os.execute("{root}/bin/mark fn-release") end, {{ releas
 o.bind("SUPER + F7", "Modified release", "mark mod-release", {{ release = true }})
 -- A user's locked release shortcut (Hyprland bindrl): on release, also on the lock screen.
 o.bind("F5", "Locked release", "mark locked-release", {{ release = true, locked = true }})
+-- Yoohoo's accept: Super_L let go, whatever else was pressed with it (ignore_mods).
+o.bind("Super_L", nil, "mark super-accept", {{ release = true, ignore_mods = true, non_consuming = true, transparent = true }})
+-- A tap of Super_R alone (a launcher on Super, Hyprland bindr).
+o.bind("Super_R", nil, "mark super-tap", {{ release = true }})
 ''')
 
 
@@ -85,6 +89,20 @@ with Session(fixture, "hl-omarchy-bindings") as session:
     time.sleep(0.3)  # an intended hold: a wrong run would show up here
     check("Ctrl+F9 runs neither half of plain F9 push-to-talk",
           not [c for c in fixture.calls()[before:] if c[0] == "voxtype"], fixture.calls()[before:])
+
+    # Release shortcuts on modifier keys: Yoohoo's accept runs when Super_L is let go after a
+    # chord; a plain Super_R release shortcut runs on a tap of Super_R alone.
+    before = len(fixture.calls())
+    session.key("KEY_LEFTMETA", True)
+    session.tap("KEY_F2")
+    ok, calls = fixture.wait_calls(lambda c: ("mark", "super-accept") in c[before:], timeout=1.0)
+    check("Super_L accept does not run while Super is held", not ok, calls[before:])
+    session.key("KEY_LEFTMETA", False)
+    ok, calls = fixture.wait_calls(lambda c: ("mark", "super-accept") in c[before:])
+    check("Super_L accept (ignore_mods) runs when Super_L is let go after Super+F2", ok, calls[before:])
+    session.tap("KEY_RIGHTMETA")
+    ok, calls = fixture.wait_calls(lambda c: ("mark", "super-tap") in c[before:])
+    check("a Super_R release shortcut runs on a tap of Super_R", ok, calls[before:])
 
     # A locked release shortcut, unlocked: runs on release, not on press.
     session.key("KEY_F5", True)
@@ -142,7 +160,7 @@ with Session(fixture, "hl-omarchy-bindings") as session:
     check("locked volume-up stops repeating on release", after.count(volume_up) == settled,
           (settled, after.count(volume_up)))
     check("unlocked-only shortcuts do not run on the lock screen (F9, Super+F7, F8)",
-          not [c for c in after if c[0] == "voxtype" or c in (("mark", "mod-release"),
+          not [c for c in after if c[0] == "voxtype" or c in (("mark", "mod-release"), ("mark", "super-accept"),
                                                               ("mark", "fn-press"), ("mark", "fn-release"))],
           after)
 

@@ -24,6 +24,8 @@ struct shortcuts_t::impl
         bool repeat  = false;
         bool locked  = false;
         bool release = false;
+        bool any_mods = false;
+        wf::activatorbinding_t keys;  // any_mods: matched on the raw key, not registered
         wf::activator_callback callback;
         uint32_t held_key  = 0;  // the key of the press this shortcut matched, until it is let go
         uint32_t held_mods = 0;  // the modifiers held at that press
@@ -31,8 +33,8 @@ struct shortcuts_t::impl
         wf::wl_timer<true> repeat_tick;
     };
 
-    wf::option_wrapper_t<wf::config::compound_list_t<wf::activatorbinding_t, std::string, bool, bool, bool>>
-    list{"scottland/shortcuts"};
+    wf::option_wrapper_t<wf::config::compound_list_t<wf::activatorbinding_t, std::string, bool, bool, bool,
+        bool>> list{"scottland/shortcuts"};
     wf::option_wrapper_t<int> kb_repeat_delay{"input/kb_repeat_delay"};
     wf::option_wrapper_t<int> kb_repeat_rate{"input/kb_repeat_rate"};
     std::vector<std::unique_ptr<shortcut_t>> shortcuts;  // stable: the repository keeps callback pointers
@@ -47,6 +49,12 @@ struct shortcuts_t::impl
 
         auto output = wf::get_core().seat->get_active_output();
         return !session_locked() && output && output->can_activate_plugin(wf::CAPABILITY_GRAB_INPUT);
+    }
+
+    /** The modifier a modifier key itself sets: still held in the state its own release reports. */
+    static uint32_t own_modifier(uint32_t keycode)
+    {
+        return wf::get_core().seat->modifier_from_keycode(keycode);
     }
 
     static void run(const shortcut_t& shortcut)
@@ -96,7 +104,10 @@ struct shortcuts_t::impl
         for (auto& shortcut : shortcuts)
         {
             let_go(*shortcut);
-            wf::get_core().bindings->rem_binding(&shortcut->callback);
+            if (!shortcut->any_mods)
+            {
+                wf::get_core().bindings->rem_binding(&shortcut->callback);
+            }
         }
 
         shortcuts.clear();
@@ -105,7 +116,7 @@ struct shortcuts_t::impl
     void load()
     {
         clear();
-        for (const auto& [name, keys, command, repeat, locked, release] : list.value())
+        for (const auto& [name, keys, command, repeat, locked, release, any_mods] : list.value())
         {
             if (command.empty())
             {
@@ -116,7 +127,9 @@ struct shortcuts_t::impl
             shortcut->command = command;
             shortcut->repeat  = repeat;
             shortcut->locked  = locked;
-            shortcut->release = release;
+            shortcut->release  = release;
+            shortcut->any_mods = any_mods;
+            shortcut->keys     = keys;
             auto *self = shortcut.get();
             shortcut->callback = [this, self] (const wf::activator_data_t& data)
             {
@@ -143,21 +156,59 @@ struct shortcuts_t::impl
 
                 return true;
             };
-            wf::get_core().bindings->add_activator(wf::create_option(keys), &shortcut->callback);
+            if (!any_mods)
+            {
+                wf::get_core().bindings->add_activator(wf::create_option(keys), &shortcut->callback);
+            }
+
             shortcuts.push_back(std::move(shortcut));
+        }
+    }
+
+    /** An any_mods shortcut's press: its key, whatever modifiers are held (the key still reaches
+     *  the focused app, as nothing claimed it). */
+    void any_mods_press(uint32_t keycode, uint32_t mods)
+    {
+        for (auto& shortcut : shortcuts)
+        {
+            if (!shortcut->any_mods || !shortcut->keys.has_match(wf::keybinding_t{0, keycode}) ||
+                !eligible(*shortcut))
+            {
+                continue;
+            }
+
+            let_go(*shortcut);
+            if (shortcut->release)
+            {
+                shortcut->held_key  = keycode;
+                shortcut->held_mods = mods;
+                continue;
+            }
+
+            run(*shortcut);
+            if (shortcut->repeat)
+            {
+                shortcut->held_key = keycode;
+                start_repeat(*shortcut);
+            }
         }
     }
 
     wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
         [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
     {
+        bool skip = (ev->mode == wf::input_event_processing_mode_t::IGNORE) || (claimed && claimed(ev));
+        uint32_t mods = wf::get_core().seat->get_keyboard_modifiers();
         if (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED)
         {
+            if (!skip)
+            {
+                any_mods_press(ev->event->keycode, mods);
+            }
+
             return;
         }
 
-        bool skip = (ev->mode == wf::input_event_processing_mode_t::IGNORE) || (claimed && claimed(ev));
-        uint32_t mods = wf::get_core().seat->get_keyboard_modifiers();
         for (auto& shortcut : shortcuts)
         {
             if (!shortcut->held_key || (shortcut->held_key != ev->event->keycode))
@@ -165,7 +216,8 @@ struct shortcuts_t::impl
                 continue;
             }
 
-            bool same_mods = (mods == shortcut->held_mods);
+            bool same_mods = shortcut->any_mods ||
+                ((mods & ~own_modifier(ev->event->keycode)) == shortcut->held_mods);
             let_go(*shortcut);
             if (shortcut->release && !skip && same_mods && eligible(*shortcut))
             {

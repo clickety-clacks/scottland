@@ -15,12 +15,17 @@ namespace scottland
  *              shortcut_repeat_<n>  = true: runs again at the keyboard's repeat rate while held
  *              shortcut_locked_<n>  = true: also runs while the session is locked
  *              shortcut_release_<n> = true: runs when the pressed key is let go, not on press
+ *              shortcut_any_mods_<n> = true: matches the key (named without modifiers, e.g.
+ *                  KEY_LEFTMETA) whatever modifiers are held, at press and at release; it is
+ *                  matched on the raw key, so the key also reaches the focused app (Hyprland's
+ *                  ignore_mods)
  *
  *  A shortcut without `locked` runs only while the session is unlocked and no other plugin holds
  *  the input, like Wayfire's ordinary bindings; with `locked` it always runs, like Wayfire's
  *  always bindings. Eligibility is checked on press, on every repeat and again on release. A
  *  release shortcut runs only for a press it matched itself (same keys, same modifiers), and only
- *  when the modifiers held at release are still the ones held at that press. Repeat and release
+ *  when the modifiers held at release are still the ones held at that press (a modifier key's own
+ *  modifier, still set as it is let go, doesn't count: Super_L alone works). Repeat and release
  *  apply to keys; a modifier-only, button or gesture activation runs once when Wayfire fires it. */
 class shortcuts_t
 {

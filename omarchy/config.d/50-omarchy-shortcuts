@@ -143,7 +143,7 @@ hl = setmetatable({
                   (opts["repeat"] or opts.repeating) and "1" or "0",
                   opts.release and "1" or "0", opts.locked and "1" or "0",
                   opts.mouse and "1" or "0", signature, option_signature(opts),
-                  from_user_omarchy_plugin() and "1" or "0" }
+                  from_user_omarchy_plugin() and "1" or "0", opts.ignore_mods and "1" or "0" }
     if not binds[id] then order[#order + 1] = id end
     binds[id] = row
     return noop
@@ -295,6 +295,8 @@ KEYSYMS = {
     "xf86launch1": "PROG1", "xf86launcha": "SCALE", "xf86display": "SWITCHVIDEOMODE",
     "xf86kbdlightonoff": "KBDILLUMTOGGLE", "xf86touchpadtoggle": "TOUCHPAD_TOGGLE",
     "xf86touchpadon": "TOUCHPAD_ON", "xf86touchpadoff": "TOUCHPAD_OFF", "xf86eject": "EJECTCD",
+    "super_l": "LEFTMETA", "super_r": "RIGHTMETA", "alt_l": "LEFTALT", "alt_r": "RIGHTALT",
+    "control_l": "LEFTCTRL", "control_r": "RIGHTCTRL", "shift_l": "LEFTSHIFT", "shift_r": "RIGHTSHIFT",
 }
 
 # Commands that only act on Hyprland itself. hyprpicker is not one: it uses the screencopy and
@@ -1095,6 +1097,7 @@ def main():
                 keys=f"Window rule: {match or 'any window'}"))
             continue
         mods, key, description, kind, arg, repeat, release, locked = (line.split("\t") + [""] * 8)[:8]
+        ignore_mods = (line.split("\t") + [""] * 13)[12] == "1"
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
         if mods == "ALT" and not key:
             omitted(label, description, "Scottland Window mode Alt hold", "window_mode",
@@ -1111,7 +1114,8 @@ def main():
             command = arg if kind == "exec" else (
                 '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
                 + shlex.quote(f"{mods}+{key}:release"))
-            wanted = combo(mods, key)
+            # ignore_mods (e.g. Yoohoo's accept on Super_L release): the key alone, whatever is held.
+            wanted = combo("" if ignore_mods else mods, key)
             if not wanted:
                 omitted(label, description, "key has no Wayfire name", kind=kind, action=arg)
                 continue
@@ -1124,7 +1128,7 @@ def main():
                         kind=kind, action=arg)
                 continue
             shortcuts.append((f"{description or label} (on release)", wanted, command,
-                              {"locked": locked == "1", "release": True}))
+                              {"locked": locked == "1", "release": True, "any_mods": ignore_mods}))
             kept += 1
             continue
         switch = SWITCH_KEY.fullmatch(key) if not mods else None
@@ -1329,7 +1333,7 @@ def main():
             print(f"# {description}")
             print(f"shortcut_keys_omarchy_{index} = {keys}")
             print(f"shortcut_command_omarchy_{index} = {command}")
-            for flag in ("repeat", "locked", "release"):
+            for flag in ("repeat", "locked", "release", "any_mods"):
                 if flags.get(flag):
                     print(f"shortcut_{flag}_omarchy_{index} = true")
         for index, (description, device, state, locked, command) in enumerate(switches):

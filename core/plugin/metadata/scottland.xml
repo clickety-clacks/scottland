@@ -392,6 +392,11 @@
 				<_long>Run when the key is let go instead of when it is pressed.</_long>
 				<default>false</default>
 			</entry>
+			<entry prefix="shortcut_any_mods_" type="bool" name="any_mods">
+				<_short>Whatever modifiers are held</_short>
+				<_long>Match the key (named without modifiers, e.g. KEY_LEFTMETA) whatever modifiers are held. The key also reaches the focused app.</_long>
+				<default>false</default>
+			</entry>
 		</option>
 		<option name="touchpad_scroll_speeds" type="dynamic-list" type-hint="dict">
 			<_short>Touchpad scroll speed per app</_short>
