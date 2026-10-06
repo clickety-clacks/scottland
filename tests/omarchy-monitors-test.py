@@ -170,7 +170,7 @@ with Session(fixture, "hl-omarchy-monitors", env={"SCOTTLAND_TEST_WRAP": str(wra
     check("the external display stays on, in place", outputs().get("DP-1") == DOCK, outputs())
     check("a closed, docked lid does not lock the session", count("omarchy-system-lock") == 0,
           fixture.calls())
-    check("the panel no longer renders (screencopy of eDP-1 fails)", capture("eDP-1", "closed") is None)
+    check("the panel produces no frames (screencopy of eDP-1 fails)", capture("eDP-1", "closed") is None)
     listed = monitors("all").get("eDP-1", {})
     check("monitors all lists the panel as disabled; monitors leaves it out",
           listed.get("disabled") is True and "eDP-1" not in monitors(), (listed, list(monitors())))
@@ -186,7 +186,7 @@ with Session(fixture, "hl-omarchy-monitors", env={"SCOTTLAND_TEST_WRAP": str(wra
     ok, seen = session.wait(lambda: outputs().get("eDP-1") == PANEL, timeout=10)
     check("lid open turns the panel back on at its scale (1.5) and position (1920x0)", ok, seen)
     shot = capture("eDP-1", "open")
-    check("the panel renders again (screencopy of eDP-1 is its 1280x720 mode)",
+    check("the panel produces frames again (screencopy of eDP-1 returns its 1280x720 mode)",
           shot is not None and shot[:2] == (1280, 720), shot and shot[:2])
     check("the clamshell toggle is gone", not flag.exists())
     panel = monitors("all").get("eDP-1", {})
