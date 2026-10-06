@@ -1525,15 +1525,14 @@
                 // Lack of clear space is never a reason to suppress an ordinary window hint.
                 bool badge_ready = true;
                 // WK41: what can still move this hint. A widget's circle rides its own widget,
-                // whose declutter shares the output with the other widgets.
+                // whose declutter relaxes every anchor on the output, windows' and widgets'.
                 bool placement_ready = solved(it->first, view->get_output()) && !animating(it->first) &&
                     (!widget || !unsettled);
                 for (auto other_id : by_output[view->get_output()])
                 {
-                    const bool other_widget = bool(link_of_widget(represented_view(other_id)));
                     if (widget)
                     {
-                        if (other_widget) placement_ready &= !animating(other_id);
+                        placement_ready &= !animating(other_id);
                         continue;
                     }
                     // A rear window can start fully covered. Wait for its and foreground
