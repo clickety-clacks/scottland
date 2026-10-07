@@ -199,8 +199,12 @@ failures leave the loose strips).
   (alignment, row length, skipped pixels and rows) and restores Wayfire's. Readings are collected
   without waiting (`glClientWaitSync` with a zero timeout) inside the render pass and otherwise by
   one 16 ms timer, armed only while a reading is in flight, starting at a rotating output. All of
-  them share one allowance of two slots per main-loop dispatch, refilled by an idle callback once
-  the dispatch's events are handled. A reading applies only if no impulse, source or settings
+  them share one allowance (`goo-allowance.hpp`): at most two slots are examined between two
+  consecutive waits of the main loop. An idle callback cannot refill it, because an idle added by
+  another idle runs in the same dispatch. Instead the first collection after a refill queues an
+  idle that closes the allowance and writes an eventfd, and only that descriptor's callback
+  refills; it cannot run before the loop's next `epoll_wait`. Without an eventfd nothing is
+  collected and the renderers use the timed fallback. A reading applies only if no impulse, source or settings
   change or wake happened since it was issued (the invalidation counter), it is of the current
   generation (a resize or a new output mode, scale or transform starts one and retires the slots
   in flight), the size is the same and it is newer than the last applied one. A GL error on the
@@ -217,10 +221,15 @@ with that number in the exception table; the x86 test machine (busy with a VM bu
 are not measured yet. `tests/goo-readback-test.py`: no GPU read on pointer motion; the goo
 sleeps on asynchronous readings; nothing stays in flight once asleep; readings held in flight
 (test switch) across a change, a resize A→B→A or a reload don't apply; a full ring is collected
-oldest first at most two slots per dispatch, also with two outputs; an output removed with
+oldest first, both goos settle with two outputs; an output removed with
 readings in flight; a failed read over a known prior buffer value (Astra's pack-state probe), a
 failed wait, map or unmap each apply nothing and sleep at about 6 s, observed in the compositor's
 CPU time; legal incoming pack state is normalized and readings still apply.
+`tests/goo-allowance-unit.sh` runs the allowance on a real `wl_event_loop`, counting the loop's
+`epoll_wait` calls through interposition rather than trusting the allowance's own state: a timer
+that adds an idle collector (the review's reproduction, four slots under the old idle refill),
+and rounds mixing idles, a timer, ready descriptors, a post-dispatch check source and idle
+chains, each examine at most two slots per wait interval while collection keeps going.
 
 ## Window mode entry (ML8)
 

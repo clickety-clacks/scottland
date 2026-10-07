@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include "goo-allowance.hpp"
 #include "goo-model.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <memory>
@@ -59,10 +60,9 @@ class renderer_t
     int readback_in_flight() const;
     /** Examine at most `budget` busy slots (shared across outputs). In a GL context. */
     void collect(int &budget);
-    /** The collection allowance of the current main-loop dispatch, shared by every output's
-     *  renderer and the collection timer; `spent` arranges its refill after the dispatch. */
-    struct allowance_t { int left = 2; std::function<void()> spent; uint64_t examined = 0; };
-    allowance_t *allowance = nullptr;
+    /** The collection allowance shared by every output's renderer and the collection timer
+     *  (goo-allowance.hpp); without one a renderer examines at most two slots per step. */
+    collect_allowance_t *allowance = nullptr;
     /** The output changed (mode, scale, transform) or was recreated: readings in flight are
      *  retired and none issued before applies, even at equal dimensions. In a GL context. */
     void new_generation();

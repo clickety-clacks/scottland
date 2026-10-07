@@ -1012,28 +1012,13 @@ struct goo_t::impl
 {
     work::worker_t *worker = nullptr;
     // Energy readings are collected inside each output's render pass and otherwise by this one
-    // timer for all outputs, armed only while some reading is in flight; at most two slots are
-    // examined per run across all outputs (main-loop Phase 3).
+    // timer for all outputs, armed only while some reading is in flight; all of them share one
+    // allowance of two slots between two waits of the main loop (main-loop Phase 3,
+    // goo-allowance.hpp). The timer starts at a rotating output, so an unsignalled reading on one
+    // output doesn't keep deferring another's.
     wf::wl_timer<true> collect_tick;
-    // One allowance per main-loop dispatch, whichever outputs render or the timer collects in
-    // it: refilled by an idle callback, which Wayfire's loop runs once the dispatch's events are
-    // handled. The timer starts at a rotating output, so an unsignalled reading on one output
-    // doesn't keep deferring another's.
-    goo::renderer_t::allowance_t allowance;
-    wf::wl_idle_call refill;
+    goo::collect_allowance_t allowance{wf::get_core().ev_loop};
     size_t collect_cursor = 0;
-    uint64_t examined_max = 0;  // the most slots examined in one dispatch (goo-state)
-    void spent()
-    {
-        if (allowance.left < 2 && !refill.is_connected())
-            refill.run_once([this]
-            {
-                SCOTTLAND_LOOP_SCOPE(goo_collect_refill);
-                examined_max = std::max(examined_max, allowance.examined);
-                allowance.examined = 0;
-                allowance.left = 2;
-            });
-    }
     void arm_collect()
     {
         if (collect_tick.is_connected()) return;
@@ -1050,7 +1035,7 @@ struct goo_t::impl
                 size_t first = order.empty() ? 0 : collect_cursor++ % order.size();
                 for (size_t i = 0; i < order.size(); i++)
                     order[(first + i) % order.size()]->state.renderer.collect(allowance.left);
-                spent();
+                allowance.spent();
                 for (auto *n : order)
                     pending |= n->state.renderer.readback_pending();
             });
@@ -1133,7 +1118,6 @@ struct goo_t::impl
         n->readback_issued = [this] { arm_collect(); };
         n->state.renderer.allowance = &allowance;
         n->shrink_hold = shrink_hold;
-        allowance.spent = [this] { spent(); };
         n->breath_keys = breath_keys;
         n->failed = [this]
         {
@@ -1412,9 +1396,6 @@ struct goo_t::impl
             list.append(s);
         }
         out["screens"] = list;
-        out["collect_max_per_dispatch"] = (int64_t)examined_max;
-        if (data.has_member("reset_collect") && data["reset_collect"].is_bool() && data["reset_collect"].as_bool())
-            examined_max = 0;
         return out;
     };
 };

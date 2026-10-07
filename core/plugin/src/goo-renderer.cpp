@@ -920,10 +920,10 @@ bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &
     if (!impulses.empty()) invalidation++;
     if (!timed_sleep())
     {
-        // The dispatch's one allowance, shared by every output (main-loop Phase 3).
+        // The allowance shared by every output (main-loop Phase 3).
         int own = 2;
         collect(allowance ? allowance->left : own);
-        if (allowance && allowance->spent) allowance->spent();
+        if (allowance) allowance->spent();
         if (steps % 30 == 0)
         {
             if (p->issue(steps, invalidation)) readings_issued++;
@@ -1420,7 +1420,7 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
 }
 bool renderer_t::timed_sleep() const
 {
-    return force_timed_sleep || !p->es3 || p->readback_failed;
+    return force_timed_sleep || !p->es3 || p->readback_failed || (allowance && !allowance->usable());
 }
 bool renderer_t::readback_pending() const
 {
@@ -1447,14 +1447,13 @@ std::string renderer_t::gl_description() const
 }
 std::string renderer_t::readback_mode() const
 {
-    return force_timed_sleep ? "timed (test)" : !p->es3 ? "timed (GLES 2)" : p->readback_failed ? "timed (readback failed)" : "async";
+    return force_timed_sleep ? "timed (test)" : !p->es3 ? "timed (GLES 2)" : p->readback_failed ? "timed (readback failed)"
+         : allowance && !allowance->usable() ? "timed (no collection allowance)" : "async";
 }
 void renderer_t::collect(int &budget)
 {
     std::vector<impl::reading_t> readings;
-    int before = budget;
     p->collect(budget, readings);
-    if (allowance) allowance->examined += before - budget;  // tests: slots examined per dispatch
     if (p->readback_failed) return;
     for (auto &r : readings)
     {

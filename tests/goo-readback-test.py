@@ -5,7 +5,8 @@ or force a failure; the checks are on what the goo then applies and does:
 - pointer motion over halos runs no GPU read (no goo_sample_at scope); the goo still falls asleep
   on asynchronous readings;
 - readings held in flight across a change, a resize A->B->A or a reload never apply; a full ring
-  is collected oldest first, at most two slots per dispatch across outputs;
+  is collected oldest first (the two-slot bound between main-loop waits is goo-allowance-unit's,
+  measured there against the event loop's own waits);
 - a failed read (the incoming pack state Astra's probe used, over a known prior buffer value), a
   failed wait, map or unmap applies nothing and enters the timed fallback: the goo keeps
   simulating until 6 s after the last change (observed in the compositor's CPU time, not only in
@@ -123,20 +124,16 @@ try:
     check('... and the goo still settles on later readings', g['sleeping'] and g['readings_applied'] > applied0, g)
 
     # 3. A full ring (four slots), then released: collected oldest first (an out-of-order
-    # collection would make the older ones stale), at most two slots per dispatch.
+    # collection would make the older ones stale).
     fault('hold'); nudge(2)
     g = wait(lambda g: g['readings_in_flight'] == 4 and g['readings_skipped'] > 0, 8)
     stale0, applied0 = g['readings_stale'], g['readings_applied']
     check('test switch: the ring is full and further readings are skipped, never waited for',
           g['readings_in_flight'] == 4, g)
-    ipc('scottland/goo-state', {'reset_collect': True})
     fault('')
     g = wait(lambda g: g['readings_in_flight'] == 0 or g['readings_applied'] - applied0 >= 4, 3)
-    state = ipc('scottland/goo-state')
     check(f"released ring: {g['readings_applied'] - applied0} applied in issue order, {g['readings_stale'] - stale0} stale",
           g['readings_applied'] - applied0 >= 4 and g['readings_stale'] == stale0, (applied0, stale0, g))
-    check(f"at most two slots examined per dispatch ({state['collect_max_per_dispatch']})",
-          0 < state['collect_max_per_dispatch'] <= 2, state['collect_max_per_dispatch'])
     wait(lambda g: g['sleeping'], 20)
 
     # 4. Resize A -> B -> A with readings in flight: a new generation each time; none applies
@@ -194,8 +191,8 @@ try:
           g['sleeping'] and g['readings_applied'] > applied0 and g['readback'] == 'async', g)
     fault('')
 
-    # 7. A second output: one allowance per dispatch across both, both settle, and removing an
-    # output with readings in flight leaves the other working.
+    # 7. A second output: both goos share one collection allowance and both settle, and removing
+    # an output with readings in flight leaves the other working.
     second = ipc('wayfire/create-headless-output', {'width': 1024, 'height': 768})['output']
     time.sleep(1)
     moved = next(v for v in ipc('window-rules/list-views') if v.get('title') == 'rb-6')
@@ -208,14 +205,10 @@ try:
     check('the second output has its own goo, with a window on it', len(screens()) == 2 and on_second, (len(screens()), on_second))
     if len(screens()) == 2 and on_second:
         wait(lambda g: g['sleeping'], 25, 1)
-        ipc('scottland/goo-state', {'reset_collect': True})
         a0, b0 = goo(0)['readings_applied'], goo(1)['readings_applied']
         nudge(0); place2(260)
         wait(lambda g: not g['sleeping'], 3, 0); wait(lambda g: not g['sleeping'], 3, 1)
         g0, g1 = wait(lambda g: g['sleeping'], 25, 0), wait(lambda g: g['sleeping'], 25, 1)
-        state = ipc('scottland/goo-state')
-        check(f"two outputs awake together: at most two slots examined per dispatch across both ({state['collect_max_per_dispatch']})",
-              0 < state['collect_max_per_dispatch'] <= 2, state['collect_max_per_dispatch'])
         check('both outputs settle on applied readings', g0['sleeping'] and g1['sleeping'] and
               g0['readings_applied'] > a0 and g1['readings_applied'] > b0, (a0, b0, g0['readings_applied'], g1['readings_applied']))
         fault('hold'); place2(200)
