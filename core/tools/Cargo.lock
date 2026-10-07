@@ -502,6 +502,17 @@ name = "scottland-lib"
 version = "0.2.0"
 
 [[package]]
+name = "scottland-system-stats"
+version = "0.2.0"
+
+[[package]]
+name = "scottland-weather"
+version = "0.2.0"
+dependencies = [
+ "scottland-lib",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -74,6 +74,7 @@ package_scottland() {
   install -Dm644 "$_root/core/apps/weather/shell.qml" "$pkgdir/usr/share/scottland/apps/weather/shell.qml"
   install -Dm644 "$_root/core/apps/weather/runtime.py" "$pkgdir/usr/share/scottland/apps/weather/runtime.py"
   install -Dm644 "$_root/core/apps/weather/scottland-weather.desktop" "$pkgdir/usr/share/applications/scottland-weather.desktop"
+  install -Dm644 "$_root/core/system-stats/scottland-system-stats.desktop" "$pkgdir/usr/share/applications/scottland-system-stats.desktop"
   install -Dm755 "$_root/core/autostart.d/05-import-environment" "$pkgdir/usr/lib/scottland/autostart.d/05-import-environment"
   install -dm755 "$pkgdir/usr/lib/scottland/early-exit.d" "$pkgdir/usr/lib/scottland/session-env.d"
   install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

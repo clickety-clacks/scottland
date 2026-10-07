@@ -71,6 +71,7 @@ tenets themselves. Status says whether every feature that should follow one does
 | L15 | Scottland copies the display scale the user's Hyprland uses (e.g. 4K panels are not tiny). | not built |
 | L16 | How widgets sit on a rail: free-floating where dropped, at the widget's own size ([docs/widgets.md](../docs/widgets.md), WG4). | implemented (headless) |
 | L36 | Core Weather (`scottland-weather`) fetches current conditions for Scottland's location on launch and every 15 minutes, with units following the locale. Every widget reading includes a status and RFC 3339 `fetchedAt`, including unavailable and no-location outcomes; current and stale readings also carry the last successful conditions and `updated` time. The app publishes through WG11 on the existing WG9 data path when WG12 reports it widgetized. Core ships the app and desktop entry; Flavorings owns the separate Weather widget package. See [WG9, WG11 and WG12](../docs/widgets.md). | pending verification |
+| L37 | Core System Stats (`scottland-system-stats`) reads CPU, memory and load every two seconds; each unavailable value and the `updated` reading time is `null`. The app publishes through WG11 on the existing WG9 data path when WG12 reports it widgetized. Core ships the app and desktop entry; Flavorings owns the separate System Stats widget package. See [WG9, WG11 and WG12](../docs/widgets.md). | pending verification |
 
 L33 changes the move renderer for L8–L10, L23/L25/L27/L29/L31/L32 and A5/A12.
 Their current-path validation is isolated headless input and pixel checks, recorded in

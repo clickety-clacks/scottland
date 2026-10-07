@@ -57,6 +57,14 @@ WG11 data method over the WG9 widget service after WG12 reports the app widgetiz
 hooks expose the app at `apps/weather`; the Arch package installs the app assets and
 `scottland-weather.desktop`. The Weather widget package remains separate in Flavorings.
 
+## System Stats app
+
+`bin/system-stats` installs `scottland-system-stats`, the launcher for the core Quickshell app in
+`core/system-stats`. It reads CPU, memory and load every two seconds; unavailable values and the
+`updated` reading time are `null`. The app publishes widget readings through the existing WG11
+method over the WG9 service when WG12 reports it widgetized. The Arch package installs
+`scottland-system-stats.desktop`; the System Stats widget package remains separate in Flavorings.
+
 ## Build, test, install
 
     make tools          # build every tool into build/tools/bin
