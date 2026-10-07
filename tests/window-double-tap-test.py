@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""WK15/16: physical hint presses with human dwell and repeat timing."""
+"""WK15/16: physical hint presses with human dwell and repeat timing.
+
+A double-tap is two final-key releases within the interval (Mike, 2026-10-07). A repeat pressed
+inside the interval but released after it is an ordinary press, never the rail."""
 import json
 from itertools import product
 import os
@@ -77,13 +80,19 @@ try:
         if width==2:
             for index in range(2,27): overflow=launch(index)
         targets=(primary,) if width==1 or '--quick' in sys.argv else (primary,overflow)
+        # (timing, interval, dwell, double-tap expected): 'press' spaces the complete hints'
+        # final-key presses, 'release' and 'late' their final-key releases.
         cases=list(product(targets,(False,True),(True,False),
-            [('press',.18,.06),('press',.25,.10),('gap',.15,.08),('gap',.25,.12)]))
+            [('press',.18,.06,True),('press',.25,.10,True),('release',.20,.08,True),
+             ('release',.26,.10,True),('late',.37,.12,False)]))
+        # Focused, the first press already steps to periphery and a slow second press reaches
+        # the widget anyway (WK7), so only an unfocused target tells a late repeat apart.
+        cases=[c for c in cases if c[3][0]!='late' or not c[2]]
         if '--quick' in sys.argv:
-            cases=[c for c in cases if not c[2] and c[3][0]=='gap']
+            cases=[c for c in cases if not c[2] and c[3][0]=='release']
         if '--guards-only' in sys.argv: cases=[]
         for target, always, focused, timing_case in cases:
-            timing,interval,dwell=timing_case
+            timing,interval,dwell,expect=timing_case
             ipc('wayfire/set-config-options',{'scottland/window_avoidance_always':always,
                 'scottland/window_double_tap_delay':300})
             ipc('scottland/present',{'window':target})
@@ -102,19 +111,22 @@ try:
             first_geometry=geometry(target)
             assert (first_geometry==before)==(not focused), 'WK6 first press'
             if timing=='press': sleep_until(events[-2]['time']+interval-(width-1)*(dwell+.02))
-            else: time.sleep(interval)
+            else: sleep_until(events[-1]['time']+interval-(width*dwell+(width-1)*.02))
             sequence(text,dwell)
             time.sleep(.6)
             result={'width':width,'always':always,'focused':focused,'timing':timing,'target':target,
+                'expect':expect,
                 'interval_ms':interval*1000,'dwell_ms':dwell*1000,'label':text,
                 'events':events.copy(),'first_selected':first['selected'],
                 'widgetized':view(target)['widgetized'],'hints_active':hints()['active'],
                 'release_gap_ms':(events[width*2]['time']-events[width*2-1]['time'])*1000,
-                'press_delta_ms':(events[(width*2)+(width-1)*2]['time']-events[(width-1)*2]['time'])*1000}
+                'press_delta_ms':(events[(width*2)+(width-1)*2]['time']-events[(width-1)*2]['time'])*1000,
+                'release_delta_ms':(events[-1]['time']-events[width*2-1]['time'])*1000}
             results.append(result)
-            print(('PASS' if result['widgetized'] else 'FAIL')+
+            print(('PASS' if result['widgetized']==expect else 'FAIL')+
                 f' {text} focused={focused} avoidance={always} {timing}={interval*1000:.0f}ms dwell={dwell*1000:.0f}ms'
-                f' complete-press delta={result["press_delta_ms"]:.1f}ms',flush=True)
+                f' {"rail" if expect else "no rail"} complete-press delta={result["press_delta_ms"]:.1f}ms'
+                f' release delta={result["release_delta_ms"]:.1f}ms',flush=True)
             key('LEFTALT',False)
             time.sleep(.1)
         if '--quick' not in sys.argv:
@@ -147,14 +159,14 @@ try:
             print('PASS '+text+' Tab clears repeat recognition',flush=True)
             if width==2:
                 text=reset()
-                sequence(text,.12); time.sleep(.25)
-                sequence(text[:1],.12)
+                sequence(text,.06); time.sleep(.06)
+                sequence(text[:1],.06)
                 assert not view(primary)['widgetized'], 'prefix triggered a rail action'
-                sequence(text[1:],.12)
+                sequence(text[1:],.06)
                 wait(lambda: view(primary)['widgetized'])
                 print('PASS '+text+' repeated prefix waits for the complete hint',flush=True)
             text=reset()
-            sequence(text,.08); time.sleep(.12); sequence(text,.08)
+            sequence(text,.08); time.sleep(.06); sequence(text,.08)
             wait(lambda: view(primary)['widgetized'])
             widget=wait(lambda: next((w['widget_view'] for w in ipc('scottland/widgets')['widgets']
                 if int(w['id'])==primary and w['widget_view']>0),None))
@@ -163,13 +175,13 @@ try:
             key('LEFTALT',True); wait(lambda: hints()['active'])
             assert hints()['selected']==primary, 'widget focus fixture'
             text=label(primary)
-            sequence(text,.12); time.sleep(.25); sequence(text,.12)
+            sequence(text,.08); time.sleep(.06); sequence(text,.08)
             wait(lambda: view(primary)['widgetized'])
             print('PASS '+text+' focused-widget human double-tap returns to rail',flush=True)
             key('LEFTALT',False)
         subprocess.run(['grim',str(art/('width-'+str(width)+'.png'))],check=True)
     (art/'results.json').write_text(json.dumps(results,indent=2))
-    assert all(r['widgetized'] and r['hints_active'] and r['first_selected']==r['target'] for r in results)
+    assert all(r['widgetized']==r['expect'] and r['hints_active'] and r['first_selected']==r['target'] for r in results)
 finally:
     key('LEFTALT',False)
     for client in clients:
