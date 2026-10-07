@@ -116,6 +116,7 @@ Specified in windowing-keys.md WK36 and WP1.
 
 | Date | Ruling | Where |
 |---|---|---|
+| 10-07 | Sunlight changes light/dark only when day becomes night or night becomes day; a manual change holds until the next transition. | A15, S21, O18 |
 | 10-03 | Overrides of Omarchy are reported with reasons, grouped by reason, explained by the user's default coding agent in plain words, leading with the user's own custom shortcuts. | O20 |
 | 10-03 | Gooarchy flavorings (curated widgets and defaults) install with the distro and with the Omarchy adapter; they may override Omarchy only where that's better for Gooarchy, always reported. | O21, P9 |
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |

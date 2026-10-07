@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Follow local sunrise/sunset while preserving a user-picked matching theme.
+"""Follow sunrise/sunset, applying light/dark only at a solar transition.
 
 Configuration: ~/.config/scottland/solar.ini, written by Scottland Settings.
-The current desired mode is published per Wayland session for distro adapters.
+The per-session mode file is published for distro adapters.
 """
+from contextlib import contextmanager
 import configparser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import fcntl
 import json
 import math
 import os
@@ -18,7 +20,8 @@ from urllib.request import urlopen
 
 CONFIG = Path(os.environ.get("SCOTTLAND_SOLAR_FILE", str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
 STATE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/"scottland"
-MODE = STATE/(os.environ.get("WAYLAND_DISPLAY", "wayland") + ".solar-mode")
+MODE = Path(os.environ.get("SCOTTLAND_SOLAR_MODE_FILE", str(STATE/(os.environ.get("WAYLAND_DISPLAY", "wayland") + ".solar-mode"))))
+TRANSITION = Path(os.environ.get("SCOTTLAND_SOLAR_TRANSITION_FILE", str(STATE/"solar-transition.json")))
 
 
 def coordinates(lat, lon):
@@ -83,8 +86,8 @@ def ip_location():
         return None
 
 
-def solar_mode(now, latitude, longitude):
-    """NOAA solar position: day begins/ends with the sun's upper limb at the horizon."""
+def solar_parameters(now):
+    """Return UTC time, minutes since midnight, equation of time, and declination."""
     now = now.astimezone(timezone.utc)
     day = now.timetuple().tm_yday
     minutes = now.hour * 60 + now.minute + now.second / 60
@@ -94,10 +97,52 @@ def solar_mode(now, latitude, longitude):
     decl = (0.006918 - 0.399912*math.cos(gamma) + 0.070257*math.sin(gamma)
             - 0.006758*math.cos(2*gamma) + 0.000907*math.sin(2*gamma)
             - 0.002697*math.cos(3*gamma) + 0.00148*math.sin(3*gamma))
+    return now, minutes, eq, decl
+
+
+def solar_noon(day, longitude):
+    """Find true solar noon in UTC for a UTC calendar date."""
+    guess = datetime.combine(day, datetime.min.time(), timezone.utc) + timedelta(minutes=720 - 4*longitude)
+    for _ in range(5):
+        _, minutes, eq, _ = solar_parameters(guess)
+        apparent_minutes = minutes + eq + 4*longitude
+        target_noon = 720 + 1440*round((apparent_minutes - 720) / 1440)
+        guess += timedelta(minutes=target_noon - apparent_minutes)
+    return guess
+
+
+def solar_mode(now, latitude, longitude):
+    """NOAA solar position: day begins/ends with the sun's upper limb at the horizon."""
+    now, minutes, eq, decl = solar_parameters(now)
     hour_angle = math.radians(((minutes + eq + 4*longitude) % 1440) / 4 - 180)
     lat = math.radians(latitude)
     altitude_sine = math.sin(lat)*math.sin(decl) + math.cos(lat)*math.cos(decl)*math.cos(hour_angle)
     return "light" if altitude_sine > math.sin(math.radians(-0.833)) else "dark"
+
+
+def solar_transition(now, latitude, longitude):
+    """Return the current mode and the most recent sunrise/sunset event identity."""
+    now = now.astimezone(timezone.utc)
+    mode = solar_mode(now, latitude, longitude)
+    for days_back in range(371):
+        solar_midday = solar_noon(now.date() - timedelta(days=days_back), longitude)
+        # Daylight contains solar noon; darkness contains solar midnight. Sampling these
+        # extrema cannot skip a short seasonal day or night near the polar circle.
+        lower = solar_midday if mode == "dark" else solar_midday - timedelta(hours=12)
+        if lower >= now or solar_mode(lower, latitude, longitude) == mode:
+            continue
+        upper = now
+        while (upper - lower).total_seconds() > 1:
+            middle = lower + (upper - lower) / 2
+            if solar_mode(middle, latitude, longitude) == mode:
+                upper = middle
+            else:
+                lower = middle
+        event = upper.replace(second=0, microsecond=0)
+        return mode, event.strftime("%Y-%m-%dT%H:%MZ")
+    # Polar day/night can last longer than a year. It is still one stable period until
+    # an actual sunrise or sunset appears within the lookback window.
+    return mode, "no-recent-transition:" + mode
 
 
 def current_mode():
@@ -126,51 +171,171 @@ def publish(mode):
 
 
 def apply(mode):
-    publish(mode)
     if current_mode() != mode:
         subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
                         "prefer-" + mode], check=True)
+    publish(mode)
 
 
-def run_once():
-    config = read_config()
-    if not config["enabled"]:
-        MODE.unlink(missing_ok=True)
+@contextmanager
+def transition_lock():
+    TRANSITION.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(TRANSITION.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def read_transition():
+    try:
+        record = json.loads(TRANSITION.read_text())
+    except FileNotFoundError:
         return None
-    location = geoclue_location() or config["location"]
-    if location is None and config["allow_ip"]:
-        location = ip_location()
+    if not isinstance(record, dict) or record.get("schema") != 1:
+        raise ValueError(f"unsupported transition record at {TRANSITION}")
+    return record
+
+
+def write_transition(record):
+    TRANSITION.parent.mkdir(parents=True, exist_ok=True)
+    temporary = TRANSITION.with_name(TRANSITION.name + "." + str(os.getpid()) + ".tmp")
+    try:
+        temporary.write_text(json.dumps(record, sort_keys=True) + "\n")
+        temporary.replace(TRANSITION)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def location_key(location):
+    return [round(location[0], 6), round(location[1], 6)]
+
+
+def empty_transition_record():
+    return {"schema": 1, "enabled": False, "location": None, "mode": None,
+            "transition_id": None, "last_applied": None, "consumer_ack": None}
+
+
+def disable():
+    with transition_lock():
+        record = read_transition() or empty_transition_record()
+        if record.get("enabled"):
+            record["enabled"] = False
+            record["consumer_ack"] = record.get("transition_id")
+            write_transition(record)
+        MODE.unlink(missing_ok=True)
+
+
+def reconcile(config, location, now, event=None, allow_location_change=False):
+    if not config["enabled"]:
+        disable()
+        return None
     if location is None:
         print("scottland-solar-theme: set fallback coordinates in Settings", file=sys.stderr)
         return None
-    desired = solar_mode(datetime.now(timezone.utc), *location)
-    apply(desired)
-    return desired
+
+    mode, transition_id = event or solar_transition(now, *location)
+    current_location = location_key(location)
+    with transition_lock():
+        previous = read_transition()
+        first_run = previous is None
+        reenabled = previous is not None and not previous.get("enabled", False)
+        location_changed = previous is not None and previous.get("location") != current_location
+        transition_changed = previous is not None and previous.get("transition_id") != transition_id
+        if location_changed and not (reenabled or allow_location_change):
+            # A Settings Save that changes the saved location changes the future schedule,
+            # not the current theme. The active watcher keeps its in-memory event baseline
+            # and applies at the next actual transition.
+            return mode
+
+        apply_now = first_run or reenabled or allow_location_change or (not location_changed and transition_changed)
+        if apply_now:
+            apply(mode)
+            write_transition({"schema": 1, "enabled": True, "location": current_location,
+                              "mode": mode, "transition_id": transition_id,
+                              "last_applied": {"mode": mode, "transition_id": transition_id},
+                              "consumer_ack": None})
+        elif previous is not None and previous.get("transition_id") == transition_id:
+            # Each Wayland session publishes its current period; this is not an apply event.
+            publish(mode)
+    return mode
+
+
+def locate(config):
+    location = geoclue_location() or config["location"]
+    if location is None and config["allow_ip"]:
+        location = ip_location()
+    return location
+
+
+def run_once(now=None, location_override=None):
+    config = read_config()
+    now = now or datetime.now(timezone.utc)
+    if not config["enabled"]:
+        return reconcile(config, None, now)
+    location = location_override if location_override is not None else locate(config)
+    return reconcile(config, location, now)
 
 
 def watch():
-    # A saved preference is observed promptly; location is refreshed between days.
     last_config = None
     location = None
     location_at = 0
+    last_check = None
+    seen_location = None
+    seen_transition = None
+    seen_mode = None
     while True:
         config = read_config()
+        now = datetime.now(timezone.utc)
+        monotonic_now = time.monotonic()
         if not config["enabled"]:
-            MODE.unlink(missing_ok=True)
+            try:
+                disable()
+            except (OSError, ValueError) as error:
+                print(f"scottland-solar-theme: transition state unavailable: {error}", file=sys.stderr)
             location = None
+            seen_location = None
+            seen_transition = None
+            seen_mode = None
         else:
-            now = time.monotonic()
-            if config != last_config or now-location_at > 12*3600:
-                location = geoclue_location() or config["location"]
-                if location is None and config["allow_ip"]:
-                    location = ip_location()
-                location_at = now
+            if config != last_config or monotonic_now-location_at > 12*3600:
+                location = locate(config)
+                location_at = monotonic_now
             if location is not None:
+                current_location = location_key(location)
+                desired = solar_mode(now, *location)
                 try:
-                    apply(solar_mode(datetime.now(timezone.utc), *location))
-                except (OSError, subprocess.CalledProcessError) as error:
+                    previous = read_transition()
+                    location_changed_in_process = seen_location is not None and seen_location != current_location
+                    long_gap = last_check is not None and now - last_check > timedelta(hours=1)
+                    needs_scan = (previous is None or not previous.get("enabled", False)
+                                  or seen_transition is None or long_gap
+                                  or location_changed_in_process)
+                    if seen_location == current_location and seen_mode != desired:
+                        needs_scan = True
+                    if seen_location is None and (previous is None
+                                                  or previous.get("location") == current_location
+                                                  or previous.get("mode") != desired):
+                        needs_scan = True
+                    if needs_scan:
+                        event = solar_transition(now, *location)
+                    else:
+                        event = (desired, seen_transition or previous["transition_id"])
+                    event_changed_during_watch = (seen_location == current_location
+                                                  and seen_transition is not None
+                                                  and event[1] != seen_transition)
+                    reconcile(config, location, now, event,
+                              allow_location_change=event_changed_during_watch)
+                    seen_location = current_location
+                    seen_transition = event[1]
+                    seen_mode = desired
+                except (OSError, ValueError, subprocess.CalledProcessError) as error:
                     print(f"scottland-solar-theme: apply failed: {error}", file=sys.stderr)
         last_config = config
+        last_check = now
         time.sleep(10)
 
 
