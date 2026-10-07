@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Weather
+Comment=Current conditions at the Scottland location
+Exec=scottland-exec -- scottland-weather
+Icon=weather
+Categories=Utility;
+StartupWMClass=scottland-weather
+Terminal=false
