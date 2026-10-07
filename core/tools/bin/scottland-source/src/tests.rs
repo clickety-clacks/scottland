@@ -220,7 +220,7 @@ fn package_removal_drops_switch_before_mechanism_links() {
         .unwrap();
 
     assert_eq!(report.removed, ["switch", "link example-tool"]);
-    assert!(fs::symlink_metadata(paths.switch).is_err());
+    assert!(fs::symlink_metadata(&paths.switch).is_err());
     assert!(fs::symlink_metadata(paths.tool_link("example-tool")).is_err());
 }
 
