@@ -245,7 +245,6 @@ try:
     focus_pointer(b, .82)
     wait_opacity(b, 1.0, 'focused window starts opaque')
     foreground = Shot('foreground-opaque')
-    fg_overlap = foreground.pixel(overlap_x, overlap_y)
     fg_visible_b = foreground.pixel(visible_b_x, visible_b_y)
     check('solid foreground fixture is distinguishable from desktop', distance(fg_visible_b, desktop_b) > 40)
 
@@ -257,8 +256,9 @@ try:
     check('sub-unity target toggles to opaque', first['override'] == 'opaque' and status(b)['override'] == 'opaque')
     wait_opacity(b, 1.0, 'opaque override animation settles')
     opaque = Shot('toggle-opaque')
+    opaque_foreground = opaque.pixel(visible_b_x, visible_b_y)
     check('opaque override produces unblended foreground pixels',
-          distance(opaque.pixel(overlap_x, overlap_y), fg_overlap) <= 3)
+          distance(opaque.pixel(overlap_x, overlap_y), opaque_foreground) <= 3)
     second = toggle(b)
     check('next toggle clears the override', second['override'] == 'none' and status(b)['override'] == 'none')
     wait_opacity(b, .65, 'cleared override restores the focused zone target')
@@ -277,7 +277,7 @@ try:
     check('unity target toggles to translucent', translucent['override'] == 'translucent')
     wait_opacity(b, .985, 'focused translucent pair')
     rendered = Shot('translucent-focused')
-    expected = blend(fg_overlap, bg_overlap, .985)
+    expected = blend(opaque_foreground, bg_overlap, .985)
     check('0.985 focused override matches rendered overlap blend',
           distance(rendered.pixel(overlap_x, overlap_y), expected) <= 5)
 
