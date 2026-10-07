@@ -4888,7 +4888,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (drag->view != view)
         {
             if (hold.window == hold.partner) solo_window(hold.window);  // not movable: commit outright
-            else pair_windows(hold.window, hold.partner);
+            else pair_windows(hold.window, hold.partner, true);
             return;
         }
         drag->suspend(true);
@@ -5798,6 +5798,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::pointf_t solo_at{0, 0};
         wf::output_t *output = nullptr;
         std::string signature;
+        // Windows shown joining from another screen, drawn in front of everything meanwhile
+        // (each output draws only its own windows).
+        std::vector<std::unique_ptr<scottland::view_lift_t>> lifts;
     };
     std::optional<hold_offer_t> hold_offer;
     static constexpr double HOLD_OFFER_EASE_MS = 240;  // showing an offer, and easing it back
@@ -5835,6 +5838,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (!window->is_mapped() || !frame_of(window, false)) return;
             a.shown = window_id;
         }
+        // Shown on another screen than its own: lift it so that screen draws it (the dragged
+        // window is drawn that way already).
+        auto shown = wf::toplevel_cast(view_by_id(a.shown));
+        if (shown && shown->get_output() != output && shown != drag->view)
+        {
+            o.lifts.push_back(std::make_unique<scottland::view_lift_t>(shown));
+            // The held window stays in front of the one joining it, and the ring in front of both.
+            if (drag->view && drag->is_live())
+                wf::scene::readd_front(wf::get_core().scene(), drag->view->get_transformed_node());
+            if (hold_ring) hold_ring->placed = false;
+        }
         o.actors.push_back(a);
     }
 
@@ -5869,8 +5883,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     }
 
     // Everything the offer drew, gone at once (offsets and card morphs).
-    void clear_offer_presentation(const hold_offer_t& o)
+    void clear_offer_presentation(hold_offer_t& o)
     {
+        o.lifts.clear();  // back into their own screens' scenes
         for (const auto& a : o.actors)
         {
             auto view = wf::toplevel_cast(view_by_id(a.shown));
@@ -5923,7 +5938,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             // Pair: both windows' real places, including a widget (as its app) and a window that
             // joins from another screen (WK36).
-            if (auto plan = plan_pair(window_id, partner))
+            if (auto plan = plan_pair(window_id, partner, true))
                 for (auto [view, at] : {std::pair{plan->left, plan->fit.left}, std::pair{plan->right, plan->fit.right}})
                     add_offer_actor(o, view->get_id(), at.x, at.y, plan->fit.scale, plan->output);
             hold_offer = std::move(o);
@@ -6039,6 +6054,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         hold_offer_tick.disconnect();
         hold_offer_abandoned.disconnect();
         hold_offer.reset();
+        offer.lifts.clear();  // the pair moves a window joining from another screen there for real
         // Card morphs end now: the restored app takes their place at the same spot and size.
         for (const auto& a : offer.actors)
             if (a.card)
@@ -6047,7 +6063,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         restore_without_grow = true;
         if (!offer.solo)
         {
-            pair_windows(offer.window, offer.partner);  // each pair window glides from its preview
+            pair_windows(offer.window, offer.partner, true);  // each pair window glides from its preview
         } else if (offer.result)
         {
             auto window = wf::toplevel_cast(view_by_id(offer.window));

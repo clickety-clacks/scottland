@@ -1049,7 +1049,12 @@
     static constexpr double PAIR_GAP = scottland::HALO; // a halo-sized gap (P7)
     wf::wl_timer<false> deferred_pair;
     wf::wl_idle_call deferred_pair_ready;
-    void pair_windows(uint64_t held_id, uint64_t partner_id, int attempts = 0)
+    // on_held_screen: the pair forms on the held window's screen and the focused one joins it there
+    // (a pointer or touchpad hold, Mike 2026-10-05: "if you hold down on an unfocused window in
+    // another screen the focused window moves to that screen"); otherwise on the focused window's
+    // (the hint hold: "the window with the hint you're manipulating can move to the screen where
+    // the windows you choose to pair with exists").
+    void pair_windows(uint64_t held_id, uint64_t partner_id, bool on_held_screen = false, int attempts = 0)
     {
         auto held = wf::toplevel_cast(view_by_id(held_id));
         auto partner = wf::toplevel_cast(view_by_id(partner_id));
@@ -1067,10 +1072,10 @@
         if (waiting)
         {
             if (attempts < 10) deferred_pair.set_timeout(100, [=] () {
-                deferred_pair_ready.run_once([=] () { pair_windows(held_id, partner_id, attempts + 1); }); });
+                deferred_pair_ready.run_once([=] () { pair_windows(held_id, partner_id, on_held_screen, attempts + 1); }); });
             return;
         }
-        auto plan = plan_pair(held_id, partner_id);
+        auto plan = plan_pair(held_id, partner_id, on_held_screen);
         if (!plan) return;
         auto [left, right, fit, output] = *plan;
         LOGI("scottland: pairing ", held_id, " with ", partner_id, " at ", fit.scale * 100,
@@ -1091,15 +1096,15 @@
         scottland::windowing::pair_layout fit;
         wf::output_t *output = nullptr;
     };
-    std::optional<pair_plan_t> plan_pair(uint64_t held_id, uint64_t partner_id)
+    std::optional<pair_plan_t> plan_pair(uint64_t held_id, uint64_t partner_id, bool on_held_screen = false)
     {
         auto held = wf::toplevel_cast(view_by_id(held_id));
         auto partner = wf::toplevel_cast(view_by_id(partner_id));
         if (!held || !partner || held == partner) return std::nullopt;
         auto held_shown = represented_view(held_id), partner_shown = represented_view(partner_id);
         if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output()) return std::nullopt;
-        // The pair forms on the focused window's screen; the held one joins it there.
-        auto output = partner_shown->get_output();
+        // The pair forms on one window's screen; the other joins it there (see pair_windows).
+        auto output = (on_held_screen ? held_shown : partner_shown)->get_output();
         // Keep the current left/right order across the whole layout (P1).
         auto global_x = [] (wayfire_toplevel_view view) {
             auto g = view->get_geometry();

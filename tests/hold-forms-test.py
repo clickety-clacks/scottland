@@ -565,23 +565,53 @@ def hold_ring():
 
 @scenario
 def cross_output_offer():
-    'a held window on the other screen is previewed on the focused window\'s screen, then joins it'
+    'held on the other screen: the focused window is previewed joining it there, then moves there (ruling 10-05)'
     o1, o2 = outputs()
-    setup([(B, 300, 300, 420, 300, o1['id']), (A, 700, 200, 520, 360, o2['id'])], A)  # B's pair spot there is free
-    area2 = {'width': o2['geometry']['width'], 'height': o2['geometry']['height']}
-    want, _ = pair_plan(B, A, area2)
-    target = (o2['geometry']['x'] + want[B][0] + 210, o2['geometry']['y'] + want[B][1] + 150)
-    check(not light(px(*target)), 'fixture: B\'s pair spot on the other screen is empty')
+    # B (held) on the left screen, A (focused) on the right one; C out of the way beside A.
+    setup([(C, 40, 40, 420, 200, o2['id']), (B, 300, 300, 420, 300, o1['id']), (A, 700, 200, 520, 360, o2['id'])], A)
+    f0 = frames(A, B, C)
+    area1 = {'width': o1['geometry']['width'], 'height': o1['geometry']['height']}
+    want, _ = pair_plan(B, A, area1)                            # B is further left: it goes left
+    target = (o1['geometry']['x'] + want[A][0] + 260, o1['geometry']['y'] + want[A][1] + 180)
+    check(not light(px(*target)), 'fixture: A\'s pair spot on B\'s screen is empty')
     super_press(*center(B))
-    need(lambda: light(px(*target)), 3, 'B previewed on the other screen')
-    # B's light run joins A's through the liquid between them, so judge B by its height and its
-    # own left edge (its pair spot's), not the joined run's width.
+    need(lambda: light(px(*target)), 3, 'A previewed on B\'s screen')
+    check(frames(A, B, C) == f0 and raw(A)['output-id'] == o2['id'], 'the preview changes no true geometry or screen (Wayfire)',
+          str(frames(A, B, C)))
+    # A's light run may join B's through the liquid between them, so judge A by its height and its
+    # own right edge (its pair spot's), not the joined run's width.
     v = run_along(*target, horizontal=False); h = run_along(*target, horizontal=True)
-    left = o2['geometry']['x'] + want[B][0]
-    check(v and h and abs((v[1] - v[0]) - 300) <= 8 and abs(h[0] - left) <= 8,
-          'B is previewed at its size, at its pair spot on the focused window\'s screen (pixels)', f'{v} {h} left {left}')
+    right = o1['geometry']['x'] + want[A][0] + 520
+    check(v and h and abs((v[1] - v[0]) - 360) <= 8 and abs(h[1] - right) <= 8,
+          'A is previewed at its own size, at its pair spot on the held window\'s screen (pixels)', f'{v} {h} right {right}')
+    capture(0, 0, o1['geometry']['width'] + o2['geometry']['width'], max(o1['geometry']['height'], o2['geometry']['height']),
+            'cross-output-offer.png')
     super_release()
-    verify(lambda: raw(B)['output-id'] == o2['id'] and paired(B, A, area2, want), 3, 'taking it moves B to that screen, paired with A (Wayfire)')
+    verify(lambda: raw(A)['output-id'] == o1['id'] and raw(B)['output-id'] == o1['id'] and paired(B, A, area1, want), 3,
+           'taking it moves A to B\'s screen, paired with B (Wayfire)')
+    check(geometry(C) == f0[C], 'C untouched (Wayfire)')
+    v = run_along(*target, horizontal=False)
+    check(v and abs((v[1] - v[0]) - 360) <= 3, 'after taking it A is drawn at 100% at its pair spot (pixels)', str(v))
+
+@scenario
+def cross_output_offer_refused():
+    'held on the other screen, starting to drag cancels: A returns to its own screen untouched'
+    o1, o2 = outputs()
+    setup([(C, 40, 40, 420, 200, o2['id']), (B, 300, 300, 420, 300, o1['id']), (A, 700, 200, 520, 360, o2['id'])], A)
+    f0 = frames(A, B, C)
+    area1 = {'width': o1['geometry']['width'], 'height': o1['geometry']['height']}
+    want, _ = pair_plan(B, A, area1)
+    target = (o1['geometry']['x'] + want[A][0] + 260, o1['geometry']['y'] + want[A][1] + 180)
+    a_home = center(A)
+    x, y = center(B); super_press(x, y)
+    need(lambda: light(px(*target)), 3, 'A previewed on B\'s screen')
+    for i in range(1, 11): pointer(x, y + 8 * i); time.sleep(.02)   # 80 px down, out of the 50 pt hotspot
+    need(lambda: not light(px(*target)), 2, 'the preview of A leaves B\'s screen')
+    verify(lambda: light(px(*a_home)), 2, 'A is drawn back on its own screen (pixels)')
+    super_release()
+    g = stable(A, B)
+    check(g[A] == f0[A] and raw(A)['output-id'] == o2['id'] and abs(g[B][1] - (f0[B][1] + 80)) <= 2,
+          'refused: A untouched on its screen, B dropped 80 px down where the pointer took it (Wayfire)', str(g))
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300,
@@ -595,8 +625,9 @@ try:
     A, B, C = launch('HoldA'), launch('HoldB'), launch('HoldC')
     PAIR = [(C, 1100, 40, 420, 200), (B, 1060, 560, 420, 300), (A, 200, 140, 520, 360)]
     SOLO = [(C, 600, 560, 420, 300), (B, 1100, 80, 420, 300), (A, 560, 140, 520, 360)]
-    if TWO: scenarios[:] = [cross_output_offer]
-    else: scenarios.remove(cross_output_offer)
+    two = [cross_output_offer, cross_output_offer_refused]
+    if TWO: scenarios[:] = two
+    else: scenarios[:] = [s for s in scenarios if s not in two]
     run_all()
 finally:
     try: release_all()

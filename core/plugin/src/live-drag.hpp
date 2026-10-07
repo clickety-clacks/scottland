@@ -16,8 +16,8 @@ class live_drag_transform_t : public wf::scene::transformer_base_node_t
 {
   public:
     wf::pointf_t position, relative;
-    // While a drag is suspended (a pending hold or an offer, WK39), draw the window exactly
-    // where it really is: the offset is just its output's origin in the layout.
+    // While a drag is suspended (a hold's offer, WK39), or a window is lifted for one, draw the
+    // window exactly where it really is: the offset is just its output's origin in the layout.
     std::optional<wf::pointf_t> pinned;
     live_drag_transform_t() : transformer_base_node_t(false) {}
     std::string stringify() const override { return "scottland-live-drag"; }
@@ -51,6 +51,62 @@ class live_drag_transform_t : public wf::scene::transformer_base_node_t
     {
         instances.push_back(std::make_unique<instance_t>(this, damage, output));
     }
+};
+
+// Draws a window in front of everything, in layout coordinates, exactly where it really is, as a
+// suspended drag does: an offset on its frame may then show it over another screen (a hold's pair
+// offer joining a window from another screen, WK39). Nothing about the window changes. It goes
+// back into its own place on destruction, drop(), unmap, or its output's removal.
+class view_lift_t
+{
+  public:
+    explicit view_lift_t(wayfire_toplevel_view target)
+    {
+        if (!target || !target->is_mapped() || !target->get_output()) return;
+        auto node = target->get_transformed_node();
+        auto inner = node->parent() ? std::dynamic_pointer_cast<wf::scene::floating_inner_node_t>(
+            node->parent()->shared_from_this()) : nullptr;
+        if (!inner) return;
+        view = target;
+        parent = inner;
+        output = target->get_output();
+        transform = std::make_shared<live_drag_transform_t>();
+        transform->pinned = wf::origin(output->get_layout_geometry());
+        view->damage();
+        node->add_transformer(transform, wf::TRANSFORMER_HIGHLEVEL - 1, "scottland-offer-lift");
+        wf::scene::readd_front(wf::get_core().scene(), node);
+        view->connect(&unmap);
+        wf::get_core().output_layout->connect(&removed);
+        view->damage();
+    }
+    ~view_lift_t() { drop(); }
+    view_lift_t(const view_lift_t&) = delete;
+    view_lift_t& operator=(const view_lift_t&) = delete;
+    bool lifted() const { return bool(view); }
+    void drop()
+    {
+        if (!view) return;
+        unmap.disconnect();
+        removed.disconnect();
+        auto node = view->get_transformed_node();
+        view->damage();
+        wf::scene::readd_front(parent, node);
+        node->rem_transformer(transform);
+        view->damage();
+        view.reset();
+        parent.reset();
+        transform.reset();
+        output = nullptr;
+    }
+
+  private:
+    wayfire_toplevel_view view;
+    std::shared_ptr<wf::scene::floating_inner_node_t> parent;
+    std::shared_ptr<live_drag_transform_t> transform;
+    wf::output_t *output = nullptr;
+    wf::signal::connection_t<wf::view_unmapped_signal> unmap = [this] (auto *) { drop(); };
+    wf::signal::connection_t<wf::output_removed_signal> removed =
+        [this] (wf::output_removed_signal *ev) { if (ev->output == output) drop(); };
 };
 
 class live_drag_t : public wf::signal::provider_t, public wf::pointer_interaction_t,
