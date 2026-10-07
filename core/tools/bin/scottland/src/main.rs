@@ -3,6 +3,7 @@
 //!     scottland                    list the tools installed
 //!     scottland TOOL [ARGS...]     run scottland-TOOL with ARGS
 //!     scottland help TOOL          run scottland-TOOL --help
+//!     scottland edit|rollback|update|status [ARGS...]  manage installed source
 //!
 //! Tools are executables named `scottland-TOOL` beside this binary or on PATH, in that order; the
 //! first found wins. Everything a tool does lives in the tool, so each works the same run directly.
@@ -36,16 +37,23 @@ fn main() -> ExitCode {
     match (first, rest.as_slice()) {
         ("-h" | "--help" | "help", []) => list(),
         ("help", [tool]) => match tool.to_str() {
+            Some(tool) if is_source_command(tool) => run("source", &[OsString::from("--help")]),
             Some(tool) => run(tool, &[OsString::from("--help")]),
             None => fail(2, "tool names are plain text"),
         },
         ("help", _) => fail(2, USAGE),
         ("-V" | "--version", []) => {
-            println!("scottland {}", env!("CARGO_PKG_VERSION"));
+            println!("scottland {}", env!("PRODUCT_SOURCE_BUILD_COMMIT"));
             ExitCode::SUCCESS
         }
         (option, _) if option.starts_with('-') => {
             fail(2, &format!("unknown option {option}\n{USAGE}"))
+        }
+        (tool, args) if is_source_command(tool) => {
+            let mut source_args = Vec::with_capacity(args.len() + 1);
+            source_args.push(OsString::from(tool));
+            source_args.extend_from_slice(args);
+            run("source", &source_args)
         }
         (tool, args) => run(tool, args),
     }
@@ -85,6 +93,10 @@ fn run(tool: &str, args: &[OsString]) -> ExitCode {
 fn fail(code: u8, message: &str) -> ExitCode {
     eprintln!("scottland: {message}");
     ExitCode::from(code)
+}
+
+fn is_source_command(command: &str) -> bool {
+    matches!(command, "edit" | "rollback" | "update" | "status")
 }
 
 /// Where tools are looked for: this binary's own directory (so an installed set of tools, or a
