@@ -80,10 +80,12 @@
             return std::nullopt;
         }
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
+        auto axis = zone_axis(output);
         sp::snapshot_t s;
-        double W = screen.width;
-        s.screen_width = W; s.screen_height = screen.height;
-        s.workarea = {double(a.x), double(a.y), double(a.x + a.width), double(a.y + a.height)};
+        double W = axis.length;
+        s.screen_width = W; s.screen_height = axis.vertical ? screen.width : screen.height;
+        s.workarea = axis.vertical ? sp::box{0, 0, axis.length, double(screen.width)} :
+            sp::box{double(a.x), double(a.y), double(a.x + a.width), double(a.y + a.height)};
         s.padding = std::ceil(SCREEN_PADDING);
         double cw = center_width, rw = rail_width, mn = std::clamp((double)min_scale, 0.05, 1.0);
         double mx = std::clamp((double)max_scale, 0.05, 1.0), bl = std::max(0.0, (double)blend_width);
@@ -102,8 +104,12 @@
             s.arrival_inset = (W / 2 - trial) - s.center_half;
             break;
         }
-        s.solo = solo_box;
-        auto rect_of = [] (scottland::rectf_t r) { return sp::box{r.x1, r.y1, r.x2, r.y2}; };
+        s.solo = axis.vertical ? sp::box{solo_box.y0 - axis.origin, solo_box.x0,
+            solo_box.y1 - axis.origin, solo_box.x1} : solo_box;
+        auto rect_of = [axis] (scottland::rectf_t r) {
+            return axis.vertical ? sp::box{r.y1 - axis.origin, r.x1, r.y2 - axis.origin, r.x2} :
+                sp::box{r.x1, r.y1, r.x2, r.y2};
+        };
         for (auto e : window_entries())
         {
             if (e.id == solo) continue;
@@ -120,8 +126,10 @@
             auto g = window->get_geometry();
             sp::window_t w;
             w.id = e.id;
-            w.width = g.width; w.height = g.height;
-            w.cx = g.x + g.width / 2.0; w.cy = g.y + g.height / 2.0;
+            w.width = axis.vertical ? g.height : g.width;
+            w.height = axis.vertical ? g.width : g.height;
+            w.cx = axis.vertical ? g.y + g.height / 2.0 - axis.origin : g.x + g.width / 2.0;
+            w.cy = axis.vertical ? g.x + g.width / 2.0 : g.y + g.height / 2.0;
             auto found = model.windows.find(e.id);
             w.pinned = found != model.windows.end() && found->second.pinned_scale.has_value();
             w.scale = std::clamp(scale_for(window), 0.05, 1.0);
@@ -264,6 +272,9 @@
         {
             auto view = wf::toplevel_cast(view_by_id(m.id));
             if (!view || !view->is_mapped() || link_of_window(view) || is_widget(view)) continue;
+            auto output = view->get_output();
+            if (!output) continue;
+            auto axis = zone_axis(output);
             auto frame = frame_of(view, false);
             auto g = view->get_geometry();
             wf::pointf_t from{g.x + g.width / 2.0, g.y + g.height / 2.0};
@@ -278,9 +289,11 @@
             keyboard_motions.erase(m.id);
             stop_glide(view);
             pin_scale(view, m.pin);
-            move_window(view, std::round(m.cx - g.width / 2.0), std::round(m.cy - g.height / 2.0));
+            double x = axis.vertical ? m.cy : m.cx;
+            double y = axis.vertical ? m.cx + axis.origin : m.cy;
+            move_window(view, std::round(x - g.width / 2.0), std::round(y - g.height / 2.0));
             remember_window(view);
-            start_cycle_glide(view, from, from_scale, {m.cx, m.cy}, m.scale);
+            start_cycle_glide(view, from, from_scale, {x, y}, m.scale);
         }
         declutter_signature.clear();
     }
@@ -296,7 +309,7 @@
         auto g = window->get_geometry();
         wf::pointf_t at{g.x + g.width / 2.0, g.y + g.height / 2.0};
         bool shown_as_window = !link_of_window(window);
-        if (!(shown_as_window && window->get_output() == output && place_at(at.x, screen.width).zone == zone_t::center))
+        if (!(shown_as_window && window->get_output() == output && place_at(output, at).zone == zone_t::center))
         {
             auto& memory = ensure_window_memory(window->get_id());
             if (auto p = memory.positions[size_t(scottland::windowing::zone::center)])

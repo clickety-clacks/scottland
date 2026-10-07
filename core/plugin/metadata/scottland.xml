@@ -259,6 +259,9 @@
 			<min>0</min>
 			<max>100</max>
 		</option>
+		<option name="vertical_outputs" type="string">
+			<default></default>
+		</option>
 		<option name="rail_width" type="double">
 			<_short>Widget rail width (%)</_short>
 			<_long>Width of each widget rail at the far left and right, as a percentage of the screen width.</_long>

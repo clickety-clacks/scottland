@@ -331,20 +331,24 @@
     scottland::windowing::zone window_zone(wayfire_toplevel_view view)
     {
         using Z = scottland::windowing::zone;
+        auto on_near_rail = [] (const std::string& rail) { return rail == "left" || rail == "top"; };
         if (auto link = link_of_window(view); link && link->docked())
-            return link->rail == "left" ? Z::left_rail : Z::right_rail;
-        if (auto link = link_of_widget(view)) return link->rail == "left" ? Z::left_rail : Z::right_rail;
+            return on_near_rail(link->rail) ? Z::left_rail : Z::right_rail;
+        if (auto link = link_of_widget(view)) return on_near_rail(link->rail) ? Z::left_rail : Z::right_rail;
         if (placement_of(view).zone == zone_t::center) return Z::center;
+        auto output = view->get_output();
         auto g = view->get_geometry();
-        return g.x + g.width / 2.0 < view->get_output()->get_relative_geometry().width / 2.0 ?
+        auto axis = zone_axis(output);
+        return axis.along({g.x + g.width / 2.0, g.y + g.height / 2.0}) < axis.length / 2.0 ?
             Z::left_periphery : Z::right_periphery;
     }
     // A side spot reads as lower priority than the center once its scale has visibly fallen: by 5%,
     // or halfway to the rail's scale when the curve has less range than that (WP4, WP8).
-    double periphery_threshold(double screen_width)
+    double periphery_threshold(wf::output_t *output)
     {
-        double rail = screen_width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
-        double outer_scale = place_at(rail + 1, screen_width).scale;
+        auto axis = zone_axis(output);
+        double rail = axis.length * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        double outer_scale = place_along(output, rail + 1).scale;
         return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
     }
     // Whether a spot at x reads as zone z (WP8): the center inside the center zone, and just past its
@@ -352,15 +356,19 @@
     // scale; a periphery anywhere else in the side zone. A Shift pin makes a side spot a periphery
     // spot wherever it is: the user put it there at that scale, even at full size (L31). A pin
     // never applies inside the center zone (tenet 4). Rails are what they are.
-    bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin, double screen_width)
+    bool reads_as(scottland::windowing::zone z, wf::pointf_t point, std::optional<double> pin,
+        wf::output_t *output)
     {
         using Z = scottland::windowing::zone;
-        auto place = place_at(x, screen_width);
+        auto axis = zone_axis(output);
+        double along = axis.along(point);
+        auto place = place_along(output, along);
         bool center = place.zone == zone_t::center ||
-            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(screen_width));
+            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(output));
         if (z == Z::center) return center;
         if (z == Z::left_periphery || z == Z::right_periphery)
-            return place.zone == zone_t::continuous && !center && ((x < screen_width / 2) == (z == Z::left_periphery));
+            return place.zone == zone_t::continuous && !center &&
+                ((along < axis.length / 2) == (z == Z::left_periphery));
         return true;
     }
     // The zone a window counts as for its zone memories and cycles (WP8): its zone, except that an
@@ -371,9 +379,10 @@
         auto z = window_zone(view);
         if (z != Z::left_periphery && z != Z::right_periphery) return z;
         auto g = placed_geometry(view);
+        auto output = view->get_output();
         auto found = model.windows.find(view->get_id());
         auto pin = found == model.windows.end() ? std::nullopt : found->second.pinned_scale;
-        return reads_as(Z::center, g.x + g.width / 2.0, pin, view->get_output()->get_relative_geometry().width) ?
+        return reads_as(Z::center, {g.x + g.width / 2.0, g.y + g.height / 2.0}, pin, output) ?
             Z::center : z;
     }
     wayfire_toplevel_view represented_view(uint64_t id)
@@ -766,7 +775,8 @@
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
         // A memory counts only while its spot still reads as its zone (WP8).
-        if (remembered && !reads_as(z, remembered->x, scottland::windowing::remembered_pin(memory, z), screen.width))
+        if (remembered && !reads_as(z, {remembered->x, remembered->y},
+            scottland::windowing::remembered_pin(memory, z), output))
             remembered.reset();
         double w = g.width, h = g.height;
         if (z == Z::center)
@@ -810,7 +820,7 @@
                 {
                     double inner = left ? side.x + side.width : side.x;
                     double outer = left ? side.x : side.x + side.width;
-                    double threshold = periphery_threshold(screen.width);
+                    double threshold = periphery_threshold(output);
                     double center_edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
                     double boundary = left ? center_edge : screen.width - center_edge;
                     auto area = output->workarea->get_workarea();
@@ -913,7 +923,8 @@
         auto screen = window->get_output()->get_relative_geometry();
         auto& memory = ensure_window_memory(id);
         auto pin = scottland::windowing::remembered_pin(memory, z);
-        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z, p->x * screen.width, pin, screen.width)))
+        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z,
+            {p->x * screen.width, p->y * screen.height}, pin, window->get_output())))
             pin.reset();
         pin_scale(window, pin);
         // Where its center actually lands, after pixel rounding: the drawn scale must be that

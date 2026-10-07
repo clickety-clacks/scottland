@@ -905,6 +905,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::option_wrapper_t<double> center_width{"scottland/center_width"};
     wf::option_wrapper_t<double> rail_width{"scottland/rail_width"};
+    wf::option_wrapper_t<std::string> vertical_outputs_option{"scottland/vertical_outputs"};
     wf::option_wrapper_t<double> min_scale{"scottland/min_scale"};
     wf::option_wrapper_t<double> max_scale{"scottland/max_scale"};
     wf::option_wrapper_t<std::string> scale_curve_text{"scottland/scale_curve"};
@@ -931,6 +932,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<wf::color_t> accent_color{"scottland/accent_color"};
     wf::option_wrapper_t<wf::color_t> attention_color{"scottland/attention_color"};
     wf::option_wrapper_t<std::string> attention_color_family{"scottland/attention_color_family"};
+    std::set<std::string> vertical_outputs;
 
     #include "windowing-bridge.hpp"
 
@@ -977,10 +979,87 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
+    struct zone_axis_t
+    {
+        bool vertical = false;
+        double origin = 0;
+        double length = 0;
+
+        double along(wf::pointf_t point) const
+        {
+            return (vertical ? point.y : point.x) - origin;
+        }
+
+        double extent(double width, double height) const
+        {
+            return vertical ? height : width;
+        }
+    };
+
+    void load_vertical_outputs()
+    {
+        vertical_outputs.clear();
+        std::string value = vertical_outputs_option;
+        size_t start = 0;
+        while (start <= value.size())
+        {
+            size_t end = value.find(',', start);
+            auto name = value.substr(start, end == std::string::npos ? end : end - start);
+            auto first = name.find_first_not_of(" \t\r\n");
+            if (first != std::string::npos)
+            {
+                auto last = name.find_last_not_of(" \t\r\n");
+                vertical_outputs.insert(name.substr(first, last - first + 1));
+            }
+
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+    }
+
+    bool is_vertical(wf::output_t *output) const
+    {
+        return output && vertical_outputs.count(output->to_string());
+    }
+
+    zone_axis_t zone_axis(wf::output_t *output) const
+    {
+        if (!output) return {};
+        if (!is_vertical(output))
+            return {false, 0, double(output->get_relative_geometry().width)};
+
+        auto area = output->workarea->get_workarea();
+        return {true, double(area.y), std::max(1.0, double(area.height))};
+    }
+
+    placement_t place_along(wf::output_t *output, double along)
+    {
+        auto axis = zone_axis(output);
+        return place(along, axis.length, center_width, rail_width, std::clamp((double)min_scale, 0.05, 1.0),
+            std::clamp((double)max_scale, 0.05, 1.0), scale_curve, std::max(0.0, (double)blend_width));
+    }
+
+    placement_t place_at(wf::output_t *output, wf::pointf_t point)
+    {
+        return place_along(output, zone_axis(output).along(point));
+    }
+
     placement_t place_at(double x, double width)
     {
         return place(x, width, center_width, rail_width, std::clamp((double)min_scale, 0.05, 1.0),
             std::clamp((double)max_scale, 0.05, 1.0), scale_curve, std::max(0.0, (double)blend_width));
+    }
+
+    std::string rail_for(wf::output_t *output, double along) const
+    {
+        auto axis = zone_axis(output);
+        return axis.vertical ? (along < axis.length / 2.0 ? "top" : "bottom") :
+            (along < axis.length / 2.0 ? "left" : "right");
+    }
+
+    std::string rail_for(wf::output_t *output, wf::pointf_t point) const
+    {
+        return rail_for(output, zone_axis(output).along(point));
     }
 
     /** Is Shift held (alone or with others) on the keyboard? */
@@ -1022,11 +1101,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto geometry = view->get_geometry();
-        double x = geometry.x + geometry.width / 2.0;
-        return place_at(x, output->get_relative_geometry().width);
+        wf::pointf_t center{geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
+        return place_at(output, center);
     }
 
-    void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_x = {})
+    void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_axis = {})
     {
         if (!view || !view->is_mapped() || view->pending_fullscreen()) return;
         auto frame = frame_of(view, false);
@@ -1040,7 +1119,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         else
         {
             auto output = view->get_output();
-            auto zone = center_x && output ? place_at(*center_x, output->get_relative_geometry().width).zone : placement_of(view).zone;
+            auto zone = center_axis && output ? place_along(output, *center_axis).zone : placement_of(view).zone;
             bool center = zone == zone_t::center;
             target = center ? (focused ? double(center_opacity_focused) : double(center_opacity_unfocused)) :
                 (focused ? double(side_opacity_focused) : double(side_opacity_unfocused));
@@ -1566,6 +1645,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool from_widget = false;  // dragging a widget: its other form is its app's window
         bool toward = false;       // heading for the other form
         double center_x = 0;       // where the dragged frame is centered (output coords)
+        double center_axis = 0;    // its center along this output's zone axis
         wf::animation::simple_animation_t shape{wf::create_option<int>(MORPH_MS)};
         wf::animation::simple_animation_t fade{wf::create_option<int>(MORPH_MS * 3 / 4)};
         scottland::widget_image_t snapshot;
@@ -1593,6 +1673,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     struct drag_session_t
     {
         double relative_x = 0.5;
+        double relative_y = 0.5;
         double margin = 0.0;
         double target = 1.0;
         double last_center = 0;
@@ -2700,7 +2781,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (existing->previewing() && !preview)
             {
                 auto g = view->get_geometry();
-                commit_preview(*existing, {g.x + g.width / 2.0, g.y + g.height / 2.0});
+                wf::pointf_t center{g.x + g.width / 2.0, g.y + g.height / 2.0};
+                auto axis = zone_axis(view->get_output());
+                if (rail && ((!axis.vertical && (*rail == "left" || *rail == "right")) ||
+                    (axis.vertical && (*rail == "top" || *rail == "bottom"))))
+                    existing->rail = *rail;
+                commit_preview(*existing, center);
             }
 
             return;
@@ -2713,14 +2799,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         auto geometry = view->get_geometry();
-        double width  = output->get_relative_geometry().width;
+        wf::pointf_t center{geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
+        auto axis = zone_axis(output);
         widget_link_t link;
         link.window_id = view->get_id();
         link.window = view->weak_from_this();
         link.output = output;
         link.make_room_pending = !preview;
-        link.drop   = {geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
-        link.rail   = rail ? *rail : (link.drop.x < width / 2 ? "left" : "right");
+        link.drop   = center;
+        link.rail   = rail && ((!axis.vertical && (*rail == "left" || *rail == "right")) ||
+            (axis.vertical && (*rail == "top" || *rail == "bottom"))) ? *rail : rail_for(output, center);
         link.launched_at = now_msec();
         LOGI("scottland: widgetize window=", link.window_id, " reason=", reason,
             " preview=", preview, " rail=", link.rail,
@@ -2901,8 +2989,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             auto g = view->get_geometry();
-            double width = view->get_output()->get_relative_geometry().width;
-            if (place_at(std::clamp(g.x + g.width / 2.0, 0.0, width - 1), width).zone == zone_t::widget)
+            wf::pointf_t center{g.x + g.width / 2.0, g.y + g.height / 2.0};
+            if (place_at(view->get_output(), center).zone == zone_t::widget)
             {
                 LOGI("scottland: window ", view->get_id(), " (", view->get_title(), ") is on a rail: a widget again");
                 widgetize(view, false, {}, "load-rail-recovery");
@@ -3206,20 +3294,30 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     };
 
-    /** Where a widget `width` x `height` goes: its drop point, its screen-edge side against the
-     *  edge, wholly on screen with room for its halo. */
+    /** Place the widget at its along-rail drop point and against the selected screen edge. */
     wf::point_t widget_spot(wf::output_t *output, const widget_link_t& link, int width, int height)
     {
-        double screen = output->get_relative_geometry().width;
         wf::pointf_t at = link.drop;
-        at.x = link.rail == "right" ? std::max(at.x, screen - width / 2.0) : std::min(at.x, width / 2.0);
         auto area = output->workarea->get_workarea();
         area.x += WIDGET_INSET;
         area.y += WIDGET_INSET;
         area.width  -= 2 * WIDGET_INSET;
         area.height -= 2 * WIDGET_INSET;
-        double x = std::clamp(at.x - width / 2.0, (double)area.x, std::max((double)area.x, (double)(area.x + area.width - width)));
-        double y = std::clamp(at.y - height / 2.0, (double)area.y, std::max((double)area.y, (double)(area.y + area.height - height)));
+        double x, y;
+        if (is_vertical(output))
+        {
+            x = std::clamp(at.x - width / 2.0, (double)area.x,
+                std::max((double)area.x, (double)(area.x + area.width - width)));
+            y = link.rail == "top" ? area.y : std::max(area.y, area.y + area.height - height);
+        } else
+        {
+            double screen = output->get_relative_geometry().width;
+            at.x = link.rail == "right" ? std::max(at.x, screen - width / 2.0) : std::min(at.x, width / 2.0);
+            x = std::clamp(at.x - width / 2.0, (double)area.x,
+                std::max((double)area.x, (double)(area.x + area.width - width)));
+            y = std::clamp(at.y - height / 2.0, (double)area.y,
+                std::max((double)area.y, (double)(area.y + area.height - height)));
+        }
         return {(int)std::round(x), (int)std::round(y)};
     }
 
@@ -3228,7 +3326,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void position_widget(wayfire_toplevel_view view, wf::toplevel_state_t& pending,
         wf::output_t *output, const widget_link_t& link)
     {
-        pending.gravity = ((link.rail == "left") ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT) | WLR_EDGE_TOP;
+        if (is_vertical(output))
+            pending.gravity = WLR_EDGE_LEFT | ((link.rail == "top") ? WLR_EDGE_TOP : WLR_EDGE_BOTTOM);
+        else
+            pending.gravity = ((link.rail == "left") ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT) | WLR_EDGE_TOP;
         if (output)
         {
             auto spot = widget_spot(output, link, pending.geometry.width, pending.geometry.height);
@@ -3528,6 +3629,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void update_rail_drag(wayfire_toplevel_view dragged, wf::output_t *output,
         std::optional<wf::pointf_t> pointer = {})
     {
+        if (output && is_vertical(output))
+        {
+            clear_rail_drag();
+            return;  // A7/R3: the prototype does not solve growing or colliding rail cards.
+        }
+
         if (!dragged || !output || !model.drag.morph || !morph_widget_shaped() ||
             !dragged->is_mapped() || (pending_drag_layout && pending_drag_layout->is_committing()))
         {
@@ -3558,6 +3665,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!widget || !widget->is_mapped() || !output || !link.docked() ||
             model.drag.rail.active || (pending_drag_layout && pending_drag_layout->is_committing()))
             return false;
+
+        if (is_vertical(output))
+        {
+            // The prototype shows one card on each vertical rail; growing-rail and
+            // multi-card make-room behavior remain outside this measurement.
+            link.make_room_pending = false;
+            link.drop_solved = false;
+            return true;
+        }
 
         // Where it has landed: without a landing glide still under way or an earlier rail
         // ease, both of which are presentation, not its place on the rail.
@@ -3754,7 +3870,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (window && window->get_output())
         {
             link.output = window->get_output();
-            link.rail   = at.x < window->get_output()->get_relative_geometry().width / 2 ? "left" : "right";
+            bool rail_matches_axis = is_vertical(link.output) ?
+                (link.rail == "top" || link.rail == "bottom") : (link.rail == "left" || link.rail == "right");
+            if (!rail_matches_axis) link.rail = rail_for(link.output, at);
         }
 
         show_attention(link.window_id);  // now shown on the widget, not the window
@@ -3863,9 +3981,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      * it leaves when the pointer goes past it. So a widget grabbed anywhere stays one until moved
      * off the rail, and the form changes as the pointer crosses, not when the window's center does.
      */
-    bool on_rail(double at, double width, wayfire_toplevel_view widget)
+    bool on_rail(wf::output_t *output, double at, wayfire_toplevel_view widget)
     {
-        if (place_at(std::clamp(at, 0.0, width - 1), width).zone == zone_t::widget)
+        auto axis = zone_axis(output);
+        if (axis.vertical && (at < 0 || at >= axis.length)) return false;
+        if (place_along(output, std::clamp(at, 0.0, axis.length - 1)).zone == zone_t::widget)
         {
             return true;
         }
@@ -3875,8 +3995,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return false;
         }
 
-        double from_edge = (at < width / 2) ? at : width - at;
-        return from_edge <= WIDGET_INSET + widget->get_geometry().width;
+        double from_edge = std::min(at, axis.length - at);
+        auto geometry = widget->get_geometry();
+        return from_edge <= WIDGET_INSET + axis.extent(geometry.width, geometry.height);
     }
 
     /** A drop, released at `pointer` (layout coords): the pointer's place says widget or window. */
@@ -3889,11 +4010,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         auto geometry = view->get_geometry();
         auto output   = view->get_output();
-        double width  = output->get_relative_geometry().width;
         wf::pointf_t center{geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
-        auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
-        double at = pointer.x - output->get_layout_geometry().x;
-        bool on_rail = widget_shaped.value_or(this->on_rail(at, width, is_widget(view) ? view : nullptr));
+        auto layout = output->get_layout_geometry();
+        wf::pointf_t local_pointer{pointer.x - layout.x, pointer.y - layout.y};
+        auto axis = zone_axis(output);
+        double at = axis.along(local_pointer);
+        auto in_rail = [&] (double along) {
+            if (axis.vertical && (along < 0 || along >= axis.length)) return false;
+            return place_along(output, std::clamp(along, 0.0, axis.length - 1)).zone == zone_t::widget;
+        };
+        bool on_rail = widget_shaped.value_or(this->on_rail(output, at, is_widget(view) ? view : nullptr));
         if (auto link = link_of_widget(view))
         {
             if (!on_rail)
@@ -3902,9 +4028,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 return;
             }
 
-            bool left = in_rail(at) ? (at < width / 2) : (center.x < width / 2);  // else its nearer rail
-
-            auto rail = left ? "left" : "right";
+            auto rail = rail_for(output, in_rail(at) ? at : axis.along(center));
             bool changed = (link->rail != rail) || (link->output != output);
             link->drop   = center;
             link->rail   = rail;
@@ -3919,7 +4043,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         } else if (on_rail)
         {
-            widgetize(view, false, (in_rail(at) ? at : center.x) < width / 2 ? "left" : "right");
+            widgetize(view, false, rail_for(output, in_rail(at) ? at : axis.along(center)));
         } else if (auto link = link_of_window(view); link && link->previewing())
         {
             cancel_preview(*link);
@@ -4106,6 +4230,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 morph["from_widget"] = model.drag.morph->from_widget;
                 morph["toward"] = model.drag.morph->toward;
                 morph["center_x"] = model.drag.morph->center_x;
+                morph["center_axis"] = model.drag.morph->center_axis;
                 drag["morph"] = morph;
             }
             reply["drag"] = drag;
@@ -5617,24 +5742,34 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // where the window really lands.
         auto output = drag->view->get_output();
         auto cursor = model.drag.input_override.value_or(wf::get_core().get_cursor_position());
-        double local_x = cursor.x - (output ? output->get_layout_geometry().x : 0);
+        auto layout = output ? output->get_layout_geometry() : wf::geometry_t{};
+        double local_x = cursor.x - layout.x;
+        double local_y = cursor.y - layout.y;
         // Use the window's resting box (its scaled width plus the halo margin), not the live
         // bounding box: a just-lifted window is mid-bulge, which inflates the box for a moment.
         auto geometry = placed_geometry(drag->view);
-        double drawn  = geometry.width * displayed_scale(drag->view);
+        double drawn_w = geometry.width * displayed_scale(drag->view);
+        double drawn_h = geometry.height * displayed_scale(drag->view);
         auto frame    = frame_of(drag->view, false);
         model.drag.margin   = frame ? frame->margin() :
-            std::max(0.0, (drag->view->get_bounding_box().width - drawn) / 2.0);
-        double box   = drawn + 2 * model.drag.margin;
+            std::max(0.0, (drag->view->get_bounding_box().width - drawn_w) / 2.0);
+        double box_x = drawn_w + 2 * model.drag.margin;
+        double box_y = drawn_h + 2 * model.drag.margin;
         double avoidance_x = 0;
+        double avoidance_y = 0;
         if (auto visual = hint_visuals.find(drag->view->get_id());
             visual != hint_visuals.end() && visual->second.offset_attached)
+        {
             avoidance_x = visual->second.offset->translation_x;
+            avoidance_y = visual->second.offset->translation_y;
+        }
         // The pointer hit the displayed surface, which may be translated away from
         // its true frame. Include that temporary presentation in the grab fraction
         // so focusing/grabbing cannot pull the visible window out from under the cursor.
-        double left  = geometry.x + avoidance_x + geometry.width / 2.0 - box / 2.0;
-        model.drag.relative_x = box > 0 ? (local_x - left) / box : 0.5;
+        double left = geometry.x + avoidance_x + geometry.width / 2.0 - box_x / 2.0;
+        double top  = geometry.y + avoidance_y + geometry.height / 2.0 - box_y / 2.0;
+        model.drag.relative_x = box_x > 0 ? (local_x - left) / box_x : 0.5;
+        model.drag.relative_y = box_y > 0 ? (local_y - top) / box_y : 0.5;
         // Where Esc sends it back (WG14). Picked up again soon after it was let go (fingers
         // reset on the touchpad, out of room), it's the same move: keep the first origin.
         bool continued = (model.drag.last_drop.became == drag->view->get_id()) &&
@@ -5755,19 +5890,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // view's box (the frame plus its halo margin) under the pointer.
         auto r = frame->screen_rect();
         double margin = frame->margin();
-        double box    = r.width() + 2 * margin;
-        double origin = output->get_layout_geometry().x;
-        double width  = output->get_relative_geometry().width;
-        double x1 = pointer.x - origin - model.drag.relative_x * box + margin;
-        double x2 = x1 + r.width();
-        model.drag.morph->center_x = (x1 + x2) / 2.0;
-        auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
-
+        auto layout = output->get_layout_geometry();
+        auto axis = zone_axis(output);
+        double box_x = r.width() + 2 * margin, box_y = r.height() + 2 * margin;
+        double x1 = pointer.x - layout.x - model.drag.relative_x * box_x + margin;
+        double y1 = pointer.y - layout.y - model.drag.relative_y * box_y + margin;
+        model.drag.morph->center_x = x1 + r.width() / 2.0;
+        double relative_axis = axis.vertical ? model.drag.relative_y : model.drag.relative_x;
+        double box_axis = axis.extent(box_x, box_y);
+        double frame_axis = axis.extent(r.width(), r.height());
+        double pointer_axis = axis.along({pointer.x - layout.x, pointer.y - layout.y});
+        model.drag.morph->center_axis = pointer_axis - relative_axis * box_axis + margin + frame_axis / 2.0;
         // The pointer (or finger) decides, not the window's geometry (WG1): entering the rail
         // makes it a widget, leaving the rail's widgets makes it a window. The drop follows the
         // shape shown.
-        double at = pointer.x - origin;
-        bool want_widget = on_rail(at, width, morph_widget_shaped() ?
+        double at = pointer_axis;
+        bool want_widget = on_rail(output, at, morph_widget_shaped() ?
             (model.drag.morph->from_widget ? view : morph_other()) : nullptr);
         bool toward = model.drag.morph->from_widget ? !want_widget : want_widget;
         if (toward != model.drag.morph->toward)
@@ -5775,7 +5913,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (!model.drag.morph->from_widget && toward)
             {
                 // Launched now, unseen, so it's ready to fade in; on the rail the drag is over.
-                widgetize(view, true, at < width / 2 ? "left" : "right", "drag-preview");
+                widgetize(view, true, rail_for(output, at), "drag-preview");
             }
 
             model.drag.morph->toward = toward;
@@ -5870,7 +6008,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (model.drag.morph->from_widget && other)
         {
             auto output = output_alive(drag->current_output) ? drag->current_output : dragged->get_output();
-            scale = output ? place_at(model.drag.morph->center_x, output->get_relative_geometry().width).scale : 1.0;
+            scale = output ? place_along(output, model.drag.morph->center_axis).scale : 1.0;
             auto g = other->get_geometry();
             w = g.width * scale;
             h = g.height * scale;
@@ -6663,7 +6801,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             // Shown as its widget: the window keeps the scale of where it is, for if it's dragged
             // back out.
-            set_scale(view, place_at(model.drag.morph->center_x, output->get_relative_geometry().width).scale);
+            set_scale(view, place_along(output, model.drag.morph->center_axis).scale);
             return;
         }
 
@@ -6673,10 +6811,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // center zone's 100% into a curve starting lower), keep the current one until the
         // pointer has moved far enough for the other to agree: otherwise the window flips
         // between the two sizes on every motion. Sizes are the targets, not the animated ones.
-        double unscaled  = view->get_geometry().width;
-        double origin_x  = output->get_layout_geometry().x;
-        double pointer_x = ev->current_position.x - origin_x;
-        double screen    = output->get_relative_geometry().width;
+        auto axis = zone_axis(output);
+        auto layout = output->get_layout_geometry();
+        double unscaled = axis.extent(view->get_geometry().width, view->get_geometry().height);
+        double pointer_layout = axis.vertical ? ev->current_position.y : ev->current_position.x;
+        double output_layout = axis.vertical ? layout.y : layout.x;
+        double pointer_axis = axis.along({ev->current_position.x - layout.x, ev->current_position.y - layout.y});
+        double relative_axis = axis.vertical ? model.drag.relative_y : model.drag.relative_x;
 
         // Where the window's center is shown, read from the drag itself rather than predicted. The
         // live drag draws the window in a box sized from the view's own box (this frame plus its
@@ -6685,7 +6826,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // follows exactly: the box grows by unscaled * ds, around the grab.
         std::function<double(double)> center_at = [&] (double s)
         {
-            return pointer_x + (0.5 - model.drag.relative_x) * (unscaled * s + 2 * model.drag.margin);
+            return pointer_axis + (0.5 - relative_axis) * (unscaled * s + 2 * model.drag.margin);
         };
         auto drag_box = view->get_transformed_node()->get_transformer<wf::scene::transformer_base_node_t>(
             "scottland-live-drag");
@@ -6694,26 +6835,31 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             auto shown = drag_box->get_bounding_box();           // where it's drawn (layout coords)
             auto inner = drag_box->get_children_bounding_box();  // the view's own box
-            if ((shown.width > 0) && (inner.width > 0))
+            double shown_axis = axis.vertical ? shown.height : shown.width;
+            double inner_axis = axis.vertical ? inner.height : inner.width;
+            double shown_start = axis.vertical ? shown.y : shown.x;
+            double inner_start = axis.vertical ? inner.y : inner.x;
+            if ((shown_axis > 0) && (inner_axis > 0))
             {
-                double zoom  = inner.width / shown.width;          // the drag's own scale-down
-                double grab  = (ev->current_position.x - shown.x) / shown.width;
+                double zoom = inner_axis / shown_axis;  // the drag's own scale-down
+                double grab = (pointer_layout - shown_start) / shown_axis;
                 auto rect    = frame->screen_rect();
-                double now_w = rect.width();
-                double left  = (rect.x1 + rect.x2) / 2.0 - now_w / 2.0 - inner.x;     // margin left
-                double right = inner.x + inner.width - (rect.x1 + rect.x2) / 2.0 - now_w / 2.0;
-                double bulge = displayed_scale(view) > 0 ? now_w / (unscaled * displayed_scale(view)) : 1.0;
+                double now_axis = axis.vertical ? rect.height() : rect.width();
+                double center = axis.vertical ? (rect.y1 + rect.y2) / 2.0 : (rect.x1 + rect.x2) / 2.0;
+                double before = center - now_axis / 2.0 - inner_start;
+                double after = inner_start + inner_axis - center - now_axis / 2.0;
+                double bulge = displayed_scale(view) > 0 ? now_axis / (unscaled * displayed_scale(view)) : 1.0;
                 center_at = [=] (double s)
                 {
-                    double width = unscaled * s * bulge;
-                    double box   = (width + left + right) / zoom;
-                    double box_x = ev->current_position.x - grab * box;
-                    return box_x + (left + width / 2.0) / zoom - origin_x;
+                    double extent = unscaled * s * bulge;
+                    double box = (extent + before + after) / zoom;
+                    double box_start = pointer_layout - grab * box;
+                    return box_start + (before + extent / 2.0) / zoom - output_layout - axis.origin;
                 };
             }
         }
 
-        auto zone_scale = [&] (double s) { return place_at(center_at(s), screen).scale; };
+        auto zone_scale = [&] (double s) { return place_along(output, center_at(s)).scale; };
         model.drag.last_center = center_at(model.drag.target);
         apply_opacity(view, model.drag.last_center);
 
@@ -6832,19 +6978,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             !widget_shaped.value_or(false))
         {
             auto geometry = main->get_geometry();
-            double screen = main->get_output()->get_relative_geometry().width;
-            double center = geometry.x + geometry.width / 2.0;
+            auto output = main->get_output();
+            auto axis = zone_axis(output);
+            double center = axis.along({geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0});
             if (shift_held())
             {
                 pin_scale(main, model.drag.target);  // dropped with Shift held (L31)
-            } else if (std::abs(place_at(center, screen).scale - model.drag.target) > JUMP)
+            } else if (std::abs(place_along(output, center).scale - model.drag.target) > JUMP)
             {
                 for (int d = 1; d <= 400; d++)
                 {
                     int found = 0;
                     for (int sign : {-1, 1})
                     {
-                        if (std::abs(place_at(center + sign * d, screen).scale - model.drag.target) <= 0.003)
+                        if (std::abs(place_along(output, center + sign * d).scale - model.drag.target) <= 0.003)
                         {
                             found = sign;
                             break;
@@ -6853,7 +7000,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
                     if (found)
                     {
-                        move_window(main, geometry.x + found * d, geometry.y);
+                        move_window(main, geometry.x + (axis.vertical ? 0 : found * d),
+                            geometry.y + (axis.vertical ? found * d : 0));
                         break;
                     }
                 }
@@ -7329,6 +7477,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Compile the shared blend shader during plugin startup, before any input-driven morph.
         wf::gles::run_in_context_if_gles([] { scottland::widget_morph_renderer().prepare(); });
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
+        load_vertical_outputs();
         if (getenv("SCOTTLAND_TEST_MODEL"))
             wf::get_core().connect(&on_test_render_end);
         init_output_tracking();
