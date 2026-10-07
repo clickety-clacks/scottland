@@ -143,6 +143,11 @@ def drawn_size(x, y):
     """The light rectangle drawn around (x, y): (width, height) in logical px."""
     h = run_along(x, y, True); v = run_along(x, y, False)
     return (h[1] - h[0], v[1] - v[0]) if h and v else None
+def drawn_size_near(x, y, w, h, tolerance):
+    """For verify(): the drawn size once it is (w, h) within tolerance, else None. The width and
+    height come from two captures, so an easing preview is judged only once it has settled."""
+    size = drawn_size(x, y)
+    return size if size and abs(size[0] - w) <= tolerance and abs(size[1] - h) <= tolerance else None
 
 # ---------------------------------------------------------------- fixtures
 GTK_APP = """import sys, gi
@@ -226,16 +231,14 @@ def offer_preview_and_take():
     super_press(*center(B))
     need(lambda: not light(px(*b_old)) and light(px(*b_new)), 3, 'pair preview on screen')
     check(frames(A, B, C) == f0, 'the preview changes no true geometry while held (Wayfire)', str(frames(A, B, C)))
-    size = drawn_size(*b_new)
     # Within 8 px: the neighbor's halo across the halo gap may cover an edge; any periphery
     # scale would be far smaller.
-    check(size and abs(size[0] - 420) <= 8 and abs(size[1] - 300) <= 8, 'B is previewed at its own size (pixels)', str(size))
+    verify(lambda: drawn_size_near(*b_new, 420, 300, 8), 2, 'B is previewed at its own size (pixels)')
     capture(0, 0, area['width'], area['height'], 'offer-preview.png')
     super_release()
     need(lambda: paired(A, B, area, want), 3, 'pair taken')
     check(geometry(C) == f0[C], 'taking the offer: A and B paired at the planned spots, C untouched (Wayfire)')
-    size = drawn_size(*b_new)
-    check(size and abs(size[0] - 420) <= 3 and abs(size[1] - 300) <= 3, 'after taking it B is drawn at 100% (pixels)', str(size))
+    verify(lambda: drawn_size_near(*b_new, 420, 300, 3), 2, 'after taking it B is drawn at 100% (pixels)')
 
 @scenario
 def offer_with_always_on_avoidance():
@@ -392,16 +395,14 @@ def rail_boundary_hold():
         pointer(1564, 650); time.sleep(.05); key('LEFTMETA', True); button(True); time.sleep(.05)
         pointer(1572, 650)                                    # 8 px, into the rail, inside the wobble
         need(lambda: light(px(want[B][0] + 210, want[B][1] + 150)), 3, 'B previewed at its pair spot')
-        verify(lambda: (lambda size: size if size and abs(size[0] - 420) <= 8 and abs(size[1] - 300) <= 8 else None)(
-               drawn_size(want[B][0] + 210, want[B][1] + 150)), 2,
+        verify(lambda: drawn_size_near(want[B][0] + 210, want[B][1] + 150, 420, 300, 8), 2,
                'held at the rail boundary: the offer shows B as itself at its pair spot, full size (pixels)')
         capture(0, 0, area['width'], area['height'], 'rail-hold-offer.png')
         super_release()
         need(lambda: paired(A, B, area, want), 3, 'rail-boundary pair')
         stable(A, B)
-        size = drawn_size(want[B][0] + 210, want[B][1] + 150)
-        check(size and abs(size[0] - 420) <= 3 and abs(size[1] - 300) <= 3,
-              'held at the rail boundary: B drawn at its full size at its pair spot, not a widget strip (pixels)', str(size))
+        verify(lambda: drawn_size_near(want[B][0] + 210, want[B][1] + 150, 420, 300, 3), 2,
+               'held at the rail boundary: B drawn at its full size at its pair spot, not a widget strip (pixels)')
         capture(0, 0, area['width'], area['height'], 'rail-hold-taken.png')
     finally: ipc('wayfire/set-config-options', {'scottland/min_scale': .2})
 
@@ -422,8 +423,7 @@ def widget_offer_preview():
     co = output_of(card)['geometry']
     super_press(co['x'] + cg['x'] + cg['width'] / 2, co['y'] + cg['y'] + cg['height'] / 2)
     need(lambda: light(px(want[B][0] + 210, want[B][1] + 150)), 3, 'the app previewed at its pair spot')
-    verify(lambda: (lambda size: size if size and abs(size[0] - 420) <= 8 and abs(size[1] - 300) <= 8 else None)(
-           drawn_size(want[B][0] + 210, want[B][1] + 150)), 2,
+    verify(lambda: drawn_size_near(want[B][0] + 210, want[B][1] + 150, 420, 300, 8), 2,
            'the widget is previewed, once its morph settles, as its app at the app\'s size at its pair spot (pixels)')
     capture(0, 0, area['width'], area['height'], 'widget-offer.png')
     super_release()
@@ -586,18 +586,19 @@ def cross_output_offer():
           str(frames(A, B, C)))
     # A's light run may join B's through the liquid between them, so judge A by its height and its
     # own right edge (its pair spot's), not the joined run's width.
-    v = run_along(*target, horizontal=False); h = run_along(*target, horizontal=True)
     right = o1['geometry']['x'] + want[A][0] + 520
-    check(v and h and abs((v[1] - v[0]) - 360) <= 8 and abs(h[1] - right) <= 8,
-          'A is previewed at its own size, at its pair spot on the held window\'s screen (pixels)', f'{v} {h} right {right}')
+    def a_preview():
+        v = run_along(*target, horizontal=False); h = run_along(*target, horizontal=True)
+        return (v, h) if v and h and abs((v[1] - v[0]) - 360) <= 8 and abs(h[1] - right) <= 8 else None
+    verify(a_preview, 2, 'A is previewed at its own size, at its pair spot on the held window\'s screen (pixels)')
     capture(0, 0, o1['geometry']['width'] + o2['geometry']['width'], max(o1['geometry']['height'], o2['geometry']['height']),
             'cross-output-offer.png')
     super_release()
     verify(lambda: raw(A)['output-id'] == o1['id'] and raw(B)['output-id'] == o1['id'] and paired(B, A, area1, want), 3,
            'taking it moves A to B\'s screen, paired with B (Wayfire)')
     check(geometry(C) == f0[C], 'C untouched (Wayfire)')
-    v = run_along(*target, horizontal=False)
-    check(v and abs((v[1] - v[0]) - 360) <= 3, 'after taking it A is drawn at 100% at its pair spot (pixels)', str(v))
+    verify(lambda: (lambda v: v if v and abs((v[1] - v[0]) - 360) <= 3 else None)(run_along(*target, horizontal=False)), 2,
+           'after taking it A is drawn at 100% at its pair spot (pixels)')
 
 @scenario
 def cross_output_offer_refused():
