@@ -276,8 +276,9 @@ ShellRoot {
         root.original = Object.assign({},root.original,{motion:Object.assign({},motion),
           opacity:Object.assign({},opacity),widgets:Object.assign({},widgets)})
         const solar=Object.assign({},root.solarDefaults)
+        // A missing key keeps the shipped default, as scottland-solar-theme reads it (S21).
         for(const k of ["enabled","allow_ip","location_set"])
-          solar[k]=root.solarText(k)==="true"
+          if(root.solarText(k)!==null)solar[k]=root.solarText(k)==="true"
         for(const k of ["latitude","longitude"]){const n=parseFloat(root.solarText(k));if(!isNaN(n))solar[k]=n}
         root.solarValues=solar;root.originalSolar=Object.assign({},solar)
         root.solarLatitudeEdited=solar.location_set;root.solarLongitudeEdited=solar.location_set
@@ -305,7 +306,7 @@ ShellRoot {
   }
   function solarText(name) {
     const match=solarFile.text().match(new RegExp("^"+name+"\\s*=\\s*(.*)$","m"))
-    return match?match[1].trim():""
+    return match?match[1].trim():null
   }
 
   // Values last saved by this app; used for settings the running session can't report.
