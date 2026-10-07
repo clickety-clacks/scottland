@@ -257,7 +257,7 @@ def goo_follows_drag_and_hover():
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300,
         'scottland/window_double_tap_delay': 300, 'scottland/window_avoidance_always': False,
-        'scottland/solo_audition_delay': 3000, 'output:HEADLESS-1/mode': '1600x1000@60000',
+        'scottland/solo_audition_hotspot': 50, 'output:HEADLESS-1/mode': '1600x1000@60000',
         'output:HEADLESS-1/position': '0, 0'})
     try: ipc('wayfire/set-config-options', {'scottland/window_hold_delay': 500})
     except RuntimeError: pass  # a build without hint holds has no such option
