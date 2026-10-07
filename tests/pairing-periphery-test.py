@@ -9,12 +9,13 @@ import json
 import os
 from pathlib import Path
 import signal
-import shutil
 import socket
 import struct
 import subprocess
 import sys
 import time
+
+from session_reload import reload_session
 
 assert os.environ.get('SCOTTLAND_TEST_MODEL') == '1', 'caller-owned headless session required'
 art = Path(sys.argv[1]).resolve(); art.mkdir(parents=True, exist_ok=True)
@@ -179,21 +180,12 @@ try:
         diagnostic = {i: hint(i).get('memories') for i in (left,right)}
         alt(False)
         if label == 'reload':
-            # Only this caller-owned session is reloaded. Mirror the existing marked plugin
-            # handover using a fresh copy, without a service/config/desktop install helper.
-            mark = Path(os.environ['XDG_RUNTIME_DIR'])/'scottland'/(os.environ['WAYLAND_DISPLAY']+'.reloading')
-            fresh = art/'libscottland-pair-memory-reload.so'
-            shutil.copy(Path(__file__).resolve().parents[1]/'build/libscottland.so', fresh)
-            plugins = ipc('wayfire/get-config-option', dict(option='core/plugins'))['value']
-            mark.touch()
-            try:
-                ipc('wayfire/set-config-options', {'core/plugins': ' '.join(str(fresh) if p == 'scottland' or
-                     '/libscottland' in p else p for p in plugins.split())})
-                wait(lambda: str(fresh) in ipc('wayfire/get-config-option', dict(option='core/plugins'))['value'] and
-                     len(ipc('scottland/desktop-model')['windows']) >= 2, 'owned reload completed')
-                check(all(geometry(i) == paired[i] for i in (left,right)),
-                      'reload: handover keeps the actual paired geometry')
-            finally: mark.unlink(missing_ok=True)
+            # Only this caller-owned session is reloaded, through the real scottland-reload: the
+            # plugin imports a handover only with its reload receipt (docs/main-loop.md "Reload").
+            reload_session()
+            wait(lambda: len(ipc('scottland/desktop-model')['windows']) >= 2, 'owned reload completed')
+            check(all(geometry(i) == paired[i] for i in (left,right)),
+                  'reload: handover keeps the actual paired geometry')
         if label == 'newdrop':
             # A real new placement must still become the memory. Also leaves the partner
             # untouched: provenance cannot disappear merely because the pair anchor broke.

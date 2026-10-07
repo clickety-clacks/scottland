@@ -214,6 +214,9 @@
             if (changed)
             {
                 self->read_palette_file();
+                // Apply it now: a hints tick may already have consumed the dirty flag with the
+                // old text before this event arrived, and nothing else would apply the new one.
+                self->refresh_hint_palette();
                 if (self->window_keys.active || self->window_avoidance_always ||
                     self->hint_avoidance_always)
                     self->refresh_layout_avoidance();
