@@ -141,10 +141,22 @@ int main()
         check(colors.size()==676,"two-letter capacity has distinct colors without a repeated fixed palette");
     }
     using D = destination;
-    check(cycle_order(D::center) == std::array<D,3>{D::periphery,D::widget,D::center}, "pure center cycle order");
-    check(cycle_order(D::periphery) == std::array<D,3>{D::center,D::widget,D::periphery}, "pure periphery cycle order");
-    check(cycle_order(D::widget) == std::array<D,3>{D::center,D::periphery,D::widget}, "pure widget cycle order");
-    alt_mode mode; std::vector<destination> moves; uint64_t selected=0,closed=0; bool restore=false;
+    using S = cycle_step;
+    const S center{D::center, false};
+    auto periphery = [] (bool left) { return S{D::periphery, left}; };
+    auto widget = [] (bool left) { return S{D::widget, left}; };
+    check(cycle_order(D::center, false) == std::vector<S>{periphery(false),widget(false),center,periphery(true),widget(true)},
+        "center cycle keeps its right start side through the other-side steps");
+    check(cycle_order(D::center, true) == std::vector<S>{periphery(true),widget(true),center,periphery(false),widget(false)},
+        "center cycle keeps its left start side through the other-side steps");
+    check(cycle_order(D::periphery, false) == std::vector<S>{center,widget(false),periphery(false),periphery(true),widget(true)},
+        "right-periphery cycle preserves its first three steps before visiting the other side");
+    check(cycle_order(D::widget, true) == std::vector<S>{center,periphery(true),widget(true),periphery(false),widget(false)},
+        "left-widget cycle preserves its first three steps before visiting the other side");
+    check(cycle_order(D::center, false, false) == std::vector<S>{periphery(false),center,periphery(true)} &&
+        cycle_order(D::periphery, true, false) == std::vector<S>{center,periphery(true),periphery(false)},
+        "dialogs skip both widget steps in start-relative order");
+    alt_mode mode; std::vector<cycle_step> moves; uint64_t selected=0,closed=0; bool restore=false;
     unsigned selections = 0, widget_hint_selections = 0; uint64_t peeked_widget = 0;
     bool peek_active = false; uint32_t clock = 0;
     auto tap_at = [&](char letter, uint32_t at, unsigned dwell = 80) {
@@ -154,55 +166,98 @@ int main()
     mode.select=[&](uint64_t id,bool r){selected=id;restore=r;++selections;};
     mode.hint_select=[&](uint64_t id){peeked_widget=id;peek_active=true;++widget_hint_selections;};
     mode.hint_peek_active=[&](uint64_t id){return peek_active && id==peeked_widget;};
-    mode.move=[&](uint64_t,destination d){moves.push_back(d);}; mode.close=[&](uint64_t id){closed=id;};
+    mode.move=[&](uint64_t,cycle_step d){moves.push_back(d);}; mode.cycle_side=[&](uint64_t){return false;};
+    mode.close=[&](uint64_t id){closed=id;};
     const std::vector<hint_entry> entries{{1,0,zone::center,false},{2,1,zone::right_periphery,false},{3,2,zone::left_rail,true}};
     mode.begin(entries,0);
     press('a'); check(selected==1 && moves.empty(),"unselected center first press only selects");
     for(int i=0;i<6;++i) press('a');
-    check(moves==std::vector<D>{D::periphery,D::widget,D::center,D::periphery,D::widget,D::center},"center repeats its full loop");
+    check(moves==std::vector<S>{periphery(false),widget(false),center,periphery(true),widget(true),periphery(false)},
+        "center cycle visits both sides and wraps to the fixed start side");
     moves.clear();press('s');check(selected==2 && !restore,"unselected periphery first press only selects");
     for(int i=0;i<6;++i)press('s');
-    check(moves==std::vector<D>{D::center,D::widget,D::periphery,D::center,D::widget,D::periphery},"periphery repeats its full loop");
+    check(moves==std::vector<S>{center,widget(false),periphery(false),periphery(true),widget(true),center},
+        "right-periphery cycle visits the other side and wraps");
     moves.clear(); press('d');check(selected==3 && !restore && moves.empty() &&
         widget_hint_selections==1 && peeked_widget==3,"unselected widget hint selects and requests a temporary peek without opening");
     for(int i=0;i<5;++i) press('d');
-    check(moves==std::vector<D>{D::center,D::periphery,D::widget,D::center,D::periphery} &&
+    check(moves==std::vector<S>{center,periphery(true),widget(true),periphery(false),widget(false)} &&
         widget_hint_selections==1,"widget next press starts its full center-first loop without starting another peek");
     mode.end(); moves.clear(); mode.double_tap_delay=3000; mode.begin(entries,0); press('d');
     tap_at('d', clock + 3080);
-    check(moves==std::vector<D>{D::center},"a repeated hint during a collapsed-widget peek takes the center step even inside double-tap timing");
+    check(moves==std::vector<S>{center},"a repeated hint during a collapsed-widget peek takes the center step even inside double-tap timing");
     peek_active=false; mode.double_tap_delay=300;
     for (unsigned slot=0; slot<3; ++slot)
     {
         mode.end(); moves.clear(); unsigned before = selections;
         mode.begin(entries,slot+1); press("asd"[slot]);
-        check(selections==before && moves.size()==1 && moves[0]==cycle_order(D(slot))[0], "selected window skips redundant select in each start zone");
+        auto first = slot == 0 ? periphery(false) : center;
+        check(selections==before && moves.size()==1 && moves[0]==first,
+            "selected window skips redundant select in each start zone");
     }
+    mode.end(); moves.clear(); unsigned side_choices = 0;
+    bool side_chosen_before_select = false; selected = 0;
+    mode.cycle_side = [&] (uint64_t) {
+        side_chosen_before_select = selected == 0;
+        return ++side_choices == 1;
+    };
+    mode.begin({{1,0,zone::center,false}},0);
+    press('a');
+    for (int i=0; i<6; ++i) press('a');
+    check(moves==std::vector<S>{periphery(true),widget(true),center,periphery(false),widget(false),periphery(true)} &&
+        side_choices==1 && side_chosen_before_select,
+        "WP3 chooses the center start side before selection and keeps it for the whole Alt hold");
+    mode.cycle_side = [&] (uint64_t) { return false; };
+    mode.end(); moves.clear(); mode.begin({{1,0,zone::left_periphery,false,false}},1);
+    press('a'); mode.refresh({{1,0,zone::center,false,false}});
+    tap_at('a',clock+381); mode.refresh({{1,0,zone::left_periphery,false,false}});
+    auto before_dialog_repeat = moves.size();
+    tap_at('a',clock+481);
+    check(moves.size()==before_dialog_repeat,"a dialog double tap has no movement or cycle effect");
+    tap_at('a',clock+1000);
+    check(moves==std::vector<S>{center,periphery(true),periphery(false)},
+        "a dialog's no-op repeat leaves the next start-relative periphery step intact");
+    mode.end(); moves.clear(); mode.begin({{1,0,zone::left_rail,true}},1);
+    press('a'); mode.refresh({{1,0,zone::center,false}});
+    tap_at('a',clock+100); mode.refresh({{1,0,zone::left_rail,true}});
+    tap_at('a',clock+200); // an idempotent widget repeat leaves step 1 at center
+    tap_at('a',clock+700);
+    check(moves==std::vector<S>{center,widget(true),center},
+        "a widget-start double tap back to its rail resumes at center after a no-op repeat");
     mode.end(); moves.clear(); mode.begin(entries,1);
     press('a'); tap_at('a',clock+380);
-    check(moves==std::vector<D>{D::periphery,D::widget},"double tap at 300 ms after release sends to rail immediately");
+    check(moves==std::vector<S>{periphery(false),widget(false)},"double tap at 300 ms after release sends to its start-side rail");
     mode.refresh({{1,0,zone::left_rail,true}});
     tap_at('a',clock+500);
     check(moves.size()==2,"double tap on widget issues no move");
-    clock += 500; press('a'); check(moves.back()==D::center,"slow press after rail shortcut resumes original loop");
+    clock += 500; press('a'); check(moves.back()==center,"slow press after rail shortcut resumes original loop");
+    mode.end(); moves.clear(); mode.cycle_side = [] (uint64_t) { return false; };
+    mode.begin({{1,0,zone::center,false}},1);
+    for (int i=0; i<4; ++i) press('a');
+    mode.refresh({{1,0,zone::left_periphery,false}});
+    tap_at('a',clock+100);
+    check(moves==std::vector<S>{periphery(false),widget(false),center,periphery(true),widget(true)},
+        "a shortcut on the other-side periphery uses that side's rail");
+    clock += 500; press('a'); check(moves.back()==periphery(false),
+        "the other-side rail shortcut resumes at step one on the original side");
     mode.end(); moves.clear(); mode.begin(entries,3);
     press('d'); tap_at('d',clock+381);
-    check(moves==std::vector<D>{D::center,D::periphery},"press past interval advances ordinary cycle");
+    check(moves==std::vector<S>{center,periphery(true)},"press past interval advances the widget-start cycle");
     mode.double_tap_delay=50; moves.clear(); mode.end(); mode.begin(entries,2);
     press('s'); tap_at('s',clock+131); press('s');
-    check(moves==std::vector<D>{D::center,D::widget,D::periphery},"configured interval leaves slow presses in periphery loop");
+    check(moves==std::vector<S>{center,widget(false),periphery(false)},"configured interval leaves slow presses in the periphery loop");
     mode.end(); moves.clear(); mode.begin(entries,2); press('s'); tap_at('s',clock+130);
-    check(moves==std::vector<D>{D::center,D::widget},"configured interval recognizes its inclusive boundary");
+    check(moves==std::vector<S>{center,widget(false)},"configured interval recognizes its inclusive boundary");
     mode.end(); moves.clear(); mode.begin(entries,0); press('a'); press('s'); tap_at('a',clock+100);
     check(moves.empty() && selected==1,"another hint resets cycle and double-tap identity");
     mode.end(); moves.clear(); mode.begin({{1,0,zone::right_periphery,false}},1); press('a');
-    check(moves==std::vector<D>{D::center},"release resets loop but selected window still skips select");
+    check(moves==std::vector<S>{center},"release resets loop but selected window still skips select");
     mode.refresh({{1,0,zone::center,false},{2,1,zone::center,false},{3,2,zone::center,false}});
     mode.tab(false); check(selected==2,"Tab follows assignment order");
     mode.tab(true); check(selected==1,"Shift Tab reverses assignment order");
     mode.tab(true);check(selected==3,"backwards Tab wraps");
     unsigned before_tab_hint = selections; moves.clear(); press('d');
-    check(selections == before_tab_hint && moves == std::vector<D>{D::periphery}, "Tab-selected window skips redundant select");
+    check(selections == before_tab_hint && moves == std::vector<S>{periphery(false)}, "Tab-selected window skips redundant select");
     mode.close_selected();check(closed==3,"close acts on selection");
     mode.refresh({{1,0,zone::center,false},{2,1,zone::center,false}});
     check(mode.selected==0,"closed selection is cleared safely");
@@ -213,29 +268,29 @@ int main()
     moves.clear(); tap_at('s',clock+81);
     check(moves.empty(), "repeated multi-letter prefix alone does not move");
     tap_at('a',clock+221);
-    check(moves == std::vector<D>{D::widget}, "repeating complete two-letter hint double-taps to rail");
+    check(moves == std::vector<S>{widget(false)}, "repeating complete two-letter hint double-taps to rail");
     mode.refresh({{1,0,zone::center,false},{677,676,zone::center,false}});
     check(mode.label(0)=="aaa" && mode.label(676)=="saa", "overflow grows hint width without dropping any window");
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
     mode.double_tap_delay=300; moves.clear(); mode.begin(entries,0);
     tap_at('a',1000,120); tap_at('a',1370,120);
-    check(moves==std::vector<D>{D::widget},"120 ms dwell plus 250 ms gap double-taps an unselected window to rail");
+    check(moves==std::vector<S>{widget(false)},"120 ms dwell plus 250 ms gap double-taps an unselected window to rail");
     mode.end(); moves.clear(); mode.begin({{1,1,zone::center,false},{27,26,zone::center,false}},0);
     tap_at('a',2000,120); tap_at('s',2140,120);
     tap_at('a',2510,120);
     check(moves.empty(),"human-timed repeated prefix alone cannot move the selection");
     tap_at('s',2650,120);
-    check(moves==std::vector<D>{D::widget},"multi-letter repeat begins within the release gap and acts only on completion");
+    check(moves==std::vector<S>{widget(false)},"multi-letter repeat begins within the release gap and acts only on completion");
     mode.end(); mode.refresh({}); moves.clear(); mode.begin(entries,0);
     mode.letter('a',3000); mode.letter('a',3100); mode.release('a',3180); // the selected window acts on release (WK35)
-    check(moves==std::vector<D>{D::periphery},"no final-key release means no double-tap candidate");
+    check(moves==std::vector<S>{periphery(false)},"no final-key release means no double-tap candidate");
     mode.end(); moves.clear(); mode.begin(entries,0);
     tap_at('a',4000,120); mode.release('s',4400); tap_at('a',4500,120);
-    check(moves==std::vector<D>{D::periphery},"an unrelated release cannot extend the repeat interval");
+    check(moves==std::vector<S>{periphery(false)},"an unrelated release cannot extend the repeat interval");
     mode.end(); moves.clear(); mode.begin(entries,0);
     tap_at('a',UINT32_MAX-40,80); tap_at('a',139,80);
-    check(moves==std::vector<D>{D::widget},"release-based repeat timing survives the monotonic timestamp wrap");
+    check(moves==std::vector<S>{widget(false)},"release-based repeat timing survives the monotonic timestamp wrap");
     {
         // WP1: each zone memory keeps the Shift scale pin there, or its absence.
         window_memory memory;

@@ -3,12 +3,32 @@
 namespace scottland::windowing
 {
 static const std::string keys = "asdfghjklqwertyuiopzxcvbnm";
-std::array<destination, 3> cycle_order(destination start)
+std::vector<cycle_step> cycle_order(destination start, bool start_left, bool widgetizable)
 {
     using D = destination;
-    if (start == D::center) return {D::periphery, D::widget, D::center};
-    if (start == D::periphery) return {D::center, D::widget, D::periphery};
-    return {D::center, D::periphery, D::widget};
+    const bool has_widgets = widgetizable || start == D::widget;
+    const bool other_left = !start_left;
+    std::vector<cycle_step> result;
+    auto add = [&] (D to, bool left) { result.push_back({to, to != D::center && left}); };
+    if (start == D::center)
+    {
+        add(D::periphery, start_left);
+        if (has_widgets) add(D::widget, start_left);
+        add(D::center, false);
+    } else if (start == D::periphery)
+    {
+        add(D::center, false);
+        if (has_widgets) add(D::widget, start_left);
+        add(D::periphery, start_left);
+    } else
+    {
+        add(D::center, false);
+        add(D::periphery, start_left);
+        add(D::widget, start_left);
+    }
+    add(D::periphery, other_left);
+    if (has_widgets) add(D::widget, other_left);
+    return result;
 }
 std::string alt_mode::label(unsigned slot) const
 {
@@ -28,7 +48,7 @@ void alt_mode::refresh(std::vector<hint_entry> windows)
     for (unsigned i = 0; i < hint_width; ++i) capacity *= keys.size();
     while (!entries.empty() && entries.back().slot >= capacity)
     { ++hint_width; capacity *= keys.size(); }
-    if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == cycling; })) cycling = 0;
+    if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == cycling; })) clear_cycle();
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == selected; })) selected = 0;
     if (std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == last_hint; })) last_hint = 0;
     if (hold && std::none_of(entries.begin(), entries.end(), [&] (auto e) { return e.id == hold->id; })) hold.reset();
@@ -37,23 +57,42 @@ void alt_mode::refresh(std::vector<hint_entry> windows)
 }
 void alt_mode::begin(std::vector<hint_entry> windows, uint64_t focused)
 {
-    active = true; selected = focused; cycling = 0; last_hint = 0; hold.reset(); waiting_tap.reset();
+    active = true; selected = focused; clear_cycle(); last_hint = 0; hold.reset(); waiting_tap.reset();
     awaiting_release = repeat_candidate = false; prefix.clear(); refresh(std::move(windows));
 }
-void alt_mode::end() { active = false; cycling = 0; last_hint = 0; awaiting_release = repeat_candidate = false; hold.reset(); waiting_tap.reset(); prefix.clear(); }
+void alt_mode::end() { active = false; clear_cycle(); last_hint = 0; awaiting_release = repeat_candidate = false; hold.reset(); waiting_tap.reset(); prefix.clear(); }
+void alt_mode::clear_cycle()
+{
+    cycling = 0; order.clear(); step = 0; cycle_start = destination::center;
+    cycle_start_left = false; cycle_widgetizable = true;
+}
+void alt_mode::start_cycle(const hint_entry& entry)
+{
+    cycling = entry.id;
+    cycle_start = entry.widget ? destination::widget : entry.location == zone::center ?
+        destination::center : destination::periphery;
+    cycle_start_left = entry.location == zone::left_periphery || entry.location == zone::left_rail;
+    if (cycle_start == destination::center)
+        cycle_start_left = cycle_side ? cycle_side(entry.id) : false;
+    cycle_widgetizable = entry.widgetizable || entry.widget;
+    order.clear(); step = 0;
+}
+void alt_mode::ensure_cycle_order()
+{
+    if (order.empty())
+        order = cycle_order(cycle_start, cycle_start_left, cycle_widgetizable);
+}
 void alt_mode::activate(uint64_t id, bool double_tap)
 {
     auto it = std::find_if(entries.begin(), entries.end(), [&] (auto e) { return e.id == id; });
     if (it == entries.end()) return;
+    const auto entry = *it;
     bool already_selected = selected == id;
-    bool widget = it->widget;
+    bool widget = entry.widget;
     selected = id;
     if (cycling != id)
     {
-        cycling = id;
-        auto start = widget ? destination::widget : it->location == zone::center ?
-            destination::center : destination::periphery;
-        order = cycle_order(start); step = 0;
+        start_cycle(entry);
         if (!already_selected && !double_tap)
         {
             if (hint_action) hint_action(id);
@@ -66,21 +105,40 @@ void alt_mode::activate(uint64_t id, bool double_tap)
     {
         if (widget && hint_peek_active && hint_peek_active(id))
         {
+            ensure_cycle_order();
             if (hint_action) hint_action(id);
             auto to = order[step];
             step = (step + 1) % order.size();
             move(id, to);
-        } else
+        } else if (widget || !entry.widgetizable)
         {
-            step = (std::find(order.begin(), order.end(), destination::widget) - order.begin() + 1) % order.size();
-            if (!widget)
+            // An idempotent widget repeat and a WG1-ineligible dialog repeat do not consume
+            // a cycle step. A later slow hint resumes at the position the user reached.
+            return;
+        }
+        else
+        {
+            bool left;
+            if (entry.location == zone::left_periphery || entry.location == zone::right_periphery)
             {
-                if (hint_action) hint_action(id);
-                move(id, destination::widget);
+                left = entry.location == zone::left_periphery;
             }
+            else
+            {
+                left = cycle_start_left;
+            }
+            ensure_cycle_order();
+            cycle_step rail{destination::widget, left};
+            auto found = std::find(order.begin(), order.end(), rail);
+            if (found == order.end()) return;
+            if (cycle_start == destination::widget && left == cycle_start_left) step = 0;
+            else step = (unsigned(found - order.begin()) + 1) % order.size();
+            if (hint_action) hint_action(id);
+            move(id, rail);
         }
         return;
     }
+    ensure_cycle_order();
     auto to = order[step];
     step = (step + 1) % order.size();
     if (hint_action) hint_action(id);
@@ -158,7 +216,7 @@ bool alt_mode::hold_due(uint32_t time_ms)
     if (!held.partner) return true; // nothing had focus: nothing to pair with
     // The hold was this press's gesture: the next press of the hint is never its double-tap,
     // and its next cycle starts from wherever the hold leaves the window.
-    last_hint = 0; cycling = 0;
+    last_hint = 0; clear_cycle();
     if (held.partner == held.id) // WK35: the waiting press never acts; the hold is the solo
     { waiting_tap.reset(); if (solo) solo(held.id); return true; }
     if (hint_action) hint_action(held.id);
@@ -172,7 +230,7 @@ void alt_mode::tab(bool backwards)
     auto it = std::find_if(entries.begin(), entries.end(), [&] (auto e) { return e.id == selected; });
     int at = it == entries.end() ? (backwards ? 0 : -1) : int(it - entries.begin());
     at = (at + (backwards ? -1 : 1) + int(entries.size())) % int(entries.size());
-    selected = entries[at].id; cycling = 0; last_hint = 0; prefix.clear(); select(selected, false);
+    selected = entries[at].id; clear_cycle(); last_hint = 0; prefix.clear(); select(selected, false);
 }
-void alt_mode::close_selected() { interrupt(); if (selected) { close(selected); cycling = 0; last_hint = 0; prefix.clear(); } }
+void alt_mode::close_selected() { interrupt(); if (selected) { close(selected); clear_cycle(); last_hint = 0; prefix.clear(); } }
 }
