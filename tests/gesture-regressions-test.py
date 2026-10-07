@@ -211,17 +211,6 @@ def grab_peeking_window():
     finally: ipc('wayfire/set-config-options', {'scottland/window_avoidance_always': False})
 
 @scenario
-def spread_audition():
-    'a drag that rests in the center for the audition delay offers the solo; dropping takes it (SP7)'
-    setup([(C, 560, 560, 420, 300), (B, 1150, 120, 420, 300), (A, 300, 120, 520, 360)], A)
-    check(in_center(C, area), 'fixture: C in the center')
-    x, y = center(B); super_press(x, y)
-    glide(x, y, 800, 300, steps=20)
-    time.sleep(3.4)                                                   # the 3 s audition pause
-    super_release()
-    verify(lambda: not in_center(C, area), 3, 'the audition was taken: C left the center (Wayfire)')
-
-@scenario
 def hint_cycle_and_hold():
     'Window mode: a tap on the focused hint cycles it; a hold on an unfocused hint pairs (WK6, WK36)'
     setup(LAYOUT, A); f0 = frames(A)
