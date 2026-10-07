@@ -312,8 +312,8 @@ void release_window_tint_gl()
 
 void window_tint_layer_node::update(wf::geometry_t bounds, double alpha, shape_provider_t provider)
 {
-    bounds.width = std::max(0, bounds.width);
-    bounds.height = std::max(0, bounds.height);
+    bounds.width = std::max(0.0, bounds.width);
+    bounds.height = std::max(0.0, bounds.height);
     alpha = std::clamp(alpha, 0.0, 1.0);
     bool geometry_changed = bounds != box;
     bool strength_changed = alpha != strength;
