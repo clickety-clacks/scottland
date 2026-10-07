@@ -154,6 +154,7 @@ hl.bind("SUPER+SHIFT+3", hl.dsp.workspace.focus({workspace = "3"}))
 hl.bind("SUPER+L", hl.dsp.layout("cycle"), {description = "Cycle tiling layout"})
 hl.bind("SUPER+J", hl.dsp.window.focus({direction = "next"}), {description = "Focus next window"})
 hl.bind("SUPER+F", hl.dsp.exec_cmd("hyprctl dispatch movefocus l"))
+hl.bind("SUPER+LEFT", hl.dsp.focus({direction = "l"}), {description = "Focus on left window"})
 hl.bind("SUPER+V", hl.dsp.exec_cmd("hyprctl dispatch layoutmsg togglesplit"))
 hl.bind("SUPER+G", hl.dsp.group.toggle(), {description = "Toggle window group"})
 hl.bind("SHIFT+F4", hl.dsp.exec_cmd("release-action"),
@@ -387,6 +388,10 @@ require("omarchy.plugins.ask")
                   "Super+J — Was: Focus next window." in
                   report_group(report, "Scottland uses its own window navigation") and
                   "Super+F — Was: Focus the window to the left." in
+                  report_group(report, "Scottland uses its own window navigation") and
+                  # WK40: a Scottland feature holds Super+arrows, so Omarchy's focus steps aside.
+                  "Super+Left — Was: Focus on left window. Now: Super+Left now focuses the nearest "
+                  "window or widget to the left in Scottland." in
                   report_group(report, "Scottland uses its own window navigation") and
                   "Super+G — Was: Toggle window group." in
                   report_group(report, "Scottland has no window groups") and

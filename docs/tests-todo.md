@@ -167,7 +167,7 @@ Every suite runs through these; an excellent assertion is worthless against the 
   so a stall widens its own limit; it imports helpers by splitting `spread-test.py` at `try:` and
   executing the prefix. Independent latency limit; ordinary helper module. (Top 5, Top 15) High.
 - **`spread-test`:** "drawn" checks compare `layout-state` with planned targets; require visible
-  window bounds at the offer and after refusal. Medium.
+  window bounds. (Its audition checks went with the drag audition, 10-05.) Medium.
 - **`spread-reload-test`:** add presented pixels and exact build identities; share helpers by
   import. Medium.
 - It carries copies of the pairing suites: run the merged result once, not once per branch.

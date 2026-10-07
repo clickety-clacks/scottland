@@ -43,6 +43,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13, WK27 |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
+| 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
 
 ## Window mode keys
 
@@ -66,6 +67,9 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Other center windows stay and peek via window avoidance; nothing goes to the periphery. |
 | 10-04 | Keep current left/right order; vertically centered; pair centered; halo gap given up first. |
 | 10-04 | Nothing is locked afterwards. Pairing is an explicit request, so shrinking center windows is a granted exception to tenet 4. |
+| 2026-10-06 | "going into pairing mode does NOT overwrite a window's saved position in the periphery." |
+
+Specified in windowing-keys.md WK36 and WP1.
 
 ## Spread and solo (docs/spread.md)
 
@@ -149,8 +153,8 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-05 | Watercolor goo is one dye, not segregated kinds. Focus and attention color dye all of a window's goo, not a band at its wall. Dye density, swirl and spread are settings. The goo picks up the color of whatever is under it (wallpaper or window content) and mixes it into the dye already there, like mixing watercolors; picked-up color spreads and swirls like any dye, smearing the material beneath. Supersedes the wall-band and wallpaper-only parts of GO15/GO24. | GO28 |
 | 10-05 | Dye release is the rate at which dye enters the goo. The setting called dye strength is dye density, and is named that. | GO23, GO28 |
 | 10-05 | Remove the drag audition (pausing during a drag to solo) altogether, with its timeout setting in Settings: the three-finger hold does the job. (Supersedes the two 10-05 re-arm entries.) | SP7 |
-| 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. | WK13, WK36, spread |
-| 10-05 | Entering Window mode, a hint appears only once it has settled: never drawn, removed, then drawn again while placement and window avoidance run. | WK |
+| 10-05 | Peeking is temporary and never moves a window's true location, so it never violates "stays put". Soloed, paired, audition-dropped and focused windows get no special anchoring in the peek engine: any window that is covered peeks like any other. **Pending for focused windows:** this conflicts with WK13's 10-02 rule that the focused window never moves for avoidance, and Mike has not yet said which wins; until he does, the focused window keeps its anchoring and only the solo, pair and audition parts are in effect. | WK13, WK36, spread |
+| 10-05 | Entering Window mode, a hint appears only once it has settled: never drawn, removed, then drawn again while placement and window avoidance run. | WK41 |
 | 10-05 | Window mode works with all windows across all screens. You can pair with a window on another screen: the window whose hint you are manipulating moves to the screen where its partner is. | WK, WK36 |
 | 10-05 | A solo or pair from a hold is an audition. Starting to drag cancels it, as does Esc. During a pair audition the pointer may not be over where the held window is drawn; that's fine, since nothing really moved. When the cursor moves again, the held window returns to its position under the cursor and drags as normal. | WK35, WK36, WK39 |
 | 10-05 | The hotspot setting stays (only the drag audition and its timeout are removed): moving beyond the hotspot is what counts as starting to drag, which cancels a hold's audition. The keyboard hint hold stays immediate, because it is intentional; a pointer hold is an audition because the user may just be thinking about where to move the window. | WK35, WK36, WK39 |
@@ -163,3 +167,4 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-05 | Hitting the pointer against the left or right edge of the screen reveals hidden or collapsed widgets. They don't hide or collapse again until the pointer moves out of the rail. | WG16, WG19 |
 | 10-05 | Goo: the balance between focus/attention color and picked-up color is a slider. The "Wallpaper soak" setting is labeled "Wallpaper pickup". | GO28 |
 | 10-05 | Dye density scales all dye in the goo, picked-up color included, not only focus and attention color. | GO23, GO28 |
+| 10-05 | Super+arrows reach widgets too: rail widgets are navigation targets like any window, judged by where they appear. No skip rules beyond what moving to the neighbor in that direction needs (not minimized-but-visible things, not widgets, not the periphery). | WK40 |

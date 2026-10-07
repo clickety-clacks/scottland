@@ -11,6 +11,7 @@ SCOTTLAND_HOOKS (dev mode), the Hyprland shim's instance signature and so on all
 the session. The session is the one named with --display, else the one the caller's
 WAYFIRE_SOCKET points at, else the only one running.
 """
+import errno
 import glob
 import os
 import socket
@@ -40,8 +41,11 @@ def alive(env):
             sock.settimeout(1)
             sock.connect(path)
         return True
-    except OSError:
-        return False
+    except OSError as error:
+        # EAGAIN means the socket has a listener whose accept queue is full: Wayfire is alive but
+        # busy (for a moment after windows map), so the session is running. A stale socket file
+        # gives ECONNREFUSED and a missing one ENOENT, both at once.
+        return error.errno == errno.EAGAIN
 
 
 def sessions():

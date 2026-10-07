@@ -251,7 +251,7 @@ while True:
     s = state()
     keep_watercolor_ticking(); time.sleep(.5)
     s = state()
-    if s.get('motion_pixels'):   # a wallpaper on this output and soak on
+    if s.get('motion_pixels') and s.get('open_pickup', True):   # a wallpaper on this output and soak on
         before = s; reasons = {}
         for _ in range(40):
             r = state()['reuse_blocked']; reasons[r] = reasons.get(r, 0)+1; time.sleep(.05)

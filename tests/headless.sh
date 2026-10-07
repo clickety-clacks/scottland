@@ -13,6 +13,7 @@
 #                                         --gdb runs Wayfire under gdb; SIGINT to that gdb prints
 #                                         all thread stacks into wayfire.log, then resumes
 #                                         --stock omits Scottland for a protocol control
+#                                         SCOTTLAND_TEST_PRELOAD=LIB preloads LIB into Wayfire only
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
@@ -75,6 +76,9 @@ GDB
           debugger=(gdb -q -batch -x "$dir/gdb.commands" --args) ;;
       esac
     done
+    # SCOTTLAND_TEST_PRELOAD: a library preloaded into this Wayfire only (e.g. tests/transform-census.c).
+    preload=()
+    [[ -n ${SCOTTLAND_TEST_PRELOAD:-} ]] && preload=(env "LD_PRELOAD=$SCOTTLAND_TEST_PRELOAD")
     (
       # A clean environment, as a display manager gives a login (not this shell's: an agent's or a
       # terminal's environment carries another desktop's variables and hides session gaps), plus
@@ -141,7 +145,7 @@ WRAPPER
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
-        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
     for _ in $(seq 100); do

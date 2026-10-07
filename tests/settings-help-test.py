@@ -3,6 +3,7 @@
 Run with tests/headless.sh run. Requires two outputs; screenshots and logs are retained in
 build/settings-help-evidence. No live config, session or services are used.
 """
+from importlib.machinery import SourceFileLoader
 import json
 import os
 import shutil
@@ -471,14 +472,14 @@ try:
     key("KEY_BACKSPACE")
     check("edge strength Backspace restores opening value",option_reaches("unfocused_edge_strength",initial_edge["unfocused_edge_strength"]))
     click(*reveal("goo",240,2*69+34));key("KEY_BACKSPACE");pointer(10,690)
-    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper soak","Overlap film","Control cloudiness","Control glow","Control proximity","Dye strength"]
+    labels=["Border thickness","Reach","Bridge draw","Swell","Mess","Lump size","Drift","Wave speed","Wave persistence","Wave height","Dye spread","Dye swirl","Dye release","Shine","Relief","Liquid depth","Wall wetting","Wallpaper pickup","Pickup balance","Overlap film","Control cloudiness","Control glow","Control proximity","Dye density"]
     for i,label in enumerate(labels):
         if i:key("KEY_DOWN")
         for _ in range(20):
             if snapshot()["goo"]["hint"]==label:break
             time.sleep(.025)
         check(label+" keyboard hint and automatic reveal",snapshot()["goo"]["hint"]==label)
-    key("KEY_RIGHT");check("GO23 Dye strength previews live",option_reaches("goo_dye_strength",1.01))
+    key("KEY_RIGHT");check("GO23 Dye density previews live",option_reaches("goo_dye_density",1.01))
     shot("04-goo-keyboard")
     tab(0);tab(1)
     # A discrete wheel burst ends before the position samples; the coast must continue,
@@ -616,6 +617,8 @@ try:
     check("resize graph sets real size coast",abs(changed_resize-170)<4 and baseline_resize>80)
     check("Save persists all Window mode options",all(k+" =" in layout.read_text() for k in saved_motion))
     check("Save writes the always-avoid choice", "window_avoidance_always = true" in layout.read_text())
+    # A layout.ini from before the drag audition was removed still names its pause.
+    with layout.open("a") as f: f.write("solo_audition_delay = 5000\n")
     panel=open_panel();tab(2)
     check("reopen retains both coast endpoints",
           all(abs(snapshot()["motion"][k]-saved_motion[k])<.01 for k in
@@ -631,16 +634,13 @@ try:
     check("double-tap timeline edits live timing",option("window_double_tap_delay")>300)
     click(*reveal("hintHoldTiming",180,60));key("KEY_RIGHT")
     check("hint hold timeline edits live timing",option("window_hold_delay")>500)
-    click(*reveal("soloPause",180,60));key("KEY_RIGHT")
-    check("solo pause timeline edits the live audition delay",option_reaches_change("solo_audition_delay",3000))
     click(*reveal("soloHotspot",180,60));key("KEY_RIGHT")
-    check("solo hotspot row edits the live hotspot",option_reaches_change("solo_audition_hotspot",50))
+    check("hold hotspot row edits the live hotspot",option_reaches_change("solo_audition_hotspot",50))
     shot("06a-window-timelines")
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);time.sleep(.2)
     check("Window Defaults restores original feel",option("key_impulse")==335 and option("key_friction")==608
           and option("resize_impulse")==335 and option("resize_friction")==608
-          and not bool_option("window_avoidance_always") and option("solo_audition_delay")==3000
-          and option("solo_audition_hotspot")==50)
+          and not bool_option("window_avoidance_always") and option("solo_audition_hotspot")==50)
     close_panel(panel,via_button=True)
     check("Cancel restores saved motion after Defaults",all(abs(option(k)-saved_motion[k])<.01 for k in
           ("key_impulse","key_friction","resize_impulse","resize_friction")))
@@ -648,6 +648,8 @@ try:
     panel=open_panel();tab(2);click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);close_panel(panel,save=True)
     check("Window Defaults saves always-avoid off", not bool_option("window_avoidance_always") and
           "window_avoidance_always = false" in layout.read_text())
+    check("Save drops the removed solo audition pause from an older layout.ini and keeps the hotspot",
+          "solo_audition_delay" not in layout.read_text() and "solo_audition_hotspot = 50" in layout.read_text())
     layout.unlink()
     # Theme applies to every control, not only hints.
     panel=open_panel()
@@ -815,6 +817,27 @@ try:
     check("Widgets Cancel restores saved rail pause",
           option_reaches("widget_make_room_dwell",saved_widgets["widget_make_room_dwell"]))
 
+    # S21: Sunlight and network location are on unless solar.ini turns them off. Saving another
+    # tab rewrites solar.ini, so the panel must read a missing file or key as the shipped default.
+    # Judged by what scottland-solar-theme itself reads back from the file the panel wrote.
+    solar_reader = SourceFileLoader("scottland_solar", str(repo/"core/libexec/scottland-solar-theme")).load_module()
+    solar_reader.CONFIG = solar
+    for name, fixture, saved_tab, expected in (
+            ("missing solar.ini", None, 4, (True, True, None)),
+            ("solar.ini without enabled or allow_ip",
+             "[solar]\nlocation_set = true\nlatitude = 37.77\nlongitude = -122.42\n", 3,
+             (True, True, (37.77, -122.42))),
+            ("solar.ini that turns both off", "[solar]\nenabled = false\nallow_ip = false\n", 4,
+             (False, False, None))):
+        if fixture is None: solar.unlink(missing_ok=True)
+        else: solar.write_text(fixture)
+        panel=open_panel();tab(saved_tab)
+        close_panel(panel,save=True)
+        read=solar_reader.read_config()
+        check("S21 saving another tab keeps Sunlight as written: " + name,
+              (read["enabled"], read["allow_ip"], read["location"]) == expected)
+        print("  solar.ini after save:", solar.read_text().replace("\n", " | "), flush=True)
+
     panel=open_panel();tab(5)
     check("Sunlight tab selects",snapshot()["tab"]==5)
     enable=snapshot()["solarEnable"]
@@ -824,7 +847,7 @@ try:
     check("manual location becomes active after both coordinates",snapshot()["solar"]["location_set"])
     network=snapshot()["solarNetwork"]
     click(*control_point("solarNetwork",network["width"]/2,21))
-    check("network location requires an explicit toggle",snapshot()["solar"]["allow_ip"])
+    check("network location toggles on from saved off",snapshot()["solar"]["allow_ip"])
     close_panel(panel,save=True,via_button=True)
     check("Sunlight Save writes isolated location and opt-in",solar.exists() and
           all(line in solar.read_text() for line in ("enabled = true","allow_ip = true","location_set = true")))

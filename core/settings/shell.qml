@@ -40,12 +40,13 @@ ShellRoot {
     { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 },
     { name: "goo_depth", hint: "Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it.", title: "Liquid depth", initial: 6, low: 0, high: 20, step: 0.1 },
     { name: "goo_profile", hint: "How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead.", title: "Wall wetting", initial: 0.65, low: 0, high: 1, step: 0.01 },
-    { name: "goo_soak", hint: "Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.", title: "Wallpaper soak", initial: 0.12, low: 0, high: 1, step: 0.01 },
+    { name: "goo_soak", hint: "How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off.", title: "Wallpaper pickup", initial: 0.12, low: 0, high: 1, step: 0.01 },
+    { name: "goo_pickup_balance", hint: "Share of picked-up color in the goo at full Wallpaper pickup. Zero keeps a window's own color (focus, attention); one shows only what is picked up from beneath.", title: "Pickup balance", initial: 0.45, low: 0, high: 1, step: 0.01 },
     { name: "goo_overlap_film", hint: "Width of goo over windows behind. Higher covers a wider strip; zero hides the film.", title: "Overlap film", initial: 4, low: 0, high: 20, step: 0.5 },
     { name: "goo_hover_cloudiness", hint: "Milkiness of a nearby corner or side. Higher makes the whole control denser; zero keeps it clear.", title: "Control cloudiness", initial: 0.65, low: 0, high: 1, step: 0.01 },
     { name: "goo_hover_emissivity", hint: "Light from inside a nearby corner or side. Higher glows brighter; zero turns the glow off.", title: "Control glow", initial: 0.35, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_hover_distance", hint: "How far away a control starts highlighting. Higher responds sooner; zero responds only over it.", title: "Control proximity", initial: 48, low: 0, high: 150, step: 1 },
-    { name: "goo_dye_strength", hint: "Scales focus, attention and Window mode hint colors in goo and fallback halos. One keeps today's look; higher values strengthen state colors, capped at full opacity. The unfocused neutral edge keeps its separate strength.", title: "Dye strength", initial: 1, low: 0, high: 1.5, step: 0.01 }]
+    { name: "goo_dye_density", hint: "How much dye the goo holds: its window colors and the colors it picks up alike (focus, attention and hint colors in fallback halos). Higher is denser, capped at full opacity; zero leaves clear liquid.", title: "Dye density", initial: 1, low: 0, high: 1.5, step: 0.01 }]
   readonly property var edgeControls: [
     { name: root.lightScheme ? "unfocused_edge_tone_light" : "unfocused_edge_tone_dark",
       hint: "Gray of an unfocused edge in the active color scheme. Lower is black; higher is white.",
@@ -65,7 +66,7 @@ ShellRoot {
   readonly property var motionDefaults: ({key_impulse:335, key_friction:608,
     resize_impulse:335, resize_friction:608, key_max_velocity:6000,
     cycle_overshoot:3, alt_hold_delay:300, window_double_tap_delay:300, window_hold_delay:500,
-    window_avoidance_always:false, window_mode_tint:7, solo_audition_delay:3000, solo_audition_hotspot:50})
+    window_avoidance_always:false, window_mode_tint:7, hint_background_opacity:100, solo_audition_hotspot:50})
   property var motionValues: Object.assign({}, motionDefaults)
   readonly property var opacityDefaults: ({center_opacity_focused:1,center_opacity_unfocused:1,
     side_opacity_focused:1,side_opacity_unfocused:1,widget_opacity_focused:1,widget_opacity_unfocused:1,
@@ -126,11 +127,11 @@ ShellRoot {
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
     resize_impulse:"Resize strength",resize_friction:"Resize deceleration",
-    key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", window_mode_tint:"Hint color overlay", alt_hold_delay:"Alt hold timing",
-    window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing", solo_audition_delay:"Solo audition pause",
-    solo_audition_hotspot:"Solo audition hotspot", unfocused_edge_tone_light:"Unfocused edge tone (light)",
+    key_max_velocity:"Speed limit", cycle_overshoot:"Hint cycle overshoot", window_mode_tint:"Hint color overlay", hint_background_opacity:"Hint background opacity", alt_hold_delay:"Alt hold timing",
+    window_double_tap_delay:"Double-tap timing", window_hold_delay:"Hint hold timing",
+    solo_audition_hotspot:"Hold hotspot", unfocused_edge_tone_light:"Unfocused edge tone (light)",
     unfocused_edge_tone_dark:"Unfocused edge tone (dark)",unfocused_edge_strength:"Unfocused edge strength",
-    attention_color_family:"Attention color family", goo_dye_strength:"Dye strength" })
+    attention_color_family:"Attention color family", goo_dye_density:"Dye density" })
 
   // The session palette carries theme colors and the desktop's interface font/text scale.
   property var palette: ({})
@@ -275,8 +276,9 @@ ShellRoot {
         root.original = Object.assign({},root.original,{motion:Object.assign({},motion),
           opacity:Object.assign({},opacity),widgets:Object.assign({},widgets)})
         const solar=Object.assign({},root.solarDefaults)
+        // A missing key keeps the shipped default, as scottland-solar-theme reads it (S21).
         for(const k of ["enabled","allow_ip","location_set"])
-          solar[k]=root.solarText(k)==="true"
+          if(root.solarText(k)!==null)solar[k]=root.solarText(k)==="true"
         for(const k of ["latitude","longitude"]){const n=parseFloat(root.solarText(k));if(!isNaN(n))solar[k]=n}
         root.solarValues=solar;root.originalSolar=Object.assign({},solar)
         root.solarLatitudeEdited=solar.location_set;root.solarLongitudeEdited=solar.location_set
@@ -304,13 +306,17 @@ ShellRoot {
   }
   function solarText(name) {
     const match=solarFile.text().match(new RegExp("^"+name+"\\s*=\\s*(.*)$","m"))
-    return match?match[1].trim():""
+    return match?match[1].trim():null
   }
 
   // Values last saved by this app; used for settings the running session can't report.
   function savedText(name) {
-    const match = saved.text().match(new RegExp("^" + name + "\\s*=\\s*(.*)$", "m"))
-    return match ? match[1].trim() : ""
+    const names = name === "goo_dye_density" ? [name, "goo_dye_strength"] : [name]
+    for (const key of names) {
+      const match = saved.text().match(new RegExp("^\\s*" + key + "\\s*=\\s*(.*)$", "m"))
+      if (match) return match[1].trim()
+    }
+    return ""
   }
 
   function savedValue(name, fallback) {
@@ -379,7 +385,7 @@ ShellRoot {
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
         widgetized:playground.widgetized,widgetSide:playground.widgetSide,edgeStops:playground.edgeStops.length}),
-      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloPause:root.testRect(soloPause),soloHotspot:root.testRect(soloHotspot),
+      motionSettings:root.testRect(motionSettings),holdTiming:root.testRect(holdTiming),doubleTiming:root.testRect(doubleTiming),hintHoldTiming:root.testRect(hintHoldTiming),soloHotspot:root.testRect(soloHotspot),
       alwaysAvoidance:root.testRect(alwaysAvoidance),
       opacitySettings:root.testRect(opacitySettings),windowOpacitySettings:root.testRect(windowOpacitySettings),
       windowTintSettings:Object.assign(root.testRect(windowTintSettings),{rowHeight:windowTintSettings.rowHeight}),
@@ -879,7 +885,8 @@ ShellRoot {
             hintFontFamily:root.hintFontFamily;textScale:root.textScale
             viewport:gooScroll;scrollOffset:gooScroll.contentY
             rows:[
-              {id:"window_mode_tint",label:"Hint color overlay",min:0,max:30,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles and outlines are unaffected."}
+              {id:"window_mode_tint",label:"Hint color overlay",min:0,max:30,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles and outlines are unaffected."},
+              {id:"hint_background_opacity",label:"Hint background opacity",min:0,max:100,step:1,largeStep:10,decimals:0,suffix:"%",hint:"Opacity of the backgrounds behind hint letters. Higher makes the backing more visible; 100% keeps the usual window and widget hint backgrounds, and zero removes their fill. Letters, hint rims and window opacity are unchanged."}
             ]
             values:root.motionValues;opening:root.original?.motion || ({})
             onChanged:(name,value)=>root.setMotion(name,value)
@@ -902,23 +909,15 @@ ShellRoot {
             value:root.motionValues.window_hold_delay;opening:root.original?.motion?.window_hold_delay || 500
             onEdited:value=>root.setMotion("window_hold_delay",value)
           }
-          // Spread's drag audition (docs/spread.md): how long a drag rests in the center before the
-          // solo is shown, and how far the pointer may then move before that counts as a refusal.
-          TimingRow {
-            id:soloPause
-            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Pause to solo"
-            minimum:0;maximum:10000;step:100;bigStep:1000;endLabel:"10 s"
-            explanation:"While dragging a window, resting it in the center zone this long shows the solo: the other center windows move to the periphery, which makes room for them. Dropping the window there accepts it; moving on refuses it and every window returns exactly. All the way left turns it off."
-            footer:"drag rests in the center → the solo is shown"
-            value:root.motionValues.solo_audition_delay;opening:root.original?.motion?.solo_audition_delay ?? 3000
-            onEdited:value=>root.setMotion("solo_audition_delay",value)
-          }
+          // How far a pointer hold's audition lets the pointer move before that counts as starting
+          // to drag and cancels it (ruling 10-05; WK39). Kept by that ruling; nothing reads it
+          // until pointer-hold auditions land.
           TimingRow {
             id:soloHotspot
-            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Solo hotspot"
+            Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Hold hotspot"
             minimum:8;maximum:400;step:1;bigStep:10;unit:"pt";endLabel:"400 pt"
-            explanation:"Once the solo is shown, moving the pointer this far from where it rested refuses it. Smaller movements are not a refusal, and a drop anywhere within this distance is accepted exactly where it lands. Larger leaves the other windows less room."
-            footer:"pointer moves this far → the solo is refused"
+            explanation:"Not used yet: pointer-hold auditions are not built. Once they are, moving the pointer this far from where a hold fired, while it shows its solo or pair, will count as starting to drag and cancel the audition. Smaller movements will keep it."
+            footer:"no effect until pointer-hold auditions are built"
             value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? 50
             onEdited:value=>root.setMotion("solo_audition_hotspot",value)
           }
