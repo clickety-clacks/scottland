@@ -1582,6 +1582,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t dragged = 0;
         bool left = false;
         double top = 0, bottom = 0;
+        // The focused card on this rail, if it isn't the one being dragged: fixed (dr_795d17c3),
+        // so it is held out of the solve rather than offered to the solver as movable.
+        bool has_focused = false;
+        double focused_lo = 0, focused_hi = 0;
         scottland::rectf_t last_item, solved_item;  // latest landing; the one the last solve cleared
         wf::pointf_t pause_anchor{0, 0};
         uint32_t pause_deadline = 0;
@@ -3402,6 +3406,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.dragged = 0;
         rail.left = false;
         rail.top = rail.bottom = 0;
+        rail.has_focused = false;
+        rail.focused_lo = rail.focused_hi = 0;
         rail.last_item = rail.solved_item = {};
         rail.pause_anchor = {};
         rail.pause_deadline = 0;
@@ -3422,6 +3428,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::vector<scottland::drag_actor_position_t> origins;
         intervals.reserve(model.widgets.size());
         origins.reserve(model.widgets.size());
+        auto active = wf::get_core().seat->get_active_view();
+        rail.has_focused = false;
         for (auto& [window_id, link] : model.widgets)
         {
             // Widgets hidden by Super+M keep their places (they come back); full screen's don't count.
@@ -3437,6 +3445,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 rect.y1 -= frame->drag_layout_y;
                 rect.y2 -= frame->drag_layout_y;
+            }
+            // The focused card is fixed (dr_795d17c3): held out of the movable set so the
+            // solver never offers it a shift, same as the dragged card itself.
+            if (active && active.get() == widget.get())
+            {
+                rail.has_focused = true;
+                rail.focused_lo = rect.y1;
+                rail.focused_hi = rect.y2;
+                continue;
             }
             auto geometry = widget->get_geometry();
             intervals.push_back({widget->get_id(), rect.y1, rect.y2});
@@ -3466,7 +3483,18 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.last_item = item;
         rail.has_item = true;
         rail.solved_item = item;
-        rail.solver.solve(item.y1, item.y2, rail.top, rail.bottom);
+        // The focused card stays fixed: solve only the sub-span on the item's side of it, so
+        // no movable card can be packed across it. If that sub-span is too small for the
+        // item, the solver's existing full-rail overlap behavior applies (WG26) rather than
+        // the focused card moving.
+        double top = rail.top, bottom = rail.bottom;
+        if (rail.has_focused)
+        {
+            double item_center = (item.y1 + item.y2) / 2.0, focused_center = (rail.focused_lo + rail.focused_hi) / 2.0;
+            if (item_center < focused_center) bottom = std::min(bottom, rail.focused_lo - scottland::rail::CONTACT);
+            else top = std::max(top, rail.focused_hi + scottland::rail::CONTACT);
+        }
+        rail.solver.solve(item.y1, item.y2, top, bottom);
         auto& shifts = rail.solver.shifts();
         for (size_t i = 0; i < rail.presentation.size(); ++i)
         {
@@ -6831,33 +6859,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen() && !is_widget(main) &&
             !widget_shaped.value_or(false))
         {
-            auto geometry = main->get_geometry();
-            double screen = main->get_output()->get_relative_geometry().width;
-            double center = geometry.x + geometry.width / 2.0;
             if (shift_held())
             {
                 pin_scale(main, model.drag.target);  // dropped with Shift held (L31)
-            } else if (std::abs(place_at(center, screen).scale - model.drag.target) > JUMP)
-            {
-                for (int d = 1; d <= 400; d++)
-                {
-                    int found = 0;
-                    for (int sign : {-1, 1})
-                    {
-                        if (std::abs(place_at(center + sign * d, screen).scale - model.drag.target) <= 0.003)
-                        {
-                            found = sign;
-                            break;
-                        }
-                    }
-
-                    if (found)
-                    {
-                        move_window(main, geometry.x + found * d, geometry.y);
-                        break;
-                    }
-                }
             }
+            // Position wins (P14, Mike's stay-still ruling dr_795d17c3): the window stays exactly
+            // where the user let go. If the drop position's natural scale differs from the scale
+            // shown while dragging, the size follows the drop position instead of the window
+            // being nudged to a position matching the shown size; `set_scale` below animates that
+            // size change (L10).
         }
 
         for (auto& dragged : ev->all_views)
