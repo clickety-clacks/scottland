@@ -20,6 +20,7 @@ gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import GdkPixbuf
 
 assert os.environ.get('SCOTTLAND_TEST_MODEL') == '1', 'caller-owned headless session required'
+assert os.environ.get('SCOTTLAND_HEADLESS_ISOLATION') == '1', 'isolated headless session required'
 repo = Path(__file__).resolve().parents[1]
 art = Path(sys.argv[1]).resolve(); art.mkdir(parents=True, exist_ok=True)
 log = (art / 'clients.log').open('w')
@@ -29,6 +30,8 @@ sock = socket.socket(socket.AF_UNIX); sock.settimeout(8); sock.connect(os.enviro
 clients, held, observations = [], set(), []
 passed = failed = 0
 panel = None
+session_palette = None
+session_palette_identity = None
 
 
 def ipc(method, data=None):
@@ -233,8 +236,29 @@ signal.signal(signal.SIGINT, interrupted)
 try:
     palette_path=art/'palette.json'
     palette_path.write_text(json.dumps(dict(scheme='dark',background='#1f232c',foreground='#d8deea',accent='#81a1c1')))
-    session_palette=Path(os.environ['XDG_RUNTIME_DIR'])/'scottland'/(os.environ['WAYLAND_DISPLAY']+'.palette.json')
-    temp=session_palette.with_suffix('.opacity-test.tmp'); temp.write_text(palette_path.read_text()); temp.replace(session_palette)
+    scratch = Path(os.environ['SCOTTLAND_TEST_SCRATCH']).resolve(strict=True)
+    session_dir = Path(os.environ['SCOTTLAND_SESSION_DIR']).resolve(strict=True)
+    if not session_dir.is_relative_to(scratch):
+        raise RuntimeError('session metadata must remain below owned runner scratch')
+    display = os.environ['WAYLAND_DISPLAY']
+    if not display.startswith('wayland-') or Path(display).name != display:
+        raise RuntimeError('unexpected headless display name')
+    session_palette = session_dir / (display + '.palette.json')
+    temp = session_palette.with_suffix('.opacity-test.tmp')
+    if session_palette.exists() or session_palette.is_symlink():
+        raise RuntimeError('session palette already exists')
+    if temp.exists() or temp.is_symlink():
+        raise RuntimeError('session palette temp already exists')
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    session_palette_identity = os.fstat(fd)
+    with os.fdopen(fd, 'w') as palette_file:
+        palette_file.write(palette_path.read_text())
+    os.link(temp, session_palette, follow_symlinks=False)
+    temp_identity = temp.lstat()
+    if (temp_identity.st_dev, temp_identity.st_ino) != (session_palette_identity.st_dev, session_palette_identity.st_ino):
+        raise RuntimeError('session palette temp ownership changed')
+    temp.unlink()
+    session_palette_identity = session_palette.lstat()
     ipc('wayfire/set-config-options',{'scottland/color_scheme':'dark','scottland/accent_color':'#81a1c1ff','scottland/sounds':False})
     light_path=art/'light-client.json'
     light_path.write_text(json.dumps(dict(background='#d8deea')))  # fixture client surface, not the theme
@@ -365,7 +389,16 @@ finally:
     for p in clients:
         try:p.wait(timeout=5)
         except subprocess.TimeoutExpired:p.kill();p.wait(timeout=5)
-    if 'session_palette' in globals():session_palette.unlink(missing_ok=True)
+    if session_palette is not None and session_palette_identity is not None:
+        try:
+            current_palette = session_palette.lstat()
+            if (current_palette.st_dev, current_palette.st_ino) == (session_palette_identity.st_dev, session_palette_identity.st_ino):
+                session_palette.unlink()
+            else:
+                print('FAIL session palette ownership changed; leaving it for owned-session cleanup', flush=True)
+                failed += 1
+        except FileNotFoundError:
+            pass
     (art/'observations.json').write_text(json.dumps(observations,indent=2))
     sock.close();log.close()
     print(f'{passed} passed, {failed} failed',flush=True)
