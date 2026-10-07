@@ -29,9 +29,11 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -45,6 +47,13 @@ for tool in (recorder_tool, 'ffmpeg', 'ffprobe'):
 sock = socket.socket(socket.AF_UNIX)
 sock.settimeout(8)
 sock.connect(os.environ['WAYFIRE_SOCKET'])
+session_palette = (Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' /
+                   (os.environ['WAYLAND_DISPLAY'] + '.palette.json'))
+session_palette_existed = False
+session_palette_before = None
+session_palette_mode = None
+session_palette_changed = False
+prior_hint_text_scale = None
 clients = []
 recorder = None
 held = set()
@@ -376,7 +385,17 @@ try:
                'accent': '#81a1c1', 'text_scale': .82, 'reduced_motion': False}
     palette_file = art / 'palette.json'
     palette_file.write_text(json.dumps(palette))
-    session_palette = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
+    if session_palette.is_symlink():
+        raise RuntimeError(f'refusing to replace symlinked session palette: {session_palette}')
+    session_palette_existed = session_palette.exists()
+    if session_palette_existed:
+        palette_info = session_palette.stat()
+        if not stat.S_ISREG(palette_info.st_mode):
+            raise RuntimeError(f'session palette is not a regular file: {session_palette}')
+        session_palette_before = session_palette.read_bytes()
+        session_palette_mode = stat.S_IMODE(palette_info.st_mode)
+    prior_hint_text_scale = float(ipc('scottland/hints')['hint_text_scale'])
+    session_palette_changed = True
     session_palette.write_text(json.dumps(palette))
     wait(lambda: abs(ipc('scottland/hints')['hint_text_scale'] - .82) < 1e-6, 'the palette')
     layout = [('W0', 300, 200, 10, 555), ('W1', 300, 200, 10, 625), ('W2', 300, 200, 10, 680),
@@ -426,6 +445,32 @@ try:
           f'{len(layout)} hints each: {passed} checks passed, {failed} failed', flush=True)
 finally:
     # Each cleanup step continues even when the compositor or recorder has already gone.
+    if session_palette_changed:
+        try:
+            if session_palette_existed:
+                restore_fd, restore_name = tempfile.mkstemp(
+                    prefix=f'.{session_palette.name}.restore-', dir=session_palette.parent)
+                try:
+                    with os.fdopen(restore_fd, 'wb') as restore:
+                        restore.write(session_palette_before)
+                    os.chmod(restore_name, session_palette_mode)
+                    os.replace(restore_name, session_palette)
+                finally:
+                    Path(restore_name).unlink(missing_ok=True)
+                if (session_palette.read_bytes() != session_palette_before or
+                        stat.S_IMODE(session_palette.stat().st_mode) != session_palette_mode):
+                    raise RuntimeError('session palette bytes or mode differ from their pre-test state')
+            else:
+                session_palette.unlink(missing_ok=True)
+                if os.path.lexists(session_palette):
+                    raise RuntimeError('session palette was absent before the test but remains afterward')
+            wait(lambda: abs(float(ipc('scottland/hints')['hint_text_scale']) -
+                             prior_hint_text_scale) < 1e-6,
+                 'the pre-test session palette to be restored', timeout=8)
+            check(True, 'the pre-test session palette is restored',
+                  f'text scale {prior_hint_text_scale:g}')
+        except Exception as error:
+            check(False, 'the pre-test session palette is restored', str(error))
     if recorder and recorder.poll() is None:
         try: recorder.send_signal(signal.SIGINT)
         except ProcessLookupError: pass
