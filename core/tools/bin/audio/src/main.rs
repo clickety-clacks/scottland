@@ -3,19 +3,19 @@ use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "\
-usage: scottland audio input mute
-       scottland audio input set-default <node-id> <source-name>
-       scottland audio output set-default <node-id> <sink-name>
+usage: scottland audio mic-mute
+       scottland audio input set <source-name>
+       scottland audio output set <sink-name>
        scottland audio output sink [sink-name]
-       scottland audio output switch
-       scottland audio output volume <raise|lower|mute-toggle|+N|-N>
+       scottland audio output next
+       scottland audio volume <raise|lower|mute-toggle|+N|-N>
        scottland audio brightness keyboard mute <on|off>";
 
 fn main() -> ExitCode {
@@ -34,28 +34,19 @@ fn dispatch(args: &[String]) -> Result<(), String> {
             println!("{USAGE}");
             Ok(())
         }
-        [input, mute] if input == "input" && mute == "mute" => input_mute(),
-        [input, set_default, node_id, source_name]
-            if input == "input" && set_default == "set-default" =>
-        {
-            input_set_default(node_id, source_name)
+        [mic_mute] if mic_mute == "mic-mute" => input_mute(),
+        [input, set_default, source_name] if input == "input" && set_default == "set" => {
+            input_set_default(source_name)
         }
-        [output, set_default, node_id, sink_name]
-            if output == "output" && set_default == "set-default" =>
-        {
-            output_set_default(node_id, sink_name)
+        [output, set_default, sink_name] if output == "output" && set_default == "set" => {
+            output_set_default(sink_name)
         }
-        [output, sink] if output == "output" && sink == "sink" => {
-            let mut graph = AudioGraph::load();
-            println!("{}", graph.resolve(&default_sink_name()));
-            Ok(())
-        }
+        [output, sink] if output == "output" && sink == "sink" => output_sink(None),
         [output, sink, sink_name] if output == "output" && sink == "sink" => {
-            let mut graph = AudioGraph::load();
-            println!("{}", graph.resolve(sink_name));
-            Ok(())
+            output_sink(Some(sink_name))
         }
-        [output, switch] if output == "output" && switch == "switch" => output_switch(),
+        [output, next] if output == "output" && next == "next" => output_switch(),
+        [volume, action] if volume == "volume" => output_volume(action),
         [output, volume, action] if output == "output" && volume == "volume" => {
             output_volume(action)
         }
@@ -79,13 +70,61 @@ fn stdout(output: io::Result<Output>) -> String {
         .unwrap_or_default()
 }
 
-fn default_sink_name() -> String {
-    stdout(run("pactl", &["get-default-sink"]))
+fn run_checked(program: &str, args: &[&str], action: &str) -> Result<Output, String> {
+    let output = run(program, args).map_err(|error| format!("{action}: {error}"))?;
+    if output.status.success() {
+        return Ok(output);
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if detail.is_empty() {
+        Err(format!("{action} failed with {}", output.status))
+    } else {
+        Err(format!("{action} failed: {detail}"))
+    }
+}
+
+fn checked_stdout(program: &str, args: &[&str], action: &str) -> Result<String, String> {
+    let output = run_checked(program, args, action)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn checked_default_sink_name() -> Result<String, String> {
+    let name = checked_stdout("pactl", &["get-default-sink"], "read default audio output")?;
+    if name.is_empty() {
+        Err("no default audio output is set".into())
+    } else {
+        Ok(name)
+    }
+}
+
+fn output_sink(sink_name: Option<&str>) -> Result<(), String> {
+    let sink_name = match sink_name {
+        Some(name) if !name.is_empty() => name.to_string(),
+        Some(_) => return Err("could not resolve an empty audio sink name".into()),
+        None => checked_default_sink_name()?,
+    };
+    let mut graph = AudioGraph::load();
+    let resolved = graph.resolve(&sink_name);
+    if resolved.is_empty() {
+        return Err(format!("could not resolve audio sink {sink_name}"));
+    }
+    println!("{resolved}");
+    Ok(())
 }
 
 fn input_mute() -> Result<(), String> {
-    let _ = run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]);
-    let muted = stdout(run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])).contains("MUTED");
+    checked_default_source_name()?;
+    run_checked(
+        "wpctl",
+        &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"],
+        "toggle default input mute",
+    )?;
+    let status = checked_stdout(
+        "wpctl",
+        &["get-volume", "@DEFAULT_AUDIO_SOURCE@"],
+        "read default input mute state",
+    )?;
+    let muted = status.contains("MUTED");
     let led = if muted { "on" } else { "off" };
     keyboard_mic_mute(led)?;
     let (icon, message) = microphone_osd(muted);
@@ -93,49 +132,115 @@ fn input_mute() -> Result<(), String> {
     Ok(())
 }
 
-fn input_set_default(node_id: &str, source_name: &str) -> Result<(), String> {
-    if node_id.is_empty() || source_name.is_empty() {
-        return Err("usage: scottland audio input set-default <node-id> <source-name>".into());
+fn checked_default_source_name() -> Result<String, String> {
+    let name = checked_stdout("pactl", &["get-default-source"], "read default audio input")?;
+    if name.is_empty() {
+        Err("no default audio input is set".into())
+    } else {
+        Ok(name)
     }
-    let _ = run("wpctl", &["set-default", node_id]);
-    let _ = run("pactl", &["set-default-source", source_name]);
-    let active = stdout(run("pactl", &["list", "short", "source-outputs"]));
+}
+
+fn list_short_names(program: &str, args: &[&str], action: &str) -> Result<Vec<String>, String> {
+    let output = checked_stdout(program, args, action)?;
+    Ok(output
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1).map(str::to_string))
+        .collect())
+}
+
+fn input_set_default(source_name: &str) -> Result<(), String> {
+    if source_name.is_empty() {
+        return Err("usage: scottland audio input set <source-name>".into());
+    }
+    let sources = list_short_names("pactl", &["list", "short", "sources"], "list audio inputs")?;
+    if !sources.iter().any(|name| name == source_name) {
+        return Err(format!("audio input {source_name} does not exist"));
+    }
+    run_checked(
+        "pactl",
+        &["set-default-source", source_name],
+        "set default audio input",
+    )?;
+    let actual = checked_default_source_name()?;
+    if actual != source_name {
+        return Err(format!(
+            "audio server selected input {actual} instead of {source_name}"
+        ));
+    }
+    let active = checked_stdout(
+        "pactl",
+        &["list", "short", "source-outputs"],
+        "list recording streams",
+    )?;
     for id in active
         .lines()
         .filter_map(|line| line.split_whitespace().next())
     {
-        let _ = run("pactl", &["move-source-output", id, source_name]);
+        run_checked(
+            "pactl",
+            &["move-source-output", id, source_name],
+            &format!("move recording stream {id} to {source_name}"),
+        )
+        .map_err(|error| format!("default input is {source_name}, but {error}"))?;
     }
     Ok(())
 }
 
-fn output_set_default(node_id: &str, sink_name: &str) -> Result<(), String> {
-    if node_id.is_empty() || sink_name.is_empty() {
-        return Err("usage: scottland audio output set-default <node-id> <sink-name>".into());
+fn output_set_default(sink_name: &str) -> Result<(), String> {
+    if sink_name.is_empty() {
+        return Err("usage: scottland audio output set <sink-name>".into());
     }
-    let _ = run("timeout", &["2", "wpctl", "set-default", node_id]);
-    let _ = run("timeout", &["2", "pactl", "set-default-sink", sink_name]);
+    let sinks = list_short_names(
+        "timeout",
+        &["2", "pactl", "list", "short", "sinks"],
+        "list audio outputs",
+    )?;
+    if !sinks.iter().any(|name| name == sink_name) {
+        return Err(format!("audio output {sink_name} does not exist"));
+    }
+    run_checked(
+        "timeout",
+        &["2", "pactl", "set-default-sink", sink_name],
+        "set default audio output",
+    )?;
+    let actual = checked_stdout(
+        "timeout",
+        &["2", "pactl", "get-default-sink"],
+        "read default audio output",
+    )?;
+    if actual != sink_name {
+        return Err(format!(
+            "audio server selected output {actual} instead of {sink_name}"
+        ));
+    }
 
-    let active = stdout(run("timeout", &["2", "pactl", "list", "sink-inputs"]));
+    let active = checked_stdout(
+        "timeout",
+        &["2", "pactl", "list", "sink-inputs"],
+        "list playback streams",
+    )?;
     for id in application_sink_inputs(&active) {
-        let _ = run(
+        run_checked(
             "timeout",
             &["2", "pactl", "move-sink-input", &id, sink_name],
-        );
+            &format!("move playback stream {id} to {sink_name}"),
+        )
+        .map_err(|error| format!("default output is {sink_name}, but {error}"))?;
     }
     Ok(())
 }
 
 fn keyboard_mic_mute(action: &str) -> Result<(), String> {
-    let led = Path::new("/sys/class/leds/platform::micmute/brightness");
-    if !led.exists() {
-        return Ok(());
-    }
     let value = match action {
         "on" => "1",
         "off" => "0",
         _ => return Err("usage: scottland audio brightness keyboard mute <on|off>".into()),
     };
+    let led = Path::new("/sys/class/leds/platform::micmute/brightness");
+    if !led.exists() {
+        return Ok(());
+    }
     let _ = run(
         "brightnessctl",
         &["--device=platform::micmute", "set", value],
@@ -476,7 +581,11 @@ fn output_switch() -> Result<(), String> {
         return Err("no audio devices found".into());
     }
 
-    let current = stdout(run("timeout", &["2", "pactl", "get-default-sink"]));
+    let current = checked_stdout(
+        "timeout",
+        &["2", "pactl", "get-default-sink"],
+        "read default audio output",
+    )?;
     let next = candidates[next_sink_index(&candidates, &current)];
     let effective_sink = graph.resolve(&next.name);
     let volume = pactl_volume_percent(&effective_sink)
@@ -488,7 +597,7 @@ fn output_switch() -> Result<(), String> {
     ))
     .contains("yes");
     if next.name != current {
-        let _ = output_set_default(&next.index.to_string(), &next.name);
+        output_set_default(&next.name)?;
     }
     show_osd(Some(volume_icon(volume, muted)), &next.description, None);
     Ok(())
@@ -503,10 +612,12 @@ fn switch_candidates<'a>(sinks: &'a [Sink], graph: &mut AudioGraph) -> Vec<&'a S
             (resolved != sink.name).then_some(resolved)
         })
         .collect();
-    sinks
+    let mut candidates = sinks
         .iter()
         .filter(|sink| sink.available() && !fronted.contains(&sink.name))
-        .collect()
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|sink| sink.index);
+    candidates
 }
 
 fn next_sink_index(candidates: &[&Sink], current: &str) -> usize {
@@ -607,27 +718,45 @@ fn pactl_volume_percent(sink: &str) -> Option<u32> {
         .find_map(|value| value.strip_suffix('%').and_then(|value| value.parse().ok()))
 }
 
+fn checked_pactl_volume_percent(sink: &str) -> Result<u32, String> {
+    let text = checked_stdout(
+        "timeout",
+        &["2", "pactl", "get-sink-volume", sink],
+        &format!("read volume for {sink}"),
+    )?;
+    text.split_whitespace()
+        .find_map(|value| value.strip_suffix('%').and_then(|value| value.parse().ok()))
+        .ok_or_else(|| format!("could not read volume for {sink}"))
+}
+
 fn output_volume(action: &str) -> Result<(), String> {
     let action = parse_volume_action(action)?;
     let mut graph = AudioGraph::load();
-    let sink = graph.resolve(&default_sink_name());
+    let sink = graph.resolve(&checked_default_sink_name()?);
     if sink.is_empty() {
         return Err("could not resolve an audio sink to control".into());
     }
     if action == VolumeAction::MuteToggle {
-        if !allow_mute_toggle()? {
+        if !allow_mute_toggle(&sink)? {
             return Ok(());
         }
-        let _ = run("pactl", &["set-sink-mute", &sink, "toggle"]);
     } else if let VolumeAction::Adjust { raise, amount } = action {
-        let current = pactl_volume_percent(&sink)
-            .ok_or_else(|| format!("could not read volume for {sink}"))?;
+        let current = checked_pactl_volume_percent(&sink)?;
         let next = adjusted_volume(current, raise, amount);
-        let _ = run("pactl", &["set-sink-mute", &sink, "0"]);
-        let _ = run("pactl", &["set-sink-volume", &sink, &format!("{next}%")]);
+        run_checked(
+            "pactl",
+            &["set-sink-mute", &sink, "0"],
+            &format!("unmute output {sink}"),
+        )?;
+        run_checked(
+            "pactl",
+            &["set-sink-volume", &sink, &format!("{next}%")],
+            &format!("set volume for {sink}"),
+        )?;
     }
-    let volume = pactl_volume_percent(&sink).unwrap_or(0);
-    let muted = stdout(run("pactl", &["get-sink-mute", &sink])).contains("yes");
+    let volume = checked_pactl_volume_percent(&sink)?;
+    let muted = checked_stdout("pactl", &["get-sink-mute", &sink], "read output mute state")?
+        .contains("yes");
     let (icon, message, progress) = volume_osd(volume, muted);
     show_osd(Some(icon), message, Some(progress));
     Ok(())
@@ -640,56 +769,155 @@ unsafe extern "C" {
 const LOCK_EX: i32 = 2;
 const LOCK_NB: i32 = 4;
 
-fn allow_mute_toggle() -> Result<bool, String> {
-    let runtime = env::var_os("XDG_RUNTIME_DIR")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    allow_mute_toggle_in(&runtime).map_err(|error| format!("mute-toggle debounce: {error}"))
+fn allow_mute_toggle(sink: &str) -> Result<bool, String> {
+    let runtime = scottland::dirs::runtime_dir();
+    fs::create_dir_all(&runtime).map_err(|error| format!("mute-toggle debounce: {error}"))?;
+    let checked_at = timestamp_ms();
+    allow_mute_toggle_in(&runtime, checked_at, || {
+        run_checked(
+            "pactl",
+            &["set-sink-mute", sink, "toggle"],
+            &format!("toggle output mute for {sink}"),
+        )?;
+        Ok(timestamp_ms())
+    })
 }
 
-fn allow_mute_toggle_in(runtime: &Path) -> io::Result<bool> {
-    let lock_path = runtime.join("scottland-audio-output-volume-mute-toggle.lock");
+fn timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn allow_mute_toggle_in(
+    runtime: &Path,
+    checked_at: u64,
+    toggle: impl FnOnce() -> Result<u64, String>,
+) -> Result<bool, String> {
     let state_path = runtime.join("scottland-audio-output-volume-mute-toggle.last");
-    let lock = OpenOptions::new()
+    let mut state = OpenOptions::new()
         .create(true)
         .truncate(false)
+        .read(true)
         .write(true)
-        .open(lock_path)?;
-    // The timestamp check and update guard a toggle, where a concurrent key event could
-    // otherwise read the same old value and toggle back immediately.
-    let locked = unsafe { flock(lock.as_raw_fd(), LOCK_EX | LOCK_NB) };
+        .open(state_path)
+        .map_err(|error| format!("mute-toggle debounce: {error}"))?;
+    let locked = unsafe { flock(state.as_raw_fd(), LOCK_EX | LOCK_NB) };
     if locked != 0 {
         let error = io::Error::last_os_error();
         if error.kind() == io::ErrorKind::WouldBlock {
             return Ok(false);
         }
-        return Err(error);
+        return Err(format!("mute-toggle debounce: {error}"));
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let last = fs::read_to_string(&state_path)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    if now.saturating_sub(last) < 250 {
+    let mut contents = String::new();
+    state
+        .read_to_string(&mut contents)
+        .map_err(|error| format!("mute-toggle debounce: {error}"))?;
+    let last = contents.trim().parse::<u64>().unwrap_or(0);
+    if checked_at.saturating_sub(last) < 250 {
         return Ok(false);
     }
-    let mut state = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(state_path)?;
-    writeln!(state, "{now}")?;
-    state.sync_data()?;
+    let accepted_at = toggle()?;
+    state
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("mute-toggle debounce: {error}"))?;
+    state
+        .set_len(0)
+        .map_err(|error| format!("mute-toggle debounce: {error}"))?;
+    writeln!(state, "{accepted_at}").map_err(|error| format!("mute-toggle debounce: {error}"))?;
+    state
+        .sync_data()
+        .map_err(|error| format!("mute-toggle debounce: {error}"))?;
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mute_toggle_test_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!(
+            "scottland-audio-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mute_toggle_persists_only_an_accepted_toggle_time_in_one_file() {
+        let directory = mute_toggle_test_dir("debounce");
+        let toggled = std::cell::Cell::new(false);
+
+        let accepted = allow_mute_toggle_in(&directory, 1_000, || {
+            toggled.set(true);
+            Ok(1_025)
+        })
+        .unwrap();
+
+        assert!(accepted);
+        assert!(toggled.get());
+        let state_path = directory.join("scottland-audio-output-volume-mute-toggle.last");
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), "1025\n");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mute_toggle_suppresses_a_second_toggle_before_250_milliseconds() {
+        let directory = mute_toggle_test_dir("debounce-window");
+        let state_path = directory.join("scottland-audio-output-volume-mute-toggle.last");
+        fs::write(&state_path, "1000\n").unwrap();
+        let toggled = std::cell::Cell::new(false);
+
+        let accepted = allow_mute_toggle_in(&directory, 1_249, || {
+            toggled.set(true);
+            Ok(1_249)
+        })
+        .unwrap();
+
+        assert!(!accepted);
+        assert!(!toggled.get());
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), "1000\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_mute_toggle_does_not_advance_the_debounce_time() {
+        let directory = mute_toggle_test_dir("debounce-failure");
+        let state_path = directory.join("scottland-audio-output-volume-mute-toggle.last");
+        fs::write(&state_path, "1000\n").unwrap();
+
+        let result = allow_mute_toggle_in(&directory, 1_300, || Err("toggle failed".into()));
+
+        assert_eq!(result, Err("toggle failed".into()));
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), "1000\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mute_toggle_is_allowed_at_the_250_millisecond_boundary() {
+        let directory = mute_toggle_test_dir("debounce-boundary");
+        let state_path = directory.join("scottland-audio-output-volume-mute-toggle.last");
+        fs::write(&state_path, "1000\n").unwrap();
+
+        let accepted = allow_mute_toggle_in(&directory, 1_250, || Ok(1_250)).unwrap();
+
+        assert!(accepted);
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), "1250\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn sink_ports_match_pactl_availability_rules() {
@@ -774,6 +1002,30 @@ mod tests {
         assert_eq!(
             ordinary[next_sink_index(&ordinary, "alsa_output.speakers")].name,
             "effect_input.room"
+        );
+    }
+
+    #[test]
+    fn output_switch_orders_available_candidates_by_server_index() {
+        let sinks = [
+            test_sink(30, "alsa_output.third"),
+            test_sink(10, "alsa_output.first"),
+            test_sink(20, "alsa_output.second"),
+        ];
+        let mut graph = AudioGraph::default();
+
+        let candidates = switch_candidates(&sinks, &mut graph);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|sink| sink.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "alsa_output.first",
+                "alsa_output.second",
+                "alsa_output.third"
+            ]
         );
     }
 
