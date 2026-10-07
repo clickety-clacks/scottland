@@ -17,19 +17,117 @@
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop
 #
-# Requires bubblewrap to redirect Quickshell logs into the test directory without changing
-# XDG_RUNTIME_DIR. Put SCOTTLAND_HEADLESS_DIR and TMPDIR under the checkout's build/ directory.
+# Requires bubblewrap to put a run-owned runtime view at XDG_RUNTIME_DIR without changing its
+# value. All runtime files and TMPDIR then live under the validated checkout build scratch.
+# Put SCOTTLAND_HEADLESS_DIR under the checkout's build/ directory.
 # Helpers come from this checkout (make test-hooks) if built, else the dev install. Set
 # SCOTTLAND_HEADLESS_DIR to run test sessions of several checkouts at once.
 #
 # Example: tests/headless.sh start --omarchy && tests/headless.sh run foot &
 #          tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
 set -euo pipefail
-repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
-runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
+runtime=$(realpath -e -- "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}")
+uid=$(id -u)
+build=$(realpath -m -- "$repo/build")
 # SCOTTLAND_HEADLESS_DIR: where this test session keeps its state, so test sessions of several
 # checkouts (e.g. agents on branches sharing a test machine) can run at once.
-dir=${SCOTTLAND_HEADLESS_DIR:-$repo/build/headless}
+dir=$(realpath -m -- "${SCOTTLAND_HEADLESS_DIR:-$build/headless}")
+runtime_scratch=$dir/runtime
+tmp_scratch=$dir/tmp
+owner=$dir/.scottland-headless-owner
+inside=0
+if [[ ${1:-} == __scottland_headless_private_runtime ]]; then
+  inside=1
+  shift
+fi
+case "$dir/" in
+  "$build"/*) ;;
+  *) echo 'SCOTTLAND_HEADLESS_DIR must be a child of this checkout build/' >&2; exit 2 ;;
+esac
+[[ $dir != "$build" ]] || { echo 'SCOTTLAND_HEADLESS_DIR cannot be the build directory itself' >&2; exit 2; }
+[[ -d $runtime && $(stat -c %u -- "$runtime") == "$uid" ]] || {
+  echo "XDG_RUNTIME_DIR must be an existing directory owned by uid $uid" >&2
+  exit 2
+}
+verify_owner() {
+  [[ -d $dir && ! -L $dir && -f $owner && ! -L $owner ]] || {
+    echo 'headless scratch has no regular owner record; refusing to use or remove it' >&2
+    return 1
+  }
+  [[ $(sed -n '1p' "$owner") == "$uid" && $(sed -n '2p' "$owner") == "$runtime" ]] || {
+    echo 'headless scratch belongs to another uid or runtime; refusing to use or remove it' >&2
+    return 1
+  }
+  [[ -d $runtime_scratch && ! -L $runtime_scratch && -d $tmp_scratch && ! -L $tmp_scratch ]] || {
+    echo 'headless runtime/TMPDIR scratch is missing or redirected; refusing to continue' >&2
+    return 1
+  }
+  [[ $(stat -c %u -- "$dir") == "$uid" && $(stat -c %u -- "$runtime_scratch") == "$uid" && \
+     $(stat -c %u -- "$tmp_scratch") == "$uid" ]] || {
+    echo 'headless scratch is not owned by this uid; refusing to use or remove it' >&2
+    return 1
+  }
+  [[ $(stat -c %a -- "$dir") == 700 && $(stat -c %a -- "$runtime_scratch") == 700 && \
+     $(stat -c %a -- "$tmp_scratch") == 700 ]] || {
+    echo 'headless scratch permissions must remain private (0700)' >&2
+    return 1
+  }
+}
+created_scratch=0
+cleanup_created_scratch() {
+  status=$?
+  trap - EXIT
+  if ((status != 0 && created_scratch)) && [[ -d $dir && ! -L $dir ]]; then
+    rm -rf -- "$dir"
+  fi
+  exit "$status"
+}
+if ((inside == 0)); then
+  case ${1:-} in
+    start)
+      command -v bwrap >/dev/null || { echo 'headless tests need bubblewrap for runtime isolation' >&2; exit 2; }
+      if [[ -e $dir || -L $dir ]]; then
+        verify_owner || exit 2
+      else
+        mkdir -m 700 -- "$dir"
+        created_scratch=1
+        trap cleanup_created_scratch EXIT
+        mkdir -m 700 -- "$runtime_scratch" "$tmp_scratch"
+        printf '%s\n%s\n' "$uid" "$runtime" >"$owner"
+        chmod 600 -- "$owner"
+        trap - EXIT
+        created_scratch=0
+      fi
+      ;;
+    stop)
+      [[ -e $dir || -L $dir ]] || exit 0
+      command -v bwrap >/dev/null || { echo 'headless cleanup needs bubblewrap for runtime isolation' >&2; exit 2; }
+      verify_owner || exit 2
+      ;;
+    run|ipc)
+      command -v bwrap >/dev/null || { echo 'headless commands need bubblewrap for runtime isolation' >&2; exit 2; }
+      verify_owner || exit 2
+      ;;
+    *)
+      sed -n '8,20p' "$0" >&2
+      exit 1
+      ;;
+  esac
+  if bwrap --bind / / --bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp \
+    --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch" \
+    -- "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
+    exit 0
+  else
+    status=$?
+    if [[ -d $dir && ! -e $dir/pid && ! -e $dir/display ]] && verify_owner; then
+      rm -rf -- "$dir"
+    fi
+    exit "$status"
+  fi
+fi
+verify_owner || exit 2
+export XDG_RUNTIME_DIR=$runtime TMPDIR=$tmp_scratch SCOTTLAND_HEADLESS_DIR=$dir
 # The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
 # package's.
 hooks=$repo/build/hooks
@@ -38,11 +136,66 @@ hooks=$repo/build/hooks
 exec_tool=$hooks/libexec/scottland-exec
 
 display() { cat "$dir/display"; }
+wayfire_process_is_ours() {
+  python3 - "$1" "$dir/wayfire.ini" <<'PY'
+import pathlib, sys
+try:
+    args = pathlib.Path('/proc/' + sys.argv[1] + '/cmdline').read_bytes().split(b'\0')
+    sys.exit(not (sys.argv[2].encode() in args and any(a.endswith(b'wayfire') for a in args)))
+except OSError:
+    sys.exit(1)
+PY
+}
+session_process_is_ours() {
+  python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" <<'PY'
+import pathlib, sys
+pid, scratch, runtime, tmpdir, display = sys.argv[1:]
+try:
+    entries = pathlib.Path('/proc/' + pid + '/environ').read_bytes().split(b'\0')
+    env = dict(entry.split(b'=', 1) for entry in entries if b'=' in entry)
+except OSError:
+    sys.exit(1)
+expected = {
+    b'SCOTTLAND_HEADLESS_DIR': scratch.encode(),
+    b'TMPDIR': tmpdir.encode(),
+    b'XDG_RUNTIME_DIR': runtime.encode(),
+    b'XDG_STATE_HOME': (scratch + '/state').encode(),
+    b'WAYLAND_DISPLAY': display.encode(),
+}
+sys.exit(not all(env.get(key) == value for key, value in expected.items()))
+PY
+}
 
 case ${1:-} in
   start)
-    [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
-    rm -rf "$dir"; mkdir -p "$dir"
+    if [[ -f $dir/display && -f $dir/compositor.pid ]]; then
+      compositor=$(cat "$dir/compositor.pid")
+      if [[ $compositor =~ ^[0-9]+$ ]] && wayfire_process_is_ours "$compositor"; then
+        echo "already running on $(display)"
+        exit 0
+      fi
+      echo 'headless scratch has stale session state; stop it or choose a fresh directory' >&2
+      exit 1
+    fi
+    if [[ -e $dir/pid || -e $dir/display ]]; then
+      echo 'headless scratch has partial session state; stop it or choose a fresh directory' >&2
+      exit 1
+    fi
+    if [[ -n $(find "$dir" -mindepth 1 -maxdepth 1 ! -name .scottland-headless-owner ! -name runtime ! -name tmp -print -quit) || \
+          -n $(find "$runtime_scratch" -mindepth 1 -print -quit) || \
+          -n $(find "$tmp_scratch" -mindepth 1 -print -quit) ]]; then
+      echo 'headless scratch is not fresh; stop it or choose a fresh directory' >&2
+      exit 1
+    fi
+    cleanup_failed_start() {
+      status=$?
+      trap - EXIT
+      if ((status != 0)); then
+        "$repo/tests/headless.sh" stop || echo 'failed to clean owned headless scratch; inspect it before retrying' >&2
+      fi
+      exit "$status"
+    }
+    trap cleanup_failed_start EXIT
     started=(01-record-environment)
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
@@ -81,7 +234,7 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_HEADLESS_DIR|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -159,6 +312,7 @@ pathlib.Path(sys.argv[2]).write_text(str(pid) + '\n')
 PY
     sleep 1
     echo "headless Scottland on $name (hooks: ${started[*]})"
+    trap - EXIT
     ;;
   run)
     shift
@@ -169,14 +323,35 @@ PY
     exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
     ;;
   stop)
-    [[ -f $dir/display ]] || exit 0
+    if [[ ! -f $dir/display ]]; then
+      if [[ -f $dir/pid ]]; then
+        pid=$(cat "$dir/pid")
+        if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+          wayfire_process_is_ours "$pid" || { echo 'partial headless PID is not this run; refusing to kill it' >&2; exit 1; }
+          group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+          if [[ $group == "$pid" ]]; then
+            kill -- "-$pid" 2>/dev/null || true
+          else
+            for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+            kill "$pid" 2>/dev/null || true
+          fi
+          for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "$pid" 2>/dev/null || true
+          [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
+        fi
+      fi
+      rm -rf -- "$dir"
+      echo 'stopped partial headless Scottland scratch'
+      exit 0
+    fi
     name=$(display)
     # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
     # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
     # with its monitors.)
     for pid_file in "$runtime/scottland/$name.lua.pid" "$runtime/scottland/$name.color-scheme.pid" "$runtime/scottland/$name.widget-bus.pid"; do
       helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
-      if [[ $helper =~ ^[0-9]+$ ]] && grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
+      if [[ $helper =~ ^[0-9]+$ ]] && session_process_is_ours "$helper" "$name" && \
+         grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
         if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
       fi
       rm -f "$pid_file"
@@ -192,7 +367,11 @@ PY
 )
     lock="$runtime/hypr/$signature/hyprland.lock"
     if [[ $signature == scottland_* && $signature != */* && -f $lock && $(sed -n 2p "$lock") == "$name" ]]; then
-      kill "$(sed -n 1p "$lock")" 2>/dev/null || true
+      hypr_pid=$(sed -n 1p "$lock")
+      if [[ $hypr_pid =~ ^[0-9]+$ ]] && session_process_is_ours "$hypr_pid" "$name" && \
+         grep -qa Hyprland "/proc/$hypr_pid/cmdline" 2>/dev/null; then
+        kill "$hypr_pid" 2>/dev/null || true
+      fi
       rm -rf "$(dirname "$lock")"
     fi
     pid=$(cat "$dir/pid")
