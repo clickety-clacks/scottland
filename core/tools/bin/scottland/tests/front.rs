@@ -171,6 +171,6 @@ fn prints_its_version() {
     let out = s.run(Path::new(FRONT), &[], &["--version"]);
     assert_eq!(
         stdout(&out),
-        format!("scottland {}\n", env!("CARGO_PKG_VERSION"))
+        format!("scottland {}\n", env!("PRODUCT_SOURCE_BUILD_COMMIT"))
     );
 }

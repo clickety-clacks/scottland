@@ -17,6 +17,7 @@ publish = false
 [workspace.dependencies]
 scottland = { path = "lib", package = "scottland-lib" }
 zbus = "=5.13.2"
+toml = "0.8"
 
 [profile.release]
 strip = "debuginfo"
