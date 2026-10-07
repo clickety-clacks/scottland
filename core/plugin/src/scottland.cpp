@@ -68,6 +68,7 @@ extern "C" {
 #include "peek.hpp"
 #include "alt-mode.hpp"
 #include "pairing.hpp"
+#include "navigation.hpp"
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"
@@ -921,8 +922,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> unfocused_edge_strength{"scottland/unfocused_edge_strength"};
     wf::option_wrapper_t<int> widget_make_room_dwell{"scottland/widget_make_room_dwell"};
     wf::option_wrapper_t<double> window_mode_tint{"scottland/window_mode_tint"};
+    wf::option_wrapper_t<double> hint_background_opacity{"scottland/hint_background_opacity"};
     wf::option_wrapper_t<bool> window_avoidance_always{"scottland/window_avoidance_always"};
-    wf::option_wrapper_t<double> goo_dye_strength{"scottland/goo_dye_strength"};
+    wf::option_wrapper_t<double> goo_dye_density{"scottland/goo_dye_density"};
     // Keep parsing the historical key so existing user config still opts in.
     wf::option_wrapper_t<bool> hint_avoidance_always{"scottland/hint_avoidance_always"};
     wf::option_wrapper_t<std::string> color_scheme{"scottland/color_scheme"};
@@ -939,7 +941,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
         scottland::palette.unfocused_edge_strength = unfocused_edge_strength;
         scottland::palette.hint_tint = window_mode_tint_strength();
-        scottland::palette.dye_strength = std::clamp(float(goo_dye_strength), 0.f, 1.5f);
+        scottland::palette.dye_strength = std::clamp(float(goo_dye_density), 0.f, 1.5f);
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
         wf::color_t attention = attention_color;
@@ -1389,7 +1391,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
     {
-        audition_invalidate(ev->view);
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             auto disappearing_card = link_of_widget(toplevel);
@@ -1517,6 +1518,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint32_t launched_at = 0;
     };
 
+    // A fitted pair is not a peripheral visit (WK36). Keep its exact placement provenance
+    // until this window moves, changes size/scale, or goes to another output.
+    struct paired_placement_t
+    {
+        wf::geometry_t geometry;
+        std::string output;
+        std::optional<double> pin;
+    };
+
     struct window_state_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -1529,6 +1539,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         bool above = false;
         std::optional<double> pinned_scale;          // kept by Shift during drag or arrow motion (L31)
         std::optional<scottland::windowing::window_memory> placement;
+        std::optional<paired_placement_t> paired_placement;
         std::optional<scottland::windowing::point> pending_rail; // refine on widget adoption
         std::set<std::string> attention;
     };
@@ -1647,7 +1658,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<true> rail_layout_tick;
     wf::wl_timer<false> rail_dwell_tick;
     static constexpr double RAIL_POINTER_WOBBLE = 4.0;
-    // A committed audition keeps its visual offsets until each Wayfire geometry transaction
+    // A committed rail audition keeps its visual offsets until each Wayfire geometry transaction
     // applies. Only one small, capped commit can be outstanding; a later drag can still proceed.
     std::optional<scottland::drag_presentation_t> pending_drag_layout;
 
@@ -2987,6 +2998,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                     entry["pending_rail"]["x"].as_double(), entry["pending_rail"]["y"].as_double()};
                 if (entry.has_member("pinned_scale") && entry["pinned_scale"].is_double())
                     found->second.pinned_scale = scottland::windowing::valid_pin(entry["pinned_scale"].as_double());
+                if (entry.has_member("paired_placement"))
+                {
+                    auto p = entry["paired_placement"];
+                    // Geometry coordinates serialize as doubles in the desktop snapshot.
+                    found->second.paired_placement = paired_placement_t{
+                        {p["x"].as_double(), p["y"].as_double(), p["width"].as_double(), p["height"].as_double()},
+                        p["output"].as_string(), p.has_member("pin") ?
+                            scottland::windowing::valid_pin(p["pin"].as_double()) : std::nullopt};
+                }
                 auto sources = entry["attention"];
                 for (size_t j = 0; j < sources.size(); j++)
                 {
@@ -3235,15 +3255,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    void set_drag_layout_offset(wayfire_toplevel_view view, double dx, double dy, double scale = 1)
+    void set_drag_layout_offset(wayfire_toplevel_view view, double dx, double dy)
     {
         auto frame = view ? frame_of(view, false) : nullptr;
         if (!frame || (std::abs(frame->drag_layout_x - dx) < 0.0001 &&
-            std::abs(frame->drag_layout_y - dy) < 0.0001 && std::abs(frame->drag_layout_scale - scale) < 0.00001)) return;
+            std::abs(frame->drag_layout_y - dy) < 0.0001)) return;
         frame->damage();
         frame->drag_layout_x = dx;
         frame->drag_layout_y = dy;
-        frame->drag_layout_scale = scale;
         frame->damage();
         view->damage();
     }
@@ -4032,6 +4051,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                         entry["pending_rail"]["y"] = state.pending_rail->y;
                     }
                     if (state.pinned_scale) entry["pinned_scale"] = *state.pinned_scale;
+                    if (state.paired_placement)
+                    {
+                        auto& p = *state.paired_placement;
+                        auto& g = p.geometry;
+                        entry["paired_placement"]["x"] = g.x;
+                        entry["paired_placement"]["y"] = g.y;
+                        entry["paired_placement"]["width"] = g.width;
+                        entry["paired_placement"]["height"] = g.height;
+                        entry["paired_placement"]["output"] = p.output;
+                        if (p.pin) entry["paired_placement"]["pin"] = *p.pin;
+                    }
                     entry["zone"] = zone_name(state.zone);
                     entry["layer"] = state.above ? "above" : "normal";
                     entry["x"] = state.geometry.x;
@@ -4131,7 +4161,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         model.version++;
-        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
         published_slices["desktop"] = text;
         full["version"] = (int64_t)model.version;
         send_ipc_event(full, "scottland-model#");
@@ -5943,7 +5972,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::wl_timer<true> glide_tick;
     wf::option_wrapper_t<double> cycle_overshoot{"scottland/cycle_overshoot"};
     static constexpr double CYCLE_MS = 300;
-    #include "spread-bridge.hpp"  // after glide_t: an audition suspends running glides
+    #include "spread-bridge.hpp"  // after glide_t
 
     void start_cycle_glide(wayfire_toplevel_view view, wf::pointf_t from, double from_scale,
         wf::pointf_t to, double to_scale)
@@ -6619,12 +6648,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             update_drag_morph(view, output, ev->current_position);
             update_rail_drag(view, output, ev->current_position);
-            audition_motion(view, output, {(double)ev->current_position.x, (double)ev->current_position.y});
             publish_model();  // morph direction/center changes even when widget scale stays 1
         } else
         {
             cancel_rail_drag();
-            audition_end("no drag");
         }
 
         if (!view || !output || view->pending_fullscreen() || is_widget(view))
@@ -6753,7 +6780,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.cancelled = false;
             model.drag.input_override.reset();
             cancel_rail_drag();
-            audition_end("Esc");  // L27: Esc cancels the drag and the audition together
             if (main && main->is_mapped())
             {
                 cancel_drop(main);
@@ -6773,10 +6799,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             update_rail_drag(main, main->get_output());  // validate the final landing footprint
             commit_rail_drag();
         }
-        // A drop inside the offered solo's hotspot accepts it; the dropped window stays exactly
-        // where it was dropped (P14), so it does not coast either.
-        bool solo_accepted = audition_drop(main, {(double)ev->grab_position.x, (double)ev->grab_position.y});
-
         if (main)
         {
             model.drag.last_drop    = origin_for(main);
@@ -6856,8 +6878,15 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             uint64_t app_window = link ? link->window_id : 0;
             handle_widget_drop(main, widget_shaped, released_at);
             auto dropped = represented_view(was_widget ? app_window : main->get_id());
-            if (dropped) remember_window(dropped);
-            if (!was_widget && dropped == main && !widget_shaped.value_or(false) && !solo_accepted &&
+            if (dropped)
+            {
+                auto link = link_of_widget(dropped);
+                auto id = link ? link->window_id : dropped->get_id();
+                if (auto state = model.windows.find(id); state != model.windows.end())
+                    state->second.paired_placement.reset(); // a real drop establishes a new spot, even in place
+                remember_window(dropped);
+            }
+            if (!was_widget && dropped == main && !widget_shaped.value_or(false) &&
                 std::hypot(released_at.x - model.drag.start_cursor.x,
                     released_at.y - model.drag.start_cursor.y) >= CLICK_SLOP)
                 start_drag_coast(dropped);
@@ -6889,9 +6918,21 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         refresh_layout_avoidance();
     };
 
+    // P12: what covers what can change without any of the signals above, e.g. a dropped window's
+    // hold above the widgets ending (L29) or the widget layer coming back. Any change to the scene's
+    // stacking or to what is enabled asks window avoidance to look again; it re-solves only if its
+    // layout signature changed, and requests are coalesced onto one tick.
+    wf::signal::connection_t<wf::scene::root_node_update_signal> on_scene_structure =
+        [=] (wf::scene::root_node_update_signal *ev)
+    {
+        // Without avoidance there are no offsets to keep honest.
+        if (!window_keys.active && !window_avoidance_always && !hint_avoidance_always) return;
+        if (ev->flags & (wf::scene::update_flag::CHILDREN_LIST | wf::scene::update_flag::ENABLED))
+            refresh_layout_avoidance();
+    };
+
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped = [=] (wf::view_mapped_signal *ev)
     {
-        audition_invalidate(ev->view);
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             observe_view(toplevel);
@@ -6909,8 +6950,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::signal::connection_t<wf::view_geometry_changed_signal> on_geometry =
         [=] (wf::view_geometry_changed_signal *ev)
     {
-        audition_invalidate(ev->view, ev->old_geometry.width != ev->view->get_geometry().width ||
-            ev->old_geometry.height != ev->view->get_geometry().height);
         if (auto view = wf::toplevel_cast(ev->view))
         {
             recenter_keyboard_resize(view);
@@ -7309,6 +7348,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_mapped);
+        wf::get_core().scene()->connect(&on_scene_structure);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_output);
         wf::get_core().connect(&on_focus);
@@ -7365,6 +7405,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
+        wf::get_core().bindings->add_key(navigate_left, &on_navigate_left);
+        wf::get_core().bindings->add_key(navigate_right, &on_navigate_right);
+        wf::get_core().bindings->add_key(navigate_up, &on_navigate_up);
+        wf::get_core().bindings->add_key(navigate_down, &on_navigate_down);
         wf::get_core().connect(&on_focus_request);
         start_activation();
         installing_model = false;
@@ -7394,8 +7438,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_tone_light.set_callback([=] { load_color_scheme(); });
         unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
-        goo_dye_strength.set_callback([=] { load_color_scheme(); });
+        goo_dye_density.set_callback([=] { load_color_scheme(); });
         window_mode_tint.set_callback([=] { load_color_scheme(); refresh_layout_avoidance(); });
+        hint_background_opacity.set_callback([=] { refresh_layout_avoidance(); });
         auto avoidance_setting_changed = [=] {
             declutter_signature.clear();
             refresh_layout_avoidance();
@@ -7506,6 +7551,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);
+        wf::get_core().bindings->rem_binding(&on_navigate_left);
+        wf::get_core().bindings->rem_binding(&on_navigate_right);
+        wf::get_core().bindings->rem_binding(&on_navigate_up);
+        wf::get_core().bindings->rem_binding(&on_navigate_down);
         on_focus_request.disconnect();
         on_new_transaction.disconnect();
         on_activate.disconnect();
@@ -7592,6 +7641,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fini_widget_spawn();
         fini_hint_palette_watch();
         release_stale_pointer_focus();  // e.g. the live drag's grab: its owner and code go next
+        // The next plugin copy continues the version. Set once here, not per publish: glibc keeps
+        // every value ever given to setenv, so per-publish calls grew the heap without bound.
+        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
+        scottland::release_aux_color_transform();  // last: nothing renders through it after this
         LOGI("scottland: plugin unloaded");
     }
 };

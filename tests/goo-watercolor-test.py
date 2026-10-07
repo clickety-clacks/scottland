@@ -125,16 +125,17 @@ try:
                 for y in ys]
     f = view('water-full')['frame']
     ys = (f['y']-2, f['y']-8)
-    # The wall row is one color along the edge (the window's state); the band row follows
-    # the wallpaper's patches beneath it.
+    # The band row follows the wallpaper's patches beneath it. (GO28 retired the GO24 wall
+    # band: the wall row now mixes the state color with what lies beneath too; its spread is
+    # reported, not judged.)
     def spread(row):
         total = 0
         for c in range(3):
             v = row[c::3]; mean = sum(v)/len(v); total += (sum((x-mean)**2 for x in v)/len(v))**.5
         return total/3
     wall_row, band_row = rows(out/'rest-a.png', ys)
-    check('on screen the wall is the window\'s state color; the band follows the wallpaper beneath',
-          spread(wall_row) < .6*spread(band_row) and spread(band_row) > 5,
+    check('on screen the band follows the wallpaper beneath it',
+          spread(band_row) > 5,
           {'wall spread': spread(wall_row), 'band spread': spread(band_row)})
     print(json.dumps({'chroma': {'bare_full': chroma(bare_full), 'wet_full': chroma(wet_full),
                                  'bare_thin': chroma(bare_thin), 'wet_thin': chroma(wet_thin)}}), flush=True)

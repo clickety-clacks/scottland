@@ -13,17 +13,24 @@ class renderer_t
     renderer_t();
     ~renderer_t();
     bool supported();
+    void poll_timing();
     // `area` (output-logical rects) limits the expensive field pass; empty means everywhere.
     bool update(const std::vector<source_t> &sources, const settings_t &settings, int width, int height,
                 float time, const std::vector<glm::vec4> &impulses,
-                const std::vector<wf::geometry_t> &area = {},
-                wf::auxilliary_buffer_t *wallpaper = nullptr, const glm::mat4 &wallpaper_map = glm::mat4{1},
-                float flow = 0);
+                const std::vector<wf::geometry_t> &area = {}, float flow = 0);
     // GO24: move only the dye (wet texels), for the watercolor's slow motion while the
     // simulation sleeps. `step` is how many ordinary steps each pass stands for.
-    void flow_dye(wf::auxilliary_buffer_t *wallpaper, const glm::mat4 &wallpaper_map, float flow, float step,
-                  int passes = 1);
+    void flow_dye(float flow, float step, int passes = 1);
     uint64_t dye_flows = 0;
+    // GO28: open desktop has a background-layer client to pick color up from (film over a
+    // window always has that window).
+    bool open_pickup = false;
+    // GO28: liquid texels whose backdrop differs from what the dye last saw (more than 4
+    // levels), counted up to 255; and taking the current backdrop as seen.
+    int backdrop_changes(); // -1: GPU reduction submitted, completion is not ready yet
+    void backdrop_seen();
+    uint64_t under_pixels = 0, backdrop_checks = 0;
+    bool under_waiting() const;  // a frame copied backdrop the pickup texture has not taken yet
     // Draws only where `area` (output-logical) meets the damage: the goo never leaves its bands.
     void draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
               const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys = true,
@@ -38,6 +45,13 @@ class renderer_t
     glm::vec4 sample_at(glm::vec2 point);
     float energy = 1, wave_energy = 1, dye_energy = 1;
     double last_step_ms = 0, last_gpu_ms = 0, last_draw_gpu_ms = 0;
+    // Complete dye-only and backdrop check scopes, including pickup refresh and reduction.
+    double flow_gpu_ms = 0, check_gpu_ms = 0, seen_gpu_ms = 0;
+    uint64_t flow_gpu_samples = 0, check_gpu_samples = 0, seen_gpu_samples = 0;
+    double flow_wall_ms = 0, check_wall_ms = 0, seen_wall_ms = 0;
+    double flow_wall_max_ms = 0, check_wall_max_ms = 0, seen_wall_max_ms = 0;
+    uint64_t seen_calls = 0;
+    bool gpu_timing = false;
     uint64_t steps = 0;
     // Submitted device-pixel work and GO18 breathing cache diagnostics.
     uint64_t draws = 0, surface_pixels = 0, capture_pixels = 0, composite_pixels = 0;

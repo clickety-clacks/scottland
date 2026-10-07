@@ -417,7 +417,7 @@ try:
     time.sleep(.15)
     check("digits enter a Goo row value", abs(float(ipc("wayfire/get-config-option",
           {"option": "scottland/goo_thickness"})["value"])-27) < .01)
-    # Walk down from thickness by row names, not a fixed count: GO23 added Dye strength after
+    # Walk down from thickness by row names, not a fixed count: GO23 added Dye density (then named Dye strength) after
     # Control proximity. One step right on the film and hover rows on the way.
     rows = settings_snapshot(panel)["goo"]["rows"]
     first, stepped = rows.index("goo_thickness"), {"goo_overlap_film", "goo_hover_cloudiness", "goo_hover_emissivity"}
@@ -433,12 +433,12 @@ try:
     key("KEY_RIGHT", True); key("KEY_RIGHT", False)
     dye = None
     for _ in range(20):
-        dye = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_dye_strength"})["value"])
+        dye = float(ipc("wayfire/get-config-option", {"option": "scottland/goo_dye_density"})["value"])
         if abs(dye-1.01) < .001: break
         time.sleep(.1)
-    check("keyboard navigation reaches the last Goo row (Dye strength)", rows[-1] == "goo_dye_strength" and
+    check("keyboard navigation reaches the last Goo row (Dye density)", rows[-1] == "goo_dye_density" and
           abs(dye-1.01) < .001)
-    ipc("wayfire/set-config-options", {"scottland/goo_dye_strength": 1.0})
+    ipc("wayfire/set-config-options", {"scottland/goo_dye_density": 1.0})
     for name, value in {"goo_overlap_film": 4.5, "goo_hover_cloudiness": .66, "goo_hover_emissivity": .36}.items():
         result = subprocess.run([str(repo / "core/libexec/scottland-ctl"), "option", "scottland/"+name],
                                 capture_output=True, text=True)

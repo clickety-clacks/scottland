@@ -1,6 +1,6 @@
 #!/bin/bash
-# Reload rehearsal for spread (final.md section 4): swap the plugin with a solve in flight and with
-# an audition offer showing, headless.  SCOTTLAND_HEADLESS_DIR=$PWD/build/hl-sr tests/spread-reload-test.sh [ARTIFACTS]
+# Reload rehearsal for spread (final.md section 4): swap the plugin with a solve in flight,
+# headless.  SCOTTLAND_HEADLESS_DIR=$PWD/build/hl-sr tests/spread-reload-test.sh [ARTIFACTS]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${SCOTTLAND_HEADLESS_DIR:?set a fresh headless directory under this checkout build/}"
