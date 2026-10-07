@@ -92,6 +92,8 @@ link-dev:
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(DEV)/window-names.d
 	ln -sfn $(CURDIR)/core/list-picker $(DEV)/list-picker
+	mkdir -p $(DEV)/apps
+	ln -sfn $(CURDIR)/core/apps/weather $(DEV)/apps/weather
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 # The system tools, after the scripts: a tool that replaces a script takes its place.
 	for f in build/tools/bin/*; do \
@@ -132,6 +134,8 @@ hooks:
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(HOOKS_DIR)/window-names.d
 	ln -sfn $(CURDIR)/core/list-picker $(HOOKS_DIR)/list-picker
+	mkdir -p $(HOOKS_DIR)/apps
+	ln -sfn $(CURDIR)/core/apps/weather $(HOOKS_DIR)/apps/weather
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	for f in build/tools/bin/*; do [ -e "$$f" ] || continue; ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
