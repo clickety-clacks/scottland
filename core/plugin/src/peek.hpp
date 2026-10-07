@@ -52,7 +52,7 @@ struct peek_window                     // one per ordinary window, front to back
     rectangle frame{0, 0, 0, 0};       // true drawn rectangle (zone scale, no avoidance offset)
     double zone_x1 = 0, zone_x2 = 0;   // P13: the displayed center x stays inside
     double center_y1 = 0, center_y2 = 0; // the displayed center y stays on screen
-    bool anchored = false;             // focused, grabbed, pair member: never moves
+    bool anchored = false;             // focused (during a drag: the dragged window): never moves
     double full_hint = 72, minimum_hint = 48; // hint diameters
     point target;                      // previous pass's target
     point displayed;                   // current eased offset

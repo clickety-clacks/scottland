@@ -5,6 +5,7 @@
 #include "attention-breath.hpp"
 #include "frame.hpp"
 #include "goo-runtime.hpp"
+#include "goo-pickup-policy.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -89,7 +90,7 @@ class goo_node_t : public wf::scene::node_t
     // rotation reach past the logical strips. The pixels the goo claims are exactly the
     // pixels it restores, so none is repainted beneath and reused as well, and none is
     // left unpainted.
-    bool foreign_damage = true, own_damage = false, reuse_enabled = true, dry_enabled = true;
+    bool foreign_damage = true, own_damage = false, reuse_enabled = true, dry_enabled = true, frame_foreign = false;
     int reuse_streak = 0;
     // GO24: the dye's own clock and the sleeping watercolor tick.
     double flow_time = 0, last_flow = 0;
@@ -125,6 +126,7 @@ class goo_node_t : public wf::scene::node_t
     wf::regionf_t breath_only_frame(const wf::render_target_t &target, const wf::regionf_t &damage)
     {
         bool foreign = std::exchange(foreign_damage, false);
+        frame_foreign = foreign;
         wf::regionf_t reuse;
         // Why the last frame took the normal path (goo-state, for tests and live reading).
         reuse_blocked = foreign ? "other damage" : !scene_observer || !reuse_enabled ? "off" :
@@ -174,8 +176,10 @@ class goo_node_t : public wf::scene::node_t
     ~goo_node_t() { detach(); }
     void detach()
     {
-        wallpaper_instances.clear();
         wallpaper_nodes.clear();
+        pickup_timer.disconnect();
+        check_timer.disconnect();
+        idle_check.disconnect();
         if (attached)
             state.output->render->rem_effect(&pre);
         attached = false;
@@ -385,9 +389,11 @@ class goo_node_t : public wf::scene::node_t
     wf::regionf_t motion_area;
     bool water_enabled = true;
     bool water_frozen = false;  // tests: tick and repaint, but leave the dye as it is
+    // Pickup is on and there is something to pick up: a background-layer client, or windows
+    // under overlap film (GO28). Without either, nothing changes from GO21 (GO24).
     bool watercolor()
     {
-        return water_enabled && state.settings.soak > 0 && !wallpaper_nodes.empty() && wallpaper.get_buffer();
+        return water_enabled && state.settings.soak > 0 && (!wallpaper_nodes.empty() || state.renderer.overlapping());
     }
     const wf::regionf_t &own_area() const { return motion_area.empty() ? breath_area : motion_area; }
     void set_breath_area(const wf::regionf_t &exact)
@@ -555,7 +561,13 @@ class goo_node_t : public wf::scene::node_t
             if (water_pace() <= 0)
             {
                 // Came to rest: back to the breathing strips alone (or to no damage at all).
+                // Compare against the backdrop at coast START. A new final frame may
+                // have arrived after useful dye work; never acknowledge it here.
                 water_running = false;
+                // A synchronous compatibility check may immediately start another coast.
+                // Run it after this repeating timer has retired, never from its callback.
+                if (!idle_check.is_connected())
+                    idle_check.run_once([this] { SCOTTLAND_LOOP_SCOPE(goo_pickup_check); backdrop_copied(std::exchange(idle_foreign, false)); });
                 set_breath_area(settled_ready ? whole_pixels(breath_support & settled_area) : breath_support);
                 return false;
             }
@@ -630,6 +642,9 @@ class goo_node_t : public wf::scene::node_t
             water_tick.disconnect();
             water_due = false;
             water_running = false;
+            // Awake, the dye picks up what lies beneath on every step: nothing waits (GO28).
+            pickup.pending = false;
+            pickup_timer.disconnect();
             set_breath_area(breath_support);
             breath_loose = true;
             }
@@ -656,50 +671,20 @@ class goo_node_t : public wf::scene::node_t
                                  return true;
                              });
     }
-    // GO15: render only background children, excluding this goo node. The
-    // quarter-resolution cache has its own damage callbacks: app redraws and
-    // goo damage cannot feed back into dye or keep the simulation awake.
-    wf::auxilliary_buffer_t wallpaper;
+    // Background-layer clients: the goo stays above them, and with none open desktop has
+    // nothing to pick up (GO28). What the goo picks up is the backdrop the renderer copies.
     std::vector<wf::scene::node_ptr> wallpaper_nodes;
-    std::vector<wf::scene::render_instance_uptr> wallpaper_instances;
-    bool wallpaper_dirty = true;
-    // The last capture that woke the dye, and counters for goo-state: background damage
-    // callbacks, captures taken, captures that differed.
-    std::vector<uint8_t> wallpaper_pixels;
-    static constexpr size_t wallpaper_tolerated = 16;
-    uint64_t wallpaper_damages = 0, wallpaper_captures = 0, wallpaper_changes = 0, wallpaper_node_changes = 0;
-    wf::geometry_t wallpaper_damage_box{};
-    glm::mat4 wallpaper_map{1};
+    uint64_t wallpaper_node_changes = 0;
     void prepare_wallpaper()
     {
-        SCOTTLAND_LOOP_SCOPE(goo_wallpaper_capture);
-        if (state.settings.soak <= 0) return;
         std::vector<wf::scene::node_ptr> next;
         for (auto &child : state.output->node_for_layer(wf::scene::layer::BACKGROUND)->get_children())
             if (child.get() != this && child->is_enabled()) next.push_back(child);
         if (next != wallpaper_nodes)
         {
-            wallpaper_instances.clear();
             wallpaper_nodes = next;
-            for (auto &child : wallpaper_nodes)
-                child->gen_render_instances(wallpaper_instances, [this](const wf::regionf_t &region) {
-                    SCOTTLAND_LOOP_SCOPE(goo_wallpaper_damage);
-                    // Only a recapture: prepare_wallpaper() wakes the simulation if the
-                    // captured pixels changed. The damage repaints the output, so it runs.
-                    wallpaper_dirty = true;
-                    ++wallpaper_damages;
-                    double x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-                    for (auto &b : region)
-                    {
-                        x1 = std::min<double>(x1, b.x1); y1 = std::min<double>(y1, b.y1);
-                        x2 = std::max<double>(x2, b.x2); y2 = std::max<double>(y2, b.y2);
-                    }
-                    if (x2 > x1)
-                        wallpaper_damage_box = wf::geometry_t{x1, y1, x2 - x1, y2 - y1};
-                }, state.output);
-            wallpaper_dirty = true;
-            wallpaper_pixels.clear();
             ++wallpaper_node_changes;
+            state.renderer.open_pickup = !wallpaper_nodes.empty();
             if (!above_windows)
             {
                 // A new background-layer surface may have been inserted in front
@@ -710,55 +695,116 @@ class goo_node_t : public wf::scene::node_t
                 whole = true;
             }
             last_change = now();
-            wake("wallpaper"); // also remove old wallpaper dye when the last background disappears
+            wake("wallpaper"); // a new client, or the last one gone: its pickup comes or goes
         }
-        // No wallpaper client means no color source, not an implicit black dye.
-        if (wallpaper_nodes.empty()) return;
-        auto g = get_bounding_box();
-        auto allocation = wallpaper.allocate(wf::dimensions(g), .25);
-        if (allocation == wf::buffer_reallocation_result_t::FAILED) return;
-        if (allocation == wf::buffer_reallocation_result_t::SAME && !wallpaper_dirty) return;
-        wf::render_target_t target{wallpaper};
-        target.geometry = g;
-        target.scale = .25;
-        wf::render_pass_params_t params;
-        params.instances = &wallpaper_instances;
-        params.target = target;
-        params.damage = g;
-        params.flags = wf::RPASS_CLEAR_BACKGROUND;
-        params.background_color = {0, 0, 0, 1};
-        wf::render_pass_t::run(params);
-        wallpaper_map = wf::gles::render_target_orthographic_projection(target);
-        wallpaper_dirty = false;
-        // GO20: a background client can commit again without changing a pixel (a shell
-        // that keeps its render loop running, a re-attached buffer). Only a capture that
-        // differs wakes the dye: more than a few pixels, by more than rounding or dither.
-        ++wallpaper_captures;
-        std::vector<uint8_t> pixels;
-        auto size = wallpaper.get_size();
-        wf::gles::run_in_context_if_gles([&]
+    }
+    // GO28: a change beneath sleeping liquid restarts only the dye's coast, never the waves or
+    // field, and at most once per cool-down: 20 s, doubling each time a change has waited out a
+    // cool-down (to 5 minutes), back to 20 s (and over at once) when nothing else has repainted
+    // under the liquid for 20 s. A change inside a cool-down waits for its end. Checks run at
+    // most twice a second, after frames that copied backdrop under the liquid, and not while
+    // one is already waiting.
+    static constexpr double pickup_coast = 6;
+    static constexpr int pickup_tolerated = 16;
+    goo::pickup_policy_t pickup;
+    bool seen_due = false;
+    uint64_t pickup_coasts = 0, pickup_deferred = 0, backdrop_changes = 0;
+    wf::wl_timer<false> pickup_timer, check_timer;
+    wf::wl_idle_call idle_check;
+    bool idle_foreign = false;
+    // `repainted`: something other than the goo repainted under the liquid this frame.
+    double pickup_callback_ms = 0, pickup_callback_max_ms = 0;
+    uint64_t pickup_callbacks = 0;
+    void record_pickup_callback(double started)
+    {
+        double elapsed = (now() - started) * 1000;
+        pickup_callback_ms += elapsed;
+        pickup_callback_max_ms = std::max(pickup_callback_max_ms, elapsed);
+        ++pickup_callbacks;
+    }
+    void backdrop_copied(bool repainted = false)
+    {
+        double started = now();
+        handle_backdrop_copied(repainted);
+        record_pickup_callback(started);
+    }
+    void handle_backdrop_copied(bool repainted)
+    {
+        if (repainted)
         {
-            GLint previous = 0;
-            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
-            glBindFramebuffer(GL_FRAMEBUFFER, wf::gles::ensure_render_buffer_fb_id(target));
-            pixels.resize(size_t(size.width) * size.height * 4);
-            glReadPixels(0, 0, size.width, size.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-            glBindFramebuffer(GL_FRAMEBUFFER, previous);
-        });
-        size_t changed = 0;
-        if (pixels.empty() || pixels.size() != wallpaper_pixels.size())
-            changed = SIZE_MAX;
-        else
-            for (size_t i = 0; i < pixels.size() && changed <= wallpaper_tolerated; i += 4)
-                changed += std::abs(pixels[i] - wallpaper_pixels[i]) > 4 ||
-                    std::abs(pixels[i + 1] - wallpaper_pixels[i + 1]) > 4 ||
-                    std::abs(pixels[i + 2] - wallpaper_pixels[i + 2]) > 4;
-        if (changed <= wallpaper_tolerated)
+            double t = now();
+            if (pickup.activity(t))
+            {
+                pickup_timer.disconnect();
+                if (state.sleeping && watercolor() && !water_running)
+                    start_pickup();
+            }
+        }
+        if (!state.sleeping || !watercolor() || water_running || pickup.pending)
             return;
-        wallpaper_pixels = std::move(pixels);
-        ++wallpaper_changes;
-        last_change = now();
-        wake("wallpaper");
+        if (pickup.check_wait(now()) > 0)
+        {
+            if (!check_timer.is_connected())
+                check_timer.set_timeout(std::max(1, int(pickup.check_wait(now()) * 1000) + 1),
+                    [this] { SCOTTLAND_LOOP_SCOPE(goo_pickup_check); backdrop_copied(); });
+            return;
+        }
+        pickup.last_check = now();
+        collect_backdrop_result();
+    }
+    void collect_backdrop_check()
+    {
+        double started = now();
+        collect_backdrop_result();
+        record_pickup_callback(started);
+    }
+    void collect_backdrop_result()
+    {
+        int changed = state.renderer.backdrop_changes();
+        if (changed < 0)
+        {
+            check_timer.set_timeout(10, [this] {
+                SCOTTLAND_LOOP_SCOPE(goo_pickup_check);
+                if (state.sleeping && watercolor() && !water_running && !pickup.pending)
+                    collect_backdrop_check();
+            });
+        }
+        else if (changed > pickup_tolerated && state.sleeping && watercolor() && !water_running && !pickup.pending)
+            backdrop_changed();
+    }
+    void backdrop_changed()
+    {
+        ++backdrop_changes;
+        double t = now();
+        if (!pickup.change(t))
+        {
+            pickup.pending = true;
+            ++pickup_deferred;
+            if (!pickup_timer.is_connected())
+                arm_pickup_wait();
+            return;
+        }
+        start_pickup();
+    }
+    void arm_pickup_wait()
+    {
+        pickup_timer.set_timeout(std::max(1, int((pickup.next - now()) * 1000) + 1), [this]
+        {
+            SCOTTLAND_LOOP_SCOPE(goo_pickup_wait);
+            double started = now();
+            // Timers may fire early: preserve the deadline and rearm, not the action.
+            if (!pickup.expire(now())) arm_pickup_wait();
+            else if (state.sleeping && watercolor() && attached) start_pickup();
+            record_pickup_callback(started);
+        });
+    }
+    void start_pickup()
+    {
+        pickup.start(now());
+        ++pickup_coasts;
+        state.renderer.backdrop_seen();
+        start_water(pickup_coast);
+        set_breath_area(settled_ready ? whole_pixels(breath_support & settled_area) : breath_support);
     }
     void prepare()
     {
@@ -822,6 +868,7 @@ class goo_node_t : public wf::scene::node_t
         }
         double t = now();
         prepare_wallpaper();
+        state.renderer.open_pickup = !wallpaper_nodes.empty();
         // Drift and curl freeze after the response, then actual GPU energy decides sleep.
         if (t - last_change < 2)
             state.time += std::min(.05, t - last_step);
@@ -865,7 +912,6 @@ class goo_node_t : public wf::scene::node_t
                     last_flow = flow_now;
                     bool ok = state.renderer.update(state.sources, state.settings, g.width, g.height,
                                                     state.time, state.impulses, sim_tiles(band),
-                                                    !wallpaper_nodes.empty() && wallpaper.get_buffer() ? &wallpaper : nullptr, wallpaper_map,
                                                     // Without watercolor the swirl stops with the drift, as
                                                     // it always has, so the dye can come to rest.
                                                     watercolor() ? flow_time : state.time);
@@ -905,6 +951,7 @@ class goo_node_t : public wf::scene::node_t
                             state.sleeping = true;
                             tick.disconnect();
                             start_settling();
+                            seen_due = true;
                         }
                     }
                 }
@@ -920,13 +967,27 @@ class goo_node_t : public wf::scene::node_t
                     double pace = water_pace();
                     flow_time += dt * pace;
                     if (!water_frozen && pace > 0)
-                        state.renderer.flow_dye(&wallpaper, wallpaper_map, flow_time, dt * 9. * pace);
+                        state.renderer.flow_dye(flow_time, dt * 9. * pace);
                 }
                 auto area = drawn_area();
                 // The backdrop is never copied in dry content, whether or not the test
                 // switch keeps it in the drawn area.
                 state.renderer.draw(data, area, breath_area, state.breath, state.sleeping, breath_keys,
                                     reuse_backdrop, &dry, &dry, &own_area());
+                // GO28: the first frame asleep takes what lies beneath as seen; later frames
+                // that copied backdrop under the liquid ask whether it changed.
+                if (state.sleeping && seen_due)
+                {
+                    seen_due = false;
+                    state.renderer.backdrop_seen();
+                } else if (state.renderer.under_waiting())
+                {
+                    // After the frame: the check (and the pickup texture's refresh) never
+                    // interrupts a frame's rendering (GO28, GO10).
+                    idle_foreign = idle_foreign || frame_foreign;
+                    if (!idle_check.is_connected())
+                        idle_check.run_once([this] { SCOTTLAND_LOOP_SCOPE(goo_pickup_check); backdrop_copied(std::exchange(idle_foreign, false)); });
+                }
             });
     }
 };
@@ -1016,7 +1077,7 @@ struct goo_t::impl
     };
     const std::vector<option_t> fields = {
         {"thickness", &goo::settings_t::thickness}, {"reach", &goo::settings_t::reach},
-        {"dye_strength", &goo::settings_t::dye_strength},
+        {"dye_density", &goo::settings_t::dye_density},
         {"thinning", &goo::settings_t::thinning},   {"swell", &goo::settings_t::swell},
         {"noise", &goo::settings_t::noise},         {"lump", &goo::settings_t::lump},
         {"drift", &goo::settings_t::drift},         {"wave_speed", &goo::settings_t::wave_speed},
@@ -1025,7 +1086,7 @@ struct goo_t::impl
         {"release", &goo::settings_t::release},     {"shine", &goo::settings_t::shine},
         {"relief", &goo::settings_t::relief},
         {"depth", &goo::settings_t::depth}, {"profile", &goo::settings_t::profile},
-        {"soak", &goo::settings_t::soak},
+        {"soak", &goo::settings_t::soak}, {"pickup_balance", &goo::settings_t::pickup_balance},
         {"overlap_film", &goo::settings_t::overlap_film},
         {"hover_cloudiness", &goo::settings_t::hover_cloudiness},
         {"hover_emissivity", &goo::settings_t::hover_emissivity},
@@ -1180,6 +1241,14 @@ struct goo_t::impl
                     n->start_water(data["water_coast"].as_double());
                     n->set_breath_area(n->settled_ready ? n->whole_pixels(n->breath_support & n->settled_area) : n->breath_support);
                 }
+                if (data.has_member("pickup_reset") && data["pickup_reset"].is_bool() && data["pickup_reset"].as_bool())
+                {
+                    n->pickup_timer.disconnect();
+                    n->check_timer.disconnect();
+                    n->pickup = goo::pickup_policy_t{};
+                }
+                if (data.has_member("water_elapsed") && (data["water_elapsed"].is_int() || data["water_elapsed"].is_double()))
+                    n->water_started = now() - data["water_elapsed"].as_double();
                 if (data.has_member("water_freeze") && data["water_freeze"].is_bool())
                     n->water_frozen = data["water_freeze"].as_bool();
                 if (data.has_member("reuse_deaf") && data["reuse_deaf"].is_bool())
@@ -1199,6 +1268,7 @@ struct goo_t::impl
             }
             if (test_changed)
                 n->damage();
+            n->state.renderer.poll_timing();
             s["output"] = o->handle->name;
             s["sleeping"] = n->state.sleeping;
             wf::json_t wakes;
@@ -1206,23 +1276,44 @@ struct goo_t::impl
                 wakes[reason] = (int64_t)count;
             s["wakes"] = wakes;
             s["last_wake"] = n->last_wake;
-            s["wallpaper_damages"] = (int64_t)n->wallpaper_damages;
-            s["wallpaper_captures"] = (int64_t)n->wallpaper_captures;
-            s["wallpaper_changes"] = (int64_t)n->wallpaper_changes;
             s["wallpaper_node_changes"] = (int64_t)n->wallpaper_node_changes;
-            wf::json_t box;
-            box["x"] = n->wallpaper_damage_box.x; box["y"] = n->wallpaper_damage_box.y;
-            box["width"] = n->wallpaper_damage_box.width; box["height"] = n->wallpaper_damage_box.height;
-            s["wallpaper_last_damage"] = box;
+            s["open_pickup"] = n->state.renderer.open_pickup;
+            // GO28: pickup of what lies beneath, and its bounded wakes.
+            s["under_pixels"] = (int64_t)n->state.renderer.under_pixels;
+            s["backdrop_checks"] = (int64_t)n->state.renderer.backdrop_checks;
+            s["backdrop_changes"] = (int64_t)n->backdrop_changes;
+            s["pickup_coasts"] = (int64_t)n->pickup_coasts;
+            s["pickup_deferred"] = (int64_t)n->pickup_deferred;
+            s["pickup_pending"] = n->pickup.pending;
+            s["pickup_gap"] = n->pickup.gap;
+            s["pickup_wait"] = std::max(0., n->pickup.next - now());
             s["breath_keys_enabled"] = n->breath_keys;
             s["steps"] = (int64_t)n->state.renderer.steps;
             s["step_ms"] = n->state.renderer.last_step_ms;
             s["gpu_ms"] = n->state.renderer.last_gpu_ms;
             s["draw_gpu_ms"] = n->state.renderer.last_draw_gpu_ms;
+            s["gpu_timing"] = n->state.renderer.gpu_timing;
+            s["flow_gpu_ms"] = n->state.renderer.flow_gpu_ms;
+            s["check_gpu_ms"] = n->state.renderer.check_gpu_ms;
+            s["seen_gpu_ms"] = n->state.renderer.seen_gpu_ms;
+            s["seen_gpu_samples"] = (int64_t)n->state.renderer.seen_gpu_samples;
+            s["flow_gpu_samples"] = (int64_t)n->state.renderer.flow_gpu_samples;
+            s["check_gpu_samples"] = (int64_t)n->state.renderer.check_gpu_samples;
+            s["flow_wall_ms"] = n->state.renderer.flow_wall_ms;
+            s["flow_wall_max_ms"] = n->state.renderer.flow_wall_max_ms;
+            s["check_wall_ms"] = n->state.renderer.check_wall_ms;
+            s["check_wall_max_ms"] = n->state.renderer.check_wall_max_ms;
+            s["seen_wall_ms"] = n->state.renderer.seen_wall_ms;
+            s["seen_wall_max_ms"] = n->state.renderer.seen_wall_max_ms;
+            s["seen_calls"] = (int64_t)n->state.renderer.seen_calls;
+            s["pickup_callback_ms"] = n->pickup_callback_ms;
+            s["pickup_callback_max_ms"] = n->pickup_callback_max_ms;
+            s["pickup_callbacks"] = (int64_t)n->pickup_callbacks;
             s["draws"] = (int64_t)n->state.renderer.draws;
             s["breath_tightens"] = (int64_t)n->breath_tightens;
             s["shrink_rejected"] = (int64_t)n->shrink_rejected;
             s["readback"] = n->state.renderer.readback_mode();
+            s["gl"] = n->state.renderer.gl_description();
             s["readback_pending"] = n->state.renderer.readback_pending();
             s["readback_generation"] = (int64_t)n->state.renderer.generation();
             s["readings_issued"] = (int64_t)n->state.renderer.readings_issued;

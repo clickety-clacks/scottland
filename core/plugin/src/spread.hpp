@@ -70,7 +70,7 @@ struct snapshot_t
     // natural scale reads as scaled (WP4). 0: the periphery's own edge.
     double arrival_inset = 0;
     std::function<double(double)> scale; // natural scale for a center x (any curve, not assumed monotone)
-    box solo;                      // the solo window's target footprint, or the audition's reserved one
+    box solo;                      // the solo window's target footprint
     std::vector<box> fixed;        // docked widgets and anything else nothing may move
     std::vector<window_t> windows; // arrivals, residents and fixed windows (never the solo window)
 

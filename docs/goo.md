@@ -29,11 +29,13 @@ remains available.
 - **Waves.** A shared wave surface pushes the goo's boundary in and out. A grab, a drop or an
   interaction swell starts a ripple there; it travels only through connected goo, around the whole
   merged outline, and fades.
-- **Dye.** Color is dye carried by the goo, separate from the goo itself. Each window keeps releasing
-  its current color into the goo it owns (neutral, focus, attention). Dye spreads and slowly swirls,
-  only within goo: where goo connects two windows their colors bleed across the bridge; apart, they
-  stay separate. A new state blooms from the window's edge outward; an answered one fades as the
-  window's neutral color replaces it.
+- **Dye.** Color is dye carried by the goo, separate from the goo itself, and it is one dye (GO28).
+  Each window keeps releasing its current color (neutral, focus, attention) into all of the goo it
+  owns, and the goo picks up the color of whatever lies beneath it (wallpaper, or a window under its
+  film); all of it mixes like watercolor pigment. Dye spreads and slowly swirls, only within goo:
+  where goo connects two windows their colors bleed across the bridge; apart, they stay separate. A
+  new state blooms from the window's edge outward; an answered one fades as the window's neutral
+  color replaces it.
 - **Attention color family (GO22).** `theme` follows the active desktop palette, unchanged from
   today's behavior. `warm` uses brick red `#B83F36` in light themes and amber `#FF9E57` in dark
   themes. `cool` uses olive green `#707C28` in light themes and yellow-green `#C9DD61` in dark
@@ -46,9 +48,9 @@ remains available.
   neutral dye. Strength one follows the old composite path exactly. The fallback halo uses the same
   scheme tone and scales only its unfocused density. Defaults reproduce the old, slightly warm/cool
   neutral RGB values.
-- **State dye strength (GO23).** The Goo tab's Dye strength slider ranges from 0 to 1.5, default 1.
-  It scales only the focus, attention and Window mode hint share of the final dye weight in goo;
-  A16's unfocused neutral strength remains independent, and wallpaper soak is untouched. The
+- **Dye density (GO23; named Dye strength until 2026-10-05).** The Goo tab's Dye density slider (`goo_dye_density`; a saved `goo_dye_strength` is still read) ranges from 0 to 1.5, default 1.
+  In the goo it scales all of the dye (GO28: windows' colors and picked-up color alike); A16's
+  unfocused strength still sets how much pigment a neutral window releases. The
   fallback halo scales those same state colors relative to its neutral tone. At 1, the shader keeps
   its original dye-weight path; stronger values clamp the resulting goo weight to full opacity.
 - **States are dye, not decorations.** Everything that marks a window's state on the halo is dye
@@ -65,7 +67,7 @@ remains available.
 ## Tuning
 
 Every goo constant and the attention color family have a live control in the settings app (beside the
-zone sliders and scale curve): unfocused edge tone and strength, state dye strength, reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
+zone sliders and scale curve): unfocused edge tone and strength, dye density, reach, border thickness, bridge draw, mess, lump size, drift, wave speed,
 wave persistence, wave height, dye spread, dye swirl, dye release, shine, relief, liquid depth, wall wetting, wallpaper soak, overlap film,
 control cloudiness, control glow, control proximity, and the falloff
 curve (how density drops away from an edge) in the curve editor. Changes apply live, as the zone
@@ -85,25 +87,26 @@ The initial defaults are the prototype’s Scottland preset.
 | GO6 | Color is dye in the goo: each window or widget releases its state's color at its presented edge, including while expanding/collapsing; dye spreads and swirls only within goo, bleeding across bridges between connected windows. | implemented; bridge/gap dye sample checks; widget presentation morph retains attention dye |
 | GO7 | Halo state markers are dye (plus goo where they need presence), never separately drawn shapes: focus, attention, the hovered resize corner (no hard edges where it meets the rest of the halo), the close dot's glow. | implemented; palette, corner and close screenshots/input checks |
 | GO8 | Resize corners, the close dot and grab areas are hit-tested against the same field; a corner hidden inside another window has no handle. Widgets and non-resizable windows (resize permission denied, or both dimensions fixed by min/max hints) have no resize handles; their band remains a move handle. A single fixed dimension still permits resizing the other. | implemented; pointer/touch move, resize, close and hidden-corner checks |
-| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. The Goo tab includes depth, wall wetting, wallpaper soak and GO23 state dye strength with metadata hints verbatim, live preview and Save/Cancel/Defaults. | implemented; Goo coverage test matches all 23 numeric Goo controls (its source-text check of GO14/GO15/GO23 hints/ranges was removed 2026-10-04, [tests-todo.md](tests-todo.md)); isolated headless input checks |
+| GO9 | Every goo constant, and the falloff curve, is a setting with a live control in the settings app. The Goo tab includes depth, wall wetting, Wallpaper pickup and Pickup balance (GO28) and GO23 dye density with metadata hints verbatim, live preview and Save/Cancel/Defaults. | implemented; current real Settings Save/Defaults/Cancel and all-dye density checks pass on both GPU paths ([review validation below](#review-validation-and-cost-2026-10-05)) |
 | GO10 | The goo costs nothing while the desktop is still: its simulation sleeps when settled. Settled is read from the GPU without waiting: every 30th step issues the energy reduction into a pixel buffer with a fence and later steps (or a shared collection timer) pick it up; a reading taken before any change since is ignored. Where that read isn't available (GLES 2, a GPU allocation, read or sync failure, until the renderer is re-created), it sleeps 6 s after the last change instead (Mike, 2026-10-03; [main-loop.md](main-loop.md#phase-3-no-gpu-wait)). Attention breathing refreshes only its local strip at 25 Hz (GO17); interaction-driven field work uses occupied tiles. When apps redraw beneath settled overlap film, cached surface properties are composited with the current backdrop instead of re-evaluating depth, SDF and antialiasing for every app frame. Backdrop capture is limited to drawable bands plus refraction margin. | implemented; Xe/RX 580 redraw-cost validation, including GO16 merge, below |
 | GO11 | Overlapping windows stay readable through the goo, not a border: each window's goo lies on top of whatever is behind that window, so a front window's edge shows its goo over the back window's content (a film whose width over windows behind is a setting with a Goo Panel row, `goo_overlap_film`, default a thin 4 pt, thickening to the full goo where it reaches open desktop). At rest the film has the set width; when that window's outer goo expands for proximity/hover, lift while dragging, or attention breathing, its film swells in the same proportion, governed by `goo_swell`, and eases back with it. It is still one liquid: where that film meets other windows' goo it merges, and waves and dye cross the join. Hidden only by windows in front of it. (Mike, 2026-10-02; core; swell clarification 2026-10-02) | implemented; isolated headless validation recorded below |
 | GO12 | The goo highlights its controls the way a UI highlights an interactive control: when the pointer nears or is over one of a window's goo controls (a corner's resize handle, a side's grab area), that control's whole goo surface (not a spot under the pointer) turns cloudy (denser, milkier dye with swirl) and glows as if lit from within (emissive: it brightens on its own, not only by reflecting light), strengthening as the pointer approaches and full while over it, then easing back when the pointer leaves. Only resizable windows have corner cloud/glow: widgets and non-resizable windows (including equal min/max size hints) never show it, in goo or the fallback halo. Their sides still highlight and move normally. Visual only: it does not change what the sides or corners do. Goo Panel settings with sensible defaults: cloudiness, emissivity (0 = no glow), and how near the pointer must be for it to begin. (Mike, 2026-10-02: corner clouding is barely visible in the goo today; the dye mark is released at only `release` strength.) | implemented; isolated headless validation recorded below |
 | GO13 | Goo outlines fade over approximately one device pixel using screen-space field derivatives, at every output/window scale. The full-resolution draw reconstructs the coarse field with smooth cubic filtering, restricted to goo bands; GO11 film and GO12 control outlines use the same coverage. Keep the existing window-edge SDF antialiasing and otherwise preserve the look, simulation and input. Added active cost stays well below one millisecond per frame, checked with the paired GO10 benchmark on Xe and RX 580. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
-| GO15 | Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
+| GO15 | *(Partly superseded by GO28: pickup is from whatever lies beneath, windows included, everywhere in the goo, mixed with the state colors rather than kept from the wall.)* Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
 | GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Ordinary Wayland surfaces whose root buffer bounds extend beyond their xdg window geometry also use the rendered alpha contour, covering client-side decoration insets generically; surfaces with matching bounds retain the analytic rounded box. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary surfaces without inset alpha masks retain analytic rounded boxes and do not sample the widget atlas. (Mike, 2026-10-02; core; CSD contour extension 2026-10-03) | implemented; Plumbus Chromium CSD, server-decoration and GTK/libadwaita captures below; physical-display verification remains open |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and keyframed source-local swell at draw time (about six logical pixels at shipped goo settings). Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
 | GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled or unavailable, draw the breathing strips exactly; the number of keys never causes that (GO26). The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs on the shrink worker thread off the main loop ([main-loop.md](main-loop.md#phase-4-the-shrink-worker), Phase 4), on a value snapshot; a result is installed only if it still describes the current sources, settings and output, and a capped job tightens only the rectangles it finished. Without a worker the conservative strips stay in use. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
-| GO20 | Only a change wakes the goo, and only liquid is worked on. (1) Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
+| GO20 | Only a change wakes the goo, and only liquid is worked on. (1) *(Replaced by GO28's bounded pickup wakes: a change beneath sleeping liquid restarts only the dye's coast; the wallpaper capture is gone.)* Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
 | GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
 | GO22 | Attention color choice: the Goo setting chooses Theme (the active palette attention color, today's behavior), Warm (light `#B83F36`, dark `#FF9E57`), or Cool (light `#707C28`, dark `#C9DD61`). The selected color applies live to attention breath and bulge on windows and widgets, in Goo and fallback halos, and follows light/dark scheme changes. Settings previews the choice; Save, Cancel and Defaults include it. | implemented; Plumbus headless Settings input, six Goo and six fallback screenshots across light/dark, window and widget attention (2026-10-03); integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
-| GO23 | Dye strength: a Goo setting from 0 to 1.5 (default 1) scales the state share of dye weight for focus accent, attention and Window mode hint dye in the goo, plus those colors in the fallback halo. At 1 the goo follows its original shader path exactly; greater weights clamp the final dye blend at full opacity. A16's neutral edge contribution remains separate and unchanged by this slider. Changes apply live. Wallpaper soak stays independent. (Mike, 2026-10-03) | implemented; test-machine unit and live Settings input, plus light/dark Goo and fallback screenshots at 0.25, 1 and 1.5; state/neutral separation and default-path formula tests passed (2026-10-03; the default-path test only matched source text and was removed 2026-10-04, [tests-todo.md](tests-todo.md)); integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
-| GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; plumbus headless checks and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO23 | Dye density (`goo_dye_density`; named Dye strength, `goo_dye_strength`, until Mike's ruling of 2026-10-05, and a value saved under that key carries over): a Goo setting from 0 to 1.5 (default 1). **In the goo it scales all dye together**, the windows' colors and picked-up color alike (Mike, 2026-10-05: "dye density scales all dye in the goo, picked-up color included"): how much of the liquid's color is dye rather than clear lens. It does not change the mix of hues (Pickup balance does, GO28). In the fallback halo it still scales focus, attention and Window mode hint colors. Greater values clamp the final dye blend at full opacity; the original-path promise at 1 is superseded. Changes apply live. (Mike, 2026-10-03; scope 2026-10-05) | implemented; current all-dye, legacy migration, Goo/fallback and Settings checks pass on both GPU paths ([below](#review-validation-and-cost-2026-10-05)) |
+| GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. *(GO28 replaces this: state colors fill the goo and mix with the pickup; there is no wall band.)* **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; headless checks on the x86 test machine and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO25 | The attention bulge and the keyframed breath go together: with the bulge restored (`6ca8c4b`), a settled breath at shipped settings and at Mike's is still drawn from keyframes (GO18), not by re-shading the strips on every tick. (Found on Mike's desktop, 2026-10-03, where the keys had stopped without notice: `breath_keys` 0 over 192,000 ticks; core) | implemented (`5429f3f`: the 16-key cap raised to 24). GO26 replaces the cap with its ceiling-and-scale rule and makes any use of the exact path say why; GO25 stays as the behavior, GO26 as the mechanism ([below](#go25-keyframes-for-the-restored-bulge-2026-10-03)) |
 | GO26 | Breath keyframes follow a ceiling-and-scale rule. A breath uses only as many keys as its swing needs at half a device pixel of shore travel per key (10 if that is all it needs). The count never exceeds a ceiling (48 where both cache textures are written in one pass, 24 where each refresh takes two); a swing that needs more keeps the ceiling and widens the spacing just enough to cover the swing. The key count never sends the breath to the exact path: that path remains only for real failures (the second cache layer cannot be allocated, the surface cache is unavailable), for keyframes switched off, and for the test override, and whenever it is in use `goo-state` says why (`breath_exact_reason`) and the log says so once. (Mike, 2026-10-04; core) | implemented; `tests/goo-breath-keys-test.py` 13 / 13 on both GPU paths, measurements [below](#go26-ceiling-and-scale-keys-2026-10-04). Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO27 | The goo never paints over dry window content: a window's interior that no goo can lie on shows the window, in every frame. A frame that reuses the cached backdrop (a breath, or a watercolor tick while the dye coasts, GO24) restores it only on its reuse region's pixels inside the goo's own drawn area and outside dry content; whatever else the merged rectangles cover stays in the frame's damage and the scene beneath paints it. (Mike's bug report, 2026-10-04; core) | implemented; `tests/goo-strip-test.sh` (forced and natural merging) passing on both GPU paths on plumbus ([below](#go27-no-backdrop-inside-a-window-2026-10-04)); not yet seen on Mike's panel; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO28 | **One dye, mixed like watercolor.** The goo carries one dye field and never segregates kinds of dye. (1) Each window releases its state color (neutral, focus, attention, GO22's family) into **all of its own goo**, in proportion to how much of the liquid at each point is its own, a little more at the wall than at the shore (2 : 1) so a new state still blooms from the edge; bridges take both windows' colors in proportion. (2) Wherever there is goo it **picks up the color beneath it on screen**: the wallpaper, or window content under overlap film; never the goo itself or anything drawn above it (hints, overlays, the cursor). (3) Picked-up color **mixes into the dye already there**, subtractively, like pigment (blue and yellow make green; colors deepen as they mix); nothing replaces anything. (4) Picked-up color is dye like any other: it spreads, swirls and runs along the band, smearing the material beneath. (5) Live Goo panel rows (Save/Cancel/Defaults) drive it: Dye spread (`goo_spread`) and Dye swirl (`goo_swirl`) move all dye alike; Dye release (`goo_release`) is how fast windows and pickup renew it; Wallpaper pickup (`goo_soak`, labeled Wallpaper soak until 2026-10-05) is the pickup strength; **Pickup balance** (`goo_pickup_balance`, 0-1, default 0.45, the one new setting, Mike 2026-10-05: "just give me a slider") is the share of picked-up color at full pickup (0 the window's color only, 1 picked-up color only; 0.45 is the ~55 / 45 first shown to him); GO23 Dye density (formerly Dye strength) scales all of the goo's dye, picked-up color included, and A16 unfocused strength sets how much pigment a neutral window releases (0 is clear water). Window mode hint colors stay an immediate draw-time tint (WK14). Mike's "dye density" is that GO23 setting, renamed (his ruling, 2026-10-05). (6) Costs hold to GO10, GO19 and GO20: a change beneath sleeping liquid never wakes the waves or field, only the dye's coast, at most once per cool-down that starts at 20 s and doubles each time a change has waited one out (to 5 min); once nothing has repainted under the liquid for 20 s the backoff is over and a change is taken at once. Supersedes GO15's wall fade, wall dominance and wallpaper-only source, GO24's narrow wall band, GO20 (1)'s wallpaper capture, and GO23's exact-original-path promise. (Mike, 2026-10-05; core) | review repairs validated; GO28 49 / 49 and regressions pass on both GPU paths; Radeon Pro 580X costs [below](#review-validation-and-cost-2026-10-05). Physical-display appearance/motion and Intel Xe remain unverified |
 
 ## Halo jobs with goo enabled
 
@@ -224,7 +227,9 @@ exponential. Invalid curves keep the last valid LUT.
 | Relief | relief | 5 |
 | Liquid depth | depth | 6 pt |
 | Wall wetting | profile | 0.65 |
-| Wallpaper soak | soak | 0.12 (0 disables injection) |
+| Wallpaper pickup (GO28; was Wallpaper soak) | soak | 0.12 (0 disables pickup) |
+| Pickup balance (GO28) | pickup_balance | 0.45 (share of picked-up color at full pickup) |
+| Dye density (GO23; was Dye strength) | dye_density | 1 |
 | Density falloff | falloff | empty (exponential) |
 
 ## Original branch verification (2026-10-01)
@@ -1011,7 +1016,7 @@ every Goo and inertial metadata option against Settings controls:
 |---|---|---|---|
 | `goo_depth` | Liquid depth | 0–20 / 6 / 0.1 | Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it. |
 | `goo_profile` | Wall wetting | 0–1 / 0.65 / 0.01 | How strongly the rounded bead climbs the window wall. Higher raises the inner meniscus; zero leaves a free rounded bead. |
-| `goo_soak` | Wallpaper soak | 0–1 / 0.12 / 0.01 | Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off. |
+| `goo_soak` | Wallpaper pickup (was Wallpaper soak) | 0–1 / 0.12 / 0.01 | How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off. |
 
 ### Isolation and evidence
 
@@ -2481,3 +2486,328 @@ with the backdrop no longer copied under windows. Intel Xe is not measured.
   rendering faults, and neither is new in the release.
 
 Not covered: a physical display; Intel Xe; the watercolor in motion seen by Mike.
+
+## GO28: one dye (2026-10-05)
+
+Core. Mike, 2026-10-05: "the attention/focus coloring should color all the goo and the dye density
+should be settable (including swirl, spread etc). it should PICK UP the wallpaper color (actually ANY
+color underneath it even from a window) and mix that color in, to whatever dye is already in the goo.
+like mixing watercolors... the wallpaper dye also spreads and swirls like any other dye, hopefully
+having the effect of smearing the wallpaper or window material below it. The intent is NOT to
+segregate different kinds of dye in the goo."
+
+### What was wrong
+
+- **State dye stayed at the wall.** In the dye pass only the dominant source released, with an
+  exponential falloff from its wall; with soak on, that release was multiplied by `(1 - share)^2`
+  outside a 1-3 pt wall band, where `share = soak^0.25`. At soak 1 (Mike's setting) the state
+  release was zero everywhere but that band, and texels beyond the shore rested at the paper's
+  color. The surface shader then drew the state color in a 1.5-4 pt band at the wall. Focus and
+  attention were a line; the goo was paper pigment.
+- **Two kinds of dye.** Paper pigment and state ink were kept apart by position (band against
+  wall) and by a draw-time override, not mixed.
+- **Pickup read only the wallpaper.** A separate quarter-resolution capture of the background layer
+  was the only source; GO15 kept window content out on purpose, so film over a window never took
+  that window's color.
+- **Mixing was linear RGB.** Blue and yellow averaged to gray.
+
+### The model
+
+**One field of absorbance.** The dye texture holds, per channel, the pigment's absorbance
+`K = -ln(color)` (Beer-Lambert optical density), stored as `sqrt(K / 6)` so the packed RGBA8 path
+keeps its precision at the light end where neutral dye lives. Everything that mixes the dye
+(advection's interpolation, spread, release, pickup) works on absorbance, so every mix is
+subtractive. Readers (the surface, the cached composite, `goo-state` samples) turn it back into a
+color with `exp(-K)`; a single color written and read back is unchanged.
+
+**Why this mixing model.** Linear RGB blending is additive light, not pigment: complementary hues go
+gray and a pale dye cannot tint a dark one. Kubelka-Munk, or a pigment-space model such as Mixbox, is
+the most faithful paint mix, but needs per-pigment scattering data or a lookup table we would have to
+license and carry through both GPU paths. Mixing absorbances is the subtractive part of that model
+for transparent pigment, which is what watercolor is: hues combine (blue and yellow make green),
+mixtures deepen, and a light dye dilutes a dark one the way water does. It costs a `log` and an
+`exp` per texel, and it is linear in the stored quantity, so spread, advection and bilinear filtering
+keep their meaning.
+
+**Release fills the window's goo.** Every source releases its color wherever it has goo, weighted
+by its share of the field there (`k_i / sum k`), times `mix(0.5, 1, exp(-e / 0.6 reach))` so the wall
+gets twice the shore's rate and a new state still blooms outward (GO6). Bridges take both colors in
+proportion instead of switching at the dominant source. The rate is `goo_release`, times the
+source's multiplier (attention keeps its 3), times its **pigment amount**: all of it for the
+state share and A16 unfocused strength for the neutral share (`n (1 - s) + s`; dye density applies to the whole goo, below). A source with
+amount 0 is clear water: it changes no hue.
+
+**Pickup.** After each frame copies the scene beneath the goo (the existing backdrop cache, the same
+pixels refraction uses), a small pass averages it into a quarter-resolution pickup texture,
+only for texels whose whole footprint was copied in that frame; other texels keep what they had, and
+texels never copied stay marked unknown and pick up nothing. The backdrop is what the
+compositor drew under the goo's own scene node: the wallpaper (the node sits on top of the
+background layer when nothing overlaps) or the windows beneath (it sits at the bottom of the overlay
+layer when they overlap). It never holds the goo (copied before the goo draws, only where the scene
+beneath was repainted) nor hint overlays and the cursor (drawn after it). Each dye step mixes
+the picked-up color in at the Pickup balance's rate (below), a little richer in saturation as wet
+pigment is (`1 + 0.35 soak^0.25`, half GO24's boost: subtractive mixing keeps saturation, and the
+full boost turned complementary colors to mud where they met), graded by thickness (thin goo two
+thirds of pooled, GO24). With no
+background-layer client, open desktop picks up nothing, as before; film still takes the window under it.
+
+**Mixing, not replacement.** Each texel moves toward the mixture of everything feeding it,
+`(sum r_i a_i K_i + p K_beneath) / (sum r_i a_i + p)`, at the combined rate. Nothing overwrites the dye:
+what is there is part of the next mixture, and its history is carried by spread and swirl. Picked-up
+color is in the same field, so it advects, spreads and runs along the band exactly like state color.
+
+**Pickup balance.** The slider `b` is the share of picked-up color at full pickup, in the middle
+of an ordinary band: there a window releases at about 0.75 of `goo_release` and pickup lands at
+about 0.8 of its rate, so pickup runs at `goo_release x 0.94 soak^0.25 x b / (1 - b)` (GO24's soak
+curve: a first try with `sqrt(soak)` left the shipped 0.12 below GO24's "clearly visible" bar on the
+packed path). 0 picks up
+nothing, 1 (held at 0.99) leaves only what is picked up; the default 0.45 is the ~55 / 45 first
+shown to Mike. It sets the mix of hues only.
+
+**Dye density** (GO23) scales all of the goo's dye at the end: the pigment amount below is
+multiplied by it, whatever the dye's colors came from (Mike, 2026-10-05).
+
+**How much the liquid is dye.** The surface still shows dye as a body over the refracted backdrop.
+Its share is today's: 0.55, plus `0.22 soak^0.25` when pickup is on (the GO24 term), times the
+point's pigment amount. That amount is now worked out once in the field pass as the equilibrium of
+the same release and pickup rates, so A16 strength 0 leaves an unfocused window's goo clear only
+where nothing was picked up. GO24's ramp to a fully opaque body at the wall goes with the wall band.
+
+**Hints, attention colors, dye density, neutral tint.**
+
+- Window mode hint colors (WK14) stay a draw-time replacement while hints show. They are a
+  transient pointer to a key, and must appear and clear at once; depositing them would leave stains
+  that take seconds to wash out. The field keeps evolving underneath and shows again when they clear.
+- GO22's attention family chooses the attention source's color; it is released like any state color.
+- GO23 Dye density (formerly Dye strength) scales all of the goo's dye, picked-up color included
+  (Mike, 2026-10-05; first built scaling only state pigment). The old "exactly the original shader
+  path at 1" no longer applies because the original path is replaced.
+- A16 unfocused strength scales the neutral release's pigment; its tone is the neutral's color.
+
+### Costs (GO10, GO19, GO20)
+
+- The pickup pass runs only on frames that copy backdrop pixels, over those pixels at a sixteenth of
+  their count. While the goo sleeps and nothing beneath changes, it never runs.
+- A change beneath sleeping liquid: on a frame whose copy touched the liquid, at most twice a
+  second and only when no change is already pending, a reduction counts liquid texels of the pickup
+  texture that differ from the copy the dye last saw by more than 4 levels in any channel (GO20's
+  threshold); more than 16 is a change. The count is exact: a 2x2 block past an odd edge of a
+  reduction level skips its missing taps (`tests/goo-change-count-test.sh`: one to 17 changed
+  texels at corners, edges and center on five output sizes, both dialects). A change never wakes waves or the field: it restarts the
+  dye's coast (GO24's slow dye-only tick on the cached composite, about 6 s, easing out), which picks
+  the new colors up and smears them. One such restart per cool-down: 20 s, doubling each time the
+  cool-down ends with another change waiting (to at most 5 minutes). A change inside a cool-down
+  waits for its end. Once nothing but the goo itself has repainted under the liquid for 20 s, the
+  backoff is over: the cool-down is 20 s again and a change is taken at once. So a video under the film or an
+  animated wallpaper costs one short coast, then ever rarer ones; a still backdrop costs nothing.
+- The quarter-resolution wallpaper capture and its full CPU readback on every background commit
+  (GO20 (1)) are removed; the backdrop copy already holds those pixels.
+- Falling asleep still coasts 14 s (GO24) when pickup is on; then the dye rests exactly as it lies.
+
+### Choices that change what Mike sees (conservative default picked)
+
+1. Focus and attention color the whole goo, mixed with what it picked up; no crisp state line at the
+   wall. (The ruling.)
+2. Subtractive mixing: a blue accent over orange wallpaper goes toward brown-violet, not gray-blue.
+   (The ruling: "like mixing watercolors".)
+3. Film over a window takes that window's colors, and they spread into the open goo. (The ruling.)
+4. Balance at Mike's settings (soak 1, dye density 1.5): about 45% picked-up color against 55% of
+   his focus color across the band; at the shipped soak 0.12, about 30%. Mike, 2026-10-05: "just
+   give me a slider": Pickup balance sets it, and its default (0.45) is this balance. Chosen so the shipped
+   default still shows pickup clearly (GO24) and full soak never hides the state color (GO28). (A
+   first balance, 2 sqrt(soak), left Mike's focus color at 40% and read as subdued in the pictures.)
+5. A wallpaper change restarts only the dye's coast instead of three seconds of full simulation.
+6. The liquid's dye share keeps today's formula (no new control); only the wall-band ramp to fully
+   opaque is gone. Mike's "dye density" is the existing Dye strength setting, renamed Dye density
+   (ruling 2026-10-05: "release is rate at which dye enters the goo. strength sounds like density.
+   density is the better term"); `goo_dye_strength` values carry over. It scales all of the goo's dye,
+   picked-up color included (ruling 2026-10-05); the hue mix is Pickup balance's.
+
+### Tests (as planned; AGENTS.md testing standard)
+
+`tests/goo-one-dye-test.py`, both GPU paths, isolated headless sessions on the test machines, real
+input for focus and moves:
+
+- focus color across the whole band: screen pixels at the wall, mid-band and shore of a focused
+  window all move toward the accent when it is focused by a real click, against the same pixels
+  unfocused;
+- pickup from wallpaper and from a window: film over a back window of a strong color takes that
+  color (dye sample and screen), with the window's own content checked to be that color;
+- mixing, not replacement: blue focus over yellow paper reads green-shifted, neither pure source;
+- spread and swirl smear: with swirl and spread on, picked-up color appears beyond the patch it
+  came from; with both zero, it does not;
+- settings live: changing soak, spread, swirl, release and dye density through the settings app's
+  rows changes the result without reload;
+- sleep returns: after each of these, zero steps and zero dye passes over a quiet interval;
+  a window animating under the film produces bounded pickup coasts with the cool-down doubling;
+- GO27: goo-strip-test and goo-exact-test unchanged in what they assert;
+- GO10 cost: the idle bench on both test machines, before and after.
+
+### Historical pre-review results (2026-10-05, ARM test machine, Asahi Mesa 26.1.7; the x86 test machine was unreachable)
+
+`tests/goo-one-dye-test.sh`, isolated headless sessions, **41 / 41 on GLES 3 and 41 / 41 on packed
+GLES 2** on the earlier build. These do not validate the subsequent density/balance changes or
+review repairs. Mixing, film-pickup and transport assertions below used dye diagnostics; their
+screenshots were not independently asserted. The previous spatial filtering and late-coast bugs
+are not covered by these results. Named scenarios and what they measured (GLES 3):
+
+| Scenario | Evidence |
+|---|---|
+| Focus colors the whole goo (real clicks; wall, middle and shore of the band) | dye change on focus 0.51 / 0.51 / 0.51 at no pickup, 0.38 / 0.37 / 0.36 at the shipped pickup, 0.32 / 0.31 / 0.29 at Mike's (full pickup, density 1.5); on screen 71-78 levels at all three distances at Mike's |
+| Mixing, not replacement | focus dye 47% of the mix at full pickup; distance from the subtractive (absorbance) line 0.001, from the best linear RGB blend 0.155 |
+| Pickup from a window | film over a magenta window: dye green 0.64 → 0.18, red and blue lead it (the window's own pixel 208, 32, 144) |
+| Spread and swirl smear | red-to-blue change along a band: under 4 pt with swirl and spread 0, 60 pt with both set high through the Settings rows (real input, saved) |
+| Never the goo itself | three pickup coasts over an unchanged backdrop: largest dye change 0.004 (one level) |
+| Bounded wakes | a window flipping colors under the film for 75 s: 0 simulation steps, 2 pickup coasts, cool-down 20 → 80 s, coasting 16% of the time, 3 backdrop checks; after it stops and 20 s pass, one more change is taken in 0.2 s with the cool-down back at 20 s |
+| Sleep returns | every scene ends with zero steps, dye passes and watercolor ticks over 4-8 s |
+
+Regressions on the same machine and build (both paths unless noted): goo-test 51 / 51; watercolor
+14 / 14; depth/soak 21 / 21; breath keys, overlap/hover, attention bulge, hint style pass;
+goo-strip forced and natural 10 / 10 (GO27); goo-exact at scale 1 and 1.5 29 / 29, rotated at 1.25
+and two outputs at 1.5 28 / 28 (GLES 3; two outputs also on GLES 2); dye strength (density) 16 / 16
+and attention family 8 / 8 (GLES 3); goo-shape 133 / 133 (same as main); fallback halo, flow on two
+outputs, edge-style and state-dye pass; settings-help 203 / 204 (the miss is "hover intent timing
+previews live", a hover-timing check outside the goo); build-config carries `goo_dye_strength`
+over as `goo_dye_density`; all 43 shader variants compile in both dialects.
+
+Checks changed because GO28 supersedes what they held: goo-watercolor no longer requires a
+one-color wall row (only that the band follows the paper); goo-depth-soak drops "focus edge stays
+blue on red paper", "focus dominant at the border", "wash softer at the border" and the two
+film-never-takes-the-window checks (now covered the other way round), samples the bottom band 6 pt
+out like the top one, and measures pooled-bridge grading at the shipped pickup (full pickup on pure
+red paper saturates both readings); goo-exact's "the dye moves while asleep" applies only where this
+output has a wallpaper.
+
+**Cost** (`tests/goo-one-dye-bench.py`, 2560x1600, Mike's settings, a window redrawing at about 20
+frames a second under the film, four 30 s rounds, main and branch alternated twice). This machine
+does not report per-client GPU busy time, so the goo's own GPU timer queries and work counters
+are used; it is shared with other test sessions (load 1-6).
+
+| Case | main | GO28 |
+|---|---:|---:|
+| At rest: steps, draws, dye passes | 0, 0, 0 | 0, 0, 0 (no checks, no pickup work) |
+| Redrawing under film: goo GPU per draw (median) | 0.09-0.23 ms | 0.13-0.23 ms |
+| Redrawing under film: compositor CPU | 3.0-5.6% | 4.1-6.2% |
+| Redrawing under film: added dye work per 30 s | none | 58 dye passes in round 1 (2 coasts), 0-29 later, 0-3 checks |
+
+The pickup refresh and the change check run outside the frame (an idle call, or the next dye
+step): a first build that refreshed the pickup texture inside the frame cost about +0.2 ms per draw
+here, which a tile-based GPU pays for switching framebuffers mid-frame. The listed draw timings omit the dye-only pickup refresh, reduction and synchronous readback
+outside those scopes. They do not establish the complete added GPU cost or P8's main-loop budget;
+the earlier cost conclusion is withdrawn. Current measurements must use the additional scopes
+and callback wall times described below.
+
+**Pictures** (`tests/goo-one-dye-shots.py`, 1600x1000, colorful paper, a focused window in front of
+a magenta one, an attention window, an unfocused one; main beside branch, at rest):
+`build/go28-shots/sheet-{shipped,mike}-focus-{front,apart}.png` and
+`sheet-branch-mike-unfocused-vs-focused.png` in the checkout that made them.
+
+Not covered: a physical display and the look in motion (Mike's eyes); RX 580 and Intel Xe cost;
+that hint overlays and the cursor never enter the pickup is by construction (they are drawn after
+the goo copies its backdrop), not by a test.
+
+### Review repairs (2026-10-05)
+
+The source now keeps the backdrop at coast start as its acknowledged baseline. Coast completion
+compares again without refreshing that baseline, so a final client frame arriving after the last
+useful dye tick remains eligible for pickup. This may conservatively schedule one extra coast for
+a change that earlier ticks partly consumed; the same cooldown bounds every restart.
+
+Dye storage keeps its square-root encoding for packed precision. Advection, spread, direct draw,
+query and both cached composites fetch texel centers, decode each absorbance, and bilinearly
+interpolate the decoded values. `tests/goo-dye-filter-test.sh` exercises five fractional-texel
+positions on both shader dialects through the actual query shader; its expected pixels come from
+`255 exp(-6t)` for the independent two-texel fixture, not renderer-reported samples.
+
+Density reads/writes fall back to the legacy live key on older plugins. Settings reads legacy
+saved values when the new key is absent. All supported config inputs, including the user's base,
+are translated without editing the input files. `tests/goo-density-ctl-test.py` uses an owned IPC
+compatibility fixture, and the real Settings Enter scenario checks that Save retains legacy 1.5.
+`tests/build-config-test.sh` checks the generated user base as well as fragment precedence.
+
+The cooldown policy accepts supplied timestamps; `tests/goo-pickup-policy-test.sh` checks exact
+cooldown, reset, doubling, ceiling and check-frequency boundaries. The 75-second functional
+performance gate is removed. The real-client scenario checks a single content redraw and another
+after the last coast dye tick against captured film pixels while the final blue backdrop is identical before and after pickup.
+Mixing and transport have captured-pixel
+assertions as well. Save waits on actual saved values and process exit; all test clients are reaped.
+
+`tests/goo-one-dye-bench.py` now records completed query counts and GPU totals for sleeping dye
+flow (including pickup refresh), backdrop refresh/reduction, and baseline copies. It records
+renderer and complete collection-callback wall time, including completion waits, and lifetime
+maxima. Draw/step medians remain separate. Unsupported GPU timing is recorded as null.
+`--width` and `--height` select representative output sizes; record load and renderer for each run.
+The reduction result has a dedicated target, and completion is collected only after a nonblocking
+GL fence (GLES 3) or EGL fence (GLES 2, where supported). A driver without fences retains a
+synchronous compatibility path. Measurements for both normal and forced-fallback paths follow.
+
+### Review validation and cost (2026-10-05)
+
+The repaired plugin and helpers, plus main `869b2a6` for comparison, built on the x86 test
+machine. Product code is `19ad315`; subsequent commits repair tests and benchmark reporting.
+Every isolated test compositor stopped; an ownership-scoped process/session audit was empty.
+No desktop install, reload or main merge was performed. Independent review is still required.
+
+| Current gate | GLES 3 | Packed GLES 2 |
+|---|---:|---:|
+| One dye: real Settings input, mixing, density, window-film pickup, no self-feedback, transport and final static client frame | 49 / 49 | 49 / 49 |
+| State-color/density and fallback halos | 16 / 16 | 16 / 16 |
+| General goo | 51 / 51 | 51 / 51 |
+| Depth and pooled wash | 21 / 21 | 21 / 21 |
+| Watercolor | 14 / 14 | 14 / 14 |
+| Exact path | 29 / 29 | 29 / 29 |
+| GO27 strips: forced / natural rectangle merging | 10 / 10 each | 10 / 10 each |
+
+Settings/help passed 205 checks. The supplied-timestamp policy passed eight properties;
+CLI legacy/current compatibility and config-builder migration/precedence checks passed.
+All 43 shader compilation checks and the five-position GPU absorbance probe in each dialect passed.
+The initial window-film fixture exposed an obsolete Foot color section; actual terminal output now
+sets its magenta background, verified in captured pixels. Cancel compares against independently
+captured opening/edited dye and screen states rather than assuming evolving packed history rewinds.
+Four shipped/Mike-settings captures were produced; selected film and Mike captures were inspected.
+
+**Measured scene.** Radeon Pro 580X, Mesa 26.2.2, four logical CPUs. Main and candidate ran
+sequentially at full pickup, density 1.5, swirl 3, with colorful wallpaper and a back terminal
+flipping green/magenta at 10 Hz beneath overlap film. Other test VMs and compilers were paused.
+Each case has 30 seconds idle, four consecutive 30-second redraw samples, then 30 seconds idle
+after pickup settles. CPU below is the mean of the four redraw samples, as percent of one core.
+Added GPU totals are the measured flow/check/baseline-copy scopes over those 120 seconds;
+they are not total compositor GPU time. Callback maxima include setup and complete collection work.
+
+| Path and output | Main CPU | Candidate CPU | Added scoped GPU total | Candidate callback maximum |
+|---|---:|---:|---:|---:|
+| GLES 3, 1920×1080 | 1.99% | 2.11% | 21.36 ms | 0.438 ms |
+| GLES 3, 2560×1600 | 2.34% | 2.44% | 33.62 ms | 0.658 ms |
+| Packed GLES 2, 2560×1600 | 2.29% | 2.39% | unavailable | 0.601 ms |
+
+GPU coverage in the two GLES 3 redraw series is complete: 87/87 flow samples, 13/13 and
+19/19 checks respectively, and 3/3 baseline copies each. Each series scheduled three coasts.
+Complete pickup-callback wall totals are 6.65 ms and 9.56 ms respectively; packed GLES 2 is
+9.47 ms, with GPU timing unavailable. Draw GPU medians range 0.0546–0.0552 ms on main and
+0.0552–0.0558 ms on the candidate at the smaller size, and 0.0760–0.0773 versus 0.0766–0.0773 ms
+at the larger size. Unsupported GPU timings and absent older-build counters are unavailable,
+never evidence of zero cost. Some original raw records retain zero placeholders for unavailable
+draw timers; the summaries exclude them and the current benchmark emits null. All candidate idle
+samples have zero steps, flows, draws and checks.
+
+**Synchronous compatibility probe.** An isolated preload fault denied fence creation only in
+the owned compositor; logs confirmed GL denial on GLES 3 and EGL denial on GLES 2. At 2560×1600,
+two 15-second redraw samples plus idle samples completed on each path. Maximum complete callbacks
+were 1.538 ms and 1.208 ms respectively. Both returned to zero work at idle. These measurements
+include synchronous completion waits, but describe forced fallback on this GPU, not every driver
+that lacks fences. The measured callback maxima stay under 2 ms in these scenes; they do not
+establish a universal frame or hardware budget.
+
+**Review follow-ups (2026-10-06, x86 test machine, integration branch).** The change count
+over-counted texels near odd reduction edges (one changed texel near the bottom-right corner
+counted 64, so small repaints started pickup coasts GO28 says to tolerate); the shader now skips
+taps past the edge. `tests/goo-change-count-test.sh` passes 45/0 on each dialect and fails 37 of 45
+on the previous shader. The OneDye suite now judges transport at the default Pickup balance (0.45,
+density 1.5) and requires at least 12 pt of graded color: measured 0 to 24 pt (GLES 3) and 0 to
+20 pt (packed GLES 2) in both dye and screen pixels; it passes 49/49 on both paths. Its first
+client-redraw check is labelled a fixture check (it mostly sees the client beneath).
+
+Physical-display appearance/motion, Intel Xe, and naturally unfenced drivers remain unverified.
+The finite redraw run does not reach the five-minute cooldown ceiling; exact supplied-timestamp
+policy tests cover that boundary. Hint/cursor exclusion remains by construction rather than a
+new pixel probe. Independent source and product review remains before delivery.

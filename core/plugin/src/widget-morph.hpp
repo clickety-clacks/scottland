@@ -14,6 +14,7 @@
 #include <cmath>
 #include <memory>
 #include "widget-spring.hpp"
+#include "offscreen.hpp"
 
 namespace scottland
 {
@@ -65,7 +66,7 @@ struct widget_image_t
             } else
             {
                 image.buffer = std::make_shared<wf::auxilliary_buffer_t>();
-                view->take_snapshot(*image.buffer);
+                take_snapshot(view, *image.buffer);
             }
         }
         auto g = view->get_geometry();
@@ -281,7 +282,7 @@ void main() {
         image.buffer = std::make_shared<wf::auxilliary_buffer_t>();
         if (image.buffer->allocate(wf::dimensions(image.box), scale) == wf::buffer_reallocation_result_t::FAILED)
             return image;
-        wf::render_target_t target{*image.buffer};
+        auto target = aux_target(*image.buffer);
         target.geometry = image.box; target.scale = scale;
         wf::render_pass_params_t params;
         params.target = target;

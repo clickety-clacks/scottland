@@ -28,7 +28,7 @@ render hooks and render instances, hit tests and input interactions, event-loop 
 option callbacks). Scopes nest: per name the monitor keeps calls, total, maximum and calls over
 2 ms; only the outermost scope counts toward ML2 and the history. Nested scopes inside entry points
 attribute known costs (`peek_step`, `hint_raster`, `goo_energy_readback`, `goo_sample_at`,
-`goo_shape_update`, `goo_wallpaper_capture`, `widget_capture`, `core_run`, `publish_model`, ...).
+`goo_shape_update`, `widget_capture`, `core_run`, `publish_model`, ...).
 Pure accessors Wayfire calls per node (bounding boxes, transformer getters) are not scoped.
 
 - `scottland/loop-stats` (IPC, `scottland-ctl loop-stats [--reset]`): per-scope counters, the ML2

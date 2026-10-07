@@ -6,6 +6,7 @@ wlroots = dependency('wlroots-0.20')
 xkbcommon = dependency('xkbcommon')
 libinput = dependency('libinput')
 cairo = dependency('cairo')
+egl = dependency('egl')
 
 # wlroots' installed layer-shell header requires this generated protocol header.
 layer_shell_header = custom_target('layer-shell-header',
@@ -20,8 +21,8 @@ pure = static_library('scottland-pure', ['src/pure/worker.cpp', 'src/pure/shrink
 shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declutter.cpp', 'src/peek.cpp',
   'src/goo.cpp', 'src/goo-renderer.cpp', 'src/goo-hit.cpp', 'src/loop.cpp', 'src/goo-shape.cpp',
   'src/key-layers.cpp', 'src/inertia.cpp', layer_shell_header, 'src/alt-mode.cpp', 'src/hint-overlay.cpp',
-  'src/pairing.cpp', 'src/spread.cpp'],
-  dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo],
+  'src/pairing.cpp', 'src/spread.cpp', 'src/navigation.cpp'],
+  dependencies: [wayfire, wlroots, xkbcommon, libinput, cairo, egl],
   link_with: pure,
 
   # -fno-gnu-unique: without it, statics in inline functions and inline variables become

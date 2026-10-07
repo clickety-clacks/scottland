@@ -76,7 +76,7 @@ def wait_option(name, expected):
 
 def set_options(options):
     if baseline_mode:
-        options = {name: value for name, value in options.items() if name != "goo_dye_strength"}
+        options = {name: value for name, value in options.items() if name != "goo_dye_density"}
     ipc("wayfire/set-config-options", {"scottland/" + name: value for name, value in options.items()})
 
 
@@ -188,7 +188,7 @@ def wait_hints(window_ids):
 
 try:
     ipc("wayfire/set-config-options", {"output:HEADLESS-1/mode": "1600x1000@60000"})
-    set_options({"goo": True, "goo_dye_strength": 1, "goo_noise": 0, "goo_drift": 0,
+    set_options({"goo": True, "goo_dye_density": 1, "goo_noise": 0, "goo_drift": 0,
                  "goo_wave_height": 0, "goo_swirl": 0, "goo_spread": 0, "goo_swell": 0,
                  "attention_color_family": "theme"})
     for title in ("go23-window", "go23-widget", "go23-neutral"):
@@ -231,8 +231,8 @@ try:
             set_options({"color_scheme": scheme, "attention_color": "#EBCB8BFF"})
             time.sleep(.2)
             for strength in strengths:
-                set_options({"goo_dye_strength": strength})
-                wait_option("goo_dye_strength", strength)
+                set_options({"goo_dye_density": strength})
+                wait_option("goo_dye_density", strength)
                 time.sleep(.45)
                 name = f"{renderer}-{scheme}-{strength:.2f}-focus"
                 awake = goo and not goo_sleeping()
@@ -253,8 +253,8 @@ try:
             set_options({"color_scheme": scheme, "attention_color": "#EBCB8BFF"})
             time.sleep(.2)
             for strength in strengths:
-                set_options({"goo_dye_strength": strength})
-                wait_option("goo_dye_strength", strength)
+                set_options({"goo_dye_density": strength})
+                wait_option("goo_dye_density", strength)
                 time.sleep(.55)
                 name = f"{renderer}-{scheme}-{strength:.2f}-attention"
                 awake = goo and not goo_sleeping()
@@ -272,8 +272,8 @@ try:
             set_options({"color_scheme": scheme, "attention_color": "#EBCB8BFF"})
             time.sleep(.2)
             for strength in strengths:
-                set_options({"goo_dye_strength": strength})
-                wait_option("goo_dye_strength", strength)
+                set_options({"goo_dye_density": strength})
+                wait_option("goo_dye_density", strength)
                 time.sleep(.45)
                 name = f"{renderer}-{scheme}-{strength:.2f}-hint"
                 images[(renderer, scheme, strength, "hint")] = screenshot(name)
@@ -313,7 +313,7 @@ finally:
     try:
         ipc("stipc/feed_key", {"key": "KEY_LEFTALT", "state": False})
         ipc("wayfire/set-config-options", {"scottland/attention_color_family": "theme",
-            "scottland/goo": True, "scottland/goo_dye_strength": 1})
+            "scottland/goo": True, "scottland/goo_dye_density": 1})
         ipc("scottland/goo-state", {"breath_hold": -1})
     except Exception:
         pass
