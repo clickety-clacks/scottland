@@ -169,14 +169,14 @@ class pending_t
      *  is full). No allocation. */
     bool own_fd(int fd) noexcept
     {
-        if (fd_count == max_transfer || !is_pidfd(fd) || holds_fd(fd)) return false;
+        if (fd_count >= limit || !is_pidfd(fd) || holds_fd(fd)) return false;
         fds[fd_count++] = fd;
         return true;
     }
 
     bool own_lease(uint64_t window) noexcept
     {
-        if (lease_count == max_transfer || holds_lease(window)) return false;
+        if (lease_count >= limit || holds_lease(window)) return false;
         leases[lease_count++] = window;
         return true;
     }
@@ -231,6 +231,8 @@ class pending_t
 
     size_t size() const noexcept { return fd_count + lease_count; }
     size_t returned_leases = 0;
+    /** Capacity of each kind; tests lower it to reach the boundary with a few real windows. */
+    size_t limit = max_transfer;
 
   private:
     std::array<int, max_transfer> fds{};
@@ -260,24 +262,52 @@ inline bool acquire(pending_t& pending, list_t& list) noexcept
     return current;
 }
 
-/** Numbers already named by an entry of one handover file. */
-struct seen_t
+/** Both formats: a number names a handle only if it is an open pidfd, and a live process behind
+ *  it must be the recorded one (a recorded 0 never authorizes a live handle). A reaped launcher
+ *  (Pid: -1) is owned-dead. The caller rejects a number an earlier entry already named. No
+ *  allocation, no exception. */
+inline bool valid_descriptor(int fd, int64_t pid) noexcept
 {
-    std::array<int, max_transfer> fds{};
-    size_t count = 0;
-};
-
-/** Both formats: a number names a handle only if it is an open pidfd that no other entry named,
- *  and a live process behind it must be the recorded one (a recorded 0 never authorizes a live
- *  handle). A reaped launcher (Pid: -1) is owned-dead. No allocation, no exception. */
-inline bool valid_descriptor(int fd, int64_t pid, seen_t& seen) noexcept
-{
-    if (fd < 0 || seen.count == seen.fds.size()) return false;
-    for (size_t i = 0; i < seen.count; i++) if (seen.fds[i] == fd) return false;
-    seen.fds[seen.count++] = fd;
-    if (!is_pidfd(fd)) return false;
+    if (fd < 0 || !is_pidfd(fd)) return false;
     auto live = pidfd_pid(fd);
     return live && (*live == -1 || (*live > 0 && pid > 0 && *live == pid));
+}
+
+/**
+ * Ownership of a parsed handover file's entries (Entry has window, pidfd, pid and descriptor).
+ * New format: an entry's handle is the one the environment list transferred, if pending holds
+ * it. Legacy (the installed writer, which hands over every docked widget with no limit): the
+ * receipt-authorized file owns one disable per window and each listed handle. Pending holds as
+ * many as its capacity; what it cannot hold is disposed of here and now, never left unowned: the
+ * lease returned with `give_back`, the handle closed, each once, with `excess` told the window.
+ * A window or number an earlier entry named is not another resource. No allocation, no
+ * exception.
+ */
+template <class Entry, class GiveBack, class Excess>
+void own_entries(pending_t& pending, std::vector<Entry>& entries, bool legacy, GiveBack give_back, Excess excess) noexcept
+{
+    for (size_t i = 0; i < entries.size(); i++)
+    {
+        auto& e = entries[i];
+        bool first_window = true, first_fd = true;
+        for (size_t j = 0; j < i; j++)
+        {
+            first_window = first_window && entries[j].window != e.window;
+            first_fd = first_fd && entries[j].pidfd != e.pidfd;
+        }
+        if (legacy && first_window && !pending.own_lease(e.window))
+        {
+            excess(e.window);
+            give_back(e.window);
+        }
+        if (!first_fd || !valid_descriptor(e.pidfd, e.pid)) continue;
+        if (!legacy) e.descriptor = pending.holds_fd(e.pidfd);
+        else if (!(e.descriptor = pending.own_fd(e.pidfd)))
+        {
+            excess(e.window);
+            ::close(e.pidfd);
+        }
+    }
 }
 
 /** Duplicated handles the outgoing copy has made and not yet published: closed unless released. */
@@ -306,4 +336,69 @@ struct duplicates_t
     void release() noexcept { count = 0; }
 };
 
+/**
+ * The outgoing copy's export, prepared before the first handle is duplicated: the file names,
+ * the duplicates made so far and the list. A failed export (an allocation included) is undone
+ * by fail() without allocating, so an ordinary unload always follows.
+ */
+struct export_t
+{
+    std::string path, tmp;  // assigned before any handle is duplicated
+    list_t list;
+    duplicates_t duplicates;
+    bool published = false;
+
+    /** Published: the next copy owns the duplicates through the list. */
+    void publish() noexcept
+    {
+        published = true;
+        duplicates.release();
+    }
+    /** Close every duplicate, remove the files and the list. No allocation, no exception. */
+    void fail() noexcept
+    {
+        published = false;
+        duplicates.close_all();
+        if (!tmp.empty()) std::remove(tmp.c_str());
+        if (!path.empty()) std::remove(path.c_str());
+        unsetenv(environment);
+    }
+    /** Does the published handover keep this window's widget (and its lease)? */
+    bool hands_over(uint64_t window) const noexcept
+    {
+        if (!published) return false;
+        for (size_t i = 0; i < list.lease_count; i++) if (list.leases[i] == window) return true;
+        return false;
+    }
+};
+
+/**
+ * Return every lease in `leases` (an ordered map, window id -> weak holder) that `kept` does not
+ * keep. Each is removed before its one `enable`, so an enable that throws has still returned it
+ * once and is reported to `failed`. In place, found again after each enable (which may change
+ * the map): no allocation, and nothing escapes.
+ */
+template <class Leases, class Kept, class Enable, class Failed>
+void return_leases(Leases& leases, Kept kept, Enable enable, Failed failed) noexcept
+{
+    for (auto it = leases.begin(); it != leases.end();)
+    {
+        if (kept(it->first))
+        {
+            ++it;
+            continue;
+        }
+        auto window = it->first;
+        auto holder = it->second.lock();
+        leases.erase(it);
+        try
+        {
+            if (holder) enable(holder);
+        } catch (...)
+        {
+            failed(window);
+        }
+        it = leases.upper_bound(window);
+    }
+}
 }

@@ -2586,8 +2586,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return link_of_widget(view) != nullptr;
     }
 
-    // Rendering resources, not desktop state: each entry holds exactly one Wayfire disable.
-    std::set<uint64_t> disabled_nodes;
+    // Rendering resources, not desktop state: each entry holds exactly one Wayfire disable, and
+    // the window it is on, so unloading returns every lease without looking anything up.
+    std::map<uint64_t, std::weak_ptr<wf::view_interface_t>> disabled_nodes;
 
     void render_hidden(wayfire_view view, bool hidden)
     {
@@ -2596,13 +2597,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             return;
         }
 
-        wf::scene::set_node_enabled(view->get_root_node(), !hidden);
+        // The entry exists while the disable does: recorded before disabling, removed before
+        // enabling (Wayfire counts the change before anything in it can throw).
         if (hidden)
         {
-            disabled_nodes.insert(view->get_id());
+            disabled_nodes.emplace(view->get_id(), view->weak_from_this());
+            wf::scene::set_node_enabled(view->get_root_node(), false);
         } else
         {
             disabled_nodes.erase(view->get_id());
+            wf::scene::set_node_enabled(view->get_root_node(), true);
         }
     }
 
@@ -3101,10 +3105,22 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return handover_faults.count(name) > 0;
     }
 
+    /** The view with this id in the scene, found without allocating (view_by_id copies the
+     *  list of views). A view's nodes stay in the scene while it is disabled. */
+    static wf::view_interface_t *scene_view(wf::scene::node_t *node, uint64_t id) noexcept
+    {
+        if (auto tag = dynamic_cast<wf::view_node_tag_t*>(node))
+            if (auto view = tag->get_view(); view && view->get_id() == id) return view.get();
+        for (auto& child : node->get_children())
+            if (auto view = scene_view(child.get(), id)) return view;
+        return nullptr;
+    }
+
     void return_lease(uint64_t window)
     {
-        if (auto view = view_by_id(window))
-            wf::scene::set_node_enabled(view->get_root_node(), true);
+        wayfire_view view{scene_view(wf::get_core().scene().get(), window)};
+        if (!view) view = view_by_id(window);  // not in the scene: may allocate
+        if (view) wf::scene::set_node_enabled(view->get_root_node(), true);
     }
 
     void dispose_handover() noexcept
@@ -3313,14 +3329,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         // Ownership, in a loop that cannot throw. New format: entries claim what the
         // environment list transferred. Legacy: the receipt-authorized file is the only
-        // writer, and it kept one disable for each entry's window.
-        scottland::handover::seen_t seen;
-        for (auto& e : links)
-        {
-            if (!new_format) handover_pending.own_lease(e.window);
-            if (scottland::handover::valid_descriptor(e.pidfd, e.pid, seen))
-                e.descriptor = new_format ? handover_pending.holds_fd(e.pidfd) : handover_pending.own_fd(e.pidfd);
-        }
+        // writer, and it kept one disable for each entry's window, however many.
+        if (handover_fault("legacy-cap-1")) handover_pending.limit = 1;
+        scottland::handover::own_entries(handover_pending, links, !new_format,
+            [this] (uint64_t window) noexcept { try { return_lease(window); } catch (...) {} },
+            [] (uint64_t window) noexcept { scottland::loop::note(scottland::loop::note_id::handover_excess, window); });
 
         for (auto& e : links)
         {
@@ -3342,7 +3355,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 process = std::make_shared<widget_process_t>();
                 if (handover_pending.holds_lease(e.window))
                 {
-                    disabled_nodes.insert(window->get_id());  // adopt the previous renderer's lease
+                    disabled_nodes.emplace(window->get_id(), window->weak_from_this());  // adopt the previous renderer's lease
                     handover_pending.claim_lease(e.window);
                     lease_moved = true;
                 }
@@ -8207,18 +8220,17 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         release_above();  // a just-dropped window doesn't stay above for good
         // The handover is published completely or not at all: duplicated handles, the file, the
         // model version and the environment list. Each duplicated handle has an owner from the
-        // moment it exists; on any failure (an allocation included) the widgets go as in an
-        // ordinary unload and those handles are closed.
-        std::vector<uint64_t> handed;
-        scottland::handover::list_t list;
-        scottland::handover::duplicates_t duplicates;
-        bool published = false;
-        std::string path;
+        // moment it exists, and what undoing needs is prepared before the first one; on any
+        // failure (an allocation included) the export is undone without allocating, and the
+        // widgets go as in an ordinary unload.
+        scottland::handover::export_t out;
+        auto& list = out.list;
         if (reloading)
         {
             try
             {
-                path = runtime_file(".widget-handover.json");
+                out.path = runtime_file(".widget-handover.json");
+                out.tmp = out.path + ".tmp";
                 wf::json_t handover = wf::json_t::array();
                 snprintf(list.id, sizeof(list.id), "%s", scottland::handover::random_id().c_str());
                 list.version = model.version;  // fixed from here: nothing publishes while handing over
@@ -8227,11 +8239,11 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
                 {
                     auto widget = wf::toplevel_cast(link.widget.lock());
                     if (!link.docked() || !widget || !widget->is_mapped()) continue;
-                    if (handed.size() == scottland::handover::max_transfer) break;  // the rest unload
+                    if (list.lease_count == scottland::handover::max_transfer) break;  // the rest unload
                     int duplicate = -1;
                     if (link.launcher && link.launcher->pidfd >= 0)
                     {
-                        duplicate = handover_fault("dup") ? -1 : duplicates.dup(link.launcher->pidfd);
+                        duplicate = handover_fault("dup") ? -1 : out.duplicates.dup(link.launcher->pidfd);
                         if (duplicate < 0 || !list.add_fd(duplicate)) ok = false;
                     }
                     if (handover_fault("export-throw")) throw std::bad_alloc();
@@ -8251,8 +8263,9 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
                     entry["icon"] = link.icon;
                     entry["card"] = link.card;
                     handover.append(entry);
-                    handed.push_back(id);
-                    if (!list.add_lease(id)) ok = false;
+                    // A listed lease is one this copy holds (a widget still forming has none yet).
+                    render_hidden(link.window.lock(), true);
+                    if (!disabled_nodes.count(id) || !list.add_lease(id)) ok = false;
                 }
 
                 // Written even with no widget: it also carries every window's memories, pins,
@@ -8269,66 +8282,60 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
                     snapshot["session"] = model.session;
                     auto manifest = scottland::handover::format_list(list);
                     auto version = std::to_string(model.version);
-                    std::ofstream out(path + ".tmp");
-                    out << (handover_fault("corrupt-file") ? std::string("{\"format\": 2, \"links\": [") : snapshot.serialize());
-                    out.close();
-                    ok = out && !handover_fault("write") && !handover_fault("rename") &&
-                        std::rename((path + ".tmp").c_str(), path.c_str()) == 0;
+                    std::ofstream file(out.tmp);
+                    file << (handover_fault("corrupt-file") ? std::string("{\"format\": 2, \"links\": [") : snapshot.serialize());
+                    file.close();
+                    ok = file && !handover_fault("write") && !handover_fault("rename") &&
+                        std::rename(out.tmp.c_str(), out.path.c_str()) == 0;
                     // The version the list is bound to goes first: a list without it is stale.
                     ok = ok && !handover_fault("version-setenv") &&
                         setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", version.c_str(), 1) == 0;
                     ok = ok && !handover_fault("setenv") &&
                         setenv(scottland::handover::environment, manifest.c_str(), 1) == 0;
                 }
-                published = ok;
+                if (ok) out.publish();  // the next copy owns the duplicates through the list
+                else out.fail();
             } catch (...)
             {
+                out.fail();
                 scottland::loop::note(scottland::loop::note_id::handover_export_failed);
-                published = false;
-            }
-
-            if (published)
-            {
-                duplicates.release();  // the next copy owns them through the list
-            } else
-            {
-                duplicates.close_all();
-                if (!path.empty())
-                {
-                    std::remove((path + ".tmp").c_str());
-                    std::remove(path.c_str());
-                }
-                unsetenv(scottland::handover::environment);
-                handed.clear();
             }
         }
 
+        // From here until every lease is returned nothing escapes: each widget's restoration
+        // is its own, and a failed one still has its lease returned below.
         for (auto& [id, link] : model.widgets)
         {
-            auto widget = wf::toplevel_cast(link.widget.lock());
-            if (std::find(handed.begin(), handed.end(), id) != handed.end())
+            try
             {
-                transition_widget(link, widget_link_t::lifecycle_t::handed_over);
-                continue;  // the window keeps its disable: the next plugin holds it
-            }
+                if (out.hands_over(id))
+                {
+                    transition_widget(link, widget_link_t::lifecycle_t::handed_over);
+                    continue;  // the window keeps its disable: the next plugin holds it
+                }
 
-            transition_widget(link, widget_link_t::lifecycle_t::restoring);
-            close_view_or_process(widget, link.launcher);
-        }
-
-        // Returning a disable is part of unloading the renderer. Only handed-over apps keep
-        // their lease for the incoming plugin; a disabled widget must never outlive this one.
-        auto leases = disabled_nodes;
-        for (auto id : leases)
-        {
-            auto link = model.widgets.find(id);
-            if (link == model.widgets.end() || link->second.lifecycle != widget_link_t::lifecycle_t::handed_over)
+                if (handover_fault("restore-throw")) throw std::bad_alloc();
+                transition_widget(link, widget_link_t::lifecycle_t::restoring);
+                close_view_or_process(wf::toplevel_cast(link.widget.lock()), link.launcher);
+            } catch (...)
             {
-                render_hidden(view_by_id(id), false);
+                scottland::loop::note(scottland::loop::note_id::unload_restore_failed, id);
             }
         }
+
+        // Returning a disable is part of unloading the renderer. Only the published handover's
+        // windows keep their lease for the incoming plugin; a disabled window must never
+        // outlive this one, whatever its lifecycle says.
+        scottland::handover::return_leases(disabled_nodes,
+            [&out] (uint64_t window) noexcept { return out.hands_over(window); },
+            [this] (const std::shared_ptr<wf::view_interface_t>& view)
+            {
+                wf::scene::set_node_enabled(view->get_root_node(), true);
+                if (handover_fault("lease-throw")) throw std::bad_alloc();  // after Wayfire counted it
+            },
+            [] (uint64_t window) noexcept { scottland::loop::note(scottland::loop::note_id::unload_lease_failed, window); });
         model.widgets.clear();
-        if (handed.empty())
+        if (list.lease_count == 0 || !out.published)
         {
             announce_widgets();  // the widget service drops its objects
             flush_model();       // now: no publication timer outlives this copy
@@ -8356,20 +8363,19 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         fini_widget_spawn();
         fini_hint_palette_watch();
         release_stale_pointer_focus();  // e.g. the live drag's grab: its owner and code go next
-        // The next plugin copy continues the version. Set once here, not per publish: glibc keeps
-        // every value ever given to setenv, so per-publish calls grew the heap without bound.
-        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
         scottland::release_aux_color_transform();  // last: nothing renders through it after this
         LOGI("scottland: plugin unloaded");
         stop_loop_monitor(reloading);
         // The next copy continues the model's version. Written once per unload, and not on every
-        // publish: setenv is not safe while another thread may read the environment. A handover
-        // already wrote this same value (installing_model kept it from changing since); here
-        // it covers an ordinary unload.
-        try
+        // publish: setenv is not safe while another thread may read the environment, and glibc
+        // keeps every value ever given to it. A handover already wrote this same value
+        // (installing_model kept it from changing since); here it covers an ordinary unload.
+        if (!out.published)
         {
-            if (!published) setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
-        } catch (...) {}
+            char version[24];
+            snprintf(version, sizeof(version), "%llu", (unsigned long long)model.version);
+            setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", version, 1);
+        }
     }
 };
 

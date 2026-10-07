@@ -243,6 +243,26 @@ class Session:
 
     def file(self, suffix): return runtime / f'{self.display}{suffix}'
 
+    def notes(self, name):
+        """The window named by each `name` note in this compositor's ring, oldest first. The ring
+        continues in place across a reload; a copy that has unloaded is shown by note id, which
+        is the same in the same build, with its arguments in order (these notes name the window
+        first). A diagnostic of what the plugin did, read beside the checks of what is on screen."""
+        ring = runtime / f'{self.display}.loop'
+        ids = {}
+        for line in Path(f'{ring}.names').read_text().splitlines()[1:]:
+            fields = line.split(None, 3)
+            if len(fields) >= 3 and fields[0] == 'note': ids[fields[2]] = fields[1]
+        dump = subprocess.run([str(repo / 'build/scottland-loop-read'), '--file', str(ring), '--json'],
+                              capture_output=True, text=True, timeout=10)
+        windows = []
+        for line in dump.stdout.splitlines():
+            r = json.loads(line)
+            if r['kind'] != 'note': continue
+            if r['scope'] == f'#{ids[name]} (previous build)': windows.append(int(r['text'].split()[0]))
+            elif r['scope'] == name: windows.append(int(next(w for w in r['text'].split() if w.isdigit())))
+        return windows
+
     def records(self):
         return [s for s in ('.reload-attempt', '.reload-receipt', '.reload-importing', '.reload-ack',
                             '.reload-failed', '.reloading', '.widget-handover.json') if self.file(s).exists()]
@@ -591,8 +611,51 @@ def launch_states():
     return t
 
 
-def failure_case(name, prepare, expect_code, expect_imported, after=None, timeout=None, fail_set=False, hook=None):
-    t = Case(name); s = Session(name.replace('/', '-'))
+@case
+def legacy_capacity():
+    """Astra's re-review B, from an installed build that writes the legacy format (--from): its
+    file names every widget with no limit. A test switch lowers this copy's capacity to one, so
+    three real widgets cross the boundary with real scene leases and pidfds. The first window's
+    lease and handle are held and adopted; each later one's lease is returned at once and its
+    handle closed, and the widget is adopted with a lease of its own and no handle. Nothing is
+    returned twice or left unowned."""
+    t = Case('legacy-capacity')
+    if origin == repo:
+        t.check('needs --from a checkout of the installed (legacy-format) build', False, 'run with --from')
+        return t
+    s = Session('legacy-capacity', start_from=origin)
+    try:
+        ids = standard(s)
+        # Sentinel descriptors, where the starting build has the switch that opens them.
+        opened = [s.ipc('scottland/test-handover', {'open': kind}) for kind in ('live', 'dead', 'file')]
+        identity = {r['fd']: s.pidfds().get(r['fd']) for r in opened if 'fd' in r}
+        if not identity: log('    (the starting build opens no sentinel descriptors: the handle count below still covers them)')
+        before = s.links()
+        s.faults('legacy-cap-1')
+        code, out = s.reload()
+        s.faults()
+        t.check('the reload carries all three widgets', code == 0 and 'imported 3 of 3' in out, out)
+        first, *rest = sorted(w for w in (ids['alive'], ids['daemon'], ids['doubly']))
+        excess = s.notes('handover_excess')
+        t.check('only the windows past capacity are disposed of at once', set(excess) == set(rest), excess)
+        links = s.links()
+        t.check('the held handle is adopted', 0 < before[first].get('launcher_pid', 0) == links.get(first, {}).get('launcher_pid', 0),
+                (before.get(first), links.get(first)))
+        t.check('a widget past capacity is adopted without a handle', all(links.get(w, {}).get('launcher_pid', -1) == 0 for w in rest),
+                [links.get(w) for w in rest])
+        check_balance(t, s, ids, True, 'after the reload past capacity')
+        current = s.pidfds()
+        t.check('sentinel descriptors are untouched', all(current.get(fd) == identity[fd] for fd in identity if identity[fd] is not None),
+                (identity, current))
+        handles_match_links(t, s, 'descriptors', extra=[fd for fd in identity if identity[fd] is not None])
+        finish_balance(t, s, ids)
+    finally:
+        s.faults(); s.stop()
+    return t
+
+
+def failure_case(name, prepare, expect_code, expect_imported, after=None, timeout=None, fail_set=False, hook=None, start_from=None):
+    t = Case(name); s = Session(name.replace('/', '-'), start_from=start_from)
     try:
         ids = standard(s, launch_daemon=False)
         sentinels = {kind: s.ipc('scottland/test-handover', {'open': kind})['fd'] for kind in ('live', 'dead', 'file')}
@@ -664,6 +727,33 @@ def export_throws():
     """An allocation failure while preparing the handover (after a handle was duplicated): the
     widgets unload as in an ordinary unload and the duplicated handles are closed."""
     return failure_case('export-throw', lambda s: s.faults('export-throw'), 0, False, after=recover_then_finish('nothing to import'))
+
+@case
+def restore_throws():
+    """Astra's re-review A: restoring every widget fails at unload, after a failed export (so the
+    ordinary unload path runs). Each failure is that widget's own, and every lease Scottland holds
+    is still returned exactly once: the windows come back, the unrelated and second-owner
+    disables are untouched. Sustained allocation failure itself is tests/fault-unit.sh. Always
+    from this build (its unload has the switches), with or without --from."""
+    def after(t, s, ids, out):
+        widgets = sorted([ids['alive'], ids['doubly']])
+        failed = s.notes('unload_restore_failed')
+        t.check("each widget's failed restoration is its own, noted once", sorted(failed) == widgets, failed)
+        recover_then_finish('nothing to import')(t, s, ids, out)
+    return failure_case('restore-throw', lambda s: s.faults('export-throw', 'restore-throw'), 0, False, after=after, start_from=repo)
+
+@case
+def lease_throws():
+    """Astra's re-review A: returning each lease fails after Wayfire counted the enable. The lease
+    is returned once all the same (no second enable, none lost) and the rest still return. The
+    restorations fail too, so the app windows' leases are still held when unload returns them (a
+    restoration returns its window's lease itself)."""
+    def after(t, s, ids, out):
+        widgets = sorted([ids['alive'], ids['doubly']])
+        failed = s.notes('unload_lease_failed')
+        t.check('each failed lease return is noted once, every widget window reached', sorted(failed) == widgets, failed)
+        recover_then_finish('nothing to import')(t, s, ids, out)
+    return failure_case('lease-throw', lambda s: s.faults('export-throw', 'restore-throw', 'lease-throw'), 0, False, after=after, start_from=repo)
 
 @case
 def adopt_throws():

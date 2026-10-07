@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <map>
+#include <memory>
 #include <new>
 #include <poll.h>
 #include <set>
@@ -80,13 +82,16 @@ static void acquisition()
         pending.size() == 2 && pending.holds_fd(fd) && pending.holds_lease(123) && open_fd(fd));
 
     // Validation of an entry's number, also without allocating.
-    handover::seen_t seen;
+    int file = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
     fail_after = 0;
-    bool valid = handover::valid_descriptor(fd, getpid(), seen);
-    bool twice = handover::valid_descriptor(fd, getpid(), seen);
-    bool other = handover::valid_descriptor(fd, getpid() + 1, seen);
+    bool valid = handover::valid_descriptor(fd, getpid());
+    bool other = handover::valid_descriptor(fd, getpid() + 1);
+    bool unrecorded = handover::valid_descriptor(fd, 0);
+    bool not_pidfd = handover::valid_descriptor(file, getpid());
     fail_after = -1;
-    check("descriptor validation with every allocation failing: the live pidfd of the recorded pid is valid once", valid && !twice && !other);
+    close(file);
+    check("descriptor validation with every allocation failing: only the live pidfd of the recorded pid is valid",
+        valid && !other && !unrecorded && !not_pidfd);
 
     // An entry that is never adopted: one close, one enable.
     std::set<uint64_t> enabled;
@@ -156,20 +161,173 @@ static void export_duplicates()
     close(source);
 }
 
-// 4. Adoption: the destination takes the lease before the pending owner lets go (the order
+// ... and a failed export is undone with allocation still failing (Astra's re-review, A).
+static void export_failure()
+{
+    char dir[] = "/tmp/scottland-fault-export.XXXXXX";
+    if (!mkdtemp(dir))
+    {
+        check("export failure: a scratch directory", false);
+        return;
+    }
+    int source = pidfd_self();
+    int made[3] = {-1, -1, -1};
+    bool escaped = false;
+    long before = failed_allocations.load();
+    handover::export_t out;
+    out.path = std::string(dir) + "/.widget-handover.json";  // prepared before the first handle
+    out.tmp = out.path + ".tmp";
+    try
+    {
+        for (auto& fd : made) out.list.add_fd(fd = out.duplicates.dup(source));
+        FILE *tmp = fopen(out.tmp.c_str(), "w");
+        if (tmp) fclose(tmp);
+        FILE *published = fopen(out.path.c_str(), "w");
+        if (published) fclose(published);
+        setenv(handover::environment, "partial", 1);
+        fail_after = 0;  // from here on every allocation fails, the undoing included
+        std::string entry(64, 'x');
+        out.publish();
+    } catch (const std::bad_alloc&)
+    {
+        out.fail();
+    } catch (...)
+    {
+        escaped = true;
+    }
+    long refused = failed_allocations.load() - before;
+    fail_after = -1;
+    bool closed = true;
+    for (int fd : made) closed = closed && fd >= 0 && !open_fd(fd);
+    check("export failing with allocation failing throughout: every duplicate closed, both files and the list removed",
+        !escaped && closed && access(out.tmp.c_str(), F_OK) != 0 && access(out.path.c_str(), F_OK) != 0 &&
+        !getenv(handover::environment) && !out.published && refused > 0);
+    check("... and the failed export hands over no window", !out.hands_over(0) && !out.hands_over(1));
+    rmdir(dir);
+    close(source);
+}
+
+// 4. Unload returns every lease but the handed-over ones, in place, with allocation failing.
+static void lease_return()
+{
+    std::map<uint64_t, std::weak_ptr<int>> leases;
+    std::vector<std::shared_ptr<int>> windows;  // each window's disable count: -1 while leased
+    for (uint64_t id = 1; id <= 300; id++)
+    {
+        windows.push_back(std::make_shared<int>(-1));
+        leases.emplace(id, windows.back());
+    }
+    windows[9].reset();  // window 10 was destroyed with its lease: nothing to enable
+    handover::list_t kept;
+    for (uint64_t id : {3, 4, 250}) kept.add_lease(id);
+    std::vector<uint64_t> failed;
+    failed.reserve(8);
+    fail_after = 0;
+    handover::return_leases(leases,
+        [&] (uint64_t w) noexcept { for (size_t i = 0; i < kept.lease_count; i++) if (kept.leases[i] == w) return true; return false; },
+        [&] (const std::shared_ptr<int>& count)
+        {
+            ++*count;
+            if (count == windows[4]) throw std::bad_alloc();  // window 5: fails after Wayfire counted it
+            if (count == windows[19])  // window 20's enable releases window 21's lease itself (re-entry)
+            {
+                leases.erase(21);
+                ++*windows[20];
+            }
+        },
+        [&] (uint64_t w) noexcept { if (failed.size() < failed.capacity()) failed.push_back(w); });
+    fail_after = -1;
+    bool balanced = true;
+    for (uint64_t id = 1; id <= 300; id++)
+    {
+        if (!windows[id - 1]) continue;
+        bool keep = id == 3 || id == 4 || id == 250;
+        balanced = balanced && *windows[id - 1] == (keep ? -1 : 0);
+    }
+    check("lease return with every allocation failing: each lease returned exactly once, the handed-over three kept",
+        balanced && leases.size() == 3 && leases.count(3) && leases.count(4) && leases.count(250));
+    check("... a failing enable is reported once and the rest still return", failed == std::vector<uint64_t>{5});
+}
+
+// 5. Ownership of a parsed file's entries on both sides of the capacity, with real pidfds
+// (Astra's re-review, B). Every lease and handle is held, or returned and closed at once, once.
+struct entry_t
+{
+    uint64_t window = 0;
+    int64_t pid = 0;
+    int pidfd = -1;
+    bool descriptor = false;
+};
+
+static void legacy_capacity()
+{
+    for (auto [limit, count] : {std::pair{handover::max_transfer, handover::max_transfer},
+             std::pair{handover::max_transfer, handover::max_transfer + 1}, std::pair{handover::max_transfer, size_t(300)},
+             std::pair{size_t(1), size_t(3)}})
+    {
+        std::vector<entry_t> entries;
+        for (size_t i = 0; i < count; i++) entries.push_back({i + 1, getpid(), pidfd_self(), false});
+        entries.push_back(entries[0]);  // a window and number named twice are one resource
+        size_t held = std::min(count, limit);
+        std::vector<int> returned(count + 1, 0), excess(count + 1, 0);  // per window; sized now
+        handover::pending_t pending;
+        pending.limit = limit;
+        long before = failed_allocations.load();
+        fail_after = 0;
+        handover::own_entries(pending, entries, true,
+            [&] (uint64_t w) noexcept { returned[w]++; },
+            [&] (uint64_t w) noexcept { excess[w]++; });
+        fail_after = -1;
+        bool exact = failed_allocations.load() == before;  // nothing even tried to allocate
+        for (size_t i = 0; i < count; i++)
+        {
+            uint64_t w = entries[i].window;
+            bool kept = i < held;
+            exact = exact && entries[i].descriptor == kept && open_fd(entries[i].pidfd) == kept &&
+                returned[w] == (kept ? 0 : 1) && excess[w] == (kept ? 0 : 2);
+        }
+        exact = exact && !entries[count].descriptor && pending.size() == 2 * held;
+        char what[200];
+        snprintf(what, sizeof(what), "legacy ownership of %zu entries (capacity %zu) with every allocation failing: "
+            "%zu held, %zu returned and closed at once, a repeat is no resource", count, limit, held, count - held);
+        check(what, exact);
+
+        pending.dispose([] (void *c, uint64_t w) { (*static_cast<std::vector<int>*>(c))[w]++; }, &returned);
+        bool once = true;
+        for (size_t i = 0; i < count; i++) once = once && returned[i + 1] == 1 && !open_fd(entries[i].pidfd);
+        check("... then disposal returns each held lease and closes each held handle: every window once", once && pending.size() == 0);
+    }
+
+    // The new format owns only the handles the environment list transferred, and no lease here.
+    std::vector<entry_t> entries;
+    for (uint64_t w : {1, 2}) entries.push_back({w, getpid(), pidfd_self(), false});
+    handover::pending_t pending;
+    pending.own_fd(entries[0].pidfd);
+    int gave = 0;
+    fail_after = 0;
+    handover::own_entries(pending, entries, false, [&] (uint64_t) noexcept { gave++; }, [&] (uint64_t) noexcept { gave++; });
+    fail_after = -1;
+    check("new format: an entry's handle is the transferred one or none, and nothing is returned or closed",
+        entries[0].descriptor && !entries[1].descriptor && gave == 0 && open_fd(entries[1].pidfd) && pending.size() == 1);
+    pending.dispose(nullptr, nullptr);
+    close(entries[1].pidfd);
+}
+
+// 6. Adoption: the destination takes the lease before the pending owner lets go (the order
 // take_handover() uses), so a failing insert leaves it with an owner that returns it.
 static void adoption_order()
 {
     for (bool fail : {true, false})
     {
         int disables = 1;  // the outgoing copy's disable on the window's root node
-        std::set<uint64_t> disabled_nodes;
+        auto view = std::make_shared<int>(0);
+        std::map<uint64_t, std::weak_ptr<int>> disabled_nodes;
         handover::pending_t pending;
         pending.own_lease(77);
         try
         {
             if (fail) fail_after = 0;
-            disabled_nodes.insert(77);
+            disabled_nodes.emplace(77, view);
             fail_after = -1;
             pending.claim_lease(77);
         } catch (const std::bad_alloc&)
@@ -182,7 +340,7 @@ static void adoption_order()
     }
 }
 
-// 5. The worker: framework allocation failures never leave its thread.
+// 7. The worker: framework allocation failures never leave its thread.
 namespace scottland::work
 {
 struct value_t : result_t { int value; explicit value_t(int v) : value(v) {} };
@@ -290,6 +448,9 @@ int main()
     acquisition();
     untrusted_lists();
     export_duplicates();
+    export_failure();
+    lease_return();
+    legacy_capacity();
     adoption_order();
     worker();
     printf("%s (%ld injected allocation failures)\n", failures ? "FAILED" : "all fault checks passed", failed_allocations.load());
