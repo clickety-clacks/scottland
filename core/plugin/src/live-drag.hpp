@@ -5,6 +5,7 @@
 #include <wayfire/plugins/common/move-drag-interface.hpp>
 #include <wayfire/output-layout.hpp>
 #include <wayfire/view-helpers.hpp>
+#include "offscreen.hpp"
 #include <wayfire/window-manager.hpp>
 
 namespace scottland
@@ -42,7 +43,7 @@ class live_drag_transform_t : public wf::scene::transformer_base_node_t
         }
         void render(const wf::scene::render_instruction_t& data) override
         {
-            data.pass->add_texture(get_texture(data.target.scale), data.target,
+            data.pass->add_texture(transformer_texture(self.get(), data.target.scale, children, _shown_on), data.target,
                 self->get_bounding_box(), data.damage);
         }
     };

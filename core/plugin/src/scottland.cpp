@@ -4180,7 +4180,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         model.version++;
-        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
         published_slices["desktop"] = text;
         full["version"] = (int64_t)model.version;
         send_ipc_event(full, "scottland-model#");
@@ -8260,6 +8259,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fini_widget_spawn();
         fini_hint_palette_watch();
         release_stale_pointer_focus();  // e.g. the live drag's grab: its owner and code go next
+        // The next plugin copy continues the version. Set once here, not per publish: glibc keeps
+        // every value ever given to setenv, so per-publish calls grew the heap without bound.
+        setenv("SCOTTLAND_INTERNAL_MODEL_VERSION", std::to_string(model.version).c_str(), 1);
+        scottland::release_aux_color_transform();  // last: nothing renders through it after this
         LOGI("scottland: plugin unloaded");
     }
 };
