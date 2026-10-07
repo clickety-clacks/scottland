@@ -51,6 +51,7 @@ assert "move_friction_curve" not in options and "resize_friction_curve" not in o
 
 assert options["window_mode_tint"].findtext("default") == "7"
 assert options["window_mode_tint"].findtext("min") == "0"
+assert options["window_mode_tint"].findtext("max") == "100"
 assert '"window_mode_tint"' in (root / "core/libexec/scottland-ctl").read_text()
 print(f"PASS Settings covers {len(goo_rows)} numeric Goo, {len(edge_options)} unfocused-edge and "
       f"{len(inertia)} inertial options")

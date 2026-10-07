@@ -175,7 +175,7 @@ Constant deceleration gives `position(t) = impulse*t - deceleration*t²/2` until
 so the default impulse travels 92.29 pt. Movement arrows and drag releases share movement
 deceleration; Ctrl+arrow resize uses the resize pair. The axis integrator includes the exact
 partial stopping frame. The speed cap and hint timings remain Settings controls, and WK29's
-`cycle_overshoot` has its own Window mode row. WK38's `window_mode_tint` (0–30%, default 7%) has its own row below the Window mode opacity pair; 0 turns the overlay off. WK42's `hint_background_opacity` has a separate row beside it in the same stack; its 0–100% value is the absolute opacity of every hint's backing, window and widget alike (default 21%).
+`cycle_overshoot` has its own Window mode row. WK38's `window_mode_tint` (0–100%, default 7%) has its own row below the Window mode opacity pair; 0 turns the overlay off. WK42's `hint_background_opacity` has a separate row beside it in the same stack; its 0–100% value is the absolute opacity of every hint's backing, window and widget alike (default 21%).
 
 The playground uses those same equations: flick its sample or press arrows, with Ctrl for
 resize. It draws the travelled path, vertical stops and the side-contact widget morph, and reports

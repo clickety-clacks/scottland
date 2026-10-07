@@ -145,7 +145,7 @@
         <option name="window_mode_tint" type="double">
             <_short>Window mode hint color overlay (%)</_short>
             <_long>How strongly Window mode tints each window and widget card with its hint color. Zero turns the overlay off. Hint circles, borders and outlines are unaffected.</_long>
-            <default>7</default><min>0</min><max>30</max>
+            <default>7</default><min>0</min><max>100</max>
         </option>
         <option name="hint_background_opacity" type="double">
             <_short>Hint background opacity (%)</_short>

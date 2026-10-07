@@ -46,6 +46,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
 | 2026-10-06 | "why does 100% mean 21% that makes no sense"; "it should set both. having them different is a bug." The slider is the absolute opacity of the background behind hint letters (100% solid, 0% none), one value and one default for window and widget hints. | WK42, WK26, S23 |
 | 2026-10-07 | "no, it should go from 0 to 100%, this is simple." This corrects an accidental choice to add a contrast floor for widget hint letters, which is void. Hint background opacity is user adjustable across the full 0-100% range, one value for window and widget hints, default 21%. No contrast floor, halo, minimum or automatic adjustment; low values show whatever lies beneath. | WK42, S23 |
+| 2026-10-07 | "Record option 2: both separate settings go 0–100%" (dr_ed09236e). The Window mode hint color overlay (`window_mode_tint`) widens from 0–30% to 0–100%, default still 7%; it stays a separate setting from hint background opacity, which is unchanged. | WK38, S14 |
 
 ## Window mode keys
 

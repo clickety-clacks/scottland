@@ -83,10 +83,10 @@ def option(name):
     return float(ipc("wayfire/get-config-option", {"option": "scottland/" + name})["value"])
 
 
-def option_reaches(name, expected, timeout=3):
+def option_reaches(name, expected, timeout=3, tolerance=.3):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        if abs(option(name) - expected) < .3:
+        if abs(option(name) - expected) < tolerance:
             return True
         time.sleep(.03)
     return False
@@ -664,11 +664,14 @@ try:
     # The panel's zone overlay is drawn over the windows, so compare each Window mode frame with
     # the same pixel just before the hold: the overlay adds (1 - its alpha) * strength * (hint - window),
     # zero at 0% and linear in the strength.
-    results = {}
-    for value in (0, 7, 20):
+    results, strengths = {}, {}
+    # 100% comes before 20% so the live check below still has room to raise the strength.
+    for value in (0, 7, 100, 20):
         x, y, width = reveal_tint()
-        click(x + width * value / 30, y + 34)
-        check(f"slider sets {value}% live, before Save", option_reaches("window_mode_tint", value))
+        # The slider steps by 0.5% over 0-100%, so a click lands within half a step of the value.
+        click(x + max(1, min(width - 1, width * value / 100)), y + 34)
+        check(f"slider sets {value}% live, before Save", option_reaches("window_mode_tint", value, tolerance=.6))
+        strengths[value] = option("window_mode_tint")
         pointer(640, 5); time.sleep(.3)
         base_image = Shot(f"04-base-{value}")
         hold()
@@ -681,7 +684,12 @@ try:
     check("0% turns the overlay off", all(abs(d) <= 2 for d in results[0]))
     check("7% overlay tints visibly", sum(abs(d) for d in results[7]) >= 6)
     check("20% overlay is the 7% tint scaled by strength",
-          all(abs(d20 - d7 * 20 / 7) <= 4 for d7, d20 in zip(results[7], results[20])))
+          all(abs(d20 - d7 * strengths[20] / strengths[7]) <= 4 for d7, d20 in zip(results[7], results[20])))
+    # 100% and 0% are exact: the slider's ends clamp to its range.
+    check("slider's ends are exactly 0% and 100%", strengths[0] == 0 and strengths[100] == 100)
+    # Each difference carries up to one unit of rounding, which scaling 20% to 100% multiplies by five.
+    check("100% overlay is the 20% tint scaled by strength",
+          all(abs(d100 - d20 * strengths[100] / strengths[20]) <= 6 for d20, d100 in zip(results[20], results[100])))
     # Live inside one hold: moving the slider while hints show changes the drawn tint at once.
     hold()
     state = hints()
@@ -703,8 +711,8 @@ try:
     check("outline draws above an overlay surface (the settings panel)",
           len(under_panel) >= 8 and hits >= .9 * len(under_panel))
     x, y, width = reveal_tint()
-    click(x + width * 30 / 30 - 2, y + 34)
-    check("slider reaches its 30% maximum", option_reaches("window_mode_tint", 30))
+    click(x + width - 1, y + 34)
+    check("slider reaches its 100% maximum", option_reaches("window_mode_tint", 100))
     time.sleep(.3)
     second = Shot("05-live-after").pixel(*sample)
     print("live within one hold", first, "->", second, flush=True)
@@ -712,6 +720,14 @@ try:
           sum(abs(a - b) for a, b in zip(second, bg)) > sum(abs(a - b) for a, b in zip(first, bg)) + 10)
     release()
     panel.terminate(); panel.wait(timeout=5)
+    # scottland-ctl takes both separate settings across 0-100%; Wayfire bounds a stored value by
+    # the option's metadata range, so a tint above the old 30% maximum must read back unclamped.
+    ctl = [str(repo / "core/libexec/scottland-ctl"), "set"]
+    for name, values, default in (("window_mode_tint", (0, 45, 100), 7), ("hint_background_opacity", (0, 100), 21)):
+        for value in values:
+            subprocess.run(ctl + [name, str(value)], check=True, timeout=10, stdout=log, stderr=log)
+            check(f"scottland-ctl sets {name} to {value}%", option_reaches(name, value, tolerance=.01))
+        subprocess.run(ctl + [name, str(default)], check=True, timeout=10, stdout=log, stderr=log)
 except Exception:
     import traceback
     traceback.print_exc()

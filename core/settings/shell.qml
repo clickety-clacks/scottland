@@ -885,7 +885,7 @@ ShellRoot {
             hintFontFamily:root.hintFontFamily;textScale:root.textScale
             viewport:gooScroll;scrollOffset:gooScroll.contentY
             rows:[
-              {id:"window_mode_tint",label:"Hint color overlay",min:0,max:30,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles and outlines are unaffected."},
+              {id:"window_mode_tint",label:"Hint color overlay",min:0,max:100,step:0.5,largeStep:1,decimals:1,suffix:"%",hint:"How strongly Window mode tints each window and widget card with its hint color. Higher is a stronger wash; zero turns the overlay off. Hint circles and outlines are unaffected."},
               {id:"hint_background_opacity",label:"Hint background opacity",min:0,max:100,step:1,largeStep:10,decimals:0,suffix:"%",hint:"Opacity of the background behind hint letters, the same for window and widget hints. 100% is a solid background and 0% is none. Letters, hint rims and window opacity are unchanged."}
             ]
             values:root.motionValues;opening:root.original?.motion || ({})
