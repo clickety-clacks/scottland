@@ -240,11 +240,15 @@
         bool opened_widget = false;
         std::optional<wf::pointf_t> restored_destination;
         std::string released_rail;
-        if (!resize && is_widget(view) && (code == KEY_LEFT || code == KEY_RIGHT))
+        auto output_axis = view->get_output() ? zone_axis(view->get_output()) : zone_axis(nullptr);
+        bool rail_return_key = output_axis.vertical ? (code == KEY_UP || code == KEY_DOWN) :
+            (code == KEY_LEFT || code == KEY_RIGHT);
+        if (!resize && is_widget(view) && rail_return_key)
         {
             auto link = link_of_widget(view);
-            bool away = link && ((link->rail == "right" && code == KEY_LEFT) ||
-                (link->rail == "left" && code == KEY_RIGHT));
+            bool away = link && (output_axis.vertical ?
+                ((link->rail == "bottom" && code == KEY_UP) || (link->rail == "top" && code == KEY_DOWN)) :
+                ((link->rail == "right" && code == KEY_LEFT) || (link->rail == "left" && code == KEY_RIGHT)));
             if (!away) return; // a push into the attached rail has no travel
             auto widget = view;
             released_rail = link->rail;
@@ -252,7 +256,7 @@
             wf::pointf_t start{from.x + from.width / 2.0, from.y + from.height / 2.0};
             auto window = wf::toplevel_cast(link->window.lock());
             if (!window) return;
-            auto destination = zone_spot(window, link->rail == "right" ?
+            auto destination = zone_spot(window, (link->rail == "right" || link->rail == "bottom") ?
                 scottland::windowing::zone::right_periphery :
                 scottland::windowing::zone::left_periphery,
                 {start.x, start.y}, nullptr, widget->get_output());
@@ -329,12 +333,23 @@
             if (!m.released_rail.empty() && !is_widget(view))
             {
                 auto screen = view->get_output()->get_relative_geometry();
+                auto axis = zone_axis(view->get_output());
                 auto zone = zone_for(view->get_output());
-                double edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
-                if (m.released_rail == "left" && m.x >= edge - 1)
-                { m.x = edge - 1; m.vx.velocity = 0; }
-                if (m.released_rail == "right" && m.x <= screen.width - edge + 1)
-                { m.x = screen.width - edge + 1; m.vx.velocity = 0; }
+                double edge = axis.length * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
+                if (axis.vertical)
+                {
+                    double top_edge = axis.origin + edge, bottom_edge = axis.origin + axis.length - edge;
+                    if (m.released_rail == "top" && m.y >= top_edge - 1)
+                    { m.y = top_edge - 1; m.vy.velocity = 0; }
+                    if (m.released_rail == "bottom" && m.y <= bottom_edge + 1)
+                    { m.y = bottom_edge + 1; m.vy.velocity = 0; }
+                } else
+                {
+                    if (m.released_rail == "left" && m.x >= edge - 1)
+                    { m.x = edge - 1; m.vx.velocity = 0; }
+                    if (m.released_rail == "right" && m.x <= screen.width - edge + 1)
+                    { m.x = screen.width - edge + 1; m.vx.velocity = 0; }
+                }
             }
             // Transfer only when the center crosses the physical seam. Keep velocity and
             // the global center; crossing an adjoining output never changes form.

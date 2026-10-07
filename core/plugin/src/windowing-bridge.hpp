@@ -273,21 +273,27 @@
         double dx = visual.offset->translation_x, dy = visual.offset->translation_y;
         if (std::abs(dx) < .5 && std::abs(dy) < .5) return;
         auto g = placed_geometry(view);
-        double width = view->get_output()->get_relative_geometry().width;
+        auto output = view->get_output();
+        auto axis = zone_axis(output);
         auto zone_at = [&] (double shift) {
-            double x = g.x + g.width / 2.0 + shift; auto z = place_at(view->get_output(), x, width).zone;
-            return z == zone_t::center ? 0 : x < width / 2 ? 1 : 2;
+            wf::pointf_t center{g.x + g.width / 2.0 + (axis.vertical ? 0 : shift),
+                g.y + g.height / 2.0 + (axis.vertical ? shift : 0)};
+            auto z = place_at(output, center).zone;
+            double along = axis.along(center);
+            return z == zone_t::center ? 0 : along < axis.length / 2 ? 1 : 2;
         };
-        if (zone_at(dx) != zone_at(0))
+        double shift = axis.vertical ? dy : dx;
+        if (zone_at(shift) != zone_at(0))
         {
-            double inside = 0, outside = dx;
+            double inside = 0, outside = shift;
             for (int i = 0; i < 24; i++)
             {
                 double mid = (inside + outside) / 2;
                 (zone_at(mid) == zone_at(0) ? inside : outside) = mid;
             }
-            dx = inside;
+            shift = inside;
         }
+        if (axis.vertical) dy = shift; else dx = shift;
         LOGI("scottland: grab commits window ", view->get_id(), "'s avoidance offset ", dx, ",", dy,
             " into its position");
         view->damage(); view->get_transformed_node()->begin_transform_update();
@@ -310,14 +316,20 @@
     {
         auto r = hint_rectangle(view, for_avoidance_solve);
         double x = (r.x1 + r.x2) / 2;
+        double y = (r.y1 + r.y2) / 2;
         if (auto link = link_of_widget(view))
         {
             double diameter = std::round(hint_size(view));
             // WK26: attach to the center-facing edge; retain space at the count corner.
-            double outside = diameter / 2 - scottland::windowing::widget_hint_overlap(diameter, r.height());
-            x = link->rail == "left" ? r.x2 + outside : r.x1 - outside;
+            auto axis = zone_axis(view->get_output());
+            double outside = diameter / 2 - scottland::windowing::widget_hint_overlap(diameter,
+                axis.vertical ? r.width() : r.height());
+            if (axis.vertical)
+                y = link->rail == "top" ? r.y2 + outside : r.y1 - outside;
+            else
+                x = link->rail == "left" ? r.x2 + outside : r.x1 - outside;
         }
-        return {x, (r.y1 + r.y2) / 2};
+        return {x, y};
     }
     double window_mode_tint_strength()
     {
@@ -336,21 +348,25 @@
     scottland::windowing::zone window_zone(wayfire_toplevel_view view)
     {
         using Z = scottland::windowing::zone;
+        auto on_near_rail = [] (const std::string& rail) { return rail == "left" || rail == "top"; };
         if (auto link = link_of_window(view); link && link->docked())
-            return link->rail == "left" ? Z::left_rail : Z::right_rail;
-        if (auto link = link_of_widget(view)) return link->rail == "left" ? Z::left_rail : Z::right_rail;
+            return on_near_rail(link->rail) ? Z::left_rail : Z::right_rail;
+        if (auto link = link_of_widget(view)) return on_near_rail(link->rail) ? Z::left_rail : Z::right_rail;
         if (placement_of(view).zone == zone_t::center) return Z::center;
+        auto output = view->get_output();
         auto g = view->get_geometry();
-        return g.x + g.width / 2.0 < view->get_output()->get_relative_geometry().width / 2.0 ?
+        auto axis = zone_axis(output);
+        return axis.along({g.x + g.width / 2.0, g.y + g.height / 2.0}) < axis.length / 2.0 ?
             Z::left_periphery : Z::right_periphery;
     }
     // A side spot reads as lower priority than the center once its scale has visibly fallen: by 5%,
     // or halfway to the rail's scale when the curve has less range than that (WP4, WP8).
-    double periphery_threshold(wf::output_t *output, double screen_width)
+    double periphery_threshold(wf::output_t *output)
     {
+        auto axis = zone_axis(output);
         auto zone = zone_for(output);
-        double rail = screen_width * std::clamp(zone.rail / 100, 0.0, 0.25);
-        double outer_scale = place_at(output, rail + 1, screen_width).scale;
+        double rail = axis.length * std::clamp(zone.rail / 100, 0.0, 0.25);
+        double outer_scale = place_along(output, rail + 1).scale;
         return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
     }
     // Whether a spot at x reads as zone z (WP8): the center inside the center zone, and just past its
@@ -358,16 +374,19 @@
     // scale; a periphery anywhere else in the side zone. A Shift pin makes a side spot a periphery
     // spot wherever it is: the user put it there at that scale, even at full size (L31). A pin
     // never applies inside the center zone (tenet 4). Rails are what they are.
-    bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin,
-        wf::output_t *output, double screen_width)
+    bool reads_as(scottland::windowing::zone z, wf::pointf_t point, std::optional<double> pin,
+        wf::output_t *output)
     {
         using Z = scottland::windowing::zone;
-        auto place = place_at(output, x, screen_width);
+        auto axis = zone_axis(output);
+        double along = axis.along(point);
+        auto place = place_along(output, along);
         bool center = place.zone == zone_t::center ||
-            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(output, screen_width));
+            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(output));
         if (z == Z::center) return center;
         if (z == Z::left_periphery || z == Z::right_periphery)
-            return place.zone == zone_t::continuous && !center && ((x < screen_width / 2) == (z == Z::left_periphery));
+            return place.zone == zone_t::continuous && !center &&
+                ((along < axis.length / 2) == (z == Z::left_periphery));
         return true;
     }
     // The zone a window counts as for its zone memories and cycles (WP8): its zone, except that an
@@ -378,10 +397,10 @@
         auto z = window_zone(view);
         if (z != Z::left_periphery && z != Z::right_periphery) return z;
         auto g = placed_geometry(view);
+        auto output = view->get_output();
         auto found = model.windows.find(view->get_id());
         auto pin = found == model.windows.end() ? std::nullopt : found->second.pinned_scale;
-        return reads_as(Z::center, g.x + g.width / 2.0, pin, view->get_output(),
-            view->get_output()->get_relative_geometry().width) ?
+        return reads_as(Z::center, {g.x + g.width / 2.0, g.y + g.height / 2.0}, pin, output) ?
             Z::center : z;
     }
     wayfire_toplevel_view represented_view(uint64_t id)
@@ -737,9 +756,10 @@
     scottland::windowing::rectangle side_region(wf::output_t *output, bool left, bool rail)
     {
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
+        auto axis = zone_axis(output);
         auto zone = zone_for(output);
-        double edge = screen.width * std::clamp(zone.rail / 100, 0.0, 0.25);
-        double center_edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
+        double edge = axis.length * std::clamp(zone.rail / 100, 0.0, 0.25);
+        double center_edge = axis.length * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
         double lo = rail ? 0 : edge + 1, hi = rail ? edge : center_edge - 1;
         if (hi < lo) hi = lo;
         if (!rail)  // (rails keep their own inset, WIDGET_INSET, which is wider)
@@ -747,6 +767,8 @@
             a = padded(a, 0, 0);
         }
 
+        if (axis.vertical)
+            return {double(a.x), axis.origin + (left ? lo : axis.length - hi), double(a.width), hi - lo};
         return {left ? lo : screen.width - hi, double(a.y), hi - lo, double(a.height)};
     }
     bool placement_side(wayfire_toplevel_view window, scottland::windowing::point current, bool rail)
@@ -754,13 +776,14 @@
         auto& memory = ensure_window_memory(window->get_id());
         if (memory.last_side) return memory.last_side < 0;
         auto output = window->get_output();
+        auto axis = zone_axis(output);
         auto obstacles = placement_obstacles(output, window->get_id());
         auto left = side_region(output, true, rail), right = side_region(output, false, rail);
         double l = scottland::windowing::largest_opening(left, obstacles);
         double r = scottland::windowing::largest_opening(right, obstacles);
         // Within five percent of screen height, the risks are about equal: favor nearby.
-        if (std::abs(l - r) <= output->get_relative_geometry().height * 0.05)
-            return current.x < output->get_relative_geometry().width / 2.0;
+        if (std::abs(l - r) <= axis.length * 0.05)
+            return (axis.vertical ? current.y - axis.origin : current.x) < axis.length / 2.0;
         return l > r;
     }
     wf::pointf_t zone_spot(wayfire_toplevel_view window, scottland::windowing::zone z,
@@ -770,13 +793,15 @@
         using Z = scottland::windowing::zone;
         auto output = destination_output ? destination_output : window->get_output();
         auto screen = output->get_relative_geometry();
+        auto axis = zone_axis(output);
         auto zone = zone_for(output);
         auto a = output->workarea->get_workarea(); auto g = window->get_geometry();
         auto& memory = ensure_window_memory(window->get_id());
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
         // A memory counts only while its spot still reads as its zone (WP8).
-        if (remembered && !reads_as(z, remembered->x, scottland::windowing::remembered_pin(memory, z), output, screen.width))
+        if (remembered && !reads_as(z, {remembered->x, remembered->y},
+            scottland::windowing::remembered_pin(memory, z), output))
             remembered.reset();
         double w = g.width, h = g.height;
         if (z == Z::center)
@@ -788,26 +813,46 @@
         if (z == Z::center)
         {
             // The zone constrains the window's CENTER; content stays full size, even if wider.
-            double edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
-            // Strictly inside: a center exactly on the zone's edge is already the periphery's
-            // (the softness band starts there), so it would be scaled (tenet 4).
-            double lo = std::max(edge + 1.0, a.x + std::min(w, double(a.width)) / 2);
-            double hi = std::min(screen.width - edge - 1.0, a.x + a.width - std::min(w, double(a.width)) / 2);
-            if (hi < lo) lo = hi = screen.width / 2.0;
-            region.x = lo - w / 2; region.width = hi - lo + w;
+            double edge = axis.length * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
+            if (axis.vertical)
+            {
+                double lo = std::max(axis.origin + edge + 1.0, a.y + std::min(h, double(a.height)) / 2);
+                double hi = std::min(axis.origin + axis.length - edge - 1.0,
+                    a.y + a.height - std::min(h, double(a.height)) / 2);
+                if (hi < lo) lo = hi = axis.origin + axis.length / 2.0;
+                region.y = lo - h / 2; region.height = hi - lo + h;
+            } else
+            {
+                // Strictly inside: a center exactly on the zone's edge is already the periphery's.
+                double lo = std::max(edge + 1.0, a.x + std::min(w, double(a.width)) / 2);
+                double hi = std::min(axis.length - edge - 1.0,
+                    a.x + a.width - std::min(w, double(a.width)) / 2);
+                if (hi < lo) lo = hi = axis.length / 2.0;
+                region.x = lo - w / 2; region.width = hi - lo + w;
+            }
         } else
         {
             bool rail = z == Z::left_rail || z == Z::right_rail;
             bool left = z == Z::left_rail || z == Z::left_periphery;
             auto side = side_region(output, left, rail);
+            double side_start = axis.vertical ? side.y : side.x;
+            double side_length = axis.vertical ? side.height : side.width;
             if (rail)
             {
                 // Provisional footprint; refine on adoption with the actual widget size.
                 auto card = footprint ? footprint->toplevel()->pending().geometry : wf::geometry_t{0, 0, 320, 90};
                 w = card.width; h = card.height;
-                double cx = left ? WIDGET_INSET + w / 2 : screen.width - WIDGET_INSET - w / 2;
-                region.x = cx - w / 2; region.width = w;
-                region.y += WIDGET_INSET; region.height = std::max(h, region.height - 2 * WIDGET_INSET);
+                if (axis.vertical)
+                {
+                    double cy = left ? axis.origin + WIDGET_INSET + h / 2 :
+                        axis.origin + axis.length - WIDGET_INSET - h / 2;
+                    region.y = cy - h / 2; region.height = h;
+                } else
+                {
+                    double cx = left ? WIDGET_INSET + w / 2 : axis.length - WIDGET_INSET - w / 2;
+                    region.x = cx - w / 2; region.width = w;
+                    region.y += WIDGET_INSET; region.height = std::max(h, region.height - 2 * WIDGET_INSET);
+                }
             } else
             {
                 // An unremembered side destination goes as close to the center as it may (WP4): its
@@ -816,13 +861,13 @@
                 // 2026-10-04), where it fits on screen (WP7); else as far out as fits. From there
                 // the placement routine below keeps it off center windows (and any other) and
                 // nearest the center. Remembered positions remain exact (WP2).
-                if (!remembered && side.width > 0)
+                if (!remembered && side_length > 0)
                 {
-                    double inner = left ? side.x + side.width : side.x;
-                    double outer = left ? side.x : side.x + side.width;
-                    double threshold = periphery_threshold(output, screen.width);
-                    double center_edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
-                    double boundary = left ? center_edge : screen.width - center_edge;
+                    double inner = left ? side_start + side_length : side_start;
+                    double outer = left ? side_start : side_start + side_length;
+                    double threshold = periphery_threshold(output);
+                    double center_edge = axis.length * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
+                    double boundary = axis.origin + (left ? center_edge : axis.length - center_edge);
                     auto area = output->workarea->get_workarea();
                     std::optional<double> chosen;
                     for (int step = 0; step <= 512; ++step)
@@ -830,41 +875,67 @@
                         double trial = inner + (outer - inner) * step / 512;
                         // A pixel inward too, so rounding the landing can't bring it back.
                         double inward = trial + (left ? 1 : -1);
-                        double scale = place_at(output, trial, screen.width).scale;
-                        if (std::max(scale, place_at(output, inward, screen.width).scale) > threshold) continue;
-                        double half = g.width * scale / 2;
+                        double scale = place_along(output, trial - axis.origin).scale;
+                        if (std::max(scale, place_along(output, inward - axis.origin).scale) > threshold) continue;
+                        double half = (axis.vertical ? g.height : g.width) * scale / 2;
                         auto pa = padded(area, g.width * scale, g.height * scale);
-                        if (left ? trial - half < pa.x : trial + half > pa.x + pa.width) continue;
+                        if (axis.vertical ? (left ? trial - half < pa.y : trial + half > pa.y + pa.height) :
+                            (left ? trial - half < pa.x : trial + half > pa.x + pa.width)) continue;
                         chosen = trial;
                         double hang = half / 2;   // a quarter of its scaled width
                         if (left ? trial + half - hang <= boundary : trial - half + hang >= boundary) break;
                     }
                     if (chosen)
                     {
-                        if (left) side.width = *chosen - side.x;
-                        else { double right = side.x + side.width;
-                            side.x = *chosen; side.width = right - *chosen; }
+                        if (axis.vertical)
+                        {
+                            if (left) side.height = *chosen - side.y;
+                            else { double end = side.y + side.height; side.y = *chosen; side.height = end - *chosen; }
+                        } else
+                        {
+                            if (left) side.width = *chosen - side.x;
+                            else { double end = side.x + side.width; side.x = *chosen; side.width = end - *chosen; }
+                        }
+                        side_start = axis.vertical ? side.y : side.x;
+                        side_length = axis.vertical ? side.height : side.width;
                     }
                 }
                 // Re-evaluate the rectangle footprint as its natural zone scale
                 // changes at the chosen x. Contention uses the pure placement routine.
                 // All contention decisions still go through the same pure placement routine.
                 auto obstacles = placement_obstacles(output, window->get_id());
-                double x = std::clamp(current.x, side.x, side.x + side.width);
+                double along = std::clamp(axis.vertical ? current.y : current.x,
+                    side_start, side_start + side_length);
                 scottland::windowing::point spot;
                 for (int iteration = 0; iteration < 16; ++iteration)
                 {
-                    double scale = place_at(output, x, screen.width).scale;
+                    double scale = place_along(output, along - axis.origin).scale;
                     w = g.width * scale; h = g.height * scale;
-                    region.x = side.x - w / 2; region.width = side.width + w;
+                    if (axis.vertical)
+                    {
+                        region.x = side.x; region.width = side.width;
+                        region.y = side.y - h / 2; region.height = side.height + h;
+                    } else
+                    {
+                        region.x = side.x - w / 2; region.width = side.width + w;
+                    }
                     // ...and wholly on screen with its padding (WP7), when it fits.
                     auto pa = padded(output->workarea->get_workarea(), w, h);
-                    double right = std::min(region.x + region.width, double(pa.x + pa.width));
-                    region.x = std::max(region.x, double(pa.x));
-                    region.width = std::max(w, right - region.x);
+                    if (axis.vertical)
+                    {
+                        double end = std::min(region.y + region.height, double(pa.y + pa.height));
+                        region.y = std::max(region.y, double(pa.y));
+                        region.height = std::max(h, end - region.y);
+                    } else
+                    {
+                        double end = std::min(region.x + region.width, double(pa.x + pa.width));
+                        region.x = std::max(region.x, double(pa.x));
+                        region.width = std::max(w, end - region.x);
+                    }
                     spot = scottland::windowing::place_rectangle(w, h, region, obstacles, current, remembered);
-                    if (std::abs(spot.x - x) < 0.01) break;
-                    x = spot.x;
+                    double placed_along = axis.vertical ? spot.y : spot.x;
+                    if (std::abs(placed_along - along) < 0.01) break;
+                    along = placed_along;
                 }
                 return {spot.x, spot.y};
             }
@@ -923,8 +994,8 @@
         auto screen = window->get_output()->get_relative_geometry();
         auto& memory = ensure_window_memory(id);
         auto pin = scottland::windowing::remembered_pin(memory, z);
-        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z, p->x * screen.width, pin,
-            window->get_output(), screen.width)))
+        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z,
+            {p->x * screen.width, p->y * screen.height}, pin, window->get_output())))
             pin.reset();
         pin_scale(window, pin);
         // Where its center actually lands, after pixel rounding: the drawn scale must be that
@@ -937,13 +1008,15 @@
         if (rail)
         {
             model.windows[id].pending_rail = current;
-            widgetize(window, false, left ? "left" : "right", "hint-rail");
+            auto axis = zone_axis(window->get_output());
+            widgetize(window, false, axis.vertical ? (left ? "top" : "bottom") :
+                (left ? "left" : "right"), "hint-rail");
             if (auto link = link_of_window(window)) link->drop = {at.x, at.y};
             if (!link_of_window(window)) model.windows[id].pending_rail.reset();
             ensure_window_memory(id).last_side = left ? -1 : 1;
             publish_model();
         } else { remember_window(window); start_cycle_glide(window, from, from_scale,
-            landed, pin ? *pin : place_at(window->get_output(), landed.x, screen.width).scale); }
+            landed, pin ? *pin : place_at(window->get_output(), landed).scale); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)
@@ -954,7 +1027,8 @@
         auto window = wf::toplevel_cast(found->second.view.lock());
         if (!window) { found->second.pending_rail.reset(); publish_model(); return false; }
         using Z = scottland::windowing::zone;
-        auto at = zone_spot(window, rail == "left" ? Z::left_rail : Z::right_rail, current, widget);
+        auto at = zone_spot(window, (rail == "left" || rail == "top") ? Z::left_rail : Z::right_rail,
+            current, widget);
         found->second.pending_rail.reset();
         if (auto link = link_of_widget(widget)) link->drop = at;
         // The caller places drop and gravity in one pending transaction (WG4/WG16).

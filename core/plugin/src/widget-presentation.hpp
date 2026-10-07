@@ -117,7 +117,10 @@ void adopt_window_widget_transition(widget_link_t& link)
     stop_glide(widget);
     auto& p = *observer->pixels;
     auto g = widget->get_geometry();
-    p.right = link.rail == "right";
+    auto output = widget->get_output();
+    bool vertical = is_vertical(output);
+    p.right = !vertical && link.rail == "right";
+    p.center_x = vertical;
     // The source has already moved/shrunk while the client was starting. Rebase
     // on that drawn rectangle; the same retained image covers it without a recapture.
     auto r = observer->provisional_started && window ? scene_rectangle(window, window->get_output()) : observer->origin;
@@ -129,7 +132,8 @@ void adopt_window_widget_transition(widget_link_t& link)
         p.duration_ms = 180; // correction to the applied size, with the full content fade
     }
     p.to_dx = p.to_dy = 0;
-    p.dx = p.from_dx = (p.right ? r.x2 - g.x - g.width : r.x1 - g.x);
+    p.dx = p.from_dx = vertical ? (r.x1 + r.x2 - 2 * g.x - g.width) / 2 :
+        (p.right ? r.x2 - g.x - g.width : r.x1 - g.x);
     p.dy = p.from_dy = (r.y1 + r.y2 - 2 * g.y - g.height) / 2;
     p.to = std::move(target);
     p.waiting = false; p.started = now_msec();
@@ -148,9 +152,18 @@ void adopt_window_widget_transition(widget_link_t& link)
         window->get_transformed_node()->end_transform_update();
         // Keep the hidden app on its rail for an unmarked unload/load (WG1/WG5).
         auto real = window->get_geometry();
-        double rail_x = link.rail == "left" ? 0 : window->get_output()->get_relative_geometry().width - 1;
-        move_window(window, std::round(rail_x - real.width / 2.0),
-            std::round(link.drop.y - real.height / 2.0));
+        if (is_vertical(window->get_output()))
+        {
+            auto area = window->get_output()->workarea->get_workarea();
+            double rail_y = link.rail == "top" ? area.y : area.y + area.height - 1;
+            move_window(window, std::round(link.drop.x - real.width / 2.0),
+                std::round(rail_y - real.height / 2.0));
+        } else
+        {
+            double rail_x = link.rail == "left" ? 0 : window->get_output()->get_relative_geometry().width - 1;
+            move_window(window, std::round(rail_x - real.width / 2.0),
+                std::round(link.drop.y - real.height / 2.0));
+        }
     }
     // A mapped card could have been selected while its root was still hidden.
     if (focus_card) wf::get_core().default_wm->focus_raise_view(widget);
@@ -188,7 +201,8 @@ void begin_widget_transition(widget_link_t& link, bool target)
         pixels->dx = pixels->from_dx = frame->presentation->dx;
         pixels->dy = pixels->from_dy = frame->presentation->dy;
     }
-    pixels->right = link.rail == "right";
+    pixels->center_x = is_vertical(view->get_output());
+    pixels->right = !pixels->center_x && link.rail == "right";
     pixels->requested = now_msec();
     pixels->bounce = std::clamp(double(widget_bounce), 0.0, 0.1);
     if (pixels->bounce > 0) pixels->duration_ms = 360;
@@ -288,11 +302,15 @@ bool step_widget_transitions()
                         p.to.width = width; p.to.height = height;
                         auto spot = widget_spot(view->get_output(), *app_link, width, height);
                         auto g = view->get_geometry();
-                        p.right = app_link->rail == "right";
+                        bool vertical = is_vertical(view->get_output());
+                        p.center_x = vertical;
+                        p.right = !vertical && app_link->rail == "right";
                         auto& r = transition.origin;
-                        p.dx = p.from_dx = p.right ? r.x2 - g.x - g.width : r.x1 - g.x;
+                        p.dx = p.from_dx = vertical ? (r.x1 + r.x2 - 2 * g.x - g.width) / 2 :
+                            (p.right ? r.x2 - g.x - g.width : r.x1 - g.x);
                         p.dy = p.from_dy = (r.y1 + r.y2 - 2 * g.y - g.height) / 2;
-                        p.to_dx = p.right ? spot.x + width - g.x - g.width : spot.x - g.x;
+                        p.to_dx = vertical ? spot.x + width / 2 - g.x - g.width / 2 :
+                            (p.right ? spot.x + width - g.x - g.width : spot.x - g.x);
                         p.to_dy = spot.y + height / 2 - g.y - g.height / 2;
                         p.started = now;
                         transition.provisional_started = true;

@@ -253,15 +253,20 @@
             <max>20000</max>
         </option>
 		<option name="center_width" type="double">
-			<_short>Center width (%)</_short>
-			<_long>Width of the full-scale center zone, as a percentage of the screen width.</_long>
+			<_short>Center zone size (%)</_short>
+			<_long>Size of the full-scale center zone as a percentage of the selected zone axis. The axis is horizontal by default and vertical on outputs listed in vertical_outputs.</_long>
 			<default>30.000</default>
 			<min>0</min>
 			<max>100</max>
 		</option>
+		<option name="vertical_outputs" type="string">
+			<_short>Vertical zone outputs</_short>
+			<_long>Comma-separated output names that use top and bottom periphery and widget rails instead of left and right. This is a prototype load-time option; windows remain unrotated.</_long>
+			<default></default>
+		</option>
 		<option name="rail_width" type="double">
-			<_short>Widget rail width (%)</_short>
-			<_long>Width of each widget rail at the far left and right, as a percentage of the screen width.</_long>
+			<_short>Widget rail depth (%)</_short>
+			<_long>Depth of each widget rail at the periphery edges, as a percentage of the selected zone axis.</_long>
 			<default>1.900</default>
 			<min>0</min>
 			<max>25</max>

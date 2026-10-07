@@ -94,6 +94,7 @@ struct widget_morph_t
     double from_scale = 1, scale = 1, shape = 0;
     double dx = 0, dy = 0, from_dx = 0, from_dy = 0, to_dx = 0, to_dy = 0;
     bool right = false;
+    bool center_x = false;
     bool cover = false; // window/card forms scale evenly to cover the changing frame
     uint32_t duration_ms = duration;
     bool waiting = true;
@@ -128,7 +129,8 @@ struct widget_morph_t
         // A resize can also reposition a clamped widget (e.g. one near the bottom).
         // Preserve the OLD rectangle until the blend advances. Ordinary moves and
         // glide translation remain independent of this size-induced correction.
-        double shift_x = right ? old.x + old.width - current.x - current.width : old.x - current.x;
+        double shift_x = center_x ? old.x + old.width / 2 - current.x - current.width / 2 :
+            (right ? old.x + old.width - current.x - current.width : old.x - current.x);
         double shift_y = old.y + old.height / 2 - current.y - current.height / 2;
         dx += shift_x; dy += shift_y;
         if (!to && to.width > 0) // the provisional destination remains at its screen position

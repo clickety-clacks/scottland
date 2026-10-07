@@ -408,7 +408,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double drag_layout_x = 0, drag_layout_y = 0;
     // A widget sliding off or peeking in at its screen edge (FS1, WG16's hidden mode). Owned by
     // the rail slides alone, so glides and morphs never reset it.
-    double rail_slide_x = 0;
+    double rail_slide_x = 0, rail_slide_y = 0;
     std::function<bool(wayfire_toplevel_view)> is_widget;
 
     bool can_resize() const
@@ -541,7 +541,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     float get_translation_y() const override
     {
-        return translation_y + drag_layout_y + (presentation ? presentation->dy : 0);
+        return translation_y + drag_layout_y + rail_slide_y + (presentation ? presentation->dy : 0);
     }
 
     float get_alpha() const override
@@ -566,6 +566,7 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         auto& p = *presentation;
         double target_inset = p.to ? p.to.inset : p.from.inset;
         return {g.x + at.x - r.x1 + (p.right ? g.width - r.width() : 0) +
+            (p.center_x ? (g.width - r.width()) / 2 : 0) +
             (p.right ? 1 : -1) * (p.inset - target_inset),
             g.y + at.y - r.y1 + (g.height - r.height()) / 2};
     }
