@@ -278,7 +278,9 @@ void main(){
   if(m>0.){
     vec3 acc=c;float ws=1.;
     for(int k=0;k<4;k++){vec2 u2=uv+off(k)*px;float w=gooMask(u2)*m;acc+=sampleDyeK(uDyeTex,u2)*w;ws+=w;}
-    c=mix(c,acc/ws,uSpread);
+    // Spread scales with the pass like flow, pickup and release: a coasting pass that stands
+    // for almost nothing must not still mix each texel most of the way to its neighbours.
+    c=mix(c,acc/ws,clamp(uSpread*uStep,0.,1.));
   }
   float ksum=1e-4,maxK=0.,nearEdge=1e5;vec2 back=backdrop(p);
   // Film over a window picks up that window; open desktop only with a background client.

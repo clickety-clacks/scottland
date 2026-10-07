@@ -1320,6 +1320,24 @@ struct goo_t::impl
                     rects.append(r);
                 }
                 s["source_rects"] = rects;
+                // Many dye samples read in one main-loop turn: a whole band's dye as it was
+                // at one simulation step, even while the goo moves (tests compare dye fields).
+                if (data.has_member("dye_points") && data["dye_points"].is_array())
+                {
+                    auto field = wf::json_t::array();
+                    for (size_t i = 0; i < data["dye_points"].size(); i++)
+                    {
+                        auto pt = data["dye_points"][i];
+                        if (!pt.is_array() || pt.size() != 2)
+                            continue;
+                        auto c = n->state.renderer.sample_at(glm::vec2(pt[size_t(0)].as_double(), pt[size_t(1)].as_double()));
+                        wf::json_t rgb = wf::json_t::array();
+                        rgb.append((double)c.r); rgb.append((double)c.g); rgb.append((double)c.b);
+                        field.append(rgb);
+                    }
+                    s["dye_field"] = field;
+                    s["dye_field_step"] = (int64_t)n->state.renderer.steps;
+                }
             }
             if (data.has_member("x") && data.has_member("y") &&
                 (data["x"].is_int() || data["x"].is_double()) &&

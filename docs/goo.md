@@ -102,7 +102,7 @@ The initial defaults are the prototype’s Scottland preset.
 | GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
 | GO22 | Attention color choice: the Goo setting chooses Theme (the active palette attention color, today's behavior), Warm (light `#B83F36`, dark `#FF9E57`), or Cool (light `#707C28`, dark `#C9DD61`). The selected color applies live to attention breath and bulge on windows and widgets, in Goo and fallback halos, and follows light/dark scheme changes. Settings previews the choice; Save, Cancel and Defaults include it. | implemented; Plumbus headless Settings input, six Goo and six fallback screenshots across light/dark, window and widget attention (2026-10-03); integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO23 | Dye density (`goo_dye_density`; named Dye strength, `goo_dye_strength`, until Mike's ruling of 2026-10-05, and a value saved under that key carries over): a Goo setting from 0 to 1.5 (default 1). **In the goo it scales all dye together**, the windows' colors and picked-up color alike (Mike, 2026-10-05: "dye density scales all dye in the goo, picked-up color included"): how much of the liquid's color is dye rather than clear lens. It does not change the mix of hues (Pickup balance does, GO28). In the fallback halo it still scales focus, attention and Window mode hint colors. Greater values clamp the final dye blend at full opacity; the original-path promise at 1 is superseded. Changes apply live. (Mike, 2026-10-03; scope 2026-10-05) | implemented; current all-dye, legacy migration, Goo/fallback and Settings checks pass on both GPU paths ([below](#review-validation-and-cost-2026-10-05)) |
-| GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. *(GO28 replaces this: state colors fill the goo and mix with the pickup; there is no wall band.)* **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; headless checks on the x86 test machine and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. *(GO28 replaces this: state colors fill the goo and mix with the pickup; there is no wall band.)* **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; headless checks on the x86 test machine and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04). 2026-10-06: the coast scales Dye spread with its passes too, so it keeps the moving goo's smear instead of blurring it ([below](#dye-spread-swirl-and-release-2026-10-06)) |
 | GO25 | The attention bulge and the keyframed breath go together: with the bulge restored (`6ca8c4b`), a settled breath at shipped settings and at Mike's is still drawn from keyframes (GO18), not by re-shading the strips on every tick. (Found on Mike's desktop, 2026-10-03, where the keys had stopped without notice: `breath_keys` 0 over 192,000 ticks; core) | implemented (`5429f3f`: the 16-key cap raised to 24). GO26 replaces the cap with its ceiling-and-scale rule and makes any use of the exact path say why; GO25 stays as the behavior, GO26 as the mechanism ([below](#go25-keyframes-for-the-restored-bulge-2026-10-03)) |
 | GO26 | Breath keyframes follow a ceiling-and-scale rule. A breath uses only as many keys as its swing needs at half a device pixel of shore travel per key (10 if that is all it needs). The count never exceeds a ceiling (48 where both cache textures are written in one pass, 24 where each refresh takes two); a swing that needs more keeps the ceiling and widens the spacing just enough to cover the swing. The key count never sends the breath to the exact path: that path remains only for real failures (the second cache layer cannot be allocated, the surface cache is unavailable), for keyframes switched off, and for the test override, and whenever it is in use `goo-state` says why (`breath_exact_reason`) and the log says so once. (Mike, 2026-10-04; core) | implemented; `tests/goo-breath-keys-test.py` 13 / 13 on both GPU paths, measurements [below](#go26-ceiling-and-scale-keys-2026-10-04). Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO27 | The goo never paints over dry window content: a window's interior that no goo can lie on shows the window, in every frame. A frame that reuses the cached backdrop (a breath, or a watercolor tick while the dye coasts, GO24) restores it only on its reuse region's pixels inside the goo's own drawn area and outside dry content; whatever else the merged rectangles cover stays in the frame's damage and the scene beneath paints it. (Mike's bug report, 2026-10-04; core) | implemented; `tests/goo-strip-test.sh` (forced and natural merging) passing on both GPU paths on plumbus ([below](#go27-no-backdrop-inside-a-window-2026-10-04)); not yet seen on Mike's panel; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
@@ -2811,3 +2811,59 @@ Physical-display appearance/motion, Intel Xe, and naturally unfenced drivers rem
 The finite redraw run does not reach the five-minute cooldown ceiling; exact supplied-timestamp
 policy tests cover that boundary. Hint/cursor exclusion remains by construction rather than a
 new pixel probe. Independent source and product review remains before delivery.
+
+## Dye spread, swirl and release (2026-10-06)
+
+Mike, 2026-10-06: "i'm not sure dye spread, swirl and release really do anything". Measured on
+the x86 test machine (Radeon Pro 580X), headless, on both GPU paths, with the daily machine's ship build
+(`d3c8397`), Mike's goo settings (spread 0.9, swirl 2.9, release 0.155, pickup 1, balance 0.47,
+density 1.5), two windows over a wallpaper of strong color patches. `tests/goo-sliders-probe.py`
+reads the dye from the GPU along a ring through the middle of both windows' bands (about 900
+points read in one simulation step through the test-only `goo-state` `dye_points`), after the
+same real-input stimulus (a Super-drag held away, a click-focus away and back), and compares it
+with Mike's value. Numbers are the mean 8-bit difference over the ring (RGBA16F; packed GLES 2
+within a few tenths of a level). Repeating Mike's value gives the noise: about 1 level while a
+window is held mid-drag, 1.5-3 after a focus change and at rest.
+
+| Value | Held mid-drag | 0.25 s after focus | At rest |
+|---|---|---|---|
+| **Dye spread** 0 / 0.225 / 0.45 / 0.675 (Mike 0.9) | 2.1 / 1.4 / 1.3 / 0.9 | 5.9 / 4.6 / 2.8 / 2.3 | 5.4 / 4.8 / 3.5 / 3.4 |
+| **Dye swirl** 0 / 0.5 / 0.9 / 1.8 / 3 (Mike 2.9) | 0.6 / 0.5 / 0.9 / 0.9 / 0.9 | 1.5 / 1.6 / 1.5 / 2.2 / 2.7 | 1.7 / 1.8 / 1.7 / 2.0 / 2.3 |
+| **Dye release** 0.005 / 0.03 / 0.06 / 0.3 (Mike 0.155) | 6.9 / 2.6 / 3.4 / 0.7 | 25.6 / 12.1 / 7.0 / 2.2 | 11.9 / 6.1 / 3.5 / 2.0 |
+
+- **All three reach the shader on both paths and act**, but at Mike's values only release's
+  low end changes the dye much. The dye is renewed toward the color each point should have
+  (its window's state color mixed with what is picked up beneath) at a rate set by release;
+  spread and swirl only move it in between. At release 0.155 a texel is about a quarter renewed
+  every step, so spread blurs it by about a dye texel (4 pt) and swirl carries it a few points
+  along the band before it is renewed. Swirl from 0 to 3 stays within the noise everywhere;
+  spread shows only below about 0.45. Together they still soften the bands: point-to-point
+  sharpness along the ring at rest rises 25-28 % with both at 0 (3 % with swirl alone at 0, 11 % with
+  spread alone at 0).
+- **Release decides how much the other two can show.** At release 0.03 swirl alone at 0 sharpens
+  the resting bands 14 % (GLES 2: 20 %) and both at 0 by about 55 %; in mean color, though, swirl's
+  effect stays within that run-to-run noise, which grows to 2-8 levels at so slow a release.
+  Above about 0.15 a higher release changes nothing more.
+- **At rest the dye settles to nearly the same picture whatever spread (0.45-0.9), swirl (any)
+  or release (0.155-0.3) is**: within the noise. Low spread and low release leave a different
+  resting picture (low spread a sharper one; low release a blurrier one, with old color lingering).
+- **A settings change wakes the goo.** Settings rows stepped with real keys while the goo
+  slept woke it within the first key press (`wakes.settings`), ran about three seconds of
+  simulation (173-194 steps) and the 14-second coast (67 dye passes), on both paths. An open
+  Settings panel left alone keeps it asleep. A click into Settings first wakes it through the
+  focus change (`frame`), so the settings wake is then not counted separately.
+- **Bug, fixed: the coast blurred the dye at full spread.** Each coasting pass scaled flow,
+  pickup and release by the share of a step it stands for (GO24) but mixed every texel by the
+  full Dye spread, so in the coast's last seconds spread kept blurring with nothing renewing the
+  dye, and the resting picture was blurrier than the moving one. Spread now scales with the
+  pass like the rest (`min(1, spread × step)`; awake steps are unchanged).
+  `tests/goo-coast-spread-test.sh` reads the dye as the goo falls asleep and after its coast, at
+  spread 0.9 and 0 (swirl 0): before, the coast moved it 2.8-3.2 levels (RGBA16F) and cut its
+  sharpness 14 % (11 % on GLES 2), against 0.1 at spread 0; now 0.1 and no loss (GLES 2: 0.9,
+  against 1.9 at spread 0). 8/8 on both paths with the fix; 6/8 on both without it.
+- **Settings help now says so**: spread and swirl are subtle and show less the higher release
+  is; release renews picked-up color as well as window color.
+
+Screen pixels along the same ring are not a usable oracle for this: the outline's lumps (Mike's
+mess and drift) differ between runs by 10-13 levels at the ring, more than any of these settings
+change the dye. Physical display and Intel Xe not measured.
