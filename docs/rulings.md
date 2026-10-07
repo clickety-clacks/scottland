@@ -43,6 +43,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13, WK27 |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
+| 10-07 | per-screen: a glide on one screen switches only that screen to live window avoidance, not all screens. | WK13 |
 | 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
 
 ## Window mode keys
@@ -128,6 +129,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-05 | The adapter brings over Omarchy's touchpad scroll speeds: the global touchpad scroll_factor and the per-app scroll_touchpad rules from the user's effective config, updating live; core gets a generic per-app touchpad scroll speed (config-driven app-id matching, no named apps) and alone keeps its current default. Nothing else from the audit's third group. | L17, O28; docs/adapter-gaps.md AG22/AG07 |
 | 10-06 | Screen sharing for Omarchy-adapter users: the adapter's setup builds and installs Gooarchy's patched xdg-desktop-portal-wlr package, replacing Arch's, and reports the replacement. Note for later: once Gooarchy has a package repository, this must migrate to installing from it. | O29; docs/adapter-gaps.md AG02; Gooarchy docs/xdg-desktop-portal-wlr.md |
 | 10-06 | Don't send the xdg-desktop-portal-wlr fixes upstream: we maintain our own public fork (clickety-clacks/xdg-desktop-portal-wlr), the fixes as commits on a branch from the 0.8.4 tag, tagged releases. At the very top of its README, and in CONTRIBUTING.md: AI-written submissions are welcome, but too many AI-written submissions that fail our adversarial review may result in a ban on having submissions accepted. Gooarchy's package builds from the fork's release. Supersedes "get the fixes accepted upstream" and "only until upstream releases them" in the 10-05 screen-sharing ruling. | AG02; Gooarchy docs/xdg-desktop-portal-wlr.md |
+
+## System tools (core/tools)
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-06 | Scottland's system tools are Rust: "group the scripts by subsystem and make a single binary for that subsystem", in one Cargo workspace with a shared library crate and a thin `scottland` front command for discovery. Like the rest of core they run on any distro and never know about Omarchy. | core/tools/README.md |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 

@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64')
 license=('MIT')
-makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput' 'cairo')
+makedepends=('meson' 'ninja' 'wayfire' 'glm' 'libinput' 'cairo' 'cargo')
 options=('!debug')
 
 _root="$startdir/../.."
@@ -14,6 +14,11 @@ _root="$startdir/../.."
 build() {
   arch-meson "$_root/core/plugin" build
   meson compile -C build
+  # Scottland's system tools: every crate under core/tools/bin is one command.
+  local crate
+  for crate in "$_root"/core/tools/bin/*/; do
+    cargo install --locked --path "$crate" --root tools --target-dir cargo --force --no-track
+  done
 }
 
 package_scottland() {
@@ -69,6 +74,12 @@ package_scottland() {
   install -Dm755 "$_root/core/autostart.d/05-import-environment" "$pkgdir/usr/lib/scottland/autostart.d/05-import-environment"
   install -dm755 "$pkgdir/usr/lib/scottland/early-exit.d" "$pkgdir/usr/lib/scottland/session-env.d"
   install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  # The system tools, last: a tool that replaces a script takes its place.
+  local tool
+  for tool in "$srcdir"/tools/bin/*; do
+    install -Dm755 "$tool" "$pkgdir/usr/lib/scottland/libexec/${tool##*/}"
+    ln -sf "/usr/lib/scottland/libexec/${tool##*/}" "$pkgdir/usr/bin/${tool##*/}"
+  done
 }
 
 package_scottland-omarchy() {
