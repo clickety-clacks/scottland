@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=System Stats
+Comment=CPU, memory and load readings
+Exec=scottland-exec -- scottland system-stats
+Icon=utilities-system-monitor
+Categories=System;Monitor;
