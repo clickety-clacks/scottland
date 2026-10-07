@@ -9,6 +9,7 @@ struct target_t
 {
     GLuint texture = 0, fb = 0;
     int width = 0, height = 0;
+    bool alpha = true;
     void release()
     {
         if (texture)
@@ -18,14 +19,18 @@ struct target_t
         texture = fb = 0;
         width = height = 0;
     }
-    bool allocate(int w, int h, bool packed, bool es3, bool framebuffer = true)
+    // `with_alpha` false makes a packed RGB texture: GLES copies from a framebuffer with no
+    // alpha only into one (ES 3.2 §8.6), which strict drivers enforce.
+    bool allocate(int w, int h, bool packed, bool es3, bool framebuffer = true, bool with_alpha = true)
     {
         release();
         width = w;
         height = h;
+        alpha = with_alpha || !packed;
+        GLenum format = alpha ? GL_RGBA : GL_RGB;
         glGenTextures(1, &texture);
         glBindTexture(GL_TEXTURE_2D, texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, packed || !es3 ? GL_RGBA : GL_RGBA16F, w, h, 0, GL_RGBA,
+        glTexImage2D(GL_TEXTURE_2D, 0, packed || !es3 ? format : GL_RGBA16F, w, h, 0, format,
                      packed ? GL_UNSIGNED_BYTE
                      : es3  ? GL_HALF_FLOAT
                             : 0x8D61 /* HALF_FLOAT_OES */,
