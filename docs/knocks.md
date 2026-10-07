@@ -1,8 +1,10 @@
 # Knocks (concept, in discussion with Mike, 2026-10-04)
 
-Status: mental model being formalized; nothing designed or built. Supersedes the narrower
-"agentd as an attention source" framing; agentd, Yoohoo's bell menu, notifications, bells and
-Tightbeam decision requests are all expected to become cases of this.
+Status: the larger knock model is still being formalized. The sender-window lookup in part 2 has a
+scoped implementation candidate; shared-runner build and real-terminal/tmux validation are
+pending. This supersedes the narrower "agentd as an attention source" framing; agentd, Yoohoo's
+bell menu, notifications, bells and Tightbeam decision requests are all expected to become cases
+of this.
 
 ## The bigger picture: attention regimes (Mike, 2026-10-04)
 
@@ -67,6 +69,17 @@ Channels (Mike, 2026-10-04): knocks don't share one channel, so they aren't rank
 Every window (every representation of an object) is a channel for that object's knocks. A knock can
 be high priority and not be represented on the desktop at all. Both coexist: there is an entire desktop
 to render them.
+
+## Sender-window lookup (part 2)
+
+The `scottland-sender-window` command accepts a resolver-v1 sender target and reports every mapped
+window with a complete `visible_exact` proof as `shows`, followed by every complete
+`linked_client` proof as `linked`, each group ordered by window id. A `shows` result suppresses the
+same window from `linked`. It returns `none` only when all applicable resolver collections finish
+with no match; an incomplete or unreachable observation returns `unknown` with no windows. An
+invalid sender is an error with no status. The command only reports: it does not focus, raise, move,
+switch a window or tmux client, or open a terminal. This candidate covers SR-1..4 and SR-6..7 only;
+terminal naming, attribution, and knock delivery or presentation remain outside this part.
 
 ## Open
 
