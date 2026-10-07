@@ -39,10 +39,6 @@ FloatingWindow {
     maximumSize: Qt.size(implicitWidth, implicitHeight)
     color: "transparent"
     visible: typeof state.revision === "number"
-    // No hot reload: a package upgrade rewrites this file in place, and a reload may replace the
-    // card's window. Scottland takes a docked card's window going away as the user closing the
-    // widget, which closes its app (WG5). A running card keeps its code until it is relaunched.
-    Component.onCompleted: Quickshell.watchFiles = false
 
     readonly property string appId: state.app_id || ""
     readonly property string appTitle: state.title || ""
