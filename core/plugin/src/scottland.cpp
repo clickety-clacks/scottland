@@ -7230,6 +7230,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         observe_view(view);
         auto& state = model.windows[view->get_id()];
+        // A transparency toggle is a later user manipulation: end pairing's one-time opaque hold.
+        state.paired_placement.reset();
         if (state.opacity_override == opacity_override_t::none)
         {
             // The frame target is the value already being eased toward, so a toggle during an
