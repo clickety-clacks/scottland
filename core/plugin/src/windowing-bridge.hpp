@@ -95,6 +95,8 @@
     // Test sessions only (SCOTTLAND_TEST_MODEL): a smaller slice budget, so a pass spreads over
     // several ticks as it does on a loaded machine. 0 keeps peek_slice_units.
     size_t avoidance_test_slice_units = 0;
+    // Test sessions only: a window whose avoidance offset never steps toward its target.
+    uint64_t test_frozen_offset = 0;
     // WK37 occlusion pass, resumable per output like the solve it follows: the next window (in
     // front-to-back order) still to measure; absent means start over, SIZE_MAX means done.
     std::map<std::string, size_t> occlusion_next_by_output;
@@ -1534,7 +1536,8 @@
             auto target = grabbed ? scottland::windowing::point{
                 double(offset->translation_x), double(offset->translation_y)} : visual.target;
             bool offset_changed = false;
-            if (std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > .001)
+            if (std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > .001 &&
+                it->first != test_frozen_offset)
             {
                 view->damage(); view->get_transformed_node()->begin_transform_update();
                 if (hints_reduced_motion || (view == focused && inertia_active()))
@@ -1902,6 +1905,11 @@
     {
         if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("slice_units") && data["slice_units"].is_int())
             avoidance_test_slice_units = std::max(0, data["slice_units"].as_int());
+        if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("freeze_offset") && data["freeze_offset"].is_int())
+        {
+            test_frozen_offset = uint64_t(std::max(0, data["freeze_offset"].as_int()));
+            refresh_layout_avoidance();
+        }
         auto reply = wf::ipc::json_ok(); reply["active"] = window_keys.active;
         reply["hint_text_scale"] = hints_palette.text_scale;
         reply["minimum_window_hint_size"] = 48 * hints_palette.text_scale;

@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""WK41: one foreground offset that never settles must not hide the hints behind it.
+
+Run in a caller-owned headless session. Alt and the touch hold are real stipc input. Window
+placement and focus are declared IPC fixture setup. The first case injects the fault through the
+test-session-only `freeze_offset` field of scottland/hints: the front window's avoidance offset
+never steps toward its target. That bypasses no input layer; it stands in for an ease that cannot
+finish (a target that keeps changing). The second case needs no hook: a finger held on the front
+window keeps it where it is drawn while Window mode moves the others. Each case passes when both
+rear windows' hint letters are found in captured pixels while the front offset is still away from
+its target, and absent from the same circles before Alt.
+"""
+import json
+import math
+import os
+from pathlib import Path
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+art = Path(sys.argv[1]).resolve(); art.mkdir(parents=True, exist_ok=True)
+sock = socket.socket(socket.AF_UNIX); sock.settimeout(8); sock.connect(os.environ['WAYFIRE_SOCKET'])
+clients = []
+held = set()
+touching = False
+passes = failures = 0
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+
+def ipc(method, data=None):
+    body = json.dumps(dict(method=method, data=data or {})).encode()
+    sock.sendall(struct.pack('<I', len(body)) + body)
+    def read(n):
+        out = b''
+        while len(out) < n:
+            chunk = sock.recv(n - len(out))
+            if not chunk: raise RuntimeError('compositor disconnected')
+            out += chunk
+        return out
+    result = json.loads(read(struct.unpack('<I', read(4))[0]))
+    if isinstance(result, dict) and 'error' in result: raise RuntimeError(result)
+    return result
+
+
+def check(name, okay, details=''):
+    global passes, failures
+    print(('PASS ' if okay else 'FAIL ') + name + (f': {details}' if details and not okay else ''), flush=True)
+    passes += bool(okay); failures += not okay
+
+
+def wait(fn, what, limit=10):
+    # A hang guard only: every pass criterion is a state, never how long it took.
+    end = time.monotonic() + limit
+    last = None
+    while time.monotonic() < end:
+        last = fn()
+        if last: return last
+        time.sleep(.02)
+    raise RuntimeError(f'{what}: never happened, last {last}')
+
+
+def key(name, down):
+    ipc('stipc/feed_key', dict(key='KEY_' + name, state=down))
+    (held.add if down else held.discard)(name)
+
+
+def rows(): return {h['window']: h for h in ipc('scottland/hints')['hints']}
+def views(): return ipc('window-rules/list-views')
+
+
+def launch(title, color):
+    palette = art / (title + '.json'); palette.write_text(json.dumps(dict(background=color)))
+    clients.append(subprocess.Popen([sys.executable, str(Path(__file__).with_name('hint-style-app.py')),
+                                    title, '420', '320', str(palette)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    return wait(lambda: next((v['id'] for v in views() if v.get('title') == title), None), title + ' mapped')
+
+
+def capture(name):
+    data = subprocess.check_output(['grim', '-t', 'ppm', '-'], timeout=8)
+    (art / (name + '.ppm')).write_bytes(data)
+    fields, pos = [], 0
+    while len(fields) < 4:
+        while data[pos:pos + 1].isspace(): pos += 1
+        end = pos
+        while not data[end:end + 1].isspace(): end += 1
+        fields.append(data[pos:end]); pos = end
+    return int(fields[1]), int(fields[2]), data[pos + 1:]
+
+
+def letter_pixels(shot, row):
+    width, height, pixels = shot
+    b = row['badge']; rgb = tuple(round(c * 255) for c in row['color'])
+    cx, cy, radius = b['x'] + b['size'] / 2, b['y'] + b['size'] / 2, b['size'] / 2
+    return sum(max(abs(pixels[(y * width + x) * 3 + c] - rgb[c]) for c in range(3)) <= 6
+               for y in range(max(0, int(cy - radius)), min(height, int(cy + radius) + 1))
+               for x in range(max(0, int(cx - radius)), min(width, int(cx + radius) + 1))
+               if (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2)
+
+
+def away(row):
+    return math.hypot(row['target_dx'] - row['dx'], row['target_dy'] - row['dy'])
+
+
+def at_rest():
+    return all(away(r) < .1 and abs(r['dx']) < .1 and abs(r['dy']) < .1 for r in rows().values())
+
+
+def run_case(name, front, rears):
+    before = capture(name + '-before-alt')
+    key('LEFTALT', True)
+    # The front window is displaced by Window mode, and its offset does not follow.
+    try:
+        wait(lambda: away(rows()[front]) > 20, name + ': front window given a target away from where it is drawn')
+        shown = wait(lambda: (lambda r: r if all(r[w].get('visible') and r[w].get('pop', 0) >= .999 and
+                                                 r[w].get('badge') for w in rears) else None)(rows()),
+                     name + ': rear hints shown')
+    except RuntimeError as error:
+        check(name + ': front offset away from its target and rear hints shown', False, str(error))
+        key('LEFTALT', False)
+        return
+    shot = capture(name + '-hints')
+    after = rows()
+    record = dict(front_away=away(after[front]), front_offset=(after[front]['dx'], after[front]['dy']),
+                  front_target=(after[front]['target_dx'], after[front]['target_dy']), rears={})
+    check(name + ': front offset still away from its target while rear hints show',
+          away(shown[front]) > 20 and away(after[front]) > 20, json.dumps(record))
+    for w in rears:
+        found, baseline = letter_pixels(shot, shown[w]), letter_pixels(before, shown[w])
+        record['rears'][w] = dict(letter_pixels=found, before_alt=baseline, badge=shown[w]['badge'])
+        check(f'{name}: rear window {w} hint letter drawn (pixels)', found >= 8 and baseline < 4,
+              f'{found} letter pixels, {baseline} before Alt')
+    (art / (name + '.json')).write_text(json.dumps(record, indent=2))
+    key('LEFTALT', False)
+
+
+try:
+    ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/window_mode_tint': 0,
+        'scottland/window_avoidance_always': False, 'scottland/hint_avoidance_always': False})
+    output = ipc('window-rules/list-outputs')[0]['geometry']
+    ids = [launch(title, color) for title, color in
+           (('RearA', '#1f232c'), ('RearB', '#24302a'), ('Front', '#2c2420'))]
+    rect = dict(x=output['x'] + output['width'] // 2 - 210, y=output['y'] + output['height'] // 2 - 160,
+                width=420, height=320)
+    for identifier in ids:
+        ipc('window-rules/configure-view', dict(id=identifier, geometry=rect))
+        ipc('window-rules/focus-view', dict(id=identifier))
+    front, rears = ids[-1], ids[:-1]
+    def centers():
+        return [(g['x'] + g['width'] / 2, g['y'] + g['height'] / 2)
+                for g in (v['geometry'] for v in views() if v['id'] in ids)]
+    wait(lambda: len(centers()) == 3 and max(math.dist(a, b) for a in centers() for b in centers()) < 30,
+         'fixture stacked')
+
+    # Case 1: an offset that cannot ease to its target (fault injection).
+    ipc('scottland/hints', dict(freeze_offset=front))
+    run_case('frozen', front, rears)
+    ipc('scottland/hints', dict(freeze_offset=0))
+    wait(at_rest, 'offsets home after the frozen case')
+
+    # Case 2: a finger held on the front window, through and past its lift (real touch input).
+    frame = next(v for v in views() if v['id'] == front)['geometry']
+    ipc('window-rules/focus-view', dict(id=front))
+    ipc('stipc/touch', dict(finger=0, x=round(frame['x'] + frame['width'] / 2),
+                            y=round(frame['y'] + frame['height'] / 2)))
+    touching = True
+    run_case('held', front, rears)
+    ipc('stipc/touch_release', dict(finger=0)); touching = False
+    print(f'hint stuck offset: {passes} passed, {failures} failed', flush=True)
+    sys.exit(bool(failures))
+finally:
+    for name in list(held):
+        try: key(name, False)
+        except Exception: pass
+    if touching:
+        try: ipc('stipc/touch_release', dict(finger=0))
+        except Exception: pass
+    try: ipc('scottland/hints', dict(freeze_offset=0))
+    except Exception: pass
+    for p in clients:
+        if p.poll() is None: p.terminate()
+    for p in clients:
+        try: p.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            p.kill(); p.wait()
+    sock.close()
