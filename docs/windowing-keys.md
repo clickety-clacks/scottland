@@ -280,9 +280,16 @@ strength 0 (`P`) and then at the strength under test, within 4/255 per channel:
    drawn at its edge.
 5. **Above overlays.** With Scottland Settings open over a tinted window, a pixel of the panel
    inside the window's frame shows the window's tint over the panel.
-6. **No strokes.** Along each window's and card's drawn edge, pixels match check 1 or 2 within the
-   same tolerance (no 2 px band in a hint color), for a mostly covered window, a scaled periphery
-   window, a full-screen window and a widget card, goo on and off.
+6. **No strokes.** For a mostly covered window, a scaled periphery window, a full-screen window
+   and a widget card, goo on and off, at a strength below 100%: a pixel more than one device pixel
+   from every drawn edge matches the mixing rule for the extents it lies in (`P` if none); a pixel
+   within one device pixel of an extent's drawn edge (the antialiased edge, rounded corners
+   included) lies, in every channel and within the tolerance, between the rule's value without
+   that extent and its value with it. `P` already holds the goo dye or the fallback halo's dye and
+   the frame's own edge, so this compares only what the tint adds. Separately, at the test
+   strength the goo or fallback halo around each window still shows its hint-color dye: those
+   pixels differ from the same layout captured before Window mode was entered, as they did before
+   the layer.
 7. **Strength.** At strength 0 every pixel matches `P`; at 7%, 30% and 100% checks 1 and 2 hold
    (at 100% an overlap shows the front color). Moving the slider while hints show retints in the
    next frame. Hint background opacity (WK42) at its own value leaves these pixels unchanged, and
