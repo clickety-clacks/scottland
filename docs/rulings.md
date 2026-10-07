@@ -43,6 +43,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13, WK27 |
 | 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
+| 10-07 | per-screen: a glide on one screen switches only that screen to live window avoidance, not all screens. | WK13 |
 | 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
 
 ## Window mode keys
