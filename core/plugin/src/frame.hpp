@@ -16,6 +16,7 @@
 
 #include "goo.hpp"
 #include "goo-shape.hpp"
+#include "offscreen.hpp"
 #include "edge-style.hpp"
 #include "state-dye.hpp"
 #include <wayfire/view-transform.hpp>
@@ -1457,7 +1458,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         if (!wf::get_core().is_gles2())
         {
             // Other renderers: plain scaled texture, no rounding or halo.
-            auto tex = this->get_texture(data.target.scale);
+            auto tex = transformer_texture(self.get(), data.target.scale, children, _shown_on);
             tex->set_filter_mode(WLR_SCALE_FILTER_BILINEAR);
             data.pass->add_texture(tex, data.target, self->view_2d_transformer_t::get_bounding_box(),
                 data.damage, self->get_alpha());
@@ -1483,7 +1484,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
             // A retained presentation owns all displayed pixels. Rendering the live
             // subtree here would immediately recreate a cache just transferred to it.
             auto tex = self->presentation ? wf::gles_texture_t{} :
-                wf::gles_texture_t{this->get_texture(data.target.scale)};
+                wf::gles_texture_t{transformer_texture(self.get(), data.target.scale, children, _shown_on)};
             bool wants_shape = self->uses_alpha_shape();
             if (wants_shape && (self->presentation || self->morphing() ||
                 last_presentation != self->presentation.get() || last_morphing != self->morphing()))

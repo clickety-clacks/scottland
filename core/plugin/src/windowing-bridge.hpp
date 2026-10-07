@@ -1107,7 +1107,7 @@
             if (!hint_visuals.count(e.id))
             {
                 hint_visual visual; visual.view = view->weak_from_this();
-                visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
+                visual.offset = std::make_shared<scottland::view_2d_t>(view);
                 hint_visuals[e.id] = std::move(visual);
             }
             auto found = hint_visuals.find(e.id);
@@ -1121,7 +1121,7 @@
                 if (visual.hint) visual.hint->relocate();
                 if (visual.fullscreen_tint) wf::scene::remove_child(visual.fullscreen_tint);
                 visual.fullscreen_tint.reset(); visual.view = view->weak_from_this();
-                visual.offset = std::make_shared<wf::scene::view_2d_transformer_t>(view);
+                visual.offset = std::make_shared<scottland::view_2d_t>(view);
                 visual.offset_attached = false;
             }
             // Window avoidance is a visual-only reservation for hint circles. It normally

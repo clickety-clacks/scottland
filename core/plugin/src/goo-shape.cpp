@@ -1,4 +1,5 @@
 #include "goo-shape.hpp"
+#include "offscreen.hpp"
 #include "goo-gl.hpp"
 #include "goo-shaders.hpp"
 #include <chrono>
@@ -141,7 +142,7 @@ bool shape_cache_t::update(glm::vec4 bounds, const std::function<void(const wf::
     int w = cw + 2 * shape_t::padding, h = ch + 2 * shape_t::padding;
     if (p->capture.allocate({w, h}, 1) == wf::buffer_reallocation_result_t::FAILED)
         return false;
-    wf::render_target_t target{p->capture};
+    auto target = aux_target(p->capture);
     float sx = bounds.z / cw, sy = bounds.w / ch;
     target.geometry = {bounds.x - shape_t::padding * sx, bounds.y - shape_t::padding * sy, w * sx, h * sy};
     target.scale = 1 / std::max(sx, sy);
