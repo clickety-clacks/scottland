@@ -28,6 +28,7 @@ class alt_mode
     std::function<uint64_t()> focused;
     std::function<void(uint64_t held, uint64_t partner)> pair; // WK36: held an unfocused window's hint
     std::function<void(uint64_t)> solo; // WK35: held the focused window's hint
+    std::function<void(uint64_t, const char*)> hold_declined; // a due hold did nothing, and why
     void begin(std::vector<hint_entry> windows, uint64_t focused);
     void end();
     void refresh(std::vector<hint_entry> windows);
@@ -45,7 +46,8 @@ class alt_mode
     // Another key (Tab, an arrow, F4, Alt release) ends a pending hold: it is not a hold, so a
     // focused window's press that waits for release acts now, before that key (WK35).
     void interrupt();
-    // Esc: end a pending hold and drop a focused window's waiting press without acting.
+    // Esc: end a pending hold and drop a waiting press (a focused window's, or a double-tap's)
+    // without acting.
     void cancel_pending() { hold.reset(); waiting_tap.reset(); }
     void tab(bool backwards);
     void close_selected();
@@ -63,10 +65,13 @@ class alt_mode
     bool repeat_candidate = false;
     struct pending_hold { uint64_t id; char key; uint32_t pressed; uint64_t partner; };
     std::optional<pending_hold> hold;
-    // WK35: a press on the focused window's hint acts on release, so a hold can solo it unmoved.
-    struct pending_tap { uint64_t id; char key; };
+    // A press that acts on release, so a hold can still claim it: the focused window's (WK35, a
+    // hold solos it unmoved), and a repeat that may be a double-tap (WK15, Mike 2026-10-07: a
+    // double-tap is two releases within double_tap_delay; a hold on the second press expires it).
+    struct pending_tap { uint64_t id; char key; bool repeat; uint32_t first_release; };
     std::optional<pending_tap> waiting_tap;
-    void act_waiting_tap();
+    // released: the waiting key's release time; none when another key or Alt release ends it.
+    void act_waiting_tap(std::optional<uint32_t> released = std::nullopt);
     void activate(uint64_t id, bool double_tap);
 };
 }

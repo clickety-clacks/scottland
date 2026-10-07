@@ -1058,9 +1058,12 @@
     {
         auto held = wf::toplevel_cast(view_by_id(held_id));
         auto partner = wf::toplevel_cast(view_by_id(partner_id));
-        if (!held || !partner || held == partner || deferred_pair.is_connected()) return;
+        auto declined = [&] (const char *why) { LOGI("scottland: pairing ", held_id, " with ", partner_id, " declined: ", why); };
+        if (!held || !partner || held == partner) return declined("not two windows");
+        if (deferred_pair.is_connected()) return declined("another pair is waiting for full screen to end");
         auto held_shown = represented_view(held_id), partner_shown = represented_view(partner_id);
-        if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output()) return;
+        if (!held_shown || !partner_shown || !held_shown->get_output() || !partner_shown->get_output())
+            return declined("a window is not shown");
         // Full screen ends first, as for an explicit cycle (WK12); the pair uses restored sizes.
         bool waiting = false;
         for (auto window : {held, partner})
@@ -1073,10 +1076,11 @@
         {
             if (attempts < 10) deferred_pair.set_timeout(100, [=] () {
                 deferred_pair_ready.run_once([=] () { pair_windows(held_id, partner_id, on_held_screen, attempts + 1); }); });
+            else declined("full screen did not end within a second");
             return;
         }
         auto plan = plan_pair(held_id, partner_id, on_held_screen);
-        if (!plan) return;
+        if (!plan) return declined("no pair layout");
         auto [left, right, fit, output] = *plan;
         LOGI("scottland: pairing ", held_id, " with ", partner_id, " at ", fit.scale * 100,
             "%, gap ", fit.gap, ", margin ", fit.margin);
@@ -2221,6 +2225,8 @@
         window_keys.pair = [=] (uint64_t held, uint64_t partner) {
             keyboard_selection = true; pair_windows(held, partner); };
         window_keys.solo = [=] (uint64_t id) { solo_window(id); };
+        window_keys.hold_declined = [=] (uint64_t id, const char *why) {
+            LOGI("scottland: hint hold on ", id, " declined: ", why); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
         wf::get_core().connect(&on_window_key);

@@ -104,16 +104,17 @@ void alt_mode::letter(char key, uint32_t time_ms)
         if (hint == prefix)
         {
             prefix.clear();
-            bool double_tap = repeat_candidate && last_hint == e.id;
+            bool repeat = repeat_candidate && last_hint == e.id;
+            uint32_t first_release = last_release;
             last_hint = e.id; last_key = key; awaiting_release = true;
             repeat_candidate = false;
             // Remember who had focus before the press, which may select and focus (WK6).
             uint64_t partner = focused ? focused() : selected;
-            // A double-tap acts at once and never becomes a hold. The focused window's press
-            // waits for release (WK35): a tap then acts, a hold solos it without a first step.
-            // Every other press acts at once (WK6) and may still become a pairing hold (WK36).
-            if (double_tap) { activate(e.id, true); return; }
-            if (partner == e.id) waiting_tap = pending_tap{e.id, key};
+            // Two presses wait for release, so a hold can claim them first: a repeat, which is a
+            // double-tap only if released in time (WK15), and the focused window's press, which a
+            // tap acts and a hold solos without a first step (WK35). Every other press acts at
+            // once (WK6) and may still become a pairing hold (WK36).
+            if (repeat || partner == e.id) waiting_tap = pending_tap{e.id, key, repeat, first_release};
             else activate(e.id, false);
             if (active) hold = pending_hold{e.id, key, time_ms, partner};
             return;
@@ -130,13 +131,16 @@ void alt_mode::release(char key, uint32_t time_ms)
         last_release = time_ms;
         awaiting_release = false;
     }
-    if (waiting_tap && waiting_tap->key == key) act_waiting_tap();
+    if (waiting_tap && waiting_tap->key == key) act_waiting_tap(time_ms);
 }
-void alt_mode::act_waiting_tap()
+void alt_mode::act_waiting_tap(std::optional<uint32_t> released)
 {
     if (!waiting_tap) return;
-    auto id = waiting_tap->id; waiting_tap.reset();
-    if (active) activate(id, false);
+    auto tap = *waiting_tap; waiting_tap.reset();
+    // A double-tap is two releases within the delay (Mike, 2026-10-07). A repeat that another
+    // key or Alt release ends before its own release was no hold, so it is the double-tap it began.
+    bool double_tap = tap.repeat && (!released || uint32_t(*released - tap.first_release) <= double_tap_delay);
+    if (active) activate(tap.id, double_tap);
 }
 void alt_mode::interrupt()
 {
@@ -155,12 +159,17 @@ bool alt_mode::hold_due(uint32_t time_ms)
 {
     if (!active || !hold || uint32_t(time_ms - hold->pressed) < hold_delay) return false;
     auto held = *hold; hold.reset();
-    if (!held.partner) return true; // nothing had focus: nothing to pair with
-    // The hold was this press's gesture: the next press of the hint is never its double-tap,
-    // and its next cycle starts from wherever the hold leaves the window.
-    last_hint = 0; cycling = 0;
-    if (held.partner == held.id) // WK35: the waiting press never acts; the hold is the solo
-    { waiting_tap.reset(); if (solo) solo(held.id); return true; }
+    // The hold was this press's gesture: a waiting press never acts (a repeat's double-tap
+    // expires, Mike 2026-10-07), and the next press of the hint is never its double-tap.
+    waiting_tap.reset(); last_hint = 0;
+    if (!held.partner)
+    {
+        if (hold_declined) hold_declined(held.id, "nothing had focus to pair with");
+        return true;
+    }
+    // Its next cycle starts from wherever the hold leaves the window.
+    cycling = 0;
+    if (held.partner == held.id) { if (solo) solo(held.id); return true; } // WK35
     if (hint_action) hint_action(held.id);
     if (pair) pair(held.id, held.partner);
     return true;

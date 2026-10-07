@@ -168,11 +168,12 @@ See [docs/windowing-keys.md](../docs/windowing-keys.md): WK1–WK42 (window mode
 start-relative cycles, double-tap to rail, inertial arrows/center resize, input ownership, full screen and focused-window-anchored temporary visual exposure for interior window hints, Super+arrows navigation WK40, hint settling WK41 and hint-background opacity WK42)
 and WP1–WP8 (zone memory, including saved peripheral positions preserved when entering pairing, side choice, shared rectangle placement, and which zone a spot reads as). Statuses and verification are recorded there.
 
-WK15–WK16 double-taps use the gap from the final key release to the first key press of
-the repeated complete hint. The 300 ms default therefore leaves the same repeat gap
-for single- and multi-letter hints. Real human-timing validation on plumbus covers
-focused/unfocused windows, both avoidance settings, physical-repeat filtering and
-the immediate WK6/WK34 first-press behavior; see the report in that design document.
+WK15–WK16 double-taps are two final-key releases of the same complete hint within the
+interval (Mike, 2026-10-07), so the repeat acts on its release and a hold on it expires the
+double-tap. Until 2026-10-07 the interval ran from the release to the repeat's first press;
+the human-timing validation on the test machine (focused/unfocused windows, both avoidance settings,
+physical-repeat filtering, the immediate WK6/WK34 first press) covered that measure; see the
+report in that design document.
 
 L29 regression: `state-model-test.py` re-grabs an ordinary dropped window during the hold
 and cancels with real Esc input; the scene must return to its ordinary layer and the hold ends.

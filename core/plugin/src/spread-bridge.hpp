@@ -317,7 +317,11 @@
     {
         auto window = wf::toplevel_cast(view_by_id(id));
         auto shown = represented_view(id);
-        if (!window || !shown || !shown->get_output() || drag->view) return;
+        if (!window || !shown || !shown->get_output() || drag->view)
+        {
+            LOGI("scottland: solo ", id, " declined: ", drag->view ? "a drag is in progress" : "the window is not shown");
+            return;
+        }
         if (window->pending_fullscreen())
         {
             LOGI("scottland: solo ", id, ": full screen, nothing to spread");
@@ -329,7 +333,11 @@
         scottland::spread::box solo{at.x - g.width / 2.0, at.y - g.height / 2.0, at.x + g.width / 2.0, at.y + g.height / 2.0};
         auto captured = std::chrono::steady_clock::now();
         auto snapshot = spread_snapshot(output, id, solo);
-        if (!snapshot) return;
+        if (!snapshot)
+        {
+            LOGI("scottland: solo ", id, " declined: no spread for its screen");
+            return;
+        }
         auto signature = spread_signature(output, id);
         double snapshot_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - captured).count();
         bool widget_before = bool(link_of_window(window));

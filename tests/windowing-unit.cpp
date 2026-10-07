@@ -169,7 +169,7 @@ int main()
     check(moves==std::vector<D>{D::center,D::periphery,D::widget,D::center,D::periphery} &&
         widget_hint_selections==1,"widget next press starts its full center-first loop without starting another peek");
     mode.end(); moves.clear(); mode.double_tap_delay=3000; mode.begin(entries,0); press('d');
-    tap_at('d', clock + 3080);
+    tap_at('d', clock + 3000);
     check(moves==std::vector<D>{D::center},"a repeated hint during a collapsed-widget peek takes the center step even inside double-tap timing");
     peek_active=false; mode.double_tap_delay=300;
     for (unsigned slot=0; slot<3; ++slot)
@@ -179,8 +179,8 @@ int main()
         check(selections==before && moves.size()==1 && moves[0]==cycle_order(D(slot))[0], "selected window skips redundant select in each start zone");
     }
     mode.end(); moves.clear(); mode.begin(entries,1);
-    press('a'); tap_at('a',clock+380);
-    check(moves==std::vector<D>{D::periphery,D::widget},"double tap at 300 ms after release sends to rail immediately");
+    press('a'); tap_at('a',clock+300);
+    check(moves==std::vector<D>{D::periphery,D::widget},"double tap with releases 300 ms apart sends to rail on release");
     mode.refresh({{1,0,zone::left_rail,true}});
     tap_at('a',clock+500);
     check(moves.size()==2,"double tap on widget issues no move");
@@ -191,8 +191,10 @@ int main()
     mode.double_tap_delay=50; moves.clear(); mode.end(); mode.begin(entries,2);
     press('s'); tap_at('s',clock+131); press('s');
     check(moves==std::vector<D>{D::center,D::widget,D::periphery},"configured interval leaves slow presses in periphery loop");
-    mode.end(); moves.clear(); mode.begin(entries,2); press('s'); tap_at('s',clock+130);
-    check(moves==std::vector<D>{D::center,D::widget},"configured interval recognizes its inclusive boundary");
+    mode.end(); moves.clear(); mode.begin(entries,0); press('s'); tap_at('s',clock+100,30);
+    check(moves==std::vector<D>{D::widget},"configured interval recognizes its inclusive boundary between releases");
+    mode.end(); moves.clear(); mode.begin(entries,0); press('s'); tap_at('s',clock+100,31);
+    check(moves==std::vector<D>{D::center},"a second release past the configured interval is an ordinary press");
     mode.end(); moves.clear(); mode.begin(entries,0); press('a'); press('s'); tap_at('a',clock+100);
     check(moves.empty() && selected==1,"another hint resets cycle and double-tap identity");
     mode.end(); moves.clear(); mode.begin({{1,0,zone::right_periphery,false}},1); press('a');
@@ -219,14 +221,17 @@ int main()
     mode.refresh({}); check(mode.hint_width==1,"empty desktop resets hint width");
     mode.end(); press('a');check(!mode.active,"inactive controller does nothing");
     mode.double_tap_delay=300; moves.clear(); mode.begin(entries,0);
+    tap_at('a',1000,120); tap_at('a',1300,120);
+    check(moves==std::vector<D>{D::widget},"120 ms dwell plus 180 ms gap (releases 300 ms apart) double-taps to rail");
+    mode.end(); moves.clear(); mode.begin(entries,0);
     tap_at('a',1000,120); tap_at('a',1370,120);
-    check(moves==std::vector<D>{D::widget},"120 ms dwell plus 250 ms gap double-taps an unselected window to rail");
+    check(moves==std::vector<D>{D::periphery},"120 ms dwell plus 250 ms gap (releases 370 ms apart) is two presses");
     mode.end(); moves.clear(); mode.begin({{1,1,zone::center,false},{27,26,zone::center,false}},0);
     tap_at('a',2000,120); tap_at('s',2140,120);
-    tap_at('a',2510,120);
-    check(moves.empty(),"human-timed repeated prefix alone cannot move the selection");
-    tap_at('s',2650,120);
-    check(moves==std::vector<D>{D::widget},"multi-letter repeat begins within the release gap and acts only on completion");
+    tap_at('a',2300,60);
+    check(moves.empty(),"repeated prefix alone cannot move the selection");
+    tap_at('s',2380,60);
+    check(moves==std::vector<D>{D::widget},"multi-letter repeat acts only on completion, final releases within the delay");
     mode.end(); mode.refresh({}); moves.clear(); mode.begin(entries,0);
     mode.letter('a',3000); mode.letter('a',3100); mode.release('a',3180); // the selected window acts on release (WK35)
     check(moves==std::vector<D>{D::periphery},"no final-key release means no double-tap candidate");

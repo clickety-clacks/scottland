@@ -59,6 +59,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-05 | A pointer or touchpad hold that has fired is an offer while the fingers or button stay down, like the drag audition: dragging out of the hotspot cancels it (everything returns, the drag carries on); releasing inside commits. | WK35, WK36 |
 | 10-04 | The focused window's hint acts on key release, so a hold can solo without first moving it. | WK35 |
 | 10-04 | Double-tap must work at human timing (measured from release to next press). | WK15 |
+| 10-07 | "maybe doubletap is a reasonable delay between mouse up's. if there's a hold on the second tap, it should automatically expire the double-tap". A double-tap is two releases within the double-tap delay (replacing the 10-04 measure from release to next press); if the second press becomes a hold, the double-tap expires and the hold solos or pairs. A hint hold that does nothing says why in Scottland's log. (Mike's diagnosis: "i think i know what it is i think i am double-tap-holding (tap to select, tap and hold to solo) is being read as a double-tap and converting it to a widget".) | WK15, WK39 |
 
 ## Pairing (WK36)
 
