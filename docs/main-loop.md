@@ -107,7 +107,11 @@ ownership is established outside the handover file.
   `SCOTTLAND_INTERNAL_HANDOVER=<id>;version=<model version>;fds=...;leases=...`, written after the
   model version it is bound to. Each duplicated handle has an owner from the moment it exists; on
   any failure, an allocation included, the widgets are torn down as in an ordinary unload and the
-  duplicates closed. At most 256 widgets are handed over; the rest unload.
+  duplicates closed. That undo is prepared before the first handle is duplicated and allocates
+  nothing: each widget's restoration is its own, so one that throws doesn't skip the rest, and
+  each lease is returned in place through a weak holder (no copy, no lookup by id). Stated limit:
+  the Wayfire damage after a node is enabled again may allocate. At most 256 widgets are handed
+  over; the rest unload.
 - **The incoming copy**, first thing in `init()`, owns what the environment list names, with
   fixed-capacity storage: parsing, validation and ownership allocate nothing, so an allocation
   failure can't drop a handle or a lease between the list and its owner. The list is
@@ -115,6 +119,8 @@ ownership is established outside the handover file.
   in between (a rollback) changes it, and a stale list owns nothing. It then consumes the receipt
   (renamed to `.reload-importing`; only one naming this compositor process), and imports a file
   whose id matches the list, or a legacy file (the installed writer's) of the receipt's session.
+  A legacy file larger than the import capacity loses no ownership: what doesn't fit is returned
+  or closed at once and noted, and duplicates are found by scanning the earlier entries.
   A handle needs an open pidfd that no other entry named and, if its process is alive, the recorded
   pid; a reaped launcher is owned-dead. Adopting a link takes each resource into its destination
   before the pending owner lets go of it; a failure while adopting one link returns its lease
@@ -131,9 +137,11 @@ ownership is established outside the handover file.
 - Tests: `tests/reload-handover-test.py [--from INSTALLED_CHECKOUT]` (headless; the upgrade
   rehearsal starts from the installed build): lease balance by the plugin's `hidden` field and by
   captured pixels (each app paints its own color), descriptor counts and sentinels, the fault
-  matrix (including allocation failures while exporting and adopting) and a queued config reload
-  behind the debounce. `tests/fault-unit.sh`: allocation failures injected into acquisition,
-  validation, export and adoption ordering, and into the worker's thread. Test sessions reload with
+  matrix (including allocation failures while exporting and adopting, a restoration and a lease
+  return that throw, and the installed build's file across a lowered capacity) and a queued config
+  reload behind the debounce. `tests/fault-unit.sh`: allocation failures injected into acquisition,
+  validation, export, its undo and adoption ordering, legacy ownership at 256, 257 and 300 entries
+  with every allocation failing, and the worker's thread. Test sessions reload with
   `SCOTTLAND_TEST_RELOAD_DIR` so plugin copies and config stay out of the machine's real runtime
   directory.
 

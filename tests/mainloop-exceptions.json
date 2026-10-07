@@ -42,7 +42,7 @@
     "aarch64_30": 38.28
    },
    "owner": "Phase 3",
-   "what": "simulation step (contains goo_energy_readback); the first frame of a newly loaded copy also builds its renderer: 200-400 ms on nacelle after a reload"
+   "what": "simulation step (contains goo_energy_readback); the first frame of a newly loaded copy also builds its renderer: 200-400 ms on the aarch64 test machine after a reload"
   },
   "hints_tick": {
    "status": "open",
@@ -328,8 +328,8 @@
    "status": "closed",
    "closed_by": "not reached in these runs (scope gone or not exercised)",
    "last_open_measured_ms": {
-    "nacelle_10": 25.3,
-    "nacelle_30": 65.3
+    "aarch64_10": 25.3,
+    "aarch64_30": 65.3
    },
    "measured_ms": {},
    "owner": "Phase 3",
@@ -339,8 +339,8 @@
    "status": "closed",
    "closed_by": "not reached in these runs (scope gone or not exercised)",
    "last_open_measured_ms": {
-    "nacelle_10": 23.6,
-    "nacelle_30": 44.0
+    "aarch64_10": 23.6,
+    "aarch64_30": 44.0
    },
    "measured_ms": {},
    "owner": "Phase 3",
@@ -350,8 +350,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 27.9,
-    "nacelle_30": 19.5
+    "aarch64_10": 27.9,
+    "aarch64_30": 19.5
    },
    "measured_ms": {
     "aarch64_10": 0.84,
@@ -364,8 +364,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 11.2,
-    "nacelle_30": 67.3
+    "aarch64_10": 11.2,
+    "aarch64_30": 67.3
    },
    "measured_ms": {
     "aarch64_10": 1.15,
@@ -378,8 +378,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 8.0,
-    "nacelle_30": 30.9
+    "aarch64_10": 8.0,
+    "aarch64_30": 30.9
    },
    "measured_ms": {
     "aarch64_10": 1.92,
@@ -392,8 +392,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 19.2,
-    "nacelle_30": 46.9
+    "aarch64_10": 19.2,
+    "aarch64_30": 46.9
    },
    "measured_ms": {
     "aarch64_10": 0.0,
@@ -406,19 +406,19 @@
    "status": "closed",
    "closed_by": "not reached in these runs (scope gone or not exercised)",
    "last_open_measured_ms": {
-    "nacelle_10": 6.1,
-    "nacelle_30": 12.4
+    "aarch64_10": 6.1,
+    "aarch64_30": 12.4
    },
    "measured_ms": {},
    "owner": "Phase 4",
-   "what": "GO19 breathing shrink slice (2.5 ms on plumbus, slower on nacelle)"
+   "what": "GO19 breathing shrink slice (2.5 ms on the x86 test machine, slower on the aarch64 one)"
   },
   "tighten_breathing": {
    "status": "closed",
    "closed_by": "not reached in these runs (scope gone or not exercised)",
    "last_open_measured_ms": {
-    "nacelle_10": 6.1,
-    "nacelle_30": 12.4
+    "aarch64_10": 6.1,
+    "aarch64_30": 12.4
    },
    "measured_ms": {},
    "owner": "Phase 4",
@@ -428,8 +428,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 2.3,
-    "nacelle_30": 5.3
+    "aarch64_10": 2.3,
+    "aarch64_30": 5.3
    },
    "measured_ms": {
     "aarch64_10": 1.14,
@@ -442,8 +442,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 18.1,
-    "nacelle_30": 2.5
+    "aarch64_10": 18.1,
+    "aarch64_30": 2.5
    },
    "measured_ms": {
     "aarch64_10": 0.09,
@@ -456,8 +456,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 0.6,
-    "nacelle_30": 4.3
+    "aarch64_10": 0.6,
+    "aarch64_30": 4.3
    },
    "measured_ms": {
     "aarch64_10": 0.59,
@@ -470,8 +470,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 3.4,
-    "nacelle_30": 2.8
+    "aarch64_10": 3.4,
+    "aarch64_30": 2.8
    },
    "measured_ms": {
     "aarch64_10": 1.19,
@@ -484,8 +484,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 3.4,
-    "nacelle_30": 2.7
+    "aarch64_10": 3.4,
+    "aarch64_30": 2.7
    },
    "measured_ms": {
     "aarch64_10": 1.16,
@@ -498,8 +498,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 2.6,
-    "nacelle_30": 1.0
+    "aarch64_10": 2.6,
+    "aarch64_30": 1.0
    },
    "measured_ms": {
     "aarch64_10": 1.17,
@@ -512,8 +512,8 @@
    "status": "closed",
    "closed_by": "measured under 2 ms",
    "last_open_measured_ms": {
-    "nacelle_10": 1.3,
-    "nacelle_30": 2.3
+    "aarch64_10": 1.3,
+    "aarch64_30": 2.3
    },
    "measured_ms": {
     "aarch64_10": 0.23,
@@ -526,8 +526,8 @@
    "status": "closed",
    "closed_by": "not reached in these runs (scope gone or not exercised)",
    "last_open_measured_ms": {
-    "nacelle_10": 3.6,
-    "nacelle_30": 2.2
+    "aarch64_10": 3.6,
+    "aarch64_30": 2.2
    },
    "measured_ms": {},
    "owner": "D1 (Phase 0: bounded at 2 ms + overshoot)",
