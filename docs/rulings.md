@@ -112,6 +112,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-03 | Watercolor wallpaper: local pickup and spread, in all of the goo (stronger where thick), persistent after motion settles. | GO24 |
 | 10-04 | Pre-computed breath frames: a ceiling (about 50) and widen spacing above it; never fall off a cliff to the expensive path silently. | GO26 |
 
+## Settings
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-07 | Direct file edits update the settings UI and running desktop, and settings UI changes update the file. | S4, S5, S6, S21 |
+
 ## Omarchy adapter, distro and flavorings
 
 | Date | Ruling | Where |

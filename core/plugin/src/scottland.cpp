@@ -4482,6 +4482,50 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return true;
     }
 
+    /** IPC scottland/release-options {options}: hand the named scottland/ options back to the
+     *  config file. wayfire/set-config-options locks every option it sets, and a locked option
+     *  ignores the file until restart, so a value Settings previewed would outrank a later hand
+     *  edit. Clearing the lock leaves each value as it is; the next file reload applies the
+     *  file's value (S4, docs/rulings.md "file wins"). Options outside scottland/ are left alone. */
+    wf::ipc::method_callback release_options_method = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("options") || !data["options"].is_array())
+        {
+            return wf::ipc::json_error("release-options needs options: an array of option names");
+        }
+
+        int released = 0;
+        for (size_t i = 0; i < data["options"].size(); ++i)
+        {
+            if (!data["options"][i].is_string())
+            {
+                return wf::ipc::json_error("each option must be a section/name string");
+            }
+
+            auto name = data["options"][i].as_string();
+            if (name.rfind("scottland/", 0) != 0)
+            {
+                continue;
+            }
+
+            auto option = wf::detail::load_raw_option(name);
+            if (option && option->is_locked())
+            {
+                // Locks are counted, one per set-config-options call; drain them all.
+                while (option->is_locked())
+                {
+                    option->set_locked(false);
+                }
+
+                ++released;
+            }
+        }
+
+        auto reply = wf::ipc::json_ok();
+        reply["released"] = released;
+        return reply;
+    };
+
     /** IPC scottland/present {window}: "I want to see this now" (L30). A widget's window opens
      *  as if its widget were clicked; a window in a side zone flies to the middle of its screen,
      *  growing to 100% there; a window already in the center zone stays where it is. All are
@@ -7382,6 +7426,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widget-action", widget_action);
         ipc_repo->register_method("scottland/widget-mode", widget_mode_ipc);
         ipc_repo->register_method("scottland/present", present_method);
+        ipc_repo->register_method("scottland/release-options", release_options_method);
         ipc_repo->register_method("scottland/widget-traits", widget_traits);
         ipc_repo->register_method("scottland/attention", attention_method);
         wf::get_core().tx_manager->connect(&on_new_transaction);
@@ -7548,6 +7593,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widget-action");
         ipc_repo->unregister_method("scottland/widget-mode");
         ipc_repo->unregister_method("scottland/present");
+        ipc_repo->unregister_method("scottland/release-options");
         ipc_repo->unregister_method("scottland/widget-traits");
         ipc_repo->unregister_method("scottland/attention");
         wf::get_core().bindings->rem_binding(&on_minimize_key);

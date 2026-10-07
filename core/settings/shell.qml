@@ -7,7 +7,8 @@ import Quickshell.Wayland
 
 // Scottland Settings: layout, goo and Window mode. Changes preview live while
 // an overlay with input only on border handles shows the five zones on every screen. Save writes
-// ~/.config/scottland/layout.ini; Cancel or Escape restores the values from when it opened.
+// the settings into ~/.config/scottland/layout.ini and solar.ini, keeping their other lines;
+// Cancel or Escape restores the values from when it opened (or the files' newer ones).
 //
 // The scale curve sets how windows shrink across the side zones: t = 0 is the center zone's
 // edge, t = 1 the widget rail. The endpoints are the largest and smallest scale; points in
@@ -234,30 +235,19 @@ ShellRoot {
     running: true
     stdout: StdioCollector {
       onStreamFinished: {
-        try {
-          const values = JSON.parse(text)
-          root.unsupported = values.unsupported || []
-          for (const name of ["center_width", "rail_width", "min_scale", "max_scale", "blend_width"])
-            if (values[name] === undefined) values[name] = root.savedValue(name, null)
-          if (values.scale_curve === undefined) values.scale_curve = root.savedText("scale_curve")
-          const points = root.parseCurve(values.scale_curve) || [
-            { x: 0, y: values.max_scale !== null ? Math.max(values.max_scale, values.min_scale || 0.05) : 1 },
-            { x: 1, y: values.min_scale !== null ? values.min_scale : 0.2 }]
-          root.original = { center_width: values.center_width ?? root.defaults.center_width,
-            rail_width: values.rail_width ?? root.defaults.rail_width,
-            blend_width: values.blend_width ?? root.defaults.blend_width, curve: points }
-        } catch (e) {
-          root.original = root.defaults
-        }
-        const goo = root.gooDefaults()
+        // The running values come first; the file covers settings the running plugin can't
+        // report (it predates them, or scottland-ctl failed).
         let values = {}
         try { values = JSON.parse(text) } catch (e) {}
-        for (const key of Object.keys(goo)) {
-          if (values[key] !== undefined) goo[key] = values[key]
-          else if (key === "goo") goo[key] = root.savedText(key) === "true"
-          else if (typeof goo[key] === "string") goo[key] = root.savedText(key) || goo[key]
-          else goo[key] = root.savedValue(key, goo[key])
-        }
+        root.unsupported = values.unsupported || []
+        const file = root.layoutState(saved.text())
+        root.layoutSeen = file
+        for (const name of ["center_width", "rail_width", "min_scale", "max_scale", "blend_width", "scale_curve"])
+          if (values[name] === undefined) values[name] = file[name]
+        root.original = { center_width: values.center_width, rail_width: values.rail_width,
+          blend_width: values.blend_width, curve: root.curveFrom(values) }
+        const goo = root.gooDefaults()
+        for (const key of Object.keys(goo)) goo[key] = values[key] !== undefined ? values[key] : file[key]
         root.original = Object.assign({}, root.original, { goo: goo })
         root.gooValues = Object.assign({}, goo)
         root.gooPoints = root.parseCurve(goo.goo_falloff, 0) || root.exponentialPoints
@@ -265,28 +255,25 @@ ShellRoot {
         root.railWidth = root.original.rail_width
         root.blendWidth = root.original.blend_width
         root.curvePoints = root.original.curve
-        const motion = Object.assign({},root.motionDefaults)
-        for (const k of Object.keys(motion))
-          motion[k] = values[k] !== undefined ? values[k] : typeof motion[k] === "boolean" ? root.savedText(k) === "true" : typeof motion[k] === "string" ? root.savedText(k) : root.savedValue(k,motion[k])
-        root.motionValues = motion
-        const opacity=Object.assign({},root.opacityDefaults),widgets=Object.assign({},root.widgetDefaults)
-        for (const group of [opacity,widgets]) for (const k of Object.keys(group))
-          group[k] = values[k] !== undefined ? values[k] : root.savedValue(k,group[k])
-        root.opacityValues=opacity;root.widgetValues=widgets
+        const motion=Object.assign({},root.motionDefaults),opacity=Object.assign({},root.opacityDefaults),widgets=Object.assign({},root.widgetDefaults)
+        for (const group of [motion,opacity,widgets]) for (const k of Object.keys(group))
+          group[k] = values[k] !== undefined ? values[k] : file[k]
+        root.motionValues=motion;root.opacityValues=opacity;root.widgetValues=widgets
         root.original = Object.assign({},root.original,{motion:Object.assign({},motion),
           opacity:Object.assign({},opacity),widgets:Object.assign({},widgets)})
-        const solar=Object.assign({},root.solarDefaults)
         // A missing key keeps the shipped default, as scottland-solar-theme reads it (S21).
-        for(const k of ["enabled","allow_ip","location_set"])
-          if(root.solarText(k)!==null)solar[k]=root.solarText(k)==="true"
-        for(const k of ["latitude","longitude"]){const n=parseFloat(root.solarText(k));if(!isNaN(n))solar[k]=n}
-        root.solarValues=solar;root.originalSolar=Object.assign({},solar)
+        const solar=root.solarState(solarFile.text())
+        root.solarSeen=solar
+        root.solarValues=Object.assign({},solar);root.originalSolar=Object.assign({},solar)
         root.solarLatitudeEdited=solar.location_set;root.solarLongitudeEdited=solar.location_set
         root.loaded = true
       }
     }
   }
 
+  // The files are the source of truth (docs/rulings.md, "File wins"). An edit to one while the
+  // panel is open takes over each setting whose line it changed, in the panel, in the running
+  // session and as the value Cancel goes back to; unsaved changes to other settings stay.
   FileView {
     id: saved
     path: root.layoutFile
@@ -294,6 +281,10 @@ ShellRoot {
     blockLoading: true  // read before the running values arrive
     blockWrites: true   // finish the small layout file before the IPC acknowledgement quits
     atomicWrites: true
+    watchChanges: true
+    onFileChanged: reload()
+    onLoaded: root.layoutChanged(text())
+    onLoadFailed: root.layoutChanged("")
   }
 
   FileView {
@@ -303,55 +294,236 @@ ShellRoot {
     blockLoading: true
     blockWrites: true
     atomicWrites: true
-  }
-  function solarText(name) {
-    const match=solarFile.text().match(new RegExp("^"+name+"\\s*=\\s*(.*)$","m"))
-    return match?match[1].trim():null
+    watchChanges: true
+    onFileChanged: reload()
+    onLoaded: root.solarChanged(text())
+    onLoadFailed: root.solarChanged("")
   }
 
-  // Values last saved by this app; used for settings the running session can't report.
-  function savedText(name) {
-    const names = name === "goo_dye_density" ? [name, "goo_dye_strength"] : [name]
-    for (const key of names) {
-      const match = saved.text().match(new RegExp("^\\s*" + key + "\\s*=\\s*(.*)$", "m"))
-      if (match) return match[1].trim()
+  // Set once Save or Cancel has sent its last values: later file events change nothing.
+  property bool closing: false
+  // What each file said when last read, setting by setting (shipped defaults for missing keys).
+  property var layoutSeen: ({})
+  property var solarSeen: ({})
+
+  // layout.ini as Wayfire reads it: "#" starts a comment ("\#" is a "#"), a line ending in "\"
+  // continues on the next, "name = value" splits at the first "=", and the last valid line wins.
+  function wayfireEntries(text) {
+    const logical = [], entries = []
+    const lines = text.split("\n")
+    let joining = false
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i]
+      const comment = /(^|[^\\])#/.exec(line)
+      if (comment) line = line.slice(0, comment.index + comment[1].length)
+      line = line.replace(/\\#/g, "#").replace(/\s+$/, "")
+      if (joining) { logical[logical.length - 1].text += line; logical[logical.length - 1].last = i }
+      else logical.push({ text: line, first: i, last: i })
+      const current = logical[logical.length - 1]
+      joining = current.text.endsWith("\\")
+      if (joining) { current.text = current.text.slice(0, -1); joining = !current.text.endsWith("\\") }
     }
-    return ""
+    let section = null
+    for (const line of logical) {
+      const trimmed = line.text.trim(), equal = line.text.indexOf("=")
+      if (trimmed.length >= 2 && trimmed[0] === "[" && trimmed[trimmed.length - 1] === "]") {
+        section = trimmed.slice(1, -1)
+        entries.push({ header: true, section: section, first: line.first, last: line.last })
+      } else if (section !== null && equal >= 0)
+        entries.push({ section: section, key: line.text.slice(0, equal).trim(),
+          value: line.text.slice(equal + 1).trim(), first: line.first, last: line.last })
+    }
+    return entries
   }
 
-  function savedValue(name, fallback) {
-    const value = parseFloat(savedText(name))
-    return isNaN(value) ? fallback : value
+  // Option types, as the plugin's metadata declares them; the rest are decimals.
+  readonly property var intSettings: ["alt_hold_delay", "minimize_hold_delay", "widget_attention_peek_duration",
+    "widget_make_room_dwell", "widget_peek_enter_delay", "widget_peek_leave_delay", "window_double_tap_delay", "window_hold_delay"]
+  readonly property var textSettings: ["scale_curve", "goo_falloff", "attention_color_family"]
+  readonly property var boolSettings: ["goo", "goo_breath_keys", "window_avoidance_always", "hint_avoidance_always"]
+  // A value Wayfire would reject is undefined: Wayfire keeps the value it had.
+  function wayfireValue(name, text) {
+    if (textSettings.indexOf(name) >= 0) return text
+    if (boolSettings.indexOf(name) >= 0) {
+      const word = text.toLowerCase()
+      return word === "true" || word === "1" ? true : word === "false" || word === "0" ? false : undefined
+    }
+    if (intSettings.indexOf(name) >= 0) return /^(0|-?[1-9]\d*)$/.test(text) ? Number(text) : undefined
+    return /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text) ? Number(text) : undefined
+  }
+
+  // Every setting layout.ini can hold, from its [scottland] lines or the shipped default.
+  function layoutState(text) {
+    const state = Object.assign({ center_width: defaults.center_width, rail_width: defaults.rail_width,
+      blend_width: defaults.blend_width, scale_curve: "", min_scale: 0.2, max_scale: 1 },
+      gooDefaults(), motionDefaults, opacityDefaults, widgetDefaults)
+    let legacyAvoidance = false
+    for (const entry of wayfireEntries(text)) {
+      if (entry.header || entry.section !== "scottland") continue
+      // The config build reads an old dye strength line as dye density; the plugin honors either
+      // avoidance option.
+      const key = entry.key === "goo_dye_strength" ? "goo_dye_density" : entry.key
+      if (!(key in state) && key !== "hint_avoidance_always") continue
+      const value = wayfireValue(key, entry.value)
+      if (value === undefined) continue
+      if (key === "hint_avoidance_always") legacyAvoidance = value
+      else state[key] = value
+    }
+    if (legacyAvoidance) state.window_avoidance_always = true
+    return state
+  }
+
+  // The plugin's curve: scale_curve when it's valid, otherwise a line between the largest and
+  // smallest scale.
+  function curveFrom(values) {
+    return parseCurve(values.scale_curve) || [
+      { x: 0, y: Math.max(values.max_scale, values.min_scale || 0.05) }, { x: 1, y: values.min_scale }]
+  }
+
+  function layoutChanged(text) {
+    const now = layoutState(text), seen = layoutSeen
+    layoutSeen = now
+    if (!loaded || closing) return
+    const changed = key => now[key] !== seen[key]
+    const taken = group => {
+      const update = {}
+      for (const key of Object.keys(group)) if (changed(key)) update[key] = now[key]
+      return update
+    }
+    const zone = {}
+    for (const key of ["center_width", "rail_width", "blend_width"]) if (changed(key)) zone[key] = now[key]
+    if (changed("scale_curve") || changed("min_scale") || changed("max_scale")) zone.curve = curveFrom(now)
+    const goo = taken(gooValues), motion = taken(motionValues), opacity = taken(opacityValues), widgets = taken(widgetValues)
+    original = Object.assign({}, original, zone, { goo: Object.assign({}, original.goo, goo),
+      motion: Object.assign({}, original.motion, motion), opacity: Object.assign({}, original.opacity, opacity),
+      widgets: Object.assign({}, original.widgets, widgets) })
+    if ("center_width" in zone) centerWidth = zone.center_width
+    if ("rail_width" in zone) railWidth = zone.rail_width
+    if ("blend_width" in zone) blendWidth = zone.blend_width
+    if ("curve" in zone) curvePoints = zone.curve
+    if ("goo_falloff" in goo) gooPoints = parseCurve(goo.goo_falloff, 0) || exponentialPoints
+    // Each change below pushes every value, so the running session follows the file too.
+    if (Object.keys(goo).length) gooValues = Object.assign({}, gooValues, goo)
+    if (Object.keys(motion).length) motionValues = Object.assign({}, motionValues, motion)
+    if (Object.keys(opacity).length) opacityValues = Object.assign({}, opacityValues, opacity)
+    if (Object.keys(widgets).length) widgetValues = Object.assign({}, widgetValues, widgets)
+  }
+
+  // solar.ini as scottland-solar-theme reads it (Python's configparser): whole-line "#" and ";"
+  // comments, case-insensitive names split at the first "=" or ":", a line indented deeper than
+  // its name continues the value, and [DEFAULT] fills in for [solar].
+  function solarEntries(text) {
+    const lines = text.split("\n"), entries = []
+    let section = null, entry = null, indent = 0
+    for (let i = 0; i < lines.length; i++) {
+      const value = lines[i].trim(), depth = lines[i].search(/\S/)
+      if (/^[#;]/.test(value)) continue
+      if (!value) { if (entry) entry.value += "\n"; continue }
+      if (entry && depth > indent) { entry.value += "\n" + value; entry.last = i; continue }
+      indent = depth
+      const header = /^\[(.+)\]/.exec(value)
+      if (header) {
+        section = header[1]; entry = null
+        entries.push({ header: true, section: section, first: i, last: i })
+        continue
+      }
+      const option = /^(.*?)\s*([=:])\s*(.*)$/.exec(value)
+      if (section === null || !option || !option[1]) continue
+      entry = { section: section, key: option[1].toLowerCase(), value: option[3], first: i, last: i }
+      entries.push(entry)
+    }
+    for (const e of entries) if (!e.header) e.value = e.value.replace(/\s+$/, "")
+    return entries
+  }
+
+  function solarState(text) {
+    const state = Object.assign({}, solarDefaults), found = {}, fallback = {}
+    let hasSolar = false
+    for (const entry of solarEntries(text)) {
+      if (entry.header) hasSolar = hasSolar || entry.section === "solar"
+      else if (entry.section === "solar") found[entry.key] = entry.value
+      else if (entry.section === "DEFAULT") fallback[entry.key] = entry.value
+    }
+    if (!hasSolar) return state
+    const raw = Object.assign(fallback, found)
+    const yes = value => ["true", "yes", "1", "on"].indexOf(value.toLowerCase()) >= 0
+    const degrees = (value, limit) => {
+      const n = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(value || "") ? Number(value) : NaN
+      return isFinite(n) && Math.abs(n) <= limit ? n : null
+    }
+    for (const key of ["enabled", "allow_ip"]) if (raw[key] !== undefined) state[key] = yes(raw[key])
+    const latitude = degrees(raw.latitude, 90), longitude = degrees(raw.longitude, 180)
+    if (latitude !== null) state.latitude = latitude
+    if (longitude !== null) state.longitude = longitude
+    // The location counts only with both coordinates valid, as the theme uses it.
+    state.location_set = raw.location_set !== undefined && yes(raw.location_set) && latitude !== null && longitude !== null
+    return state
+  }
+
+  function solarChanged(text) {
+    const now = solarState(text), seen = solarSeen
+    solarSeen = now
+    if (!loaded || closing) return
+    const update = {}
+    for (const key of Object.keys(now)) if (now[key] !== seen[key]) update[key] = now[key]
+    if (!Object.keys(update).length) return
+    solarValues = Object.assign({}, solarValues, update)
+    originalSolar = Object.assign({}, originalSolar, update)
+    if ("location_set" in update) { solarLatitudeEdited = now.location_set; solarLongitudeEdited = now.location_set }
+  }
+
+  // Writes values into a file's section in place: a setting's first line takes the new value, its
+  // later lines (and lines under an old name) go, and settings the file lacks are added at the
+  // end of the section. Every other line, comment and section stays as it was.
+  function writeSection(text, entries, section, values, renamed) {
+    const lines = text === "" ? [] : text.replace(/\n$/, "").split("\n")
+    const output = lines.map(line => [line]), done = {}
+    let end = -1
+    for (const entry of entries) {
+      if (entry.section !== section) continue
+      end = entry.last
+      const key = renamed[entry.key] || entry.key
+      if (entry.header || !(key in values)) continue
+      for (let i = entry.first; i <= entry.last; i++) output[i] = []
+      if (!done[key]) output[entry.first] = [key + " = " + values[key]]
+      done[key] = true
+    }
+    const missing = Object.keys(values).filter(key => !done[key]).map(key => key + " = " + values[key])
+    if (end >= 0) output[end] = output[end].concat(missing)
+    else if (missing.length) output.push((lines.length ? [""] : []).concat(["[" + section + "]"], missing))
+    return [].concat(...output).join("\n") + "\n"
   }
 
   function save() {
     push.stop()
+    closing = true
     send(centerWidth, railWidth, curvePoints, blendWidth)
     sendGoo(gooValues)
     sendBatch(motionValues)
     sendBatch(opacityValues)
     sendBatch(widgetValues)
-    solarFile.setText("# Written by Scottland Settings.\n[solar]\n"+Object.keys(solarValues).map(k=>k+" = "+solarValues[k]+"\n").join(""))
-    saved.setText("# Written by Scottland settings.\n[scottland]\n"
-      + "center_width = " + centerWidth.toFixed(3) + "\n"
-      + "rail_width = " + railWidth.toFixed(3) + "\n"
-      + "blend_width = " + blendWidth.toFixed(1) + "\n"
-      + "scale_curve = " + curveText(curvePoints) + "\n"
-      + "min_scale = " + minScale.toFixed(3) + "\n"
-      + "max_scale = " + maxScale.toFixed(3) + "\n"
-      + Object.keys(gooValues).map(k => k + " = " + gooValues[k] + "\n").join("")
-      + Object.keys(motionValues).map(k => k + " = " + motionValues[k] + "\n").join("")
-      + Object.keys(opacityValues).map(k => k + " = " + opacityValues[k] + "\n").join("")
-      + Object.keys(widgetValues).map(k => k + " = " + widgetValues[k] + "\n").join(""))
-    live.write("flush\n")
+    const solar = {}
+    for (const key of Object.keys(solarValues)) solar[key] = String(solarValues[key])
+    solarFile.setText(writeSection(solarFile.text(), solarEntries(solarFile.text()), "solar", solar, {}))
+    const layout = { center_width: centerWidth.toFixed(3), rail_width: railWidth.toFixed(3),
+      blend_width: blendWidth.toFixed(1), scale_curve: curveText(curvePoints),
+      min_scale: minScale.toFixed(3), max_scale: maxScale.toFixed(3) }
+    for (const group of [gooValues, motionValues, opacityValues, widgetValues])
+      for (const key of Object.keys(group)) layout[key] = String(group[key])
+    saved.setText(writeSection(saved.text(), wayfireEntries(saved.text()), "scottland", layout,
+      { goo_dye_strength: "goo_dye_density", hint_avoidance_always: "window_avoidance_always" }))
+    // The files decide again; the config watcher's rebuild loads the saved values.
+    live.write("release\nflush\n")
   }
 
   function cancel() {
     push.stop()
+    closing = true
     if (original) { send(original.center_width, original.rail_width, original.curve, original.blend_width); sendGoo(original.goo); sendBatch(original.motion); sendBatch(original.opacity); sendBatch(original.widgets) }
     solarValues=Object.assign({},originalSolar)
     solarLatitudeEdited=originalSolar.location_set;solarLongitudeEdited=originalSolar.location_set
-    live.write("flush\n")
+    // The files decide again, including any hand edit the open panel was holding back.
+    live.write("release\nreload\nflush\n")
   }
 
   function testRect(item) {
@@ -391,7 +563,8 @@ ShellRoot {
       windowTintSettings:Object.assign(root.testRect(windowTintSettings),{rowHeight:windowTintSettings.rowHeight}),
       widgetSettings:root.testRect(widgetSettings),solarSettings:root.testRect(solarSettings),
       solarEnable:root.testRect(solarEnable),solarNetwork:root.testRect(solarNetwork),
-      motion:root.motionValues,opacity:root.opacityValues,widgets:root.widgetValues,solar:root.solarValues,values:root.gooValues,palette:root.palette})
+      motion:root.motionValues,opacity:root.opacityValues,widgets:root.widgetValues,solar:root.solarValues,values:root.gooValues,palette:root.palette,
+      layout:{center_width:root.centerWidth,rail_width:root.railWidth,blend_width:root.blendWidth},original:root.original,originalSolar:root.originalSolar})
     }
   }
 

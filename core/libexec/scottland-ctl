@@ -5,9 +5,14 @@
   scottland-ctl set scale_curve "0:1 0.4:0.6 1:0.2"
   scottland-ctl set min_scale 0.3        apply a value to the running session (not saved)
   scottland-ctl stdin                    apply "name value" lines from stdin (used by the settings app)
+  scottland-ctl release                  hand every setting back to the config files and reload them
   scottland-ctl windows                  list open windows: id, app-id, zone, scale, title
   scottland-ctl present 42               bring window 42 (or its widget's window) to the middle, focused
   scottland-ctl option scottland/sounds  print an option's live value (any Wayfire option)
+
+A value set here outranks the config files until it is released: Wayfire locks every option
+set over IPC. The settings app releases its settings when it closes, so the files win again
+(docs/rulings.md, "file wins").
 
 Outside a Scottland session it runs inside one through scottland-exec.
 """
@@ -36,6 +41,8 @@ TEXT = ("scale_curve", "goo_falloff", "attention_color_family")
 # Renamed settings: the old name is still accepted (Mike, 2026-10-05: dye strength is dye density).
 LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always", "goo_dye_strength": "goo_dye_density"}
 ACCEPTED_NAMES = set(NAMES) | set(LEGACY_OPTIONS)
+# Every option a setting can write, legacy names included.
+RELEASED_OPTIONS = sorted(f"scottland/{name}" for name in ACCEPTED_NAMES)
 
 LIVE_OPTIONS = {}
 
@@ -71,6 +78,17 @@ def call(sock, method, data):
     while len(reply) < size:
         reply += sock.recv(size - len(reply))
     return json.loads(reply)
+
+
+def release(sock):
+    """Unlock the settings' options so the config files decide their values again. Values are
+    left as they are until the next config reload. Returns how many were locked, or None when
+    the running plugin predates scottland/release-options (the session needs a reload)."""
+    reply = call(sock, "scottland/release-options", {"options": RELEASED_OPTIONS})
+    if "released" not in reply:
+        print(f"release: {reply.get('error', reply)}", file=sys.stderr, flush=True)
+        return None
+    return reply["released"]
 
 
 def main():
@@ -117,6 +135,12 @@ def main():
         reply = call(sock, "scottland/present", {"window": int(sys.argv[2])})
         print(json.dumps(reply))
         sys.exit(1 if "error" in reply else 0)
+    elif command == "release" and len(sys.argv) == 2:
+        released = release(sock)
+        if released:
+            call(sock, "wayfire/reload-config-metadata", {})
+        print(json.dumps({"released": released}))
+        sys.exit(1 if released is None else 0)
     elif command == "windows":
         for view in call(sock, "scottland/layout-state", {}).get("views", []):
             print(f"{view['id']:>5}  {view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")
@@ -124,6 +148,14 @@ def main():
         for line in sys.stdin:
             if line.strip() == "flush":
                 print("flushed", flush=True)
+                continue
+            # Save releases and lets the config watcher's rebuild load the new file; Cancel also
+            # reloads, so a hand edit the panel was holding back takes effect.
+            if line.strip() == "release":
+                release(sock)
+                continue
+            if line.strip() == "reload":
+                call(sock, "wayfire/reload-config-metadata", {})
                 continue
             if line.startswith("batch "):
                 values = json.loads(line[6:])

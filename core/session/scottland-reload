@@ -40,8 +40,8 @@ previous=$(cat "$runtime/plugins/current" 2>/dev/null || true)
 echo "$fresh" >"$runtime/plugins/current"
 
 # Rewrite the config (new settings take their saved values; the plugin list names the fresh
-# copy), register any new settings, then swap the plugin. The plugin list is also set over IPC:
-# values set over IPC (e.g. by the settings app) take precedence over the file.
+# copy), register any new settings, then swap the plugin. The plugin list is also set over IPC,
+# because Wayfire keeps a value set over IPC in preference to the file.
 "$hooks/libexec/scottland-build-config" >/dev/null
 # Widgets stay through a reload: the outgoing plugin sees this mark and hands them over.
 reloading="$runtime/${WAYLAND_DISPLAY:-wayland}.reloading"
@@ -68,6 +68,9 @@ if reply.get("error"): sys.exit(f"scottland-reload: {reply['error']}")
 time.sleep(1)
 PY
 rm -f "$reloading"
+# Settings values left set over IPC (a settings panel that didn't close cleanly, or a plugin that
+# predates releasing them) would keep outranking the files: the files win (docs/rulings.md).
+"$hooks/libexec/scottland-ctl" release >/dev/null || true
 
 # Old copies are no longer loaded.
 for old in "$runtime"/plugins/libscottland-*.so; do
