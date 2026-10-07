@@ -540,7 +540,16 @@ require("omarchy.plugins.ask")
             install_home.mkdir()
             install_log = temp / "install-launches.txt"
             install_agent_log = temp / "install-agent-prompts.txt"
+            # Setup also builds and installs Gooarchy's portal with network, makepkg and sudo. Here
+            # the download fails and sudo is refused, so setup takes its documented degraded path on
+            # any host: it says the portal is missing, still shows the report, and exits 1.
+            offline_bin = temp / "offline-bin"
+            offline_bin.mkdir()
+            for tool in ("curl", "sudo"):
+                (offline_bin / tool).write_text("#!/bin/sh\nexit 1\n")
+                (offline_bin / tool).chmod(0o755)
             install_env = test_env(install_home, hooks, install_log, fake_bin)
+            install_env["PATH"] = str(offline_bin) + os.pathsep + install_env["PATH"]
             install_env["SCOTTLAND_AGENT_PROMPT_LOG"] = str(install_agent_log)
             install_env["SCOTTLAND_DEFAULT_AGENT"] = "codex-test"
             install_env["OMARCHY_PATH"] = str(defaults)
@@ -550,7 +559,9 @@ require("omarchy.plugins.ask")
             completed = subprocess.run([str(setup)], env=install_env, capture_output=True, text=True, timeout=10)
             install_report = Path(install_env["XDG_STATE_HOME"]) / "scottland/omarchy-overrides.txt"
             check("O20 setup generates and opens the report at install",
-                  completed.returncode == 0 and install_report.is_file() and
+                  completed.returncode == 1 and
+                  "Gooarchy's xdg-desktop-portal-wlr is not installed" in completed.stderr and
+                  install_report.is_file() and
                   "This report lists shortcuts and mappings from the live Omarchy configuration" in install_report.read_text() and
                   wait_prompt_count(install_agent_log, 1) and not install_log.exists(),
                   completed.stdout + completed.stderr)

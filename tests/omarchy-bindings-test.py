@@ -44,6 +44,22 @@ def ran(name, args):
     return lambda calls: (name, args) in calls
 
 
+def settled_count(count, quiet=0.3, timeout=3.0):
+    """count() once no new call has landed for `quiet` seconds; returns (ok, count). A command
+    launched just before a key's release may log after it; a repeat still running (Omarchy's 40
+    per second) never goes quiet."""
+    deadline = time.monotonic() + timeout
+    last, changed = count(), time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        now = count()
+        if now != last:
+            last, changed = now, time.monotonic()
+        elif time.monotonic() - changed >= quiet:
+            return True, last
+    return False, last
+
+
 with Session(fixture, "hl-omarchy-bindings") as session:
     check("Lua host is running", session.wait_lua_host()[0])
 
@@ -119,10 +135,10 @@ with Session(fixture, "hl-omarchy-bindings") as session:
     ok, calls = fixture.wait_calls(lambda c: c.count(volume_up) >= 3, timeout=5)
     check("held volume-up repeats", ok, calls.count(volume_up))
     session.key("KEY_VOLUMEUP", False)
-    settled = fixture.calls().count(volume_up)
+    quiet, settled = settled_count(lambda: fixture.calls().count(volume_up))
     time.sleep(0.5)  # an intended hold: repeats must stop with the key
-    check("volume-up stops repeating on release", fixture.calls().count(volume_up) == settled,
-          (settled, fixture.calls().count(volume_up)))
+    check("volume-up stops repeating on release", quiet and fixture.calls().count(volume_up) == settled,
+          (quiet, settled, fixture.calls().count(volume_up)))
     session.key("KEY_MUTE", True)
     ok, calls = fixture.wait_calls(lambda c: mute in c)
     time.sleep(1.0)  # an intended hold past the repeat delay
@@ -154,11 +170,11 @@ with Session(fixture, "hl-omarchy-bindings") as session:
     ok, calls = fixture.wait_calls(lambda c: c[before:].count(volume_up) >= 3, timeout=5)
     check("held locked volume-up repeats on the lock screen", ok, calls[before:].count(volume_up))
     session.key("KEY_VOLUMEUP", False)
-    settled = fixture.calls()[before:].count(volume_up)
+    quiet, settled = settled_count(lambda: fixture.calls()[before:].count(volume_up))
     time.sleep(0.5)  # an intended hold: repeats must stop with the key
     after = fixture.calls()[before:]
-    check("locked volume-up stops repeating on release", after.count(volume_up) == settled,
-          (settled, after.count(volume_up)))
+    check("locked volume-up stops repeating on release", quiet and after.count(volume_up) == settled,
+          (quiet, settled, after.count(volume_up)))
     check("unlocked-only shortcuts do not run on the lock screen (F9, Super+F7, F8)",
           not [c for c in after if c[0] == "voxtype" or c in (("mark", "mod-release"), ("mark", "super-accept"),
                                                               ("mark", "fn-press"), ("mark", "fn-release"))],
