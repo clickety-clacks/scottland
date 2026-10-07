@@ -60,6 +60,9 @@
         char rule = '-';
         scottland::windowing::rectangle room{0, 0, 0, 0};
         std::chrono::steady_clock::time_point last_offset_step{};
+        // WK41: when hints behind this window stop waiting for its offset to settle. Set when
+        // the offset starts moving, from the time its ease needs; empty while settled.
+        std::chrono::steady_clock::time_point settle_deadline{};
     };
     std::map<uint64_t, hint_visual> hint_visuals; // by represented application id
     std::string declutter_signature;
@@ -1516,6 +1519,22 @@
         // own timer, without a layout change to wake this one.
         bool awaiting_settle = false;
         bool moving = false, animation_moving = false;
+        // A touch hold may become a lift: until it resolves, the window stays where it is
+        // drawn, so the lift grabs it there (decision 9); a tap then eases it home as focused.
+        auto grabbed = [&] (const wayfire_toplevel_view& view) {
+            return drag->view == view || (hold_finger >= 0 && hold_view.lock().get() == view.get());
+        };
+        const auto step_time = std::chrono::steady_clock::now();
+        // WK41: whether a hint behind this window still waits for its offset. A grabbed window
+        // stays where it is drawn. An offset that has not settled in the time its ease needs
+        // (a target that keeps changing, an ease that cannot finish) stops holding hints back.
+        auto holds_back = [&] (const hint_visual& other) {
+            auto other_view = wf::toplevel_cast(other.view.lock());
+            if (!other_view || grabbed(other_view) || std::hypot(other.target.x - other.offset->translation_x,
+                other.target.y - other.offset->translation_y) < .1) return false;
+            return other.settle_deadline == std::chrono::steady_clock::time_point{} ||
+                step_time < other.settle_deadline;
+        };
         for (auto it = hint_visuals.begin(); it != hint_visuals.end();)
         {
             auto& visual = it->second; auto view = wf::toplevel_cast(visual.view.lock());
@@ -1530,10 +1549,8 @@
                 it = hint_visuals.erase(it); continue;
             }
             auto offset = visual.offset;
-            // A touch hold may become a lift: until it resolves, the window stays where it is
-            // drawn, so the lift grabs it there (decision 9); a tap then eases it home as focused.
-            const bool grabbed = drag->view == view || (hold_finger >= 0 && hold_view.lock().get() == view.get());
-            auto target = grabbed ? scottland::windowing::point{
+            const bool held = grabbed(view);
+            auto target = held ? scottland::windowing::point{
                 double(offset->translation_x), double(offset->translation_y)} : visual.target;
             bool offset_changed = false;
             if (std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > .001 &&
@@ -1566,10 +1583,16 @@
                 visual.last_offset_step = std::chrono::steady_clock::now();
                 offset_changed = true;
             }
-            bool unsettled = !grabbed &&
-                std::hypot(target.x - offset->translation_x, target.y - offset->translation_y) > 0.1;
+            const double distance = std::hypot(target.x - offset->translation_x, target.y - offset->translation_y);
+            bool unsettled = !held && distance > 0.1;
             moving |= unsettled;
             if (!unsettled) { offset->translation_x = target.x; offset->translation_y = target.y; }
+            // The ease covers at most AUTOMATIC_MAX_SPEED and then closes in geometrically; a
+            // second covers that tail and a retarget early in the ease.
+            if (!unsettled) visual.settle_deadline = {};
+            else if (visual.settle_deadline == std::chrono::steady_clock::time_point{})
+                visual.settle_deadline = step_time + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(distance / scottland::motion::AUTOMATIC_MAX_SPEED + 1.0));
             if (offset_changed) { view->get_transformed_node()->end_transform_update(); view->damage(); }
             if (window_keys.active)
             {
@@ -1582,7 +1605,7 @@
                 // WK41: what can still move this hint. A widget's circle rides its own widget,
                 // whose declutter relaxes every anchor on the output, windows' and widgets'.
                 bool placement_ready = solved(it->first, view->get_output()) && !animating(it->first) &&
-                    (!widget || !unsettled);
+                    (!widget || !holds_back(visual));
                 for (auto other_id : by_output[view->get_output()])
                 {
                     if (widget)
@@ -1593,10 +1616,8 @@
                     // A rear window can start fully covered. Wait for its and foreground
                     // offsets to settle; the minimum-size fallback appears even if the
                     // settled region still cannot contain the circle.
-                    auto& other = hint_visuals[other_id];
                     if (other_id != it->first && rank(other_id) >= rank(it->first)) continue;
-                    badge_ready &= std::hypot(other.target.x - other.offset->translation_x,
-                        other.target.y - other.offset->translation_y) < .1;
+                    badge_ready &= !holds_back(hint_visuals[other_id]);
                     placement_ready &= !animating(other_id);
                 }
                 if (!badge_ready && visual.hint)
