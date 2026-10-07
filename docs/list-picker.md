@@ -7,7 +7,7 @@ the core installation and runs in Scottland's existing Quickshell layer.
 ## Command and input/output
 
 ```text
-scottland-list-picker [--title TEXT] [--prompt TEXT]
+scottland-list-picker [--prompt TEXT]
 ```
 
 The command reads standard input through EOF. Each LF-delimited line is one entry;
@@ -21,9 +21,8 @@ diagnostics or other data to standard output. On cancellation, standard output i
 empty and the exit status is nonzero. Errors also exit nonzero and report any
 diagnostic on standard error.
 
-`--title` supplies the picker title and `--prompt` supplies its instruction text;
-either, both or neither may be given. These arguments affect only the UI and never
-the selected output.
+`--prompt` supplies optional instruction text. It affects only the UI and never
+appears in the selected output.
 
 ## Interaction and placement
 
@@ -39,11 +38,11 @@ the selected output.
 
 | ID | Invariant | Status |
 |---|---|---|
-| LP1 | `scottland-list-picker` reads line-delimited entries from stdin and returns exactly one chosen entry plus LF on stdout with status 0; cancel returns no stdout and a nonzero status. | not built |
-| LP2 | The picker narrows by case-insensitive substring while preserving input order; keyboard and pointer can choose an entry, and Escape or clicking outside cancels. | not built |
-| LP3 | Optional title and prompt arguments affect presentation only; they never appear in the selected output. | not built |
-| LP4 | The picker uses Scottland's core palette, opens on the focused output, and runs in the existing Quickshell layer. | not built |
-| LP5 | The command is part of the core installation and can be called by any distro and any Scottland tool without a distro-specific adapter. | not built |
+| LP1 | `scottland-list-picker` reads line-delimited entries from stdin and returns exactly one chosen entry plus LF on stdout with status 0; cancel returns no stdout and a nonzero status. | source implemented; plumbus verification pending |
+| LP2 | The picker narrows by case-insensitive substring while preserving input order; keyboard and pointer can choose an entry, and Escape or clicking outside cancels. | source implemented; plumbus verification pending |
+| LP3 | The optional prompt argument affects presentation only; it never appears in the selected output. | source implemented; plumbus verification pending |
+| LP4 | The picker uses Scottland's core palette, opens on the focused output, and runs in the existing Quickshell layer. | source implemented; plumbus verification pending |
+| LP5 | The command is part of the core installation and can be called by any distro and any Scottland tool without a distro-specific adapter. | source implemented; plumbus verification pending |
 
 This contract defines one single-choice list picker. It does not include icons,
 previews, multi-select, history, ranking, other picker modes, a new dependency,

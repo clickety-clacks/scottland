@@ -152,7 +152,7 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 ## List picker
 
 The generic list picker command and its command/IO contract are in
-[../docs/list-picker.md](../docs/list-picker.md) (LP1–LP5). Status: not built.
+[../docs/list-picker.md](../docs/list-picker.md) (LP1–LP5). Source implemented; plumbus verification pending.
 
 ## Session
 
