@@ -7237,9 +7237,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // The frame target is the value already being eased toward, so a toggle during an
             // animation samples the shown mode once instead of chasing its changing alpha.
             double shown_opacity = 1.0;
-            if (auto frame = frame_of(view, false))
+            if (!view->pending_fullscreen())
             {
-                shown_opacity = frame->opacity_target;
+                if (auto frame = frame_of(view, false))
+                {
+                    shown_opacity = frame->opacity_target;
+                }
             }
             state.opacity_override = shown_opacity < 1.0 ? opacity_override_t::opaque :
                 opacity_override_t::translucent;
