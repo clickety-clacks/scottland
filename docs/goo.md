@@ -2838,7 +2838,7 @@ window is held mid-drag, 1.5-3 after a focus change and at rest.
   every step, so spread blurs it by about a dye texel (4 pt) and swirl carries it a few points
   along the band before it is renewed. Swirl from 0 to 3 stays within the noise everywhere;
   spread shows only below about 0.45. Together they still soften the bands: point-to-point
-  sharpness along the ring at rest rises 25-28 % with both at 0 (3 % with swirl alone at 0, 11 % with
+  sharpness along the ring at rest rises 25-28 % with both at 0 (3-4 % with swirl alone at 0, 7-12 % with
   spread alone at 0).
 - **Release decides how much the other two can show.** At release 0.03 swirl alone at 0 sharpens
   the resting bands 14 % (GLES 2: 20 %) and both at 0 by about 55 %; in mean color, though, swirl's
@@ -2858,12 +2858,16 @@ window is held mid-drag, 1.5-3 after a focus change and at rest.
   dye, and the resting picture was blurrier than the moving one. Spread now scales with the
   pass like the rest (`min(1, spread × step)`; awake steps are unchanged).
   `tests/goo-coast-spread-test.sh` reads the dye as the goo falls asleep and after its coast, at
-  spread 0.9 and 0 (swirl 0): before, the coast moved it 2.8-3.2 levels (RGBA16F) and cut its
-  sharpness 14 % (11 % on GLES 2), against 0.1 at spread 0; now 0.1 and no loss (GLES 2: 0.9,
-  against 1.9 at spread 0). 8/8 on both paths with the fix; 6/8 on both without it.
+  spread 0.9 and 0 (swirl 0): before, the coast moved it 2.8-3.2 levels against 0.1 at spread 0
+  and cut its sharpness 14 % (RGBA16F; GLES 2: 2.4-2.6 levels against 1.9, and 11 %); now 0.1
+  and no loss (GLES 2: 0.9 against 1.9). With the fix 8/8 on both paths. Without it GLES 2 fails
+  both blur checks (6/8); the RGBA16F figures without the fix come from an earlier draft of the
+  test, and the final test has not yet run there.
 - **Settings help now says so**: spread and swirl are subtle and show less the higher release
   is; release renews picked-up color as well as window color.
 
 Screen pixels along the same ring are not a usable oracle for this: the outline's lumps (Mike's
 mess and drift) differ between runs by 10-13 levels at the ring, more than any of these settings
-change the dye. Physical display and Intel Xe not measured.
+change the dye. Physical display and Intel Xe not measured. The table and the sharpness figures
+were measured before the coast fix above, so their resting columns include the coast's blur at
+high spread.
