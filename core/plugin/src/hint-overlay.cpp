@@ -1,6 +1,6 @@
 #include "hint-overlay.hpp"
 #include <cairo.h>
-#include <array>
+#include <algorithm>
 #include <cmath>
 #include <wayfire/opengl.hpp>
 #include <sstream>
@@ -133,39 +133,6 @@ void hint_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr
 {
     instances.push_back(std::make_unique<hint_render>(this, damage, output));
 }
-void fullscreen_hint_node::update(wf::geometry_t geometry, hint_rgb dye, double tint)
-{
-    if (geometry == box && dye.r == color.r && dye.g == color.g && dye.b == color.b && tint == alpha) return;
-    wf::scene::damage_node(this, box);
-    box = geometry; color = dye; alpha = std::clamp(tint, 0.0, 1.0);
-    wf::scene::damage_node(this, box);
-    wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
-}
-class fullscreen_hint_render : public wf::scene::simple_render_instance_t<fullscreen_hint_node>
-{
-  public:
-    using simple_render_instance_t::simple_render_instance_t;
-    void render(const wf::scene::render_instruction_t& data) override
-    {
-        auto r = self->box; auto c = self->color; double a = self->alpha;
-        // The render pass takes premultiplied colors (the frame shader composites explicitly).
-        if (a > 0)
-            data.pass->add_rect({c.r * a, c.g * a, c.b * a, a}, data.target, r, data.damage);
-        double line = hint_border_width;
-        wf::color_t rim{c.r, c.g, c.b, 1};
-        for (auto strip : std::vector<wf::geometry_t>{{r.x, r.y, r.width, line},
-            {r.x, r.y + r.height - line, r.width, line},
-            {r.x, r.y + line, line, r.height - 2 * line},
-            {r.x + r.width - line, r.y + line, line, r.height - 2 * line}})
-            data.pass->add_rect(rim, data.target, strip, data.damage);
-    }
-};
-void fullscreen_hint_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
-    wf::scene::damage_callback damage, wf::output_t *output)
-{
-    instances.push_back(std::make_unique<fullscreen_hint_render>(this, damage, output));
-}
-
 void center_switcher_node::update(double output_width, const std::string& title, unsigned position,
     unsigned count, const hint_palette& palette, double scale)
 {
@@ -301,7 +268,7 @@ void hint_flash_node::gen_render_instances(std::vector<wf::scene::render_instanc
 
 namespace
 {
-const char *outline_vertex_source = R"(#version 100
+const char *tint_vertex_source = R"(#version 100
 attribute highp vec2 position;
 varying highp vec2 pos;
 uniform mat4 MVP;
@@ -309,99 +276,90 @@ void main() {
     gl_Position = MVP * vec4(position, 0.0, 1.0);
     pos = position;
 })";
-// Coverage of the band between the rounded rectangle's edge and `line` inside it, from its
-// signed distance, antialiased over one device pixel (`aa` logical px).
-const char *outline_fragment_source = R"(#version 100
+const char *tint_fragment_source = R"(#version 100
 varying highp vec2 pos;
 uniform highp vec4 rect;
 uniform highp float radius;
-uniform highp float line;
 uniform highp float aa;
 uniform highp vec4 color;
 void main() {
     highp vec2 half_size = rect.zw * 0.5;
     highp vec2 q = abs(pos - rect.xy - half_size) - half_size + radius;
     highp float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
-    highp float outer = clamp(0.5 - d / aa, 0.0, 1.0);
-    highp float inner = clamp(0.5 - (d + line) / aa, 0.0, 1.0);
-    gl_FragColor = color * (outer - inner);
+    highp float coverage = clamp(0.5 - d / aa, 0.0, 1.0);
+    highp float alpha = color.a * coverage;
+    gl_FragColor = vec4(color.rgb * alpha, alpha);
 })";
-struct outline_program_t
+struct tint_program_t
 {
     OpenGL::program_t program;
     bool ready = false;
 };
-outline_program_t& outline_program()
+tint_program_t& tint_program()
 {
-    static outline_program_t program;  // per loaded plugin copy (see meson.build)
+    static tint_program_t program;  // per loaded plugin copy (see meson.build)
     return program;
 }
 }
 
-void release_hint_gl()
+void release_window_tint_gl()
 {
-    auto& p = outline_program();
+    auto& p = tint_program();
     if (!p.ready) return;
     wf::gles::run_in_context_if_gles([&] { p.program.free_resources(); });
     p.ready = false;
 }
 
-void hint_outline_node::update(double nx, double ny, double nwidth, double nheight, double corner_radius,
-    hint_rgb dye, double line_width)
+void window_tint_layer_node::update(wf::geometry_t bounds, double alpha, shape_provider_t provider)
 {
-    corner_radius = std::max(0.0, corner_radius);
-    line_width = std::max(1.0, line_width);
-    if (nx == x && ny == y && nwidth == width && nheight == height && corner_radius == radius &&
-        line_width == line && dye.r == color.r && dye.g == color.g && dye.b == color.b) return;
-    wf::scene::damage_node(this, box);
-    x = nx; y = ny; width = std::max(0.0, nwidth); height = std::max(0.0, nheight);
-    radius = corner_radius; color = dye; line = line_width;
-    // One logical px of margin holds the antialiased outer edge.
-    double x1 = std::floor(x) - 1, y1 = std::floor(y) - 1;
-    box = {x1, y1, std::ceil(x + width) + 1 - x1, std::ceil(y + height) + 1 - y1};
-    wf::scene::damage_node(this, box);
-    wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
+    bounds.width = std::max(0, bounds.width);
+    bounds.height = std::max(0, bounds.height);
+    alpha = std::clamp(alpha, 0.0, 1.0);
+    bool geometry_changed = bounds != box;
+    bool strength_changed = alpha != strength;
+    if (geometry_changed || strength_changed)
+    {
+        wf::scene::damage_node(this, box);
+        box = bounds;
+        strength = alpha;
+        wf::scene::damage_node(this, box);
+        wf::scene::update(shared_from_this(), wf::scene::update_flag::GEOMETRY);
+    }
+    shapes = std::move(provider);
 }
 
-class hint_outline_render : public wf::scene::simple_render_instance_t<hint_outline_node>
+class window_tint_render : public wf::scene::simple_render_instance_t<window_tint_layer_node>
 {
   public:
     using simple_render_instance_t::simple_render_instance_t;
     void render(const wf::scene::render_instruction_t& data) override
     {
-        double x = self->x, y = self->y, w = self->width, h = self->height;
-        if (w <= 0 || h <= 0) return;
-        double line = std::min({self->line, w / 2, h / 2});
-        double r = std::min({self->radius, w / 2, h / 2});
-        auto c = self->color;
+        if (self->strength <= 0 || !self->shapes) return;
+        auto shapes = self->shapes();
+        if (shapes.empty()) return;
         bool drawn = data.pass->custom_gles_subpass([&]
         {
-            auto& p = outline_program();
-            if (!p.ready) { p.program.compile(outline_vertex_source, outline_fragment_source); p.ready = true; }
+            auto& p = tint_program();
+            if (!p.ready) { p.program.compile(tint_vertex_source, tint_fragment_source); p.ready = true; }
             wf::gles::bind_render_buffer(data.target);
             p.program.use(wf::TEXTURE_TYPE_RGBA);
             p.program.uniformMatrix4f("MVP", wf::gles::render_target_orthographic_projection(data.target));
-            p.program.uniform4f("rect", glm::vec4{x, y, w, h});
-            p.program.uniform1f("radius", r);
-            p.program.uniform1f("line", line);
             p.program.uniform1f("aa", 1.0f / std::max(0.01f, float(data.target.scale)));
-            p.program.uniform4f("color", glm::vec4{c.r, c.g, c.b, 1.0});
             glEnable(GL_BLEND);
             glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            // Only the ring's bands: top and bottom across the corners, then the sides between,
-            // so no fragment is covered twice.
-            double band = std::min({std::max(r, line) + 1, h / 2, w / 2});
-            std::vector<std::array<float, 4>> quads{
-                {float(x - 1), float(y - 1), float(x + w + 1), float(y + band)},
-                {float(x - 1), float(y + h - band), float(x + w + 1), float(y + h + 1)},
-                {float(x - 1), float(y + band), float(x + band), float(y + h - band)},
-                {float(x + w - band), float(y + band), float(x + w + 1), float(y + h - band)}};
             wf::gles::for_each_scissor_rect(data.target, data.damage, [&]
             {
-                for (auto [x1, y1, x2, y2] : quads)
+                for (const auto& shape : shapes)
                 {
-                    if (x2 <= x1 || y2 <= y1) continue;
-                    GLfloat vertices[] = {x1, y2, x2, y2, x2, y1, x1, y1};
+                    if (shape.width <= 0 || shape.height <= 0) continue;
+                    double radius = std::clamp(shape.radius, 0.0, std::min(shape.width, shape.height) / 2);
+                    GLfloat vertices[] = {float(shape.x), float(shape.y + shape.height),
+                        float(shape.x + shape.width), float(shape.y + shape.height),
+                        float(shape.x + shape.width), float(shape.y), float(shape.x), float(shape.y)};
+                    p.program.uniform4f("rect", glm::vec4{shape.x, shape.y, shape.width, shape.height});
+                    p.program.uniform1f("radius", radius);
+                    p.program.uniform4f("color", glm::vec4{shape.color.r, shape.color.g,
+                        shape.color.b, self->strength});
                     p.program.attrib_pointer("position", 2, 0, vertices);
                     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
                 }
@@ -409,42 +367,49 @@ class hint_outline_render : public wf::scene::simple_render_instance_t<hint_outl
             p.program.deactivate();
         });
         if (drawn) return;
-        // Without GLES: whole-pixel rows (corners stair-stepped).
-        wf::geometry_t b{std::round(x), std::round(y), std::round(w), std::round(h)};
-        line = std::round(line);
-        double inner = std::max(0.0, r - line);
-        wf::color_t rim{c.r, c.g, c.b, 1};
-        auto strip = [&] (double sx, double sy, double sw, double sh)
+        // The software path keeps the rounded silhouette with device-pixel scanlines.
+        const double pixel = 1.0 / std::max(0.01f, float(data.target.scale));
+        for (const auto& shape : shapes)
         {
-            if (sw > 0 && sh > 0) data.pass->add_rect(rim, data.target, {sx, sy, sw, sh}, data.damage);
-        };
-        auto inset = [] (double radius, double row)
-        {
-            if (row >= radius) return 0.0;
-            double distance = std::max(0.0, radius - row - .5);
-            return radius - std::sqrt(std::max(0.0, radius * radius - distance * distance));
-        };
-        int rows = int(std::ceil(std::max(r, line)));
-        for (int row = 0; row < rows; ++row)
-        {
-            double outer = inset(r, row), k = row - line;
-            for (double ry : {double(b.y + row), double(b.y + b.height - row - 1)})
+            if (shape.width <= 0 || shape.height <= 0) continue;
+            const double radius = std::clamp(shape.radius, 0.0, std::min(shape.width, shape.height) / 2);
+            auto fill = wf::color_t{shape.color.r * self->strength, shape.color.g * self->strength,
+                shape.color.b * self->strength, self->strength};
+            auto strip = [&] (double x, double y, double width, double height)
             {
-                if (k < 0) { strip(b.x + outer, ry, b.width - 2 * outer, 1); continue; }
-                double in = line + inset(inner, k);
-                strip(b.x + outer, ry, in - outer, 1);
-                strip(b.x + b.width - in, ry, in - outer, 1);
+                int x1 = int(std::floor(x)), y1 = int(std::floor(y));
+                int x2 = int(std::ceil(x + width)), y2 = int(std::ceil(y + height));
+                if (x2 > x1 && y2 > y1)
+                    data.pass->add_rect(fill, data.target, {x1, y1, x2 - x1, y2 - y1}, data.damage);
+            };
+            if (radius <= 0)
+            {
+                strip(shape.x, shape.y, shape.width, shape.height);
+                continue;
             }
+            auto cap = [&] (bool bottom)
+            {
+                for (double offset = 0; offset < radius; offset += pixel)
+                {
+                    const double height = std::min(pixel, radius - offset);
+                    const double depth = offset + height / 2;
+                    const double inset = radius - std::sqrt(std::max(0.0,
+                        radius * radius - std::pow(radius - depth, 2)));
+                    const double y = bottom ? shape.y + shape.height - radius + offset : shape.y + offset;
+                    strip(shape.x + inset, y, std::max(0.0, shape.width - 2 * inset), height);
+                }
+            };
+            cap(false);
+            cap(true);
+            strip(shape.x, shape.y + radius, shape.width, std::max(0.0, shape.height - 2 * radius));
         }
-        strip(b.x, b.y + rows, line, b.height - 2 * rows);
-        strip(b.x + b.width - line, b.y + rows, line, b.height - 2 * rows);
     }
 };
 
-void hint_outline_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
+void window_tint_layer_node::gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
     wf::scene::damage_callback damage, wf::output_t *output)
 {
-    instances.push_back(std::make_unique<hint_outline_render>(this, damage, output));
+    instances.push_back(std::make_unique<window_tint_render>(this, damage, output));
 }
 
 }

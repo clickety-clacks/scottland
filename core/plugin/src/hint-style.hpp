@@ -19,15 +19,10 @@ struct hint_palette
     std::string font_family = "sans-serif";  // the desktop's interface font
 };
 constexpr double hint_badge_opacity = 0.21;
-// WK14/WK38 default window/card overlay. `scottland/window_mode_tint` replaces it live for
-// drawing; hint colors keep this value as their contrast basis so a slider never recolors them.
+// Hint colors keep this 7% window/card tint as their contrast basis; the live Window-mode slider
+// changes the separate scene-layer wash and never recalculates the colors themselves.
 constexpr double hint_window_opacity = 0.07;
 constexpr double hint_border_width = 2.0;
-// WK37: a window with less than this share of its on-screen area visible (the rest covered by
-// windows and widgets in front, at their displayed avoidance offsets) also gets an opaque
-// outline in its hint color in the overlay layer above all windows, this many logical px thick.
-constexpr double hint_outline_visible_fraction = 0.5;
-constexpr double hint_outline_width = 2.0;
 inline double hint_badge_size(double width, double height, double text_scale = 1.0)
 {
     // Vimarchy's sizing, scaled with the desktop's text size as everything else that's text.

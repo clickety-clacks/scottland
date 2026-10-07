@@ -7,6 +7,7 @@
 #include <optional>
 #include <vector>
 #include <chrono>
+#include <functional>
 namespace scottland::windowing
 {
 // Click-through compositor overlay; its caller supplies the stable visible-region attachment.
@@ -39,40 +40,31 @@ class hint_node : public wf::scene::node_t
     double move_x = 0, move_y = 0, drawn_opacity = -1, size_from = 0, size_to = 0;
     void geometry();
 };
-// Fullscreen surfaces have no Scottland frame. Keep their tint in their own scene subtree
-// (below the badges and other windows), with the square, inset rim fullscreen requires.
-class fullscreen_hint_node : public wf::scene::node_t
+struct window_tint_shape
 {
-  public:
-    fullscreen_hint_node() : node_t(false) {}
-    void update(wf::geometry_t geometry, hint_rgb dye, double tint);
-    wf::geometry_t get_bounding_box() override { return box; }
-    void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
-        wf::scene::damage_callback damage, wf::output_t *output) override;
-    wf::geometry_t box{0, 0, 0, 0};
+    double x = 0, y = 0, width = 0, height = 0;
+    double radius = 0;
     hint_rgb color{0, 0, 0};
-    double alpha = hint_window_opacity;
 };
 
-// WK37: an opaque rounded outline of a mostly occluded window's drawn frame, at the front of
-// the overlay layer (above all windows, below the hint circles). Only the ring is drawn, by a
-// small shader that antialiases it at the output's device pixels (strips without GLES).
-class hint_outline_node : public wf::scene::node_t
+// Window mode's per-output tint layer lives at the back of OVERLAY: above every window/card,
+// below Scottland's own overlay surfaces. Its provider is sampled by render(), so the tint uses
+// the same transformed frame positions and stacking order as the frame drawn in that pass.
+class window_tint_layer_node : public wf::scene::node_t
 {
   public:
-    hint_outline_node() : node_t(false) {}
-    void update(double x, double y, double width, double height, double corner_radius,
-        hint_rgb dye, double line_width);
+    using shape_provider_t = std::function<std::vector<window_tint_shape>()>;
+    window_tint_layer_node() : node_t(false) {}
+    void update(wf::geometry_t bounds, double strength, shape_provider_t shapes);
     wf::geometry_t get_bounding_box() override { return box; }
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
         wf::scene::damage_callback damage, wf::output_t *output) override;
     wf::geometry_t box{0, 0, 0, 0};
-    double x = 0, y = 0, width = 0, height = 0;
-    hint_rgb color{0, 0, 0};
-    double radius = 0, line = hint_outline_width;
+    double strength = 0;
+    shape_provider_t shapes;
 };
-// Frees the outline shader; call with the plugin's other GL resources on unload.
-void release_hint_gl();
+// Frees the tint shader; call with the plugin's other GL resources on unload.
+void release_window_tint_gl();
 
 // A small, click-through name plate while a quick Alt+Tab chord previews a center window.
 class center_switcher_node : public wf::scene::node_t
