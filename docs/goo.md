@@ -180,7 +180,10 @@ amount is normalized there so volume draw does not erase a thin film. The foremo
 extended under its own content only for field reconstruction; analytic clipping still excludes
 that content from drawing and flow. Scenes without overlapping rectangles keep the union fast path. Unsupported half-float render targets use packed
 RGBA8 (log density and quantization-aware wave damping); missing float source textures, failed
-targets or shaders retain the halo with a log message.
+targets or shaders retain the halo with a log message. A driver can pass all of that and still
+refuse goo's own GL calls on every frame: goo then stops at the first GL error in its pass, logs it
+once and retains the halo until a session start or goo off and on tries again
+(`tests/goo-runtime-fallback-test.sh`).
 GLES 2 limits the source list to 1024; GLES 3 loops use the actual source count.
 
 Drift and curl time freeze two seconds after the last geometry/state change, including while
@@ -279,6 +282,7 @@ tests/headless.sh run python3 tests/goo-test.py
 tests/headless.sh stop
 # Start with SCOTTLAND_TEST_GOO_GLES=2 for the packed path, or
 # SCOTTLAND_TEST_GOO_GLES=unsupported for goo-fallback-test.py.
+tests/goo-runtime-fallback-test.sh ARTIFACTS  # fresh SCOTTLAND_HEADLESS_DIR; forced runtime GL error
 # goo-flow-test.py needs SCOTTLAND_TEST_OUTPUTS=2 at start.
 tests/widgets-test.sh                     # shipped default: goo on
 SCOTTLAND_TEST_GOO=0 tests/widgets-test.sh  # explicit fallback halo

@@ -4,6 +4,7 @@
 #include "goo-runtime.hpp"
 #include "goo-pickup-policy.hpp"
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
@@ -159,6 +160,9 @@ class goo_node_t : public wf::scene::node_t
     std::map<uint64_t, double> motion_pulse;
     bool attached = true, above_windows = false;
     std::function<void()> failed;
+    // Goo's own GL work failed at runtime: draw nothing more, and let failed() restore the halo.
+    bool gl_failed = false;
+    bool gl_fail = false; // test-only: goo's pass raises a GL error, as a refusing driver does
     goo_t::source_provider_t snapshot;
     goo_node_t(wf::output_t *o, goo_t::source_provider_t provider) : node_t(false), snapshot(std::move(provider))
     {
@@ -909,12 +913,14 @@ class goo_node_t : public wf::scene::node_t
     }
     void render(const wf::scene::render_instruction_t &data, bool reuse_backdrop)
     {
-        if (!attached || !goo_enabled() || !wf::get_core().is_gles2() ||
+        if (!attached || gl_failed || !goo_enabled() || !wf::get_core().is_gles2() ||
             (state.sources.size() == 1 && !state.sources[0].emitter))
             return;
         data.pass->custom_gles_subpass(
             [&]
             {
+                // An error already pending is not goo's.
+                while (glGetError() != GL_NO_ERROR) {}
                 auto g = get_bounding_box();
                 auto &band = bands();
                 if (!state.sleeping)
@@ -993,6 +999,21 @@ class goo_node_t : public wf::scene::node_t
                     idle_foreign = idle_foreign || frame_foreign;
                     if (!idle_check.is_connected())
                         idle_check.run_once([this] { backdrop_copied(std::exchange(idle_foreign, false)); });
+                }
+                if (gl_fail)
+                    glBindTexture(0, 0);
+                // A driver can pass setup and still refuse goo's calls on every frame. Goo
+                // stops at the first refusal, with one line, instead of drawing a broken
+                // frame and an error each frame; a session start or goo off and on retries.
+                if (GLenum error = glGetError(); error != GL_NO_ERROR)
+                {
+                    while (glGetError() != GL_NO_ERROR) {}
+                    gl_failed = true;
+                    char code[8];
+                    snprintf(code, sizeof code, "%04x", error);
+                    LOGE("scottland goo: GL error 0x", code, " in goo's drawing; retaining halo");
+                    if (failed)
+                        failed();
                 }
             });
     }
@@ -1135,6 +1156,11 @@ struct goo_t::impl
                 {
                     n->breath_hold = data["breath_hold"].as_double();
                     n->state.breath = n->breath_hold >= 0 ? n->breath_hold : goo::attention_breath(now());
+                    test_changed = true;
+                }
+                if (data.has_member("gl_fail") && data["gl_fail"].is_bool())
+                {
+                    n->gl_fail = data["gl_fail"].as_bool();
                     test_changed = true;
                 }
                 if (data.has_member("surface_cache_fail") && data["surface_cache_fail"].is_bool())
