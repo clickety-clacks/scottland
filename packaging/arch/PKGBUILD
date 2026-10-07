@@ -13,7 +13,7 @@ _root="$startdir/../.."
 
 build() {
   arch-meson "$_root/core/plugin" build
-  meson compile -C build
+  meson compile -C build --jobs 2
 }
 
 package_scottland() {
