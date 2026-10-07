@@ -140,6 +140,19 @@ try:
     else:
         check('the card looks as it did before the upgrade', False, 'the card is gone')
 
+    # Observe fresh code adoption before restarting the widget service; that restart is a
+    # separate check and must not be able to explain the package-replacement result.
+    fresh_title = 'card-upgrade-fresh-launch'
+    fresh_card, fresh_error = None, None
+    try:
+        fresh_card = launch_fresh_card(fresh_title, y=420)
+    except AssertionError as error:
+        fresh_error = str(error)
+    check('a fresh launch adopts the upgraded QML',
+          fresh_card is not None and fresh_card['title'].endswith(': ' + fresh_title + upgrade_marker),
+          {'expected_suffix': ': ' + fresh_title + upgrade_marker,
+           'actual': fresh_card and fresh_card['title'], 'launch_error': fresh_error})
+
     # The reload after an upgrade replaces the widget service that writes the card's state (WG5);
     # stamp the running one as older code so the reload replaces it here too.
     bus_pid_file = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'),
@@ -172,16 +185,6 @@ try:
           {'collapsed_width': collapsed and collapsed['frame']['width'],
            'expanded_width': expanded and expanded['frame']['width']})
 
-    fresh_title = 'card-upgrade-fresh-launch'
-    fresh_card, fresh_error = None, None
-    try:
-        fresh_card = launch_fresh_card(fresh_title, y=420)
-    except AssertionError as error:
-        fresh_error = str(error)
-    check('a fresh launch adopts the upgraded QML',
-          fresh_card is not None and fresh_card['title'].endswith(': ' + fresh_title + upgrade_marker),
-          {'expected_suffix': ': ' + fresh_title + upgrade_marker,
-           'actual': fresh_card and fresh_card['title'], 'launch_error': fresh_error})
 finally:
     t.cleanup()
     (out/'checks.json').write_text(json.dumps(checks, indent=2))
