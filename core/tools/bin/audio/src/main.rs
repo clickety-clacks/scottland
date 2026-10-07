@@ -1,6 +1,7 @@
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -85,13 +86,11 @@ fn default_sink_name() -> String {
 fn input_mute() -> Result<(), String> {
     let _ = run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]);
     let muted = stdout(run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])).contains("MUTED");
-    let (led, icon, message) = if muted {
-        ("on", "microphone-muted", "Microphone muted")
-    } else {
-        ("off", "microphone", "Microphone on")
-    };
+    let led = if muted { "on" } else { "off" };
     keyboard_mic_mute(led)?;
-    show_osd(Some(icon), message, None)
+    let (icon, message) = microphone_osd(muted);
+    show_osd(Some(icon), message, None);
+    Ok(())
 }
 
 fn input_set_default(node_id: &str, source_name: &str) -> Result<(), String> {
@@ -144,26 +143,42 @@ fn keyboard_mic_mute(action: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn show_osd(icon: Option<&str>, message: &str, progress: Option<u32>) -> Result<(), String> {
-    let mut command = Command::new("scottland-widget");
-    command.arg("osd").arg("--message").arg(message);
+fn osd_args(icon: Option<&str>, message: &str, progress: Option<u32>) -> Vec<String> {
+    let mut args = vec!["osd".into(), "--message".into(), message.into()];
     if let Some(icon) = icon {
-        command.arg("--icon").arg(icon);
+        args.extend(["--icon".into(), icon.into()]);
     }
     if let Some(progress) = progress {
-        command.arg("--progress").arg(progress.to_string());
+        args.extend(["--progress".into(), progress.to_string()]);
     }
-    match command.output() {
-        Ok(output) if output.status.success() => Ok(()),
-        // Audio controls still work before the widget binary is installed. Once it is present,
-        // its OSD result is part of the command's result.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Ok(output) => Err(format!(
-            "scottland-widget osd failed with {}",
+    args
+}
+
+fn show_osd(icon: Option<&str>, message: &str, progress: Option<u32>) {
+    show_osd_with(OsStr::new("scottland-widget"), icon, message, progress);
+}
+
+fn show_osd_with(program: &OsStr, icon: Option<&str>, message: &str, progress: Option<u32>) {
+    let output = invoke_osd(program, icon, message, progress);
+    match output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => eprintln!(
+            "scottland-audio: display could not be shown (scottland-widget osd exited {})",
             output.status
-        )),
-        Err(error) => Err(format!("cannot run scottland-widget osd: {error}")),
+        ),
+        Err(error) => eprintln!("scottland-audio: display could not be shown: {error}"),
     }
+}
+
+fn invoke_osd(
+    program: &OsStr,
+    icon: Option<&str>,
+    message: &str,
+    progress: Option<u32>,
+) -> io::Result<Output> {
+    Command::new(program)
+        .args(osd_args(icon, message, progress))
+        .output()
 }
 
 #[derive(Clone, Debug)]
@@ -457,7 +472,7 @@ fn output_switch() -> Result<(), String> {
     let mut graph = AudioGraph::load();
     let candidates = switch_candidates(&sinks, &mut graph);
     if candidates.is_empty() {
-        show_osd(None, "No audio devices found", None)?;
+        show_osd(None, "No audio devices found", None);
         return Err("no audio devices found".into());
     }
 
@@ -472,15 +487,11 @@ fn output_switch() -> Result<(), String> {
         &["2", "pactl", "get-sink-mute", &effective_sink],
     ))
     .contains("yes");
-    let icon_state = volume_icon_state(volume, muted);
     if next.name != current {
         let _ = output_set_default(&next.index.to_string(), &next.name);
     }
-    show_osd(
-        Some(&format!("volume-{icon_state}")),
-        &next.description,
-        None,
-    )
+    show_osd(Some(volume_icon(volume, muted)), &next.description, None);
+    Ok(())
 }
 
 fn switch_candidates<'a>(sinks: &'a [Sink], graph: &mut AudioGraph) -> Vec<&'a Sink> {
@@ -561,6 +572,35 @@ fn volume_icon_state(volume: u32, muted: bool) -> &'static str {
     }
 }
 
+fn volume_icon(volume: u32, muted: bool) -> &'static str {
+    match volume_icon_state(volume, muted) {
+        "muted" => "audio-volume-muted",
+        "low" => "audio-volume-low",
+        "medium" => "audio-volume-medium",
+        _ => "audio-volume-high",
+    }
+}
+
+fn volume_osd(volume: u32, muted: bool) -> (&'static str, &'static str, u32) {
+    (
+        if muted || volume == 0 {
+            "audio-volume-muted"
+        } else {
+            "audio-volume-high"
+        },
+        if muted { "Muted" } else { "Volume" },
+        volume.min(100),
+    )
+}
+
+fn microphone_osd(muted: bool) -> (&'static str, &'static str) {
+    if muted {
+        ("microphone-sensitivity-muted", "Microphone muted")
+    } else {
+        ("audio-input-microphone", "Microphone on")
+    }
+}
+
 fn pactl_volume_percent(sink: &str) -> Option<u32> {
     let text = stdout(run("timeout", &["2", "pactl", "get-sink-volume", sink]));
     text.split_whitespace()
@@ -588,15 +628,9 @@ fn output_volume(action: &str) -> Result<(), String> {
     }
     let volume = pactl_volume_percent(&sink).unwrap_or(0);
     let muted = stdout(run("pactl", &["get-sink-mute", &sink])).contains("yes");
-    show_osd(
-        Some(if muted || volume == 0 {
-            "volume-muted"
-        } else {
-            "volume-high"
-        }),
-        "Volume",
-        Some(volume),
-    )
+    let (icon, message, progress) = volume_osd(volume, muted);
+    show_osd(Some(icon), message, Some(progress));
+    Ok(())
 }
 
 unsafe extern "C" {
@@ -791,11 +825,125 @@ mod tests {
 
     #[test]
     fn volume_icons_follow_mute_and_threshold_rules() {
-        assert_eq!(volume_icon_state(80, true), "muted");
-        assert_eq!(volume_icon_state(0, false), "muted");
-        assert_eq!(volume_icon_state(33, false), "low");
-        assert_eq!(volume_icon_state(34, false), "medium");
-        assert_eq!(volume_icon_state(66, false), "medium");
-        assert_eq!(volume_icon_state(67, false), "high");
+        assert_eq!(volume_icon(80, true), "audio-volume-muted");
+        assert_eq!(volume_icon(0, false), "audio-volume-muted");
+        assert_eq!(volume_icon(33, false), "audio-volume-low");
+        assert_eq!(volume_icon(34, false), "audio-volume-medium");
+        assert_eq!(volume_icon(66, false), "audio-volume-medium");
+        assert_eq!(volume_icon(67, false), "audio-volume-high");
+    }
+
+    #[test]
+    fn volume_osd_reports_mute_state_and_caps_progress() {
+        assert_eq!(volume_osd(73, true), ("audio-volume-muted", "Muted", 73));
+        assert_eq!(volume_osd(0, false), ("audio-volume-muted", "Volume", 0));
+        assert_eq!(volume_osd(115, false), ("audio-volume-high", "Volume", 100));
+    }
+
+    #[test]
+    fn microphone_osd_uses_the_widget_icon_names() {
+        assert_eq!(
+            microphone_osd(true),
+            ("microphone-sensitivity-muted", "Microphone muted")
+        );
+        assert_eq!(
+            microphone_osd(false),
+            ("audio-input-microphone", "Microphone on")
+        );
+    }
+
+    #[test]
+    fn osd_args_call_the_widget_osd_subcommand_directly() {
+        assert_eq!(
+            osd_args(Some("audio-volume-high"), "Volume", Some(45)),
+            [
+                "osd",
+                "--message",
+                "Volume",
+                "--icon",
+                "audio-volume-high",
+                "--progress",
+                "45"
+            ]
+        );
+        assert_eq!(
+            osd_args(None, "No audio devices found", None),
+            ["osd", "--message", "No audio devices found"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn widget_osd_receives_exact_audio_call_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!(
+            "scottland-audio-osd-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let program = directory.join("scottland-widget");
+        fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cases = [
+            (
+                Some("audio-volume-high"),
+                "Volume",
+                Some(45),
+                vec![
+                    "osd",
+                    "--message",
+                    "Volume",
+                    "--icon",
+                    "audio-volume-high",
+                    "--progress",
+                    "45",
+                ],
+            ),
+            (
+                Some("microphone-sensitivity-muted"),
+                "Microphone muted",
+                None,
+                vec![
+                    "osd",
+                    "--message",
+                    "Microphone muted",
+                    "--icon",
+                    "microphone-sensitivity-muted",
+                ],
+            ),
+            (
+                Some("audio-volume-low"),
+                "Headphones",
+                None,
+                vec![
+                    "osd",
+                    "--message",
+                    "Headphones",
+                    "--icon",
+                    "audio-volume-low",
+                ],
+            ),
+            (
+                None,
+                "No audio devices found",
+                None,
+                vec!["osd", "--message", "No audio devices found"],
+            ),
+        ];
+
+        for (icon, message, progress, expected) in cases {
+            let output = invoke_osd(program.as_os_str(), icon, message, progress).unwrap();
+            assert!(output.status.success());
+            let received = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(received.lines().collect::<Vec<_>>(), expected);
+        }
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }
