@@ -390,7 +390,13 @@ def rail_boundary_hold():
         place(B, 1280, 500, 420, 300); ipc('window-rules/focus-view', {'id': A}); stable(A, B)
         want, _ = pair_plan(A, B, area)
         pointer(1564, 650); time.sleep(.05); key('LEFTMETA', True); button(True); time.sleep(.05)
-        pointer(1572, 650); time.sleep(.75); super_release()
+        pointer(1572, 650)                                    # 8 px, into the rail, inside the wobble
+        need(lambda: light(px(want[B][0] + 210, want[B][1] + 150)), 3, 'B previewed at its pair spot')
+        verify(lambda: (lambda size: size if size and abs(size[0] - 420) <= 8 and abs(size[1] - 300) <= 8 else None)(
+               drawn_size(want[B][0] + 210, want[B][1] + 150)), 2,
+               'held at the rail boundary: the offer shows B as itself at its pair spot, full size (pixels)')
+        capture(0, 0, area['width'], area['height'], 'rail-hold-offer.png')
+        super_release()
         need(lambda: paired(A, B, area, want), 3, 'rail-boundary pair')
         stable(A, B)
         size = drawn_size(want[B][0] + 210, want[B][1] + 150)

@@ -5751,9 +5751,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             std::round(hold.travel * 10) / 10, " px) on window ", hold.window, ": ",
             hold.window == hold.partner ? "solo" : "pair with window " + std::to_string(hold.partner));
         // The drag was a hold: it never really moved the window. Undo what the wobble showed (rail
-        // room, a rail morph, a scale change at a zone edge) and draw the window at its true place;
-        // the result is offered while the button or fingers stay down.
+        // room, a rail morph and the widget it previewed, a scale change at a zone edge) and draw
+        // the window at its true place; the result is offered while the button or fingers stay down.
         cancel_rail_drag();
+        if (auto view = wf::toplevel_cast(drag->view); view && !is_widget(view))
+            if (auto preview = link_of_window(view); preview && preview->previewing()) cancel_preview(*preview);
         end_morph();
         drag->suspend(true);
         if (auto view = wf::toplevel_cast(drag->view); view && !is_widget(view) && !view->pending_fullscreen())
