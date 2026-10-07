@@ -40,7 +40,8 @@ HOOKS = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
 SOURCE_DIRS = [os.path.join(HOOKS, "attention.d"), "/usr/share/scottland/attention.d",
                os.path.join(CONFIG, "scottland", "attention.d")]  # later wins for a name
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "scottland")
-RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+RUNTIME = os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
 DISPLAY = os.environ.get("WAYLAND_DISPLAY") or "wayland"
 
 

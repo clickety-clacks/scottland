@@ -11,10 +11,10 @@ The accent comes from an integration's provider in accent.d/ (executables printi
 with --watch-paths they print the paths to watch for changes), else the portal's accent-color.
 
 It also scales the pointer with the desktop's GTK text size, rounding up to an image size in the
-active cursor theme, and keeps the session's palette file current
-($XDG_RUNTIME_DIR/scottland/<display>.palette.json:
-scheme, background, foreground, muted, accent, alert, attention), for widgets and other Scottland
-surfaces, and sets the halo's attention color from it:
+active cursor theme, and keeps the session's palette file current (under SCOTTLAND_SESSION_DIR
+when set, otherwise under $XDG_RUNTIME_DIR/scottland): scheme, background, foreground, muted,
+accent, alert, attention. Widgets and other Scottland surfaces use this palette, and the halo's
+attention color comes from it:
 neutral light or dark colors, overlaid by a provider's full palette (accent.d providers that
 print a JSON object of those colors when run with --palette).
 """
@@ -296,7 +296,7 @@ def update_recorded_environment(size):
     display = os.environ.get("WAYLAND_DISPLAY")
     if not display:
         return
-    path = os.path.join(RUNTIME, "scottland", display + ".env")
+    path = os.path.join(SESSION_DIR, display + ".env")
     for _ in range(20):  # autostart records the environment in a sibling hook
         try:
             with open(path, "rb") as source:
@@ -376,7 +376,7 @@ def write_palette(scheme, accent=None):
     if accent:
         palette["accent"] = accent
     palette["text_scale"], palette["font_family"], palette["reduced_motion"] = text_settings()
-    path = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".palette.json")
+    path = os.path.join(SESSION_DIR, os.environ.get("WAYLAND_DISPLAY", "wayland") + ".palette.json")
     temporary = f"{path}.{os.getpid()}.{threading.get_ident()}"
     set_option("attention_color", palette["attention"] + "ff")  # widgets needing attention (WG15)
     with PALETTE_LOCK:
@@ -395,7 +395,8 @@ def set_option(name, value):
         print(f"scottland-color-scheme: {reply['error']}", file=sys.stderr)
 
 
-RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+SESSION_DIR = os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
 
 
 def apply(scheme, accent=None):
@@ -405,7 +406,7 @@ def apply(scheme, accent=None):
         set_option("accent_color", accent + "ff")
     set_cursor_size()
     write_palette(scheme, accent)
-PID_FILE = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
+PID_FILE = os.path.join(SESSION_DIR, os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
 
 
 def fingerprint():
@@ -447,7 +448,7 @@ def watch():
         os.setsid()  # its monitors share its session, so replacing it ends them too
     except OSError:
         pass
-    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+    os.makedirs(SESSION_DIR, exist_ok=True)
     with open(PID_FILE, "w") as target:
         target.write(f"{os.getpid()}\n{fingerprint()}\n")
     applied = current()

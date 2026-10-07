@@ -21,6 +21,8 @@
 # XDG_RUNTIME_DIR. Put SCOTTLAND_HEADLESS_DIR and TMPDIR under the checkout's build/ directory.
 # Helpers come from this checkout (make test-hooks) if built, else the dev install. Set
 # SCOTTLAND_HEADLESS_DIR to run test sessions of several checkouts at once.
+# SCOTTLAND_HEADLESS_ISOLATION=1 is the runner path: it requires a fresh owned scratch root,
+# keeps session metadata there, preserves XDG_RUNTIME_DIR, and refuses unsafe cleanup.
 #
 # Example: tests/headless.sh start --omarchy && tests/headless.sh run foot &
 #          tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
@@ -30,6 +32,31 @@ runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 # SCOTTLAND_HEADLESS_DIR: where this test session keeps its state, so test sessions of several
 # checkouts (e.g. agents on branches sharing a test machine) can run at once.
 dir=${SCOTTLAND_HEADLESS_DIR:-$repo/build/headless}
+isolation=${SCOTTLAND_HEADLESS_ISOLATION:-0}
+if [[ $isolation == 1 ]]; then
+  scratch=${SCOTTLAND_TEST_SCRATCH:?isolated headless mode requires a private scratch directory}
+  scratch=$(realpath -m -- "$scratch")
+  build_root=$(realpath -m -- "$repo/build")
+  case $scratch in
+    "$build_root"/*) ;;
+    *) echo 'isolated headless scratch must be below this checkout build/' >&2; exit 2 ;;
+  esac
+  [[ -d $scratch && ! -L $scratch && $(stat -c '%u:%a' -- "$scratch") == "$(id -u):700" ]] || {
+    echo 'isolated headless scratch must be an owned mode-700 directory' >&2; exit 2;
+  }
+  dir=$(realpath -m -- "$dir")
+  case $dir in
+    "$scratch"/*) ;;
+    *) echo 'isolated headless state must be below its private scratch directory' >&2; exit 2 ;;
+  esac
+  session_dir="$dir/session"
+  if [[ -n ${SCOTTLAND_SESSION_DIR:-} && $(realpath -m -- "$SCOTTLAND_SESSION_DIR") != "$session_dir" ]]; then
+    echo 'isolated session metadata must stay in the headless run directory' >&2; exit 2
+  fi
+else
+  session_dir=${SCOTTLAND_SESSION_DIR:-$runtime/scottland}
+fi
+export SCOTTLAND_SESSION_DIR=$session_dir
 # The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
 # package's.
 hooks=$repo/build/hooks
@@ -39,10 +66,75 @@ exec_tool=$hooks/libexec/scottland-exec
 
 display() { cat "$dir/display"; }
 
+process_uses_config() {
+  python3 - "$1" "$2" "${3:-}" <<'PY'
+import pathlib, sys
+pid, config, required = sys.argv[1:]
+try:
+    args = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    if config.encode() not in args:
+        sys.exit(1)
+    if required and not any(arg.rsplit(b"/", 1)[-1] == required.encode() for arg in args):
+        sys.exit(1)
+except OSError:
+    sys.exit(1)
+PY
+}
+
+process_group_uses_config() {
+  python3 - "$1" "$2" <<'PY'
+import os, pathlib, sys
+group, config = int(sys.argv[1]), os.fsencode(sys.argv[2])
+for entry in pathlib.Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        pid = int(entry.name)
+        if os.getpgid(pid) != group:
+            continue
+        args = (entry / "cmdline").read_bytes().split(b"\0")
+        if config in args and any(arg.rsplit(b"/", 1)[-1] == b"wayfire" for arg in args):
+            sys.exit(0)
+    except (OSError, ProcessLookupError, PermissionError):
+        pass
+sys.exit(1)
+PY
+}
+
+process_owns_session() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import pathlib, sys
+pid, display, session, executable = sys.argv[1:]
+try:
+    raw = pathlib.Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    env = dict(entry.split(b"=", 1) for entry in raw if b"=" in entry)
+    argv = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    owned = (env.get(b"WAYLAND_DISPLAY") == display.encode() and
+             env.get(b"SCOTTLAND_SESSION_DIR") == session.encode() and
+             any(executable.encode() in arg for arg in argv))
+    sys.exit(0 if owned else 1)
+except OSError:
+    sys.exit(1)
+PY
+}
+
 case ${1:-} in
   start)
-    [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
-    rm -rf "$dir"; mkdir -p "$dir"
+    if [[ $isolation == 1 ]]; then
+      for option in "${@:2}"; do
+        [[ $option != --omarchy ]] || {
+          echo 'isolated runner mode does not start the Omarchy/Hyprland shim' >&2; exit 2;
+        }
+      done
+      [[ ! -e $dir && ! -L $dir ]] || {
+        echo 'isolated headless directory already exists; refusing to reuse or remove it' >&2; exit 2;
+      }
+      mkdir -m 700 -- "$dir"
+      mkdir -m 700 -- "$session_dir"
+    else
+      [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
+      rm -rf "$dir"; mkdir -p "$dir"
+    fi
     started=(01-record-environment)
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
@@ -81,7 +173,7 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|SCOTTLAND_HEADLESS_ISOLATION|SCOTTLAND_TEST_SCRATCH|SCOTTLAND_SESSION_DIR|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -140,14 +232,14 @@ WRAPPER
     )
     for _ in $(seq 100); do
       name=$(sed -n 's/.*Using socket name \(wayland-[0-9]*\).*/\1/p' "$dir/wayfire.log")
-      [[ -n $name && -f $runtime/scottland/$name.env ]] && break
+      [[ -n $name && -f $session_dir/$name.env ]] && break
       sleep 0.1
     done
     [[ -n ${name:-} ]] || { echo "headless Scottland didn't start; see $dir/wayfire.log" >&2; exit 1; }
     echo "$name" >"$dir/display"
     # The debugger/private-bus wrapper can exit independently. Retain the actual
     # compositor identity so stop still reaps our inferior in that case.
-    python3 - "$runtime/scottland/$name.env" "$dir/compositor.pid" <<'PY'
+    python3 - "$session_dir/$name.env" "$dir/compositor.pid" <<'PY'
 import pathlib, socket, struct, sys
 entries = pathlib.Path(sys.argv[1]).read_bytes().split(b'\0')
 endpoint = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET='))
@@ -169,19 +261,85 @@ PY
     exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
     ;;
   stop)
+    if [[ $isolation == 1 && ! -f $dir/display ]]; then
+      [[ -e $dir || -L $dir ]] || exit 0
+      [[ -d $dir && ! -L $dir && $(stat -c '%u:%a' -- "$dir") == "$(id -u):700" ]] || {
+        echo 'isolated headless directory changed; refusing cleanup' >&2; exit 2;
+      }
+      if [[ -e $dir/pid || -L $dir/pid ]]; then
+        [[ -f $dir/pid && ! -L $dir/pid && -f $dir/wayfire.ini && ! -L $dir/wayfire.ini ]] || {
+          echo 'isolated startup ownership record changed; preserving its scratch directory' >&2; exit 2;
+        }
+        pid=$(cat "$dir/pid")
+        [[ $pid =~ ^[0-9]+$ ]] || {
+          echo 'isolated startup PID is invalid; preserving its scratch directory' >&2; exit 2;
+        }
+        if process_group_uses_config "$pid" "$dir/wayfire.ini"; then
+          kill -- "-$pid" 2>/dev/null || true
+          for _ in $(seq 30); do
+            process_group_uses_config "$pid" "$dir/wayfire.ini" || break
+            sleep 0.1
+          done
+          if process_group_uses_config "$pid" "$dir/wayfire.ini"; then
+            kill -9 -- "-$pid" 2>/dev/null || true
+            process_group_uses_config "$pid" "$dir/wayfire.ini" && {
+              echo 'isolated startup process did not exit; preserving its scratch directory' >&2; exit 2;
+            }
+          fi
+        elif [[ $pid =~ ^[0-9]+$ ]] && kill -0 -- "-$pid" 2>/dev/null; then
+          echo 'isolated startup process group is not owned by this config; refusing cleanup' >&2; exit 2
+        fi
+      elif [[ -e $dir/wayfire.ini || -L $dir/wayfire.ini ]]; then
+        echo 'isolated config exists without its owner PID; preserving scratch' >&2; exit 2
+      fi
+      rm -rf -- "$dir"
+      exit 0
+    fi
     [[ -f $dir/display ]] || exit 0
+    if [[ $isolation == 1 ]]; then
+      [[ -d $dir && ! -L $dir && $(stat -c '%u:%a' -- "$dir") == "$(id -u):700" && \
+         -d $session_dir && ! -L $session_dir && \
+         $(stat -c '%u:%a' -- "$session_dir") == "$(id -u):700" ]] || {
+        echo 'isolated headless ownership directory changed; refusing cleanup' >&2; exit 2;
+      }
+      [[ -f $dir/display && ! -L $dir/display && -f $dir/pid && ! -L $dir/pid && \
+         -f $dir/wayfire.ini && ! -L $dir/wayfire.ini && \
+         ( ! -e $dir/compositor.pid || ( -f $dir/compositor.pid && ! -L $dir/compositor.pid ) ) ]] || {
+        echo 'isolated process ownership records changed; refusing cleanup' >&2; exit 2;
+      }
+    fi
     name=$(display)
     # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
     # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
     # with its monitors.)
-    for pid_file in "$runtime/scottland/$name.lua.pid" "$runtime/scottland/$name.color-scheme.pid" "$runtime/scottland/$name.widget-bus.pid"; do
+    if [[ $isolation == 1 ]]; then
+      pid_file="$session_dir/$name.widget-bus.pid"
+      if [[ -f $pid_file && ! -L $pid_file ]]; then
+        helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
+        if [[ $helper =~ ^[0-9]+$ ]] && process_owns_session "$helper" "$name" "$session_dir" scottland-widget-bus; then
+          kill "$helper" 2>/dev/null || true
+          for _ in $(seq 20); do
+            process_owns_session "$helper" "$name" "$session_dir" scottland-widget-bus || break
+            sleep 0.1
+          done
+          if process_owns_session "$helper" "$name" "$session_dir" scottland-widget-bus; then
+            kill -9 "$helper" 2>/dev/null || true
+            process_owns_session "$helper" "$name" "$session_dir" scottland-widget-bus && {
+              echo 'isolated widget bus did not exit; preserving scratch directory' >&2; exit 2;
+            }
+          fi
+        fi
+      fi
+    else
+    for pid_file in "$session_dir/$name.lua.pid" "$session_dir/$name.color-scheme.pid" "$session_dir/$name.widget-bus.pid"; do
       helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
       if [[ $helper =~ ^[0-9]+$ ]] && grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
         if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
       fi
       rm -f "$pid_file"
     done
-    signature=$(python3 - "$runtime/scottland/$name.env" <<'PY'
+    fi
+    signature=$(python3 - "$session_dir/$name.env" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 if path.exists():
@@ -190,39 +348,85 @@ if path.exists():
             print(entry.split(b'=', 1)[1].decode())
 PY
 )
-    lock="$runtime/hypr/$signature/hyprland.lock"
-    if [[ $signature == scottland_* && $signature != */* && -f $lock && $(sed -n 2p "$lock") == "$name" ]]; then
-      kill "$(sed -n 1p "$lock")" 2>/dev/null || true
-      rm -rf "$(dirname "$lock")"
+    if [[ $isolation != 1 ]]; then
+      lock="$runtime/hypr/$signature/hyprland.lock"
+      if [[ $signature == scottland_* && $signature != */* && -f $lock && $(sed -n 2p "$lock") == "$name" ]]; then
+        kill "$(sed -n 1p "$lock")" 2>/dev/null || true
+        rm -rf "$(dirname "$lock")"
+      fi
     fi
     pid=$(cat "$dir/pid")
     compositor=$(cat "$dir/compositor.pid" 2>/dev/null || true)
-    if [[ $compositor =~ ^[0-9]+$ ]] && \
-      python3 - "$compositor" "$dir/wayfire.ini" <<'PY'
-import pathlib, sys
-try:
-    args = pathlib.Path('/proc/' + sys.argv[1] + '/cmdline').read_bytes().split(b'\0')
-    sys.exit(not (sys.argv[2].encode() in args and any(a.endswith(b'wayfire') for a in args)))
-except OSError:
-    sys.exit(1)
-PY
-    then
-      kill "$compositor" 2>/dev/null || true
-    else compositor=; fi
-    # setsid gives this harness its own group. Include the debugger's inferior,
-    # not only dbus-run-session's immediate child, when stopping --gdb sessions.
-    group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-    if [[ $group == "$pid" ]]; then
-      kill -- "-$pid" 2>/dev/null || true
+    if [[ $isolation == 1 ]]; then
+      [[ $pid =~ ^[0-9]+$ && ( -z $compositor || $compositor =~ ^[0-9]+$ ) ]] || {
+        echo 'isolated process IDs are invalid; preserving scratch' >&2; exit 2;
+      }
+      config="$dir/wayfire.ini"
+      launcher_owned=0; compositor_owned=0; owned_group=0
+      if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        process_uses_config "$pid" "$config" || {
+          echo 'isolated launcher identity changed; refusing cleanup' >&2; exit 2;
+        }
+        launcher_owned=1
+      fi
+      if [[ $compositor =~ ^[0-9]+$ ]] && kill -0 "$compositor" 2>/dev/null; then
+        process_uses_config "$compositor" "$config" wayfire && compositor_owned=1
+      fi
+      if ((launcher_owned)); then
+        group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+        if [[ $group == "$pid" ]]; then owned_group=1; fi
+      else
+        group=
+      fi
+      if ((compositor_owned)); then
+        compositor_group=$(ps -o pgid= -p "$compositor" 2>/dev/null | tr -d ' ' || true)
+        [[ $compositor_group != "$pid" ]] || owned_group=1
+      fi
+      if ((owned_group)); then kill -- "-$pid" 2>/dev/null || true; fi
+      if (( launcher_owned )); then
+        [[ $group == "$pid" ]] || kill "$pid" 2>/dev/null || true
+      fi
+      if ((compositor_owned)) && [[ $compositor_group != "$pid" ]]; then kill "$compositor" 2>/dev/null || true; fi
+      for _ in $(seq 30); do
+        alive=0
+        if ((launcher_owned)) && process_uses_config "$pid" "$config"; then alive=1; fi
+        if ((compositor_owned)) && process_uses_config "$compositor" "$config" wayfire; then alive=1; fi
+        ((alive == 0)) && break
+        sleep 0.1
+      done
+      if ((launcher_owned)) && process_uses_config "$pid" "$config"; then kill -9 "$pid" 2>/dev/null || true; fi
+      if ((compositor_owned)) && process_uses_config "$compositor" "$config" wayfire; then kill -9 "$compositor" 2>/dev/null || true; fi
+      if ((launcher_owned)) && process_uses_config "$pid" "$config" || \
+         ((compositor_owned)) && process_uses_config "$compositor" "$config" wayfire || \
+         ((owned_group)) && kill -0 -- "-$pid" 2>/dev/null; then
+        echo 'isolated process did not exit; preserving its scratch directory' >&2; exit 2
+      fi
+      if [[ $pid =~ ^[0-9]+$ ]] && kill -0 -- "-$pid" 2>/dev/null; then
+        echo 'isolated process group remains; preserving its scratch directory' >&2; exit 2
+      fi
     else
-      for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+      if [[ $compositor =~ ^[0-9]+$ ]] && process_uses_config "$compositor" "$dir/wayfire.ini" wayfire; then
+        kill "$compositor" 2>/dev/null || true
+      else compositor=; fi
+      # setsid gives this harness its own group. Include the debugger's inferior,
+      # not only dbus-run-session's immediate child, when stopping --gdb sessions.
+      group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+      if [[ $group == "$pid" ]]; then
+        kill -- "-$pid" 2>/dev/null || true
+      else
+        for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+      fi
+      kill "$pid" 2>/dev/null || true
+      for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+      kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs
+      [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
+      [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
     fi
-    kill "$pid" 2>/dev/null || true
-    for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-    kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs
-    [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
-    [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
-    rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo"
+    if [[ $isolation == 1 ]]; then
+      rm -f "$session_dir/$name.env" "$session_dir/$name.lua.fifo" "$session_dir/$name.widget-bus.pid"
+    else
+      rm -f "$session_dir/$name.env" "$session_dir/$name.lua.fifo"
+    fi
     rm -rf "$dir"
     echo "stopped headless Scottland on $name"
     ;;

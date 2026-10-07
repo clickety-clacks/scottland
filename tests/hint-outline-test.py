@@ -6,6 +6,7 @@ state land in build/hint-outline-evidence; no live config, session or service is
 import json
 import os
 from pathlib import Path
+import stat
 import socket
 import struct
 import subprocess
@@ -17,7 +18,8 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf
 
 repo = Path(__file__).resolve().parents[1]
-art = repo / "build/hint-outline-evidence" / f"run-{os.getpid()}-{time.time_ns()}"
+evidence = Path(os.environ.get("SCOTTLAND_TEST_EVIDENCE_DIR") or repo / "build/hint-outline-evidence")
+art = evidence / f"run-{os.getpid()}-{time.time_ns()}"
 art.mkdir(parents=True)
 layout = art / "settings-home/scottland/layout.ini"
 layout.parent.mkdir(parents=True, exist_ok=True)
@@ -523,15 +525,21 @@ def second_output():
     release()
 
 
+session_palette = None
+session_palette_identity = None
 try:
     assert os.environ["WAYLAND_DISPLAY"] != "wayland-1", "isolated headless session required"
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark", background=BACKGROUND,
                                             foreground="#d8deea", accent="#81a1c1")))
-    session_palette = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
-    staged = session_palette.with_suffix(".hint-outline-test.tmp")
-    staged.write_text(palette_path.read_text())
-    staged.replace(session_palette)
+    session_palette = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
+    if not session_palette.parent.is_dir():
+        raise RuntimeError(f"session runtime directory is missing: {session_palette.parent}")
+    palette_fd = os.open(session_palette, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(palette_fd, "wb") as palette_file:
+        palette_stat = os.fstat(palette_file.fileno())
+        session_palette_identity = (palette_stat.st_dev, palette_stat.st_ino)
+        palette_file.write(palette_path.read_bytes())
     ipc("wayfire/set-config-options", {"scottland/color_scheme": "dark", "scottland/accent_color": "#81a1c1ff",
                                        "scottland/sounds": False})
     pointer(640, 10)
@@ -736,9 +744,13 @@ finally:
     for p in clients:
         if p.poll() is None:
             p.terminate()
-    try:
-        session_palette.unlink(missing_ok=True)
-    except NameError:
-        pass
+    if session_palette is not None and session_palette_identity is not None:
+        try:
+            palette_stat = session_palette.lstat()
+            if stat.S_ISREG(palette_stat.st_mode) and \
+               (palette_stat.st_dev, palette_stat.st_ino) == session_palette_identity:
+                session_palette.unlink()
+        except FileNotFoundError:
+            pass
     print(f"{passed} passed, {failed} failed", flush=True)
     raise SystemExit(1 if failed else 0)

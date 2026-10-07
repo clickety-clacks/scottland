@@ -16,7 +16,7 @@ if [ "${1:-}" = --watch-paths ]; then
   exit 0
 fi
 
-dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+dir="${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}"
 out="$dir/wayfire.ini"
 test_output=
 if [ "${1:-}" = --output ] && [ -n "${2:-}" ]; then

@@ -2879,11 +2879,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     static constexpr int WIDGET_INSET = (int)scottland::SWOLLEN + 3;  // room for the halo at its widest
 
-    /** $XDG_RUNTIME_DIR/scottland/<display><suffix>: this session's runtime files. */
+    /** Per-session files; headless tests keep them in their owned session directory. */
     static std::string runtime_file(const std::string& suffix)
     {
+        const char *session = getenv("SCOTTLAND_SESSION_DIR");
         const char *runtime = getenv("XDG_RUNTIME_DIR");
         const char *display = getenv("WAYLAND_DISPLAY");
+        if (session && *session)
+        {
+            return std::string(session) + "/" + (display ? display : "wayland") + suffix;
+        }
         return std::string(runtime ? runtime : "/tmp") + "/scottland/" + (display ? display : "wayland") + suffix;
     }
 
@@ -5208,8 +5213,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      *  no noise. Written once as a WAV in the runtime directory. */
     void synthesize_pop()
     {
+        const char *session = getenv("SCOTTLAND_SESSION_DIR");
         const char *runtime = getenv("XDG_RUNTIME_DIR");
-        std::string dir = std::string(runtime ? runtime : "/tmp") + "/scottland";
+        std::string dir = (session && *session) ? std::string(session) :
+            std::string(runtime ? runtime : "/tmp") + "/scottland";
         std::string mkdir = "mkdir -p '" + dir + "'";
         if (system(mkdir.c_str()) != 0)
         {

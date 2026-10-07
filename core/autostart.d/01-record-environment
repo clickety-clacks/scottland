@@ -2,7 +2,7 @@
 # Record this session's environment (what Wayfire gives its children: WAYLAND_DISPLAY,
 # WAYFIRE_SOCKET, SCOTTLAND_HOOKS, integration variables...) so scottland-exec can run commands
 # in this session from anywhere, with exactly this environment instead of the caller's.
-runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+runtime="${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}"
 mkdir -p "$runtime"
 file="$runtime/${WAYLAND_DISPLAY:-wayland}.env"
 umask 077

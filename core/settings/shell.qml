@@ -138,7 +138,8 @@ ShellRoot {
   readonly property bool lightScheme: palette.scheme === "light"
   FileView {
     path: Quickshell.env("SCOTTLAND_PALETTE") ||
-      (Quickshell.env("XDG_RUNTIME_DIR") + "/scottland/" + Quickshell.env("WAYLAND_DISPLAY") + ".palette.json")
+      ((Quickshell.env("SCOTTLAND_SESSION_DIR") || (Quickshell.env("XDG_RUNTIME_DIR") + "/scottland")) +
+        "/" + Quickshell.env("WAYLAND_DISPLAY") + ".palette.json")
     printErrors: false
     watchChanges: true
     onFileChanged: reload()
