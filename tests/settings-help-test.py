@@ -3,6 +3,7 @@
 Run with tests/headless.sh run. Requires two outputs; screenshots and logs are retained in
 build/settings-help-evidence. No live config, session or services are used.
 """
+from importlib.machinery import SourceFileLoader
 import json
 import os
 import shutil
@@ -816,6 +817,27 @@ try:
     check("Widgets Cancel restores saved rail pause",
           option_reaches("widget_make_room_dwell",saved_widgets["widget_make_room_dwell"]))
 
+    # S21: Sunlight and network location are on unless solar.ini turns them off. Saving another
+    # tab rewrites solar.ini, so the panel must read a missing file or key as the shipped default.
+    # Judged by what scottland-solar-theme itself reads back from the file the panel wrote.
+    solar_reader = SourceFileLoader("scottland_solar", str(repo/"core/libexec/scottland-solar-theme")).load_module()
+    solar_reader.CONFIG = solar
+    for name, fixture, saved_tab, expected in (
+            ("missing solar.ini", None, 4, (True, True, None)),
+            ("solar.ini without enabled or allow_ip",
+             "[solar]\nlocation_set = true\nlatitude = 37.77\nlongitude = -122.42\n", 3,
+             (True, True, (37.77, -122.42))),
+            ("solar.ini that turns both off", "[solar]\nenabled = false\nallow_ip = false\n", 4,
+             (False, False, None))):
+        if fixture is None: solar.unlink(missing_ok=True)
+        else: solar.write_text(fixture)
+        panel=open_panel();tab(saved_tab)
+        close_panel(panel,save=True)
+        read=solar_reader.read_config()
+        check("S21 saving another tab keeps Sunlight as written: " + name,
+              (read["enabled"], read["allow_ip"], read["location"]) == expected)
+        print("  solar.ini after save:", solar.read_text().replace("\n", " | "), flush=True)
+
     panel=open_panel();tab(5)
     check("Sunlight tab selects",snapshot()["tab"]==5)
     enable=snapshot()["solarEnable"]
@@ -825,7 +847,7 @@ try:
     check("manual location becomes active after both coordinates",snapshot()["solar"]["location_set"])
     network=snapshot()["solarNetwork"]
     click(*control_point("solarNetwork",network["width"]/2,21))
-    check("network location requires an explicit toggle",snapshot()["solar"]["allow_ip"])
+    check("network location toggles on from saved off",snapshot()["solar"]["allow_ip"])
     close_panel(panel,save=True,via_button=True)
     check("Sunlight Save writes isolated location and opt-in",solar.exists() and
           all(line in solar.read_text() for line in ("enabled = true","allow_ip = true","location_set = true")))
