@@ -8,6 +8,9 @@ PACKAGE is a scratch copy of the card package, found first on SCOTTLAND_WIDGET_P
 A package upgrade rewrites the card's shell.qml in place, the way pacman does: unlink, then
 write the new file. A card that hot-reloaded on that could replace its window, and Scottland
 takes a docked card's window going away as the user closing the widget, which closes its app.
+The upgrade adds a property to the card's window, as the upgrade that closed apps did: a card
+that hot-reloads a change that small to its structure (a comment, identical bytes) keeps its
+window, and would not show the failure.
 After the upgrade the test holds for longer than a reload takes, watching for the app or the
 card to go; then the app's client must still be running, both windows must be the same ones,
 and the card must look as it did. The running card keeps its old code until it is relaunched,
@@ -50,9 +53,11 @@ def card_pixels(name, frame):
     subprocess.run(['grim', str(path)], check=True, timeout=5)
     image = GdkPixbuf.Pixbuf.new_from_file(str(path))
     stride, n, pixels = image.get_rowstride(), image.get_n_channels(), image.get_pixels()
-    # Frames are fractional; take every pixel the card touches.
-    xs = range(max(math.floor(frame['x']), 0), min(math.ceil(frame['x'] + frame['width']), image.get_width()))
-    ys = range(max(math.floor(frame['y']), 0), min(math.ceil(frame['y'] + frame['height']), image.get_height()))
+    # Frames are fractional; take every whole pixel inside the card. The halo moves, and shows
+    # through the card's rounded corners and badge room, so leave out a corner's radius all round.
+    inset = 16
+    xs = range(max(math.ceil(frame['x']) + inset, 0), min(math.floor(frame['x'] + frame['width']) - inset, image.get_width()))
+    ys = range(max(math.ceil(frame['y']) + inset, 0), min(math.floor(frame['y'] + frame['height']) - inset, image.get_height()))
     return [pixels[y*stride + x*n + c] for y in ys for x in xs for c in range(3)]
 
 
@@ -80,7 +85,11 @@ try:
     before = card_pixels('before', card['frame'])
 
     source = package/'shell.qml'
-    upgraded = source.read_bytes() + b'\n// upgraded\n'
+    code = source.read_bytes()
+    window = b'FloatingWindow {\n'
+    if window not in code:
+        raise AssertionError('the card no longer opens with ' + window.decode().strip())
+    upgraded = code.replace(window, window + b'    readonly property int upgradeRoom: 6\n', 1)
     source.unlink()
     source.write_bytes(upgraded)
 
