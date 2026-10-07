@@ -210,6 +210,36 @@ try:
     check_spread('three-finger solo', result, S, (A1, A2), r_before)
     shot('touchpad-solo.png')
 
+    # 2b. Focus race: a stay-still guard (dr_795d17c3) must exclude whichever window is actually
+    # focused at solve time, even when that differs from the window the hold is soloing. The
+    # three-finger hold captures its partner at hold_begin and only re-checks "is this still the
+    # held window" at the delayed solo, so re-focusing another window in between (before the
+    # delay fires) still solos the originally-held window (S) while the now-focused one (A1) must
+    # stay fixed in place instead of being pushed aside as an ordinary arrival.
+    ipc('wayfire/set-config-options', {'scottland/window_hold_delay': 400})
+    setup(scene, S)
+    a1_before, a2_before = geometry(A1), geometry(A2)
+    n = solves()
+    x1, y1, x2, y2 = footprint(S); pointer((x1 + x2) / 2, (y1 + y2) / 2); time.sleep(.1)
+    pad('hold_begin', fingers=3)
+    time.sleep(.15)
+    ipc('window-rules/focus-view', {'id': A1})
+    time.sleep(.45)  # past the 400 ms delay: the hold already fired on S, not on the new focus
+    pad('hold_end', cancelled=False)
+    result = wait_solve(n)
+    check(result['purpose'] == 'solo', 'focus race: the hold still produces a solo solve', result['purpose'])
+    settle(ids)
+    check(zone_of(center(S)[0]) == 'center' and abs(layout(S)['applied_scale'] - 1) < .01,
+          'focus race: the hold solos the window it began on (S), not the later focus (A1)',
+          f'S zone {zone_of(center(S)[0])}')
+    check(geometry(A1) == a1_before,
+          'focus race: the window focused at solve time (A1) stays fixed, even though it is not the solo target',
+          f'{a1_before} -> {geometry(A1)}')
+    check(geometry(A2) != a2_before and zone_of(center(A2)[0]) == 'periphery',
+          'focus race: a window that is neither the target nor the live focus still arrives normally',
+          f'{a2_before} -> {geometry(A2)}')
+    ipc('wayfire/set-config-options', {'scottland/window_hold_delay': 500}); time.sleep(.3)
+
     # A Super drag of a window, for the ordinary drop below.
     def start_drag(id, to):
         x1, y1, x2, y2 = footprint(id); x, y = (x1 + x2) / 2, (y1 + y2) / 2
