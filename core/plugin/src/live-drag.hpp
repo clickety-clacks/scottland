@@ -162,10 +162,9 @@ class live_drag_t : public wf::signal::provider_t, public wf::pointer_interactio
         emit(&ev);
     }
     // Suspended: the window is drawn where it really is, still in front of everything in layout
-    // coordinates, while the grab, its motion and its release keep coming here. A drag that may
-    // be a hold starts suspended (nothing moves within the wobble), and a fired hold stays so as
-    // an offer (WK39). Resuming carries on as the ordinary drag: the window rejoins the pointer
-    // at its original grab point.
+    // coordinates, while the grab, its motion and its release keep coming here. A fired hold is
+    // suspended for as long as it offers (WK39). Resuming carries on as the ordinary drag: the
+    // window rejoins the pointer at its original grab point.
     bool suspended = false;
     void suspend(bool on)
     {

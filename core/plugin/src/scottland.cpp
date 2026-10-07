@@ -1618,6 +1618,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag_origin_t origin;
         bool cancelled = false;
         bool held = false;  // ended as a hold form (WK35/WK36): no drop, no move
+        std::optional<double> start_pin;  // this drag's window's scale pin when it started (a chain's origin keeps the first)
         uint64_t widget = 0;
         drag_origin_t last_drop;
         uint32_t last_drop_at = 0;
@@ -5653,12 +5654,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     // Hold forms (WK35/WK36; Mike, 2026-10-04: every gesture that drags a window has one). A
     // pointer or three-finger drag that stays within HOLD_WOBBLE of where it began for the hint
-    // hold delay is a hold. Until it is decided the drag is suspended: the window stays where it
-    // is, so nothing has visibly moved when the hold fires (a drag that has moved stays a drag,
-    // L23), and no rail morph, rail room or audition can begin inside the wobble. Moving past the
-    // wobble resumes the drag, the window rejoining the pointer at its grab point; letting go
-    // first is a click. A fired hold is an offer (below). Touch drags start from a long press
-    // already (L25) and keep that meaning.
+    // hold delay is a hold. Until it fires the drag is live as ever (L8: the grabbed point stays
+    // under the pointer from the first motion). When it fires, nothing of the drag survives: the
+    // drag is suspended, so the window is drawn back at its true place and scale (it never really
+    // moved), and any rail morph or rail room the wobble began ends. Moving past the wobble first
+    // is an ordinary drag; letting go first is a click. A fired hold is an offer (below). Touch
+    // drags start from a long press already (L25) and keep that meaning.
     static constexpr double HOLD_WOBBLE = 12.0;  // logical px: hands and resting fingers jitter
     // Who owns a hold or an offer: only its own device's release, lift, swipe or cancel acts on
     // it; another device, or a gesture with another finger count, never takes it over.
@@ -5703,7 +5704,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         elapsed = std::min(elapsed, delay - 1);
         drag_hold = drag_hold_t{window, partner, wf::get_core().get_cursor_position(), 0, gesture, now_msec() - elapsed, owner};
         drag_hold_timer.set_timeout(delay - elapsed, [=] () { drag_hold_due(); });
-        drag->suspend(true);  // nothing moves until it is a drag
         start_hold_ring(0, window, elapsed, delay);
         LOGI("scottland: ", gesture, " on window ", window, " began: a hold if it stays within ", HOLD_WOBBLE,
             " px for ", delay, " ms", window == partner ? " (focused: solo)" : " (pairs)");
@@ -5719,15 +5719,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         drag_hold_timer.disconnect();
     }
 
-    // True while the hold is still pending (the drag stays suspended).
-    bool drag_hold_motion(wf::pointf_t at)
+    // The scale pin a held drag's window had before the drag (which clears it once it moves).
+    std::optional<double> held_drag_pin(wayfire_toplevel_view view)
     {
-        if (!drag_hold) return false;
+        if (model.drag.started) return model.drag.start_pin;
+        auto found = model.windows.find(view->get_id());
+        return found != model.windows.end() ? found->second.pinned_scale : std::nullopt;
+    }
+
+    // A pending hold's motion: the drag itself carries on; past the wobble it is only a drag.
+    void drag_hold_motion(wf::pointf_t at)
+    {
+        if (!drag_hold) return;
         drag_hold->travel = std::max(drag_hold->travel, std::hypot(at.x - drag_hold->start.x, at.y - drag_hold->start.y));
-        if (drag_hold->travel <= HOLD_WOBBLE) return true;
-        disarm_drag_hold("moved past the wobble, a drag");
-        drag->suspend(false);  // the drag shows from here: the window rejoins the pointer
-        return false;
+        if (drag_hold->travel > HOLD_WOBBLE) disarm_drag_hold("moved past the wobble, a drag");
     }
 
     void drag_hold_due()
@@ -5745,8 +5750,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         LOGI("scottland: ", hold.gesture, " held still ", int32_t(now_msec() - hold.began), " ms (travel ",
             std::round(hold.travel * 10) / 10, " px) on window ", hold.window, ": ",
             hold.window == hold.partner ? "solo" : "pair with window " + std::to_string(hold.partner));
-        // The window never moved (the drag stayed suspended); the result is offered while the
-        // button or fingers stay down.
+        // The drag was a hold: it never really moved the window. Undo what the wobble showed (rail
+        // room, a rail morph, a scale change at a zone edge) and draw the window at its true place;
+        // the result is offered while the button or fingers stay down.
+        cancel_rail_drag();
+        end_morph();
+        drag->suspend(true);
+        if (auto view = wf::toplevel_cast(drag->view); view && !is_widget(view) && !view->pending_fullscreen())
+            set_scale(view, held_drag_pin(view).value_or(placement_of(view).scale));
         begin_hold_offer(hold.window, hold.partner, hold.gesture, hold.owner);
     }
 
@@ -6183,6 +6194,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         model.drag.widget = is_widget(drag->view) ? drag->view->get_id() : 0;
         model.drag.origin = origin_of(drag->view);
         model.drag.origin.pin = pin_at_start;
+        model.drag.start_pin = pin_at_start;
         if (continued)
         {
             auto view = model.drag.origin.view;
@@ -7192,7 +7204,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto output = drag->current_output;
         wf::pointf_t at{double(ev->current_position.x), double(ev->current_position.y)};
         if (hold_offer_motion(at)) return;  // a fired hold is offering: the drag is suspended
-        if (drag_hold_motion(at)) return;   // a pending hold: nothing moves inside the wobble
+        drag_hold_motion(at);               // a pending hold: the drag shows as ever (L8)
         refresh_layout_avoidance();
         note_drag_start();
         drag_velocity.add(now_msec(), ev->current_position.x, ev->current_position.y);
@@ -7347,8 +7359,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.drag.input_override.reset();
             cancel_rail_drag();
             end_morph();  // no widget shape survives a hold (the drag never moved)
-            if (main && main->is_mapped() && !is_widget(main) && model.drag.origin.view == main->get_id())
-                pin_scale(main, model.drag.origin.pin);
+            if (main && main->is_mapped() && !is_widget(main))
+                pin_scale(main, held_drag_pin(main));
             release_above();
             model.drag.last_drop = {};
             model.drag.widget = 0;

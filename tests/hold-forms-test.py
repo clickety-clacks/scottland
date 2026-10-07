@@ -297,6 +297,33 @@ def esc_refuses_offer():
     need(lambda: not light(px(want[B][0] + 210, want[B][1] + 150)), 2, 'preview gone after Esc')
     check(stable(A, B) == f0, 'Esc: no true geometry changed (Wayfire)', str(frames(A, B)))
 
+def left_edge(y, x_inside):
+    """The left end of the light run through (x_inside, y), in logical px (pixels)."""
+    run = run_along(x_inside, y, True); return run[0] if run else None
+
+@scenario
+def wobble_is_live_until_the_hold_fires():
+    'within the wobble the window follows the pointer (L8); when the hold fires it is drawn back at its true place'
+    ipc('wayfire/set-config-options', {'scottland/window_hold_delay': 1500})
+    try:
+        setup(SOLO, A); f0 = frames(A, C)
+        x, y = center(A); row = f0[A][1] + 60                      # a row of A with only desktop to its left
+        l0 = need(lambda: left_edge(row, x), 2, 'A\'s left edge before the press')
+        c_spot = (f0[C][0] + 350, f0[C][1] + 250)
+        super_press(x, y); time.sleep(.05)
+        for i in range(1, 6): pointer(x + 2 * i, y); time.sleep(.02)  # 10 px: inside the 12 px wobble
+        verify(lambda: (lambda l: l if l is not None and abs(l - (l0 + 10)) <= 1.5 else None)(left_edge(row, x + 10)), 1,
+               'before the hold fires, A is drawn 10 px right, under the pointer (pixels)')
+        if offer()['active']: raise Abort('the hold fired before the wobble was seen; the verdict above is void')
+        need(lambda: not light(px(*c_spot)), 3, 'the solo offer shows: C leaves its spot')
+        verify(lambda: (lambda l: l if l is not None and abs(l - l0) <= 1.5 else None)(left_edge(row, x)), 1,
+               'once the hold fires, A is drawn back at its true place while still held (pixels)')
+        check(frames(A, C) == f0, 'the wobble and the offer changed no true geometry (Wayfire)', str(frames(A, C)))
+        super_release()
+        need(lambda: not in_center(C, area), 3, 'solo taken')
+        check(geometry(A) == f0[A], 'taking it: A stays exactly where it was, not 10 px over (Wayfire)', str(geometry(A)))
+    finally: ipc('wayfire/set-config-options', {'scottland/window_hold_delay': 500})
+
 @scenario
 def drag_before_hold():
     'a Super press that moves past the wobble first is a drag: it follows the pointer, nothing pairs'
