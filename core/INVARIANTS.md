@@ -7,6 +7,8 @@ rules are in [../AGENTS.md](../AGENTS.md).
 Status: **verified** = exercised with real input on a real session (plumbus); **implemented** =
 built and tested headless or by IPC only; **not built** = agreed but not implemented yet.
 
+Window naming follows [../docs/window-names.md](../docs/window-names.md) (WN1–WN14).
+
 ## Principles (tenet candidates)
 
 Rules Mike stated while deciding specific features that apply across features. They decide edges

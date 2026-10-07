@@ -56,6 +56,7 @@ link-dev:
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
+	ln -sfn $(CURDIR)/core/window-names.d $(DEV)/window-names.d
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 # The system tools, after the scripts: a tool that replaces a script takes its place.
 	for f in build/tools/bin/*; do \
@@ -91,6 +92,7 @@ hooks:
 	ln -sf $(CURDIR)/core/session/scottland-settings $(HOOKS_DIR)/libexec/scottland-settings
 	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
+	ln -sfn $(CURDIR)/core/window-names.d $(HOOKS_DIR)/window-names.d
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	for f in build/tools/bin/*; do [ -e "$$f" ] || continue; ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
