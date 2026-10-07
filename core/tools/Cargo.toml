@@ -16,6 +16,7 @@ publish = false
 # Dependencies more than one tool uses are declared once here and taken with `workspace = true`.
 [workspace.dependencies]
 scottland = { path = "lib", package = "scottland-lib" }
+serde_json = "1"
 
 [profile.release]
 strip = "debuginfo"
