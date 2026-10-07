@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Choose the configured Omarchy day/night theme for Scottland's solar preference.
-
-A current theme whose light/dark mode already matches is never replaced.
-"""
+"""Apply an Omarchy theme once for each new Sunlight transition."""
 import configparser
+import fcntl
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 
-state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))
-mode_file = Path(os.environ.get("SCOTTLAND_SOLAR_MODE_FILE", str(state/"scottland"/(os.environ.get("WAYLAND_DISPLAY", "wayland")+".solar-mode"))))
-current = Path(os.environ.get("SCOTTLAND_OMARCHY_CURRENT", str(state/"omarchy/current")))
+state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/"scottland"
+mode_file = Path(os.environ.get("SCOTTLAND_SOLAR_MODE_FILE", str(state/(os.environ.get("WAYLAND_DISPLAY", "wayland")+".solar-mode"))))
+transition_file = Path(os.environ.get("SCOTTLAND_SOLAR_TRANSITION_FILE", str(state/"solar-transition.json")))
 config_file = Path(os.environ.get("SCOTTLAND_OMARCHY_SOLAR_FILE",
                                   str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/omarchy-solar.ini")))
 
@@ -25,20 +24,65 @@ def themes():
             "dark": section.get("night", "watercolor-dream-dark")}
 
 
+def transition_lock():
+    transition_file.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(transition_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
+def read_transition():
+    try:
+        record = json.loads(transition_file.read_text())
+    except FileNotFoundError:
+        return None
+    if not isinstance(record, dict) or record.get("schema") != 1:
+        raise ValueError(f"unsupported Sunlight transition record at {transition_file}")
+    return record
+
+
+def write_transition(record):
+    temporary = transition_file.with_name(transition_file.name + "." + str(os.getpid()) + ".tmp")
+    try:
+        temporary.write_text(json.dumps(record, sort_keys=True) + "\n")
+        temporary.replace(transition_file)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def acknowledge(transition_id):
+    descriptor = transition_lock()
+    try:
+        record = read_transition()
+        if (record is None or not record.get("enabled")
+                or record.get("transition_id") != transition_id):
+            return False
+        record["consumer_ack"] = transition_id
+        write_transition(record)
+        return True
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def run_once():
-    if not mode_file.is_file():
+    record = read_transition()
+    if record is None or not record.get("enabled"):
         return "off"
-    desired = mode_file.read_text().strip()
+    desired = mode_file.read_text().strip() if mode_file.is_file() else ""
     if desired not in ("light", "dark"):
         return "off"
-    colors = current/"theme/colors.toml"
-    result = subprocess.run(["omarchy-theme-color", "--file", str(colors), "mode"],
-                            capture_output=True, text=True)
-    if result.returncode == 0 and result.stdout.strip().lower() == desired:
-        return "kept"
+    transition_id = record.get("transition_id")
+    if not transition_id:
+        return "off"
+    if record.get("consumer_ack") == transition_id:
+        return "unchanged"
+
     target = themes()[desired]
     subprocess.run(["omarchy", "theme", "set", target], check=True)
-    return target
+    outcome = target
+    acknowledge(transition_id)
+    return outcome
 
 
 if __name__ == "__main__":
@@ -48,6 +92,6 @@ if __name__ == "__main__":
         while True:
             try:
                 run_once()
-            except (OSError, subprocess.CalledProcessError) as error:
+            except (OSError, ValueError, subprocess.CalledProcessError) as error:
                 print(f"scottland-omarchy-solar-theme: {error}", file=sys.stderr)
             time.sleep(10)
