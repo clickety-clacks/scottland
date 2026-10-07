@@ -24,7 +24,7 @@ build() {
 package_scottland() {
   # quickshell: the default widget (card) and the layout settings app
   depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell')
-  optdepends=('geoclue: automatic location for Sunlight')
+  optdepends=('geoclue: automatic location for Weather and Sunlight')
 
   meson install -C build --destdir "$pkgdir"
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
@@ -68,6 +68,9 @@ package_scottland() {
   install -dm755 "$pkgdir/usr/share/scottland/settings"
   install -m644 "$_root"/core/settings/*.qml "$pkgdir/usr/share/scottland/settings/"
   install -Dm644 "$_root/core/settings/scottland-settings.desktop" "$pkgdir/usr/share/applications/scottland-settings.desktop"
+  install -Dm644 "$_root/core/apps/weather/shell.qml" "$pkgdir/usr/share/scottland/apps/weather/shell.qml"
+  install -Dm644 "$_root/core/apps/weather/runtime.py" "$pkgdir/usr/share/scottland/apps/weather/runtime.py"
+  install -Dm644 "$_root/core/apps/weather/scottland-weather.desktop" "$pkgdir/usr/share/applications/scottland-weather.desktop"
   install -Dm755 "$_root/core/autostart.d/05-import-environment" "$pkgdir/usr/lib/scottland/autostart.d/05-import-environment"
   install -dm755 "$pkgdir/usr/lib/scottland/early-exit.d" "$pkgdir/usr/lib/scottland/session-env.d"
   install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
