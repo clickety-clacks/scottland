@@ -86,6 +86,10 @@ class monitor_t
     void note(note_id id, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
     // brief: counters only, without the history and the ML2 episodes (a caller that resets and discards).
     std::string stats_json(bool reset, bool brief = false);
+    // The scopes whose time ML2's unexcused occupancy leaves out (the latency test's open
+    // exceptions), replacing any earlier set; false for a name no scope has.
+    void clear_excused();
+    bool excuse(const std::string& name);
 
     uint32_t depth = 0;
     uint64_t build_id = 0;
@@ -108,17 +112,24 @@ class monitor_t
     uint64_t last_work_end_ns = 0;   // main-thread copy
     uint64_t notes = 0, slow_records = 0;
 
-    // ML2: outermost intervals intersecting the last 16.7 ms; the sum of their clipped lengths.
+    // ML2: outermost intervals intersecting the last 16.7 ms; the sum of their clipped lengths,
+    // and the same sum without the excused scopes, evaluated at every outermost exit. Outermost
+    // intervals do not overlap, so only the oldest one can start before the window.
     struct ml2_interval_t { uint64_t start, end; uint32_t id; };
     static constexpr size_t ml2_capacity = 8192;
     std::array<ml2_interval_t, ml2_capacity> ml2{};
     size_t ml2_head = 0, ml2_size = 0;
     uint64_t ml2_sum = 0, ml2_max = 0, ml2_max_at = 0;
-    // Each run of windows over ML2's budget (an episode), with the scopes that filled its worst
-    // window: an exception excuses an episode only if it was in it (tests/mainloop-latency-test).
+    std::array<bool, (size_t)scope_id::count> excused{};
+    uint64_t ml2_unexcused_sum = 0, ml2_unexcused_max = 0, ml2_unexcused_max_at = 0;
+    // Intervals dropped from a full queue while still inside the window: the sums at those
+    // exits are too low, so ML2 is unknown for them.
+    uint64_t ml2_lost = 0;
+    // Each run of windows whose unexcused occupancy is over ML2's budget (an episode), with the
+    // scopes in its worst window (tests/mainloop-latency-test fails on every episode).
     struct ml2_episode_t
     {
-        uint64_t peak = 0, at = 0;
+        uint64_t peak = 0, total = 0, at = 0;                   // unexcused and all, ns
         std::array<std::pair<uint32_t, uint64_t>, 8> scopes{};  // the largest contributors, ns
         uint64_t other = 0;                                     // the rest of the window, ns
     };

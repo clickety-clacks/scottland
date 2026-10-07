@@ -363,6 +363,71 @@ int main(int argc, char **argv)
         unlink(fixture.c_str());
     }
 
+    // 6. ML2 with supplied timestamps (no clock, no ring): unexcused occupancy is evaluated at
+    // every window, not only at each episode's largest one.
+    {
+        const uint64_t base = 1000 * loop::ms;
+        auto emit = [] (loop::monitor_t& m, loop::scope_id id, uint64_t start, uint64_t duration)
+        {
+            m.enter(id, start);
+            m.exit(id, start + duration, start);
+        };
+        auto episodes = [] (const std::string& json)
+        {
+            size_t n = 0;
+            for (auto at = json.find("\"peak_ms\":"); at != std::string::npos; at = json.find("\"peak_ms\":", at + 1)) n++;
+            return n;
+        };
+
+        // The review's case: an excused 16 ms goo_render, then 1.8 ms option_layout every 4 ms.
+        // Each later callback is under ML1, but every 16.7 ms window ending at one holds four of
+        // them and 0.7 ms of a fifth: 7.9 ms unexcused, while occupancy never drops under 4 ms.
+        loop::monitor_t m;
+        check("an exception's scope can be excused by name", m.excuse("goo_render") && !m.excuse("no_such_scope"));
+        emit(m, loop::scope_id::goo_render, base, 16 * loop::ms);
+        for (uint64_t i = 0; i < 20; i++) emit(m, loop::scope_id::option_layout, base + (18 + 4 * i) * loop::ms, 1800000);
+        auto stats = m.stats_json(false);
+        auto peak = json_number(stats, "peak_ms");
+        check("an excused peak does not hide later unexcused windows over 4 ms (7.9 ms)",
+              episodes(stats) == 1 && peak > 7.89 && peak < 7.91 && stats.find("\"option_layout\":") != std::string::npos);
+        check("... and the unexcused maximum is reported as such", json_number(stats, "ml2_unexcused_max_ms") > 7.89 &&
+              stats.find("\"ml2_excused\":[\"goo_render\"]") != std::string::npos);
+
+        // The same excused peak followed by sparse work: no episode. Without the excuse, one.
+        for (bool excuse : {true, false})
+        {
+            loop::monitor_t sparse;
+            if (excuse) sparse.excuse("goo_render");
+            emit(sparse, loop::scope_id::goo_render, base, 16 * loop::ms);
+            for (uint64_t i = 0; i < 5; i++) emit(sparse, loop::scope_id::option_layout, base + (20 + 20 * i) * loop::ms, 1800000);
+            auto s = sparse.stats_json(false);
+            if (excuse)
+                check("an excused peak with sparse work after it: no episode, 1.8 ms unexcused at most",
+                      episodes(s) == 0 && json_number(s, "ml2_unexcused_max_ms") < 1.81);
+            else
+                check("... and the same work with nothing excused: one 16 ms episode", episodes(s) == 1 && json_number(s, "peak_ms") > 15.99);
+        }
+
+        // Excusing after intervals are queued (with a reset, as loop-stats does) takes them out of
+        // the window that is still open.
+        loop::monitor_t late;
+        emit(late, loop::scope_id::goo_render, base, 3 * loop::ms);
+        late.excuse("goo_render");
+        late.stats_json(true);
+        emit(late, loop::scope_id::option_layout, base + 4 * loop::ms, 2 * loop::ms);
+        auto l = late.stats_json(false);
+        check("excusing a queued scope takes it out of the open window (2 ms unexcused of 5)",
+              json_number(l, "ml2_unexcused_max_ms") < 2.01 && json_number(l, "ml2_max_ms") > 4.99);
+
+        // More intervals in one window than the queue holds: reported lost, never a low sum.
+        loop::monitor_t dense;
+        for (uint64_t i = 0; i < 8200; i++) emit(dense, loop::scope_id::option_layout, base + i * 2000, 1000);
+        auto d = dense.stats_json(false);
+        check("a full ML2 queue dropping an interval inside the window counts it lost", json_number(d, "ml2_lost") >= 8);
+        check("... and a reset clears the count", json_number(dense.stats_json(true), "ml2_lost") >= 8 &&
+              json_number(dense.stats_json(false), "ml2_lost") == 0);
+    }
+
     wl_event_loop_destroy(events);
     rmdir(dir.c_str());
     printf("%s\n", failures ? "FAILED" : "all loop checks passed");

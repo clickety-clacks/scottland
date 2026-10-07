@@ -346,37 +346,51 @@ void monitor_t::exit(scope_id id, uint64_t at, uint64_t started)
     }
 
     s.outermost++;
-    // ML2: drop intervals that ended before the window, clip the oldest that remains.
-    if (ml2_size == ml2_capacity)
+    // ML2: drop intervals that ended before the window, clip the oldest that remains. Every
+    // window's maximum is reached at some interval's end, so evaluating at each exit covers them.
+    auto window_start = at > window_ns ? at - window_ns : 0;
+    auto drop = [this]
     {
-        ml2_sum -= ml2[ml2_head].end - ml2[ml2_head].start;
+        auto& oldest = ml2[ml2_head];
+        ml2_sum -= oldest.end - oldest.start;
+        if (!excused[oldest.id]) ml2_unexcused_sum -= oldest.end - oldest.start;
         ml2_head = (ml2_head + 1) % ml2_capacity;
         ml2_size--;
+    };
+    if (ml2_size == ml2_capacity)
+    {
+        if (ml2[ml2_head].end > window_start) ml2_lost++;
+        drop();
     }
     ml2[(ml2_head + ml2_size) % ml2_capacity] = {started, at, (uint32_t)id};
     ml2_size++;
     ml2_sum += duration;
-    auto window_start = at > window_ns ? at - window_ns : 0;
-    while (ml2_size && ml2[ml2_head].end <= window_start)
+    if (!excused[(size_t)id]) ml2_unexcused_sum += duration;
+    while (ml2_size && ml2[ml2_head].end <= window_start) drop();
+    auto clipped = ml2_sum, unexcused = ml2_unexcused_sum;
+    if (ml2_size && ml2[ml2_head].start < window_start)
     {
-        ml2_sum -= ml2[ml2_head].end - ml2[ml2_head].start;
-        ml2_head = (ml2_head + 1) % ml2_capacity;
-        ml2_size--;
+        clipped -= window_start - ml2[ml2_head].start;
+        if (!excused[ml2[ml2_head].id]) unexcused -= window_start - ml2[ml2_head].start;
     }
-    auto clipped = ml2_sum;
-    if (ml2_size && ml2[ml2_head].start < window_start) clipped -= window_start - ml2[ml2_head].start;
     if (clipped > ml2_max)
     {
         ml2_max = clipped;
         ml2_max_at = at;
     }
-    if (clipped > ml2_budget_ns)
+    if (unexcused > ml2_unexcused_max)
+    {
+        ml2_unexcused_max = unexcused;
+        ml2_unexcused_max_at = at;
+    }
+    if (unexcused > ml2_budget_ns)
     {
         if (!ml2_over) episode = {};
         ml2_over = true;
-        if (clipped > episode.peak)
+        if (unexcused > episode.peak)
         {
-            episode.peak = clipped;
+            episode.peak = unexcused;
+            episode.total = clipped;
             episode.at = at;
             ml2_compose(window_start, episode);
         }
@@ -535,6 +549,31 @@ void monitor_t::watch()
     }
 }
 
+void monitor_t::clear_excused()
+{
+    excused = {};
+    ml2_unexcused_sum = ml2_sum;
+}
+
+bool monitor_t::excuse(const std::string& name)
+{
+    for (size_t i = 1; i < excused.size(); i++)
+    {
+        if (name != scope_info[i].name) continue;
+        if (!excused[i])
+        {
+            excused[i] = true;
+            for (size_t k = 0; k < ml2_size; k++)
+            {
+                auto& interval = ml2[(ml2_head + k) % ml2_capacity];
+                if (interval.id == i) ml2_unexcused_sum -= interval.end - interval.start;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 std::string monitor_t::stats_json(bool reset, bool brief)
 {
     std::ostringstream out;
@@ -550,14 +589,27 @@ std::string monitor_t::stats_json(bool reset, bool brief)
             << ",\"max_ms\":" << msf(s.max_ns) << ",\"over_2ms\":" << s.over_budget << "}";
         first = false;
     }
-    out << "},\"ml2_max_ms\":" << msf(ml2_max) << ",\"ml2_max_at_ns\":" << ml2_max_at << ",\"ml2_episodes\":[";
+    out << "},\"ml2_max_ms\":" << msf(ml2_max) << ",\"ml2_max_at_ns\":" << ml2_max_at
+        << ",\"ml2_unexcused_max_ms\":" << msf(ml2_unexcused_max) << ",\"ml2_unexcused_max_at_ns\":" << ml2_unexcused_max_at
+        << ",\"ml2_lost\":" << ml2_lost << ",\"ml2_excused\":[";
+    {
+        bool comma = false;
+        for (size_t i = 1; i < excused.size(); i++)
+            if (excused[i])
+            {
+                out << (comma ? "," : "") << "\"" << scope_info[i].name << "\"";
+                comma = true;
+            }
+    }
+    out << "],\"ml2_episodes\":[";
     {
         // Closed episodes, and one still open, each with the scopes in its worst window.
         auto shown = brief ? 0 : std::min<uint64_t>(episode_count, episodes.size());
         bool any = false;
         auto emit = [&] (const ml2_episode_t& e)
         {
-            out << (any ? "," : "") << "{\"peak_ms\":" << msf(e.peak) << ",\"at_ns\":" << e.at << ",\"other_ms\":" << msf(e.other)
+            out << (any ? "," : "") << "{\"peak_ms\":" << msf(e.peak) << ",\"total_ms\":" << msf(e.total) << ",\"at_ns\":" << e.at
+                << ",\"other_ms\":" << msf(e.other)
                 << ",\"scopes\":{";
             bool comma = false;
             for (auto& [sid, ns] : e.scopes)
@@ -598,6 +650,9 @@ std::string monitor_t::stats_json(bool reset, bool brief)
         stats = {};
         ml2_max = 0;
         ml2_max_at = 0;
+        ml2_unexcused_max = 0;
+        ml2_unexcused_max_at = 0;
+        ml2_lost = 0;
         episode_count = 0;
         ml2_over = false;
         history_count = 0;

@@ -12,9 +12,10 @@ maximum and per-scope maxima from scottland/loop-stats (absent on builds without
 
 Every number is labelled: "measured" (an observation), "ceiling" (a target from the exception table,
 tests/mainloop-exceptions.json) or "open exception" (a scope over 2 ms that the table lists). With
---gate, the run fails on a scope over its ceiling, an ML2 window still over 4 ms once the open
-exceptions in that same window are taken out (the monitor records each episode's contributors),
-or ping p99 over 10 ms (with no scope over its ceiling, attribution unknown; with high host load
+--gate, the run fails on a scope over its ceiling, any 16.7 ms window still over 4 ms once the
+open exceptions are taken out (the monitor excuses them itself, at every callback exit, and records
+each such episode with its contributors), ML2 intervals the monitor could not hold (attribution
+unknown), or ping p99 over 10 ms (with no scope over its ceiling, attribution unknown; with high host load
 reported as noise). Only exceptions with status "open" carry an allowance; closed ones are
 history. This is a benchmark and gate, separate from the functional tests.
 """
@@ -33,6 +34,11 @@ gate = option('--gate')
 only = list(args)
 root = Path(__file__).resolve().parents[1]
 exceptions = json.loads((root / 'tests/mainloop-exceptions.json').read_text())
+# Only open exceptions carry an allowance; closed ones are kept in the file as history.
+ceilings = {name: e['ceiling_ms'] for name, e in exceptions['scopes'].items() if e.get('status', 'open') == 'open'}
+# Sent with every reset: the monitor leaves these scopes out of the occupancy it holds to the ML2
+# budget. Excusing one window's worst only would hide the windows after it (docs/main-loop.md).
+excused = sorted(ceilings)
 
 
 class Channel:
@@ -139,7 +145,7 @@ def wait_sleep(limit=45):
         time.sleep(.1)
     return False
 def has_stats():
-    try: control.call('scottland/loop-stats', {'reset': True, 'brief': True}); return True
+    try: control.call('scottland/loop-stats', {'reset': True, 'brief': True, 'excuse': excused}); return True
     except RuntimeError: return False
 stats_available = has_stats()
 def loadavg(): return float(Path('/proc/loadavg').read_text().split()[0])
@@ -149,7 +155,7 @@ def scenario(name):
     def wrap(fn):
         if only and name not in only: return fn
         time.sleep(.5); drain()
-        if stats_available: control.call('scottland/loop-stats', {'reset': True, 'brief': True})
+        if stats_available: control.call('scottland/loop-stats', {'reset': True, 'brief': True, 'excuse': excused})
         pings_before, inputs_before = pings.sent, inputs.sent
         load0, t0 = loadavg(), time.monotonic()
         try: note = fn()
@@ -352,8 +358,6 @@ for c in clients:
 
 # Report.
 def pct(a, p): return a[min(len(a) - 1, int(len(a) * p))] if a else float('nan')
-# Only open exceptions carry an allowance; closed ones are kept in the file as history.
-ceilings = {name: e['ceiling_ms'] for name, e in exceptions['scopes'].items() if e.get('status', 'open') == 'open'}
 budget = exceptions['budget_ms']; ml2_budget = exceptions['ml2_ms']
 failures, noise = [], []
 lines = [f"{'scenario':24} {'pings':>6} {'p50':>6} {'p99':>7} {'max':>8} {'>8ms':>5} | {'input p50/p99/max':>20} {'offered/s':>9} "
@@ -377,15 +381,16 @@ for r in results:
         row += ', '.join(marks)
         for name, v in s['scopes'].items():
             if v['max_ms'] > ceilings.get(name, budget): scope_over.append((name, v['max_ms'], ceilings.get(name, budget)))
-        # ML2, per episode (a run of 16.7 ms windows over budget): excused only by the open
-        # exceptions that were in its own worst window. What remains must fit the budget.
+        # ML2: every episode is a run of 16.7 ms windows whose occupancy without the open
+        # exceptions was over budget; its peak is that unexcused occupancy, at its worst window.
+        if sorted(s.get('ml2_excused', [])) != excused:
+            failures.append(f"{r['name']}: the monitor excused {s.get('ml2_excused')}, not the open exceptions {excused}")
         for e in s.get('ml2_episodes', []):
-            listed = sum(ms for name, ms in e['scopes'].items() if name in ceilings)
-            rest = e['peak_ms'] - listed
-            if rest > ml2_budget:
-                unlisted = ', '.join(f'{n} {ms:.2f}' for n, ms in e['scopes'].items() if n not in ceilings)
-                failures.append(f"{r['name']}: ML2 window {e['peak_ms']:.2f} ms; without its open exceptions {rest:.2f} ms over "
-                                f"{ml2_budget} ms ({unlisted}{', other ' + format(e['other_ms'], '.2f') if e['other_ms'] else ''})")
+            unlisted = ', '.join(f'{n} {ms:.2f}' for n, ms in e['scopes'].items() if n not in ceilings)
+            failures.append(f"{r['name']}: ML2 window {e['total_ms']:.2f} ms; without its open exceptions {e['peak_ms']:.2f} ms over "
+                            f"{ml2_budget} ms ({unlisted}{', other ' + format(e['other_ms'], '.2f') if e['other_ms'] else ''})")
+        if s.get('ml2_lost'):
+            failures.append(f"{r['name']}: {s['ml2_lost']} ML2 intervals dropped while still in their window (attribution unknown)")
         if s.get('ml2_episodes_dropped'):
             failures.append(f"{r['name']}: {s['ml2_episodes_dropped']} ML2 episodes not recorded (attribution unknown)")
     else:

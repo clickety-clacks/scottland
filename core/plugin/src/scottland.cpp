@@ -7841,6 +7841,16 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         }
         bool reset = data.has_member("reset") && data["reset"].is_bool() && data["reset"].as_bool();
         bool brief = data.has_member("brief") && data["brief"].is_bool() && data["brief"].as_bool();
+        if (data.has_member("excuse"))
+        {
+            // The latency test's open exceptions, applied with a reset so no episode mixes two sets.
+            if (!reset || !data["excuse"].is_array())
+                return wf::ipc::json_error("excuse needs reset: true and an array of scope names");
+            for (size_t i = 0; i < data["excuse"].size(); i++)
+                if (!data["excuse"][i].is_string()) return wf::ipc::json_error("excuse: each entry must be a scope name");
+            loop_monitor.clear_excused();
+            for (size_t i = 0; i < data["excuse"].size(); i++) loop_monitor.excuse(data["excuse"][i].as_string());
+        }
         if (wf::json_t::parse_string(loop_monitor.stats_json(reset, brief), reply))
             return wf::ipc::json_error("loop statistics unavailable");
         // What scottland-reload needs to resolve an attempt by evidence: which load of the plugin

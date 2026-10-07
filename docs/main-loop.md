@@ -35,9 +35,14 @@ Pure accessors Wayfire calls per node (bounding boxes, transformer getters) are 
   maximum, the last 256 outermost callbacks, watchdog counters, and the reload state
   (`reload.load`, `reload.nonce`, `reload.outcome`).
 - ML2 is exact for every window ending at a callback exit: a queue of the outermost intervals that
-  intersect the last 16.7 ms, the oldest clipped. Each run of windows over 4 ms (an episode) is
-  recorded with the scopes that filled its worst window (`ml2_episodes`, the last 1,024): the latency
-  gate excuses an episode only by the open exceptions inside that window.
+  intersect the last 16.7 ms, the oldest clipped. The maximum of any sliding window is reached at
+  some interval's end, so these windows cover all of them. `ml2_max_ms` is the total; alongside it the
+  monitor keeps the occupancy without an excused set of scopes, which the latency test sends with
+  each reset (`excuse`: the open exceptions; reported back as `ml2_excused`). Each run of windows
+  whose unexcused occupancy is over 4 ms (an episode) is recorded with that peak (`peak_ms`), the
+  window's total (`total_ms`) and the scopes that filled it (`ml2_episodes`, the last 1,024); the
+  latency gate fails on every one. An interval pushed out of the full queue while still inside its
+  window is counted in `ml2_lost`, and the gate reports it as attribution unknown.
 - Cost of a scope: two monotonic clock reads and, for an outermost scope, a handful of atomic
   stores; measured in the latency test (scopes compiled in, against the same build without them).
 
