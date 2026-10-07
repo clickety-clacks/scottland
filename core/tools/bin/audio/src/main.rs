@@ -293,6 +293,7 @@ struct Sink {
     description: String,
     ports: Vec<Port>,
     volume_percent: Option<u32>,
+    node_group: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -307,6 +308,13 @@ impl Sink {
                 .ports
                 .iter()
                 .any(|port| port.availability.as_deref() != Some("not available"))
+    }
+
+    fn is_filter_chain(&self) -> bool {
+        // PipeWire's filter-chain module supplies this generated node group by default.
+        self.node_group
+            .as_deref()
+            .is_some_and(|group| group.starts_with("filter-chain-"))
     }
 }
 
@@ -343,6 +351,11 @@ fn parse_sinks(json: &str) -> Result<Vec<Sink>, String> {
                 })
                 .unwrap_or(&name)
                 .to_string();
+            let node_group = value
+                .get("properties")
+                .and_then(|properties| properties.get("node.group"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let ports = value
                 .get("ports")
                 .and_then(Value::as_array)
@@ -361,6 +374,7 @@ fn parse_sinks(json: &str) -> Result<Vec<Sink>, String> {
                 description,
                 ports,
                 volume_percent: json_volume_percent(value.get("volume")),
+                node_group,
             })
         })
         .collect()
@@ -606,7 +620,7 @@ fn output_switch() -> Result<(), String> {
 fn switch_candidates<'a>(sinks: &'a [Sink], graph: &mut AudioGraph) -> Vec<&'a Sink> {
     let fronted: BTreeSet<String> = sinks
         .iter()
-        .filter(|sink| sink.available() && !sink.name.starts_with("alsa_output."))
+        .filter(|sink| sink.available() && sink.is_filter_chain())
         .filter_map(|sink| {
             let resolved = graph.resolve(&sink.name);
             (resolved != sink.name).then_some(resolved)
@@ -925,7 +939,8 @@ mod tests {
             r#"[
               {"index":1,"name":"alsa_output.a","description":"Speaker","ports":[],"volume":{"front-left":{"value_percent":"72%"}}},
               {"index":2,"name":"alsa_output.b","ports":[{"availability":"not available"}]},
-              {"index":3,"name":"alsa_output.c","properties":{"device.description":"Dock"},"ports":[{"availability":"unknown"}]}
+              {"index":3,"name":"alsa_output.c","properties":{"device.description":"Dock"},"ports":[{"availability":"unknown"}]},
+              {"index":4,"name":"effect_input.room","properties":{"node.group":"filter-chain-1234-7"},"ports":[]}
             ]"#,
         )
         .unwrap();
@@ -935,6 +950,7 @@ mod tests {
         assert!(!sinks[1].available());
         assert_eq!(sinks[2].description, "Dock");
         assert!(sinks[2].available());
+        assert!(sinks[3].is_filter_chain());
     }
 
     #[test]
@@ -966,14 +982,22 @@ mod tests {
             description: name.into(),
             ports: Vec::new(),
             volume_percent: Some(50),
+            node_group: None,
+        }
+    }
+
+    fn test_filter_chain_sink(index: u32, name: &str) -> Sink {
+        Sink {
+            node_group: Some("filter-chain-1234-7".into()),
+            ..test_sink(index, name)
         }
     }
 
     #[test]
-    fn output_switch_replaces_a_fronted_physical_speaker_with_its_dsp_sink() {
+    fn output_switch_replaces_a_fronted_physical_speaker_with_its_filter_chain_sink() {
         let sinks = [
             test_sink(1, "alsa_output.speakers"),
-            test_sink(2, "effect_input.room"),
+            test_filter_chain_sink(2, "effect_input.room"),
             test_sink(3, "alsa_output.headphones"),
         ];
         let mut fronted_graph = AudioGraph {
@@ -1002,6 +1026,40 @@ mod tests {
         assert_eq!(
             ordinary[next_sink_index(&ordinary, "alsa_output.speakers")].name,
             "effect_input.room"
+        );
+    }
+
+    #[test]
+    fn output_switch_keeps_easyeffects_and_its_device_in_the_cycle() {
+        let sinks = [
+            test_sink(1, "alsa_output.speakers"),
+            test_sink(2, "alsa_output.headphones"),
+            test_sink(3, "easyeffects_sink"),
+        ];
+        let mut graph = AudioGraph {
+            sinks_by_index: HashMap::from([(8, "alsa_output.headphones".into())]),
+            sink_inputs: parse_sink_inputs(
+                "Sink Input #55\n    Sink: 8\n    Properties:\n        application.name = \"EasyEffects\"\n",
+            ),
+            pw_links: None,
+        };
+
+        let candidates = switch_candidates(&sinks, &mut graph);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|sink| sink.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "alsa_output.speakers",
+                "alsa_output.headphones",
+                "easyeffects_sink"
+            ]
+        );
+        assert_eq!(
+            candidates[next_sink_index(&candidates, "alsa_output.speakers")].name,
+            "alsa_output.headphones"
         );
     }
 
