@@ -27,6 +27,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | The user puts windows in zones; nothing automatic moves a window into another zone, not even visually. | P13 |
 | 10-04 | The user always wins: what the user places ends up exactly where they put it; everything else flows around it (no settling the dropped item). | P14 |
 
+## Touchpad input
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-06 | Keep tap-to-click, but ignore touchpad input while typing and wait for a short quiet period after the last keypress before accepting it again. | L36 |
+
 ## Window avoidance and peeking
 
 | Date | Ruling | Where |
