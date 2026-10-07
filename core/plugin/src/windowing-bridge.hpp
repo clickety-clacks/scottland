@@ -351,6 +351,12 @@
         double outer_scale = place_along(output, rail + 1).scale;
         return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
     }
+    double periphery_threshold(double screen_width)
+    {
+        double rail = screen_width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        double outer_scale = place_at(rail + 1, screen_width).scale;
+        return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
+    }
     // Whether a spot at x reads as zone z (WP8): the center inside the center zone, and just past its
     // edge (the softness band) while an unpinned window there still shows its zone's full-looking
     // scale; a periphery anywhere else in the side zone. A Shift pin makes a side spot a periphery
@@ -369,6 +375,18 @@
         if (z == Z::left_periphery || z == Z::right_periphery)
             return place.zone == zone_t::continuous && !center &&
                 ((along < axis.length / 2) == (z == Z::left_periphery));
+        return true;
+    }
+    bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin, double screen_width)
+    {
+        using Z = scottland::windowing::zone;
+        auto place = place_at(x, screen_width);
+        bool center = place.zone == zone_t::center ||
+            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(screen_width));
+        if (z == Z::center) return center;
+        if (z == Z::left_periphery || z == Z::right_periphery)
+            return place.zone == zone_t::continuous && !center &&
+                ((x < screen_width / 2) == (z == Z::left_periphery));
         return true;
     }
     // The zone a window counts as for its zone memories and cycles (WP8): its zone, except that an
@@ -775,8 +793,8 @@
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
         // A memory counts only while its spot still reads as its zone (WP8).
-        if (remembered && !reads_as(z, {remembered->x, remembered->y},
-            scottland::windowing::remembered_pin(memory, z), output))
+        if (remembered && !reads_as(z, remembered->x,
+            scottland::windowing::remembered_pin(memory, z), screen.width))
             remembered.reset();
         double w = g.width, h = g.height;
         if (z == Z::center)
@@ -820,7 +838,7 @@
                 {
                     double inner = left ? side.x + side.width : side.x;
                     double outer = left ? side.x : side.x + side.width;
-                    double threshold = periphery_threshold(output);
+                    double threshold = periphery_threshold(screen.width);
                     double center_edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
                     double boundary = left ? center_edge : screen.width - center_edge;
                     auto area = output->workarea->get_workarea();
@@ -924,7 +942,7 @@
         auto& memory = ensure_window_memory(id);
         auto pin = scottland::windowing::remembered_pin(memory, z);
         if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z,
-            {p->x * screen.width, p->y * screen.height}, pin, window->get_output())))
+            p->x * screen.width, pin, screen.width)))
             pin.reset();
         pin_scale(window, pin);
         // Where its center actually lands, after pixel rounding: the drawn scale must be that
