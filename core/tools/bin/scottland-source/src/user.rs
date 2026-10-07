@@ -800,7 +800,7 @@ fn run_editor(directory: &Path) -> Result<()> {
     let status = Command::new("sh")
         .arg("-c")
         .arg("exec $EDITOR \"$1\"")
-        .arg("scottland-source-editor")
+        .arg("source-editor")
         .arg(directory)
         .env("EDITOR", editor.as_ref())
         .status()
