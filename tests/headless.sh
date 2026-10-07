@@ -41,8 +41,16 @@ display() { cat "$dir/display"; }
 
 case ${1:-} in
   start)
+    if [[ -n ${SCOTTLAND_HEADLESS_OWNER:-} ]]; then
+      [[ ${SCOTTLAND_HEADLESS_OWNER_DIR:-} == "$dir" && $(realpath -m "$dir") == "$repo"/build/* && ! -e $dir && ! -L $dir ]] || {
+        echo 'owned headless start requires its fresh directory under this checkout build/' >&2
+        exit 1
+      }
+      mkdir "$dir"
+    else
     [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
     rm -rf "$dir"; mkdir -p "$dir"
+    fi
     started=(01-record-environment)
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
@@ -81,7 +89,7 @@ GDB
       # the session's own variables.
       for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
         case $name in
-          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|repo|dir|hooks|runtime|exec_tool|started) ;;
+          HOME|USER|LOGNAME|SHELL|LANG|LC_*|TERM|TMPDIR|stock|test_goo|test_gles|test_outputs|debugger|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SCOTTLAND_WIDGET_PATH|SCOTTLAND_WIDGET_SCOPE|SCOTTLAND_HEADLESS_OUTPUTS|SCOTTLAND_DBUS_LEGACY|SCOTTLAND_HEADLESS_OWNER|SCOTTLAND_HEADLESS_OWNER_DIR|repo|dir|hooks|runtime|exec_tool|started) ;;
           *) unset "$name" 2>/dev/null || true ;;
         esac
       done
@@ -138,18 +146,75 @@ WRAPPER
         setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
+    recorded=0
     for _ in $(seq 100); do
       name=$(sed -n 's/.*Using socket name \(wayland-[0-9]*\).*/\1/p' "$dir/wayfire.log")
-      [[ -n $name && -f $runtime/scottland/$name.env ]] && break
+      if [[ -n $name && -f $runtime/scottland/$name.env ]]; then
+        if [[ -n ${SCOTTLAND_HEADLESS_OWNER:-} ]]; then
+          if python3 - "$runtime/scottland/$name.env" "$SCOTTLAND_HEADLESS_OWNER" "$dir" "$runtime" <<'PY'
+import pathlib, sys
+entries = pathlib.Path(sys.argv[1]).read_bytes().split(b'\0')
+env = dict(entry.split(b'=', 1) for entry in entries if b'=' in entry)
+expected = {
+    b'SCOTTLAND_HEADLESS_OWNER': sys.argv[2].encode(),
+    b'SCOTTLAND_HEADLESS_OWNER_DIR': sys.argv[3].encode(),
+    b'XDG_CONFIG_HOME': (sys.argv[3] + '/config').encode(),
+    b'XDG_STATE_HOME': (sys.argv[3] + '/state').encode(),
+}
+runtime_ok = env.get(b'XDG_RUNTIME_DIR', sys.argv[4].encode()) == sys.argv[4].encode()
+sys.exit(0 if runtime_ok and all(env.get(key) == value for key, value in expected.items()) else 1)
+PY
+          then recorded=1; break; fi
+        else
+          recorded=1; break
+        fi
+      fi
       sleep 0.1
     done
-    [[ -n ${name:-} ]] || { echo "headless Scottland didn't start; see $dir/wayfire.log" >&2; exit 1; }
+    [[ -n ${name:-} && $recorded == 1 ]] || { echo "headless Scottland didn't record an owned session; see $dir/wayfire.log" >&2; exit 1; }
     echo "$name" >"$dir/display"
     # The debugger/private-bus wrapper can exit independently. Retain the actual
     # compositor identity so stop still reaps our inferior in that case.
-    python3 - "$runtime/scottland/$name.env" "$dir/compositor.pid" <<'PY'
-import pathlib, socket, struct, sys
+    python3 - "$runtime/scottland/$name.env" "$dir/compositor.pid" "$runtime" "${SCOTTLAND_HEADLESS_OWNER:-}" "$dir" <<'PY'
+import json, os, pathlib, socket, stat, struct, sys
 entries = pathlib.Path(sys.argv[1]).read_bytes().split(b'\0')
+fields = dict(entry.split(b'=', 1) for entry in entries if b'=' in entry)
+if sys.argv[4]:
+    owner, directory, runtime = sys.argv[4], pathlib.Path(sys.argv[5]), pathlib.Path(sys.argv[3])
+    display = fields.get(b'WAYLAND_DISPLAY', b'').decode()
+    env_display = pathlib.Path(sys.argv[1]).name[:-4]
+    expected = {
+        b'SCOTTLAND_HEADLESS_OWNER': owner.encode(),
+        b'SCOTTLAND_HEADLESS_OWNER_DIR': str(directory).encode(),
+        b'XDG_CONFIG_HOME': str(directory / 'config').encode(),
+        b'XDG_STATE_HOME': str(directory / 'state').encode(),
+    }
+    if (not display or display != env_display or
+            any(fields.get(key) != value for key, value in expected.items()) or
+            fields.get(b'XDG_RUNTIME_DIR', str(runtime).encode()) != str(runtime).encode()):
+        raise SystemExit('owned headless environment record does not match this session')
+    paths = [pathlib.Path(sys.argv[1]), runtime / display, runtime / (display + '.lock')]
+    files = {}
+    for path in paths:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise SystemExit(f'refusing symlink runtime record: {path}')
+        if path == paths[0] and not stat.S_ISREG(info.st_mode):
+            raise SystemExit(f'refusing non-file environment record: {path}')
+        if path == paths[1] and not stat.S_ISSOCK(info.st_mode):
+            raise SystemExit(f'refusing non-socket Wayland endpoint: {path}')
+        if path == paths[2] and not stat.S_ISREG(info.st_mode):
+            raise SystemExit(f'refusing non-file Wayland lock: {path}')
+        files[str(path)] = {'device': info.st_dev, 'inode': info.st_ino, 'mode': stat.S_IFMT(info.st_mode)}
+    manifest = {'owner': owner, 'display': display, 'runtime': str(runtime), 'files': files}
+    manifest_path = directory / 'runtime-owned.json'
+    fd = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(manifest, output, sort_keys=True)
+        output.write('\n')
 endpoint = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET='))
 with socket.socket(socket.AF_UNIX) as peer:
     peer.settimeout(2)
