@@ -1,18 +1,18 @@
 #!/bin/bash
-# Owner entrypoint for the WK37/WK38 item2 checks plus the tint pixel check.
+# Owner entrypoint for item2's WK37/WK38 tint checks and WK36 opaque-once pixels.
 set -euo pipefail
 umask 077
 
 case ${I:-} in
   tint) ;;
-  *) echo 'set I=tint to run the item2 and tint pixel checks' >&2; exit 2 ;;
+  *) echo 'set I=tint to run the item2 tint and opaque-once checks' >&2; exit 2 ;;
 esac
 
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
 [[ -x tests/hint-outline-test.sh && -f tests/hint-outline-test.py && \
-   -f tests/window-mode-tint-pixel-test.py ]] || {
-  echo 'item2 WK37/WK38 or composed tint pixel source is missing' >&2; exit 2;
+   -f tests/pairing-opaque-test.py ]] || {
+  echo 'item2 WK37/WK38 or pairing opaque-once source is missing' >&2; exit 2;
 }
 
 mkdir -p "$repo/build"
@@ -50,21 +50,23 @@ trap 'exit 143' TERM
 
 export SCOTTLAND_HEADLESS_DIR="$scratch/headless-wk37-wk38"
 export SCOTTLAND_TEST_EVIDENCE_DIR="$scratch/evidence-wk37-wk38"
+unset SCOTTLAND_TEST_GOO
 mkdir -m 700 -- "$SCOTTLAND_TEST_EVIDENCE_DIR"
 tests/hint-outline-test.sh
 [[ ! -e $SCOTTLAND_HEADLESS_DIR ]] || {
   echo 'WK37/WK38 headless session was not cleaned from its private scratch' >&2; exit 1;
 }
 
-export SCOTTLAND_HEADLESS_DIR="$scratch/headless-tint"
-export SCOTTLAND_TEST_GOO=1
-export SCOTTLAND_TEST_EVIDENCE_DIR="$scratch/evidence-tint"
+export SCOTTLAND_HEADLESS_DIR="$scratch/headless-pairing-opaque"
+export SCOTTLAND_TEST_EVIDENCE_DIR="$scratch/evidence-pairing-opaque"
 mkdir -m 700 -- "$SCOTTLAND_TEST_EVIDENCE_DIR"
-tests/headless.sh start --widgets
-tests/headless.sh run python3 tests/window-mode-tint-pixel-test.py "$SCOTTLAND_TEST_EVIDENCE_DIR" \
+tests/headless.sh start
+tests/headless.sh run timeout --signal=TERM --kill-after=30s 4m python3 -u \
+  tests/pairing-opaque-test.py "$SCOTTLAND_TEST_EVIDENCE_DIR" \
   | tee "$SCOTTLAND_TEST_EVIDENCE_DIR/results.log"
+cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$SCOTTLAND_TEST_EVIDENCE_DIR/wayfire.log" 2>/dev/null || true
 tests/headless.sh stop
 [[ ! -e $SCOTTLAND_HEADLESS_DIR ]] || {
-  echo 'tint headless session was not cleaned from its private scratch' >&2; exit 1;
+  echo 'pairing opaque-once headless session was not cleaned from its private scratch' >&2; exit 1;
 }
 echo "evidence retained under $scratch"
