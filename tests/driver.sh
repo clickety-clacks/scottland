@@ -28,18 +28,22 @@ unset SCOTTLAND_SESSION_DIR
 finish() {
   result=$?
   trap - EXIT
+  cleanup_ok=1
   if [[ -n ${SCOTTLAND_HEADLESS_DIR:-} && ( -e $SCOTTLAND_HEADLESS_DIR || -L $SCOTTLAND_HEADLESS_DIR ) ]]; then
-    tests/headless.sh stop || result=1
+    tests/headless.sh stop || { result=1; cleanup_ok=0; }
   fi
   if [[ -n ${SCOTTLAND_HEADLESS_DIR:-} && ( -e $SCOTTLAND_HEADLESS_DIR || -L $SCOTTLAND_HEADLESS_DIR ) ]]; then
     echo "headless cleanup did not release its private directory: $SCOTTLAND_HEADLESS_DIR" >&2
-    result=1
+    result=1; cleanup_ok=0
   fi
-  if [[ -d $tmp && ! -L $tmp && $(realpath -m -- "$tmp") == "$scratch/tmp" && \
+  if ((cleanup_ok)) && \
+     [[ -d $scratch && ! -L $scratch && $(realpath -m -- "$scratch") == "$scratch" && \
+        $(stat -c '%u:%a' -- "$scratch") == "$(id -u):700" && \
+        -d $tmp && ! -L $tmp && $(realpath -m -- "$tmp") == "$scratch/tmp" && \
         $(stat -c '%u:%a' -- "$tmp") == "$(id -u):700" ]]; then
-    rm -rf -- "$tmp"
+    rm -rf -- "$tmp" || { echo 'temporary scratch cleanup failed; preserving runner scratch' >&2; result=1; }
   else
-    echo 'temporary directory ownership changed; preserving runner scratch' >&2
+    echo 'headless cleanup or scratch ownership check failed; preserving runner scratch' >&2
     result=1
   fi
   exit "$result"
