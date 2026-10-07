@@ -466,18 +466,24 @@ try:
     check(g['x'] < before[B]['x'] - 60 and geometry(A) == before[A], 'touchpad: a drag that starts first moves the window and pairs nothing',
           f"B {before[B]['x']} -> {g['x']}; A {geometry(A)}")
 
-    for cancelled_first in (False, True):
-        setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
-        before = still(); over(B)
-        pad('hold_begin', fingers=3); time.sleep(.15)
-        if cancelled_first: pad('hold_end', cancelled=True)
-        r = pad('button', button='middle', pressed=True)
-        check(not r['hold_pending'] and r['middle_pending'], f'touchpad: a three-finger click first is L24 (hold ended: {cancelled_first})')
-        time.sleep(.7); r = pad('button', button='middle', pressed=False)
-        if not cancelled_first: pad('hold_end', cancelled=True)
-        time.sleep(.4)
-        check(not r['middle_pending'] and not r['middle_resizing'] and still() == before,
-              f'touchpad: the click stays a middle click and pairs nothing (hold ended: {cancelled_first})')
+    setup([(B, 1060, 520, 420, 300), (A, 200, 140, 520, 360)], A)
+    before = still(); sizes = sizes_of(A, B); over(B)
+    x1, y1, x2, y2 = footprint(B)
+    ipc('wayfire/set-config-options', {'scottland/touchpad_gestures': False})
+    r = pad('button', button='middle', pressed=True)
+    check(r['middle_pending'], 'touchpad R7: middle press starts independently of touchpad_gestures')
+    for step in range(1, 11):
+        pad('motion', x=(x1 + x2) / 2 - 20 * step, y=(y1 + y2) / 2); time.sleep(.02)
+        if step == 1:
+            wait(lambda: ipc('scottland/test-input')['middle_dragging'], what='touchpad R7 drag')
+    r = pad('button', button='middle', pressed=False)
+    wait(lambda: not ipc('scottland/test-input')['dragging'], what='touchpad R7 drag end')
+    settle([A, B])
+    check(not r['middle_pending'] and geometry(B)['x'] < before[B]['x'] - 150,
+          'touchpad R7: a 200 px middle drag moves the window',
+          f"{before[B]['x']} -> {geometry(B)['x']}")
+    check(sizes_of(A, B) == sizes, 'touchpad R7: middle drag preserves both window sizes')
+    ipc('wayfire/set-config-options', {'scottland/touchpad_gestures': True})
 
     setup([(B, 1060, 520, 420, 300), (A, 520, 140, 520, 360)], A)
     before = still(); over(A)

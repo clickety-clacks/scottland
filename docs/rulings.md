@@ -138,6 +138,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-04 | Knocks from objects on the desktop matter most (the user elected them to be there). Knock priority comes from another system; Scottland only renders it. | docs/knocks.md |
 | 10-04 | Knocks have many channels, not one: every window is a channel for its object's knocks, and knocks from objects not on the desktop coexist with them; nothing is ranked against anything else. | docs/knocks.md |
 
+## Middle-press window drag
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-06 | Mike chose `middle-real-only` (A2): “any real middle press drags the window; a stock pen does nothing until you remap a button with another tool.” `BTN_STYLUS` stays client input; Scottland adds no pen remapping or setting. R7 replaces L24's three-finger click-drag resize with a move. A quick middle click still reaches the app; R5 waits on WK39 hold forms. | dr_9fb5cc88; L24; R1–R8 |
+
 ## Testing
 
 | Date | Ruling | Where |

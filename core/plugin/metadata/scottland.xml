@@ -331,7 +331,7 @@
 		</option>
 		<option name="touchpad_gestures" type="bool">
 			<_short>Touchpad window gestures</_short>
-			<_long>Three-finger drag on a touchpad moves the window under the pointer; a three-finger click-drag resizes it around its center. A three-finger click without moving is still a middle click.</_long>
+			<_long>Three-finger drag on a touchpad moves the window under the pointer; a three-finger click-drag moves it too. A middle click without moving still reaches the app. Turning this setting off does not disable middle-press drag; it controls three-finger swipe and hold gestures.</_long>
 			<default>true</default>
 		</option>
 		<option name="lift_delay" type="int">
