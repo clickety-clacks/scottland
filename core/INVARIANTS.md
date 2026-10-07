@@ -5,7 +5,8 @@ uwsm; those live in [../omarchy/INVARIANTS.md](../omarchy/INVARIANTS.md). Projec
 rules are in [../AGENTS.md](../AGENTS.md).
 
 Status: **verified** = exercised with real input on a real session (plumbus); **implemented** =
-built and tested headless or by IPC only; **not built** = agreed but not implemented yet.
+built and tested headless or by IPC only; **candidate** = scoped code is present but required
+shared-runner evidence is pending; **not built** = agreed but not implemented yet.
 
 Window naming follows [../docs/window-names.md](../docs/window-names.md) (WN1–WN14).
 
@@ -31,7 +32,13 @@ tenets themselves. Status says whether every feature that should follow one does
 | P12 | **Nothing is ever completely hidden.** Every window peeks out from behind the windows in front of it, so you can always see that it's there (tenet 2; object permanence, like having no workspaces). Window avoidance exists for this: it keeps a visible patch of every window, at least the size of a hint circle, so the same patch also holds the window's hint in Window mode. The hint is the yardstick, not the purpose. Direction agreed: one engine, two tests: always-on peeking needs only a clearly visible strip (preferably along the window's top edge), and on Alt each hint sits on the strip already showing (the badge may overlap the front window's edge), nudging only windows whose strip can't hold one. (Mike, 2026-10-03) Decided (Mike, 2026-10-04): a peeking window may hang past its zone edge (zones are decided by the center), but peeking never moves a window into another zone: its displayed center stays in its own zone (P13). If it still can't peek, only its hint is placed where it can be seen. | window avoidance: implemented as the peeking strip (WK13); verified on the ARM test machine with real input, strips measured from screenshots, including dense 12- and 16-window stacks with nothing hidden (2026-10-04) |
 | P13 | **The user puts windows in zones; nothing else does.** A window is in a zone because the user put it there (drag, keys, cycling, presenting). Automatic behavior (window avoidance, peeking, making room, spread) may shift a window within its zone but never moves it into another zone, not even visually. (Mike, 2026-10-04) | window avoidance: implemented (WK13: the displayed center stays in its own zone; verified in `tests/peek-unit.sh` and on the ARM test machine, 2026-10-04) |
 | P14 | **The user always wins.** Whatever the user places (a window or a widget, by drag, drop, fling or keys) ends up exactly where the user put it; everything else flows around it. Automatic layout never relocates the thing the user just placed to make its own solution cheaper; when nothing else can move out of the way, things overlap rather than the placed item being moved. (Mike, 2026-10-04: "literally an invariant of the entire system") | rail make-room: implemented (the dropped widget never moves; the gap opens under the pointer; verified by unit fuzz and real stipc input on the test machine, 2026-10-04) |
-| P15 | **Attention regimes.** The desktop is the user's window onto what has their attention, in regimes: center (forefront), periphery, widgets on the rails, and the ether (everything not represented on the desktop, which still exists). Objects are promoted and demoted between regimes by the user; an object asks for promotion with a knock; only the user grants it (tenet 5). Extends tenets 1 and 3. Concept: [docs/knocks.md](../docs/knocks.md). (Mike, 2026-10-04) | concept; center/periphery/rails built, ether and knocks not designed |
+| P15 | **Attention regimes.** The desktop is the user's window onto what has their attention, in regimes: center (forefront), periphery, widgets on the rails, and the ether (everything not represented on the desktop, which still exists). Objects are promoted and demoted between regimes by the user; an object asks for promotion with a knock; only the user grants it (tenet 5). Extends tenets 1 and 3. Concept: [docs/knocks.md](../docs/knocks.md). (Mike, 2026-10-04) | center/periphery/rails built; sender-window lookup part 2 is a candidate with runner validation pending; broader knock delivery and presentation remain undesigned |
+
+## Sender-window lookup
+
+| ID | Invariant | Status |
+|---|---|---|
+| K1 | The sender-window lookup reports every complete resolver-v1 `visible_exact` match as `shows` and every applicable `linked_client` match as `linked`, in relation order and ascending window id; a shown window is not repeated as linked. A complete no-match is `none`; incomplete or unreachable evidence is `unknown` with no windows; an invalid sender is an error with no status. Lookup is report-only and never changes focus, window placement, or tmux client state. | candidate; SR-1..4 and SR-6..7 implementation is awaiting shared-runner build and real-terminal/tmux evidence |
 
 ## Layout and scaling
 
