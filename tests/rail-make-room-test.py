@@ -174,6 +174,35 @@ try:
           {"during": full_during, "after": full_after})
     check("stipc pointer updates remain bounded while the rail is full",
           bool(durations) and max(durations) < 0.25, max(durations) if durations else None)
+
+    # Stay-still (dr_795d17c3): make-room must treat the focused card as fixed. Focus rail-a, then
+    # drag an arrival onto rail-a's own spot: without the guard this would push rail-a along the
+    # rail like any other resident (as the earlier "widget dragged along its rail" case above
+    # does to rail-b); with it, rail-a must not move at all, and the arrival goes to whichever
+    # place WG26's existing no-room/overlap behavior gives it instead.
+    ipc.call("window-rules/focus-view", {"id": t.card("rail-a")["id"]})
+    time.sleep(0.1)
+    before_focus_a, before_focus_b = card_geometry("rail-a"), card_geometry("rail-b")
+    before_focus_a_scene = card_scene("rail-a")
+    t.launch("rail-focus-arrive", rail=None)
+    ipc.call("window-rules/focus-view", {"id": t.card("rail-a")["id"]})  # launching may steal focus
+    time.sleep(0.1)
+    start_drag(t.app("rail-focus-arrive"), edge_right, before_focus_a_scene["y"] + before_focus_a_scene["height"] / 2)
+    during_focus_a = card_scene("rail-a")
+    check("the focused card does not move live while make-room runs",
+          abs(during_focus_a["y"] - before_focus_a_scene["y"]) < 0.5 and
+          abs(during_focus_a["x"] - before_focus_a_scene["x"]) < 0.5,
+          (before_focus_a_scene, during_focus_a))
+    end_drag()
+    t.wait_for(lambda: t.card("rail-focus-arrive") and not t.card("rail-focus-arrive")["preview"])
+    after_focus_a, after_focus_b = card_geometry("rail-a"), card_geometry("rail-b")
+    check("the focused card's committed geometry is exactly unchanged after the drop",
+          after_focus_a == before_focus_a, (before_focus_a, after_focus_a))
+    arrive_geometry = card_geometry("rail-focus-arrive")
+    on_focused_spot = (abs(arrive_geometry["y"] - before_focus_a["y"]) < 0.5 and
+                        abs(arrive_geometry["x"] - before_focus_a["x"]) < 0.5)
+    check("the arrival does not land on top of the fixed focused card",
+          not on_focused_spot, (before_focus_a, arrive_geometry))
 finally:
     t.cleanup()
     print(f"WG26 rail input: {passed} passed, {failed} failed", flush=True)

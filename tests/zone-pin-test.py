@@ -357,6 +357,45 @@ try:
           'unpinned window: back at its spot at the zone scale, no jump',
           {'spot': plain_spot, 'now': center(v), 'applied': v['applied_scale'], 'zone': plain_scale})
 
+    # --- P14 (dr_795d17c3): the drop position wins even when the shown drag scale and the drop
+    # zone's natural scale disagree. The old fa4b60a nudge re-centered the window sideways once
+    # the scale settled; now `center` must stay exactly where it was the instant before release,
+    # through the whole scale settle afterward, no matter which way the scale moves.
+    g = launch('NoNudge', width * .5, height * .3)
+    v = view('NoNudge')
+    f = v['frame']
+    cx, cy = f['x'] + f['width'] / 2, f['y'] + f['height'] / 2
+    tx, ty = width * .2, height * .6
+    ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
+    key('LEFTMETA', True)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    for step in range(1, 11):
+        ipc('stipc/move_cursor', {'x': round(cx + (tx - cx) * step / 10), 'y': round(cy + (ty - cy) * step / 10)})
+        time.sleep(.025)
+    time.sleep(.12)
+    before = center(view('NoNudge'))
+    shown_scale = view('NoNudge')['applied_scale']
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    key('LEFTMETA', False)
+    just_after = center(view('NoNudge'))
+    check(near(before, just_after, eps=.5),
+          'the drop leaves the center exactly where it was the instant before release (P14)',
+          {'before': before, 'just after': just_after})
+    end = time.monotonic() + .8
+    track = []
+    while time.monotonic() < end:
+        track.append((center(view('NoNudge')), view('NoNudge')['applied_scale']))
+        time.sleep(.03)
+    natural_scale = view('NoNudge')['scale']
+    check(all(near(pos, before) for pos, _ in track),
+          'the center never moves while the scale settles afterward, even if the scale changes (P14)',
+          {'before': before, 'track centers': [p for p, _ in track[:6]]})
+    if abs(shown_scale - natural_scale) > .01:
+        check(abs(track[-1][1] - natural_scale) < .01,
+              'the scale does settle to the drop zone\'s natural value; only the position stays put',
+              {'shown while dragging': shown_scale, 'natural': natural_scale, 'settled': track[-1][1]})
+    ipc('window-rules/close-view', {'id': g}); time.sleep(.3)
+
     # --- Persisted across a reload, then still restored.
     drag('Pinned', width * .25, height * .55, shift=True)  # a fresh left pin, at the pin's own scale
     pin = view('Pinned')['applied_scale']; spot = center(view('Pinned'))
