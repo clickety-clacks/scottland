@@ -404,8 +404,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     std::shared_ptr<widget_morph_t> presentation;
     // Generic drag-owned layout audition. Independent of glides, widget morphs and the live
     // transform on the dragged view; committed moves clear this after real geometry applies.
-    // The scale factor multiplies the layout's own scale (a solo audition shows each window at
-    // the scale of where it would land, docs/spread.md); the rail audition leaves it at 1.
+    // The scale factor multiplies the layout's own scale (a hold's offer shows each window at the
+    // scale of where it would land, WK39); the rail audition leaves it at 1.
     double drag_layout_x = 0, drag_layout_y = 0, drag_layout_scale = 1;
     // A widget sliding off or peeking in at its screen edge (FS1, WG16's hidden mode). Owned by
     // the rail slides alone, so glides and morphs never reset it.

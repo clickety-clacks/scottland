@@ -86,11 +86,15 @@
             <default>0.65</default><min>0</min><max>1</max>
         </option>
         <option name="goo_soak" type="double">
-            <_short>Wallpaper soak</_short><_long>Weak wallpaper color washes through thicker goo, fading near window edges so state colors stay clear. Zero turns it off.</_long>
+            <_short>Wallpaper pickup</_short><_long>How strongly the goo picks up the colors beneath it (wallpaper, or windows under the film) and mixes them into its dye. Zero turns pickup off.</_long>
             <default>0.12</default><min>0</min><max>1</max>
         </option>
-        <option name="goo_dye_strength" type="double">
-            <_short>Dye strength</_short><_long>Scales focus, attention and Window mode hint colors in goo and fallback halos. One keeps today's look; higher values strengthen state colors, capped at full opacity. The unfocused neutral edge keeps its separate strength.</_long>
+        <option name="goo_pickup_balance" type="double">
+            <_short>Pickup balance</_short><_long>Share of picked-up color in the goo at full Wallpaper pickup. Zero keeps a window's own color (focus, attention); one shows only what is picked up from beneath.</_long>
+            <default>0.45</default><min>0</min><max>1</max>
+        </option>
+        <option name="goo_dye_density" type="double">
+            <_short>Dye density</_short><_long>How much dye the goo holds: its window colors and the colors it picks up alike (focus, attention and hint colors in fallback halos). Higher is denser, capped at full opacity; zero leaves clear liquid.</_long>
             <default>1</default><min>0</min><max>1.5</max>
         </option>
 
@@ -143,6 +147,11 @@
             <_long>How strongly Window mode tints each window and widget card with its hint color. Zero turns the overlay off. Hint circles, borders and outlines are unaffected.</_long>
             <default>7</default><min>0</min><max>30</max>
         </option>
+        <option name="hint_background_opacity" type="double">
+            <_short>Hint background opacity (%)</_short>
+            <_long>Opacity of the background behind hint letters, the same for window and widget hints. One hundred is a solid background; zero is none. Letters, hint rims and window opacity are unchanged.</_long>
+            <default>21</default><min>0</min><max>100</max>
+        </option>
         <option name="window_avoidance_always" type="bool">
             <_short>Window avoidance outside Window mode</_short>
             <_long>Keep windows visually shifted to reserve space for Window mode hints outside Window mode. This affects no geometry, zone, scale, placement memory or widget state.</_long>
@@ -171,6 +180,26 @@
             <_long>Preview the previous center-zone window by recent use. Releasing Alt focuses and raises it. Window mode uses this key so you can focus a center window while keeping the others visible.</_long>
             <default>&lt;alt&gt; &lt;shift&gt; KEY_TAB</default>
         </option>
+        <option name="navigate_left" type="key">
+            <_short>Focus the window or widget to the left</_short>
+            <_long>Focus and raise the nearest window or widget to the left of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_LEFT</default>
+        </option>
+        <option name="navigate_right" type="key">
+            <_short>Focus the window or widget to the right</_short>
+            <_long>Focus and raise the nearest window or widget to the right of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_RIGHT</default>
+        </option>
+        <option name="navigate_up" type="key">
+            <_short>Focus the window or widget above</_short>
+            <_long>Focus and raise the nearest window or widget above of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_UP</default>
+        </option>
+        <option name="navigate_down" type="key">
+            <_short>Focus the window or widget below</_short>
+            <_long>Focus and raise the nearest window or widget below of the focused one, judged by where they show. If there is none, nothing happens. Scottland uses these keys to move between windows.</_long>
+            <default>&lt;super&gt; KEY_DOWN</default>
+        </option>
         <option name="window_double_tap_delay" type="int">
             <_short>Window mode hint double-tap interval (ms)</_short>
             <_long>After releasing a complete hint, begin typing it again within this interval to send the window to its rail widget. The repeat must be completed; key hold time and typing the remaining letters do not spend the interval. A window already on the rail stays put unless its collapsed-widget hint peek is active. Slower presses follow the starting-zone cycle.</_long>
@@ -185,16 +214,9 @@
             <min>1</min>
             <max>3000</max>
         </option>
-        <option name="solo_audition_delay" type="int">
-            <_short>Solo audition pause (ms)</_short>
-            <_long>While dragging a window, resting it in the center zone this long shows the solo: the other center windows move to the periphery, which makes room for them. Dropping the window there accepts it; moving on refuses it and every window returns exactly. 0 turns the audition off.</_long>
-            <default>3000</default>
-            <min>0</min>
-            <max>10000</max>
-        </option>
         <option name="solo_audition_hotspot" type="double">
-            <_short>Solo audition hotspot (pt)</_short>
-            <_long>Once the solo is shown, moving the pointer this far from where it rested refuses it. Smaller movements are not a refusal, and a drop anywhere within this distance is accepted exactly where it is dropped.</_long>
+            <_short>Hold hotspot (pt)</_short>
+            <_long>For pointer-hold auditions, which are not built yet: while a pointer hold shows its solo or pair, moving the pointer farther than this from where the hold fired will count as starting to drag, cancelling the audition. Until then this setting has no effect.</_long>
             <default>50</default>
             <min>8</min>
             <max>400</max>

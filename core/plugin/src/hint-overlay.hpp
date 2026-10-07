@@ -4,7 +4,6 @@
 #include <wayfire/render.hpp>
 #include "hint-style.hpp"
 #include <string>
-#include <optional>
 #include <vector>
 #include <chrono>
 namespace scottland::windowing
@@ -15,7 +14,8 @@ class hint_node : public wf::scene::node_t
   public:
     hint_node();
     bool update(double x, double y, const std::string& text, double size, const std::string& family,
-        hint_rgb color, double scale, std::optional<hint_rgb> background, bool goo, bool reduced_motion);
+        hint_rgb color, double scale, hint_rgb background, double background_opacity,
+        bool goo, bool reduced_motion);
     void hide(bool reduced_motion);
     bool animate();
     void relocate() { relocating = true; }

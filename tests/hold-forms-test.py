@@ -559,7 +559,7 @@ def cross_output_offer():
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300,
         'scottland/window_hold_delay': 500, 'scottland/window_double_tap_delay': 300,
-        'scottland/window_avoidance_always': False, 'scottland/solo_audition_delay': 3000,
+        'scottland/window_avoidance_always': False, 'scottland/solo_audition_hotspot': 50,
         'output:HEADLESS-1/mode': '1600x1000@60000', 'output:HEADLESS-1/position': '0, 0'})
     if TWO:
         ipc('wayfire/set-config-options', {'output:HEADLESS-2/mode': '1280x800@60000', 'output:HEADLESS-2/position': '1600, 0'})
