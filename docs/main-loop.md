@@ -176,9 +176,13 @@ result (1 MB). Past any limit the goo keeps its loose strips; any change of sour
 mode bumps the lane's epoch. A result is installed only if its ticket and epoch are current, the
 goo still sleeps and the output is the same incarnation. A job capped at the whole-job limit
 tightens only the rectangles it finished; none finished means no change. Work units (one per
-density term) are calibrated by `tests/worker-unit.sh`: 29-36 ns each on the aarch64 test machine, so a step of
-60,000 units is about 2 ms and the cap of 9,000,000 about 300 ms; the slowest single operation (a
-256-source density call) is 9-10 µs at p99.
+density term) are calibrated by `tests/worker-unit.sh --calibrate` (a benchmark, outside the default
+run): 29-36 ns each on the aarch64 test machine on 2026-10-04, so a step of 60,000 units is about
+2 ms and the cap of 9,000,000 about 300 ms; the slowest single operation (a 256-source density
+call) was 9-10 µs at p99. A later optimized run (2026-10-06, machine not recorded) failed the 20 µs
+target: 117 ns per term, so a step of about 7.04 ms and the cap about 1,055 ms, and a p99 of 32 µs
+for the 256-source call. The step and cap are not recalibrated until a run on the test machine
+settles which holds.
 
 Verified (the aarch64 test machine): `tests/worker-unit.sh` (ThreadSanitizer, no suppressions: forced interleavings
 of submit, finish, deliver, cancel, epoch bump, close and stop for both policies; `broken` without
@@ -225,11 +229,20 @@ Measured (the aarch64 test machine, Asahi): collection at most 0.03-0.05 ms; iss
 with that number in the exception table; the x86 test machine (busy with a VM build) and an Intel test host
 are not measured yet. `tests/goo-readback-test.py`: no GPU read on pointer motion; the goo
 sleeps on asynchronous readings; nothing stays in flight once asleep; readings held in flight
-(test switch) across a change, a resize A→B→A or a reload don't apply; a full ring is collected
-oldest first, both goos settle with two outputs; an output removed with
-readings in flight; a failed read over a known prior buffer value (Astra's pack-state probe), a
-failed wait, map or unmap each apply nothing and sleep at about 6 s, observed in the compositor's
-CPU time; legal incoming pack state is normalized and readings still apply.
+(test switch) across a change, a resize A→B→A or a reload don't apply, and after the resizes only
+readings issued once the size went back apply; a full ring is collected oldest first; with the
+oldest reading held while newer ones complete (`hold-oldest`), the newer ones apply and the late
+oldest is refused without the applied step going back; both goos settle with two outputs; an
+output removed with readings in flight; a failed read over a known prior buffer value (Astra's
+pack-state probe), a failed wait, map or unmap each apply nothing, enter the timed fallback, keep
+simulating, then sleep, and a change wakes the goo; legal incoming pack state is normalized and
+readings still apply. Its waits are on state with hang deadlines; it measures but does not gate
+elapsed time. The decision itself, `goo-settle.hpp`, is unit-tested on supplied times and step
+counts by `tests/goo-settle-unit.sh`: the timed fallback sleeps only after 6 s, the asynchronous
+path after 3 s with a settled reading a full 30-step interval after a wake, and a reading applies
+only against the state it was issued in and when newer than the last applied one. The fallback's
+CPU cost awake and asleep is a benchmark, `tests/goo-fallback-bench.py`, which records the
+machine, GL renderer, load and sample count.
 `tests/goo-allowance-unit.sh` runs the allowance on a real `wl_event_loop`, counting the loop's
 `epoll_wait` calls through interposition rather than trusting the allowance's own state: a timer
 that adds an idle collector (the review's reproduction, four slots under the old idle refill),

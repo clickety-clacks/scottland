@@ -58,6 +58,7 @@ class renderer_t
     bool force_timed_sleep = false;  // tests (goo-state), SCOTTLAND_TEST_MODEL only
     bool readback_pending() const;
     int readback_in_flight() const;
+    uint64_t oldest_in_flight_step() const;  // 0 when none is in flight
     /** Examine at most `budget` busy slots (shared across outputs). In a GL context. */
     void collect(int &budget);
     /** The collection allowance shared by every output's renderer and the collection timer
@@ -67,7 +68,8 @@ class renderer_t
      *  retired and none issued before applies, even at equal dimensions. In a GL context. */
     void new_generation();
     uint64_t generation() const;
-    // Tests only: "hold" (nothing is collected), "incoming-pack-state", "prior-value",
+    // Tests only: "hold" (nothing is collected), "hold-oldest" (all but the oldest reading in
+    // flight are collected), "incoming-pack-state", "prior-value",
     // "wait-failed", "map-failed", "unmap-failed"; "" also leaves the readback-failed fallback.
     void set_readback_fault(const std::string &fault);
     std::string readback_mode() const;

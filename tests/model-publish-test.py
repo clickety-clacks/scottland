@@ -127,8 +127,15 @@ try:
     stats = c.call('scottland/loop-stats')  # not a model query: it flushes nothing
     # The motion stopped with the button still held. Without any query, the trailing timer must
     # publish the last change: the first flushing query afterwards (desktop-model) would publish
-    # anything left dirty under a new version, so its version must be the last event's.
-    time.sleep(1.0)
+    # anything left dirty under a new version, so its version must be the last event's. Waited
+    # for on non-flushing loop-stats: nothing left to publish, and that version's event received.
+    end = time.monotonic() + 10
+    while (pub := c.call('scottland/loop-stats', {'brief': True})['publish'])['pending'] and time.monotonic() < end:
+        time.sleep(.02)
+    while not any(e.get('version') == pub['version'] for _, e in events) and time.monotonic() < end:
+        time.sleep(.02)
+    check('the trailing publication completes and its event arrives', not pub['pending'] and
+          any(e.get('version') == pub['version'] for _, e in events), (pub, events[-1][1].get('version') if events else None))
     stop_events.set(); collector.join()
     last = events[-1][1] if events else None
     targets = {round(e.get('drag', {}).get('target_scale', -1), 3) for _, e in events}

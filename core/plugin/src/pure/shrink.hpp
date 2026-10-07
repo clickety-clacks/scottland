@@ -33,10 +33,12 @@ struct shrink_result_t : result_t
 
 /**
  * Work units: one per density term (one source at one sample point), one per source tested for a
- * mask; charged before each operation. Calibrated by tests/worker-unit.sh (the aarch64 test machine, aarch64,
- * optimized, 2026-10-04): one density term costs about 35 ns, so a step allowance of 60,000 units
- * is about 2 ms and the whole-job cap of 9,000,000 units about 300 ms. One operation (a density
- * call) is bounded by the source count: about 9 us at the 256-source snapshot limit.
+ * mask; charged before each operation. Calibrated by tests/worker-unit.sh --calibrate (the aarch64
+ * test machine, optimized, 2026-10-04): one density term costs about 35 ns, so a step allowance of
+ * 60,000 units is about 2 ms and the whole-job cap of 9,000,000 units about 300 ms. One operation
+ * (a density call) is bounded by the source count: about 9 us at the 256-source snapshot limit.
+ * A later run elsewhere measured 117 ns per term (a 7 ms step) and 32 us for that call; see
+ * docs/main-loop.md, "Phase 4: the shrink worker".
  */
 constexpr uint64_t shrink_step_units = 60000;
 constexpr uint64_t shrink_cap_units = 9000000;

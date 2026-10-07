@@ -6,6 +6,7 @@
 #include "frame.hpp"
 #include "goo-runtime.hpp"
 #include "goo-pickup-policy.hpp"
+#include "goo-settle.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -933,17 +934,11 @@ class goo_node_t : public wf::scene::node_t
                         // that quantization floor as settled; larger wave/dye
                         // deltas still exceed this bound and keep simulating.
                         const float sleep_energy = state.renderer.packed ? 16.f / 255.f + .0001f : .012f;
-                        // The energy is read every 30 steps; one full interval after a wake
-                        // makes the reading describe the response to it.
-                        // Where the settle check can't be read without waiting (GLES 2, a readback
-                        // failure, the test switch), sleep on time alone: 6 s after the last change
-                        // (Mike, 2026-10-03; GO10).
                         // GO24: watercolor dye never comes to rest, and need not: it goes on
                         // moving in the sleeping goo. Then only the waves decide sleep.
                         float energy = watercolor() ? state.renderer.wave_energy : state.renderer.energy;
-                        bool settled_now = state.renderer.timed_sleep() ? now() - last_change > 6 :
-                            now() - last_change > 3 && energy <= sleep_energy &&
-                            state.renderer.steps - wake_step >= 30;
+                        bool settled_now = goo::may_sleep(state.renderer.timed_sleep(), now() - last_change,
+                            energy, sleep_energy, state.renderer.steps - wake_step);
                         if (state.renderer.readback_pending() && readback_issued)
                             readback_issued();
                         if (settled_now)
@@ -1306,6 +1301,7 @@ struct goo_t::impl
             s["readings_skipped"] = (int64_t)n->state.renderer.readings_skipped;
             s["last_applied_step"] = (int64_t)n->state.renderer.last_applied_step;
             s["readings_in_flight"] = (int64_t)n->state.renderer.readback_in_flight();
+            s["oldest_in_flight_step"] = (int64_t)n->state.renderer.oldest_in_flight_step();
             s["tick_ms"] = n->tick_ms;
             s["tighten_ms"] = n->tighten_ms;
             // The settled (tight) region is still being worked out; conservative bands in use.

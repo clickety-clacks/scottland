@@ -2,6 +2,7 @@
 #include "loop.hpp"
 #include "goo-shaders.hpp"
 #include "goo-gl.hpp"
+#include "goo-settle.hpp"
 #include "attention-breath.hpp"
 #include <algorithm>
 #include <array>
@@ -767,7 +768,8 @@ struct renderer_t::impl
         int n = 0;
         for (auto &slot : energy_slots) if (slot.busy) order[n++] = &slot;
         std::sort(order.begin(), order.begin() + n, [](auto a, auto b) { return a->step < b->step; });
-        for (int i = 0; i < n && budget > 0; i++)
+        // Tests: the oldest reading stays in flight while newer ones complete (out of order).
+        for (int i = readback_fault == "hold-oldest" ? 1 : 0; i < n && budget > 0; i++)
         {
             auto &slot = *order[i];
             budget--;
@@ -1437,6 +1439,13 @@ void renderer_t::set_readback_fault(const std::string &fault)
     p->readback_fault = fault;
     if (fault.empty()) p->readback_failed = false;  // tests: back to the asynchronous reading
 }
+uint64_t renderer_t::oldest_in_flight_step() const
+{
+    uint64_t oldest = 0;
+    for (auto &s : p->energy_slots)
+        if (s.busy && (!oldest || s.step < oldest)) oldest = s.step;
+    return oldest;
+}
 int renderer_t::readback_in_flight() const
 {
     return (int)std::count_if(p->energy_slots.begin(), p->energy_slots.end(), [](auto &s) { return s.busy; });
@@ -1457,9 +1466,8 @@ void renderer_t::collect(int &budget)
     if (p->readback_failed) return;
     for (auto &r : readings)
     {
-        // Applied only if nothing changed since it was issued, in step order.
-        if (r.generation != p->generation || r.invalidation != invalidation || r.w != p->width || r.h != p->height ||
-            r.step <= last_applied_step)
+        if (!goo::reading_applies({r.step, r.invalidation, r.generation, r.w, r.h},
+                                  {steps, invalidation, p->generation, p->width, p->height}, last_applied_step))
         {
             readings_stale++;
             continue;

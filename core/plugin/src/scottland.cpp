@@ -7859,6 +7859,9 @@ SCOTTLAND_LOOP_SCOPE(on_axis);
         reply["reload"]["nonce"] = reload_nonce;
         reply["reload"]["outcome"] = handover_outcome;
         reply["proc_reads"] = (int64_t)proc_reads;
+        // Whether a change still waits for the trailing publication, read without flushing it.
+        reply["publish"]["pending"] = model_dirty || publish_timer.is_connected();
+        reply["publish"]["version"] = (int64_t)model.version;
         wf::json_t workers;
         if (!wf::json_t::parse_string(shrink_worker.stats_json(), workers)) reply["workers"]["shrink"] = workers;
         return reply;

@@ -1,5 +1,6 @@
 // The worker and the breathing-shrink job without a compositor (docs/main-loop.md "Worker").
-// Run by tests/worker-unit.sh: once under ThreadSanitizer, once optimized for calibration.
+// Run by tests/worker-unit.sh: once under ThreadSanitizer, once optimized (--timing); the
+// calibration (--calibrate) runs only on request, as a benchmark.
 #include "pure/shrink.hpp"
 #include "pure/worker.hpp"
 #include <atomic>
@@ -171,7 +172,12 @@ static bool same(const std::vector<rect_t>& a, const std::vector<rect_t>& b)
 
 int main(int argc, char **argv)
 {
-    bool timing = argc > 1 && !strcmp(argv[1], "--timing");
+    bool timing = false, calibrate = false;
+    for (int i = 1; i < argc; i++)
+    {
+        timing |= !strcmp(argv[i], "--timing");
+        calibrate |= !strcmp(argv[i], "--calibrate");
+    }
 
     // 1. Ordinary run: submit, finish, deliver through the eventfd.
     {
@@ -498,8 +504,9 @@ int main(int argc, char **argv)
         check("... stop releases every shape and destroys every result", left == 0 && results_alive.load() == 0);
     }
 
-    // 11. Calibration (timing build only): the cost of a unit and the slowest single operation.
-    if (timing)
+    // Calibration (a benchmark, not part of the default run): the cost of a unit and the slowest
+    // single operation, against the 20 us target for one operation.
+    if (calibrate)
     {
         auto s30 = snapshot_for(30, 7);
         auto t0 = now_ns();
