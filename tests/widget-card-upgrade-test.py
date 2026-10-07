@@ -16,6 +16,7 @@ Super+M must still collapse and expand it.
 """
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -49,8 +50,9 @@ def card_pixels(name, frame):
     subprocess.run(['grim', str(path)], check=True, timeout=5)
     image = GdkPixbuf.Pixbuf.new_from_file(str(path))
     stride, n, pixels = image.get_rowstride(), image.get_n_channels(), image.get_pixels()
-    xs = range(max(frame['x'], 0), min(frame['x'] + frame['width'], image.get_width()))
-    ys = range(max(frame['y'], 0), min(frame['y'] + frame['height'], image.get_height()))
+    # Frames are fractional; take every pixel the card touches.
+    xs = range(max(math.floor(frame['x']), 0), min(math.ceil(frame['x'] + frame['width']), image.get_width()))
+    ys = range(max(math.floor(frame['y']), 0), min(math.ceil(frame['y'] + frame['height']), image.get_height()))
     return [pixels[y*stride + x*n + c] for y in ys for x in xs for c in range(3)]
 
 
