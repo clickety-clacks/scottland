@@ -4,6 +4,19 @@ This packet covers WK14/WK38's tint layer. Run it only from the shared runner's 
 host grant. Keep this tint branch separate; the runner composes it with the landed item2 and
 transparency candidates and records the resulting full-tree hash. This packet has not been run.
 
+## Executable focused check
+
+`tests/window-mode-tint-pixel-test.sh` owns an isolated headless session and records PPM captures
+plus `observations.json` under `build/window-mode-tint-pixel-results/`. Run it from the exact
+shared-runner tree with a fresh `SCOTTLAND_HEADLESS_DIR` under that checkout's `build/` directory.
+The invocation is `SCOTTLAND_HEADLESS_DIR="$PWD/build/headless-window-mode-tint-$$" tests/window-mode-tint-pixel-test.sh`.
+It drives Alt and Super-drag through stipc, covers Goo on/off, the 0/7/30/100% mix on exclusive
+window regions, overlapping windows and a widget card, checks that hints stay unchanged, verifies
+hint dye or the fallback halo at both ends, checks for edge strokes, and confirms the tint layer
+clears after Alt release. The eight manual scenarios below remain required for Settings/list
+picker isolation, fullscreen edges, separation from hint-background opacity, motion tracking, and
+the complete clear/escape matrix; the focused executable does not replace them.
+
 ## Fixture and measurement
 
 Use a clean Scottland session with two or more clients that paint stable, distinct solid colors,
