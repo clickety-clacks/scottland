@@ -183,7 +183,7 @@ ShellRoot {
   }
 
   function publishedReading(value) {
-    const result = { status: value.status }
+    const result = { status: value.status, fetchedAt: value.fetchedAt }
     if (value.status === "current" || value.status === "stale") {
       result.condition = value.condition
       result.icon = value.icon
@@ -194,6 +194,7 @@ ShellRoot {
   }
 
   function setReading(value) {
+    value = Object.assign({ fetchedAt: new Date().toISOString() }, value)
     const before = reading ? JSON.stringify(publishedReading(reading)) : ""
     const after = JSON.stringify(publishedReading(value))
     reading = value
