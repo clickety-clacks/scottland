@@ -3,7 +3,7 @@ DEV := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/dev
 CONF := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/scottland
 RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 
-.PHONY: plugin dev-install link-dev test-hooks hooks dev-uninstall package clean
+.PHONY: plugin tools tools-test dev-install link-dev test-hooks hooks dev-uninstall package clean
 
 # Optimized with debug info, asserts and frame pointers: unoptimized builds ran the plugin's CPU
 # paths 7-9x slower and froze the pointer (docs/compositor-hangs.md); cores and stacks stay readable.
@@ -13,15 +13,27 @@ plugin:
 	meson setup build core/plugin --reconfigure $(PLUGIN_OPTS) 2>/dev/null || meson setup build core/plugin $(PLUGIN_OPTS)
 	meson compile -C build
 
+# Scottland's system tools (core/tools), installed into build/tools/bin. Every crate under
+# core/tools/bin is one command and is built, installed and linked by name: a new tool needs no
+# edit here or in the PKGBUILD.
+CARGO ?= cargo
+tools:
+	@for crate in core/tools/bin/*/; do \
+	  $(CARGO) install --quiet --locked --path $$crate --root build/tools --target-dir build/cargo --force --no-track || exit 1; \
+	done
+
+tools-test:
+	$(CARGO) test --locked --manifest-path core/tools/Cargo.toml --target-dir build/cargo
+
 # The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
 # here doesn't touch it until the next dev-install (and reload). Refuses uncommitted work, so what
 # runs is exactly a commit. Snapshots are kept (running widgets may still use an older one).
-dev-install: plugin
+dev-install: plugin tools
 	@git diff --quiet HEAD -- . && test -z "$$(git ls-files --others --exclude-standard)" || \
 	  { echo "dev-install: commit first; the session runs exactly a commit" >&2; exit 1; }
 	@rev=$$(git rev-parse --short=12 HEAD); dest=$(RELEASES)/$$rev; \
 	rm -rf "$$dest.new" && mkdir -p "$$dest.new/build" && git archive HEAD | tar -x -C "$$dest.new" && \
-	cp build/libscottland.so "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
+	cp build/libscottland.so "$$dest.new/build/" && cp -r build/tools "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
 	$(MAKE) --no-print-directory -C "$$dest" link-dev >/dev/null && echo "installed $$rev ($$dest)"
 
 # Points the user's session at this tree (dev-install runs it inside a snapshot).
@@ -45,6 +57,11 @@ link-dev:
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
+# The system tools, after the scripts: a tool that replaces a script takes its place.
+	for f in build/tools/bin/*; do \
+	  [ -e "$$f" ] || continue; \
+	  ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); ln -sf $(CURDIR)/$$f $(HOME)/.local/bin/$$(basename $$f); \
+	done
 	ln -sfn $(CURDIR)/core/settings $(DEV)/settings
 	ln -sf $(CURDIR)/omarchy/prompts/omarchy-overrides-agent.txt $(DEV)/prompts/omarchy-overrides-agent.txt
 	mkdir -p $(HOME)/.config/systemd/user
@@ -75,6 +92,7 @@ hooks:
 	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
+	for f in build/tools/bin/*; do [ -e "$$f" ] || continue; ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
 	ln -sf $(CURDIR)/omarchy/prompts/omarchy-overrides-agent.txt $(HOOKS_DIR)/prompts/omarchy-overrides-agent.txt
 	for d in session-env.d autostart.d early-exit.d config.d reload.d accent.d focus.d override-report.d; do \
@@ -88,7 +106,7 @@ hooks:
 # The same, inside this checkout (build/hooks), for its headless test sessions only
 # (tests/headless.sh): test sessions of different checkouts on one machine never run each other's
 # helpers, and the user's own session is untouched.
-test-hooks: plugin
+test-hooks: plugin tools
 	$(MAKE) --no-print-directory hooks HOOKS_DIR=$(CURDIR)/build/hooks
 
 dev-uninstall:

@@ -1,0 +1,21 @@
+# Scottland's system tools: one binary per subsystem (scottland-ctl, scottland-display, ...), all
+# built on the shared `scottland` library in lib/. Each binary is its own crate under bin/; the
+# Makefile and the package build and install every crate there, so adding a tool needs no edit to
+# either. See README.md.
+[workspace]
+resolver = "3"
+members = ["lib", "bin/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+# Dependencies more than one tool uses are declared once here and taken with `workspace = true`.
+[workspace.dependencies]
+scottland = { path = "lib", package = "scottland-lib" }
+
+[profile.release]
+strip = "debuginfo"

@@ -125,6 +125,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-04 | Gooarchy patterns after Omarchy but starts clean: nothing is borrowed to fill a gap (no bar yet means no bar), so the distro's deficit is clearly defined once it is built. | distro-notes |
 | 10-04 | Gooarchy will have its own custom bar and its own notification system; until they exist it ships neither. | distro-notes |
 
+## System tools (core/tools)
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-06 | Scottland's system tools are Rust: "group the scripts by subsystem and make a single binary for that subsystem", in one Cargo workspace with a shared library crate and a thin `scottland` front command for discovery. Like the rest of core they run on any distro and never know about Omarchy. | core/tools/README.md |
+
 ## Knocks (concept in discussion; docs/knocks.md)
 
 | Date | Ruling |
