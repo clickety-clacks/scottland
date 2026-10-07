@@ -16,6 +16,7 @@ wallpaper by a large share of the wallpaper's own change; a black backdrop leave
 over both. The compositor log must hold no GL errors.
 """
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -38,6 +39,7 @@ sock.connect(os.environ['WAYFIRE_SOCKET'])
 OUTPUT = 'HEADLESS-1'
 LIGHT, DARK = '#efe9dc', '#101827'
 WINDOW = {'x': 550, 'y': 300, 'width': 500, 'height': 340}
+CELL = 40   # foot sizes itself to whole character cells, so it can come out up to a cell smaller
 PROBE = (200, 850)   # bare wallpaper, far from the window and its goo
 
 
@@ -144,7 +146,8 @@ try:
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     window = wait_view('backdrop-copy')
     ipc('window-rules/configure-view', {'id': window['id'], 'geometry': WINDOW})
-    placed = lambda f: all(f[k] == v for k, v in WINDOW.items())
+    placed = lambda f: (abs(f['x'] - WINDOW['x']) < 1 and abs(f['y'] - WINDOW['y']) < 1 and
+                        all(0 <= WINDOW[k] - f[k] < CELL for k in ('width', 'height')))
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not placed(wait_view('backdrop-copy')['frame']): time.sleep(.05)
     frame = wait_view('backdrop-copy')['frame']
@@ -159,12 +162,13 @@ try:
     settle('bare dark wallpaper', 0)
     bare_dark = shot('bare-dark')
 
-    # Goo pixels: outside the window, where the goo changed the light wallpaper.
+    # Goo pixels: outside the window, where the goo changed the light wallpaper. Frames are
+    # fractional; the scan covers every pixel the window touches and 120 px around it.
     w, h = bare_light[0], bare_light[1]
     fx, fy, fw, fh = frame['x'], frame['y'], frame['width'], frame['height']
     gains, wall = [], luma(rgb(bare_light, *PROBE)) - luma(rgb(bare_dark, *PROBE))
-    for y in range(max(fy - 120, 0), min(fy + fh + 120, h)):
-        for x in range(max(fx - 120, 0), min(fx + fw + 120, w)):
+    for y in range(max(math.floor(fy) - 120, 0), min(math.ceil(fy + fh) + 120, h)):
+        for x in range(max(math.floor(fx) - 120, 0), min(math.ceil(fx + fw) + 120, w)):
             if fx <= x < fx + fw and fy <= y < fy + fh: continue
             a, b = rgb(goo_light, x, y), rgb(bare_light, x, y)
             if max(abs(p - q) for p, q in zip(a, b)) <= 8: continue
