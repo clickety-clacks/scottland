@@ -20,6 +20,14 @@ does:
 - `scottland::session`: the running sessions and the environments they recorded at startup, chosen
   the way `scottland-exec` chooses: a named display, else the caller's own session, else the only one.
 
+`scottland-sender-window` reports every Scottland window that the sender's identity proves is
+showing or linked to it. It uses the resolver-v1 Python package copied verbatim from
+`core/tools/vendor/agent_window_resolver/` at the commit in `VENDORED.json`; the normal `tools`
+build and Arch package place that package beside the binaries under `lib/`. The command asks
+`scottland-ctl sender-window-snapshot` for mapped window identities and never changes focus or
+window state. It uses `scottland-exec`'s bounded recorded-session selection rather than the Rust
+session library's blocking liveness probe.
+
 The front command only finds and runs tools, the way `git` runs `git-*`: `scottland` lists the tools
 installed, `scottland display ...` runs `scottland-display ...`, and `scottland help display` runs
 `scottland-display --help`. It looks beside itself first, then on `PATH`. Each tool works the same
@@ -54,6 +62,7 @@ change; until then the tool, installed after the scripts, takes the script's pla
     make package        # the Arch package installs them in /usr/lib/scottland/libexec and /usr/bin
 
 All of these need `cargo`. Builds go to `build/cargo`, so `make clean` removes them with the rest.
+The sender-window tool also needs the distro's Python 3 runtime, already required by Scottland.
 
 How the tools' sources ship on a machine, and how they are edited and rebuilt there, is a separate
 design; nothing here assumes it.

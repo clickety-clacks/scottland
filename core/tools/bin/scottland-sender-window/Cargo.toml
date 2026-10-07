@@ -1,0 +1,11 @@
+[package]
+name = "scottland-sender-window"
+description = "Report Scottland windows proven to show or link to a sender"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true

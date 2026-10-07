@@ -6,6 +6,7 @@
   scottland-ctl set min_scale 0.3        apply a value to the running session (not saved)
   scottland-ctl stdin                    apply "name value" lines from stdin (used by the settings app)
   scottland-ctl windows                  list open windows: id, app-id, zone, scale, title
+  scottland-ctl sender-window-snapshot   print mapped window identities as JSON
   scottland-ctl present 42               bring window 42 (or its widget's window) to the middle, focused
   scottland-ctl option scottland/sounds  print an option's live value (any Wayfire option)
 
@@ -52,11 +53,13 @@ def setting_updates(name, value, sock=None):
     return updates
 
 
-def connect():
+def connect(timeout=None):
     if not os.environ.get("WAYFIRE_SOCKET") and not os.environ.get("SCOTTLAND_EXEC"):
         here = os.path.dirname(os.path.realpath(__file__))
         os.execvp(os.path.join(here, "scottland-exec"), ["scottland-exec", "--", os.path.realpath(__file__), *sys.argv[1:]])
     sock = socket.socket(socket.AF_UNIX)
+    if timeout is not None:
+        sock.settimeout(timeout)
     sock.connect(os.environ["WAYFIRE_SOCKET"])
     return sock
 
@@ -66,16 +69,22 @@ def call(sock, method, data):
     sock.sendall(struct.pack("<I", len(body)) + body)
     header = b""
     while len(header) < 4:
-        header += sock.recv(4 - len(header))
+        chunk = sock.recv(4 - len(header))
+        if not chunk:
+            raise ConnectionError("Wayfire closed IPC before the reply header")
+        header += chunk
     size, reply = struct.unpack("<I", header)[0], b""
     while len(reply) < size:
-        reply += sock.recv(size - len(reply))
+        chunk = sock.recv(size - len(reply))
+        if not chunk:
+            raise ConnectionError("Wayfire closed IPC before the reply body")
+        reply += chunk
     return json.loads(reply)
 
 
 def main():
-    sock = connect()
     command = sys.argv[1] if len(sys.argv) > 1 else "get"
+    sock = connect(timeout=2 if command == "sender-window-snapshot" else None)
     if command == "get":
         # Settings the running plugin doesn't know (it predates them; the session needs a restart)
         # are listed under "unsupported" instead of being reported as 0.
@@ -120,6 +129,12 @@ def main():
     elif command == "windows":
         for view in call(sock, "scottland/layout-state", {}).get("views", []):
             print(f"{view['id']:>5}  {view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")
+    elif command == "sender-window-snapshot":
+        reply = call(sock, "window-rules/list-views", {})
+        if isinstance(reply, dict) and "error" in reply:
+            print(reply["error"], file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(reply))
     elif command == "stdin":
         for line in sys.stdin:
             if line.strip() == "flush":
