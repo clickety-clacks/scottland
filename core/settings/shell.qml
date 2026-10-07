@@ -909,14 +909,13 @@ ShellRoot {
             onEdited:value=>root.setMotion("window_hold_delay",value)
           }
           // How far a pointer hold's audition lets the pointer move before that counts as starting
-          // to drag and cancels it (ruling 10-05; WK39). Kept by that ruling; nothing reads it
-          // until pointer-hold auditions land.
+          // to drag and cancels it (ruling 10-05; WK39).
           TimingRow {
             id:soloHotspot
             Layout.fillWidth:true;design:theme;viewport:gooScroll;scrollOffset:gooScroll.contentY;title:"Hold hotspot"
             minimum:8;maximum:400;step:1;bigStep:10;unit:"pt";endLabel:"400 pt"
-            explanation:"Not used yet: pointer-hold auditions are not built. Once they are, moving the pointer this far from where a hold fired, while it shows its solo or pair, will count as starting to drag and cancel the audition. Smaller movements will keep it."
-            footer:"no effect until pointer-hold auditions are built"
+            explanation:"While a pointer or touchpad hold shows its solo or pair, moving the pointer this far from where the hold fired counts as starting to drag: the audition is cancelled, everything returns and the window drags as normal. Smaller movements keep it; letting go takes it."
+            footer:"pointer moves this far → the hold's audition is cancelled"
             value:root.motionValues.solo_audition_hotspot;opening:root.original?.motion?.solo_audition_hotspot ?? 50
             onEdited:value=>root.setMotion("solo_audition_hotspot",value)
           }
