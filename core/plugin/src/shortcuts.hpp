@@ -6,9 +6,9 @@
 
 namespace scottland
 {
-/** Shortcuts that keep Hyprland-style flags together, for integrations whose bindings Wayfire's
- *  command plugin cannot express (its config has no repeating or release binding that also runs
- *  on the lock screen).
+/** Shortcuts that keep repeat, session lock, release and modifier matching flags together for
+ *  integrations whose bindings Wayfire's command plugin cannot express (its config has no
+ *  repeating or release binding that also runs on the lock screen).
  *
  *  [scottland] shortcut_keys_<n>    = activator, e.g. KEY_F9 or <super> KEY_P
  *              shortcut_command_<n> = command to run
@@ -17,8 +17,7 @@ namespace scottland
  *              shortcut_release_<n> = true: runs when the pressed key is let go, not on press
  *              shortcut_any_mods_<n> = true: matches the key (named without modifiers, e.g.
  *                  KEY_LEFTMETA) whatever modifiers are held, at press and at release; it is
- *                  matched on the raw key, so the key also reaches the focused app (Hyprland's
- *                  ignore_mods)
+ *                  matched on the raw key, so the key also reaches the focused app
  *
  *  A shortcut without `locked` runs only while the session is unlocked and no other plugin holds
  *  the input, like Wayfire's ordinary bindings; with `locked` it always runs, like Wayfire's

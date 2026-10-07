@@ -61,7 +61,7 @@ if [ ! -s "$new" ]; then
   echo "scottland-build-config: the assembled config is empty; keeping $out" >&2
   exit 1
 fi
-# A generator that fails (e.g. a Hyprland config that no longer parses) must not cost the session
+# A generator that fails (e.g. a generator whose source no longer parses) must not cost the session
 # the settings it generated before: keep the last config and fail. With no config yet (session
 # start), use what was built without it, and still fail.
 if [ -n "$failed" ] && [ -s "$out" ]; then
