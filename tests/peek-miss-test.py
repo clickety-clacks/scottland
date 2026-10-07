@@ -266,8 +266,10 @@ try:
         sx1, sy1, sx2, sy2 = scene(S); fx = scene(B)
         gx, gy = (sx1 + 8, (sy1 + sy2) / 2) if sx1 < fx[0] - 10 else (sx2 - 8, (sy1 + sy2) / 2) if sx2 > fx[2] + 10 else \
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
-        pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.2)
-        pointer(gx + 3, gy + 3); time.sleep(.3); release()
+        # A grab and drop, let go well inside the hold delay: held still that long it would be a
+        # hold form instead (WK39).
+        pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
+        pointer(gx + 3, gy + 3); time.sleep(.1); release()
         until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
         # Clear the cover off it again, back where it started, so the case's own cover starts clear.
         pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2)); release(); settled()
