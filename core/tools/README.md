@@ -56,6 +56,17 @@ workspace at one commit and place its binaries in the mechanism's base-build dir
 links follow the active build. When a tool replaces a script, remove the script and its install
 lines in the same change.
 
+## Weather app
+
+`bin/weather` installs `scottland-weather`, the launcher for the core Quickshell app in
+`core/apps/weather`. It reads the current Scottland location through the existing location setup,
+fetches current conditions, and retains the reading in the app. Each reading published to a
+widget includes `status` and an RFC 3339 UTC `fetchedAt`; current and stale readings also include
+their condition fields and the last successful `updated` time. Publication uses the existing
+WG11 data method over the WG9 widget service after WG12 reports the app widgetized. Dev and test
+hooks expose the app at `apps/weather`; the Arch package installs the app assets and
+`scottland-weather.desktop`. The Weather widget package remains separate in Flavorings.
+
 ## Build, test, install
 
     make tools          # build every tool into build/tools/bin
