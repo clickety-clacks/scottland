@@ -90,10 +90,12 @@ fn installed_loose_ref_symlink_survives_supported_git_operations() {
 
     let scratch = Scratch::new();
     let source = scratch.0.join("source");
-    let bare = scratch.0.join("bare");
     let product_root = scratch.0.join("root");
     fs::create_dir_all(&source).unwrap();
     fs::create_dir_all(&product_root).unwrap();
+    let paths = Paths::under_root("example", &product_root, product_root.join("state"));
+    let bare = paths.source_repo.clone();
+    fs::create_dir_all(bare.parent().unwrap()).unwrap();
     assert!(
         Command::new("git")
             .arg("-C")
@@ -130,7 +132,6 @@ fn installed_loose_ref_symlink_survives_supported_git_operations() {
         &["fetch", "--no-tags", source.to_str().unwrap(), &commit],
     );
 
-    let paths = Paths::under_root("example", &product_root, product_root.join("state"));
     let build = paths.build_dir(&commit);
     fs::create_dir_all(&build).unwrap();
     fs::create_dir_all(paths.switch.parent().unwrap()).unwrap();
