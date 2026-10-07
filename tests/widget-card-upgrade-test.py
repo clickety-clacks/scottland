@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Upgrading the card package under a docked card leaves the card and its app open (WG5).
+
+Run through tests/widget-card-upgrade-test.sh in a private headless --widgets session:
+  widget-card-upgrade-test.py PACKAGE ARTIFACTS
+PACKAGE is a scratch copy of the card package, found first on SCOTTLAND_WIDGET_PATH.
+
+A package upgrade rewrites the card's shell.qml in place, the way pacman does: unlink, then
+write the new file. A card that hot-reloaded on that could replace its window, and Scottland
+takes a docked card's window going away as the user closing the widget, which closes its app.
+After the upgrade the test holds for longer than a reload takes, watching for the app or the
+card to go; then the app's client must still be running, both windows must be the same ones,
+and the card must look as it did.
+"""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+import gi
+gi.require_version('GdkPixbuf', '2.0')
+from gi.repository import GdkPixbuf
+
+if os.environ.get('SCOTTLAND_TEST_MODEL') != '1':
+    sys.exit('requires the isolated headless harness')
+
+spec = importlib.util.spec_from_file_location('widget_input', Path(__file__).with_name('widget-input-test.py'))
+t = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(t)
+package, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+out.mkdir(parents=True, exist_ok=True)
+title = 'card-upgrade'
+# Quickshell reloads within a second of a change to a file it watches.
+HOLD = 5
+
+checks = []
+def check(name, ok, detail=None):
+    checks.append({'check': name, 'ok': bool(ok), 'detail': detail})
+    print(('PASS ' if ok else 'FAIL ') + name + ' ' + json.dumps(detail), flush=True)
+
+
+def card_pixels(name, frame):
+    path = out/(name + '.png')
+    subprocess.run(['grim', str(path)], check=True, timeout=5)
+    image = GdkPixbuf.Pixbuf.new_from_file(str(path))
+    stride, n, pixels = image.get_rowstride(), image.get_n_channels(), image.get_pixels()
+    xs = range(max(frame['x'], 0), min(frame['x'] + frame['width'], image.get_width()))
+    ys = range(max(frame['y'], 0), min(frame['y'] + frame['height'], image.get_height()))
+    return [pixels[y*stride + x*n + c] for y in ys for x in xs for c in range(3)]
+
+
+def card_processes():
+    """Running quickshell processes whose command names the scratch package's shell.qml."""
+    found = []
+    for proc in Path('/proc').iterdir():
+        try:
+            argv = (proc/'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        if argv and argv[0].endswith(b'quickshell') and str(package/'shell.qml').encode() in argv:
+            found.append(int(proc.name))
+    return found
+
+
+try:
+    t.ipc.call('wayfire/set-config-options', {'scottland/sounds': False})
+    t.launch(title, rail='right')
+    process = t.owned[-1][1]
+    app, card = t.app(title), t.card(title)
+    if not card_processes():
+        raise AssertionError('the card did not start from the scratch package ' + str(package))
+    t.wait_for(lambda: t.ipc.call('scottland/layout-state')['widget_transition_count'] == 0)
+    before = card_pixels('before', card['frame'])
+
+    source = package/'shell.qml'
+    upgraded = source.read_bytes() + b'\n// upgraded\n'
+    source.unlink()
+    source.write_bytes(upgraded)
+
+    # An intended hold: the failure is the app or the card going, which can only be seen by
+    # waiting for it.
+    deadline = time.monotonic() + HOLD
+    while time.monotonic() < deadline:
+        if process.poll() is not None or not t.app(title) or not t.card(title): break
+        time.sleep(.05)
+
+    after_app, after_card = t.app(title), t.card(title)
+    check('the app is still running after the upgrade', process.poll() is None,
+          {'exit': process.poll()})
+    check('the app keeps its window', after_app is not None and after_app['id'] == app['id'],
+          {'before': app['id'], 'after': after_app and after_app['id']})
+    check('the docked card keeps its window', after_card is not None and after_card['id'] == card['id'],
+          {'before': card['id'], 'after': after_card and after_card['id']})
+    if after_card is not None:
+        t.wait_for(lambda: t.ipc.call('scottland/layout-state')['widget_transition_count'] == 0)
+        after = card_pixels('after', after_card['frame'])
+        changed = sum(1 for a, b in zip(before, after) if abs(a - b) > 8)
+        check('the card looks as it did before the upgrade',
+              len(after) == len(before) and changed <= len(before) // 100,
+              {'channels_changed': changed, 'channels': len(before)})
+    else:
+        check('the card looks as it did before the upgrade', False, 'the card is gone')
+finally:
+    t.cleanup()
+    (out/'checks.json').write_text(json.dumps(checks, indent=2))
+
+passed = sum(c['ok'] for c in checks)
+print(f'{passed}/{len(checks)} checks passed', flush=True)
+sys.exit(0 if checks and passed == len(checks) else 1)
