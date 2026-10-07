@@ -10,7 +10,9 @@ write the new file. A card that hot-reloaded on that could replace its window, a
 takes a docked card's window going away as the user closing the widget, which closes its app.
 After the upgrade the test holds for longer than a reload takes, watching for the app or the
 card to go; then the app's client must still be running, both windows must be the same ones,
-and the card must look as it did.
+and the card must look as it did. The running card keeps its old code until it is relaunched,
+so it must still work with the upgraded Scottland: after the reload replaces the widget service,
+Super+M must still collapse and expand it.
 """
 import importlib.util
 import json
@@ -103,6 +105,38 @@ try:
               {'channels_changed': changed, 'channels': len(before)})
     else:
         check('the card looks as it did before the upgrade', False, 'the card is gone')
+
+    # The reload after an upgrade replaces the widget service that writes the card's state (WG5);
+    # stamp the running one as older code so the reload replaces it here too.
+    bus_pid_file = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'),
+                        'scottland', os.environ['WAYLAND_DISPLAY'] + '.widget-bus.pid')
+    old_bus = bus_pid_file.read_text().split('\n')[0]
+    bus_pid_file.write_text(old_bus + '\nfingerprint-of-older-code\n')
+    subprocess.run([os.environ['SCOTTLAND_HOOKS'] + '/reload.d/08-widget-bus'], check=True, timeout=15)
+    new_bus = None
+    try:
+        new_bus = t.wait_for(lambda: (p := bus_pid_file.read_text().split('\n')[0]) != old_bus
+                             and Path('/proc', p).exists() and not Path('/proc', old_bus).exists() and p)
+    except AssertionError:
+        pass
+    check('the reload replaces the widget service under the running card', new_bus is not None,
+          {'old': old_bus, 'new': new_bus})
+
+    # The card still running its old code still follows the upgraded Scottland: a real Super+M
+    # tap collapses it to the square around its icon, and expanding again restores its width.
+    collapsed = expanded = None
+    if t.card(title):
+        try:
+            t.tap_mode_key()
+            collapsed = t.wait_for(lambda: (c := t.card(title)) and abs(c['frame']['width'] - 96) < 1 and c)
+            t.set_widget_mode('expanded')
+            expanded = t.wait_for(lambda: (c := t.card(title)) and c['frame']['width'] > 120 and c)
+        except AssertionError as e:
+            print('card did not follow Super+M: ' + str(e), flush=True)
+    check('the upgraded card still collapses and expands with Super+M',
+          collapsed is not None and expanded is not None and expanded['id'] == card['id'],
+          {'collapsed_width': collapsed and collapsed['frame']['width'],
+           'expanded_width': expanded and expanded['frame']['width']})
 finally:
     t.cleanup()
     (out/'checks.json').write_text(json.dumps(checks, indent=2))
