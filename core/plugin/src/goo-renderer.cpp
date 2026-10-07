@@ -799,10 +799,20 @@ void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::reg
         glReadBuffer(draw_fbo ? GL_COLOR_ATTACHMENT0 : GL_BACK);
     }
     // Real scene beneath the shared visible liquid, including overlapped window content.
+    // wlroots outputs are usually XRGB8888, with no alpha. Copying them into an RGBA texture
+    // is a GL_INVALID_OPERATION that Mesa lets through and NVIDIA does not, so the backdrop
+    // takes alpha only when the screen has it. An RGB texture samples with alpha 1, which is
+    // what the RGBA copy stored where a driver allowed it.
+    GLint alpha_bits = 0;
+    if (p->es3)
+        glGetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER, draw_fbo ? GL_COLOR_ATTACHMENT0 : GL_BACK,
+                                              GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE, &alpha_bits);
+    else
+        glGetIntegerv(GL_ALPHA_BITS, &alpha_bits);
     auto &bg = p->background;
-    if (!bg.texture || bg.width != viewport[2] || bg.height != viewport[3])
+    if (!bg.texture || bg.width != viewport[2] || bg.height != viewport[3] || bg.alpha != (alpha_bits > 0))
     {
-        bg.allocate(viewport[2], viewport[3], true, p->es3, false);
+        bg.allocate(viewport[2], viewport[3], true, p->es3, false, alpha_bits > 0);
         p->under_pending.clear();  // what it noted was copied into the old texture
     }
     p->backdrop_geometry = data.target.geometry;
@@ -1368,7 +1378,7 @@ bool renderer_t::overlapping() const { return p->overlap; }
 bool renderer_t::under_waiting() const { return !p->under_pending.empty(); }
 bool renderer_t::backdrop_ready(const wf::render_target_t &target) const
 {
-    // The backdrop cache is RGBA8: it stands in for scene pixels losslessly only on an
+    // The backdrop cache is RGB8 or RGBA8: it stands in for scene pixels losslessly only on an
     // ordinary 8-bit SDR target, and only one with the mapping it was copied under.
     wlr_dmabuf_attributes attrs{};
     if (target.get_output_transfer_function() != WLR_COLOR_TRANSFER_FUNCTION_SRGB ||
