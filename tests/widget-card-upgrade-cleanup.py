@@ -36,6 +36,82 @@ def assert_no_symlink_components(path):
             fail(f'refusing path through symlink: {current}')
 
 
+def validate_runtime(runtime):
+    if not runtime.is_absolute():
+        fail('runtime path is not absolute; refusing runtime use')
+    assert_no_symlink_components(runtime)
+    try:
+        canonical = runtime.resolve(strict=True)
+    except (FileNotFoundError, RuntimeError, OSError) as error:
+        fail(f'runtime path cannot be resolved safely: {error}')
+    if canonical != runtime:
+        fail('runtime path is not canonical; refusing runtime use')
+    runtime_info = lstat(runtime)
+    if runtime_info is None or stat.S_ISLNK(runtime_info.st_mode) or not stat.S_ISDIR(runtime_info.st_mode):
+        fail('runtime path is missing or is not a real directory')
+    state_dir = runtime / 'scottland'
+    state_info = lstat(state_dir)
+    if state_info is not None and (stat.S_ISLNK(state_info.st_mode) or not stat.S_ISDIR(state_info.st_mode)):
+        fail('Scottland runtime directory is not a real directory')
+    return canonical
+
+
+def create_owner_record(owner_record, owner, repo):
+    if not re.fullmatch(r'[0-9a-f-]{36}', owner):
+        fail('owner token is not a UUID')
+    build = repo / 'build'
+    suffix = '.widget-upgrade-owner'
+    if (not repo.is_absolute() or not owner_record.is_absolute() or
+            not owner_record.name.endswith(suffix) or owner_record.parent != build):
+        fail('owner record is not the expected direct build/ sidecar')
+    owner_dir = owner_record.with_name(owner_record.name[:-len(suffix)])
+    assert_no_symlink_components(repo)
+    assert_no_symlink_components(build)
+    assert_no_symlink_components(owner_dir)
+    build_info = lstat(build)
+    if build_info is None or stat.S_ISLNK(build_info.st_mode) or not stat.S_ISDIR(build_info.st_mode):
+        fail('checkout build/ is missing or is not a real directory')
+    if lstat(owner_dir) is not None:
+        fail('headless owner directory appeared before setup')
+    data = (owner + '\n').encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
+    fd = None
+    opened = None
+    interrupted = []
+
+    def note_interrupt(signum, _frame):
+        interrupted.append(signum)
+
+    old_int = signal.signal(signal.SIGINT, note_interrupt)
+    old_term = signal.signal(signal.SIGTERM, note_interrupt)
+    try:
+        fd = os.open(owner_record, flags, 0o600)
+        opened = os.fstat(fd)
+        os.fchmod(fd, 0o600)
+        offset = 0
+        while offset < len(data):
+            offset += os.write(fd, data[offset:])
+        os.fsync(fd)
+        if interrupted:
+            raise InterruptedError(f'owner record setup interrupted by signal {interrupted[0]}')
+        os.close(fd)
+        fd = None
+    except BaseException:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        current = lstat(owner_record)
+        if (opened is not None and current is not None and stat.S_ISREG(current.st_mode) and
+                current.st_dev == opened.st_dev and current.st_ino == opened.st_ino):
+            owner_record.unlink()
+        raise
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGTERM, old_term)
+
+
 def process_info(pid):
     try:
         data = Path('/proc', str(pid), 'stat').read_text()
@@ -252,6 +328,12 @@ def remove_widget_runtime(runtime, display, owner, owned_pids):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--validate-runtime':
+        print(validate_runtime(Path(sys.argv[2])))
+        return
+    if len(sys.argv) == 5 and sys.argv[1] == '--create-owner-record':
+        create_owner_record(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
+        return
     if len(sys.argv) != 5:
         fail('usage: widget-card-upgrade-cleanup.py SESSION_DIR OWNER_RECORD RUNTIME REPO')
     owner_dir = Path(sys.argv[1])
@@ -280,11 +362,7 @@ def main():
     if not re.fullmatch(r'[0-9a-f-]{36}', owner):
         fail('owner record does not contain a valid UUID token')
     record_identity = (record_info.st_dev, record_info.st_ino, stat.S_IFMT(record_info.st_mode))
-    if not runtime.is_absolute():
-        fail('runtime path is not absolute; refusing runtime cleanup')
-    assert_no_symlink_components(runtime)
-    if lstat(runtime) is None or not stat.S_ISDIR(lstat(runtime).st_mode):
-        fail('runtime path is missing or is a symlink; refusing runtime cleanup')
+    runtime = validate_runtime(runtime)
 
     runtime_view = owner_dir / 'runtime'
     headless_owner_record = owner_dir / '.scottland-headless-owner'
