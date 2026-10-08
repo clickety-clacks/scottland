@@ -255,6 +255,90 @@ expected = {
 sys.exit(not all(env.get(key) == value for key, value in expected.items()))
 PY
 }
+session_shim_process_state() {
+  # Return 0 for this run's live shim, 1 when the PID has exited, and 2 when
+  # identity cannot be proved. The lock lives in this run's private runtime,
+  # but its PID may still be stale or reused.
+  python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" "$3" \
+    "${SCOTTLAND_HEADLESS_OWNER:-}" "$4" <<'PY'
+import pathlib, sys
+
+pid, scratch, runtime, tmpdir, display, signature, owner, shim = sys.argv[1:]
+proc = pathlib.Path('/proc') / pid
+try:
+    stat = (proc / 'stat').read_bytes()
+except FileNotFoundError:
+    sys.exit(1)
+except OSError:
+    sys.exit(2)
+try:
+    state = stat[stat.rfind(b')') + 2:].split()[0]
+except (IndexError, ValueError):
+    sys.exit(2)
+if state in (b'Z', b'X'):
+    sys.exit(1)
+try:
+    entries = (proc / 'environ').read_bytes().split(b'\0')
+    env = dict(entry.split(b'=', 1) for entry in entries if b'=' in entry)
+    command = (proc / 'cmdline').read_bytes().split(b'\0')
+except FileNotFoundError:
+    sys.exit(1)
+except OSError:
+    sys.exit(2)
+expected = {
+    b'SCOTTLAND_HEADLESS_DIR': scratch.encode(),
+    b'TMPDIR': tmpdir.encode(),
+    b'XDG_RUNTIME_DIR': runtime.encode(),
+    b'XDG_STATE_HOME': (scratch + '/state').encode(),
+    b'WAYLAND_DISPLAY': display.encode(),
+    b'HYPRLAND_INSTANCE_SIGNATURE': signature.encode(),
+}
+if owner:
+    expected[b'SCOTTLAND_HEADLESS_OWNER'] = owner.encode()
+if not all(env.get(key) == value for key, value in expected.items()) or \
+   shim.encode() not in command:
+    sys.exit(2)
+sys.exit(0)
+PY
+}
+stop_session_shim() {
+  local pid=$1 display=$2 signature=$3 shim=$4 process_state signal
+  if session_shim_process_state "$pid" "$display" "$signature" "$shim"; then
+    :
+  else
+    process_state=$?
+    if ((process_state == 1)); then return 0; fi
+    echo "headless shim PID $pid is not this run's shim; preserving runtime and scratch" >&2
+    return 1
+  fi
+  for signal in TERM KILL; do
+    if [[ $signal == TERM ]]; then
+      kill -TERM "$pid" 2>/dev/null || true
+    else
+      # Revalidate the exact run-owned process immediately before escalation.
+      if session_shim_process_state "$pid" "$display" "$signature" "$shim"; then
+        kill -KILL "$pid" 2>/dev/null || true
+      else
+        process_state=$?
+        if ((process_state == 1)); then return 0; fi
+        echo "headless shim PID $pid changed identity before forced stop; preserving runtime and scratch" >&2
+        return 1
+      fi
+    fi
+    for _ in $(seq 30); do
+      if session_shim_process_state "$pid" "$display" "$signature" "$shim"; then
+        sleep 0.1
+      else
+        process_state=$?
+        if ((process_state == 1)); then return 0; fi
+        echo "headless shim PID $pid no longer proves this run; preserving runtime and scratch" >&2
+        return 1
+      fi
+    done
+  done
+  echo "headless shim PID $pid did not exit; preserving runtime and scratch" >&2
+  return 1
+}
 
 case ${1:-} in
   start)
@@ -450,14 +534,30 @@ if path.exists():
             print(entry.split(b'=', 1)[1].decode())
 PY
 )
-    lock="$runtime/hypr/$signature/hyprland.lock"
-    if [[ $signature == scottland_* && $signature != */* && -f $lock && $(sed -n 2p "$lock") == "$name" ]]; then
-      hypr_pid=$(sed -n 1p "$lock")
-      if [[ $hypr_pid =~ ^[0-9]+$ ]] && session_process_is_ours "$hypr_pid" "$name" && \
-         grep -qa Hyprland "/proc/$hypr_pid/cmdline" 2>/dev/null; then
-        kill "$hypr_pid" 2>/dev/null || true
+    if [[ $signature == scottland_* && $signature != */* ]]; then
+      lock_dir="$runtime/hypr/$signature"
+      lock="$lock_dir/hyprland.lock"
+      if [[ -e $lock || -L $lock || -e $lock_dir || -L $lock_dir ]]; then
+        [[ -d $runtime/hypr && ! -L $runtime/hypr && -d $lock_dir && ! -L $lock_dir && \
+           -f $lock && ! -L $lock ]] || {
+          echo 'headless shim lock path is missing, redirected, or not a regular file; preserving scratch' >&2
+          exit 2
+        }
+        [[ $(sed -n 2p "$lock") == "$name" ]] || {
+          echo 'headless shim lock belongs to a different display; preserving scratch' >&2
+          exit 2
+        }
+        hypr_pid=$(sed -n 1p "$lock")
+        [[ $hypr_pid =~ ^[0-9]+$ ]] || {
+          echo 'headless shim lock has an invalid PID; preserving scratch' >&2
+          exit 2
+        }
+        shim="$hooks/libexec/scottland-hyprshim"
+        stop_session_shim "$hypr_pid" "$name" "$signature" "$shim" || exit 2
+        # The lock directory is removed only after its PID is gone or its process
+        # identity has been proved to be this run's shim and that shim has exited.
+        rm -rf -- "$lock_dir"
       fi
-      rm -rf "$(dirname "$lock")"
     fi
     pid=$(cat "$dir/pid")
     compositor=$(cat "$dir/compositor.pid" 2>/dev/null || true)
