@@ -11,10 +11,16 @@ for id in $(loginctl list-sessions --no-legend | awk -v u="$(id -un)" '$3 == u {
   case $type in wayland|x11) [ "$state" != closing ] && others=$((others + 1)) ;; esac
 done
 if [ "$others" -gt 0 ]; then
-  manager_desktop=$(systemctl --user show-environment |
+  manager_environment=$(systemctl --user show-environment)
+  manager_desktop=$(printf '%s\n' "$manager_environment" |
     sed -n 's/^XDG_SESSION_DESKTOP=//p')
+  manager_current_desktop=$(printf '%s\n' "$manager_environment" |
+    sed -n 's/^XDG_CURRENT_DESKTOP=//p')
+  # XDG_SESSION_DESKTOP can be stale when bare Hyprland takes over the manager.
   [ -n "${XDG_SESSION_DESKTOP:-}" ] &&
-    [ "$manager_desktop" = "$XDG_SESSION_DESKTOP" ] || exit 0
+    [ "$manager_desktop" = "$XDG_SESSION_DESKTOP" ] &&
+    [ -n "${XDG_CURRENT_DESKTOP:-}" ] &&
+    [ "$manager_current_desktop" = "$XDG_CURRENT_DESKTOP" ] || exit 0
 fi
 
 # Integrations add their own variables through SCOTTLAND_IMPORT_ENV (see session-env.d).
