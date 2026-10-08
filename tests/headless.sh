@@ -25,11 +25,15 @@
 # Example: tests/headless.sh start --omarchy && tests/headless.sh run foot &
 #          tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
 set -euo pipefail
-repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
 runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+build=$repo/build
 # SCOTTLAND_HEADLESS_DIR: where this test session keeps its state, so test sessions of several
 # checkouts (e.g. agents on branches sharing a test machine) can run at once.
-dir=${SCOTTLAND_HEADLESS_DIR:-$repo/build/headless}
+dir_input=${SCOTTLAND_HEADLESS_DIR:-$build/headless}
+case $dir_input in /*) ;; *) dir_input=$repo/$dir_input ;; esac
+dir=$(realpath -m -- "$dir_input")
+session_helper=$repo/tests/headless-session.py
 # The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
 # package's.
 hooks=$repo/build/hooks
@@ -41,8 +45,38 @@ display() { cat "$dir/display"; }
 
 case ${1:-} in
   start)
-    [[ -f $dir/pid ]] && kill -0 "$(cat "$dir/pid")" 2>/dev/null && { echo "already running on $(display)"; exit 0; }
-    rm -rf "$dir"; mkdir -p "$dir"
+    [[ ! -L $build ]] || { echo "build directory is a symlink: $build" >&2; exit 1; }
+    mkdir -p -- "$build"
+    [[ ! -L $build && $(realpath -e -- "$build") == "$build" ]] || {
+      echo "build directory must be a real directory in this checkout: $build" >&2
+      exit 1
+    }
+    [[ $dir != "$build" && $(dirname -- "$dir") == "$build" ]] || {
+      echo "SCOTTLAND_HEADLESS_DIR must be a direct child of this checkout's build/: $dir" >&2
+      exit 1
+    }
+    [[ ! -e $dir && ! -L $dir ]] || {
+      echo "headless directory occupied; refusing to adopt or remove it: $dir" >&2
+      exit 1
+    }
+    runtime=$(python3 "$session_helper" canonical-runtime "$runtime")
+    session_id=$(python3 "$session_helper" token)
+    umask 077
+    mkdir -m 700 -- "$dir"
+    printf '%s\n' "$session_id" >"$dir/session-id"
+    printf '%s\n' "$runtime" >"$dir/runtime-path"
+    mkdir -m 700 -- "$dir/hooks" "$dir/hooks/autostart.d"
+    ln -s -- "$hooks/libexec" "$dir/hooks/libexec"
+    ln -s -- "$hooks/session-env.d" "$dir/hooks/session-env.d"
+    for hook in "$hooks"/autostart.d/*; do
+      [[ -e $hook || -L $hook ]] || continue
+      hook_name=${hook##*/}
+      if [[ $hook_name == 01-record-environment ]]; then
+        ln -s -- "$repo/tests/headless-record-environment.sh" "$dir/hooks/autostart.d/$hook_name"
+      else
+        ln -s -- "$hook" "$dir/hooks/autostart.d/$hook_name"
+      fi
+    done
     started=(01-record-environment)
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
@@ -89,6 +123,7 @@ GDB
       export SCOTTLAND_TEST_MODEL=1
       # Isolate every child's settings and logs, not just config generation. Keep the real
       # runtime so Wayland display names (and systemd widget scopes) remain unique.
+      export XDG_RUNTIME_DIR=$runtime SCOTTLAND_HEADLESS_DIR=$dir SCOTTLAND_TEST_SESSION_ID=$session_id
       export XDG_CONFIG_HOME=$dir/config XDG_STATE_HOME=$dir/state XDG_CACHE_HOME=$dir/cache
       export SCOTTLAND_TEST_STATE=$dir/state
       # Quickshell hardcodes logs under $XDG_RUNTIME_DIR/quickshell. Bind only that
@@ -102,7 +137,8 @@ WRAPPER
       chmod +x "$dir/bin/quickshell"
       ln -s quickshell "$dir/bin/qs"
       export PATH=$dir/bin:$PATH
-      export SCOTTLAND_HOOKS=$hooks XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
+      export SCOTTLAND_HOOKS=$dir/hooks SCOTTLAND_HEADLESS_SESSION_HELPER=$session_helper
+      export XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots XDG_SESSION_TYPE=wayland
       # Focus-mode hooks (full screen) touch the desktop (e.g. its notifications): a test session
       # runs only its own, from its folder.
       mkdir -p "$dir/focus.d"; export SCOTTLAND_FOCUS_HOOKS=$dir/focus.d
@@ -114,7 +150,7 @@ WRAPPER
       "$hooks/libexec/scottland-build-config" --output "$dir/wayfire.ini" >/dev/null
       hook_list=${started[*]}
       sed -i -e 's/^plugins = \\$/plugins = stipc \\/' \
-        -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \& done; wait'#" \
+        -e "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" || exit; done'#" \
         "$dir/wayfire.ini"
       # A protocol control: same clients/config/stock Wayfire, without Scottland's
       # scene transforms or input handlers. Autostart still records its environment.
@@ -140,10 +176,13 @@ WRAPPER
     )
     for _ in $(seq 100); do
       name=$(sed -n 's/.*Using socket name \(wayland-[0-9]*\).*/\1/p' "$dir/wayfire.log")
-      [[ -n $name && -f $runtime/scottland/$name.env ]] && break
+      [[ -n $name ]] && python3 "$session_helper" owns-env "$runtime/scottland/$name.env" "$session_id" && break
       sleep 0.1
     done
-    [[ -n ${name:-} ]] || { echo "headless Scottland didn't start; see $dir/wayfire.log" >&2; exit 1; }
+    [[ -n ${name:-} ]] && python3 "$session_helper" owns-env "$runtime/scottland/$name.env" "$session_id" || {
+      echo "headless Scottland didn't start with an owned environment record; see $dir/wayfire.log" >&2
+      exit 1
+    }
     echo "$name" >"$dir/display"
     # The debugger/private-bus wrapper can exit independently. Retain the actual
     # compositor identity so stop still reaps our inferior in that case.
@@ -169,62 +208,24 @@ PY
     exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
     ;;
   stop)
-    [[ -f $dir/display ]] || exit 0
-    name=$(display)
-    # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
-    # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
-    # with its monitors.)
-    for pid_file in "$runtime/scottland/$name.lua.pid" "$runtime/scottland/$name.color-scheme.pid" "$runtime/scottland/$name.widget-bus.pid"; do
-      helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
-      if [[ $helper =~ ^[0-9]+$ ]] && grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
-        if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
-      fi
-      rm -f "$pid_file"
-    done
-    signature=$(python3 - "$runtime/scottland/$name.env" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-if path.exists():
-    for entry in path.read_bytes().split(b'\0'):
-        if entry.startswith(b'HYPRLAND_INSTANCE_SIGNATURE='):
-            print(entry.split(b'=', 1)[1].decode())
-PY
-)
-    lock="$runtime/hypr/$signature/hyprland.lock"
-    if [[ $signature == scottland_* && $signature != */* && -f $lock && $(sed -n 2p "$lock") == "$name" ]]; then
-      kill "$(sed -n 1p "$lock")" 2>/dev/null || true
-      rm -rf "$(dirname "$lock")"
+    [[ -e $dir || -L $dir ]] || exit 0
+    session_id=$(python3 "$session_helper" verify "$build" "$dir" --field token)
+    owned_runtime=$(python3 "$session_helper" verify "$build" "$dir" --field runtime)
+    name=$(cat "$dir/display" 2>/dev/null || true)
+    capture_failed=0
+    python3 "$session_helper" capture-runtime "$build" "$dir" "$owned_runtime" "$session_id" || capture_failed=1
+    python3 "$session_helper" signal "$session_id" TERM
+    if ! python3 "$session_helper" wait "$session_id" 3; then
+      python3 "$session_helper" signal "$session_id" KILL
+      python3 "$session_helper" wait "$session_id" 2
     fi
-    pid=$(cat "$dir/pid")
-    compositor=$(cat "$dir/compositor.pid" 2>/dev/null || true)
-    if [[ $compositor =~ ^[0-9]+$ ]] && \
-      python3 - "$compositor" "$dir/wayfire.ini" <<'PY'
-import pathlib, sys
-try:
-    args = pathlib.Path('/proc/' + sys.argv[1] + '/cmdline').read_bytes().split(b'\0')
-    sys.exit(not (sys.argv[2].encode() in args and any(a.endswith(b'wayfire') for a in args)))
-except OSError:
-    sys.exit(1)
-PY
-    then
-      kill "$compositor" 2>/dev/null || true
-    else compositor=; fi
-    # setsid gives this harness its own group. Include the debugger's inferior,
-    # not only dbus-run-session's immediate child, when stopping --gdb sessions.
-    group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-    if [[ $group == "$pid" ]]; then
-      kill -- "-$pid" 2>/dev/null || true
-    else
-      for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+    if ((capture_failed)); then
+      echo 'runtime ownership audit failed; stopped owned processes and preserved session state' >&2
+      exit 1
     fi
-    kill "$pid" 2>/dev/null || true
-    for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-    kill -9 "$pid" 2>/dev/null || true  # Wayfire can hang on SIGTERM with no outputs
-    [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
-    [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
-    rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo"
-    rm -rf "$dir"
-    echo "stopped headless Scottland on $name"
+    python3 "$session_helper" clean-runtime "$build" "$dir" "$owned_runtime" "$session_id" "$name"
+    python3 "$session_helper" remove-dir "$build" "$dir" "$session_id"
+    echo "stopped owned headless Scottland session${name:+ on $name}"
     ;;
   *)
     sed -n '2,15p' "$0"; exit 1
