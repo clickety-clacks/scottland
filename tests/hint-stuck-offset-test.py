@@ -188,33 +188,39 @@ try:
     ids.append(launch('Anchor', '#242a34'))
     rect = dict(x=output['x'] + output['width'] // 2 - 210, y=output['y'] + output['height'] // 2 - 160,
                 width=420, height=320)
-    anchor_rect = dict(x=output['x'] + output['width'] // 2 - 100,
-                       y=output['y'] + output['height'] // 2 - 80, width=200, height=160)
+    touch_anchor_rect = dict(x=rect['x'] + rect['width'] // 2, y=rect['y'],
+                             width=rect['width'], height=rect['height'])
     for identifier in ids[:-1]:
         ipc('window-rules/configure-view', dict(id=identifier, geometry=rect))
-    ipc('window-rules/configure-view', dict(id=ids[-1], geometry=anchor_rect))
-    # Keep the cover focused and above Front. The small initial cover exposes Front for the
-    # held case's real touch; an equal-sized cover is used while testing offset movement.
+    ipc('window-rules/configure-view', dict(id=ids[-1], geometry=rect))
+    # Keep the equal-sized cover focused and above Front. The held case moves it sideways,
+    # avoiding a client resize whose drawn bounds can lag or remain at the original size.
     ipc('window-rules/focus-view', dict(id=ids[-1]))
     front, rears, anchor = ids[2], ids[:2], ids[3]
     def place_anchor(geometry, reason):
         ipc('window-rules/configure-view', dict(id=anchor, geometry=geometry))
+        observed = {}
         def placed():
             view = next((v for v in views() if v['id'] == anchor), None)
-            if not view: return None
-            actual = view['geometry']
-            return view if all(abs(float(actual[key]) - float(geometry[key])) < .5
-                               for key in ('x', 'y', 'width', 'height')) else None
-        wait(placed, 'cover geometry: ' + reason)
+            hint = next((r for r in rows().values() if r['window'] == anchor), None)
+            if not view or not hint: return None
+            actual, drawn = view['geometry'], hint['drawn']
+            observed.update(view=actual, drawn=drawn)
+            keys = ('x', 'y', 'width', 'height')
+            return view if all(abs(float(actual[key]) - float(geometry[key])) < .5 and
+                               abs(float(drawn[key]) - float(geometry[key])) < .5
+                               for key in keys) else None
+        wait(placed, 'cover geometry and drawn bounds: ' + reason,
+             timeout_detail=lambda: json.dumps(observed))
     def centers():
         return [(g['x'] + g['width'] / 2, g['y'] + g['height'] / 2)
                 for g in (v['geometry'] for v in views() if v['id'] in ids)]
     wait(lambda: len(centers()) == 4 and max(math.dist(a, b) for a in centers() for b in centers()) < 30,
          'fixture stacked')
 
-    # The 200x160 cover left 80px bands above and below Front, enough for the 48px
-    # minimum hint room (about 53px); the solver correctly stayed at home. Cover Front
-    # exactly so neither a full/minimum hint nor a peek strip fits without moving it.
+    # A smaller requested cover did not produce smaller drawn bounds on the client in the
+    # prior runner result. Keep the cover the same size as Front; full overlap forces the
+    # avoidance target away from home.
     place_anchor(rect, 'fully cover Front for the frozen-offset case')
     # Case 1: an offset that cannot ease to its target (fault injection).
     ipc('scottland/hints', dict(freeze_offset=front))
@@ -222,10 +228,10 @@ try:
     ipc('scottland/hints', dict(freeze_offset=0))
     wait(at_rest, 'offsets home after the frozen case')
 
-    # Case 2: arm a real touch while part of Front is exposed, then cover it before Alt.
-    # The solver has the same forced target as the frozen case while the real hold keeps
-    # Front drawn in place; the rear-letter pixel assertions below remain unchanged.
-    place_anchor(anchor_rect, 'expose Front for the real held touch')
+    # Case 2: move the full-size cover sideways to expose Front for the real held touch,
+    # then move it back over Front before Alt. The hold keeps Front drawn in place while
+    # the solver computes the same forced target; pixel assertions remain unchanged.
+    place_anchor(touch_anchor_rect, 'move cover aside to expose Front for the real held touch')
     run_case('held', front, rears, touch_point(front, [anchor]),
              cover_after_touch=lambda: place_anchor(rect, 'cover Front after the touch is armed'))
     ipc('stipc/touch_release', dict(finger=0)); touching = False
