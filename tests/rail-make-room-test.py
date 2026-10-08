@@ -199,6 +199,10 @@ try:
     check("the focused card's committed geometry is exactly unchanged after the drop",
           after_focus_a == before_focus_a, (before_focus_a, after_focus_a))
     arrive_geometry = card_geometry("rail-focus-arrive")
+    print("WG26 stay-still fallback observation: "
+          f"rail-a {before_focus_a} -> {after_focus_a}; "
+          f"rail-b {before_focus_b} -> {after_focus_b}; "
+          f"arrival {arrive_geometry}", flush=True)
     on_focused_spot = (abs(arrive_geometry["y"] - before_focus_a["y"]) < 0.5 and
                         abs(arrive_geometry["x"] - before_focus_a["x"]) < 0.5)
     check("the arrival does not land on top of the fixed focused card",
