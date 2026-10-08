@@ -1,0 +1,12 @@
+[package]
+name = "scottland-bluetooth"
+description = "Bluetooth power and device controls for Scottland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+scottland.workspace = true
+zbus.workspace = true
