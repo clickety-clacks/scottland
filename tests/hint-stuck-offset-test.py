@@ -2,14 +2,14 @@
 """WK41: one foreground offset that never settles must not hide the hints behind it.
 
 Run in a caller-owned headless session. Alt and the touch hold are real stipc input. Window
-placement and focus are declared IPC fixture setup. A separate, focused cover window gives the
-tested front window a real avoidance target while leaving part of it touchable. The first case
-injects the fault through the test-session-only `freeze_offset` field of scottland/hints: the
-front window's avoidance offset never steps toward its target. That bypasses no input layer; it
-stands in for an ease that cannot finish (a target that keeps changing). The second case holds a
-real touch on the exposed part of the front window and confirms the hold is armed before Alt.
-Each case passes when both rear windows' hint letters are found in captured pixels while the
-front offset is still away from its target, and absent from the same circles before Alt.
+placement and focus are declared IPC fixture setup. A focused cover window fully covers the
+tested front window so the solver must give it a nonzero avoidance target. In the held case, the
+test first arms a real touch on an exposed part of Front, then expands the cover before Alt. The
+frozen case injects an offset that never steps toward its target through the test-session-only
+`freeze_offset` field of scottland/hints. That bypasses no input layer; it stands in for an ease
+that cannot finish (a target that keeps changing). Each case passes when both rear windows' hint
+letters are found in captured pixels while the front offset is still away from its target, and
+absent from the same circles before Alt.
 """
 import json
 import math
@@ -52,7 +52,7 @@ def check(name, okay, details=''):
     passes += bool(okay); failures += not okay
 
 
-def wait(fn, what, limit=10):
+def wait(fn, what, limit=10, timeout_detail=None):
     # A hang guard only: every pass criterion is a state, never how long it took.
     end = time.monotonic() + limit
     last = None
@@ -60,7 +60,8 @@ def wait(fn, what, limit=10):
         last = fn()
         if last: return last
         time.sleep(.02)
-    raise RuntimeError(f'{what}: never happened, last {last}')
+    detail = timeout_detail() if timeout_detail else last
+    raise RuntimeError(f'{what}: never happened, last {detail}')
 
 
 def key(name, down):
@@ -127,7 +128,7 @@ def touch_point(window, blockers):
     raise RuntimeError(f'no exposed touch point on window {window}: frame={frame}, blockers={blocked}')
 
 
-def run_case(name, front, rears, exposed_touch=None):
+def run_case(name, front, rears, exposed_touch=None, cover_after_touch=None):
     before = capture(name + '-before-alt')
     try:
         if exposed_touch:
@@ -138,9 +139,17 @@ def run_case(name, front, rears, exposed_touch=None):
             wait(lambda: (lambda s: s if s.get('hold_armed') and not s.get('lifted') and
                           not s.get('dragging') else None)(test_input()),
                  name + ': real touch hold armed on the tested front window')
+            if cover_after_touch:
+                cover_after_touch()
         key('LEFTALT', True)
-        # The unanchored front window is displaced by Window mode; its offset does not follow.
-        wait(lambda: away(rows()[front]) > 20, name + ': front window given a target away from where it is drawn')
+        last_front = {}
+        def target_away():
+            row = rows()[front]
+            last_front.update({key: row.get(key) for key in ('dx', 'dy', 'target_dx', 'target_dy', 'rule', 'rung')})
+            last_front['away'] = away(row)
+            return row if last_front['away'] > 20 else None
+        wait(target_away, name + ': front window given a target away from where it is drawn',
+             timeout_detail=lambda: json.dumps(last_front))
         shown = wait(lambda: (lambda r: r if all(r[w].get('visible') and r[w].get('pop', 0) >= .999 and
                                                  r[w].get('badge') for w in rears) else None)(rows()),
                      name + ': rear hints shown')
@@ -176,7 +185,7 @@ try:
     output = ipc('window-rules/list-outputs')[0]['geometry']
     ids = [launch(title, color) for title, color in
            (('RearA', '#1f232c'), ('RearB', '#24302a'), ('Front', '#2c2420'))]
-    ids.append(launch('Anchor', '#242a34', 200, 160))
+    ids.append(launch('Anchor', '#242a34'))
     rect = dict(x=output['x'] + output['width'] // 2 - 210, y=output['y'] + output['height'] // 2 - 160,
                 width=420, height=320)
     anchor_rect = dict(x=output['x'] + output['width'] // 2 - 100,
@@ -184,25 +193,41 @@ try:
     for identifier in ids[:-1]:
         ipc('window-rules/configure-view', dict(id=identifier, geometry=rect))
     ipc('window-rules/configure-view', dict(id=ids[-1], geometry=anchor_rect))
-    # Keep the cover focused and above Front. The tested Front window is intentionally
-    # unanchored, so Window mode gives it a nonzero avoidance target.
+    # Keep the cover focused and above Front. The small initial cover exposes Front for the
+    # held case's real touch; an equal-sized cover is used while testing offset movement.
     ipc('window-rules/focus-view', dict(id=ids[-1]))
     front, rears, anchor = ids[2], ids[:2], ids[3]
+    def place_anchor(geometry, reason):
+        ipc('window-rules/configure-view', dict(id=anchor, geometry=geometry))
+        def placed():
+            view = next((v for v in views() if v['id'] == anchor), None)
+            if not view: return None
+            actual = view['geometry']
+            return view if all(abs(float(actual[key]) - float(geometry[key])) < .5
+                               for key in ('x', 'y', 'width', 'height')) else None
+        wait(placed, 'cover geometry: ' + reason)
     def centers():
         return [(g['x'] + g['width'] / 2, g['y'] + g['height'] / 2)
                 for g in (v['geometry'] for v in views() if v['id'] in ids)]
     wait(lambda: len(centers()) == 4 and max(math.dist(a, b) for a in centers() for b in centers()) < 30,
          'fixture stacked')
 
+    # The 200x160 cover left 80px bands above and below Front, enough for the 48px
+    # minimum hint room (about 53px); the solver correctly stayed at home. Cover Front
+    # exactly so neither a full/minimum hint nor a peek strip fits without moving it.
+    place_anchor(rect, 'fully cover Front for the frozen-offset case')
     # Case 1: an offset that cannot ease to its target (fault injection).
     ipc('scottland/hints', dict(freeze_offset=front))
     run_case('frozen', front, rears)
     ipc('scottland/hints', dict(freeze_offset=0))
     wait(at_rest, 'offsets home after the frozen case')
 
-    # Case 2: keep a real touch hold pending on Front while Window mode moves the others.
-    # The cover is smaller than Front, leaving a pixel-checked geometric hit-test point.
-    run_case('held', front, rears, touch_point(front, [anchor]))
+    # Case 2: arm a real touch while part of Front is exposed, then cover it before Alt.
+    # The solver has the same forced target as the frozen case while the real hold keeps
+    # Front drawn in place; the rear-letter pixel assertions below remain unchanged.
+    place_anchor(anchor_rect, 'expose Front for the real held touch')
+    run_case('held', front, rears, touch_point(front, [anchor]),
+             cover_after_touch=lambda: place_anchor(rect, 'cover Front after the touch is armed'))
     ipc('stipc/touch_release', dict(finger=0)); touching = False
     print(f'hint stuck offset: {passes} passed, {failures} failed', flush=True)
     sys.exit(bool(failures))
