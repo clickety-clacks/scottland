@@ -780,7 +780,6 @@ mod tests {
             [
                 "radio:unblock",
                 "read-adapters",
-                "read-adapters",
                 "power-default:on:5",
                 "read-adapters"
             ]
@@ -913,7 +912,10 @@ mod tests {
             &mut ImmediateWaiter::default(),
         );
         assert_eq!(output.status, 0);
-        assert_eq!(backend.events, ["pair:20", "trust:2", "connect:20"]);
+        assert_eq!(
+            backend.events,
+            ["read-adapters", "pair:20", "trust:2", "connect:20"]
+        );
     }
 
     #[test]
@@ -948,7 +950,10 @@ mod tests {
                 .stderr
                 .contains("not connected (request failed: connect denied)")
         );
-        assert_eq!(backend.events, ["pair:20", "trust:2", "connect:20"]);
+        assert_eq!(
+            backend.events,
+            ["read-adapters", "pair:20", "trust:2", "connect:20"]
+        );
     }
 
     #[test]
@@ -966,7 +971,10 @@ mod tests {
         assert_eq!(output.status, 1);
         assert!(output.stderr.contains("could not read back device"));
         assert!(output.stderr.contains("pair request failed: pair denied"));
-        assert_eq!(backend.events, ["pair:20", "trust:2", "connect:20"]);
+        assert_eq!(
+            backend.events,
+            ["read-adapters", "pair:20", "trust:2", "connect:20"]
+        );
     }
 
     #[test]
@@ -987,7 +995,10 @@ mod tests {
                 .stderr
                 .contains("not trusted (request failed: access denied)")
         );
-        assert_eq!(backend.events, ["trust:2", "connect:20"]);
+        assert_eq!(
+            backend.events,
+            ["read-adapters", "trust:2", "connect:20"]
+        );
     }
 
     #[test]
@@ -1014,7 +1025,10 @@ mod tests {
             &mut ImmediateWaiter::default(),
         );
         assert_eq!(output.status, 0);
-        assert_eq!(backend.events, ["disconnect:10", "remove:10"]);
+        assert_eq!(
+            backend.events,
+            ["read-adapters", "disconnect:10", "remove:10"]
+        );
         assert!(!backend.device.as_ref().unwrap().paired);
     }
 
