@@ -90,7 +90,7 @@ def button(down):
 def drag_to(title, target, local_x=None):
     current = view(title)
     origin_output = output(current["output-id"])
-    frame = current["bbox"]
+    frame = current["geometry"]
     origin = origin_output["geometry"]
     x = origin["x"] + frame["x"] + frame["width"] / 2
     y = origin["y"] + frame["y"] + frame["height"] / 2
@@ -103,6 +103,10 @@ def drag_to(title, target, local_x=None):
         for step in range(1, 31):
             pointer(x + (tx - x) * step / 30, y)
             time.sleep(.02)
+        wait_for(lambda: ipc("scottland/test-input")["dragging"],
+                 f"{title} compositor drag active", seconds=2)
+        # A held, deliberate drop avoids turning this placement check into an inertial fling.
+        time.sleep(.15)
     finally:
         button(False)
         key(False)
@@ -134,13 +138,17 @@ def capture(label, titles):
             pixels = image.read()
         assert len(pixels) == width * height * 3
         background = pixels[:3]
+        snapshot = state(name)
+        scale_x = width / snapshot["simulation_width"]
+        scale_y = height / snapshot["simulation_height"]
         rings = {}
         for title in titles:
-            source = next((r for r in state(name)["source_rects"] if r["id"] == view(title)["id"]), None)
+            source = next((r for r in snapshot["source_rects"] if r["id"] == view(title)["id"]), None)
             assert source, f"{label}: no goo source for {title}"
             frame = source
-            x0, y0 = int(frame["x"]), int(frame["y"])
-            x1, y1 = x0 + int(frame["width"]), y0 + int(frame["height"])
+            x0, y0 = round(frame["x"] * scale_x), round(frame["y"] * scale_y)
+            x1 = round((frame["x"] + frame["width"]) * scale_x)
+            y1 = round((frame["y"] + frame["height"]) * scale_y)
             count = 0
             for y in range(max(0, y0 - 30), min(height, y1 + 30)):
                 for x in range(max(0, x0 - 30), min(width, x1 + 30)):
@@ -170,6 +178,11 @@ try:
     first = launch("hotplug-first")
     ipc("window-rules/configure-view", {"id": first["id"],
         "geometry": {"x": 250, "y": 220, "width": 360, "height": 220}})
+    wait_for(lambda: (v if (v := view("hotplug-first")) and
+                      abs(v["geometry"]["x"] - 250) < 5 and
+                      abs(v["geometry"]["y"] - 220) < 5 and
+                      v["geometry"]["width"] >= 300 else None),
+             "first window configured before dragging")
     new_output = ipc("wayfire/create-headless-output", {"width": 5120, "height": 1440})["output"]
     wait_for(lambda: len(ipc("window-rules/list-outputs")) == 2, "runtime output")
     wait_for(lambda: (s if (s := ready(new_output["name"])) and s["sources"] == 0
@@ -193,7 +206,7 @@ try:
     assert view("hotplug-first")["output-id"] == new_output["id"]
     print(f"first window settled in center: {first_source}", flush=True)
     capture("first", ["hotplug-first"])
-    assert full_size_first(), "first window left full-size center placement before capture"
+    assert full_size_first(), "first window left full-size center placement after capture"
     pointer(startup["geometry"]["x"] + 50, startup["geometry"]["y"] + 50)
     second = launch("hotplug-second")
     if second["output-id"] != startup["id"]:
