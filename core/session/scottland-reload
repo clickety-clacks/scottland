@@ -30,6 +30,10 @@ runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
 hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}"
 [ -n "${WAYFIRE_SOCKET:-}" ] || { echo "scottland-reload: no running Scottland session found" >&2; exit 1; }
 
+# Keep services and later activations on this session's environment after a reload. The hook
+# retains another desktop's environment when that desktop owns the shared user manager.
+/bin/sh "$hooks/autostart.d/05-import-environment"
+
 source_plugin=/usr/lib/wayfire/libscottland.so
 [ -e "$dev/plugins/libscottland.so" ] && source_plugin="$dev/plugins/libscottland.so"
 
