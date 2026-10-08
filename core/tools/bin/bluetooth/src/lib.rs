@@ -755,6 +755,36 @@ mod tests {
     }
 
     #[test]
+    fn power_on_refuses_controller_requests_for_one_soft_blocked_radio() {
+        let mut backend = FakeBackend::with_device();
+        backend.radios[0].soft_blocked = true;
+        backend.adapters[0].powered = false;
+        backend.radio_request_error = Some("permission denied".to_string());
+        let output = execute(
+            &args(&["power", "on"]),
+            &mut backend,
+            &mut ImmediateWaiter::default(),
+        );
+
+        assert_eq!(output.status, 1);
+        assert!(
+            output
+                .stderr
+                .contains("Bluetooth radio is still soft blocked")
+        );
+        assert!(
+            output
+                .stderr
+                .contains("radio unblock request failed: permission denied")
+        );
+        assert_eq!(backend.events, ["radio:unblock"]);
+        assert_eq!(backend.radio_reads, 1);
+        assert_eq!(backend.adapter_reads, 0);
+        assert!(backend.radios[0].soft_blocked);
+        assert!(!backend.adapters[0].powered);
+    }
+
+    #[test]
     fn a_failed_unblock_request_continues_when_readback_is_clear() {
         let mut backend = FakeBackend::with_device();
         backend.radio_request_error = Some("rfkill returned an error".to_string());
@@ -957,6 +987,34 @@ mod tests {
     }
 
     #[test]
+    fn pair_failure_is_reported_when_the_device_stays_connected() {
+        let mut backend = FakeBackend::with_device();
+        backend.device.as_mut().unwrap().paired = false;
+        backend
+            .errors
+            .push_back(("pair", "pair denied".to_string()));
+        let output = execute(
+            &args(&["device", "pair", ADDRESS]),
+            &mut backend,
+            &mut ImmediateWaiter::default(),
+        );
+
+        assert_eq!(output.status, 1);
+        assert!(
+            output
+                .stderr
+                .contains("not paired (request failed: pair denied)")
+        );
+        let device = backend.device.as_ref().unwrap();
+        assert!(!device.paired);
+        assert!(device.connected);
+        assert_eq!(
+            backend.events,
+            ["read-adapters", "pair:20", "trust:2", "connect:20"]
+        );
+    }
+
+    #[test]
     fn pair_preserves_request_errors_when_readback_fails() {
         let mut backend = FakeBackend::with_device();
         backend.device_read_error = Some("service unavailable".to_string());
@@ -995,10 +1053,62 @@ mod tests {
                 .stderr
                 .contains("not trusted (request failed: access denied)")
         );
-        assert_eq!(
-            backend.events,
-            ["read-adapters", "trust:2", "connect:20"]
+        assert_eq!(backend.events, ["read-adapters", "trust:2", "connect:20"]);
+    }
+
+    #[test]
+    fn connect_failure_is_reported_when_readback_remains_disconnected() {
+        let mut backend = FakeBackend::with_device();
+        backend.device.as_mut().unwrap().connected = false;
+        backend
+            .errors
+            .push_back(("connect", "link refused".to_string()));
+        let output = execute(
+            &args(&["device", "connect", ADDRESS]),
+            &mut backend,
+            &mut ImmediateWaiter::default(),
         );
+
+        assert_eq!(output.status, 1);
+        assert!(
+            output
+                .stderr
+                .contains("not connected (request failed: link refused)")
+        );
+        let device = backend.device.as_ref().unwrap();
+        assert!(device.trusted);
+        assert!(!device.connected);
+        assert_eq!(backend.events, ["read-adapters", "trust:2", "connect:20"]);
+    }
+
+    #[test]
+    fn device_connect_stops_when_power_on_keeps_the_radio_soft_blocked() {
+        let mut backend = FakeBackend::with_device();
+        backend.radios[0].soft_blocked = true;
+        backend.adapters[0].powered = false;
+        backend.device.as_mut().unwrap().connected = false;
+        backend.radio_request_error = Some("permission denied".to_string());
+        let output = execute(
+            &args(&["device", "connect", ADDRESS]),
+            &mut backend,
+            &mut ImmediateWaiter::default(),
+        );
+
+        assert_eq!(output.status, 1);
+        assert!(
+            output
+                .stderr
+                .contains("Bluetooth radio is still soft blocked")
+        );
+        assert!(
+            output
+                .stderr
+                .contains("radio unblock request failed: permission denied")
+        );
+        assert_eq!(backend.events, ["read-adapters", "radio:unblock"]);
+        assert_eq!(backend.radio_reads, 1);
+        assert_eq!(backend.adapter_reads, 1);
+        assert!(!backend.device.as_ref().unwrap().connected);
     }
 
     #[test]
@@ -1104,6 +1214,39 @@ mod tests {
         assert_eq!(output.status, 0);
         assert!(!output.stdout.is_empty());
         assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn unblock_reports_a_denied_request_when_a_radio_stays_soft_blocked() {
+        let mut backend = FakeBackend::with_device();
+        backend.radios[0].soft_blocked = true;
+        backend.radio_request_error = Some("permission denied".to_string());
+        let output = execute(
+            &args(&["unblock"]),
+            &mut backend,
+            &mut ImmediateWaiter::default(),
+        );
+
+        assert_eq!(output.status, 1);
+        assert!(
+            output
+                .stdout
+                .contains("test-radio: soft blocked: yes; hard blocked: no")
+        );
+        assert!(
+            output
+                .stderr
+                .contains("one or more Bluetooth radios remain blocked")
+        );
+        assert!(
+            output
+                .stderr
+                .contains("radio unblock request failed: permission denied")
+        );
+        assert_eq!(backend.events, ["radio:unblock"]);
+        assert_eq!(backend.radio_reads, 1);
+        assert_eq!(backend.adapter_reads, 0);
+        assert!(backend.radios[0].soft_blocked);
     }
 
     #[test]
