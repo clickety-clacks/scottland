@@ -1,7 +1,7 @@
 # Local build: cd packaging/arch && makepkg -si
 pkgbase=scottland
 pkgname=(scottland scottland-omarchy)
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64')
