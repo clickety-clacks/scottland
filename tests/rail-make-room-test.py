@@ -42,6 +42,10 @@ def card_geometry(title):
     return geometry(t.card(title)["id"])
 
 
+def focused_view_id():
+    return ipc.call("window-rules/get-focused-view").get("info", {}).get("id")
+
+
 def launch_card(title, rail="right", y=260):
     try:
         return t.launch(title, rail=rail, y=y)
@@ -59,7 +63,7 @@ def launch_card(title, rail="right", y=260):
         raise
 
 
-def start_drag(view, x, y, steps=24):
+def start_drag(view, x, y, steps=24, focus_during=None):
     f = view["frame"]
     sx, sy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
     t.move(sx, sy)
@@ -73,6 +77,11 @@ def start_drag(view, x, y, steps=24):
         t.move(x1, y1)
         durations.append(time.monotonic() - started)
         time.sleep(0.025)
+        if i == 1 and focus_during is not None:
+            # Starting a real drag may focus its source window. Re-establish the test's active
+            # card after the drag starts but before it reaches the rail and invokes make-room.
+            ipc.call("window-rules/focus-view", {"id": focus_during})
+            t.wait_for(lambda: focused_view_id() == focus_during)
     time.sleep(0.45)
 
 
@@ -196,15 +205,17 @@ try:
     # drag an arrival onto rail-a's own spot: rail-a stays fixed, and P14 keeps the arrival at the
     # explicit drop point even when that means the two cards overlap. Preserve the geometry as the
     # WG26 fallback observation; the drop itself must not be silently moved to simplify the solve.
-    ipc.call("window-rules/focus-view", {"id": t.card("rail-a")["id"]})
-    time.sleep(0.1)
+    focused_card_id = t.card("rail-a")["id"]
+    ipc.call("window-rules/focus-view", {"id": focused_card_id})
+    t.wait_for(lambda: focused_view_id() == focused_card_id)
     before_focus_a, before_focus_b = card_geometry("rail-a"), card_geometry("rail-b")
     before_focus_a_scene = card_scene("rail-a")
     drop_y = before_focus_a_scene["y"] + before_focus_a_scene["height"] / 2
     launch_card("rail-focus-arrive", rail=None)
-    ipc.call("window-rules/focus-view", {"id": t.card("rail-a")["id"]})  # launching may steal focus
-    time.sleep(0.1)
-    start_drag(t.app("rail-focus-arrive"), edge_right, drop_y)
+    start_drag(t.app("rail-focus-arrive"), edge_right, drop_y, focus_during=focused_card_id)
+    focus_at_solve = focused_view_id()
+    check("the focused-card fixture remains active through the make-room solve",
+          focus_at_solve == focused_card_id, (focused_card_id, focus_at_solve))
     during_focus_a = card_scene("rail-a")
     check("the focused card does not move live while make-room runs",
           abs(during_focus_a["y"] - before_focus_a_scene["y"]) < 0.5 and
@@ -219,7 +230,7 @@ try:
     print("WG26 stay-still fallback observation: "
           f"rail-a {before_focus_a} -> {after_focus_a}; "
           f"rail-b {before_focus_b} -> {after_focus_b}; "
-          f"arrival {arrive_geometry}", flush=True)
+          f"arrival {arrive_geometry}; focused id at solve {focus_at_solve}", flush=True)
     arrival_center_y = arrive_geometry["y"] + arrive_geometry["height"] / 2
     check("the arrival stays at the explicit drop position in the focused-card fallback",
           abs(arrival_center_y - drop_y) < 0.5, (drop_y, arrive_geometry))

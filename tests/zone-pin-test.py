@@ -62,6 +62,26 @@ def wait_for(predicate, timeout=5):
     raise RuntimeError('timed out waiting for compositor/client state')
 
 
+def wait_for_compositor(timeout=15):
+    """Wait until this headless session's Wayfire IPC socket accepts connections."""
+    global request_path
+    if request_path is None:
+        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.socket(socket.AF_UNIX) as request:
+                request.settimeout(.25)
+                request.connect(request_path)
+            return
+        except OSError as failure:
+            last_error = f'{type(failure).__name__}: {failure}'
+            time.sleep(.05)
+    raise RuntimeError(f'Wayfire IPC socket did not accept a connection within {timeout}s: {last_error}')
+
+
 def views():
     state = ipc('scottland/layout-state')['views']
     geometries = {v['id']: v['geometry'] for v in ipc('window-rules/list-views')}
@@ -117,10 +137,24 @@ def launch(name, x, y):
     ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
     log = artifacts / (name + '.keys')
     log.write_text('')
-    clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+    client = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
         str(Path('tests/windowing-key-recorder.py').resolve()), name, str(log)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-    v = wait_for(lambda: view(name))
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    clients.append(client)
+    try:
+        v = wait_for(lambda: view(name), timeout=15)
+    except RuntimeError as failure:
+        try:
+            state = {
+                'client_pid': client.pid,
+                'client_returncode': client.poll(),
+                'layout_views': ipc('scottland/layout-state')['views'],
+                'mapped_views': ipc('window-rules/list-views'),
+            }
+        except Exception as diagnostic_failure:
+            state = {'client_pid': client.pid, 'client_returncode': client.poll(),
+                     'diagnostic_failure': repr(diagnostic_failure)}
+        raise RuntimeError(f'{name} did not map within 15s; last observed state: {state!r}') from failure
     time.sleep(.4)
     return v['id']
 
@@ -260,6 +294,7 @@ def close_all():
 
 
 try:
+    wait_for_compositor()
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300})
     output = ipc('window-rules/list-outputs')[0]['geometry']
     width, height = output['width'], output['height']
