@@ -160,6 +160,14 @@ class goo_node_t : public wf::scene::node_t
     bool attached = true, above_windows = false;
     std::function<void()> failed;
     goo_t::source_provider_t snapshot;
+    uint64_t topology_prepares = 0;
+    wf::signal::connection_t<wf::output_configuration_changed_signal> configuration_changed =
+        [this] (wf::output_configuration_changed_signal *e)
+    {
+        if (e->changed_fields & (wf::OUTPUT_MODE_CHANGE | wf::OUTPUT_SCALE_CHANGE |
+                                 wf::OUTPUT_POSITION_CHANGE | wf::OUTPUT_TRANSFORM_CHANGE))
+            prepare_output();
+    };
     goo_node_t(wf::output_t *o, goo_t::source_provider_t provider) : node_t(false), snapshot(std::move(provider))
     {
         state.output = o;
@@ -167,10 +175,12 @@ class goo_node_t : public wf::scene::node_t
         state.wake = [this] { wake("frame"); };
         pre = [this] { prepare(); };
         o->render->add_effect(&pre, wf::OUTPUT_EFFECT_PRE);
+        o->connect(&configuration_changed);
     }
     ~goo_node_t() { detach(); }
     void detach()
     {
+        configuration_changed.disconnect();
         wallpaper_nodes.clear();
         pickup_timer.disconnect();
         check_timer.disconnect();
@@ -188,6 +198,18 @@ class goo_node_t : public wf::scene::node_t
             goo::screens.erase(it);
     }
     wf::geometry_t get_bounding_box() override { return state.output->get_relative_geometry(); }
+    void prepare_output()
+    {
+        ++topology_prepares;
+        auto size = get_bounding_box();
+        if (!state.renderer.prepare(size.width, size.height) && failed)
+            failed();
+        settled_ready = false;
+        whole = true;
+        band_cache.reset();
+        wake("output");
+        state.output->render->damage_whole_idle();
+    }
     std::optional<wf::scene::input_node_t> find_node_at(const wf::pointf_t &) override
     {
         return {};
@@ -1102,6 +1124,7 @@ struct goo_t::impl
         goo::screens[o] = &n->state;
         // prepare() moves this same surface above windows when overlap requires it.
         wf::scene::add_front(o->node_for_layer(wf::scene::layer::BACKGROUND), n);
+        n->prepare_output();
         n->wake("start");
         screen_changed(o, true);
     }
@@ -1206,6 +1229,11 @@ struct goo_t::impl
                 n->damage();
             n->state.renderer.poll_timing();
             s["output"] = o->handle->name;
+            auto size = o->get_relative_geometry();
+            s["renderer_ready"] = n->state.renderer.prepared_for(size.width, size.height);
+            s["simulation_width"] = size.width;
+            s["simulation_height"] = size.height;
+            s["topology_prepares"] = (int64_t)n->topology_prepares;
             s["sleeping"] = n->state.sleeping;
             wf::json_t wakes;
             for (auto &[reason, count] : n->wake_counts)
