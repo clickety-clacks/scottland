@@ -745,10 +745,10 @@ fn parse_volume_action(action: &str) -> Result<VolumeAction, String> {
             } else if let Some(amount) = action.strip_prefix('-') {
                 (false, amount)
             } else {
-                return Err(format!("unknown volume action: {action}"));
+                return Err(USAGE.to_string());
             };
             if amount.is_empty() || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(format!("unknown volume action: {action}"));
+                return Err(USAGE.to_string());
             }
             let amount = amount
                 .parse::<u32>()
@@ -1331,9 +1331,11 @@ mod tests {
         );
         assert_eq!(adjusted_volume(98, true, 5), 100);
         assert_eq!(adjusted_volume(3, false, 5), 0);
+        assert_eq!(parse_volume_action("+"), Err(USAGE.to_string()));
+        assert_eq!(parse_volume_action("unknown"), Err(USAGE.to_string()));
         assert_eq!(
-            parse_volume_action("+"),
-            Err("unknown volume action: +".into())
+            dispatch(&[String::from("volume"), String::from("unknown")]),
+            Err(USAGE.to_string())
         );
     }
 
