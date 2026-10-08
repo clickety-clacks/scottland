@@ -26,7 +26,15 @@
 # Example: tests/headless.sh start --omarchy && tests/headless.sh run foot &
 #          tests/headless.sh ipc stipc/feed_key '{"key":"KEY_LEFTMETA","state":true}'
 set -euo pipefail
-repo=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
+script=$(realpath -e -- "$0")
+repo=$(cd -- "$(dirname -- "$script")/.." && pwd -P)
+tmp_mount=$(realpath -e -- /tmp)
+case "$repo/" in
+  "$tmp_mount/"*)
+    echo 'headless checkout resolves under /tmp, which this harness masks with its private TMPDIR; stage the checkout outside /tmp' >&2
+    exit 2
+    ;;
+esac
 runtime=$(realpath -e -- "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}")
 uid=$(id -u)
 build=$(realpath -m -- "$repo/build")
