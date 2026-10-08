@@ -526,14 +526,16 @@ impl AudioGraph {
     }
 
     fn resolve(&mut self, sink_name: &str) -> String {
-        if sink_name.is_empty() || sink_name.starts_with("alsa_output.") {
+        if sink_name.is_empty()
+            || sink_name.starts_with("alsa_output.")
+            || sink_name.starts_with("bluez_output.")
+        {
             return sink_name.to_string();
         }
         let output_name = sink_name
             .strip_prefix("effect_input.")
             .map(|suffix| format!("effect_output.{suffix}"))
             .unwrap_or_else(|| sink_name.to_string());
-        let mut fallback = None;
         for input in &self.sink_inputs {
             let (Some(sink_index), Some(node_name)) =
                 (input.sink_index, input.node_name.as_deref())
@@ -541,15 +543,10 @@ impl AudioGraph {
                 continue;
             };
             let target = self.sinks_by_index.get(&sink_index);
-            if node_name == output_name
-                || (output_name == sink_name && node_name.starts_with(sink_name))
-            {
+            if node_name == output_name {
                 if let Some(target) = target {
                     return target.clone();
                 }
-            }
-            if fallback.is_none() && node_name.starts_with(sink_name) {
-                fallback = target.cloned();
             }
             if sink_name == "easyeffects_sink"
                 && input.application_name.as_deref() == Some("EasyEffects")
@@ -558,9 +555,6 @@ impl AudioGraph {
                     return target.clone();
                 }
             }
-        }
-        if let Some(fallback) = fallback {
-            return fallback;
         }
         if sink_name == "easyeffects_sink" {
             if self.pw_links.is_none() {
@@ -576,6 +570,43 @@ impl AudioGraph {
             }
         }
         sink_name.to_string()
+    }
+}
+
+fn resolved_sink_muted(
+    effective_sink: &str,
+    selected_sink: &str,
+    mut read_mute: impl FnMut(&str) -> Option<bool>,
+) -> bool {
+    read_mute(effective_sink)
+        .or_else(|| {
+            (selected_sink != effective_sink)
+                .then(|| read_mute(selected_sink))
+                .flatten()
+        })
+        .unwrap_or(false)
+}
+
+fn pactl_sink_muted(sink: &str) -> Option<bool> {
+    let state = checked_stdout(
+        "timeout",
+        &["2", "pactl", "get-sink-mute", sink],
+        &format!("read mute state for {sink}"),
+    )
+    .ok()?;
+    parse_mute_state(&state)
+}
+
+fn parse_mute_state(state: &str) -> Option<bool> {
+    let state = state
+        .trim()
+        .strip_prefix("Mute:")
+        .map(str::trim)
+        .unwrap_or_else(|| state.trim());
+    match state {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
     }
 }
 
@@ -656,11 +687,7 @@ fn output_switch() -> Result<(), String> {
     let volume = pactl_volume_percent(&effective_sink)
         .or(next.volume_percent)
         .unwrap_or(0);
-    let muted = stdout(run(
-        "timeout",
-        &["2", "pactl", "get-sink-mute", &effective_sink],
-    ))
-    .contains("yes");
+    let muted = resolved_sink_muted(&effective_sink, &next.name, pactl_sink_muted);
     let output_set = if next.name == current {
         Ok(())
     } else {
@@ -674,7 +701,7 @@ fn output_switch() -> Result<(), String> {
 fn switch_candidates<'a>(sinks: &'a [Sink], graph: &mut AudioGraph) -> Vec<&'a Sink> {
     let fronted: BTreeSet<String> = sinks
         .iter()
-        .filter(|sink| sink.available() && sink.is_filter_chain())
+        .filter(|sink| sink.is_filter_chain())
         .filter_map(|sink| {
             let resolved = graph.resolve(&sink.name);
             (resolved != sink.name).then_some(resolved)
@@ -1029,6 +1056,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolver_uses_an_exact_dsp_output_stream_name() {
+        let mut graph = AudioGraph {
+            sinks_by_index: HashMap::from([
+                (6, "alsa_output.headphones".into()),
+                (7, "alsa_output.speakers".into()),
+            ]),
+            sink_inputs: parse_sink_inputs(
+                "Sink Input #44\n    Sink: 6\n    Properties:\n        node.name = \"effect_output.room.extra\"\nSink Input #45\n    Sink: 7\n    Properties:\n        node.name = \"effect_output.room\"\n",
+            ),
+            pw_links: None,
+        };
+
+        assert_eq!(graph.resolve("effect_input.room"), "alsa_output.speakers");
+    }
+
+    #[test]
+    fn resolver_treats_bluetooth_outputs_as_device_sinks() {
+        let mut graph = AudioGraph {
+            sinks_by_index: HashMap::from([(7, "alsa_output.speakers".into())]),
+            sink_inputs: parse_sink_inputs(
+                "Sink Input #44\n    Sink: 7\n    Properties:\n        node.name = \"bluez_output.headphones.effect\"\n",
+            ),
+            pw_links: None,
+        };
+
+        assert_eq!(
+            graph.resolve("bluez_output.headphones"),
+            "bluez_output.headphones"
+        );
+    }
+
+    #[test]
+    fn switch_mute_falls_back_to_selected_sink_only_when_resolution_cannot_be_read() {
+        let mut reads = Vec::new();
+        let muted = resolved_sink_muted("alsa_output.speakers", "effect_input.room", |sink| {
+            reads.push(sink.to_string());
+            if sink == "effect_input.room" {
+                Some(true)
+            } else {
+                None
+            }
+        });
+        assert!(muted);
+        assert_eq!(reads, ["alsa_output.speakers", "effect_input.room"]);
+
+        reads.clear();
+        let muted = resolved_sink_muted("alsa_output.speakers", "effect_input.room", |sink| {
+            reads.push(sink.to_string());
+            Some(false)
+        });
+        assert!(!muted);
+        assert_eq!(reads, ["alsa_output.speakers"]);
+    }
+
+    #[test]
+    fn mute_state_parses_the_pactl_label() {
+        assert_eq!(parse_mute_state("Mute: yes"), Some(true));
+        assert_eq!(parse_mute_state("Mute: no"), Some(false));
+        assert_eq!(parse_mute_state("unknown"), None);
+    }
+
     fn test_sink(index: u32, name: &str) -> Sink {
         Sink {
             index,
@@ -1111,6 +1200,36 @@ mod tests {
         assert_eq!(
             ordinary[next_sink_index(&ordinary, "alsa_output.speakers")].name,
             "effect_input.room"
+        );
+    }
+
+    #[test]
+    fn output_switch_skips_a_device_fronted_by_an_unavailable_filter_chain() {
+        let sinks = [
+            test_sink(1, "alsa_output.speakers"),
+            Sink {
+                ports: vec![Port {
+                    availability: Some("not available".into()),
+                }],
+                ..test_filter_chain_sink(2, "effect_input.tuning")
+            },
+            test_sink(3, "alsa_output.headphones"),
+        ];
+        let mut graph = AudioGraph {
+            sinks_by_index: HashMap::from([(7, "alsa_output.speakers".into())]),
+            sink_inputs: parse_sink_inputs(
+                "Sink Input #44\n    Sink: 7\n    Properties:\n        node.name = \"effect_output.tuning\"\n",
+            ),
+            pw_links: None,
+        };
+
+        let candidates = switch_candidates(&sinks, &mut graph);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|sink| sink.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alsa_output.headphones"]
         );
     }
 
