@@ -135,7 +135,7 @@ run_pending_case() {
     "$repo/tests/headless.sh" "${start_args[@]}" >"$start_log" 2>&1 &
   local start_pid=$!
 
-  if python3 - "$session_dir" "$runtime" "$watcher_record" <<'PY'
+  if python3 - "$session_dir" "$runtime" "$owner" "$watcher_record" <<'PY'
 import json
 import os
 import pathlib
@@ -144,7 +144,8 @@ import time
 
 scratch = pathlib.Path(sys.argv[1])
 runtime = os.fsencode(sys.argv[2])
-record = pathlib.Path(sys.argv[3])
+owner = os.fsencode(sys.argv[3])
+record = pathlib.Path(sys.argv[4])
 deadline = time.monotonic() + 120
 while time.monotonic() < deadline:
     try:
@@ -174,6 +175,8 @@ while time.monotonic() < deadline:
         sys.exit(2)
     expected = {
         b'SCOTTLAND_HEADLESS_DIR': os.fsencode(str(scratch)),
+        b'SCOTTLAND_HEADLESS_OWNER': owner,
+        b'SCOTTLAND_HEADLESS_OWNER_DIR': os.fsencode(str(scratch / 'missing-owner-dir')),
         b'XDG_RUNTIME_DIR': runtime,
         b'TMPDIR': os.fsencode(str(scratch / 'tmp')),
     }
