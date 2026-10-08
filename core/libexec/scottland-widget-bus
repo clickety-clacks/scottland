@@ -31,7 +31,9 @@ BUS_NAME = "org.scottland.Widgets"
 ROOT = "/org/scottland/Widgets"
 DISPLAY = os.environ.get("WAYLAND_DISPLAY") or "wayland"
 # Per session (display): two Scottland sessions number their windows independently.
-RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets", DISPLAY)
+SESSION_DIR = os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+RUNTIME = os.path.join(SESSION_DIR, "widgets", DISPLAY)
 STATE_LOG = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
                          "scottland", "widgets.log")
 
@@ -651,7 +653,7 @@ class Service:
 
     def run(self):
         # One service per session: the reload hook checks this before starting another.
-        pid_file = os.path.join(os.path.dirname(os.path.dirname(RUNTIME)), DISPLAY + ".widget-bus.pid")
+        pid_file = os.path.join(SESSION_DIR, DISPLAY + ".widget-bus.pid")
         with open(pid_file, "w") as out:
             # Its pid and a fingerprint of the code it runs: a reload replaces it once that differs.
             out.write(f"{os.getpid()}\n{fingerprint()}\n")

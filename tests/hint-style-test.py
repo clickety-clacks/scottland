@@ -211,7 +211,12 @@ try:
         accent_hue = colorsys.rgb_to_hls(*rgb(palettes[scheme]['accent']))[0]*360
         check(all(abs((h-accent_hue+180)%360-180) >= 100-1e-6 for h in hue), scheme+': hues lie opposite the accent')
         check(all(abs((a-b+180)%360-180) >= 60 for a, b in zip(hue, hue[1:])), scheme+': adjacent hints are at least 60 degrees apart')
-        check(all(contrast(c, mix(mix(rgb(palettes[scheme]['background']), c, .07), c, .21)) >= 3 for c in colors),
+        # WK42: one backing for every hint, the theme background under a 21% hint-color tint,
+        # at the session's hint background opacity (its default here).
+        backing = float(ipc('wayfire/get-config-option', {'option': 'scottland/hint_background_opacity'})['value'])/100
+        def badge_over(surface, c):
+            return mix(surface, mix(rgb(palettes[scheme]['background']), c, .21), backing)
+        check(all(contrast(c, badge_over(mix(rgb(palettes[scheme]['background']), c, .07), c)) >= 3 for c in colors),
             scheme+': letters contrast at least 3:1 against the composited badge')
         for h in state:
             v = represented[links.get(h['window'], h['window'])]
@@ -243,12 +248,17 @@ try:
             px, py = round(cx+outward*badge['size']*.39), round(cy)
             fill = tuple(n/255 for n in image.getpixel((px, py)))
             if not v['widget']:
-                check(max(abs(a-b) for a, b in zip(fill, mix(mix(rgb(palettes[scheme]['background']), c, .07), c, .21))) < .025,
-                    scheme+': 21% badge fill on '+v['title'])
+                check(max(abs(a-b) for a, b in zip(fill, badge_over(mix(rgb(palettes[scheme]['background']), c, .07), c))) < .025,
+                    scheme+': themed badge backing over the tinted window on '+v['title'])
             else:
-                check(max(abs(a-b) for a, b in zip(fill, mix(rgb(palettes[scheme]['background']), c, .21))) < .025
-                      and contrast(c, fill) >= 3,
-                    scheme+': exterior widget badge has a theme background and readable 21% tint')
+                under = tuple(n/255 for n in baseline.getpixel((px, py)))
+                check(max(abs(a-b) for a, b in zip(fill, badge_over(under, c))) < .025,
+                    scheme+': exterior widget badge has the same themed backing as window badges')
+                # WK26's opaque widget backing guaranteed 3:1 over any wallpaper; WK42 (Mike,
+                # 2026-10-06) gives widget hints the window hints' opacity, so over wallpaper
+                # the letter contrast now depends on that setting. Measured, not gated.
+                print(f'      {scheme}: widget letter contrast over wallpaper at {backing:.0%} backing: '
+                      f'{contrast(c, fill):.2f}:1', flush=True)
         # Replace the palette without releasing Alt or restarting: colors must change live.
         other = 'light' if scheme == 'dark' else 'dark'
         previous = {h['window']: (h['hint'], h['color']) for h in state}

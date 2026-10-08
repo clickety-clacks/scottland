@@ -35,9 +35,10 @@ DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "sha
 DATA_DIRS = (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state"), "scottland")
 # Per session (display): two Scottland sessions number their windows independently.
-RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland", "widgets",
-                       os.environ.get("WAYLAND_DISPLAY") or "wayland")
-PALETTE = os.path.join(os.path.dirname(os.path.dirname(RUNTIME)),
+SESSION_DIR = os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+RUNTIME = os.path.join(SESSION_DIR, "widgets", os.environ.get("WAYLAND_DISPLAY") or "wayland")
+PALETTE = os.path.join(SESSION_DIR,
                        (os.environ.get("WAYLAND_DISPLAY") or "wayland") + ".palette.json")
 HOOKS = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
 BUILTIN = [os.path.join(HOOKS, "widgets"), "/usr/lib/scottland/widgets"]

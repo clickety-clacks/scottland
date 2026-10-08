@@ -12,7 +12,7 @@ namespace scottland::windowing
 {
 hint_node::hint_node() : node_t(false) {}
 bool hint_node::update(double x, double y, const std::string& text, double size, const std::string& family,
-    hint_rgb color, double scale, std::optional<hint_rgb> background, double background_opacity,
+    hint_rgb color, double scale, hint_rgb background, double background_opacity,
     bool goo, bool reduced_motion)
 {
     reduced = reduced_motion;
@@ -35,8 +35,7 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
     std::ostringstream key;
     key << text << ':' << family << ':' << logical_size << ':' << color.r << ',' << color.g << ',' << color.b << ':' << scale << ':' << goo;
     background_opacity = std::clamp(background_opacity, 0.0, 1.0);
-    key << ':' << background_opacity;
-    if (background) key << ':' << background->r << ',' << background->g << ',' << background->b;
+    key << ':' << background_opacity << ':' << background.r << ',' << background.g << ',' << background.b;
     if (key.str() != appearance)
     {
         wf::scene::damage_node(this, box);
@@ -64,13 +63,10 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
             cairo_set_source_rgb(cr, color.r, color.g, color.b); cairo_stroke(cr);
         }
         cairo_arc(cr, mid, mid, radius, 0, 2 * 3.141592653589793);
-        // Exterior widget hints sit over arbitrary wallpaper, not the themed app surface.
-        // Give their circle the palette background under its usual tint (WK26).
-        if (background)
-        {
-            auto fill = hint_mix(*background, color, hint_badge_opacity);
-            cairo_set_source_rgba(cr, fill.r, fill.g, fill.b, background_opacity);
-        } else cairo_set_source_rgba(cr, color.r, color.g, color.b, hint_badge_opacity * background_opacity);
+        // One backing for window and exterior widget hints alike: the palette background under
+        // the usual hint-color tint, at the hint background opacity (WK42: 1 is solid, 0 none).
+        auto fill = hint_mix(background, color, hint_badge_opacity);
+        cairo_set_source_rgba(cr, fill.r, fill.g, fill.b, background_opacity);
         cairo_fill(cr);
         cairo_select_font_face(cr, family.empty() ? "sans-serif" : family.c_str(), CAIRO_FONT_SLANT_NORMAL,
             CAIRO_FONT_WEIGHT_BOLD);

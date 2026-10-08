@@ -17,7 +17,8 @@ import os
 import socket
 import sys
 
-RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+RUNTIME = os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
 
 
 def read_env(path):

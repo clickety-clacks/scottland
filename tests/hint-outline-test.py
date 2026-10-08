@@ -6,6 +6,7 @@ state land in build/hint-outline-evidence; no live config, session or service is
 import json
 import os
 from pathlib import Path
+import stat
 import socket
 import struct
 import subprocess
@@ -17,13 +18,153 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf
 
 repo = Path(__file__).resolve().parents[1]
-art = repo / "build/hint-outline-evidence" / f"run-{os.getpid()}-{time.time_ns()}"
+
+
+def require_isolated_headless_session():
+    """Fail closed unless this process is inside this run's private headless session."""
+    env = os.environ
+
+    def refuse(reason):
+        raise RuntimeError(f"isolated headless session required: {reason}")
+
+    def env_path(name):
+        raw = env.get(name)
+        if not raw:
+            refuse(f"{name} is missing")
+        path = Path(raw)
+        if not path.is_absolute():
+            refuse(f"{name} is not absolute")
+        try:
+            if path.resolve(strict=True) != path:
+                refuse(f"{name} is not canonical")
+        except OSError as error:
+            refuse(f"{name} cannot be resolved: {error}")
+        return path
+
+    def owned(path, kind, mode=None):
+        try:
+            info = path.lstat()
+        except OSError as error:
+            refuse(f"{path} is unavailable: {error}")
+        is_expected = {
+            "directory": stat.S_ISDIR,
+            "file": stat.S_ISREG,
+            "socket": stat.S_ISSOCK,
+        }[kind](info.st_mode)
+        if not is_expected or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+            refuse(f"{path} is not an owned, non-symlink {kind}")
+        if mode is not None and stat.S_IMODE(info.st_mode) != mode:
+            refuse(f"{path} does not have mode {mode:04o}")
+        return info
+
+    def same_inode(left, right, label):
+        left_info = left.stat()
+        right_info = right.stat()
+        if (left_info.st_dev, left_info.st_ino) != (right_info.st_dev, right_info.st_ino):
+            refuse(f"{label} is not the private bind-mounted path")
+
+    if env.get("SCOTTLAND_HEADLESS_ISOLATION") != "1":
+        refuse("runner isolation flag is absent")
+
+    build = (repo / "build").resolve(strict=True)
+    scratch = env_path("SCOTTLAND_TEST_SCRATCH")
+    headless = env_path("SCOTTLAND_HEADLESS_DIR")
+    session = env_path("SCOTTLAND_SESSION_DIR")
+    runtime = env_path("XDG_RUNTIME_DIR")
+    tmpdir = env_path("TMPDIR")
+    prefix = next(
+        (name for name in ("item2-tint.", "item2-acceptance.") if scratch.name.startswith(name)),
+        None,
+    )
+    suffix = scratch.name[len(prefix):] if prefix else ""
+    if (scratch.parent != build or len(suffix) != 8 or not suffix.isalnum()):
+        refuse("test scratch is not this checkout's unique item2 run directory")
+    if headless != scratch / "headless-wk37-wk38" or session != headless / "session":
+        refuse("headless/session paths are outside the expected item2 run")
+    private_runtime = headless / "runtime"
+    private_tmp = headless / "tmp"
+    if tmpdir != private_tmp:
+        refuse("TMPDIR is not the headless run's private scratch")
+
+    for path in (scratch, headless, private_runtime, private_tmp, session, runtime, tmpdir):
+        owned(path, "directory", 0o700)
+    marker = headless / ".scottland-headless-owner"
+    owned(marker, "file", 0o600)
+    try:
+        owner_lines = marker.read_text().splitlines()
+    except OSError as error:
+        refuse(f"headless owner record cannot be read: {error}")
+    owner_token = env.get("SCOTTLAND_HEADLESS_OWNER", "")
+    if owner_lines != [str(os.getuid()), str(runtime), owner_token]:
+        refuse("headless owner record does not match this uid, canonical runtime, and owner token")
+    # wayland-1 is normal when a fresh private runtime starts empty; prove the bind mount instead.
+    same_inode(runtime, private_runtime, "XDG_RUNTIME_DIR")
+    same_inode(Path("/tmp"), private_tmp, "/tmp")
+
+    display_file = headless / "display"
+    compositor_file = headless / "compositor.pid"
+    owned(display_file, "file", 0o600)
+    owned(compositor_file, "file", 0o600)
+    display = display_file.read_text().strip()
+    if not display.startswith("wayland-") or not display.removeprefix("wayland-").isdigit():
+        refuse("display record is not a Wayland socket name")
+    owned(runtime / display, "socket")
+    same_inode(runtime / display, private_runtime / display, "Wayland display socket")
+
+    try:
+        compositor_pid = int(compositor_file.read_text().strip())
+    except ValueError as error:
+        refuse(f"headless process identity record is invalid: {error}")
+    if compositor_pid <= 1:
+        refuse("headless process identity record is not a valid PID")
+
+    env_file = session / f"{display}.env"
+    owned(env_file, "file", 0o600)
+    try:
+        recorded = {}
+        for entry in env_file.read_bytes().split(b"\0"):
+            key, separator, value = entry.partition(b"=")
+            if separator:
+                recorded[os.fsdecode(key)] = os.fsdecode(value)
+    except OSError as error:
+        refuse(f"session environment record cannot be read: {error}")
+
+    expected = {
+        "SCOTTLAND_HEADLESS_ISOLATION": "1",
+        "SCOTTLAND_TEST_SCRATCH": str(scratch),
+        "SCOTTLAND_HEADLESS_DIR": str(headless),
+        "SCOTTLAND_SESSION_DIR": str(session),
+        "XDG_RUNTIME_DIR": str(runtime),
+        "TMPDIR": str(private_tmp),
+        "WAYLAND_DISPLAY": display,
+    }
+    for key, value in expected.items():
+        if recorded.get(key) != value or env.get(key) != value:
+            refuse(f"{key} does not match this run's saved session environment")
+    if env.get("SCOTTLAND_EXEC") != "1":
+        refuse("test command was not launched through the selected headless session")
+
+    ipc_path = Path(env.get("WAYFIRE_SOCKET", ""))
+    expected_ipc = runtime / f"wayfire-{display}-.socket"
+    if ipc_path != expected_ipc or recorded.get("WAYFIRE_SOCKET") != str(expected_ipc):
+        refuse("Wayfire IPC endpoint is not the recorded socket under the private runtime")
+    owned(ipc_path, "socket")
+
+
+require_isolated_headless_session()
+evidence = Path(os.environ.get("SCOTTLAND_TEST_EVIDENCE_DIR") or repo / "build/hint-outline-evidence")
+art = evidence / f"run-{os.getpid()}-{time.time_ns()}"
 art.mkdir(parents=True)
 layout = art / "settings-home/scottland/layout.ini"
 layout.parent.mkdir(parents=True, exist_ok=True)
 log = (art / "clients.log").open("w")
 sock = socket.socket(socket.AF_UNIX)
 sock.connect(os.environ["WAYFIRE_SOCKET"])
+peer_pid, peer_uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+compositor_pid = int((Path(os.environ["SCOTTLAND_HEADLESS_DIR"]) / "compositor.pid").read_text().strip())
+if peer_pid != compositor_pid or peer_uid != os.getuid():
+    sock.close()
+    raise RuntimeError("isolated headless session required: IPC peer is not this run's owned Wayfire")
 clients = []
 passed = failed = 0
 BACKGROUND = "#1f232c"
@@ -83,10 +224,10 @@ def option(name):
     return float(ipc("wayfire/get-config-option", {"option": "scottland/" + name})["value"])
 
 
-def option_reaches(name, expected, timeout=3):
+def option_reaches(name, expected, timeout=3, tolerance=.3):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        if abs(option(name) - expected) < .3:
+        if abs(option(name) - expected) < tolerance:
             return True
         time.sleep(.03)
     return False
@@ -523,15 +664,20 @@ def second_output():
     release()
 
 
+session_palette = None
+session_palette_identity = None
 try:
-    assert os.environ["WAYLAND_DISPLAY"] != "wayland-1", "isolated headless session required"
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark", background=BACKGROUND,
                                             foreground="#d8deea", accent="#81a1c1")))
-    session_palette = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
-    staged = session_palette.with_suffix(".hint-outline-test.tmp")
-    staged.write_text(palette_path.read_text())
-    staged.replace(session_palette)
+    session_palette = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / (os.environ["WAYLAND_DISPLAY"] + ".palette.json")
+    if not session_palette.parent.is_dir():
+        raise RuntimeError(f"session runtime directory is missing: {session_palette.parent}")
+    palette_fd = os.open(session_palette, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(palette_fd, "wb") as palette_file:
+        palette_stat = os.fstat(palette_file.fileno())
+        session_palette_identity = (palette_stat.st_dev, palette_stat.st_ino)
+        palette_file.write(palette_path.read_bytes())
     ipc("wayfire/set-config-options", {"scottland/color_scheme": "dark", "scottland/accent_color": "#81a1c1ff",
                                        "scottland/sounds": False})
     pointer(640, 10)
@@ -664,11 +810,14 @@ try:
     # The panel's zone overlay is drawn over the windows, so compare each Window mode frame with
     # the same pixel just before the hold: the overlay adds (1 - its alpha) * strength * (hint - window),
     # zero at 0% and linear in the strength.
-    results = {}
-    for value in (0, 7, 20):
+    results, strengths = {}, {}
+    # 100% comes before 20% so the live check below still has room to raise the strength.
+    for value in (0, 7, 100, 20):
         x, y, width = reveal_tint()
-        click(x + width * value / 30, y + 34)
-        check(f"slider sets {value}% live, before Save", option_reaches("window_mode_tint", value))
+        # The slider steps by 0.5% over 0-100%, so a click lands within half a step of the value.
+        click(x + max(1, min(width - 1, width * value / 100)), y + 34)
+        check(f"slider sets {value}% live, before Save", option_reaches("window_mode_tint", value, tolerance=.6))
+        strengths[value] = option("window_mode_tint")
         pointer(640, 5); time.sleep(.3)
         base_image = Shot(f"04-base-{value}")
         hold()
@@ -681,7 +830,12 @@ try:
     check("0% turns the overlay off", all(abs(d) <= 2 for d in results[0]))
     check("7% overlay tints visibly", sum(abs(d) for d in results[7]) >= 6)
     check("20% overlay is the 7% tint scaled by strength",
-          all(abs(d20 - d7 * 20 / 7) <= 4 for d7, d20 in zip(results[7], results[20])))
+          all(abs(d20 - d7 * strengths[20] / strengths[7]) <= 4 for d7, d20 in zip(results[7], results[20])))
+    # 100% and 0% are exact: the slider's ends clamp to its range.
+    check("slider's ends are exactly 0% and 100%", strengths[0] == 0 and strengths[100] == 100)
+    # Each difference carries up to one unit of rounding, which scaling 20% to 100% multiplies by five.
+    check("100% overlay is the 20% tint scaled by strength",
+          all(abs(d100 - d20 * strengths[100] / strengths[20]) <= 6 for d20, d100 in zip(results[20], results[100])))
     # Live inside one hold: moving the slider while hints show changes the drawn tint at once.
     hold()
     state = hints()
@@ -703,8 +857,8 @@ try:
     check("outline draws above an overlay surface (the settings panel)",
           len(under_panel) >= 8 and hits >= .9 * len(under_panel))
     x, y, width = reveal_tint()
-    click(x + width * 30 / 30 - 2, y + 34)
-    check("slider reaches its 30% maximum", option_reaches("window_mode_tint", 30))
+    click(x + width - 1, y + 34)
+    check("slider reaches its 100% maximum", option_reaches("window_mode_tint", 100))
     time.sleep(.3)
     second = Shot("05-live-after").pixel(*sample)
     print("live within one hold", first, "->", second, flush=True)
@@ -712,6 +866,14 @@ try:
           sum(abs(a - b) for a, b in zip(second, bg)) > sum(abs(a - b) for a, b in zip(first, bg)) + 10)
     release()
     panel.terminate(); panel.wait(timeout=5)
+    # scottland-ctl takes both separate settings across 0-100%; Wayfire bounds a stored value by
+    # the option's metadata range, so a tint above the old 30% maximum must read back unclamped.
+    ctl = [str(repo / "core/libexec/scottland-ctl"), "set"]
+    for name, values, default in (("window_mode_tint", (0, 45, 100), 7), ("hint_background_opacity", (0, 100), 21)):
+        for value in values:
+            subprocess.run(ctl + [name, str(value)], check=True, timeout=10, stdout=log, stderr=log)
+            check(f"scottland-ctl sets {name} to {value}%", option_reaches(name, value, tolerance=.01))
+        subprocess.run(ctl + [name, str(default)], check=True, timeout=10, stdout=log, stderr=log)
 except Exception:
     import traceback
     traceback.print_exc()
@@ -720,9 +882,13 @@ finally:
     for p in clients:
         if p.poll() is None:
             p.terminate()
-    try:
-        session_palette.unlink(missing_ok=True)
-    except NameError:
-        pass
+    if session_palette is not None and session_palette_identity is not None:
+        try:
+            palette_stat = session_palette.lstat()
+            if stat.S_ISREG(palette_stat.st_mode) and \
+               (palette_stat.st_dev, palette_stat.st_ino) == session_palette_identity:
+                session_palette.unlink()
+        except FileNotFoundError:
+            pass
     print(f"{passed} passed, {failed} failed", flush=True)
     raise SystemExit(1 if failed else 0)
