@@ -20,9 +20,9 @@ dev-install: plugin
 	@git diff --quiet HEAD -- . && test -z "$$(git ls-files --others --exclude-standard)" || \
 	  { echo "dev-install: commit first; the session runs exactly a commit" >&2; exit 1; }
 	@rev=$$(git rev-parse --short=12 HEAD); dest=$(RELEASES)/$$rev; \
-	rm -rf "$$dest.new" && mkdir -p "$$dest.new/build" && git archive HEAD | tar -x -C "$$dest.new" && \
-	cp build/libscottland.so "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
-	$(MAKE) --no-print-directory -C "$$dest" link-dev >/dev/null && echo "installed $$rev ($$dest)"
+	  rm -rf "$$dest.new" && mkdir -p "$$dest.new/build" && git archive HEAD | tar -x -C "$$dest.new" && \
+	  cp build/libscottland.so build/scottland-clipboardd "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
+	  $(MAKE) --no-print-directory -C "$$dest" link-dev >/dev/null && echo "installed $$rev ($$dest)"
 
 # Points the user's session at this tree (dev-install runs it inside a snapshot).
 link-dev:
@@ -43,9 +43,14 @@ link-dev:
 	ln -sf $(CURDIR)/core/libexec/scottland-exec $(HOME)/.local/bin/scottland-exec
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
 	ln -sf $(CURDIR)/core/libexec/scottland-list-picker $(HOME)/.local/bin/scottland-list-picker
+	ln -sf $(CURDIR)/core/libexec/scottland-clipboard $(HOME)/.local/bin/scottland-clipboard
+	ln -sf $(CURDIR)/core/libexec/scottland-keybindings $(HOME)/.local/bin/scottland-keybindings
+	ln -sf $(CURDIR)/core/libexec/scottland-emoji $(HOME)/.local/bin/scottland-emoji
+	ln -sf $(CURDIR)/build/scottland-clipboardd $(DEV)/libexec/scottland-clipboardd
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	ln -sfn $(CURDIR)/core/list-picker $(DEV)/list-picker
+	ln -sfn $(CURDIR)/core/emoji $(DEV)/emoji
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(DEV)/settings
 	ln -sf $(CURDIR)/omarchy/prompts/omarchy-overrides-agent.txt $(DEV)/prompts/omarchy-overrides-agent.txt
@@ -77,6 +82,8 @@ hooks:
 	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	ln -sfn $(CURDIR)/core/list-picker $(HOOKS_DIR)/list-picker
+	ln -sfn $(CURDIR)/core/emoji $(HOOKS_DIR)/emoji
+	ln -sf $(CURDIR)/build/scottland-clipboardd $(HOOKS_DIR)/libexec/scottland-clipboardd
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
 	ln -sf $(CURDIR)/omarchy/prompts/omarchy-overrides-agent.txt $(HOOKS_DIR)/prompts/omarchy-overrides-agent.txt

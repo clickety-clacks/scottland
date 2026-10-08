@@ -7188,6 +7188,61 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return wf::ipc::json_ok();
     };
 
+    // Run a configured compositor binding by calling the binding repository directly. This
+    // deliberately bypasses surface key layers and does not synthesize an input event for the
+    // list-picker surface. The caller supplies the focused app window captured before opening
+    // the picker when the binding acts on a window.
+    wf::ipc::method_callback run_binding = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!data.has_member("key") || !data["key"].is_string())
+        {
+            return wf::ipc::json_error("run-binding needs a string \"key\"");
+        }
+
+        auto seat = wf::get_core().get_current_seat();
+        auto keyboard = wlr_seat_get_keyboard(seat);
+        if (!keyboard || !keyboard->keymap)
+        {
+            return wf::ipc::json_error("no keyboard on the seat");
+        }
+
+        auto key = evdev_keycode(keyboard->keymap, data["key"].as_string());
+        if (!key)
+        {
+            wf::json_t reply;
+            reply["result"] = "not-runnable";
+            return reply;
+        }
+
+        uint64_t target = 0;
+        if (data.has_member("target"))
+        {
+            if (!data["target"].is_int64() || data["target"].as_int64() <= 0)
+            {
+                return wf::ipc::json_error("run-binding target must be a positive window id");
+            }
+            target = static_cast<uint64_t>(data["target"].as_int64());
+            auto found = model.windows.find(target);
+            std::shared_ptr<wf::view_interface_t> view;
+            if (found != model.windows.end()) view = found->second.view.lock();
+            if (found == model.windows.end() || !view || !view->is_mapped() || !found->second.focused)
+            {
+                return wf::ipc::json_error("this shortcut's target window is no longer focused");
+            }
+        }
+
+        std::string mods = data.has_member("mods") && data["mods"].is_string() ?
+            data["mods"].as_string() : "";
+        wf::keybinding_t binding{modifier_mask(keyboard->keymap, mods), *key};
+        if (!wf::get_core().bindings->handle_key(binding, 0))
+        {
+            wf::json_t reply;
+            reply["result"] = "not-runnable";
+            return reply;
+        }
+        return wf::ipc::json_ok();
+    };
+
     // Wayfire <= 0.11 never applies input/touchpad_scroll_speed to touchpad finger scrolling:
     // pointing_device_t::get_scroll_speed() only returns it for tablet pads, so touchpads (pointer
     // devices) always scroll at 1.0 (https://github.com/WayfireWM/wayfire/issues/3148). Apply it
@@ -7345,6 +7400,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             model.version = std::strtoull(version, nullptr, 10);
         }
         ipc_repo->register_method("scottland/send-key", send_key);
+        ipc_repo->register_method("scottland/run-binding", run_binding);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_mapped);
@@ -7487,6 +7543,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
+        ipc_repo->unregister_method("scottland/run-binding");
         ipc_repo->unregister_method("scottland/layout-state");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();

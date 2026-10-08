@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""Scottland's session-only clipboard history and compositor clipboard commands."""
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+
+OPS = {
+    "ping": 1, "list": 2, "clear": 3, "copy-text": 4, "copy-file": 5,
+    "select": 6, "snapshot": 7, "release": 8, "type-text": 9, "temp-file": 10,
+}
+
+
+def runtime_display():
+    display = Path(os.environ.get("WAYLAND_DISPLAY") or "wayland-0").name
+    return display or "wayland-0"
+
+
+def service_socket():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        raise OSError("XDG_RUNTIME_DIR is unavailable")
+    return Path(runtime) / "scottland" / f"clipboard-{runtime_display()}" / "service.sock"
+
+
+def u32(value):
+    return struct.pack("!I", value)
+
+
+def u64(value):
+    return struct.pack("!Q", value)
+
+
+def field(value):
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    return u32(len(value)) + value
+
+
+def read_exact(sock, count):
+    data = bytearray()
+    while len(data) < count:
+        chunk = sock.recv(count - len(data))
+        if not chunk:
+            raise ConnectionError("the clipboard service closed its connection")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def call(op, payload=b""):
+    request = bytes([OPS[op]]) + payload
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(15)
+    client.connect(str(service_socket()))
+    client.sendall(u32(len(request)) + request)
+    size = struct.unpack("!I", read_exact(client, 4))[0]
+    response = read_exact(client, size)
+    client.close()
+    if not response:
+        raise ConnectionError("the clipboard service returned an empty response")
+    status, body = response[0], response[1:]
+    if status:
+        raise RuntimeError(body.decode("utf-8", "replace").splitlines()[0] or "clipboard operation failed")
+    return body
+
+
+def read_u32(data, offset):
+    if offset + 4 > len(data):
+        raise ValueError("the clipboard service returned malformed data")
+    return struct.unpack_from("!I", data, offset)[0], offset + 4
+
+
+def read_u64(data, offset):
+    if offset + 8 > len(data):
+        raise ValueError("the clipboard service returned malformed data")
+    return struct.unpack_from("!Q", data, offset)[0], offset + 8
+
+
+def read_field(data, offset):
+    size, offset = read_u32(data, offset)
+    if offset + size > len(data):
+        raise ValueError("the clipboard service returned malformed data")
+    return data[offset:offset + size], offset + size
+
+
+def focus_target():
+    socket_path = os.environ.get("WAYFIRE_SOCKET")
+    if not socket_path:
+        raise OSError("the Scottland compositor session is unavailable")
+    request = b'{"method":"scottland/desktop-model","data":{"slice":"desktop"}}'
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(3)
+    try:
+        client.connect(socket_path)
+        client.sendall(struct.pack("<I", len(request)) + request)
+        size = struct.unpack("<I", read_exact(client, 4))[0]
+        import json
+        reply = json.loads(read_exact(client, size))
+    finally:
+        client.close()
+    if reply.get("error"):
+        raise OSError(reply["error"])
+    focused = [int(view["id"]) for view in reply.get("windows", []) if view.get("focused")]
+    if len(focused) != 1:
+        raise RuntimeError("there is no focused app window")
+    return focused[0]
+
+
+def require_target(expected=None):
+    current = focus_target()
+    if expected is not None and current != expected:
+        raise RuntimeError("the app focused before the picker is no longer focused")
+    return current
+
+
+def picker_path():
+    found = shutil.which("scottland-list-picker")
+    if found:
+        return found
+    hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
+    candidate = hooks / "libexec" / "scottland-list-picker"
+    return str(candidate) if candidate.is_file() else None
+
+
+def entries():
+    data = call("list")
+    count, offset = read_u32(data, 0)
+    rows = []
+    for _ in range(count):
+        entry_id, offset = read_u64(data, offset)
+        mime, offset = read_field(data, offset)
+        content, offset = read_field(data, offset)
+        rows.append({"id": entry_id, "mime": mime.decode("utf-8"), "data": content})
+    if offset != len(data):
+        raise ValueError("the clipboard service returned malformed data")
+    return rows
+
+
+def image_size(data, mime):
+    try:
+        if mime == "image/png" and len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n":
+            return struct.unpack(">II", data[16:24])
+        if mime == "image/gif" and len(data) >= 10 and data[:3] == b"GIF":
+            return struct.unpack("<HH", data[6:10])
+        if mime == "image/bmp" and len(data) >= 26 and data[:2] == b"BM":
+            width, height = struct.unpack("<ii", data[18:26])
+            return abs(width), abs(height)
+        if mime in ("image/tiff", "image/x-tiff") and len(data) >= 8:
+            if data[:2] == b"II":
+                byte_order = "<"
+            elif data[:2] == b"MM":
+                byte_order = ">"
+            else:
+                return None
+            if struct.unpack_from(byte_order + "H", data, 2)[0] != 42:
+                return None
+            directory = struct.unpack_from(byte_order + "I", data, 4)[0]
+            if directory + 2 > len(data):
+                return None
+            count = struct.unpack_from(byte_order + "H", data, directory)[0]
+            width = height = None
+            for index in range(count):
+                entry = directory + 2 + index * 12
+                if entry + 12 > len(data):
+                    return None
+                tag, kind, values = struct.unpack_from(byte_order + "HHI", data, entry)
+                if tag not in (256, 257) or values < 1:
+                    continue
+                if kind == 3:
+                    if values == 1:
+                        value = struct.unpack_from(byte_order + "H", data, entry + 8)[0]
+                    else:
+                        address = struct.unpack_from(byte_order + "I", data, entry + 8)[0]
+                        value = struct.unpack_from(byte_order + "H", data, address)[0]
+                elif kind == 4:
+                    if values == 1:
+                        value = struct.unpack_from(byte_order + "I", data, entry + 8)[0]
+                    else:
+                        address = struct.unpack_from(byte_order + "I", data, entry + 8)[0]
+                        value = struct.unpack_from(byte_order + "I", data, address)[0]
+                else:
+                    continue
+                if tag == 256:
+                    width = value
+                else:
+                    height = value
+            if width and height:
+                return width, height
+        if mime == "image/webp" and len(data) >= 30 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            chunk = data[12:16]
+            if chunk == b"VP8X":
+                return (1 + int.from_bytes(data[24:27], "little"),
+                        1 + int.from_bytes(data[27:30], "little"))
+            if chunk == b"VP8 " and len(data) >= 30:
+                return (int.from_bytes(data[26:28], "little") & 0x3FFF,
+                        int.from_bytes(data[28:30], "little") & 0x3FFF)
+            if chunk == b"VP8L" and len(data) >= 25:
+                bits = int.from_bytes(data[21:25], "little")
+                return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+        if mime == "image/jpeg" and data[:2] == b"\xff\xd8":
+            offset = 2
+            while offset + 4 <= len(data):
+                if data[offset] != 0xFF:
+                    offset += 1
+                    continue
+                marker = data[offset + 1]
+                offset += 2
+                if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                    continue
+                length = int.from_bytes(data[offset:offset + 2], "big")
+                if length < 2 or offset + length > len(data):
+                    break
+                if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                    height = int.from_bytes(data[offset + 3:offset + 5], "big")
+                    width = int.from_bytes(data[offset + 5:offset + 7], "big")
+                    return width, height
+                offset += length
+    except (IndexError, OverflowError, ValueError, struct.error):
+        return None
+    return None
+
+
+def display_text(data):
+    text = data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    line = lines[0]
+    if len(line) > 96:
+        line = line[:95] + "…"
+    if len(lines) > 1:
+        line += " ↵…"
+    return line
+
+
+def display_rows(rows):
+    displays = []
+    for row in rows:
+        if row["mime"].startswith("image/"):
+            dimensions = image_size(row["data"], row["mime"])
+            label = f"Image {dimensions[0]}×{dimensions[1]}" if dimensions else "Image"
+        else:
+            label = display_text(row["data"])
+        displays.append(label)
+    counts = {}
+    for label in displays:
+        counts[label] = counts.get(label, 0) + 1
+    ordinals = {}
+    unique = []
+    for label in displays:
+        if counts[label] > 1:
+            ordinals[label] = ordinals.get(label, 0) + 1
+            label = f"{label} · {ordinals[label]}"
+        unique.append(label)
+    return unique
+
+
+def choose(rows, labels, prompt):
+    picker = picker_path()
+    if not picker:
+        raise OSError("scottland-list-picker is not installed")
+    result = subprocess.run([picker, "--prompt", prompt],
+                            input="".join(label + "\n" for label in labels).encode("utf-8"),
+                            capture_output=True, check=False)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").splitlines()
+        raise RuntimeError(detail[0] if detail else "selection cancelled")
+    selected = result.stdout.decode("utf-8").rstrip("\n")
+    try:
+        return rows[labels.index(selected)]
+    except (ValueError, IndexError) as error:
+        raise RuntimeError("the list picker returned an unknown clipboard entry") from error
+
+
+def open_entry(row):
+    opener = shutil.which("gio")
+    if not opener:
+        raise OSError("the GLib gio command is not installed")
+    if row["mime"] == "text/plain;charset=utf-8":
+        text = row["data"].decode("utf-8", "replace")
+        candidate = text.strip()
+        address = urlsplit(candidate)
+        if (not any(character.isspace() for character in candidate) and
+                address.scheme in ("http", "https") and address.netloc):
+            subprocess.Popen([opener, "open", candidate], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+            return
+    path = call("temp-file", field(row["mime"]) + field(row["data"])).decode("utf-8")
+    subprocess.Popen([opener, "open", path], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+
+
+def command_history(args):
+    target = require_target() if args.paste else None
+    rows = entries()
+    labels = display_rows(rows)
+    selected = choose(rows, labels, "Search clipboard history")
+    if args.open:
+        open_entry(selected)
+        return 0
+    if args.paste:
+        require_target(target)
+    mode = 1 if args.paste else 0
+    call("select", u64(selected["id"]) + bytes([mode]) + u64(target or 0))
+    return 0
+
+
+def command_copy_text(args):
+    data = sys.stdin.buffer.read()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("stdin is not valid UTF-8 text") from error
+    target = 0 if args.copy_only else require_target()
+    payload = bytes([args.copy_only]) + u64(target) + field(data)
+    call("copy-text", payload)
+    return 0
+
+
+def command_copy_file(args):
+    path = Path(args.path)
+    data = path.read_bytes()
+    target = 0 if args.copy_only else require_target()
+    payload = bytes([args.copy_only]) + u64(target) + field(args.mime) + field(data)
+    call("copy-file", payload)
+    return 0
+
+
+def command_snapshot(_args):
+    value, offset = read_u64(call("snapshot"), 0)
+    if offset != 8:
+        raise ValueError("the clipboard service returned malformed snapshot data")
+    print(value)
+    return 0
+
+
+def command_release(args):
+    call("release", u64(args.snapshot))
+    return 0
+
+
+def command_type_text(args):
+    target = int(args.target)
+    require_target(target)
+    data = sys.stdin.buffer.read()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("stdin is not valid UTF-8 text") from error
+    call("type-text", u64(target) + u64(args.snapshot) + field(data))
+    return 0
+
+
+def command_focused_target(_args):
+    print(focus_target())
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="scottland-clipboard")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    history = sub.add_parser("history", help="choose a recent clipboard entry")
+    mode = history.add_mutually_exclusive_group()
+    mode.add_argument("--paste", action="store_true", help="paste the chosen entry into the focused app")
+    mode.add_argument("--open", action="store_true", help="open the chosen entry in its default application")
+    history.set_defaults(run=command_history)
+
+    copy_text = sub.add_parser("copy-text", help="copy text from stdin and paste it")
+    copy_text.add_argument("--copy-only", action="store_true", help="copy without pasting")
+    copy_text.set_defaults(run=command_copy_text)
+
+    copy_file = sub.add_parser("copy-file", help="copy a file with its MIME type and paste it")
+    copy_file.add_argument("path")
+    copy_file.add_argument("mime")
+    copy_file.add_argument("--copy-only", action="store_true", help="copy without pasting")
+    copy_file.set_defaults(run=command_copy_file)
+
+    clear = sub.add_parser("clear", help="empty the session clipboard history")
+    clear.set_defaults(run=lambda _args: (call("clear"), 0)[1])
+
+    # Private entry points used by scottland-emoji to preserve the pre-picker clipboard.
+    snapshot = sub.add_parser("snapshot", help=argparse.SUPPRESS)
+    snapshot.set_defaults(run=command_snapshot)
+    release = sub.add_parser("release", help=argparse.SUPPRESS)
+    release.add_argument("snapshot", type=int)
+    release.set_defaults(run=command_release)
+    type_text = sub.add_parser("type-text", help=argparse.SUPPRESS)
+    type_text.add_argument("--snapshot", type=int, required=True)
+    type_text.add_argument("--target", required=True)
+    type_text.set_defaults(run=command_type_text)
+    target = sub.add_parser("focused-target", help=argparse.SUPPRESS)
+    target.set_defaults(run=command_focused_target)
+
+    args = parser.parse_args()
+    try:
+        return args.run(args)
+    except (OSError, ConnectionError, RuntimeError, UnicodeError, ValueError) as error:
+        message = str(error).splitlines()[0] if str(error) else "clipboard operation failed"
+        print(f"scottland-clipboard: {message}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

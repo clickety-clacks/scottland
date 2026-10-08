@@ -73,6 +73,21 @@ disconnect removes it. A short-lived IPC connection may close without removing t
 Register again after remapping or a plugin reload. Compositor grabs retain their input.
 Full rules: Scottland's `docs/key-layers.md` (KL1–KL8).
 
+## Session shortcuts, clipboard and emoji
+
+scottland-keybindings opens the searchable list of shortcuts configured for the current session.
+Use scottland-keybindings --print to write the same chord-and-label lines to standard output.
+
+scottland-clipboard history opens the session-only clipboard history and copies the chosen entry.
+Add --paste to paste it into the app that was focused when the picker opened, or --open to open
+the entry in its default application. To copy new data, pipe text to scottland-clipboard
+copy-text, or pass a path and MIME type to scottland-clipboard copy-file. Both commands paste by
+default; add --copy-only to skip pasting. Use scottland-clipboard clear to empty history.
+
+scottland-emoji opens the bundled searchable emoji list and inserts the choice into the app that
+was focused when the picker opened, restoring the clipboard afterward. Add --copy to copy the
+choice without inserting it.
+
 ## Touchscreen scrolling for apps that ignore touch
 
 Many apps scroll with a finger on their own (browsers, most GTK and Qt apps). Some don't, notably

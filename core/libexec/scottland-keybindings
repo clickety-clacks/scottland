@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""Search and run configured Scottland session shortcuts."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+
+
+DEFAULT_LABELS = {
+    ("core", "close_top_view"): "Close focused window",
+    ("command", "binding_terminal"): "Open terminal",
+    ("command", "binding_scottland_settings"): "Open Scottland Settings",
+    ("command", "binding_switch"): "Switch desktop session",
+    ("command", "binding_scottland_reload"): "Reload Scottland",
+    ("command", "binding_logout"): "Log out",
+    ("command", "binding_screenshot"): "Take screenshot",
+    ("command", "binding_screenshot_interactive"): "Take selected-area screenshot",
+    ("command", "repeatable_binding_volume_up"): "Raise volume",
+    ("command", "repeatable_binding_volume_down"): "Lower volume",
+    ("command", "binding_mute"): "Toggle mute",
+    ("command", "repeatable_binding_light_up"): "Raise screen brightness",
+    ("command", "repeatable_binding_light_down"): "Lower screen brightness",
+    ("wrot", "activate"): "Rotate window",
+    ("grid", "slot_bl"): "Move window to bottom left",
+    ("grid", "slot_b"): "Move window to bottom",
+    ("grid", "slot_br"): "Move window to bottom right",
+    ("grid", "slot_l"): "Move window to left",
+    ("grid", "slot_c"): "Move window to center",
+    ("grid", "slot_r"): "Move window to right",
+    ("grid", "slot_tl"): "Move window to top left",
+    ("grid", "slot_t"): "Move window to top",
+    ("grid", "slot_tr"): "Move window to top right",
+    ("grid", "restore"): "Restore window position",
+    ("fast-switcher", "activate"): "Switch windows",
+    ("vswitch", "binding_left"): "Focus left window",
+    ("vswitch", "binding_down"): "Focus lower window",
+    ("vswitch", "binding_up"): "Focus upper window",
+    ("vswitch", "binding_right"): "Focus right window",
+    ("vswitch", "with_win_left"): "Move focused window left",
+    ("vswitch", "with_win_down"): "Move focused window down",
+    ("vswitch", "with_win_up"): "Move focused window up",
+    ("vswitch", "with_win_right"): "Move focused window right",
+    ("cube", "activate"): "Rotate workspace cube",
+    ("expo", "toggle"): "Show workspace overview",
+    ("oswitch", "next_output"): "Focus next output",
+    ("oswitch", "next_output_with_win"): "Move window to next output",
+    ("invert", "toggle"): "Invert display colors",
+    ("wayfire-shell", "toggle_menu"): "Hold to show shell menu",
+    ("scottland", "move"): "Move window",
+}
+
+KEY_NAMES = {
+    "KEY_ESC": "Escape", "KEY_ENTER": "Return", "KEY_BACKSPACE": "BackSpace",
+    "KEY_DELETE": "Delete", "KEY_INSERT": "Insert", "KEY_TAB": "Tab",
+    "KEY_SPACE": "space", "KEY_LEFT": "Left", "KEY_RIGHT": "Right",
+    "KEY_UP": "Up", "KEY_DOWN": "Down", "KEY_HOME": "Home", "KEY_END": "End",
+    "KEY_PAGEUP": "Page_Up", "KEY_PAGEDOWN": "Page_Down", "KEY_COMMA": "comma",
+    "KEY_DOT": "period", "KEY_SLASH": "slash", "KEY_SEMICOLON": "semicolon",
+    "KEY_APOSTROPHE": "apostrophe", "KEY_LEFTBRACE": "bracketleft",
+    "KEY_RIGHTBRACE": "bracketright", "KEY_BACKSLASH": "backslash",
+    "KEY_MINUS": "minus", "KEY_EQUAL": "equal", "KEY_GRAVE": "grave",
+    "KEY_PRINT": "Print", "KEY_VOLUMEUP": "XF86AudioRaiseVolume",
+    "KEY_VOLUMEDOWN": "XF86AudioLowerVolume", "KEY_MUTE": "XF86AudioMute",
+    "KEY_BRIGHTNESSUP": "XF86MonBrightnessUp", "KEY_BRIGHTNESSDOWN": "XF86MonBrightnessDown",
+    "KEY_KPENTER": "KP_Enter", "KEY_KPPLUS": "KP_Add", "KEY_KPMINUS": "KP_Subtract",
+    "KEY_KPASTERISK": "KP_Multiply", "KEY_KPSLASH": "KP_Divide", "KEY_KPDOT": "KP_Decimal",
+}
+KEY_NAMES.update({f"KEY_KP{number}": f"KP_{number}" for number in range(10)})
+
+PRETTY_KEYS = {**KEY_NAMES}
+PRETTY_KEYS.update({f"KEY_{number}": number for number in range(10)})
+PRETTY_KEYS.update({f"KEY_{letter}": letter for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"})
+PRETTY_KEYS.update({f"KEY_F{number}": f"F{number}" for number in range(1, 25)})
+PRETTY_KEYS.update({f"KEY_KP{number}": f"Keypad {number}" for number in range(10)})
+PRETTY_KEYS.update({
+    "KEY_ESC": "Escape", "KEY_ENTER": "Enter", "KEY_BACKSPACE": "Backspace",
+    "KEY_PAGEUP": "Page Up", "KEY_PAGEDOWN": "Page Down", "KEY_KPENTER": "Keypad Enter",
+    "KEY_KPPLUS": "Keypad +", "KEY_KPMINUS": "Keypad −", "KEY_KPASTERISK": "Keypad *",
+    "KEY_KPSLASH": "Keypad /", "KEY_KPDOT": "Keypad .", "KEY_VOLUMEUP": "Volume up",
+    "KEY_VOLUMEDOWN": "Volume down", "KEY_MUTE": "Mute", "KEY_BRIGHTNESSUP": "Brightness up",
+    "KEY_BRIGHTNESSDOWN": "Brightness down", "KEY_PRINT": "Print Screen",
+})
+MODIFIERS = {"<super>": "Super", "<ctrl>": "Ctrl", "<alt>": "Alt", "<shift>": "Shift"}
+MODIFIER_IPC = {"<super>": "SUPER", "<ctrl>": "CTRL", "<alt>": "ALT", "<shift>": "SHIFT"}
+BUTTONS = {"BTN_LEFT": "Left mouse button", "BTN_RIGHT": "Right mouse button",
+           "BTN_MIDDLE": "Middle mouse button", "BTN_SIDE": "Side mouse button"}
+
+
+def config_path():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        raise OSError("the session runtime directory is unavailable")
+    return Path(runtime) / "scottland" / "wayfire.ini"
+
+
+def binding_value(value):
+    value = value.strip()
+    if not value or value.lower() == "none":
+        return False
+    tokens = value.split()
+    return ("KEY_" in value or "BTN_" in value or
+            bool(tokens) and all(token.lower() in MODIFIERS for token in tokens))
+
+
+def is_binding_option(section, option, value):
+    prefixes = ("binding_", "repeatable_binding_", "release_binding_", "always_binding_")
+    if section == "command":
+        return option.startswith(prefixes)
+    if option.startswith(prefixes):
+        return True
+    if option == "modifier":
+        return False
+    if "KEY_" in value or "BTN_" in value:
+        return True
+    return binding_value(value)
+
+
+def command_for_binding(option, all_options):
+    for prefix in ("repeatable_binding_", "release_binding_", "always_binding_", "binding_"):
+        if option.startswith(prefix):
+            return all_options.get("command_" + option[len(prefix):], "")
+    return ""
+
+
+def pretty_chord(chord):
+    pieces = chord.split()
+    labels = [MODIFIERS[piece.lower()] for piece in pieces if piece.lower() in MODIFIERS]
+    keys = [PRETTY_KEYS.get(piece, BUTTONS.get(piece, piece.removeprefix("KEY_").replace("_", " ")))
+            for piece in pieces if piece.upper().startswith(("KEY_", "BTN_"))]
+    if not keys:
+        labels.append("hold")
+    else:
+        labels.extend(keys)
+    return " + ".join(labels)
+
+
+def humanize(section, option, command):
+    known = DEFAULT_LABELS.get((section, option))
+    if known:
+        return known
+    if section == "command" and command:
+        return command.strip()
+    action = option
+    for prefix in ("binding_", "repeatable_binding_", "release_binding_", "always_binding_"):
+        if action.startswith(prefix):
+            action = action[len(prefix):]
+            break
+    action = action.replace("_", " ").strip()
+    return action[:1].upper() + action[1:] if action else section
+
+
+def read_bindings(path):
+    section = ""
+    effective = {}
+    pending = None
+    continued = False
+
+    def finish_pending():
+        nonlocal pending
+        if pending is not None:
+            effective[(pending[0], pending[1])] = pending[2].strip()
+            pending = None
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if continued:
+            piece = line
+            continued = piece.endswith("\\")
+            if continued:
+                piece = piece[:-1].rstrip()
+            pending[2] += " " + piece
+            if not continued:
+                finish_pending()
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            finish_pending()
+            section = line[1:-1].strip()
+            if not section:
+                raise ValueError("the session configuration has an empty section name")
+            continue
+        if "=" not in line:
+            raise ValueError("the session configuration contains a malformed line")
+        if not section:
+            raise ValueError("the session configuration has an option outside a section")
+        name, value = line.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if not name:
+            raise ValueError("the session configuration contains an unnamed option")
+        pending = [section, name, value]
+        continued = value.endswith("\\")
+        if continued:
+            pending[2] = value[:-1].rstrip()
+        else:
+            finish_pending()
+    if continued:
+        raise ValueError("the session configuration ends in an incomplete continuation")
+    finish_pending()
+
+    all_options = {option: value for (sec, option), value in effective.items() if sec == "command"}
+    rows = []
+    for (sec, option), value in effective.items():
+        if not binding_value(value) or not is_binding_option(sec, option, value):
+            continue
+        command = command_for_binding(option, all_options) if sec == "command" else ""
+        chords = [part.strip() for part in value.split("|") if part.strip()]
+        label = humanize(sec, option, command)
+        chord_text = " / ".join(pretty_chord(chord) for chord in chords)
+        display = f"{chord_text} → {label}"
+        rows.append({"section": sec, "option": option, "command": command,
+                     "chords": chords, "label": label, "display": display})
+    duplicates = {}
+    for row in rows:
+        duplicates[row["display"]] = duplicates.get(row["display"], 0) + 1
+    ordinals = {}
+    for row in rows:
+        display = row["display"]
+        if duplicates[display] > 1:
+            ordinals[display] = ordinals.get(display, 0) + 1
+            row["display"] = f"{display} · {ordinals[display]}"
+    return rows
+
+
+def scottland_executable(name):
+    found = shutil.which(name)
+    if found:
+        return found
+    hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
+    candidate = hooks / "libexec" / name
+    return str(candidate) if candidate.is_file() else None
+
+
+def run_binding(chord, target=None):
+    if any(token.upper().startswith("BTN_") for token in chord.split()):
+        return None
+    mods, key = [], None
+    for token in chord.split():
+        if token.lower() in MODIFIER_IPC:
+            mods.append(MODIFIER_IPC[token.lower()])
+        elif token.upper().startswith("KEY_"):
+            key = KEY_NAMES.get(token.upper(), token[4:].title())
+        else:
+            return None
+    if key is None:
+        return None
+    socket_path = os.environ.get("WAYFIRE_SOCKET")
+    if not socket_path:
+        raise OSError("the session compositor socket is unavailable")
+    client = socket.socket(socket.AF_UNIX)
+    client.settimeout(2)
+    client.connect(socket_path)
+    data = {"key": key, "mods": " ".join(mods)}
+    if target is not None:
+        data["target"] = target
+    request = json.dumps({"method": "scottland/run-binding", "data": data}).encode()
+    try:
+        client.sendall(struct.pack("<I", len(request)) + request)
+        reply = read_exact(client, 4)
+        size = struct.unpack("<I", reply)[0]
+        response = json.loads(read_exact(client, size))
+    finally:
+        client.close()
+    if response.get("error"):
+        raise RuntimeError(response["error"])
+    return response.get("result") != "not-runnable"
+
+
+def read_exact(client, size):
+    output = bytearray()
+    while len(output) < size:
+        chunk = client.recv(size - len(output))
+        if not chunk:
+            raise ConnectionError("the compositor closed its IPC connection")
+        output.extend(chunk)
+    return bytes(output)
+
+
+def focus_snapshot():
+    socket_path = os.environ.get("WAYFIRE_SOCKET")
+    if not socket_path:
+        raise OSError("the Scottland compositor session is unavailable")
+    request = b'{"method":"scottland/desktop-model","data":{"slice":"desktop"}}'
+    client = socket.socket(socket.AF_UNIX)
+    client.settimeout(3)
+    try:
+        client.connect(socket_path)
+        client.sendall(struct.pack("<I", len(request)) + request)
+        size = struct.unpack("<I", read_exact(client, 4))[0]
+        snapshot = json.loads(read_exact(client, size))
+    finally:
+        client.close()
+    if snapshot.get("error"):
+        raise RuntimeError(snapshot["error"])
+    windows = snapshot.get("windows", [])
+    focused = [int(view["id"]) for view in windows if view.get("focused")]
+    return (focused[0] if len(focused) == 1 else None), {int(view["id"]) for view in windows}
+
+
+def needs_target(row):
+    section, option = row["section"], row["option"]
+    if section in ("core", "grid", "vswitch", "fast-switcher", "wrot"):
+        return True
+    if section == "scottland" and option == "move":
+        return True
+    if section == "oswitch" and option == "next_output_with_win":
+        return True
+    return False
+
+
+def keyboard_chord(chord):
+    tokens = chord.split()
+    return any(token.upper().startswith("KEY_") for token in tokens) and not any(
+        token.upper().startswith("BTN_") for token in tokens
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="scottland-keybindings")
+    parser.add_argument("--print", dest="print_only", action="store_true", help="write the list to stdout")
+    args = parser.parse_args()
+    try:
+        path = config_path()
+        rows = read_bindings(path)
+        if args.print_only:
+            for row in rows:
+                print(row["display"])
+            return 0
+        picker = scottland_executable("scottland-list-picker")
+        if not picker:
+            raise OSError("scottland-list-picker is not installed")
+        target, _ = focus_snapshot()
+        payload = "".join(row["display"] + "\n" for row in rows).encode("utf-8")
+        selected = subprocess.run([picker, "--prompt", "Search session shortcuts"],
+                                  input=payload, capture_output=True, check=False)
+        if selected.returncode != 0:
+            if selected.stderr:
+                sys.stderr.buffer.write(selected.stderr)
+            return selected.returncode
+        display = selected.stdout.decode("utf-8").rstrip("\n")
+        row = next((candidate for candidate in rows if candidate["display"] == display), None)
+        if row is None:
+            raise ValueError("the picker returned an unknown shortcut")
+        if not any(keyboard_chord(chord) for chord in row["chords"]):
+            return 0
+        if row["command"]:
+            subprocess.Popen(["/bin/sh", "-c", row["command"]], close_fds=True)
+            return 0
+        target_window = needs_target(row)
+        if target_window:
+            if target is None:
+                raise RuntimeError("this shortcut needs a target window, but none was focused when the list opened")
+        for chord in row["chords"]:
+            handled = run_binding(chord, target if target_window else None)
+            if handled is not None and handled:
+                return 0
+        return 0
+    except (OSError, UnicodeError, ValueError, RuntimeError, ConnectionError) as error:
+        print(f"scottland-keybindings: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
