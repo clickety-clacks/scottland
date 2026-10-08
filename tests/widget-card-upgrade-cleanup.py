@@ -363,12 +363,19 @@ def main():
                 break
     if display:
         cleanup_issues = []
-        try:
-            remove_widget_runtime(runtime_view, display, owner, owned_pids)
-        except RuntimeError as error:
-            cleanup_issues.append(str(error))
-            print(f'left widget runtime untouched: {error}', file=sys.stderr, flush=True)
-        if manifest_info is not None:
+        if manifest_info is None:
+            # Every runtime path is under this freshly-created, private owner directory because
+            # headless.sh bind-mounts owner_dir/runtime at the unchanged XDG_RUNTIME_DIR. Without
+            # a manifest, do not guess which individual socket/lock paths are ours; defer their
+            # complete removal to the identity-checked owner_dir rmtree below.
+            print('no runtime inode manifest; deferring private runtime-view cleanup to owner-tree removal',
+                  flush=True)
+        else:
+            try:
+                remove_widget_runtime(runtime_view, display, owner, owned_pids)
+            except RuntimeError as error:
+                cleanup_issues.append(str(error))
+                print(f'left widget runtime untouched: {error}', file=sys.stderr, flush=True)
             try:
                 if not remove_recorded_paths(manifest_path, runtime, runtime_view, owner, owner_dir):
                     cleanup_issues.append('runtime inode manifest vanished before cleanup')
@@ -385,11 +392,6 @@ def main():
             except RuntimeError as error:
                 cleanup_issues.append(str(error))
                 print(f'left remaining runtime paths untouched: {error}', file=sys.stderr, flush=True)
-        else:
-            env_path = runtime_view / 'scottland' / f'{display}.env'
-            if owned_env(env_path, owner, owner_dir):
-                env_path.unlink()
-                cleanup_issues.append('removed owned environment record but no inode manifest exists; inspect leftover socket paths')
         if cleanup_issues:
             fail('; '.join(cleanup_issues))
     elif manifest_info is not None:
@@ -418,7 +420,7 @@ def main():
                  stat.S_IFMT(current_runtime_view.st_mode)) != runtime_view_identity):
             fail('headless runtime view identity changed before cleanup')
         shutil.rmtree(owner_dir)
-        print(f'removed owned session directory {owner_dir}', flush=True)
+        print(f'removed identity-checked owner session tree and private runtime view {owner_dir}', flush=True)
     current_record = lstat(owner_record)
     if (current_record is None or stat.S_ISLNK(current_record.st_mode) or
             not stat.S_ISREG(current_record.st_mode) or
