@@ -1445,4 +1445,18 @@ void goo_t::stop()
         p->remove(p->nodes.begin()->first);
     goo::enabled = false;
 }
+std::optional<double> goo_t::peek_occlusion_margin(wf::output_t *output, uint64_t source_id)
+{
+    if (!output) return {};
+    auto found = p->nodes.find(output);
+    if (found == p->nodes.end()) return {};
+    auto &node = *found->second;
+    // Use the same support radii and device-pixel padding as the renderer. The cached band list
+    // is invalidated with the source/settings snapshot and is shared by all frame consumers.
+    (void)node.bands();
+    for (size_t i = 0; i < node.state.sources.size() && i < node.band_outs.size(); i++)
+        if (node.state.sources[i].id == source_id)
+            return node.band_outs[i];
+    return {};
+}
 } // namespace scottland

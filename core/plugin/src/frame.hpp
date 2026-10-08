@@ -637,6 +637,24 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
         return std::max(rest * 0.7, rest + (SWOLLEN - rest) * swell);
     }
 
+    /** Fallback-frame pixels which can cover a peek strip beyond the window body. */
+    double fallback_peek_occlusion_margin(double output_scale) const
+    {
+        double t = std::max(thickness(), hint_dye ? windowing::hint_border_width : 0.0);
+        // own_liquid() adds a bounded noise wave (1.2 times the shader ripple), and cover()
+        // antialiases through half a device pixel in logical coordinates.
+        double halo = t + 1.2 * halo_ripple() + 0.5 / std::max(0.01, output_scale);
+        // The close-dot quad can exceed a very thin hint-dyed halo while the dot fades out.
+        double dot = (!morphing() && dot_glow > 0.003) ? thickness() / 2 + DOT_RADIUS + 4 : 0;
+        return std::max(halo, dot);
+    }
+
+    double halo_ripple() const
+    {
+        double travel = SWOLLEN - HALO * halo_scale();
+        return std::min(4.0, std::abs(swell_velocity) * travel * 0.3);
+    }
+
     /** Distance from p to the edge of this window's liquid (negative inside it). */
     double liquid_distance(wf::pointf_t p) const
     {
@@ -1604,8 +1622,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.uniform1f("radius", radius);
         program.uniform1f("thickness", t);
         // Ripples along the edge while the goo moves, in proportion to how fast it's moving.
-        double travel = SWOLLEN - HALO * self->halo_scale();
-        program.uniform1f("ripple", std::min(4.0, std::abs(self->swell_velocity) * travel * 0.3));
+        program.uniform1f("ripple", self->halo_ripple());
         program.uniform1f("phase", self->phase);
         program.uniform1f("aa", aa);
         if (self->hint_dye)

@@ -1,7 +1,9 @@
 #pragma once
 #include "goo-model.hpp"
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <wayfire/output.hpp>
 #include <wayfire/geometry.hpp>
 
@@ -20,6 +22,7 @@ class goo_t
     void start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed,
         std::function<void(wf::output_t *)> output_configured);
     void stop();
+    std::optional<double> peek_occlusion_margin(wf::output_t *output, uint64_t source_id);
 
   private:
     struct impl;

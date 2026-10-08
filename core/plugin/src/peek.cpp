@@ -32,6 +32,11 @@ constexpr double infinity = std::numeric_limits<double>::infinity();
 double right(rectangle r) { return r.x + r.width; }
 double bottom(rectangle r) { return r.y + r.height; }
 rectangle moved(rectangle r, point d) { r.x += d.x; r.y += d.y; return r; }
+rectangle grown(rectangle r, double margin)
+{
+    r.x -= margin; r.y -= margin; r.width += 2 * margin; r.height += 2 * margin;
+    return r;
+}
 rectangle on_screen(rectangle r, rectangle screen)
 {
     double x2 = std::min(right(r), right(screen)), y2 = std::min(bottom(r), bottom(screen));
@@ -395,7 +400,8 @@ bool peek_step(peek_pass& pass, size_t budget, std::chrono::steady_clock::time_p
             c.started = true;
             c.obstacles = window.fixed_foreground;
             for (size_t j = 0; j < i; ++j)
-                c.obstacles.push_back(moved(request.windows[j].frame, pass.results[j].target));
+                c.obstacles.push_back(grown(moved(request.windows[j].frame, pass.results[j].target),
+                    request.windows[j].occlusion_margin));
             spend(c.obstacles.size());
             const double cx = window.frame.x + window.frame.width / 2;
             const double cy = window.frame.y + window.frame.height / 2;

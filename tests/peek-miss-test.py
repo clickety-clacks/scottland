@@ -33,6 +33,7 @@ exec(src[:src.index('\ntry:\n')])  # its helpers: ipc, wait, check, setup, press
 results = []
 FOCUSED_PEEKS = False  # WK13: the focused window never moves for avoidance (not yet decided otherwise)
 STRIP_D, STRIP_L, EDGE = 24, 100, 2   # EDGE: the frame's own antialiased outline
+STRIP_SCALE = 1.0  # WK13 scales the required strip by the active desktop text scale.
 COLORS = {'Small': '#e02828', 'Big': '#2850c8', 'Other': '#28b450', 'Cover': '#c8a028', 'Probe': '#c828b4'}
 NEUTRALS = ['#181818', '#2a2a2a', '#505058', '#6e6e78', '#8c8c96', '#b4b4be', '#e6e6ee']
 CENTER_PCT = 33.333
@@ -124,7 +125,7 @@ def strip_of(rows, color, size):
             if current: return True
         return False
     fw, fh = size
-    d, l = STRIP_D - EDGE, STRIP_L - EDGE
+    d, l = STRIP_D * STRIP_SCALE - EDGE, STRIP_L * STRIP_SCALE - EDGE
     return (fits(min(l, fw - EDGE), min(d, fh - EDGE)) or fits(min(d, fw - EDGE), min(l, fh - EDGE))), count
 
 
@@ -139,8 +140,10 @@ def observe(name, phase, covered, title, quiet=False):
     found, count = strip_of(labels_of(image), COLORS[title], (x2 - x1, y2 - y1))
     h = hint(covered)
     row = {'case': name, 'phase': phase, 'strip_in_pixels': found, 'pixels': count,
+           'text_scale': STRIP_SCALE,
            'scene_frame': [round(v, 1) for v in (x1, y1, x2, y2)],
-           'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule')}}
+           'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule', 'solve_frame', 'drawn',
+               'dx', 'dy', 'target_dx', 'target_dy', 'room', 'hint_size', 'clearance', 'visible_fraction')}}
     if not quiet:
         results.append(row)
         print(f'      {name} [{phase}]: {json.dumps(row)}', flush=True)
@@ -191,6 +194,9 @@ try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/window_avoidance_always': True,
         'place/mode': 'pointer', 'scottland/goo_shine': 0.0, 'scottland/goo_relief': 0.5,
         'scottland/goo_overlap_film': 0.0})
+    STRIP_SCALE = float(hints()['hint_text_scale'])
+    if not math.isfinite(STRIP_SCALE) or STRIP_SCALE <= 0:
+        raise RuntimeError(f'invalid hint text scale: {STRIP_SCALE}')
     out = ipc('window-rules/list-outputs')[0]['geometry']
     W, H = out['width'], out['height']
     S = launch_colored('Small', 400, 300); B = launch_colored('Big', 760, 560); C = launch_colored('Other', 460, 360)
@@ -270,6 +276,8 @@ try:
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
         until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
         # Clear the cover off it again, back where it started, so the case's own cover starts clear.
+        ipc('window-rules/focus-view', {'id': B})
+        until(lambda: (focused_id() == B, focused_id()), 3, 'cover focused for reset drag')
         pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2)); release(); settled()
 
     def solo_big():
