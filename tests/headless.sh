@@ -36,6 +36,7 @@ dir=$(realpath -m -- "${SCOTTLAND_HEADLESS_DIR:-$build/headless}")
 runtime_scratch=$dir/runtime
 tmp_scratch=$dir/tmp
 owner=$dir/.scottland-headless-owner
+session_mode_record=$dir/.scottland-headless-mode
 inside=0
 if [[ ${1:-} == __scottland_headless_private_runtime ]]; then
   inside=1
@@ -255,6 +256,47 @@ expected = {
 sys.exit(not all(env.get(key) == value for key, value in expected.items()))
 PY
 }
+read_session_signature() {
+  python3 - "$1" <<'PY'
+import pathlib, re, sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    if path.is_symlink() or not path.is_file():
+        sys.exit(2)
+    entries = path.read_bytes().split(b'\0')
+except OSError:
+    sys.exit(2)
+signatures = [entry.split(b'=', 1)[1] for entry in entries
+              if entry.startswith(b'HYPRLAND_INSTANCE_SIGNATURE=')]
+if not signatures:
+    print('')
+    sys.exit(0)
+if len(signatures) != 1 or not re.fullmatch(rb'scottland_[A-Za-z0-9_-]+', signatures[0]):
+    sys.exit(2)
+try:
+    print(signatures[0].decode('ascii'))
+except UnicodeDecodeError:
+    sys.exit(2)
+PY
+}
+validate_session_environment() {
+  local session_display=$1 expected_signature=$2 env_file actual_signature
+  env_file="$runtime/scottland/$session_display.env"
+  [[ -d $runtime/scottland && ! -L $runtime/scottland && -f $env_file && \
+     ! -L $env_file && -s $env_file ]] || {
+    echo 'headless session environment record is missing or redirected; preserving runtime and scratch' >&2
+    return 1
+  }
+  if ! actual_signature=$(read_session_signature "$env_file"); then
+    echo 'headless session signature is invalid; preserving runtime and scratch' >&2
+    return 1
+  fi
+  [[ $actual_signature == "$expected_signature" ]] || {
+    echo 'headless session signature does not match its owned mode record; preserving runtime and scratch' >&2
+    return 1
+  }
+}
 session_shim_process_state() {
   # Return 0 for this run's live shim, 1 when the PID has exited, and 2 when
   # identity cannot be proved. The lock lives in this run's private runtime,
@@ -339,6 +381,35 @@ stop_session_shim() {
   echo "headless shim PID $pid did not exit; preserving runtime and scratch" >&2
   return 1
 }
+stop_recorded_shim() {
+  local session_display=$1 signature=$2 lock_dir lock hypr_pid shim
+  [[ $signature =~ ^scottland_[A-Za-z0-9_-]+$ ]] || {
+    echo 'headless shim session signature is missing or invalid; preserving runtime and scratch' >&2
+    return 1
+  }
+  validate_session_environment "$session_display" "$signature" || return 1
+  lock_dir="$runtime/hypr/$signature"
+  lock="$lock_dir/hyprland.lock"
+  [[ -d $runtime/hypr && ! -L $runtime/hypr && -d $lock_dir && \
+     ! -L $lock_dir && -f $lock && ! -L $lock ]] || {
+    echo 'headless shim lock path is missing, redirected, or not a regular file; preserving runtime and scratch' >&2
+    return 1
+  }
+  [[ $(sed -n 2p "$lock") == "$session_display" ]] || {
+    echo 'headless shim lock belongs to a different display; preserving runtime and scratch' >&2
+    return 1
+  }
+  hypr_pid=$(sed -n 1p "$lock")
+  [[ $hypr_pid =~ ^[0-9]+$ ]] || {
+    echo 'headless shim lock has an invalid PID; preserving runtime and scratch' >&2
+    return 1
+  }
+  shim="$hooks/libexec/scottland-hyprshim"
+  stop_session_shim "$hypr_pid" "$session_display" "$signature" "$shim" || return 1
+  # Remove the lock only after its process is gone or its exact run identity was
+  # proved and the shim exited. All ambiguous lock cases preserve scratch.
+  rm -rf -- "$lock_dir"
+}
 
 case ${1:-} in
   start)
@@ -361,7 +432,14 @@ case ${1:-} in
       echo 'headless scratch is not fresh; stop it or choose a fresh directory' >&2
       exit 1
     fi
+    [[ ! -e $session_mode_record && ! -L $session_mode_record ]] || {
+      echo 'headless session mode marker already exists; refusing to start in reused scratch' >&2
+      exit 2
+    }
+    printf 'plain-pending\n' >"$session_mode_record"
+    chmod 600 -- "$session_mode_record"
     started=(01-record-environment)
+    shim_expected=0
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
     test_outputs=${SCOTTLAND_TEST_OUTPUTS:-${SCOTTLAND_HEADLESS_OUTPUTS:-1}}
@@ -371,7 +449,11 @@ case ${1:-} in
     for option in "${@:2}"; do
       case $option in
         --stock) stock=1 ;;
-        --omarchy) started+=(10-hyprshim 25-omarchy-override-report 30-lua-host) ;;
+        --omarchy)
+          printf 'shim-pending\n' >"$session_mode_record"
+          shim_expected=1
+          started+=(10-hyprshim 25-omarchy-override-report 30-lua-host)
+          ;;
         --widgets) started+=(08-widget-bus); private_bus=1 ;;
         --gdb)
           [[ $(realpath -m "$dir") == "$repo"/build/* ]] || {
@@ -468,6 +550,20 @@ WRAPPER
       echo "headless session environment record is missing or redirected: $env_file; see $dir/wayfire.log" >&2
       exit 1
     }
+    if ! signature=$(read_session_signature "$env_file"); then
+      echo 'headless session signature is invalid; preserving runtime and scratch' >&2
+      exit 1
+    fi
+    if ((shim_expected)); then
+      [[ $signature =~ ^scottland_[A-Za-z0-9_-]+$ ]] || {
+        echo 'headless shim session signature is missing or invalid; preserving runtime and scratch' >&2
+        exit 1
+      }
+      printf 'shim\n%s\n%s\n' "$name" "$signature" >"$session_mode_record"
+    else
+      printf 'plain\n%s\n%s\n' "$name" "$signature" >"$session_mode_record"
+    fi
+    chmod 600 -- "$session_mode_record"
     # The debugger/private-bus wrapper can exit independently. Retain the actual
     # compositor identity so stop still reaps our inferior in that case.
     python3 - "$env_file" "$dir/compositor.pid" <<'PY'
@@ -494,6 +590,41 @@ PY
     ;;
   stop)
     if [[ ! -f $dir/display ]]; then
+      [[ -f $session_mode_record && ! -L $session_mode_record ]] || {
+        echo 'headless session mode is missing or redirected; preserving runtime and scratch' >&2
+        exit 2
+      }
+      session_mode=$(sed -n '1p' "$session_mode_record")
+      expected_display=$(sed -n '2p' "$session_mode_record")
+      expected_signature=$(sed -n '3p' "$session_mode_record")
+      case $session_mode in
+        plain-pending)
+          echo 'headless session mode was not fully recorded; preserving runtime and scratch' >&2
+          exit 2
+          ;;
+        shim-pending)
+          echo 'headless shim identity was not fully recorded; preserving runtime and scratch' >&2
+          exit 2
+          ;;
+        plain)
+          [[ $expected_display =~ ^wayland-[0-9]+$ ]] || {
+            echo 'headless partial session display is invalid; preserving runtime and scratch' >&2
+            exit 2
+          }
+          validate_session_environment "$expected_display" "$expected_signature" || exit 2
+          ;;
+        shim)
+          [[ $expected_display =~ ^wayland-[0-9]+$ ]] || {
+            echo 'headless partial shim display is invalid; preserving runtime and scratch' >&2
+            exit 2
+          }
+          stop_recorded_shim "$expected_display" "$expected_signature" || exit 2
+          ;;
+        *)
+          echo 'headless session mode is invalid; preserving runtime and scratch' >&2
+          exit 2
+          ;;
+      esac
       if [[ -f $dir/pid ]]; then
         pid=$(cat "$dir/pid")
         if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
@@ -510,10 +641,33 @@ PY
           [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
         fi
       fi
+      if [[ $session_mode == plain || $session_mode == shim ]]; then
+        rm -f -- "$runtime/scottland/$expected_display.env" \
+          "$runtime/scottland/$expected_display.lua.fifo"
+      fi
       echo 'stopped partial headless session; retaining owned scratch for outer cleanup'
       exit 0
     fi
     name=$(display)
+    [[ -f $session_mode_record && ! -L $session_mode_record ]] || {
+      echo 'headless session mode is missing or redirected; preserving runtime and scratch' >&2
+      exit 2
+    }
+    session_mode=$(sed -n '1p' "$session_mode_record")
+    expected_display=$(sed -n '2p' "$session_mode_record")
+    expected_signature=$(sed -n '3p' "$session_mode_record")
+    [[ $expected_display == "$name" ]] || {
+      echo 'headless session mode display does not match the started session; preserving runtime and scratch' >&2
+      exit 2
+    }
+    case $session_mode in
+      plain) validate_session_environment "$name" "$expected_signature" || exit 2 ;;
+      shim) stop_recorded_shim "$name" "$expected_signature" || exit 2 ;;
+      *)
+        echo 'headless session mode is incomplete or invalid; preserving runtime and scratch' >&2
+        exit 2
+        ;;
+    esac
     # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
     # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
     # with its monitors.)
@@ -525,40 +679,6 @@ PY
       fi
       rm -f "$pid_file"
     done
-    signature=$(python3 - "$runtime/scottland/$name.env" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-if path.exists():
-    for entry in path.read_bytes().split(b'\0'):
-        if entry.startswith(b'HYPRLAND_INSTANCE_SIGNATURE='):
-            print(entry.split(b'=', 1)[1].decode())
-PY
-)
-    if [[ $signature == scottland_* && $signature != */* ]]; then
-      lock_dir="$runtime/hypr/$signature"
-      lock="$lock_dir/hyprland.lock"
-      if [[ -e $lock || -L $lock || -e $lock_dir || -L $lock_dir ]]; then
-        [[ -d $runtime/hypr && ! -L $runtime/hypr && -d $lock_dir && ! -L $lock_dir && \
-           -f $lock && ! -L $lock ]] || {
-          echo 'headless shim lock path is missing, redirected, or not a regular file; preserving scratch' >&2
-          exit 2
-        }
-        [[ $(sed -n 2p "$lock") == "$name" ]] || {
-          echo 'headless shim lock belongs to a different display; preserving scratch' >&2
-          exit 2
-        }
-        hypr_pid=$(sed -n 1p "$lock")
-        [[ $hypr_pid =~ ^[0-9]+$ ]] || {
-          echo 'headless shim lock has an invalid PID; preserving scratch' >&2
-          exit 2
-        }
-        shim="$hooks/libexec/scottland-hyprshim"
-        stop_session_shim "$hypr_pid" "$name" "$signature" "$shim" || exit 2
-        # The lock directory is removed only after its PID is gone or its process
-        # identity has been proved to be this run's shim and that shim has exited.
-        rm -rf -- "$lock_dir"
-      fi
-    fi
     pid=$(cat "$dir/pid")
     compositor=$(cat "$dir/compositor.pid" 2>/dev/null || true)
     if [[ $compositor =~ ^[0-9]+$ ]] && \
