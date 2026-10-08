@@ -2,4 +2,35 @@
 # Scottland's widget service: per-widget D-Bus objects, badges, the app<->widget mailbox.
 state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
 mkdir -p "$state"
+if [ -n "${SCOTTLAND_HEADLESS_OWNER:-}" ]; then
+    case $SCOTTLAND_HEADLESS_OWNER in *[!0-9a-f-]*|'') exit 73 ;; esac
+    [ "${#SCOTTLAND_HEADLESS_OWNER}" -eq 36 ] || exit 73
+    owner_dir=${SCOTTLAND_HEADLESS_OWNER_DIR:-}
+    [ -n "$owner_dir" ] && [ -d "$owner_dir" ] && [ ! -L "$owner_dir" ] || exit 73
+    runtime_base=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+    [ -d "$runtime_base" ] && [ ! -L "$runtime_base" ] || exit 73
+    runtime="${SCOTTLAND_SESSION_DIR:-$runtime_base/scottland}"
+    [ ! -L "$runtime" ] || exit 73
+    display=${WAYLAND_DISPLAY:-wayland}
+    pid_file="$runtime/$display.widget-bus.pid"
+    widget_dir="$runtime/widgets/$display"
+    if [ -e "$pid_file" ] || [ -L "$pid_file" ] || [ -e "$widget_dir" ] || [ -L "$widget_dir" ]; then
+        printf '%s\n' "runtime collision for $display" >"$owner_dir/runtime-collision"
+        echo "headless widget runtime already exists for $display" >&2
+        exit 73
+    fi
+    [ ! -L "$runtime/widgets" ] || exit 73
+    mkdir -p "$runtime/widgets" || exit 73
+    [ -d "$runtime/widgets" ] && [ ! -L "$runtime/widgets" ] || exit 73
+    if ! (umask 077; mkdir "$widget_dir"); then
+        printf '%s\n' "runtime collision for $display" >"$owner_dir/runtime-collision"
+        echo "headless widget runtime already exists for $display" >&2
+        exit 73
+    fi
+    if ! (set -C; printf '%s\n' "$SCOTTLAND_HEADLESS_OWNER" >"$widget_dir/.headless-owner"); then
+        rmdir "$widget_dir" 2>/dev/null || true
+        printf '%s\n' "runtime claim failed for $display" >"$owner_dir/runtime-collision"
+        exit 73
+    fi
+fi
 exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-widget-bus" 2>>"$state/widgets.log"
