@@ -534,6 +534,14 @@ name = "scottland"
 version = "0.2.0"
 
 [[package]]
+name = "scottland-audio"
+version = "0.1.0"
+dependencies = [
+ "scottland-lib",
+ "serde_json",
+]
+
+[[package]]
 name = "scottland-bluetooth"
 version = "0.2.0"
 dependencies = [
