@@ -14,7 +14,7 @@ fi
 
 make test-hooks
 make tools-test
-for suite in inertia navigation pairing peek rail-make-room spread; do
+for suite in inertia navigation pairing peek rail-make-room spread windowing; do
   bash "tests/${suite}-unit.sh"
 done
 
@@ -41,7 +41,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-tests/headless.sh start --widgets
+tests/headless.sh start
 tests/headless.sh run true
 tests/headless.sh ipc window-rules/list-outputs >"$scratch/outputs.json"
 tests/headless.sh ipc window-rules/list-views >"$scratch/views.json"
@@ -54,10 +54,4 @@ assert isinstance(views, list), 'window list is not an array'
 print(f'headless IPC: {len(outputs)} output(s), {len(views)} view(s)')
 PY
 rm -- "$scratch/outputs.json" "$scratch/views.json"
-tests/headless.sh run python3 tests/hint-outline-test.py
-tests/headless.sh stop
-
-# A fresh private session keeps spread's input and window fixtures independent
-# of the outline suite. Do not use wrappers that manage another scratch path.
-tests/headless.sh start
-tests/headless.sh run python3 -u tests/spread-test.py "$evidence/spread"
+tests/headless.sh run python3 -u ci/headless-state-test.py
