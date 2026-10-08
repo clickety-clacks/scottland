@@ -19,6 +19,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -108,8 +109,15 @@ class Session:
         self.stop()
 
     def harness(self, *args, check=True, timeout=60, input=None):
-        return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=self.env, text=True,
-                              capture_output=True, check=check, timeout=timeout, input=input)
+        try:
+            return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=self.env,
+                                  text=True, capture_output=True, check=check, timeout=timeout,
+                                  input=input)
+        except subprocess.CalledProcessError as error:
+            # Its output is the only record of why: a failed start removes its scratch, logs too.
+            print(f"tests/headless.sh {' '.join(args)}: exit {error.returncode}\n"
+                  f"{error.stdout or ''}{error.stderr or ''}", file=sys.stderr, end="")
+            raise
 
     def start(self):
         self.harness("stop", check=False)
