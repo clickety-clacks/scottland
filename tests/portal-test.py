@@ -95,101 +95,109 @@ def wireplumber_connected(session):
 
 started = []
 with Session(fixture, "hl-portal") as session:
-    check("shim answers", session.wait_shim()[0])
-    session.run("dbus-update-activation-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP")
-    # In this session's own config dir, so it applies to this WirePlumber alone.
-    wireplumber_conf = session.dir / "config/wireplumber/wireplumber.conf.d"
-    wireplumber_conf.mkdir(parents=True, exist_ok=True)
-    (wireplumber_conf / "90-portal-test.conf").write_text(
-        "wireplumber.profiles = {\n  main = {\n"
-        + "".join(f"    monitor.{device} = disabled\n"
-                  for device in ("alsa", "alsa-midi", "bluez", "bluez-midi", "libcamera", "v4l2"))
-        + "  }\n}\n")
-    started.append(session.spawn("exec pipewire", build / "portal-pipewire.log"))
-    started.append(session.spawn("exec wireplumber", build / "portal-wireplumber.log"))
-    check("the session's PipeWire answers, with WirePlumber connected",
-          session.wait(lambda: wireplumber_connected(session), timeout=20, interval=0.5)[0])
-    if xdpw != system_xdpw:
-        started.append(session.spawn(f"exec {xdpw} {os.environ.get('XDPW_ARGS', '')}",
-                                      build / "portal-xdpw.log"))
-        check("xdg-desktop-portal-wlr is on the bus",
-              session.wait(lambda: owned(session, "org.freedesktop.impl.portal.desktop.wlr"))[0])
-    started.append(session.spawn(f"exec env {portal_dir}XDG_DATA_HOME={data_home} "
-                                 f"XDG_DATA_DIRS={share}:/usr/local/share:/usr/share "
-                                 f"/usr/lib/xdg-desktop-portal -r -v", build / "portal-frontend.log"))
-    check("portal frontend is on the bus",
-          session.wait(lambda: owned(session, "org.freedesktop.portal.Desktop"))[0])
+    try:
+        check("shim answers", session.wait_shim()[0])
+        session.run("dbus-update-activation-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP")
+        # In this session's own config dir, so it applies to this WirePlumber alone.
+        wireplumber_conf = session.dir / "config/wireplumber/wireplumber.conf.d"
+        wireplumber_conf.mkdir(parents=True, exist_ok=True)
+        (wireplumber_conf / "90-portal-test.conf").write_text(
+            "wireplumber.profiles = {\n  main = {\n"
+            + "".join(f"    monitor.{device} = disabled\n"
+                      for device in ("alsa", "alsa-midi", "bluez", "bluez-midi", "libcamera", "v4l2"))
+            + "  }\n}\n")
+        started.append(session.spawn("exec pipewire", build / "portal-pipewire.log"))
+        started.append(session.spawn("exec wireplumber", build / "portal-wireplumber.log"))
+        check("the session's PipeWire answers, with WirePlumber connected",
+              session.wait(lambda: wireplumber_connected(session), timeout=20, interval=0.5)[0])
+        if xdpw != system_xdpw:
+            started.append(session.spawn(f"exec {xdpw} {os.environ.get('XDPW_ARGS', '')}",
+                                          build / "portal-xdpw.log"))
+            check("xdg-desktop-portal-wlr is on the bus",
+                  session.wait(lambda: owned(session, "org.freedesktop.impl.portal.desktop.wlr"))[0])
+        started.append(session.spawn(f"exec env {portal_dir}XDG_DATA_HOME={data_home} "
+                                     f"XDG_DATA_DIRS={share}:/usr/local/share:/usr/share "
+                                     f"/usr/lib/xdg-desktop-portal -r -v", build / "portal-frontend.log"))
+        check("portal frontend is on the bus",
+              session.wait(lambda: owned(session, "org.freedesktop.portal.Desktop"))[0])
 
-    started.append(session.spawn(f"exec python3 {REPO}/tests/solid-color-app.py portal '#E0A030' --tick"))
-    ok, found = session.wait(lambda: [v for v in views(session)
-                                      if v.get("app-id") == "org.scottland.SolidColor.portal"
-                                      and v.get("mapped")], timeout=20)
-    if not check("window maps", ok):
-        sys.exit(check.summary())
-    box = found[0]["geometry"]
-    center = (int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
-    # Judge pixels away from where the pointer clicks (a cursor or hover effect may be drawn there).
-    sample = (int(box["x"] + box["width"] / 4), int(box["y"] + box["height"] / 4))
-    shown = {}
-    ok, _ = session.wait(lambda: shown.update(rgb=(lambda shot: pixel(shot, *sample) if shot else None)(
-        screenshot(session, "portal-ready"))) or shown["rgb"] == COLOR, timeout=10, interval=0.2)
-    check("setup: the compositor's screencopy shows the window's color", ok, shown.get("rgb"))
+        started.append(session.spawn(f"exec python3 {REPO}/tests/solid-color-app.py portal '#E0A030' --tick"))
+        ok, found = session.wait(lambda: [v for v in views(session)
+                                          if v.get("app-id") == "org.scottland.SolidColor.portal"
+                                          and v.get("mapped")], timeout=20)
+        if not check("window maps", ok):
+            sys.exit(check.summary())
+        box = found[0]["geometry"]
+        center = (int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+        # Judge pixels away from where the pointer clicks (a cursor or hover effect may be drawn there).
+        sample = (int(box["x"] + box["width"] / 4), int(box["y"] + box["height"] / 4))
+        shown = {}
+        ok, _ = session.wait(lambda: shown.update(rgb=(lambda shot: pixel(shot, *sample) if shot else None)(
+            screenshot(session, "portal-ready"))) or shown["rgb"] == COLOR, timeout=10, interval=0.2)
+        check("setup: the compositor's screencopy shows the window's color", ok, shown.get("rgb"))
 
-    # Screenshot, as an app asks for one.
-    out = build / "portal-screenshot.json"
-    out.unlink(missing_ok=True)
-    session.run("python3", str(REPO / "tests/portal-client.py"), "screenshot", str(out), timeout=90)
-    result = read_json(out) or {}
-    uri = result.get("results", {}).get("uri", "")
-    check("Screenshot portal answers with an image", result.get("response") == 0 and uri, result)
-    if uri:
-        width, height, rgb = read_png(uri.removeprefix("file://"))
-        offset = (sample[1] * width + sample[0]) * 3
-        check("the screenshot shows the window's color where Wayfire placed it",
-              tuple(rgb[offset:offset + 3]) == COLOR, tuple(rgb[offset:offset + 3]))
-        Path(uri.removeprefix("file://")).unlink(missing_ok=True)
+        # Screenshot, as an app asks for one.
+        out = build / "portal-screenshot.json"
+        out.unlink(missing_ok=True)
+        session.run("python3", str(REPO / "tests/portal-client.py"), "screenshot", str(out), timeout=90)
+        result = read_json(out) or {}
+        uri = result.get("results", {}).get("uri", "")
+        check("Screenshot portal answers with an image", result.get("response") == 0 and uri, result)
+        if uri:
+            width, height, rgb = read_png(uri.removeprefix("file://"))
+            offset = (sample[1] * width + sample[0]) * 3
+            check("the screenshot shows the window's color where Wayfire placed it",
+                  tuple(rgb[offset:offset + 3]) == COLOR, tuple(rgb[offset:offset + 3]))
+            Path(uri.removeprefix("file://")).unlink(missing_ok=True)
 
-    # Screen sharing: share a monitor, picked in the backend's chooser with a pointer click.
-    out, frame = build / "portal-screencast.json", build / "portal-frame.rgb"
-    out.unlink(missing_ok=True)
-    frame.unlink(missing_ok=True)
-    started.append(session.spawn(f"exec env GST_PLUGIN_PATH={gst} python3 {REPO}/tests/portal-client.py "
-                                 f"screencast {out} {frame}", build / "portal-screencast.log"))
-    ok, _ = session.wait(lambda: [v for v in views(session) if v.get("app-id") == "slurp"
-                                  or "slurp" in str(v.get("title", "")).lower()
-                                  or v.get("layer") == "overlay"], timeout=20)
-    check("the backend's output chooser appears", ok,
-          [(v.get("role"), v.get("app-id"), v.get("layer")) for v in views(session)])
-    session.ipc("stipc/move_cursor", {"x": center[0], "y": center[1]})
-    time.sleep(0.2)  # paces the gesture: motion, then the click
-    session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
-    session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
-    # Frames come when something on screen changes (a static screen sends one): the window's
-    # corner counter ticks, away from the sampled point.
-    ok, result = session.wait(lambda: read_json(out), timeout=60)
-    result = result or {}
-    check("ScreenCast portal starts a stream for the picked monitor",
-          result.get("response") == 0 and result.get("streams"), result or
-          (build / "portal-screencast.log").read_text()[-500:])
-    if frame.exists() and result.get("streams"):
-        width, height = result["streams"][0][1]["size"]
-        stride = (width * 3 + 3) // 4 * 4
-        # The newest frame: the stream's first buffer can predate the first completed capture.
-        data = frame.read_bytes()[-stride * height:]
-        offset = sample[1] * stride + sample[0] * 3
-        check("the shared stream shows the window's color where Wayfire placed it",
-              tuple(data[offset:offset + 3]) == COLOR,
-              (tuple(data[offset:offset + 3]), width, height, len(data)))
-    else:
-        check("a frame arrives over PipeWire", False, result)
-    # Diagnostic, from xdg-desktop-portal's own log: which backend it chose for each interface.
-    chosen = [line for line in (build / "portal-frontend.log").read_text().splitlines()
-              if line.startswith("XDP: Using ")]
-    check("xdg-desktop-portal chose wlr for ScreenCast and Screenshot, Hyprland's backend for "
-          "nothing (its log)",
-          any("wlr.portal for org.freedesktop.impl.portal.ScreenCast" in line for line in chosen)
-          and any("wlr.portal for org.freedesktop.impl.portal.Screenshot" in line for line in chosen)
-          and not any("hyprland.portal" in line for line in chosen), chosen)
-    session.terminate(*reversed(started))
+        # Screen sharing: share a monitor, picked in the backend's chooser with a pointer click.
+        out, frame = build / "portal-screencast.json", build / "portal-frame.rgb"
+        out.unlink(missing_ok=True)
+        frame.unlink(missing_ok=True)
+        started.append(session.spawn(f"exec env GST_PLUGIN_PATH={gst} python3 {REPO}/tests/portal-client.py "
+                                     f"screencast {out} {frame}", build / "portal-screencast.log"))
+        ok, _ = session.wait(lambda: [v for v in views(session) if v.get("app-id") == "slurp"
+                                      or "slurp" in str(v.get("title", "")).lower()
+                                      or v.get("layer") == "overlay"], timeout=20)
+        check("the backend's output chooser appears", ok,
+              [(v.get("role"), v.get("app-id"), v.get("layer")) for v in views(session)])
+        session.ipc("stipc/move_cursor", {"x": center[0], "y": center[1]})
+        time.sleep(0.2)  # paces the gesture: motion, then the click
+        session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
+        session.ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "release"})
+        # Frames come when something on screen changes (a static screen sends one): the window's
+        # corner counter ticks, away from the sampled point.
+        ok, result = session.wait(lambda: read_json(out), timeout=60)
+        result = result or {}
+        check("ScreenCast portal starts a stream for the picked monitor",
+              result.get("response") == 0 and result.get("streams"), result or
+              (build / "portal-screencast.log").read_text()[-500:])
+        if frame.exists() and result.get("streams"):
+            width, height = result["streams"][0][1]["size"]
+            stride = (width * 3 + 3) // 4 * 4
+            # The newest frame: the stream's first buffer can predate the first completed capture.
+            data = frame.read_bytes()[-stride * height:]
+            offset = sample[1] * stride + sample[0] * 3
+            check("the shared stream shows the window's color where Wayfire placed it",
+                  tuple(data[offset:offset + 3]) == COLOR,
+                  (tuple(data[offset:offset + 3]), width, height, len(data)))
+        else:
+            check("a frame arrives over PipeWire", False, result)
+        # Diagnostic, from xdg-desktop-portal's own log: which backend it chose for each interface.
+        chosen = [line for line in (build / "portal-frontend.log").read_text().splitlines()
+                  if line.startswith("XDP: Using ")]
+        check("xdg-desktop-portal chose wlr for ScreenCast and Screenshot, Hyprland's backend for "
+              "nothing (its log)",
+              any("wlr.portal for org.freedesktop.impl.portal.ScreenCast" in line for line in chosen)
+              and any("wlr.portal for org.freedesktop.impl.portal.Screenshot" in line for line in chosen)
+              and not any("hyprland.portal" in line for line in chosen), chosen)
+    finally:
+        # Every exit path, sys.exit and exceptions too: the session's stop does not reach what
+        # the test started. terminate signals only PIDs still carrying this session's marker;
+        # one that outlives SIGKILL fails the test and is left for the operator, not guessed at.
+        stuck = [pid for pid in session.terminate(*reversed(started))
+                 if not session.wait(lambda pid=pid: not session.owns(pid), timeout=2)[0]]
+        if stuck:
+            sys.exit(f"processes this test started are still running after SIGKILL: {stuck}")
 
 sys.exit(check.summary())
