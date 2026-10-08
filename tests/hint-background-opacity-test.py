@@ -291,6 +291,11 @@ try:
         f=card; dx,dy=state[i]['dx'],state[i]['dy']
         return (f['x']+dx-margin<=p[0]<=f['x']+dx+f['width']+margin and
                 f['y']+dy-margin<=p[1]<=f['y']+dy+f['height']+margin)
+    goo_enabled = str(ipc('wayfire/get-config-option', {'option':'scottland/goo'})['value']).lower() not in ('false','0')
+    # The Goo shader changes the wallpaper beneath the widget hint while the hint is active.
+    # Its released screenshot therefore cannot be the reference within the configured shore.
+    goo_reach = math.ceil(float(ipc('wayfire/get-config-option', {'option':'scottland/goo_reach'})['value'])) if goo_enabled else 0
+    widget_underlay_margin = max(8, goo_reach)
     images={}
     images['default']=Shot('opacity-default')
     # C3: the option alone, written by scottland-ctl while hints show, must redraw the backing.
@@ -339,7 +344,7 @@ try:
         # surface sampled away from the hint; beside the widget, exactly what is there once the
         # hints are gone (Window mode tints windows and cards, not the wallpaper).
         if name=='window': bare=fill; beneath=lambda p: images[0].pixel(*content)
-        else: bare=[p for p in fill if not inside(p,i)]; beneath=lambda p: images['released'].pixel(*p)
+        else: bare=[p for p in fill if not inside(p,i,margin=widget_underlay_margin)]; beneath=lambda p: images['released'].pixel(*p)
         check(name+': 0% leaves no backing (fill matches the surface beneath)',len(bare)>12 and
               all(distance(images[0].pixel(*p),beneath(p))<=3 for p in bare))
         check(name+': 100% is a solid themed backing',len(fill)>20 and
@@ -356,7 +361,7 @@ try:
         # can prove unchanged foreground independently of that backing.
         rim=[(x,y) for x in range(round(cx-r-4),round(cx+r+4)) for y in range(round(cy-r-4),round(cy+r+4))
              if r+.75<=math.hypot(x-cx,y-cy)<=r+3 and distance(images[0].pixel(x,y),color)<=1]  # clear of the fill's own antialiased edge
-        if str(ipc('wayfire/get-config-option',{'option':'scottland/goo'})['value']).lower() in ('false','0'):
+        if not goo_enabled:
             check(name+': opaque fallback rim ink remains unchanged',len(rim)>=8 and all(distance(images[100].pixel(*p),images[0].pixel(*p))<=3 for p in rim))
     print('measured backing opacity',json.dumps(alphas),flush=True); observations.append(dict(alphas=alphas))
     check('window and widget hints show the same opacity at every value',
