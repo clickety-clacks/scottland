@@ -39,7 +39,7 @@ fn dispatch(args: &[String]) -> Result<(), String> {
             input_set_default(source_name)
         }
         [output, set_default, sink_name] if output == "output" && set_default == "set" => {
-            output_set_default(sink_name)
+            output_set_default(sink_name).map_err(|failure| failure.message)
         }
         [output, sink] if output == "output" && sink == "sink" => output_sink(None),
         [output, sink, sink_name] if output == "output" && sink == "sink" => {
@@ -187,48 +187,99 @@ fn input_set_default(source_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn output_set_default(sink_name: &str) -> Result<(), String> {
+struct OutputSetFailure {
+    message: String,
+    default_confirmed: bool,
+}
+
+impl OutputSetFailure {
+    fn before_confirmation(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            default_confirmed: false,
+        }
+    }
+
+    fn after_confirmation(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            default_confirmed: true,
+        }
+    }
+}
+
+fn output_set_default(sink_name: &str) -> Result<(), OutputSetFailure> {
     if sink_name.is_empty() {
-        return Err("usage: scottland audio output set <sink-name>".into());
+        return Err(OutputSetFailure::before_confirmation(
+            "usage: scottland audio output set <sink-name>",
+        ));
     }
     let sinks = list_short_names(
         "timeout",
         &["2", "pactl", "list", "short", "sinks"],
         "list audio outputs",
-    )?;
+    )
+    .map_err(OutputSetFailure::before_confirmation)?;
     if !sinks.iter().any(|name| name == sink_name) {
-        return Err(format!("audio output {sink_name} does not exist"));
+        return Err(OutputSetFailure::before_confirmation(format!(
+            "audio output {sink_name} does not exist"
+        )));
     }
     run_checked(
         "timeout",
         &["2", "pactl", "set-default-sink", sink_name],
         "set default audio output",
-    )?;
+    )
+    .map_err(OutputSetFailure::before_confirmation)?;
     let actual = checked_stdout(
         "timeout",
         &["2", "pactl", "get-default-sink"],
         "read default audio output",
-    )?;
+    )
+    .map_err(OutputSetFailure::before_confirmation)?;
     if actual != sink_name {
-        return Err(format!(
+        return Err(OutputSetFailure::before_confirmation(format!(
             "audio server selected output {actual} instead of {sink_name}"
-        ));
+        )));
     }
 
     let active = checked_stdout(
         "timeout",
         &["2", "pactl", "list", "sink-inputs"],
         "list playback streams",
-    )?;
+    )
+    .map_err(OutputSetFailure::after_confirmation)?;
     for id in application_sink_inputs(&active) {
         run_checked(
             "timeout",
             &["2", "pactl", "move-sink-input", &id, sink_name],
             &format!("move playback stream {id} to {sink_name}"),
         )
-        .map_err(|error| format!("default output is {sink_name}, but {error}"))?;
+        .map_err(|error| {
+            OutputSetFailure::after_confirmation(format!(
+                "default output is {sink_name}, but {error}"
+            ))
+        })?;
     }
     Ok(())
+}
+
+fn finish_output_switch(
+    output_set: Result<(), OutputSetFailure>,
+    show: impl FnOnce(),
+) -> Result<(), String> {
+    match output_set {
+        Ok(()) => {
+            show();
+            Ok(())
+        }
+        Err(failure) => {
+            if failure.default_confirmed {
+                show();
+            }
+            Err(failure.message)
+        }
+    }
 }
 
 fn keyboard_mic_mute(action: &str) -> Result<(), String> {
@@ -610,11 +661,14 @@ fn output_switch() -> Result<(), String> {
         &["2", "pactl", "get-sink-mute", &effective_sink],
     ))
     .contains("yes");
-    if next.name != current {
-        output_set_default(&next.name)?;
-    }
-    show_osd(Some(volume_icon(volume, muted)), &next.description, None);
-    Ok(())
+    let output_set = if next.name == current {
+        Ok(())
+    } else {
+        output_set_default(&next.name)
+    };
+    finish_output_switch(output_set, || {
+        show_osd(Some(volume_icon(volume, muted)), &next.description, None)
+    })
 }
 
 fn switch_candidates<'a>(sinks: &'a [Sink], graph: &mut AudioGraph) -> Vec<&'a Sink> {
@@ -991,6 +1045,37 @@ mod tests {
             node_group: Some("filter-chain-1234-7".into()),
             ..test_sink(index, name)
         }
+    }
+
+    #[test]
+    fn output_switch_shows_confirmed_default_when_a_stream_move_fails() {
+        let calls = std::cell::Cell::new(0);
+        let result = finish_output_switch(
+            Err(OutputSetFailure::after_confirmation(
+                "default output is headphones, but stream 44 could not move",
+            )),
+            || calls.set(calls.get() + 1),
+        );
+
+        assert_eq!(
+            result,
+            Err("default output is headphones, but stream 44 could not move".into())
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn output_switch_skips_display_when_server_rejects_the_default() {
+        let calls = std::cell::Cell::new(0);
+        let result = finish_output_switch(
+            Err(OutputSetFailure::before_confirmation(
+                "server rejected headphones",
+            )),
+            || calls.set(calls.get() + 1),
+        );
+
+        assert_eq!(result, Err("server rejected headphones".into()));
+        assert_eq!(calls.get(), 0);
     }
 
     #[test]
