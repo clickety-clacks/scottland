@@ -21,9 +21,6 @@ jobs:
           - runner: scottland-ci-aarch64
     runs-on: [self-hosted, linux, '${{ matrix.runner }}']
     timeout-minutes: 45
-    concurrency:
-      group: scottland-fast-${{ matrix.runner }}
-      cancel-in-progress: false
     steps:
       - name: Checkout the tested merge result
         uses: actions/checkout@v4

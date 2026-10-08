@@ -14,6 +14,9 @@ fi
 
 make test-hooks
 make tools-test
+for suite in inertia navigation pairing peek rail-make-room spread; do
+  bash "tests/${suite}-unit.sh"
+done
 
 umask 077
 mkdir -p build
@@ -21,6 +24,8 @@ scratch=$(mktemp -d -p "$PWD/build" fast-check.XXXXXXXX)
 export SCOTTLAND_HEADLESS_ISOLATION=1 SCOTTLAND_TEST_SCRATCH=$scratch
 export SCOTTLAND_HEADLESS_DIR=$scratch/headless
 export SCOTTLAND_HEADLESS_OWNER="ci-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}-$$"
+evidence="$PWD/build/ci-evidence/$SCOTTLAND_HEADLESS_OWNER"
+mkdir -p -- "$evidence"
 
 cleanup() {
   local result=$?
@@ -36,7 +41,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-tests/headless.sh start
+tests/headless.sh start --widgets
 tests/headless.sh run true
 tests/headless.sh ipc window-rules/list-outputs >"$scratch/outputs.json"
 tests/headless.sh ipc window-rules/list-views >"$scratch/views.json"
@@ -49,3 +54,10 @@ assert isinstance(views, list), 'window list is not an array'
 print(f'headless IPC: {len(outputs)} output(s), {len(views)} view(s)')
 PY
 rm -- "$scratch/outputs.json" "$scratch/views.json"
+tests/headless.sh run python3 tests/hint-outline-test.py
+tests/headless.sh stop
+
+# A fresh private session keeps spread's input and window fixtures independent
+# of the outline suite. Do not use wrappers that manage another scratch path.
+tests/headless.sh start
+tests/headless.sh run python3 -u tests/spread-test.py "$evidence/spread"
