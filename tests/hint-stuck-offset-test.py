@@ -2,10 +2,10 @@
 """WK41: one foreground offset that never settles must not hide the hints behind it.
 
 Run in a caller-owned headless session. Alt and the touch hold are real stipc input. Window
-placement and focus are declared IPC fixture setup. A focused cover window fully covers the
-tested front window so the solver must give it a nonzero avoidance target. In the held case, the
-test first arms a real touch on an exposed part of Front, then expands the cover before Alt. The
-frozen case injects an offset that never steps toward its target through the test-session-only
+placement and focus are declared IPC fixture setup. A focused cover window leaves a narrow
+exposed strip on the tested front window, too small for a minimum hint. In the held case, the
+real touch starts in that strip; the cover is already in its final position before touch-down.
+The frozen case injects an offset that never steps toward its target through the test-session-only
 `freeze_offset` field of scottland/hints. That bypasses no input layer; it stands in for an ease
 that cannot finish (a target that keeps changing). Each case passes when both rear windows' hint
 letters are found in captured pixels while the front offset is still away from its target, and
@@ -118,7 +118,7 @@ def touch_point(window, blockers):
     blocked = [state[w]['drawn'] for w in blockers]
     # Avoid rounded window corners and leave a margin from a foreground surface so the
     # real touch hit test must land on the intended, exposed window.
-    for fx, fy in ((.15, .5), (.85, .5), (.5, .15), (.5, .85),
+    for fx, fy in ((.02, .5), (.15, .5), (.85, .5), (.5, .15), (.5, .85),
                    (.25, .25), (.75, .25), (.25, .75), (.75, .75)):
         x = frame['x'] + frame['width'] * fx
         y = frame['y'] + frame['height'] * fy
@@ -128,7 +128,7 @@ def touch_point(window, blockers):
     raise RuntimeError(f'no exposed touch point on window {window}: frame={frame}, blockers={blocked}')
 
 
-def run_case(name, front, rears, exposed_touch=None, cover_after_touch=None):
+def run_case(name, front, rears, exposed_touch=None):
     before = capture(name + '-before-alt')
     try:
         if exposed_touch:
@@ -139,8 +139,6 @@ def run_case(name, front, rears, exposed_touch=None, cover_after_touch=None):
             wait(lambda: (lambda s: s if s.get('hold_armed') and not s.get('lifted') and
                           not s.get('dragging') else None)(test_input()),
                  name + ': real touch hold armed on the tested front window')
-            if cover_after_touch:
-                cover_after_touch()
         key('LEFTALT', True)
         last_front = {}
         def target_away():
@@ -188,7 +186,9 @@ try:
     ids.append(launch('Anchor', '#242a34'))
     rect = dict(x=output['x'] + output['width'] // 2 - 210, y=output['y'] + output['height'] // 2 - 160,
                 width=420, height=320)
-    touch_anchor_rect = dict(x=rect['x'] + rect['width'] // 2, y=rect['y'],
+    # Leave a 28px strip at Front's left edge for a touch, narrower than the 52.88px
+    # minimum-hint room. This produces a >20px target while avoiding any cover move under touch.
+    touch_anchor_rect = dict(x=rect['x'] + 28, y=rect['y'],
                              width=rect['width'], height=rect['height'])
     for identifier in ids[:-1]:
         ipc('window-rules/configure-view', dict(id=identifier, geometry=rect))
@@ -228,12 +228,11 @@ try:
     ipc('scottland/hints', dict(freeze_offset=0))
     wait(at_rest, 'offsets home after the frozen case')
 
-    # Case 2: move the full-size cover sideways to expose Front for the real held touch,
-    # then move it back over Front before Alt. The hold keeps Front drawn in place while
-    # the solver computes the same forced target; pixel assertions remain unchanged.
+    # Case 2: keep the full-size cover over all but a narrow touch strip before touch-down.
+    # The strip cannot fit the minimum hint, so the solver moves Front while the real hold is
+    # armed. No fixture IPC runs between touch-down and Alt; pixel assertions are unchanged.
     place_anchor(touch_anchor_rect, 'move cover aside to expose Front for the real held touch')
-    run_case('held', front, rears, touch_point(front, [anchor]),
-             cover_after_touch=lambda: place_anchor(rect, 'cover Front after the touch is armed'))
+    run_case('held', front, rears, touch_point(front, [anchor]))
     ipc('stipc/touch_release', dict(finger=0)); touching = False
     print(f'hint stuck offset: {passes} passed, {failures} failed', flush=True)
     sys.exit(bool(failures))
