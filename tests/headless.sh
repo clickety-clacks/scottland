@@ -201,11 +201,13 @@ PY
     ;;
   run)
     shift
-    exec "$exec_tool" --display "$(display)" -- "$@"
+    # A runner may stream this script to a remote `bash -s` over SSH. Never let
+    # a client or command launched here consume the shell's remaining script.
+    exec "$exec_tool" --display "$(display)" -- "$@" </dev/null
     ;;
   ipc)
     shift
-    exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
+    exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@" </dev/null
     ;;
   stop)
     [[ -e $dir || -L $dir ]] || exit 0
