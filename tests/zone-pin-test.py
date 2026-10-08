@@ -128,10 +128,26 @@ def launch(name, x, y):
 def drag(name, x, y, shift=False):
     """Super+drag the window (or its widget) to (x, y), optionally with Shift held throughout."""
     v = view(name)
+    frame = v['frame']
     if v['widgetized']:
-        link = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == v['id'])
-        v = next(item for item in views() if item['id'] == link['widget_view'])
-    f = v['frame']
+        def widget_frame():
+            link = next((w for w in ipc('scottland/widgets')['widgets']
+                if int(w['id']) == v['id'] and int(w['widget_view']) >= 0), None)
+            if link is None:
+                return None
+            widget_id = int(link['widget_view'])
+            return next((item['geometry'] for item in ipc('window-rules/list-views')
+                if item['id'] == widget_id), None)
+
+        try:
+            frame = wait_for(widget_frame)
+        except RuntimeError as failure:
+            state = {
+                'widgets': ipc('scottland/widgets')['widgets'],
+                'views': ipc('scottland/layout-state')['views'],
+            }
+            raise RuntimeError(f'widget view for {name} did not become available: {state!r}') from failure
+    f = frame
     cx, cy = f['x'] + f['width'] / 2, f['y'] + f['height'] / 2
     ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
     if shift: key('LEFTSHIFT', True)
@@ -359,8 +375,8 @@ try:
 
     # --- P14 (dr_795d17c3): the drop position wins even when the shown drag scale and the drop
     # zone's natural scale disagree. The old fa4b60a nudge re-centered the window sideways once
-    # the scale settled; now `center` must stay exactly where it was the instant before release,
-    # through the whole scale settle afterward, no matter which way the scale moves.
+    # the scale settled; now its center stays at the pointer's drop point through the whole scale
+    # settle afterward, no matter which way the scale moves.
     g = launch('NoNudge', width * .5, height * .3)
     v = view('NoNudge')
     f = v['frame']
@@ -375,21 +391,22 @@ try:
     time.sleep(.12)
     before = center(view('NoNudge'))
     shown_scale = view('NoNudge')['applied_scale']
+    drop_center = (tx, ty)  # this gesture starts at the window center, so release is its center
     ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
     key('LEFTMETA', False)
     just_after = center(view('NoNudge'))
-    check(near(before, just_after, eps=.5),
-          'the drop leaves the center exactly where it was the instant before release (P14)',
-          {'before': before, 'just after': just_after})
+    check(near(drop_center, just_after, eps=.5),
+          'the drop leaves the center exactly where the pointer was released (P14)',
+          {'before release': before, 'drop point': drop_center, 'just after': just_after})
     end = time.monotonic() + .8
     track = []
     while time.monotonic() < end:
         track.append((center(view('NoNudge')), view('NoNudge')['applied_scale']))
         time.sleep(.03)
     natural_scale = view('NoNudge')['scale']
-    check(all(near(pos, before) for pos, _ in track),
-          'the center never moves while the scale settles afterward, even if the scale changes (P14)',
-          {'before': before, 'track centers': [p for p, _ in track[:6]]})
+    check(all(near(pos, drop_center) for pos, _ in track),
+          'the center stays at the drop point while scale settles afterward (P14)',
+          {'drop point': drop_center, 'track centers': [p for p, _ in track[:6]]})
     if abs(shown_scale - natural_scale) > .01:
         check(abs(track[-1][1] - natural_scale) < .01,
               'the scale does settle to the drop zone\'s natural value; only the position stays put',
