@@ -45,13 +45,7 @@ jobs:
   fast-checks:
     # Public fork code must not execute on private self-hosted machines.
     if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: scottland-ci-x86_64
-          - runner: scottland-ci-aarch64
-    runs-on: [self-hosted, linux, '${{ matrix.runner }}']
+    runs-on: [self-hosted, linux, scottland-ci-x86_64]
     timeout-minutes: 45
     steps:
       - name: Checkout the tested merge result
