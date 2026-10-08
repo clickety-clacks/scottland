@@ -70,7 +70,7 @@ fn run() -> Result<bool, String> {
     };
 
     let desktop_index =
-        desktop::Index::read_from(|name| selected.var(name).map(OsStr::to_os_string));
+        desktop::Index::read_from(&|name| selected.var(name).map(OsStr::to_os_string));
     let process_snapshot = process::Snapshot::read();
     let recipes = recipe::load(&recipe_directories(&selected));
     let outputs = service::name(

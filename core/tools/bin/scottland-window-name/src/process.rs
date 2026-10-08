@@ -8,7 +8,7 @@ pub struct Snapshot {
     executable_names: BTreeMap<u32, String>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Tree {
     pub pids: BTreeSet<u32>,
     pub executable_names: BTreeSet<String>,
