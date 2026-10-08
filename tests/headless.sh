@@ -114,7 +114,9 @@ if ((inside == 0)); then
       exit 1
       ;;
   esac
-  if bwrap --bind / / --bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp \
+  # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
+  # compositor can see its render node; runtime and TMPDIR remain privately bound below.
+  if bwrap --bind / / --dev-bind /dev /dev --bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp \
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch" \
     -- "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
     exit 0
@@ -250,7 +252,7 @@ GDB
       command -v bwrap >/dev/null || { echo 'headless tests need bubblewrap for Quickshell logs' >&2; exit 1; }
       cat >"$dir/bin/quickshell" <<'WRAPPER'
 #!/bin/sh
-exec bwrap --bind / / --bind "$XDG_STATE_HOME/../quickshell" "$XDG_RUNTIME_DIR/quickshell" -- /usr/bin/quickshell "$@"
+exec bwrap --bind / / --dev-bind /dev /dev --bind "$XDG_STATE_HOME/../quickshell" "$XDG_RUNTIME_DIR/quickshell" -- /usr/bin/quickshell "$@"
 WRAPPER
       chmod +x "$dir/bin/quickshell"
       ln -s quickshell "$dir/bin/qs"
