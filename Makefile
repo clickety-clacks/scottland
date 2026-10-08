@@ -54,7 +54,10 @@ link-dev:
 	ln -sf $(CURDIR)/core/session/scottland-reload $(HOME)/.local/bin/scottland-reload
 	ln -sf $(CURDIR)/core/libexec/scottland-exec $(HOME)/.local/bin/scottland-exec
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
-	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
+	# Agent skills: every skill in the source tree, each linked by name.
+	if [ -L $(DEV)/agents ]; then rm $(DEV)/agents; fi
+	mkdir -p $(DEV)/agents/skills && find $(DEV)/agents/skills -mindepth 1 -maxdepth 1 -type l -delete
+	for s in */agents/skills/*; do if [ -f "$$s/SKILL.md" ]; then ln -sfn $(CURDIR)/$$s $(DEV)/agents/skills/$$(basename $$s); fi; done
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 # The system tools, after the scripts: a tool that replaces a script takes its place.
@@ -89,7 +92,10 @@ hooks:
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOOKS_DIR)/libexec/start-scottland
 	ln -sf $(CURDIR)/core/session/scottland-reload $(HOOKS_DIR)/libexec/scottland-reload
 	ln -sf $(CURDIR)/core/session/scottland-settings $(HOOKS_DIR)/libexec/scottland-settings
-	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
+	# Agent skills: every skill in the source tree, each linked by name.
+	if [ -L $(HOOKS_DIR)/agents ]; then rm $(HOOKS_DIR)/agents; fi
+	mkdir -p $(HOOKS_DIR)/agents/skills && find $(HOOKS_DIR)/agents/skills -mindepth 1 -maxdepth 1 -type l -delete
+	for s in */agents/skills/*; do if [ -f "$$s/SKILL.md" ]; then ln -sfn $(CURDIR)/$$s $(HOOKS_DIR)/agents/skills/$$(basename $$s); fi; done
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	for f in build/tools/bin/*; do [ -e "$$f" ] || continue; ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done

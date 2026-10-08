@@ -250,9 +250,11 @@ Window mode is active. The six normal-zone pairs return when it ends. Defaults a
 WG23's `widget_bounce` changes only widget expansion/contraction. Rail motion has no rebound
 control. Widget peek delays default to 150 ms on hover, 100 ms on leave and 5000 ms for attention.
 
-Sunlight writes `~/.config/scottland/solar.ini`. Latitude and longitude are used only if the
-system location service is unavailable; entering both coordinates enables the saved pair.
-The network lookup switch is off by default and calls ipapi.co only after explicit permission.
+Sunlight writes `~/.config/scottland/solar.ini`. Sun following is on by default. Latitude and
+longitude are used only if the system location service (Geoclue) is unavailable; entering both
+coordinates enables the saved pair. The network lookup switch is on by default: when neither
+Geoclue nor saved coordinates give a location, Sunlight asks ipapi.co. Turning the switch off
+stops that lookup (S21, A15).
 A matching current light/dark preference is left alone. The per-session desired mode is published
 in `<XDG_STATE_HOME>/scottland/<WAYLAND_DISPLAY>.solar-mode` for adapters.
 An isolated headless `once` run used the keyfile GSettings backend and saved coordinates when
