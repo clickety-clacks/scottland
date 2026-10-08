@@ -5486,6 +5486,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             auto held = hold_view.lock();
             reply["hold_window"] = held ? held->get_id() : 0;
+            auto anchor = drag->view ? drag->view : wf::toplevel_cast(wf::get_core().seat->get_active_view());
+            reply["avoidance_anchor_window"] = anchor ? anchor->get_id() : 0;
         }
         reply["lifted"]     = lifted_finger >= 0;
         reply["dragging"]   = (bool)drag->view;
