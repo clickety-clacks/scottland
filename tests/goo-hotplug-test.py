@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Exercise goo across output add, reconfiguration and removal in a headless session.
 
-Run with tests/headless.sh run python3 tests/goo-hotplug-test.py. The compositor,
-input and screenshots all belong to that session.
+Run with tests/headless.sh run python3 tests/goo-hotplug-test.py. Pass
+--ghostty-plain-first on a runner with Ghostty to grab its halo without Super.
+The compositor, input and screenshots all belong to that session.
 """
 import json
 import os
@@ -10,10 +11,14 @@ from pathlib import Path
 import socket
 import struct
 import subprocess
+import sys
 import time
 
 assert os.environ.get("SCOTTLAND_TEST_MODEL") == "1", "private headless session required"
-art = Path(__file__).resolve().parents[1] / "build/goo-hotplug-evidence"
+ghostty_first = sys.argv[1:] == ["--ghostty-plain-first"]
+assert not sys.argv[1:] or ghostty_first, "unknown test arguments"
+variant = "ghostty-plain" if ghostty_first else "foot-super"
+art = Path(__file__).resolve().parents[1] / "build/goo-hotplug-evidence" / variant
 art.mkdir(parents=True, exist_ok=True)
 sock = socket.socket(socket.AF_UNIX)
 sock.settimeout(5)
@@ -70,9 +75,14 @@ def ready(name, sources=0):
 
 
 def launch(title):
-    clients.append(subprocess.Popen(["foot", "-c", "/dev/null", "-T", title, "sleep", "120"],
+    command = (["ghostty", "--config-file=/dev/null", "--window-decoration=true",
+                f"--title={title}", "-e", "sleep", "120"] if ghostty_first and
+               title == "hotplug-first" else
+               ["foot", "-c", "/dev/null", "-T", title, "sleep", "120"])
+    clients.append(subprocess.Popen(command,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-    return wait_for(lambda: view(title), f"{title} mapped")
+    return wait_for(lambda: (v if (v := view(title)) and v["mapped"] else None),
+                    f"{title} mapped")
 
 
 def pointer(x, y):
@@ -87,17 +97,32 @@ def button(down):
     ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press" if down else "release"})
 
 
-def drag_to(title, target, local_x=None):
+def drag_to(title, target, local_x=None, plain=False):
     current = view(title)
     origin_output = output(current["output-id"])
     frame = current["geometry"]
     origin = origin_output["geometry"]
-    x = origin["x"] + frame["x"] + frame["width"] / 2
-    y = origin["y"] + frame["y"] + frame["height"] / 2
+    if plain:
+        # The map animation can offset the visible halo from the view's geometry.
+        def halo_point():
+            shown = next(v for v in ipc("scottland/layout-state")["views"]
+                         if v["id"] == current["id"])
+            drawn = shown.get("scene_frame", shown["frame"])
+            point = (origin["x"] + drawn["x"] - 6,
+                     origin["y"] + drawn["y"] + drawn["height"] / 2)
+            pointer(*point)
+            hovered = next(v for v in ipc("scottland/layout-state")["views"]
+                           if v["id"] == current["id"])["frame"]["hovered"]
+            return point if hovered == "halo" else None
+        x, y = wait_for(halo_point, f"{title} halo handle under pointer")
+    else:
+        x = origin["x"] + frame["x"] + frame["width"] / 2
+        y = origin["y"] + frame["y"] + frame["height"] / 2
     tx = target["geometry"]["x"] + (local_x if local_x is not None else
                                      min(4000, target["geometry"]["width"] - 300))
     pointer(x, y)
-    key(True)
+    if not plain:
+        key(True)
     button(True)
     try:
         for step in range(1, 31):
@@ -109,7 +134,8 @@ def drag_to(title, target, local_x=None):
         time.sleep(.15)
     finally:
         button(False)
-        key(False)
+        if not plain:
+            key(False)
     moved = wait_for(lambda: (v if (v := view(title)) and v["output-id"] == target["id"] else None),
                      f"{title} on runtime output")
     print(f"moved {title} to {target['name']}: {moved['geometry']}", flush=True)
@@ -176,20 +202,25 @@ try:
     startup = ipc("window-rules/list-outputs")[0]
     wait_for(lambda: ready(startup["name"]), "startup output prepared before a window")
     first = launch("hotplug-first")
-    ipc("window-rules/configure-view", {"id": first["id"],
-        "geometry": {"x": 250, "y": 220, "width": 360, "height": 220}})
-    wait_for(lambda: (v if (v := view("hotplug-first")) and
-                      abs(v["geometry"]["x"] - 250) < 5 and
-                      abs(v["geometry"]["y"] - 220) < 5 and
-                      v["geometry"]["width"] >= 300 else None),
-             "first window configured before dragging")
+    if ghostty_first:
+        expected_size = first["base-geometry"]
+    else:
+        ipc("window-rules/configure-view", {"id": first["id"],
+            "geometry": {"x": 250, "y": 220, "width": 360, "height": 220}})
+        wait_for(lambda: (v if (v := view("hotplug-first")) and
+                          abs(v["geometry"]["x"] - 250) < 5 and
+                          abs(v["geometry"]["y"] - 220) < 5 and
+                          v["geometry"]["width"] >= 300 else None),
+                 "first window configured before dragging")
+        expected_size = {"width": 360, "height": 220}
     new_output = ipc("wayfire/create-headless-output", {"width": 5120, "height": 1440})["output"]
     wait_for(lambda: len(ipc("window-rules/list-outputs")) == 2, "runtime output")
     wait_for(lambda: (s if (s := ready(new_output["name"])) and s["sources"] == 0
                       and s["topology_prepares"] >= 1 else None),
              "runtime output prepared while empty")
     print(f"runtime output prepared before any window: {new_output}", flush=True)
-    drag_to("hotplug-first", new_output, new_output["geometry"]["width"] / 2)
+    drag_to("hotplug-first", new_output, new_output["geometry"]["width"] / 2,
+            plain=ghostty_first)
     wait_for(lambda: (s if (s := ready(new_output["name"], 1)) and s["steps"] > 0
                       and s["draws"] > 0 else None), "first window's goo rendered")
     first_id = view("hotplug-first")["id"]
@@ -198,7 +229,8 @@ try:
                        if r["id"] == first_id), None)
         center = source["x"] + source["width"] / 2 if source else None
         width = new_output["geometry"]["width"]
-        if (source and source["width"] >= 300 and source["height"] >= 180 and
+        if (source and source["width"] >= expected_size["width"] * .85 and
+                source["height"] >= expected_size["height"] * .85 and
                 width * .35 <= center <= width * .65):
             return source
         return None
