@@ -35,6 +35,37 @@ def check(ok,label):
     print(('PASS ' if ok else 'FAIL ')+label,flush=True)
     assert ok,label
     passed+=1
+
+def rectangle_tuple(rectangle):
+    return tuple(float(rectangle[key]) for key in ('x', 'y', 'width', 'height'))
+
+def check_capture_rectangles():
+    layout = ipc('scottland/layout-state')
+    info = view()
+    row = next(v for v in layout['views'] if v['id'] == info['id'])
+    owner = next(o for o in outputs if o['id'] == info['output-id'])
+    output = owner['geometry']
+    shown = row.get('scene_frame', row.get('frame'))
+    expected = (output['x'] + shown['x'], output['y'] + shown['y'],
+        shown['width'], shown['height'])
+    rectangles = layout['window_rectangles']
+    record_keys = {'id', 'app_id', 'title', 'hidden', 'preview', 'output', 'rect'}
+    by_id = {record['id']: record for record in rectangles}
+    record = by_id[info['id']]
+    check(len(rectangles) == len(layout['views']) and
+        len(by_id) == len(rectangles) and
+        all(set(record) == record_keys for record in rectangles),
+        'layout-state gives every mapped view an explicit identity/output/rectangle record')
+    check(record['output'] == owner['name'] and not record['hidden'] and
+        rectangle_tuple(record['rect']) == expected,
+        'window ID remains paired with its owning output and global drawn rectangle')
+    command = str(Path('core/libexec/scottland-ctl').resolve())
+    cli = json.loads(subprocess.check_output([command, 'windows', '--json'], text=True))
+    check(all(set(window) == record_keys for window in cli) and
+        len({window['id'] for window in cli}) == len(cli) and
+        {window['id']: window for window in cli} == by_id,
+        'scottland-ctl JSON preserves the compositor per-window records')
+
 def launch():
     p=subprocess.Popen([sys.executable,str(Path(__file__).with_name('live-drag-app.py'))],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); clients.append(p)
     for _ in range(100):
@@ -54,6 +85,7 @@ def finish(touch=False):
     else: button(False); key('LEFTMETA',False)
 try:
     p=launch()
+    check_capture_rectangles()
     for touch in (False,True):
         time.sleep(2.7)
         x,y,origin=begin(touch)
@@ -83,6 +115,7 @@ try:
         else: pointer(tx,y)
         time.sleep(.4); finish(touch); time.sleep(.6)
         check(view()['output-id']==other['id'],f'{touch=}: drop transfers output ownership')
+        check_capture_rectangles()
     # A disappearing surface must release every input/scene resource.
     begin(); p.terminate(); p.wait(timeout=5); time.sleep(.4)
     check(not ipc('scottland/test-input')['dragging'],'closing a held window releases the drag')

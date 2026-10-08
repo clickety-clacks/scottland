@@ -7233,6 +7233,21 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::json_t reply = wf::ipc::json_ok();
         wf::json_t views = wf::json_t::array();
         wf::json_t outputs = wf::json_t::array();
+        wf::json_t window_rectangles = wf::json_t::array();
+        auto set_window_rectangle = [] (wf::json_t& window, double x, double y, double width, double height)
+        {
+            if (width <= 0 || height <= 0)
+            {
+                return;
+            }
+
+            wf::json_t rectangle;
+            rectangle["x"] = x;
+            rectangle["y"] = y;
+            rectangle["width"] = width;
+            rectangle["height"] = height;
+            window["rect"] = rectangle;
+        };
         reply["widget_transition_count"] = (int64_t)widget_transitions.size();
         reply["widget_transition_steps"] = (int64_t)widget_transition_steps;
         for (auto output : wf::get_core().output_layout->get_outputs())
@@ -7274,16 +7289,58 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;
             }
 
+            auto output = view->get_output();
+            auto link = link_of_window(view);
+            bool preview = (link && link->previewing()) ||
+                (link_of_widget(view) && link_of_widget(view)->previewing());
+            bool hidden = !view->get_root_node()->is_enabled();
+
+            // Keep the window identity, owning output, and drawn global rectangle in one
+            // snapshot record. Hidden or not-yet-drawn mapped views retain identity with a
+            // null rectangle so consumers never correlate parallel arrays by position.
+            wf::json_t rectangle_entry;
+            rectangle_entry["id"] = (int64_t)view->get_id();
+            rectangle_entry["app_id"] = view->get_app_id();
+            rectangle_entry["title"] = view->get_title();
+            rectangle_entry["hidden"] = hidden;
+            rectangle_entry["preview"] = preview;
+            rectangle_entry["output"] = wf::json_t{};
+            if (output && output->handle)
+            {
+                rectangle_entry["output"] = output->handle->name;
+            }
+            rectangle_entry["rect"] = wf::json_t{};
+            if (output && output->handle && !hidden)
+            {
+                auto layout = output->get_layout_geometry();
+                if (view->pending_fullscreen() || view->toplevel()->current().fullscreen)
+                {
+                    set_window_rectangle(rectangle_entry, layout.x, layout.y, layout.width, layout.height);
+                } else if (frame_of(view, false))
+                {
+                    auto drawn = scene_rectangle(view, output);
+                    set_window_rectangle(rectangle_entry, layout.x + drawn.x1, layout.y + drawn.y1,
+                        drawn.width(), drawn.height());
+                } else
+                {
+                    // A newly mapped non-fullscreen view can precede its frame transformer.
+                    // Its compositor geometry is then its on-screen rectangle at scale 1.
+                    auto geometry = view->get_geometry();
+                    set_window_rectangle(rectangle_entry, layout.x + geometry.x, layout.y + geometry.y,
+                        geometry.width, geometry.height);
+                }
+            }
+            window_rectangles.append(rectangle_entry);
+
             auto placement = placement_of(view);
             wf::json_t entry;
             entry["id"]    = (int64_t)view->get_id();
             entry["title"] = view->get_title();
             entry["app_id"] = view->get_app_id();
             entry["widget"] = is_widget(view);
-            auto link = link_of_window(view);
             entry["widgetized"] = link && !link->previewing();
-            entry["preview"] = (link && link->previewing()) || (link_of_widget(view) && link_of_widget(view)->previewing());
-            entry["hidden"] = !view->get_root_node()->is_enabled();
+            entry["preview"] = preview;
+            entry["hidden"] = hidden;
             entry["zone"]  = zone_name(placement.zone);
             entry["scale"] = placement.scale;
             auto transformer = view->get_transformed_node()->get_transformer<
@@ -7362,6 +7419,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         reply["views"] = views;
+        reply["window_rectangles"] = window_rectangles;
         reply["rail_max_easing_speed_px_s"] = rail_easing_speed_max;
         reply["rail_max_drawn_speed_px_s"] = rail_drawn_speed_max;
         reply["rail_max_drawn_step_px"] = rail_drawn_step_max;

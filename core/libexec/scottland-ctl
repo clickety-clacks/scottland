@@ -6,6 +6,7 @@
   scottland-ctl set min_scale 0.3        apply a value to the running session (not saved)
   scottland-ctl stdin                    apply "name value" lines from stdin (used by the settings app)
   scottland-ctl windows                  list open windows: id, app-id, zone, scale, title
+  scottland-ctl windows --json           print per-window output identity and logical rectangle records
   scottland-ctl present 42               bring window 42 (or its widget's window) to the middle, focused
   scottland-ctl option scottland/sounds  print an option's live value (any Wayfire option)
 
@@ -126,8 +127,17 @@ def main():
         print(json.dumps(reply))
         sys.exit(1 if "error" in reply else 0)
     elif command == "windows":
-        for view in call(sock, "scottland/layout-state", {}).get("views", []):
-            print(f"{view['id']:>5}  {view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")
+        if sys.argv[2:] == ["--json"]:
+            state = call(sock, "scottland/layout-state", {})
+            if "window_rectangles" not in state:
+                print("scottland-ctl: compositor does not provide window rectangles", file=sys.stderr)
+                sys.exit(1)
+            print(json.dumps(state["window_rectangles"]))
+        elif len(sys.argv) == 2:
+            for view in call(sock, "scottland/layout-state", {}).get("views", []):
+                print(f"{view['id']:>5}  {view.get('app_id', ''):32} {view['zone']:11} {view['applied_scale']:.2f}  {view['title'][:60]}")
+        else:
+            sys.exit(__doc__)
     elif command == "stdin":
         for line in sys.stdin:
             if line.strip() == "flush":
