@@ -182,7 +182,7 @@ pub fn load(directories: &[PathBuf]) -> Set {
                 continue;
             }
         };
-        let document = match source.parse::<Value>() {
+        let document = match toml::from_str::<Value>(&source) {
             Ok(document) => document,
             Err(error) => {
                 set.warnings.push(Warning {

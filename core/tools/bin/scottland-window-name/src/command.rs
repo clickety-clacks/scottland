@@ -101,8 +101,8 @@ fn run_once(
                 kill_group(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
-                join_reader(stdout_reader);
-                join_reader(stderr_reader);
+                let _ = join_reader(stdout_reader);
+                let _ = join_reader(stderr_reader);
                 let _ = stdin_writer.join();
                 return Err(format!("command timed out after {timeout_ms} ms"));
             }
@@ -110,8 +110,8 @@ fn run_once(
                 kill_group(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
-                join_reader(stdout_reader);
-                join_reader(stderr_reader);
+                let _ = join_reader(stdout_reader);
+                let _ = join_reader(stderr_reader);
                 let _ = stdin_writer.join();
                 return Err(format!("cannot wait for command: {error}"));
             }

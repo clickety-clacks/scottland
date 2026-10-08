@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn track_metadata_is_decoded_from_an_owned_dbus_value() {
-        let value = zbus::zvariant::OwnedValue::from("Song".to_string());
+        let value = zbus::zvariant::OwnedValue::from(zbus::zvariant::Str::from("Song".to_string()));
         assert_eq!(super::string_value(&value).as_deref(), Some("Song"));
     }
 

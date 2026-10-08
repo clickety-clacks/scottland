@@ -519,6 +519,7 @@ mod tests {
     use crate::mpris::Player;
     use crate::process::{Snapshot, Tree};
     use crate::recipe::Set;
+    use scottland::session::Environment;
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
