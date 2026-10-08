@@ -17,6 +17,7 @@ sys.argv = [sys.argv[0], str(art)]
 h = {}
 exec(compile(source, 'spread-test.py', 'exec'), h)
 ipc, check, wait, geometry, layout = h['ipc'], h['check'], h['wait'], h['geometry'], h['layout']
+hints = h["hints"]
 
 def widgets():
     return {int(w['id']): w['widget_view'] for w in ipc('scottland/widgets')['widgets']}
@@ -104,6 +105,17 @@ try:
     h['shot']('after-reload.png')
     brightness = mean_brightness(art / 'after-reload.png')
     check(brightness > 8, f'after: the screen renders (mean brightness {brightness:.1f})')
+
+    # Window mode in the reloaded session: every window and widget shows its hint.
+    h['alt'](True)
+    try:
+        hinted = wait(lambda: all(any(x['window'] == i and x.get('visible') for x in hints()['hints']) for i in ids),
+                      6, 'hints')
+    except RuntimeError: hinted = False
+    check(hinted, 'after: Window mode shows a hint for every window and widget',
+          str([(x['window'], x.get('visible')) for x in hints()['hints']]))
+    h['shot']('after-hints.png')
+    h['alt'](False)
 
     # The new build's solo works in the reloaded session, widgets present.
     h['setup']([(ids[1], 80, 120, 700, 500), (ids[5], 900, 150, 600, 450), (ids[6], 1100, 700, 600, 450),

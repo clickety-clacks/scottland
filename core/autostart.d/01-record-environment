@@ -3,7 +3,7 @@
 # WAYFIRE_SOCKET, SCOTTLAND_HOOKS, integration variables...) so scottland-exec can run commands
 # in this session from anywhere, with exactly this environment instead of the caller's.
 runtime_base=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-runtime="$runtime_base/scottland"
+runtime="${SCOTTLAND_SESSION_DIR:-$runtime_base/scottland}"
 file="$runtime/${WAYLAND_DISPLAY:-wayland}.env"
 umask 077
 if [ -n "${SCOTTLAND_HEADLESS_OWNER:-}" ]; then

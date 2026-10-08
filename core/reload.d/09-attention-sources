@@ -1,7 +1,7 @@
 #!/bin/sh
 # Restart the attention sources service: it picks up new or changed sources (attention.d/*.ini)
 # and updated code. It keeps no state the sources can't give it again.
-runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+runtime="${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}"
 pid=$(sed -n 1p "$runtime/${WAYLAND_DISPLAY:-wayland}.attention-sources.pid" 2>/dev/null || true)
 if [ -n "$pid" ] && grep -q scottland-attention-sources "/proc/$pid/cmdline" 2>/dev/null; then
   kill "$pid"

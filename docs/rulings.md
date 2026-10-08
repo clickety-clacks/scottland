@@ -45,6 +45,9 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 | 10-07 | per-screen: a glide on one screen switches only that screen to live window avoidance, not all screens. | WK13 |
 | 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
+| 2026-10-06 | "why does 100% mean 21% that makes no sense"; "it should set both. having them different is a bug." The slider is the absolute opacity of the background behind hint letters (100% solid, 0% none), one value and one default for window and widget hints. | WK42, WK26, S23 |
+| 2026-10-07 | "no, it should go from 0 to 100%, this is simple." This corrects an accidental choice to add a contrast floor for widget hint letters, which is void. Hint background opacity is user adjustable across the full 0-100% range, one value for window and widget hints, default 21%. No contrast floor, halo, minimum or automatic adjustment; low values show whatever lies beneath. | WK42, S23 |
+| 2026-10-07 | "Record option 2: both separate settings go 0–100%" (dr_ed09236e). The Window mode hint color overlay (`window_mode_tint`) widens from 0–30% to 0–100%, default still 7%; it stays a separate setting from hint background opacity, which is unchanged. | WK38, S14 |
 
 ## Window mode keys
 
@@ -69,6 +72,7 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Keep current left/right order; vertically centered; pair centered; halo gap given up first. |
 | 10-04 | Nothing is locked afterwards. Pairing is an explicit request, so shrinking center windows is a granted exception to tenet 4. |
 | 2026-10-06 | "going into pairing mode does NOT overwrite a window's saved position in the periphery." |
+| 2026-10-06 | "can we make it so when paired neither of the paired windows is translucent, like a one-time override. dragging the window or otherwise repositioning it/manipulating it doesn't continue this lock. don't know if we need to set a separate flag on it, just set it to opaque once and any other subsequent manipulation does its natural thing." |
 
 Specified in windowing-keys.md WK36 and WP1.
 
