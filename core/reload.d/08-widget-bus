@@ -2,7 +2,7 @@
 # Start the widget service if this session doesn't have one (it predates the service, or it died),
 # and replace one that runs other code than what's installed (an update, then a reload): the
 # service records a fingerprint of its code next to its pid.
-runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+runtime="${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}"
 service="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-widget-bus"
 pid_file="$runtime/${WAYLAND_DISPLAY:-wayland}.widget-bus.pid"
 pid=$(sed -n 1p "$pid_file" 2>/dev/null)

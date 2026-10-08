@@ -10,9 +10,10 @@ export TMPDIR=${TMPDIR:-$HOME/.cache/scottland-build-tmp}; mkdir -p "$TMPDIR"
 make test-hooks >/dev/null
 [[ -x build/hooks/libexec/scottland-exec && -f build/libscottland.so ]] || {
   echo 'this checkout has no test hooks (make test-hooks failed)' >&2; exit 1; }
-mkdir -p build/hint-outline-evidence
+evidence=${SCOTTLAND_TEST_EVIDENCE_DIR:-$PWD/build/hint-outline-evidence}
+mkdir -p "$evidence"
 cleanup() {
-  cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" build/hint-outline-evidence/wayfire.log 2>/dev/null || true
+  cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$evidence/wayfire.log" 2>/dev/null || true
   tests/headless.sh stop >/dev/null 2>&1 || true
 }
 trap cleanup EXIT

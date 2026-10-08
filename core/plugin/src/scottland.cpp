@@ -1033,7 +1033,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
-        if (window_keys.active)
+        if (untouched_since_pairing(view))
+            target = 1.0;  // pairing shows both fully opaque, once (WK36)
+        else if (window_keys.active)
             target = focused ? double(window_mode_opacity_focused) : double(window_mode_opacity_unfocused);
         else if (is_widget(view))
             target = focused ? double(widget_opacity_focused) : double(widget_opacity_unfocused);
@@ -1046,6 +1048,20 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 (focused ? double(side_opacity_focused) : double(side_opacity_unfocused));
         }
         frame->set_configured_opacity(target);
+    }
+
+    // Pairing makes both windows fully opaque once (Mike, 2026-10-06; WK36). Opacity is recomputed
+    // on every focus change, Window mode entry and exit, and setting change, so "once" is kept by the
+    // pair's existing placement record rather than a new flag: a window still exactly where pairing
+    // put it, at the pair's scale, and not being dragged. Any move, resize, rescale or drag ends it.
+    bool untouched_since_pairing(wayfire_toplevel_view view)
+    {
+        auto found = model.windows.find(view->get_id());
+        if (found == model.windows.end() || !found->second.paired_placement || drag->view == view ||
+            is_widget(view) || !view->get_output()) return false;
+        auto& paired = *found->second.paired_placement;
+        return paired.geometry == placed_geometry(view) && paired.output == view->get_output()->to_string() &&
+            paired.pin == found->second.pinned_scale;
     }
 
     void apply_all_opacity()
@@ -2863,11 +2879,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     static constexpr int WIDGET_INSET = (int)scottland::SWOLLEN + 3;  // room for the halo at its widest
 
-    /** $XDG_RUNTIME_DIR/scottland/<display><suffix>: this session's runtime files. */
+    /** Per-session files; headless tests keep them in their owned session directory. */
     static std::string runtime_file(const std::string& suffix)
     {
+        const char *session = getenv("SCOTTLAND_SESSION_DIR");
         const char *runtime = getenv("XDG_RUNTIME_DIR");
         const char *display = getenv("WAYLAND_DISPLAY");
+        if (session && *session)
+        {
+            return std::string(session) + "/" + (display ? display : "wayland") + suffix;
+        }
         return std::string(runtime ? runtime : "/tmp") + "/scottland/" + (display ? display : "wayland") + suffix;
     }
 
@@ -5192,8 +5213,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      *  no noise. Written once as a WAV in the runtime directory. */
     void synthesize_pop()
     {
+        const char *session = getenv("SCOTTLAND_SESSION_DIR");
         const char *runtime = getenv("XDG_RUNTIME_DIR");
-        std::string dir = std::string(runtime ? runtime : "/tmp") + "/scottland";
+        std::string dir = (session && *session) ? std::string(session) :
+            std::string(runtime ? runtime : "/tmp") + "/scottland";
         std::string mkdir = "mkdir -p '" + dir + "'";
         if (system(mkdir.c_str()) != 0)
         {
