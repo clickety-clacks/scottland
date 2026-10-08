@@ -74,6 +74,16 @@ verify_owner() {
     return 1
   }
 }
+wayfire_process_is_ours() {
+  python3 - "$1" "$dir/wayfire.ini" <<'PY'
+import pathlib, sys
+try:
+    args = pathlib.Path('/proc/' + sys.argv[1] + '/cmdline').read_bytes().split(b'\0')
+    sys.exit(not (sys.argv[2].encode() in args and any(a.endswith(b'wayfire') for a in args)))
+except OSError:
+    sys.exit(1)
+PY
+}
 created_scratch=0
 cleanup_created_scratch() {
   status=$?
@@ -114,11 +124,36 @@ if ((inside == 0)); then
       exit 1
       ;;
   esac
+  session_userns_args=()
+  if [[ -f $dir/display ]]; then
+    compositor=$(cat "$dir/compositor.pid" 2>/dev/null || true)
+    if [[ $compositor =~ ^[0-9]+$ ]] && kill -0 "$compositor" 2>/dev/null; then
+      wayfire_process_is_ours "$compositor" || {
+        echo 'headless compositor PID is not this run; refusing to join its namespace' >&2
+        exit 2
+      }
+      if ! exec {session_userns_fd}<"/proc/$compositor/ns/user"; then
+        echo 'cannot open this headless session user namespace; refusing an isolated run' >&2
+        exit 2
+      fi
+      session_userns_args=(--userns "$session_userns_fd")
+    elif [[ ${1:-} == run || ${1:-} == ipc ]]; then
+      echo 'headless compositor is not live; refusing to run outside its session namespace' >&2
+      exit 2
+    fi
+  fi
+  bwrap_args=(--bind / / --dev-bind /dev /dev)
+  if ((${#session_userns_args[@]})); then
+    bwrap_args+=("${session_userns_args[@]}")
+  fi
+  bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
+    --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
   # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
-  # compositor can see its render node; runtime and TMPDIR remain privately bound below.
-  if bwrap --bind / / --dev-bind /dev /dev --bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp \
-    --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch" \
-    -- "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
+  # compositor can see its render node. Reuse a live session's user namespace for later
+  # invocations so run processes retain access to that session's /proc entries; runtime and
+  # TMPDIR are still privately bound to this run's owned scratch.
+  if bwrap "${bwrap_args[@]}" -- \
+    "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
     exit 0
   else
     status=$?
@@ -138,16 +173,6 @@ hooks=$repo/build/hooks
 exec_tool=$hooks/libexec/scottland-exec
 
 display() { cat "$dir/display"; }
-wayfire_process_is_ours() {
-  python3 - "$1" "$dir/wayfire.ini" <<'PY'
-import pathlib, sys
-try:
-    args = pathlib.Path('/proc/' + sys.argv[1] + '/cmdline').read_bytes().split(b'\0')
-    sys.exit(not (sys.argv[2].encode() in args and any(a.endswith(b'wayfire') for a in args)))
-except OSError:
-    sys.exit(1)
-PY
-}
 session_process_is_ours() {
   python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" <<'PY'
 import pathlib, sys
