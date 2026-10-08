@@ -862,13 +862,11 @@ unsafe extern "C" {
 }
 
 const LOCK_EX: i32 = 2;
-const LOCK_NB: i32 = 4;
 
 fn allow_mute_toggle(sink: &str) -> Result<bool, String> {
     let runtime = scottland::dirs::runtime_dir();
     fs::create_dir_all(&runtime).map_err(|error| format!("mute-toggle debounce: {error}"))?;
-    let checked_at = timestamp_ms();
-    allow_mute_toggle_in(&runtime, checked_at, || {
+    allow_mute_toggle_in(&runtime, timestamp_ms, || {
         run_checked(
             "pactl",
             &["set-sink-mute", sink, "toggle"],
@@ -887,7 +885,7 @@ fn timestamp_ms() -> u64 {
 
 fn allow_mute_toggle_in(
     runtime: &Path,
-    checked_at: u64,
+    now: impl FnOnce() -> u64,
     toggle: impl FnOnce() -> Result<u64, String>,
 ) -> Result<bool, String> {
     let state_path = runtime.join("scottland-audio-output-volume-mute-toggle.last");
@@ -898,14 +896,12 @@ fn allow_mute_toggle_in(
         .write(true)
         .open(state_path)
         .map_err(|error| format!("mute-toggle debounce: {error}"))?;
-    let locked = unsafe { flock(state.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    let locked = unsafe { flock(state.as_raw_fd(), LOCK_EX) };
     if locked != 0 {
         let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::WouldBlock {
-            return Ok(false);
-        }
         return Err(format!("mute-toggle debounce: {error}"));
     }
+    let checked_at = now();
     let mut contents = String::new();
     state
         .read_to_string(&mut contents)
@@ -952,10 +948,14 @@ mod tests {
         let directory = mute_toggle_test_dir("debounce");
         let toggled = std::cell::Cell::new(false);
 
-        let accepted = allow_mute_toggle_in(&directory, 1_000, || {
-            toggled.set(true);
-            Ok(1_025)
-        })
+        let accepted = allow_mute_toggle_in(
+            &directory,
+            || 1_000,
+            || {
+                toggled.set(true);
+                Ok(1_025)
+            },
+        )
         .unwrap();
 
         assert!(accepted);
@@ -974,10 +974,14 @@ mod tests {
         fs::write(&state_path, "1000\n").unwrap();
         let toggled = std::cell::Cell::new(false);
 
-        let accepted = allow_mute_toggle_in(&directory, 1_249, || {
-            toggled.set(true);
-            Ok(1_249)
-        })
+        let accepted = allow_mute_toggle_in(
+            &directory,
+            || 1_249,
+            || {
+                toggled.set(true);
+                Ok(1_249)
+            },
+        )
         .unwrap();
 
         assert!(!accepted);
@@ -993,7 +997,7 @@ mod tests {
         let state_path = directory.join("scottland-audio-output-volume-mute-toggle.last");
         fs::write(&state_path, "1000\n").unwrap();
 
-        let result = allow_mute_toggle_in(&directory, 1_300, || Err("toggle failed".into()));
+        let result = allow_mute_toggle_in(&directory, || 1_300, || Err("toggle failed".into()));
 
         assert_eq!(result, Err("toggle failed".into()));
         assert_eq!(fs::read_to_string(&state_path).unwrap(), "1000\n");
@@ -1007,7 +1011,7 @@ mod tests {
         let state_path = directory.join("scottland-audio-output-volume-mute-toggle.last");
         fs::write(&state_path, "1000\n").unwrap();
 
-        let accepted = allow_mute_toggle_in(&directory, 1_250, || Ok(1_250)).unwrap();
+        let accepted = allow_mute_toggle_in(&directory, || 1_250, || Ok(1_250)).unwrap();
 
         assert!(accepted);
         assert_eq!(fs::read_to_string(&state_path).unwrap(), "1250\n");
