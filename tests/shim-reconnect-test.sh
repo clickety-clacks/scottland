@@ -13,7 +13,9 @@ esac
 }
 artifacts=$PWD/build/shim-reconnect-evidence
 mkdir -p "$artifacts"
-export SCOTTLAND_HEADLESS_OWNER="shim-reconnect-$$"
+# The session environment hooks require a UUID owner token and its scratch directory.
+export SCOTTLAND_HEADLESS_OWNER="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+export SCOTTLAND_HEADLESS_OWNER_DIR="$SCOTTLAND_HEADLESS_DIR"
 cleanup() {
   cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$artifacts/wayfire.log" 2>/dev/null || true
   cp "$SCOTTLAND_HEADLESS_DIR/state/scottland/hyprshim.log" "$artifacts/hyprshim.log" 2>/dev/null || true
