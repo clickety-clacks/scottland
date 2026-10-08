@@ -145,6 +145,18 @@ ShellRoot {
           border.width: 1
           border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
 
+          Text {
+            anchors.fill: search
+            anchors.leftMargin: 14
+            anchors.rightMargin: 14
+            verticalAlignment: Text.AlignVCenter
+            text: "Type to narrow"
+            visible: search.text.length === 0
+            color: root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 15 * root.textScale
+          }
+
           TextInput {
             id: search
             anchors.fill: parent
@@ -152,8 +164,6 @@ ShellRoot {
             anchors.rightMargin: 14
             verticalAlignment: TextInput.AlignVCenter
             color: root.foreground
-            placeholderText: "Type to narrow"
-            placeholderTextColor: root.muted
             font.family: root.fontFamily
             font.pixelSize: 15 * root.textScale
             selectByMouse: true
