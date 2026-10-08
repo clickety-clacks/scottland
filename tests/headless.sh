@@ -15,7 +15,7 @@
 #                                         SCOTTLAND_TEST_PRELOAD=LIB preloads LIB into Wayfire only
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
-#   tests/headless.sh stop
+#   tests/headless.sh stop [--preserve-scratch]
 #
 # Requires bubblewrap to put a run-owned runtime view at XDG_RUNTIME_DIR without changing its
 # value. All runtime files and TMPDIR then live under the validated checkout build scratch.
@@ -85,6 +85,35 @@ except OSError:
     sys.exit(1)
 PY
 }
+scratch_mounts_clear() {
+  python3 - "$dir" "$runtime_scratch" "$tmp_scratch" <<'PY'
+import os, re, sys
+
+roots = tuple(os.path.normpath(path) for path in sys.argv[1:])
+def unescape_mount_path(path):
+    return re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1), 8)), path)
+
+try:
+    with open('/proc/self/mountinfo', encoding='utf-8') as mountinfo:
+        for line in mountinfo:
+            fields = line.split()
+            if len(fields) < 5:
+                continue
+            mounted = unescape_mount_path(fields[4])
+            if any(mounted == root or mounted.startswith(root + os.sep) for root in roots):
+                print(f'refusing to remove headless scratch while a mount remains at {mounted}',
+                      file=sys.stderr)
+                sys.exit(1)
+except OSError as error:
+    print(f'cannot verify headless scratch mounts; preserving scratch: {error}', file=sys.stderr)
+    sys.exit(1)
+PY
+}
+remove_owned_scratch() {
+  verify_owner || return 1
+  scratch_mounts_clear || return 1
+  rm -rf -- "$dir"
+}
 created_scratch=0
 cleanup_created_scratch() {
   status=$?
@@ -95,6 +124,8 @@ cleanup_created_scratch() {
   exit "$status"
 }
 if ((inside == 0)); then
+  action=${1:-}
+  preserve_scratch=0
   case ${1:-} in
     start)
       command -v bwrap >/dev/null || { echo 'headless tests need bubblewrap for runtime isolation' >&2; exit 2; }
@@ -112,6 +143,11 @@ if ((inside == 0)); then
       fi
       ;;
     stop)
+      if [[ $# -gt 2 || ( -n ${2:-} && ${2:-} != --preserve-scratch ) ]]; then
+        echo 'stop accepts only the optional --preserve-scratch flag' >&2
+        exit 2
+      fi
+      [[ ${2:-} != --preserve-scratch ]] || preserve_scratch=1
       [[ -e $dir || -L $dir ]] || exit 0
       command -v bwrap >/dev/null || { echo 'headless cleanup needs bubblewrap for runtime isolation' >&2; exit 2; }
       verify_owner || exit 2
@@ -142,6 +178,24 @@ if ((inside == 0)); then
       echo 'headless compositor is not live; refusing to run outside its session namespace' >&2
       exit 2
     fi
+  elif [[ $action == stop ]]; then
+    # A startup can fail after Wayfire starts but before the display/environment markers are
+    # published. Join only when the partial-start PID still proves it is this run's Wayfire.
+    for pid_file in "$dir/compositor.pid" "$dir/pid"; do
+      cleanup_pid=$(cat "$pid_file" 2>/dev/null || true)
+      if [[ $cleanup_pid =~ ^[0-9]+$ ]] && kill -0 "$cleanup_pid" 2>/dev/null; then
+        wayfire_process_is_ours "$cleanup_pid" || {
+          echo 'partial headless PID is not this run; refusing to join its namespace' >&2
+          exit 2
+        }
+        if ! exec {session_userns_fd}<"/proc/$cleanup_pid/ns/user"; then
+          echo 'cannot open this partial headless session user namespace; preserving scratch' >&2
+          exit 2
+        fi
+        session_userns_args=(--userns "$session_userns_fd")
+        break
+      fi
+    done
   fi
   bwrap_args=(--bind / / --dev-bind /dev /dev)
   if ((${#session_userns_args[@]})); then
@@ -155,14 +209,22 @@ if ((inside == 0)); then
   # TMPDIR are still privately bound to this run's owned scratch.
   if bwrap "${bwrap_args[@]}" -- \
     "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
-    exit 0
+    status=0
   else
     status=$?
-    if [[ -d $dir && ! -e $dir/pid && ! -e $dir/display ]] && verify_owner; then
-      rm -rf -- "$dir"
-    fi
-    exit "$status"
   fi
+  if [[ $action == start && $status -ne 0 && -d $dir && ! -L $dir ]] && verify_owner; then
+    # The failed start has left its private namespace. Stop any partial session from the outer
+    # namespace and retain logs/owner state for the caller's EXIT trap to capture first.
+    if ! "$repo/tests/headless.sh" stop --preserve-scratch; then
+      echo 'failed to stop partial headless session; preserving owned scratch for inspection' >&2
+    fi
+  fi
+  if [[ $action == stop && $status -eq 0 && $preserve_scratch -eq 0 ]]; then
+    remove_owned_scratch || exit 2
+    echo 'removed run-owned headless scratch after its private namespace exited'
+  fi
+  exit "$status"
 fi
 verify_owner || exit 2
 export XDG_RUNTIME_DIR=$runtime TMPDIR=$tmp_scratch SCOTTLAND_HEADLESS_DIR=$dir
@@ -215,15 +277,6 @@ case ${1:-} in
       echo 'headless scratch is not fresh; stop it or choose a fresh directory' >&2
       exit 1
     fi
-    cleanup_failed_start() {
-      status=$?
-      trap - EXIT
-      if ((status != 0)); then
-        "$repo/tests/headless.sh" stop || echo 'failed to clean owned headless scratch; inspect it before retrying' >&2
-      fi
-      exit "$status"
-    }
-    trap cleanup_failed_start EXIT
     started=(01-record-environment)
     test_goo=${SCOTTLAND_TEST_GOO:-}
     test_gles=${SCOTTLAND_TEST_GOO_GLES:-}
@@ -321,14 +374,19 @@ WRAPPER
     )
     for _ in $(seq 100); do
       name=$(sed -n 's/.*Using socket name \(wayland-[0-9]*\).*/\1/p' "$dir/wayfire.log")
-      [[ -n $name && -f $runtime/scottland/$name.env ]] && break
+      env_file=$runtime/scottland/$name.env
+      [[ -n $name && -f $env_file && ! -L $env_file && -s $env_file ]] && break
       sleep 0.1
     done
-    [[ -n ${name:-} ]] || { echo "headless Scottland didn't start; see $dir/wayfire.log" >&2; exit 1; }
-    echo "$name" >"$dir/display"
+    [[ -n ${name:-} ]] || { echo "headless Wayfire didn't publish a socket name; see $dir/wayfire.log" >&2; exit 1; }
+    env_file=$runtime/scottland/$name.env
+    [[ -f $env_file && ! -L $env_file && -s $env_file ]] || {
+      echo "headless session environment record is missing or redirected: $env_file; see $dir/wayfire.log" >&2
+      exit 1
+    }
     # The debugger/private-bus wrapper can exit independently. Retain the actual
     # compositor identity so stop still reaps our inferior in that case.
-    python3 - "$runtime/scottland/$name.env" "$dir/compositor.pid" <<'PY'
+    python3 - "$env_file" "$dir/compositor.pid" <<'PY'
 import pathlib, socket, struct, sys
 entries = pathlib.Path(sys.argv[1]).read_bytes().split(b'\0')
 endpoint = next(e.split(b'=', 1)[1] for e in entries if e.startswith(b'WAYFIRE_SOCKET='))
@@ -338,9 +396,9 @@ with socket.socket(socket.AF_UNIX) as peer:
     pid, _, _ = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
 pathlib.Path(sys.argv[2]).write_text(str(pid) + '\n')
 PY
+    echo "$name" >"$dir/display"
     sleep 1
     echo "headless Scottland on $name (hooks: ${started[*]})"
-    trap - EXIT
     ;;
   run)
     shift
@@ -368,8 +426,7 @@ PY
           [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
         fi
       fi
-      rm -rf -- "$dir"
-      echo 'stopped partial headless Scottland scratch'
+      echo 'stopped partial headless session; retaining owned scratch for outer cleanup'
       exit 0
     fi
     name=$(display)
@@ -430,8 +487,7 @@ PY
     [[ $group != "$pid" ]] || kill -9 -- "-$pid" 2>/dev/null || true
     [[ -z $compositor ]] || kill -9 "$compositor" 2>/dev/null || true
     rm -f "$runtime/scottland/$name.env" "$runtime/scottland/$name.lua.fifo"
-    rm -rf "$dir"
-    echo "stopped headless Scottland on $name"
+    echo "stopped headless Scottland on $name; retaining owned scratch for outer cleanup"
     ;;
   *)
     sed -n '2,15p' "$0"; exit 1
