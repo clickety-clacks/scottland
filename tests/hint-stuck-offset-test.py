@@ -143,15 +143,23 @@ def run_case(name, front, rears, exposed_touch=None, keep_focused=None):
             if state.get('hold_window') != front:
                 raise RuntimeError(f'{name}: touch held window {state.get("hold_window")}, expected front {front}')
             if keep_focused is not None:
-                # A touch can change keyboard focus. Keep the cover anchored so the held front
-                # remains eligible for the same avoidance target as the frozen case.
+                # A touch can change focus. Restore the cover as the solver anchor and confirm
+                # that the real hold is still on Front before the configured lift timer expires.
                 ipc('window-rules/focus-view', dict(id=keep_focused))
+                wait(lambda: (lambda s: s if s.get('hold_armed') and not s.get('lifted') and
+                              not s.get('dragging') and s.get('hold_window') == front and
+                              s.get('avoidance_anchor_window') == keep_focused else None)(test_input()),
+                     name + ': Anchor focus restored while Front remains held', limit=1,
+                     timeout_detail=lambda: json.dumps(test_input()))
         key('LEFTALT', True)
         last_front = {}
         def target_away():
             row = rows()[front]
             last_front.update({key: row.get(key) for key in ('dx', 'dy', 'target_dx', 'target_dy', 'rule', 'rung')})
             last_front['away'] = away(row)
+            input_state = test_input()
+            last_front['input'] = {key: input_state.get(key) for key in
+                                   ('hold_armed', 'hold_window', 'avoidance_anchor_window', 'lifted', 'dragging')}
             return row if last_front['away'] > 20 else None
         wait(target_away, name + ': front window given a target away from where it is drawn',
              timeout_detail=lambda: json.dumps(last_front))
