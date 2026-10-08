@@ -1,5 +1,62 @@
 # Scottland: agent guide
 
+## Branches and releases (Mike, 2026-10-08)
+
+Every agent working in this repository follows this. It replaces ad hoc integration and `ship-*` branches.
+
+**Where things stand (2026-10-08)**
+
+- osanwe runs `v0.1.0` (`d3c8397`). `main` holds the next release, `v0.2.0` (cut 2): from now on only
+  fixes land on `main` until `v0.2.0` ships.
+- `0.3` is open for new feature work (adapter-fixes, monitor translation, the env-import fix, goo on new
+  screens, middle-press drag, touchpad while typing, and what the Gooarchy PO targets at it).
+- No merge queue or CI exists yet; the Gooarchy PDO is setting them up. Until then, immediately before
+  merging: update your branch to the target branch's current tip and rerun the fast checks on that exact
+  result.
+
+**Branches**
+
+- `main` is the released line: exactly what users run (Mike's osanwe, Omarchy users). Only fixes to the
+  shipped release land here, and every release on it is a tag.
+- One branch per upcoming release, named for its version (`0.3`, `0.4`, ...). Feature work targets the
+  release it is planned for: open your PR against that branch, never against `main`.
+- A later release branch is cut from the one before it and stays current by merging it forward: whenever
+  `main` changes, merge `main` into the oldest open release branch; whenever a release branch changes,
+  merge it into the next one. So `0.4` always contains all of `0.3` as it stands, and each future release
+  can be built and tested at any time.
+- Feature branches are short-lived and deleted after merge. Name them for the work, not for a date.
+
+**Landing a change**
+
+- A PR lands only through the merge queue for its target branch. The queue tests the actual merge result
+  (target branch + PRs ahead of it + this PR) with the fast checks: build, unit tests, and the headless
+  suites on the shared test hosts. Do not merge by hand after a stale green run.
+- Review by an author of the other harness is still required before a PR enters the queue.
+- A change that must land before it is finished goes in behind a setting that is off by default.
+- If the integrated branch breaks after a merge, revert or fix forward immediately; do not stack work on a
+  red branch.
+
+**Testing a release**
+
+- The full rehearsal (install and reload from the version osanwe runs, real-session checks, racter on
+  NVIDIA for rendering) runs on each release branch head regularly and before every release, not per PR.
+  Fixture runs (headless on plumbus/nacelle) are preflight, not acceptance.
+- osanwe is never a test host. It changes only when Mike says go.
+
+**Shipping**
+
+- When a release branch passes its full rehearsal: tag the candidate (`v0.3.0-rc1`), rehearse that exact
+  tag, then merge the branch into `main`, tag `v0.3.0`, and open the next release branch if it does not
+  already exist. Work not landed rides the next release; no release waits for a late feature.
+- Tell Mike "ready for osanwe" with the tag and its contents list (what users get, in product terms).
+- A fix to a shipped release when `main` cannot take it directly: branch `release/0.3` from the tag,
+  cherry-pick the fix from where it landed, tag `v0.3.1`, merge forward.
+
+**Consumers**
+
+- Gooarchy and gooarchy-flavorings consume this repository by tag, never by branch or untagged commit.
+  Gooarchy's next-release branch may pin this repository's next release branch head for testing.
+
 ## Test host on osanwe (Mike, 2026-10-02)
 
 Do not run Scottland tests, headless sessions, extra Wayfire/Quickshell instances,
