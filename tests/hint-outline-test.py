@@ -94,8 +94,9 @@ def require_isolated_headless_session():
         owner_lines = marker.read_text().splitlines()
     except OSError as error:
         refuse(f"headless owner record cannot be read: {error}")
-    if owner_lines != [str(os.getuid()), str(runtime)]:
-        refuse("headless owner record does not match this uid and canonical runtime")
+    owner_token = env.get("SCOTTLAND_HEADLESS_OWNER", "")
+    if owner_lines != [str(os.getuid()), str(runtime), owner_token]:
+        refuse("headless owner record does not match this uid, canonical runtime, and owner token")
     # wayland-1 is normal when a fresh private runtime starts empty; prove the bind mount instead.
     same_inode(runtime, private_runtime, "XDG_RUNTIME_DIR")
     same_inode(Path("/tmp"), private_tmp, "/tmp")
