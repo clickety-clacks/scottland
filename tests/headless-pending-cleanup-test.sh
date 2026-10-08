@@ -57,6 +57,8 @@ for entry in pathlib.Path('/proc').iterdir():
         continue
     proc = entry
     try:
+        if proc.stat().st_uid != os.getuid():
+            continue
         raw_stat = (proc / 'stat').read_bytes()
         fields = raw_stat[raw_stat.rfind(b')') + 2:].split()
         state = fields[0]
@@ -78,35 +80,14 @@ for entry in pathlib.Path('/proc').iterdir():
     if env.get(b'SCOTTLAND_HEADLESS_DIR') == scratch:
         found.append((entry.name, process_group))
 if found:
-    print(f'run-owned processes remain after failed-start stop: {found}', file=sys.stderr)
-    sys.exit(1)
-if expected_pgid > 0:
-    group_members = []
-    for entry in pathlib.Path('/proc').iterdir():
-        if not entry.name.isdecimal():
-            continue
-        try:
-            raw_stat = (entry / 'stat').read_bytes()
-            fields = raw_stat[raw_stat.rfind(b')') + 2:].split()
-            state = fields[0]
-            process_group = int(fields[2])
-            env = dict(part.split(b'=', 1) for part in
-                       (entry / 'environ').read_bytes().split(b'\0') if b'=' in part)
-        except FileNotFoundError:
-            continue
-        except PermissionError as error:
-            print(f'cannot verify process group {expected_pgid}: {error}', file=sys.stderr)
-            sys.exit(2)
-        except (IndexError, ValueError, OSError) as error:
-            print(f'cannot verify process group {expected_pgid}: {error}', file=sys.stderr)
-            sys.exit(2)
-        if state not in (b'Z', b'X') and process_group == expected_pgid and \
-                env.get(b'SCOTTLAND_HEADLESS_DIR') == scratch:
-            group_members.append(entry.name)
+    group_members = [pid for pid, process_group in found
+                     if expected_pgid > 0 and process_group == expected_pgid]
     if group_members:
         print(f'run-owned process group {expected_pgid} remains: {group_members}',
               file=sys.stderr)
         sys.exit(1)
+    print(f'run-owned processes remain after failed-start stop: {found}', file=sys.stderr)
+    sys.exit(1)
 PY
 }
 
