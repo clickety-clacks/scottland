@@ -2,13 +2,14 @@
 """WK41: one foreground offset that never settles must not hide the hints behind it.
 
 Run in a caller-owned headless session. Alt and the touch hold are real stipc input. Window
-placement and focus are declared IPC fixture setup. The first case injects the fault through the
-test-session-only `freeze_offset` field of scottland/hints: the front window's avoidance offset
-never steps toward its target. That bypasses no input layer; it stands in for an ease that cannot
-finish (a target that keeps changing). The second case needs no hook: a finger held on the front
-window keeps it where it is drawn while Window mode moves the others. Each case passes when both
-rear windows' hint letters are found in captured pixels while the front offset is still away from
-its target, and absent from the same circles before Alt.
+placement and focus are declared IPC fixture setup. A separate, focused cover window gives the
+tested front window a real avoidance target while leaving part of it touchable. The first case
+injects the fault through the test-session-only `freeze_offset` field of scottland/hints: the
+front window's avoidance offset never steps toward its target. That bypasses no input layer; it
+stands in for an ease that cannot finish (a target that keeps changing). The second case holds a
+real touch on the exposed part of the front window and confirms the hold is armed before Alt.
+Each case passes when both rear windows' hint letters are found in captured pixels while the
+front offset is still away from its target, and absent from the same circles before Alt.
 """
 import json
 import math
@@ -69,12 +70,13 @@ def key(name, down):
 
 def rows(): return {h['window']: h for h in ipc('scottland/hints')['hints']}
 def views(): return ipc('window-rules/list-views')
+def test_input(): return ipc('scottland/test-input')
 
 
-def launch(title, color):
+def launch(title, color, width=420, height=320):
     palette = art / (title + '.json'); palette.write_text(json.dumps(dict(background=color)))
     clients.append(subprocess.Popen([sys.executable, str(Path(__file__).with_name('hint-style-app.py')),
-                                    title, '420', '320', str(palette)],
+                                    title, str(width), str(height), str(palette)],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     return wait(lambda: next((v['id'] for v in views() if v.get('title') == title), None), title + ' mapped')
 
@@ -109,11 +111,35 @@ def at_rest():
     return all(away(r) < .1 and abs(r['dx']) < .1 and abs(r['dy']) < .1 for r in rows().values())
 
 
-def run_case(name, front, rears):
+def touch_point(window, blockers):
+    state = rows()
+    frame = state[window]['drawn']
+    blocked = [state[w]['drawn'] for w in blockers]
+    # Avoid rounded window corners and leave a margin from a foreground surface so the
+    # real touch hit test must land on the intended, exposed window.
+    for fx, fy in ((.15, .5), (.85, .5), (.5, .15), (.5, .85),
+                   (.25, .25), (.75, .25), (.25, .75), (.75, .75)):
+        x = frame['x'] + frame['width'] * fx
+        y = frame['y'] + frame['height'] * fy
+        if all(not (b['x'] - 8 <= x <= b['x'] + b['width'] + 8 and
+                    b['y'] - 8 <= y <= b['y'] + b['height'] + 8) for b in blocked):
+            return round(x), round(y)
+    raise RuntimeError(f'no exposed touch point on window {window}: frame={frame}, blockers={blocked}')
+
+
+def run_case(name, front, rears, exposed_touch=None):
     before = capture(name + '-before-alt')
-    key('LEFTALT', True)
-    # The front window is displaced by Window mode, and its offset does not follow.
     try:
+        if exposed_touch:
+            x, y = exposed_touch
+            ipc('stipc/touch', dict(finger=0, x=x, y=y))
+            global touching
+            touching = True
+            wait(lambda: (lambda s: s if s.get('hold_armed') and not s.get('lifted') and
+                          not s.get('dragging') else None)(test_input()),
+                 name + ': real touch hold armed on the tested front window')
+        key('LEFTALT', True)
+        # The unanchored front window is displaced by Window mode; its offset does not follow.
         wait(lambda: away(rows()[front]) > 20, name + ': front window given a target away from where it is drawn')
         shown = wait(lambda: (lambda r: r if all(r[w].get('visible') and r[w].get('pop', 0) >= .999 and
                                                  r[w].get('badge') for w in rears) else None)(rows()),
@@ -128,6 +154,12 @@ def run_case(name, front, rears):
                   front_target=(after[front]['target_dx'], after[front]['target_dy']), rears={})
     check(name + ': front offset still away from its target while rear hints show',
           away(shown[front]) > 20 and away(after[front]) > 20, json.dumps(record))
+    if exposed_touch:
+        input_state = test_input()
+        record['touch_input'] = input_state
+        check(name + ': touch remains armed without lifting or dragging while rear hints show',
+              input_state.get('hold_armed') and not input_state.get('lifted') and
+              not input_state.get('dragging'), json.dumps(input_state))
     for w in rears:
         found, baseline = letter_pixels(shot, shown[w]), letter_pixels(before, shown[w])
         record['rears'][w] = dict(letter_pixels=found, before_alt=baseline, badge=shown[w]['badge'])
@@ -139,20 +171,27 @@ def run_case(name, front, rears):
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/window_mode_tint': 0,
+        'scottland/lift_delay': 1500,
         'scottland/window_avoidance_always': False, 'scottland/hint_avoidance_always': False})
     output = ipc('window-rules/list-outputs')[0]['geometry']
     ids = [launch(title, color) for title, color in
            (('RearA', '#1f232c'), ('RearB', '#24302a'), ('Front', '#2c2420'))]
+    ids.append(launch('Anchor', '#242a34', 200, 160))
     rect = dict(x=output['x'] + output['width'] // 2 - 210, y=output['y'] + output['height'] // 2 - 160,
                 width=420, height=320)
-    for identifier in ids:
+    anchor_rect = dict(x=output['x'] + output['width'] // 2 - 100,
+                       y=output['y'] + output['height'] // 2 - 80, width=200, height=160)
+    for identifier in ids[:-1]:
         ipc('window-rules/configure-view', dict(id=identifier, geometry=rect))
-        ipc('window-rules/focus-view', dict(id=identifier))
-    front, rears = ids[-1], ids[:-1]
+    ipc('window-rules/configure-view', dict(id=ids[-1], geometry=anchor_rect))
+    # Keep the cover focused and above Front. The tested Front window is intentionally
+    # unanchored, so Window mode gives it a nonzero avoidance target.
+    ipc('window-rules/focus-view', dict(id=ids[-1]))
+    front, rears, anchor = ids[2], ids[:2], ids[3]
     def centers():
         return [(g['x'] + g['width'] / 2, g['y'] + g['height'] / 2)
                 for g in (v['geometry'] for v in views() if v['id'] in ids)]
-    wait(lambda: len(centers()) == 3 and max(math.dist(a, b) for a in centers() for b in centers()) < 30,
+    wait(lambda: len(centers()) == 4 and max(math.dist(a, b) for a in centers() for b in centers()) < 30,
          'fixture stacked')
 
     # Case 1: an offset that cannot ease to its target (fault injection).
@@ -161,13 +200,9 @@ try:
     ipc('scottland/hints', dict(freeze_offset=0))
     wait(at_rest, 'offsets home after the frozen case')
 
-    # Case 2: a finger held on the front window, through and past its lift (real touch input).
-    frame = next(v for v in views() if v['id'] == front)['geometry']
-    ipc('window-rules/focus-view', dict(id=front))
-    ipc('stipc/touch', dict(finger=0, x=round(frame['x'] + frame['width'] / 2),
-                            y=round(frame['y'] + frame['height'] / 2)))
-    touching = True
-    run_case('held', front, rears)
+    # Case 2: keep a real touch hold pending on Front while Window mode moves the others.
+    # The cover is smaller than Front, leaving a pixel-checked geometric hit-test point.
+    run_case('held', front, rears, touch_point(front, [anchor]))
     ipc('stipc/touch_release', dict(finger=0)); touching = False
     print(f'hint stuck offset: {passes} passed, {failures} failed', flush=True)
     sys.exit(bool(failures))
