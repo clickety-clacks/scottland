@@ -140,11 +140,35 @@ def at_rest():
                 for h in state['hints'])) and state
 
 
-def settled_in_mode(count):
-    """Every hint shown at full size, nothing moving, the solve finished."""
-    state = at_rest()
-    return (state and state['active'] and len(state['hints']) == count and
-            all(h.get('visible') and abs(h.get('pop', 0) - 1) < 1e-3 for h in state['hints'])) and state
+def settled_hints(count):
+    """Wait for the actual badge geometry to remain settled before recording it as final."""
+    previous = None
+    stable_since = None
+
+    def ready():
+        nonlocal previous, stable_since
+        state = at_rest()
+        if not (state and state['active'] and len(state['hints']) == count and
+                not state['hint_step_animation'] and not state['hint_step_offset'] and
+                not state['occlusion_pending'] and all(
+                    h.get('visible') and abs(h.get('pop', 0) - 1) < 1e-3 and 'badge' in h
+                    for h in state['hints'])):
+            previous = None
+            stable_since = None
+            return False
+
+        positions = tuple((h['window'], *(round(h['badge'][key], 3) for key in ('x', 'y', 'size')))
+                          for h in state['hints'])
+        now = time.monotonic()
+        if positions != previous:
+            previous = positions
+            stable_since = now
+            return False
+        if stable_since is None or now - stable_since < .25:
+            return False
+        return state
+
+    return ready
 
 
 # ---------------------------------------------------------------------------- frames
@@ -351,7 +375,7 @@ def record_entry(label, count):
     wait(lambda: 'Output #0' in log.read_text(), 'the recorder to start')
     key('LEFTALT', True)
     wait(lambda: ipc('scottland/hints')['active'], 'Window mode')
-    final = wait(lambda: settled_in_mode(count), 'every hint to settle')
+    final = wait(settled_hints(count), 'every hint position to remain settled')
     final['views'] = list(views().values())
     # Frames presented after the settled state: a paced pointer gesture along the empty top
     # edge. The judge requires the last recorded frame to show every settled hint.
