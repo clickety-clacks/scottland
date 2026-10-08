@@ -13,6 +13,17 @@ assert signature.startswith("scottland_")
 directory = runtime / "hypr" / signature
 lock = directory / "hyprland.lock"
 original_pid = int(lock.read_text().splitlines()[0])
+try:
+    shim_environment = dict(entry.split(b"=", 1) for entry in
+                            (Path("/proc") / str(original_pid) / "environ").read_bytes().split(b"\0")
+                            if b"=" in entry)
+except OSError as error:
+    raise AssertionError(
+        f"headless run cannot read session shim /proc/{original_pid}/environ: {error}") from error
+assert shim_environment.get(b"HYPRLAND_INSTANCE_SIGNATURE") == signature.encode(), \
+    "headless run read an environment from the wrong session shim"
+assert shim_environment.get(b"WAYLAND_DISPLAY") == os.environ["WAYLAND_DISPLAY"].encode(), \
+    "headless run read a shim environment for the wrong display"
 log = Path(os.environ["SCOTTLAND_TEST_STATE"]) / "scottland" / "hyprshim.log"
 assert os.environ["XDG_STATE_HOME"] == os.environ["SCOTTLAND_TEST_STATE"]
 assert log.is_file(), "shim log missing from the isolated state directory"
@@ -66,3 +77,4 @@ finally:
     events.close()
 print("PASS shim keeps its Hyprland PID, answers hyprctl and resumes events after both Wayfire IPC clients close")
 print("PASS shim log stays under the isolated session state directory")
+print("PASS headless run reads the session shim's environment from /proc")
