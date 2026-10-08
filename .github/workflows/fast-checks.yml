@@ -10,6 +10,38 @@ permissions:
   contents: read
 
 jobs:
+  cloud-build-units:
+    # Fresh GitHub VMs accept public-fork PR code. These jobs give routine
+    # x86_64/ARM build and unit coverage without placing fork code on local hosts.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+          - runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the tested merge result
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact subject and toolchain
+        run: |
+          git rev-parse HEAD
+          uname -m
+          cargo --version
+          c++ --version
+      - name: Build and test Rust tools
+        run: |
+          make tools-test
+          make tools
+      - name: Pure C++ plugin units
+        run: |
+          for suite in inertia navigation pairing peek rail-make-room spread windowing; do
+            bash "tests/${suite}-unit.sh"
+          done
+
   fast-checks:
     # Public fork code must not execute on private self-hosted machines.
     if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
