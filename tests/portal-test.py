@@ -5,6 +5,9 @@ Isolated headless --omarchy session (fixture HOME) on a private D-Bus bus, with 
 installed portal backends (gtk, Hyprland's, keyrings) plus xdg-desktop-portal-wlr, and the
 shipped core/config/scottland-portals.conf found where the package installs it (a data dir).
 If xdg-desktop-portal-wlr is not installed, XDPW_ROOT names an extracted package of it.
+The session's runtime dir is private (tests/headless.sh), so the machine's PipeWire is out of
+reach: the test starts its own PipeWire and WirePlumber in the session, with WirePlumber's device
+monitors off so it leaves the machine's audio, Bluetooth and cameras alone.
 
 An app's view, through tests/portal-client.py: a non-interactive Screenshot, and a ScreenCast of
 a monitor, picked in xdg-desktop-portal-wlr's own chooser (slurp) with a stipc pointer click.
@@ -17,6 +20,7 @@ in is not mistaken for a portal fault. Every process the test starts is stopped 
 """
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -32,6 +36,9 @@ xdpw_root = Path(os.environ.get("XDPW_ROOT", "/"))
 xdpw = system_xdpw if system_xdpw.exists() else xdpw_root / "usr/lib/xdg-desktop-portal-wlr"
 if not xdpw.exists():
     sys.exit("xdg-desktop-portal-wlr is not installed; set XDPW_ROOT to an extracted package")
+for tool in ("pipewire", "wireplumber", "pw-dump"):
+    if not shutil.which(tool):
+        sys.exit(f"{tool} is not installed; the test runs its own PipeWire in the session")
 
 # Portal backends as installed, plus wlr; the shipped selection where the package puts it.
 share = build / "portal-test-share"
@@ -75,10 +82,33 @@ def owned(session, name):
     return "boolean true" in reply.stdout
 
 
+def wireplumber_connected(session):
+    """The session's PipeWire answers and lists WirePlumber among its clients."""
+    try:
+        objects = json.loads(session.run("pw-dump", timeout=5).stdout or "[]")
+    except ValueError:
+        return False
+    return any(o.get("type") == "PipeWire:Interface:Client"
+               and o.get("info", {}).get("props", {}).get("application.name") == "WirePlumber"
+               for o in objects)
+
+
 started = []
 with Session(fixture, "hl-portal") as session:
     check("shim answers", session.wait_shim()[0])
     session.run("dbus-update-activation-environment", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP")
+    # In this session's own config dir, so it applies to this WirePlumber alone.
+    wireplumber_conf = session.dir / "config/wireplumber/wireplumber.conf.d"
+    wireplumber_conf.mkdir(parents=True, exist_ok=True)
+    (wireplumber_conf / "90-portal-test.conf").write_text(
+        "wireplumber.profiles = {\n  main = {\n"
+        + "".join(f"    monitor.{device} = disabled\n"
+                  for device in ("alsa", "alsa-midi", "bluez", "bluez-midi", "libcamera", "v4l2"))
+        + "  }\n}\n")
+    started.append(session.spawn("exec pipewire", build / "portal-pipewire.log"))
+    started.append(session.spawn("exec wireplumber", build / "portal-wireplumber.log"))
+    check("the session's PipeWire answers, with WirePlumber connected",
+          session.wait(lambda: wireplumber_connected(session), timeout=20, interval=0.5)[0])
     if xdpw != system_xdpw:
         started.append(session.spawn(f"exec {xdpw} {os.environ.get('XDPW_ARGS', '')}",
                                       build / "portal-xdpw.log"))
