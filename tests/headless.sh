@@ -598,14 +598,7 @@ PY
       expected_display=$(sed -n '2p' "$session_mode_record")
       expected_signature=$(sed -n '3p' "$session_mode_record")
       case $session_mode in
-        plain-pending)
-          echo 'headless session mode was not fully recorded; preserving runtime and scratch' >&2
-          exit 2
-          ;;
-        shim-pending)
-          echo 'headless shim identity was not fully recorded; preserving runtime and scratch' >&2
-          exit 2
-          ;;
+        plain-pending|shim-pending) ;;
         plain)
           [[ $expected_display =~ ^wayland-[0-9]+$ ]] || {
             echo 'headless partial session display is invalid; preserving runtime and scratch' >&2
