@@ -49,7 +49,8 @@ print("PASS output IPC", flush=True)
 
 title = f"scottland-ci-{os.getpid()}"
 client = subprocess.Popen(
-    ["foot", "-T", title, "sh", "-c", "sleep 30"],
+    ["foot", "-c", "/dev/null", "-o", "resize-by-cells=no", "-T", title,
+     "sh", "-c", "sleep 30"],
     stdout=subprocess.DEVNULL,
     stderr=subprocess.DEVNULL,
 )
