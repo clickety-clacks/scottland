@@ -4910,6 +4910,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::pointf_t hold_origin;
     std::weak_ptr<wf::view_interface_t> hold_view;
     wf::wl_timer<false> hold_timer;
+    // Test sessions can hold the long-press timer while still delivering real touch input.
+    bool test_hold_lift_timer = false;
     std::weak_ptr<scottland::frame_t> lifted_frame;
     int lifted_finger = -1;
     std::string pop_sound;
@@ -5047,7 +5049,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         hold_finger = finger;
         hold_origin = wf::get_core().get_touch_position(finger);
         hold_view   = view->weak_from_this();
-        hold_timer.set_timeout(std::max(50, (int)lift_delay), [=] () { lift_held_window(); });
+        hold_timer.set_timeout(std::max(50, (int)lift_delay), [=] ()
+        {
+            if (getenv("SCOTTLAND_TEST_MODEL") && test_hold_lift_timer) return;
+            lift_held_window();
+        });
     };
 
     wf::signal::connection_t<wf::post_input_event_signal<wlr_touch_motion_event>> on_touch_motion =
@@ -5445,6 +5451,12 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         // Real wlroots pointer-axis input for isolated settings scroll tests. This is
         // deliberately unavailable in ordinary sessions, and never sets QML state.
+        // A test-only timer hold keeps the real long touch armed past its production timeout.
+        if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("hold_lift_timer") &&
+            data["hold_lift_timer"].is_bool())
+        {
+            test_hold_lift_timer = data["hold_lift_timer"].as_bool();
+        }
         if (getenv("SCOTTLAND_TEST_MODEL") && data.has_member("scroll_y"))
         {
             if (!touch_pointer) touch_pointer = std::make_unique<virtual_pointer_t>();
@@ -5488,6 +5500,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             reply["hold_window"] = held ? held->get_id() : 0;
             auto anchor = drag->view ? drag->view : wf::toplevel_cast(wf::get_core().seat->get_active_view());
             reply["avoidance_anchor_window"] = anchor ? anchor->get_id() : 0;
+            reply["lift_timer_held"] = test_hold_lift_timer;
         }
         reply["lifted"]     = lifted_finger >= 0;
         reply["dragging"]   = (bool)drag->view;

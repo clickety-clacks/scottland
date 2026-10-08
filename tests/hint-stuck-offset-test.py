@@ -9,7 +9,8 @@ The frozen case injects an offset that never steps toward its target through the
 `freeze_offset` field of scottland/hints. That bypasses no input layer; it stands in for an ease
 that cannot finish (a target that keeps changing). Each case passes when both rear windows' hint
 letters are found in captured pixels while the front offset is still away from its target, and
-absent from the same circles before Alt.
+absent from the same circles before Alt. The held case freezes only the test-session lift timer;
+touch delivery, focus, avoidance and pixels remain real, without a 1.5-second timing race.
 """
 import json
 import math
@@ -71,7 +72,7 @@ def key(name, down):
 
 def rows(): return {h['window']: h for h in ipc('scottland/hints')['hints']}
 def views(): return ipc('window-rules/list-views')
-def test_input(): return ipc('scottland/test-input')
+def test_input(data=None): return ipc('scottland/test-input', data)
 
 
 def launch(title, color, width=420, height=320):
@@ -129,7 +130,11 @@ def touch_point(window, blockers):
     raise RuntimeError(f'no exposed touch point on window {window}: frame={frame}, blockers={blocked}')
 
 
-def run_case(name, front, rears, exposed_touch=None, keep_focused=None):
+def run_case(name, front, rears, exposed_touch=None, keep_focused=None, hold_lift_timer=False):
+    if hold_lift_timer:
+        state = test_input(dict(hold_lift_timer=True))
+        if state.get('lift_timer_held') is not True:
+            raise RuntimeError(f'{name}: test-model lift timer hold was not enabled: {state}')
     before = capture(name + '-before-alt')
     try:
         if exposed_touch:
@@ -247,8 +252,10 @@ try:
     # The strip cannot fit the minimum hint, so the solver moves Front while the real hold is
     # armed. After verifying touch owns Front, restore Anchor focus without moving geometry.
     place_anchor(touch_anchor_rect, 'move cover aside to expose Front for the real held touch')
-    run_case('held', front, rears, touch_point(front, [anchor]), keep_focused=anchor)
+    run_case('held', front, rears, touch_point(front, [anchor]), keep_focused=anchor,
+             hold_lift_timer=True)
     ipc('stipc/touch_release', dict(finger=0)); touching = False
+    ipc('scottland/test-input', dict(hold_lift_timer=False))
     print(f'hint stuck offset: {passes} passed, {failures} failed', flush=True)
     sys.exit(bool(failures))
 finally:
@@ -259,6 +266,8 @@ finally:
         try: ipc('stipc/touch_release', dict(finger=0))
         except Exception: pass
     try: ipc('scottland/hints', dict(freeze_offset=0))
+    except Exception: pass
+    try: ipc('scottland/test-input', dict(hold_lift_timer=False))
     except Exception: pass
     for p in clients:
         if p.poll() is None: p.terminate()
