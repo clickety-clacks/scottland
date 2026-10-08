@@ -2,7 +2,7 @@
 """WK36: pairing shows both windows fully opaque once; a later manipulation returns natural opacity.
 
 Judged by pixels: each window is a solid-color GTK client, and its opacity is estimated from a
-grim capture against the same pixels captured before any window mapped. The compositor's
+grim capture against the exposed output clear color sampled from that same capture. The compositor's
 reported opacity is used only to wait for eased values to settle.
 
 IPC config, initial sizes and the first focus are fixture setup. Peripheral placement and later
@@ -11,6 +11,7 @@ real hint keys.
 """
 import json
 import os
+from collections import Counter
 from pathlib import Path
 import signal
 import socket
@@ -120,13 +121,36 @@ def pixel(image, x, y):
     return tuple(image['pixels'][k:k+3])
 
 
-def alpha(image, identifier, color, shift=(0, 0)):
-    """Median opacity over interior samples: (shown - background) / (color - background).
+def clear_color(image):
+    """Read the contemporaneous, exposed output background from a sparse pixel grid.
+    The headless output has a flat clear color. Exclude every visible client and its halo so
+    this reference is not contaminated by a window, then fail closed if the exposed pixels
+    do not provide a consistent background sample.
+    """
+    views = ipc('scottland/layout-state')['views']
+    frames = [v['frame'] for v in views if v.get('frame') and not v.get('hidden')]
+    samples = []
+    for y in range(4, image['height'], 8):
+        for x in range(4, image['width'], 8):
+            if any(f['x'] - 32 <= x <= f['x'] + f['width'] + 32 and
+                   f['y'] - 32 <= y <= f['y'] + f['height'] + 32 for f in frames):
+                continue
+            samples.append(pixel(image, x, y))
+    if len(samples) < 32:
+        raise RuntimeError(f'not enough exposed output pixels for clear-color reference: {len(samples)}')
+    color, count = Counter(samples).most_common(1)[0]
+    if count / len(samples) < .90:
+        raise RuntimeError(f'exposed output background is not flat: color={color}, support={count}/{len(samples)}')
+    return color
+
+
+def alpha(image, identifier, color, background_color, shift=(0, 0)):
+    """Median opacity over interior samples: (shown - clear color) / (color - clear color).
     Samples another window's frame (halo included) covers are skipped: their background is not
-    the empty screen's. shift: how far a held drag has moved the window from its frame."""
+    the exposed output's. shift: how far a held drag has moved the window from its frame."""
     views = ipc('scottland/layout-state')['views']
     f = next(v for v in views if v['id'] == identifier)['frame']
-    others = [v['frame'] for v in views if v['id'] != identifier and v.get('frame') and not v['hidden']]
+    others = [v['frame'] for v in views if v['id'] != identifier and v.get('frame') and not v.get('hidden')]
     covered = lambda x, y: any(o['x'] - 20 <= x <= o['x'] + o['width'] + 20 and
                                o['y'] - 20 <= y <= o['y'] + o['height'] + 20 for o in others)
     estimates = []
@@ -134,7 +158,7 @@ def alpha(image, identifier, color, shift=(0, 0)):
         for fy in (.55, .7, .85):  # below a GTK header bar
             x, y = round(f['x'] + shift[0] + f['width'] * fx), round(f['y'] + shift[1] + f['height'] * fy)
             if covered(x, y): continue
-            p, b = pixel(image, x, y), pixel(background, x, y)
+            p, b = pixel(image, x, y), background_color
             d = [c - bb for c, bb in zip(color, b)]
             n = sum(v * v for v in d)
             if n > 60 * 60: estimates.append(sum((pp - bb) * v for pp, bb, v in zip(p, b, d)) / n)
@@ -155,10 +179,12 @@ def judge(step, expectations, shift=(0, 0)):
     """expectations: {label: (id, color, expected opacity)}; one capture, every window judged."""
     settled([i for i, _, _ in expectations.values()])
     image = capture(step)
+    bg = clear_color(image)
     for label, (identifier, color, expected) in expectations.items():
-        seen = alpha(image, identifier, color, shift)
+        seen = alpha(image, identifier, color, bg, shift)
         observations.append(dict(step=step, window=label, expected=expected, pixels=seen,
-            reported=round(layout(identifier)['opacity'], 3), zone=layout(identifier)['zone']))
+            reported=round(layout(identifier)['opacity'], 3), zone=layout(identifier)['zone'],
+            clear_color=bg))
         if expected is None:
             check(seen is not None and seen <= 1 - 2 * TOLERANCE, f'{step}: {label} is translucent', dict(pixels=seen))
         else:
@@ -228,8 +254,6 @@ try:
         'scottland/window_mode_tint': 0.0,
         **{'scottland/' + k: v for k, v in OPACITY.items()}})
     output = ipc('window-rules/list-outputs')[0]['geometry']; W, H = output['width'], output['height']
-    background = capture('background')
-
     # A bystander, unfocused in the center, never paired: ordinary rules throughout.
     by = launch('Bystander', round(W * .22), GREEN)
     place(by, W / 2 - W * .11, 30, round(W * .22), 120)
