@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A concurrent login must leave a user's agent skill in place."""
+"""Installed skills follow the selected install without replacing personal skills."""
 
 from pathlib import Path
 import os
@@ -65,6 +65,44 @@ class AgentSkillLinks(unittest.TestCase):
         self.assertEqual(os.readlink(self.link), str(self.stock))
         self.assertTrue(all("keeping existing agent skill" not in result.stderr
                             for result in results), results)
+
+    def test_core_and_integration_are_discoverable_in_installed_harnesses(self) -> None:
+        harnesses = [".claude", ".codex", ".agents", ".pi/agent", ".hermes",
+                     ".hermes/profiles/example"]
+        for harness in harnesses:
+            (self.home / harness).mkdir(parents=True, exist_ok=True)
+        adapter = self.stock.parent / "scottland-example"
+        adapter.mkdir()
+        (adapter / "SKILL.md").write_text("integration skill\n")
+        result = subprocess.run([str(HOOK)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for harness in harnesses:
+            skills = self.home / harness / "skills"
+            self.assertEqual((skills / "scottland/SKILL.md").read_text(), "stock skill\n")
+            self.assertEqual((skills / "scottland-example/SKILL.md").read_text(),
+                             "integration skill\n")
+        (adapter / "SKILL.md").unlink()
+        adapter.rmdir()
+        result = subprocess.run([str(HOOK)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for harness in harnesses:
+            skills = self.home / harness / "skills"
+            self.assertFalse(os.path.lexists(skills / "scottland-example"))
+            self.assertEqual((skills / "scottland/SKILL.md").read_text(), "stock skill\n")
+
+    def test_owned_packaged_link_switches_to_selected_install(self) -> None:
+        self.link.symlink_to("/usr/share/scottland/agents/skills/scottland")
+        results = self.run_concurrent_hooks()
+        self.assertTrue(all(result.returncode == 0 for result in results), results)
+        self.assertEqual(os.readlink(self.link), str(self.stock))
+        self.assertEqual((self.link / "SKILL.md").read_text(), "stock skill\n")
+
+    def test_absent_harness_is_not_created_and_personal_file_is_kept(self) -> None:
+        self.link.write_text("personal skill\n")
+        results = self.run_concurrent_hooks()
+        self.assertTrue(all(result.returncode == 0 for result in results), results)
+        self.assertEqual(self.link.read_text(), "personal skill\n")
+        self.assertFalse((self.home / ".claude").exists())
 
 
 if __name__ == "__main__":

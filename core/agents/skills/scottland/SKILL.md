@@ -1,257 +1,117 @@
 ---
 name: scottland
-description: Operate and configure Scottland, the Wayfire spatial desktop. Use for its tagged Arch install or upgrade, session selection and reload, window/layout/input settings, app IDs, touch scrolling, widgets, attention and troubleshooting. Omarchy-specific setup belongs to the separate adapter.
+description: Operate and configure Scottland, the Wayfire spatial desktop. Use for tagged installation or upgrades, session selection and reload, window/layout/input settings, app IDs, touch scrolling, writing or choosing rail widgets, attention, display configuration, and troubleshooting.
 ---
 
 # Scottland
 
-Scottland is a spatial desktop on Wayfire: a full-size center zone, windows shrinking toward
-the screen edges, widget rails at the edges, and no workspaces. Use this skill for the core
-desktop. Keep Omarchy-specific changes in the adapter; `core/` has no Omarchy dependency.
+Scottland is a spatial desktop for Linux: stock Wayfire plus the `scottland` plugin, its config
+and helpers. Each screen has a full-size **center zone**; windows to either side (the
+**periphery**) shrink the farther they are from the center; on thin **rails** at the left and right
+edges, windows turn into **widgets**. There are no workspaces: everything open stays on one screen
+in some form. The window manager's job is the user's attention, so a window that needs the user
+breathes a halo in the attention color, and nothing an agent does should move or cover what the
+user is looking at.
 
-## Install, upgrade, and select a session
+This skill covers Scottland itself, on any system. Integrations and distros that ship Scottland may
+install their own skill next to this one, named `scottland-<something>`. If one is installed, read
+it too: it says what changes on that system.
 
-Follow the repository `README.md` install/upgrade section for the current published tag.
-The Arch `packaging/arch/PKGBUILD` builds `scottland` and `scottland-omarchy` as a matched
-split pair; install both on Omarchy or only the core package on another Arch desktop.
-Check the selected tag and installed package versions before attributing behavior to a
-release. Package installation does not replace a plugin already loaded by Wayfire.
+## Topic guides
 
-After installing the packages, install and read this Core skill from
-`/usr/share/scottland/agents/skills/scottland/` before working on Scottland.
-For Scottland on Omarchy, also install and read the separate
-[adapter skill](../../../../omarchy/agents/skills/scottland-omarchy/SKILL.md) from
-`/usr/share/scottland/agents/skills/scottland-omarchy/`. The Scottland login
-hook links it into installed agent harnesses at the next fresh Scottland login
-when an adapter package provides it there. For Gooarchy
-distribution or configuration work, also install and read the
-[Gooarchy skill](https://github.com/clickety-clacks/gooarchy/blob/main/agents/skills/gooarchy/SKILL.md)
-from `/usr/share/gooarchy/agents/skills/gooarchy/`. Confirm each applicable
-skill is available in the agent harness's skills directory before using it.
-The `v0.3.0` Scottland packages ship this Core skill; check later packages
-for the adapter and Gooarchy skills rather than assuming those paths are
-installed.
+Read the matching guide before starting:
 
-Start a new session from the login manager's Scottland entry or run `start-scottland` from
-a text console. Inside Scottland, `scottland-reload` reloads the selected plugin in place.
-From another desktop or shell, list running sessions with `scottland-exec --list` and use
-`scottland-exec --display <wayland-name> -- scottland-reload` for an explicitly selected
-session. When several sessions exist, do not guess which one to change.
+- [`concepts.md`](concepts.md): zones and scaling, moving and resizing, rail widgets and their
+  modes, Window mode (hints, cycling, solo, pairing), attention, full screen.
+- [`widgets.md`](widgets.md): choosing a widget for an app, writing one (with a worked example),
+  its launch context, state file, palette, D-Bus interface and actions, attention sources.
+- [`control.md`](control.md): `scottland-ctl`, calling Scottland's IPC (including read-only state
+  such as `scottland/hints`), shortcuts, temporary shortcut layers, key remaps, touch scrolling.
+- [`outputs.md`](outputs.md): screen rotation, scale and position.
+- [`operating.md`](operating.md): installation, upgrades, session selection, reloading safely,
+  testing, logs, the runtime directory.
+- [`troubleshooting.md`](troubleshooting.md): hints missing, a widget stuck, a suspected leak.
 
-Before claiming an upgrade is active, check whether `~/.local/share/scottland/dev` selects
-a development plugin: reload prefers its plugin over packaged `/usr/lib` code. Preserve any
-user-owned dev links and config; make selection deliberate rather than assuming package
-installation changed the running session. Do not run `make dev-install` as an ordinary
-package upgrade: it builds and links a committed development snapshot into the user's session.
-If retiring an earlier development install, inspect its links and saved files first; the
-checkout's `make dev-uninstall` removes the dev selection and linked commands but also
-removes `~/.config/scottland/scottland.ini`. It does not uninstall Arch packages. Preserve
-personal config and use a fresh Scottland login to verify the packaged plugin afterward.
+## Which environment are you in?
 
-## Inspect before changing
+Check before acting; the answers change what is safe.
 
-Use `scottland-ctl windows` for live window IDs and app IDs, `scottland-ctl get` for the
-running layout settings, and `scottland-ctl option section/key` for a specific Wayfire
-option. `scottland-ctl set name value` is a live, unsaved change; use Scottland Settings
-or the user's override file for persistence. Outside the session, `scottland-ctl` routes
-through `scottland-exec`; choose an explicit display when multiple sessions are running.
-
-Scottland Settings (`scottland-settings`, Super+, in the shipped bindings) owns Layout,
-Goo, Window mode, Translucency, Widgets and Sunlight. Use its Save/Cancel behavior when
-changing those values. `~/.config/scottland/layout.ini` records its saved layout values;
-do not hand-edit it while the app owns a pending edit. See `docs/settings.md` for the
-current controls and `docs/windowing-keys.md` for window-mode gestures and keys.
+| Question | How to tell |
+|---|---|
+| Is Scottland running on this machine? | `scottland-exec --list` prints one line per running session (`wayland-1 ...`). Nothing printed: no session is running. |
+| Is your shell inside it? | `XDG_CURRENT_DESKTOP` starts with `Scottland`. Agents and ssh shells usually aren't, even when the user's screen shows Scottland. Either way, reach the session with `scottland-exec` (below), never by setting its variables yourself. |
+| Packaged or dev mode? | Inspect `~/.local/share/scottland/dev/plugins/libscottland.so`: a valid development plugin takes precedence over the packaged plugin at startup/reload. A directory alone does not prove which build is running; see [`operating.md`](operating.md). |
+| Is this the user's daily machine? | Ask if you don't know. Never run test sessions there (see [`operating.md`](operating.md)). |
 
 ## Where settings live
 
-| File | Who writes it | Notes |
+Scottland assembles the session's config from layers; later layers win.
+
+| Layer | Who writes it | Notes |
 |---|---|---|
-| `~/.config/scottland/overrides.ini` | The user (and you, on their behalf) | Wayfire-ini format. Applied last, so it wins over everything. Scottland never writes it. |
-| `~/.config/scottland/layout.ini` | The Scottland settings app | Global zone sizes and per-screen zone overrides, keyed by exact reported make/model/serial identity. Prefer the app (`scottland-settings`). |
-| Scottland's shipped config | The package | Defaults. Never edit it; override in `overrides.ini`. |
+| `/usr/share/scottland/scottland.ini` | The package | Shipped defaults. Never edit it. |
+| `~/.config/scottland/scottland.ini` | The user, rarely | A complete replacement for the shipped file if present. Avoid: it stops tracking shipped changes; prefer `overrides.ini`. In dev mode it is a link to the snapshot's shipped file: leave it. |
+| Generated fragments | Integrations | Added by programs in Scottland's `config.d/` (for example shortcuts imported from another desktop). |
+| `~/.config/scottland/layout.ini` | Scottland Settings (`scottland-settings`, Super+,) | Zones, scale curve, goo, Window mode, translucency and widget settings. Global sizes and per-screen zone overrides use exact reported make/model/serial identity. Prefer the app. |
+| `~/.config/scottland/solar.ini` | Scottland Settings (Sunlight) | Sun following and its location sources. Standalone defaults enable sun following and network lookup; an integration may require opt-in. Saved explicit choices win. Geoclue comes first, then saved coordinates, then the network lookup. |
+| `~/.config/scottland/overrides.ini` | The user, and you on their behalf | Wayfire ini format, appended last, so it wins over everything. Scottland never writes it. |
 
-Changes to `overrides.ini` apply to the running session automatically within a second or two
-(Scottland rebuilds its config when the file changes). No restart or reload needed.
+Other files in `~/.config/scottland/`: `widgets.ini` (which widget each app gets),
+`attention.d/*.ini` (attention sources), `focus.d/` (the user's hooks run when full screen starts
+and ends).
 
-The Layout tab edits either global sizes or the screen it opened on. Screens with the same
-reported make/model/serial share an override; a screen with no identity follows the global sizes.
-Use “Reset to global” to remove a screen's override.
+Settings owns pending edits: use its Save/Cancel behavior instead of editing `layout.ini`
+underneath it. Screens with the same reported make/model/serial share a zone override; a screen
+without that identity uses global sizes. “Reset to global” removes a screen's override.
 
-Put settings under the section they belong to, e.g. `[scottland]` or `[input]`. Only add the
-keys you're changing; keep the user's existing lines.
+The result is `$XDG_RUNTIME_DIR/scottland/wayfire.ini`; read it to see the effective config. A
+watcher rebuilds it within a second or two when anything in `~/.config/scottland/` changes, and
+Wayfire applies the result live: no reload or restart for settings. To edit `overrides.ini`, put
+each key under its section (`[scottland]`, `[input]`, `[command]`, `[output:NAME]` ...), add only
+the keys you change, and keep the user's existing lines. Check a live value with
+`scottland-ctl option SECTION/KEY`.
 
-## Find an app's app-id
-
-Per-app settings match the app-id. List what's open:
-
-```bash
-scottland-ctl windows
-```
-
-The first column is the app-id (e.g. `com.mitchellh.ghostty`, `foot`, `chromium`).
-
-## Bring a window to the user
-
-`scottland-ctl present <id>` (IPC `scottland/present {window}`) shows a window now: a widget opens
-back into its window, a window at the side flies to the middle at 100%, and either way it's raised
-and focused. A window already in the center zone stays put. Use it when the user picks a window
-(from a launcher, a list of agents); a plain focus request moves nothing.
-
-## Temporary shortcut layers for a surface
-
-An app can claim its own shortcuts while its surface has keyboard focus. Everything it doesn't
-claim bleeds through to the user's current shortcuts, release bindings and remaps. Claimed keys
-reach the surface as ordinary press/release events with modifiers intact. Registration never
-changes focus. Toplevels and layer-shell popups work independently, even within one process.
-
-Call Wayfire IPC **`scottland/key-layer`** through the app's session `WAYFIRE_SOCKET`:
-
-```json
-{"action":"list"}
-{"action":"set","window":42,"keys":["0:Escape","4:comma","4:j"]}
-{"action":"set","pid":1234,"namespace":"my-popup","keys":["0:Up","0:Down"]}
-{"action":"clear","window":42}
-```
-
-Choose either a positive Scottland `window` ID or positive client `pid` plus layer-shell
-`namespace`; ambiguity is an error. `list` returns mapped `surfaces` with `window`, `pid`,
-`title`, `app_id`, `registered`, `active`, `keys`, and `namespace` for layer-shell surfaces.
-`set`/`clear` return `{ "result":"ok", "window":42 }`; errors return `{ "error":"..." }`.
-
-Chords are case-sensitive XKB **`MODMASK:keysym`** strings. Add modifier bits: Shift=1, Ctrl=4,
-Alt=8, Super=64 (`5:j` = Ctrl+Shift+J). Names match the current keyboard layout. Locks are
-ignored for matching. Consumed Shift can be omitted for produced symbols: `4:plus` claims
-Ctrl+Shift+= where that produces plus; `4:j` does not claim Ctrl+Shift+J. The app receives the
-actual modifiers unchanged.
-
-Register after the surface maps; set replaces its previous keys atomically. Clear or empty
-`keys` removes the layer. Focus loss deactivates it; unmap, close or the Wayland client's
-disconnect removes it. A short-lived IPC connection may close without removing the layer.
-Register again after remapping or a plugin reload. Compositor grabs retain their input.
-Full rules: Scottland's `docs/key-layers.md` (KL1–KL8).
-
-## Touchscreen scrolling for apps that ignore touch
-
-Many apps scroll with a finger on their own (browsers, most GTK and Qt apps). Some don't, notably
-terminals: a finger does nothing in them. For apps listed here, Scottland turns a one-finger drag
-into smooth scrolling (with momentum after a flick) and a quick tap into a click. A long press
-still lifts the window to move it.
-
-Entries are `touch_scroll_<name> = <regex>` in `[scottland]`, matched case-insensitively against
-the app-id. Scottland ships one entry:
-
-```ini
-touch_scroll_terminals = ^(com\.mitchellh\.ghostty|foot|footclient|Alacritty|kitty|org\.wezfurlong\.wezterm)$
-```
-
-In `~/.config/scottland/overrides.ini`:
-
-```ini
-[scottland]
-# Add an app (any name after touch_scroll_; one entry per app or group):
-touch_scroll_editors = ^(dev\.zed\.Zed|org\.gnome\.TextEditor)$
-
-# Change a shipped entry: give the same name a new value.
-touch_scroll_terminals = ^(com\.mitchellh\.ghostty|foot)$
-
-# Switch a shipped entry off: give the same name an empty value.
-touch_scroll_terminals =
-```
-
-Don't add apps that already handle touch (Chromium, Firefox, GTK4/Qt apps): they would scroll
-twice. Test by dragging a finger in the app; if it already scrolls without an entry, leave it out.
-
-Check the live value:
-
-```bash
-scottland-ctl option scottland/touch_scroll
-```
-
-Apps that ignore smooth scrolling (Ghostty) get it as a high-resolution wheel instead: list them in
-`touch_scroll_wheel = <app-id regex>` (shipped: Ghostty). Wheel mode is only for apps also listed in a
-`touch_scroll_<name>` entry.
-
-## Other common settings (`[scottland]` unless noted)
+Common `[scottland]` settings:
 
 | Setting | What it does |
 |---|---|
-| `lift_delay = 350` | Milliseconds a finger must rest still on a window before it lifts to move. |
-| `sounds = true` | Scottland's interface sounds (the lift "bloop"). |
-| `touchpad_gestures = true` | Three-finger drag moves a window; three-finger click-drag resizes it. |
-| `remap_apps_<n>` / `remap_from_<n>` / `remap_to_<n>` | Per-app key remaps, e.g. Ctrl+W → Ctrl+BackSpace in browsers. |
-| `[input] natural_scroll`, `touchpad_scroll_speed`, `click_method`, `drag_lock` | Touchpad behavior (Wayfire input options). |
+| `lift_delay = 350` | Milliseconds a finger must rest on a window before it lifts to move. |
+| `sounds = true` | Interface sounds (the lift "bloop"). |
+| `touchpad_gestures = true` | Three-finger drag moves a window; three-finger click-drag resizes it; a three-finger hold solos or pairs. |
+| `alt_hold_delay = 300` | How long Alt alone must be held before Window mode shows hints. |
+| `minimize_hold_delay = 300` | Super+M: shorter is a tap (cycle widget mode), longer is a momentary hold. |
+| `goo = true` | One liquid surface around all windows; `false` gives each window its own halo band. |
+| `window_avoidance_always = false` | Keep covered windows peeking out even outside Window mode. |
+| `touch_scroll_<name>`, `touch_scroll_wheel` | Touchscreen scrolling for apps that ignore touch ([`control.md`](control.md)). |
+| `remap_apps_<name>`, `remap_from_<name>`, `remap_to_<name>` | Per-app key remaps ([`control.md`](control.md)). |
 
-## Rail widgets
+`[input]` holds Wayfire's input options: `natural_scroll`, `touchpad_scroll_speed` (shipped 0.2),
+`click_method` (shipped `clickfinger`), `drag_lock`, `xkb_layout`, `xkb_options`, `cursor_size`.
 
-Dragging a window onto a screen-edge rail turns it into a **widget**: the window hides and a
-widget program stands in for it, at 100%, where it was dropped. Dragging the widget off the rail
-(so no part of it is on the rail) brings the window back; closing either closes both. Full design: Scottland's `docs/widgets.md`.
+## Reaching a running session
 
-**Choose a widget for an app** in `~/.config/scottland/widgets.ini` (create it if missing):
+Use these; they run in the session's own recorded environment, from anywhere (another desktop's
+terminal, ssh, an agent):
 
-```ini
-[widgets]
-# app-id (or .desktop id) = widget id
-org.gnome.Nautilus = card
-```
+    scottland-exec --list                       running sessions
+    scottland-exec [--display wayland-N] -- CMD run CMD inside a session (grim, wl-copy, a script)
+    scottland-ctl ...                           settings, windows, present (see control.md)
+    scottland-reload [--display wayland-N]      load the current build and config in place (see operating.md)
 
-Otherwise the app's own widget is used (its `.desktop` entry's `X-Scottland-Widget=`, or a
-package claiming its app-id), else the default **card** (icon, title, alert badge).
-
-**Make a widget**: a folder in `~/.local/share/scottland/widgets/<name>/` with `widget.toml`:
-
-```toml
-id = "my-widget"
-name = "My widget"
-apps = ['^org\.example\.App$']      # app-id regexes it's for (optional)
-exec = "quickshell -p %d/shell.qml"  # any program; %d = this folder
-touch_drag = true   # optional: a finger drag anywhere moves it (only if it drags nothing itself)
-```
-
-A widget is any program (QML via Quickshell, GTK, a web view, a TUI...), fully interactive, with
-the user's normal access (files, network, D-Bus). It gets the window's identity in its
-environment: `SCOTTLAND_WIDGET_APP_ID`, `_ICON`, `_NAME`, `_DESKTOP`, `_PID` (the app's
-process), `_WINDOW`, `_ID`, `_STATE` (a complete JSON presentation snapshot, written atomically
-before the widget starts and replaced live: identity, title, rail, minimized, badge, focus,
-urgency, data, model version and presentation revision), and `SCOTTLAND_PALETTE` (a JSON file with the desktop's colors: `scheme`,
-`background`, `foreground`, `muted`, `accent`, `alert`, kept current). Placeholders in `exec`: `%a` app-id, `%t` title, `%i` icon, `%p` pid, `%w`
-window, `%r` rail, `%d` folder. Live properties and `Restore()`/`Close()`/`Focus()` are on D-Bus at
-`org.scottland.Widgets /org/scottland/widget/<id>` (interface `org.scottland.Widget`).
-
-The window turns into its widget while it's dragged onto the rail (and back when dragged off);
-Esc cancels a drag. A widget whose app needs attention (bell, notification) gets a breathing halo
-in the theme's attention color (the Omarchy theme's yellow; it follows theme changes).
-
-For reactive IPC, `scottland/subscribe {"slice":"widgets"}` returns the complete current slice
-immediately and then full `scottland-widgets#` events. Replace your copy for each newer version;
-never merge fields. Slices `desktop` and `attention` provide the full model or attention source
-sets. `session` identifies the compositor; a new session replaces everything. `builtin:` attention
-source names are reserved for plugin inputs.
-
-Troubleshooting: `~/.local/state/scottland/widgets.log` says which widget was chosen and why.
-
-## Attention
-
-A window (or its widget) whose app needs the user gets a breathing halo in the attention color,
-until the user goes to it. Built in: an app's bell or focus request, its urgency hint, a desktop
-notification from its own process. **Add a source** (another program that knows which windows need
-the user) with a file `~/.config/scottland/attention.d/<name>.ini`, then run `scottland-reload`:
-
-```ini
-[source]
-list = some-command --json      # prints JSON listing the windows that need attention now
-windows = items                 # where the list is in it ("a.b" for nested; empty = top level)
-window = id                     # the field of each entry that names its window
-format = id                     # id (Scottland window id) | pid | hex-offset:<base>
-interval = 2                    # seconds between listings
-watch = ~/.cache/x/state.json   # optional: re-read at once when this file changes
-answered = some-command dismiss {id}   # optional: run when the user goes to it ({field})
-```
-
-Find window ids with `scottland-ctl windows`. A source only takes back its own attention.
-Log: `~/.local/state/scottland/attention.log`.
+`--display` is only needed when several sessions run on one machine.
 
 ## Don't
 
-- Don't edit Scottland's shipped files or anything under `/usr/share/scottland` or `/usr/lib/scottland`.
-- Don't restart the user's session to apply settings; `overrides.ini` applies live.
+- Don't edit shipped files: anything under `/usr/share/scottland` or `/usr/lib/scottland`, or a
+  dev snapshot under `~/.local/share/scottland/`. Override in `~/.config/scottland/`.
+- Don't hand-set `WAYFIRE_SOCKET`, `WAYLAND_DISPLAY`, `SCOTTLAND_HOOKS` or similar to reach a
+  session; use `scottland-exec`.
+- Don't restart or reload the user's session to apply settings; config changes apply live. Reload
+  only for a new build, and only as [`operating.md`](operating.md) says.
+- Don't run tests, extra compositors, headless sessions or test widgets on the user's daily
+  machine.
+- Don't move, focus, resize or cover the user's windows unasked. To show the user a window they
+  asked for, use `scottland-ctl present` ([`control.md`](control.md)).
+- Don't silently replace something the user had (a shortcut, a remap, a widget choice). If a change
+  displaces it, tell the user what it was, what it is now and why.
+- Don't delete files in the runtime or state directories you didn't create; ask the user.
