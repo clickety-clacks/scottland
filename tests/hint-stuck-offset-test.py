@@ -118,7 +118,8 @@ def touch_point(window, blockers):
     blocked = [state[w]['drawn'] for w in blockers]
     # Avoid rounded window corners and leave a margin from a foreground surface so the
     # real touch hit test must land on the intended, exposed window.
-    for fx, fy in ((.02, .5), (.15, .5), (.85, .5), (.5, .15), (.5, .85),
+    # Prefer the center of the narrow exposed strip, away from the frame edge and cover.
+    for fx, fy in ((.035, .5), (.02, .5), (.15, .5), (.85, .5), (.5, .15), (.5, .85),
                    (.25, .25), (.75, .25), (.25, .75), (.75, .75)):
         x = frame['x'] + frame['width'] * fx
         y = frame['y'] + frame['height'] * fy
@@ -128,7 +129,7 @@ def touch_point(window, blockers):
     raise RuntimeError(f'no exposed touch point on window {window}: frame={frame}, blockers={blocked}')
 
 
-def run_case(name, front, rears, exposed_touch=None):
+def run_case(name, front, rears, exposed_touch=None, keep_focused=None):
     before = capture(name + '-before-alt')
     try:
         if exposed_touch:
@@ -136,9 +137,15 @@ def run_case(name, front, rears, exposed_touch=None):
             ipc('stipc/touch', dict(finger=0, x=x, y=y))
             global touching
             touching = True
-            wait(lambda: (lambda s: s if s.get('hold_armed') and not s.get('lifted') and
-                          not s.get('dragging') else None)(test_input()),
-                 name + ': real touch hold armed on the tested front window')
+            state = wait(lambda: (lambda s: s if s.get('hold_armed') and not s.get('lifted') and
+                                  not s.get('dragging') else None)(test_input()),
+                         name + ': real touch hold armed')
+            if state.get('hold_window') != front:
+                raise RuntimeError(f'{name}: touch held window {state.get("hold_window")}, expected front {front}')
+            if keep_focused is not None:
+                # A touch can change keyboard focus. Keep the cover anchored so the held front
+                # remains eligible for the same avoidance target as the frozen case.
+                ipc('window-rules/focus-view', dict(id=keep_focused))
         key('LEFTALT', True)
         last_front = {}
         def target_away():
@@ -230,9 +237,9 @@ try:
 
     # Case 2: keep the full-size cover over all but a narrow touch strip before touch-down.
     # The strip cannot fit the minimum hint, so the solver moves Front while the real hold is
-    # armed. No fixture IPC runs between touch-down and Alt; pixel assertions are unchanged.
+    # armed. After verifying touch owns Front, restore Anchor focus without moving geometry.
     place_anchor(touch_anchor_rect, 'move cover aside to expose Front for the real held touch')
-    run_case('held', front, rears, touch_point(front, [anchor]))
+    run_case('held', front, rears, touch_point(front, [anchor]), keep_focused=anchor)
     ipc('stipc/touch_release', dict(finger=0)); touching = False
     print(f'hint stuck offset: {passes} passed, {failures} failed', flush=True)
     sys.exit(bool(failures))

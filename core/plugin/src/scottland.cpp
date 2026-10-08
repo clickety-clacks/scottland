@@ -5482,6 +5482,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         reply["middle_pending"]  = middle_pending;
         reply["middle_resizing"] = middle_resizing;
         reply["hold_armed"] = hold_finger >= 0;
+        if (getenv("SCOTTLAND_TEST_MODEL"))
+        {
+            auto held = hold_view.lock();
+            reply["hold_window"] = held ? held->get_id() : 0;
+        }
         reply["lifted"]     = lifted_finger >= 0;
         reply["dragging"]   = (bool)drag->view;
         reply["drag_renderer"] = drag->view ? (drag->is_live() ? "scottland-live" : "wayfire-move") : "none";
