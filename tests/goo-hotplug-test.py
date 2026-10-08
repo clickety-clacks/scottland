@@ -87,14 +87,15 @@ def button(down):
     ipc("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press" if down else "release"})
 
 
-def drag_to(title, target):
+def drag_to(title, target, local_x=None):
     current = view(title)
     origin_output = output(current["output-id"])
     frame = current["bbox"]
     origin = origin_output["geometry"]
     x = origin["x"] + frame["x"] + frame["width"] / 2
     y = origin["y"] + frame["y"] + frame["height"] / 2
-    tx = target["geometry"]["x"] + min(4000, target["geometry"]["width"] - 300)
+    tx = target["geometry"]["x"] + (local_x if local_x is not None else
+                                     min(4000, target["geometry"]["width"] - 300))
     pointer(x, y)
     key(True)
     button(True)
@@ -175,10 +176,24 @@ try:
                       and s["topology_prepares"] >= 1 else None),
              "runtime output prepared while empty")
     print(f"runtime output prepared before any window: {new_output}", flush=True)
-    drag_to("hotplug-first", new_output)
+    drag_to("hotplug-first", new_output, new_output["geometry"]["width"] / 2)
     wait_for(lambda: (s if (s := ready(new_output["name"], 1)) and s["steps"] > 0
                       and s["draws"] > 0 else None), "first window's goo rendered")
+    first_id = view("hotplug-first")["id"]
+    def full_size_first():
+        source = next((r for r in state(new_output["name"])["source_rects"]
+                       if r["id"] == first_id), None)
+        center = source["x"] + source["width"] / 2 if source else None
+        width = new_output["geometry"]["width"]
+        if (source and source["width"] >= 300 and source["height"] >= 180 and
+                width * .35 <= center <= width * .65):
+            return source
+        return None
+    first_source = wait_for(full_size_first, "first window settled full-size in center")
+    assert view("hotplug-first")["output-id"] == new_output["id"]
+    print(f"first window settled in center: {first_source}", flush=True)
     capture("first", ["hotplug-first"])
+    assert full_size_first(), "first window left full-size center placement before capture"
     pointer(startup["geometry"]["x"] + 50, startup["geometry"]["y"] + 50)
     second = launch("hotplug-second")
     if second["output-id"] != startup["id"]:
