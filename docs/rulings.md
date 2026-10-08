@@ -124,6 +124,7 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-04 | Strata is Gooarchy's standard file browser and replaces Files. | distro-notes |
 | 10-04 | Gooarchy patterns after Omarchy but starts clean: nothing is borrowed to fill a gap (no bar yet means no bar), so the distro's deficit is clearly defined once it is built. | distro-notes |
 | 10-04 | Gooarchy will have its own custom bar and its own notification system; until they exist it ships neither. | distro-notes |
+| 10-06 | Agent skills: the core `scottland` skill covers Scottland itself and stands alone. Mike: "this should definitely cover scottland specific things. also it should probably not recommend omarchy-related things"; "in the distro scottland stands alone". | E6 |
 
 ## System tools (core/tools)
 
