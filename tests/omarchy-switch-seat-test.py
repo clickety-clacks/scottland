@@ -22,7 +22,7 @@ result independently of the switch code:
 
 The dialog runs this checkout's scottland-switch (first on PATH); the root helper is the
 installed one (pkexec only runs /usr/lib/scottland/scottland-session-helper). Evidence
-(screenshots, webcam frames, logs) goes to build/seat/.
+(screenshots, webcam frames, logs) goes to a unique, owner-marked build/seat-<run>/.
 
   tests/omarchy-switch-seat-test.py
 """
@@ -37,8 +37,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from omarchy_fixture import REPO, Checks, read_ppm  # noqa: E402
+from seat_test_scratch import OwnedScratch  # noqa: E402
 
-OUT = REPO / "build/seat"
+SCRATCH = OwnedScratch(REPO / "build")
+OUT = SCRATCH.path
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 REMEMBERED = CONFIG / "scottland/switch.json"
@@ -197,8 +199,10 @@ def urgent_pixels(ppm):
 
 def grab(name, runner):
     """Screenshot through `runner` (a function running grim inside the desktop): (ppm, png)."""
-    ppm, png = OUT / f"{name}.ppm", OUT / f"{name}.png"
-    ppm.unlink(missing_ok=True)
+    ppm = SCRATCH.output(f"{name}.ppm")
+    png = SCRATCH.output(f"{name}.png")
+    SCRATCH.remove(ppm)
+    SCRATCH.remove(png)
     runner(["timeout", "5", "grim", "-t", "ppm", str(ppm)])
     runner(["timeout", "5", "grim", str(png)])
     return ppm, png
@@ -207,7 +211,7 @@ def grab(name, runner):
 def camera(name):
     """A webcam frame of the physical screen (evidence when screenshots might lie)."""
     sh("timeout", "15", "ffmpeg", "-loglevel", "error", "-y", "-f", "v4l2", "-i", "/dev/video2",
-       "-frames:v", "1", str(OUT / f"cam-{name}.jpg"), timeout=20)
+       "-frames:v", "1", str(SCRATCH.output(f"cam-{name}.jpg")), timeout=20)
 
 
 def core_dumps(since):
@@ -269,9 +273,6 @@ def leg(source, target, launch, runner, mapped=lambda: True):
     return pids, True
 
 
-OUT.mkdir(parents=True, exist_ok=True)
-for stale in OUT.iterdir():
-    stale.unlink()
 dialog = REPO / "omarchy/switch-dialog"
 path = f"{REPO}/omarchy/bin:/usr/local/bin:/usr/bin:/bin"
 qs_pids = []
@@ -288,9 +289,10 @@ sig, hdisplay, hpid = before
 camera("hyprland-before")
 
 # Leg 1: Hyprland -> Scottland
-launcher = OUT / "dialog-to-scottland.sh"
+launcher = SCRATCH.output("dialog-to-scottland.sh")
+launcher_log = SCRATCH.output("dialog-to-scottland.log")
 launcher.write_text(f"#!/bin/sh\nexport PATH={path} OTHER=scottland CURRENT=hyprland\n"
-                    f"exec qs -p {dialog} >{OUT}/dialog-to-scottland.log 2>&1\n")
+                    f"exec qs -p {dialog} >{launcher_log} 2>&1\n")
 launcher.chmod(0o755)
 hypr_env = {"HYPRLAND_INSTANCE_SIGNATURE": sig, "WAYLAND_DISPLAY": hdisplay}
 t0_us, t0 = monotonic_us(), time.time()
@@ -381,7 +383,6 @@ for path_ in quickshell_logs(qs_pids):
         path_.unlink()
     elif path_.is_dir() and path_.is_relative_to(RUNTIME / "quickshell"):
         shutil.rmtree(path_)
-for ppm in OUT.glob("*.ppm"):
-    ppm.unlink()
-(OUT / "seat.log").write_text("\n".join(log_lines) + "\n")
+SCRATCH.remove_suffix(".ppm")
+SCRATCH.output("seat.log").write_text("\n".join(log_lines) + "\n")
 sys.exit(check.summary())
