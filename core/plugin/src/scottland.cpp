@@ -60,6 +60,7 @@ extern "C" {
 #include "spread.hpp"
 #include "spread-job.hpp"
 #include "live-drag.hpp"
+#include "p14-observer.hpp"
 #include "rail-make-room.hpp"
 #include "eased-move.hpp"
 #include "placement.hpp"
@@ -5524,6 +5525,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
 
             track_pointer();
+            if (ev->event->button == BTN_LEFT && p14_observer.active())
+                p14_observer.marker("release-processed", p14_observer.cover, ev->event->time_msec,
+                    wf::get_core().seat->get_keyboard_modifiers(), false, ev->event);
         }
     };
 
@@ -6816,6 +6820,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // the zone says the other size. Then keep the size shown, and nudge the window sideways
         // by the least distance that puts its center where that size belongs.
         auto main = ev->main_view;
+        struct observation_end_t
+        {
+            scottland::p14_observer_t& observer;
+            int64_t id;
+            bool cancelled;
+            ~observation_end_t() { observer.marker("drag-done-end", id, 0, 0, cancelled); }
+        } observation_end{p14_observer, main ? main->get_id() : 0, model.drag.cancelled};
+        p14_observer.marker("drag-done-begin", observation_end.id, 0, 0, model.drag.cancelled);
         swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
         reconcile_rail_slides();  // a widget held in place by the grab may go now
         if (model.drag.cancelled)
@@ -7064,6 +7076,39 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         for (size_t i = 0; i < pixels.size(); i += 4)
             image.write((char *)&pixels[i], 3);
         ++captured_frames;
+    };
+
+    scottland::p14_observer_t p14_observer;
+    wf::signal::connection_t<wf::input_event_signal<wlr_pointer_button_event>> p14_release_received =
+        [this] (auto *ev)
+    {
+        if (ev->event->button == BTN_LEFT && ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED)
+            p14_observer.marker("release-received", drag->view ? drag->view->get_id() : 0,
+                ev->event->time_msec, wf::get_core().seat->get_keyboard_modifiers(), false, ev->event);
+    };
+    wf::ipc::method_callback p14_observe = [this] (wf::json_t data) -> wf::json_t
+    {
+        if (!getenv("SCOTTLAND_TEST_MODEL") || std::string(getenv("SCOTTLAND_TEST_MODEL")) != "1" ||
+            !getenv("SCOTTLAND_TEST_STATE") || !data.has_member("case") ||
+            data["case"].as_string() != "grabbed-while-peeking")
+            return wf::ipc::json_error("P14 test session and case opt-in required");
+        if (data["action"].as_string() == "stop")
+        {
+            p14_release_received.disconnect();
+            return p14_observer.stop();
+        }
+        auto outputs = wf::get_core().output_layout->get_outputs();
+        if (data["action"].as_string() != "arm" || outputs.size() != 1 || !drag->view ||
+            drag->view->get_id() != data["cover"].as_int() || drag->view->get_title() != "Big" ||
+            !drag->is_live() || drag->view->get_output() != outputs[0])
+            return wf::ipc::json_error("P14 live blue-B drag on one output required");
+        if (!data["directory"].is_string() || !data["nonce"].is_string())
+            return wf::ipc::json_error("P14 observation path and nonce required");
+        if (!p14_observer.arm(outputs[0]->handle, drag->view->get_id(),
+            data["directory"].as_string(), data["nonce"].as_string()))
+            return wf::ipc::json_error("P14 output API/readback prerequisites unavailable");
+        wf::get_core().connect(&p14_release_received);
+        return wf::ipc::json_ok();
     };
 
     wf::ipc::method_callback layout_state = [=] (wf::json_t data) -> wf::json_t
@@ -7389,6 +7434,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
+        if (getenv("SCOTTLAND_TEST_MODEL") && std::string(getenv("SCOTTLAND_TEST_MODEL")) == "1" &&
+            getenv("SCOTTLAND_TEST_STATE"))
+            ipc_repo->register_method("scottland/test-p14-observe", p14_observe);
         wf::get_core().connect(&on_axis);
         wf::get_core().connect(&on_mapped);
         wf::get_core().scene()->connect(&on_scene_structure);
@@ -7531,6 +7579,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
+        p14_release_received.disconnect();
+        p14_observer.stop();
+        ipc_repo->unregister_method("scottland/test-p14-observe");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
         on_key.disconnect();
