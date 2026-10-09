@@ -158,6 +158,30 @@ fn run() -> Result<Value, String> {
         .get("visible_exact")
         .ok_or_else(|| "resolver omitted visible_exact result".to_string())?;
     let linked = results.get("linked_client");
+    Ok(resolve_session_fallback(
+        has_tmux,
+        sender,
+        &resolver_dir,
+        &windows,
+        &window_facts,
+        &local_machine,
+        shows,
+        linked,
+        &call_resolver,
+    ))
+}
+
+fn resolve_session_fallback(
+    has_tmux: bool,
+    sender: &Value,
+    resolver_dir: &Path,
+    windows: &[Value],
+    window_facts: &BTreeMap<String, WindowFact>,
+    local_machine: &str,
+    shows: &RelationResult,
+    linked: Option<&RelationResult>,
+    resolve: &impl Fn(&Path, &Value) -> Result<Value, String>,
+) -> Value {
     if has_tmux && shows.windows.is_empty() && linked.is_none_or(|result| result.windows.is_empty())
     {
         let session = sender["tmux"]["session"]
@@ -167,13 +191,13 @@ fn run() -> Result<Value, String> {
             .as_str()
             .expect("validated sender machine");
         let (attributed, et_unproved) = match session_attributions(
-            &resolver_dir,
-            &windows,
-            &window_facts,
-            &local_machine,
+            resolver_dir,
+            windows,
+            window_facts,
+            local_machine,
             machine,
             session,
-            &call_resolver,
+            resolve,
         ) {
             Ok(ids) => ids,
             Err(mut reasons) => {
@@ -183,17 +207,12 @@ fn run() -> Result<Value, String> {
                 if let Some(linked) = linked.filter(|result| !result.complete) {
                     extend_unique(&mut reasons, &linked.reasons);
                 }
-                return Ok(unknown_from_reasons(reasons));
+                return unknown_from_reasons(reasons);
             }
         };
-        return Ok(format_attribution_result(
-            shows,
-            linked,
-            attributed,
-            et_unproved,
-        ));
+        return format_attribution_result(shows, linked, attributed, et_unproved);
     }
-    Ok(format_result(shows, linked))
+    format_result(shows, linked)
 }
 
 fn format_attribution_result(
@@ -1124,7 +1143,6 @@ fn diagnostic(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::cell::Cell;
-
     fn resolver_v1_accepts_target(target: &Value) -> bool {
         let script = r#"
 import json, sys
@@ -1158,13 +1176,135 @@ print("valid")
             ),
         }
     }
-
     fn complete(windows: &[u64], reason_code: &str) -> RelationResult {
         RelationResult {
             complete: true,
             windows: windows.iter().copied().collect(),
             reasons: vec![reason(reason_code, "caller", "test reason", false)],
         }
+    }
+
+    fn proof_case() -> (Value, Vec<Value>, BTreeMap<String, WindowFact>) {
+        let facts = BTreeMap::from([
+            (
+                "17".into(),
+                WindowFact {
+                    id: 17,
+                    address: "0x11".into(),
+                    pid: 41,
+                    ticks: "123".into(),
+                },
+            ),
+            (
+                "21".into(),
+                WindowFact {
+                    id: 21,
+                    address: "0x15".into(),
+                    pid: 42,
+                    ticks: "124".into(),
+                },
+            ),
+        ]);
+        let windows = vec![
+            json!({"stableId": "17", "address": "0x11", "pid": 41, "startTimeTicks": "123", "class": "ssh"}),
+            json!({"stableId": "21", "address": "0x15", "pid": 42, "startTimeTicks": "124", "class": "mosh"}),
+        ];
+        let sender =
+            json!({"identity": {"machine": "example-host"}, "tmux": {"session": "deploy"}});
+        (sender, windows, facts)
+    }
+
+    fn v1_relation(relation: &str, selected: &[Value]) -> Value {
+        let candidates: Vec<Value> = selected
+            .iter()
+            .map(|window| {
+                json!({
+                    "window": window,
+                    "proof": {"state": "complete", "relation": relation},
+                })
+            })
+            .collect();
+        json!({
+            "schema": "agent-window-resolver.response.v1", "operation": "resolve",
+            "requestedRelation": relation,
+            "status": if candidates.is_empty() { "unresolved" } else if candidates.len() == 1 { "matched" } else { "ambiguous" },
+            "candidates": candidates,
+            "reasons": if selected.is_empty() { vec![reason("candidate_count", "resolver", "none", false)] } else { vec![] },
+        })
+    }
+
+    #[test]
+    fn r3_distinct_v1_endpoint_proofs_survive_without_session_heuristic() {
+        let (sender, windows, facts) = proof_case();
+        let shows = parse_relation(
+            &v1_relation("visible_exact", &windows[..1]),
+            "visible_exact",
+            &facts,
+        )
+        .unwrap();
+        let linked = parse_relation(
+            &v1_relation("linked_client", &windows[1..]),
+            "linked_client",
+            &facts,
+        )
+        .unwrap();
+        let calls = Cell::new(0);
+        let result = resolve_session_fallback(
+            true,
+            &sender,
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            &shows,
+            Some(&linked),
+            &|_, _| {
+                calls.set(calls.get() + 1);
+                Err("session heuristic should not run after valid v1 proof".into())
+            },
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(result["status"], "found");
+        assert_eq!(
+            result["windows"],
+            json!([
+                {"window": 17, "relation": "shows"},
+                {"window": 21, "relation": "linked"},
+            ])
+        );
+    }
+
+    #[test]
+    fn r3_unproved_ambiguous_connections_are_not_attributed() {
+        let (sender, windows, facts) = proof_case();
+        let shows =
+            parse_relation(&v1_relation("visible_exact", &[]), "visible_exact", &facts).unwrap();
+        let linked =
+            parse_relation(&v1_relation("linked_client", &[]), "linked_client", &facts).unwrap();
+        let calls = Cell::new(0);
+        let result = resolve_session_fallback(
+            true,
+            &sender,
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            &shows,
+            Some(&linked),
+            &|_, request| {
+                calls.set(calls.get() + 1);
+                Ok(json!({
+                    "schema": "agent-window-resolver.window-session.response.v1",
+                    "operation": "window-session", "requestId": request["requestId"],
+                    "status": "unknown", "session": null,
+                    "reasons": [reason("transport_ambiguous", "proc", "two connections", false)],
+                }))
+            },
+        );
+        assert_eq!(calls.get(), 2);
+        assert_eq!(result["status"], "unknown");
+        assert_eq!(result["windows"], json!([]));
+        assert_eq!(result["reasons"][0]["code"], "transport_ambiguous");
     }
 
     #[test]
