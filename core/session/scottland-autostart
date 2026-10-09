@@ -5,8 +5,7 @@ hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/autostart.d"
 import_hook="$hooks/05-import-environment"
 if [ -f "$import_hook" ] && [ -x "$import_hook" ]; then
   "$import_hook" || {
-    echo "scottland-autostart: session environment import failed; remaining hooks were not started" >&2
-    exit 1
+    echo "scottland-autostart: session environment setup failed; continuing remaining hooks" >&2
   }
 fi
 

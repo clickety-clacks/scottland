@@ -23,11 +23,21 @@ if [ "$others" -gt 0 ]; then
     [ "$manager_current_desktop" = "$XDG_CURRENT_DESKTOP" ] || exit 0
 fi
 
+start_session_watch() {
+  # A failed environment refresh must not leave the session without its normal stop watcher.
+  if [ -n "${SCOTTLAND_SESSION_PID:-}" ]; then
+    systemctl --user start "scottland-session-watch@$SCOTTLAND_SESSION_PID.service"
+  else
+    systemctl --user start scottland-session.target
+  fi
+}
+
 # The user manager persists across Scottland logins. A portal already started here can still hold
 # the previous session's environment, so remember only portal units that predate this import.
 portal_units=$(systemctl --user list-units --all --type=service \
   --no-legend 'xdg-desktop-portal*.service') || {
   echo "scottland: could not inspect portal services before importing the session environment" >&2
+  start_session_watch
   exit 1
 }
 portal_units=$(printf '%s\n' "$portal_units" |
@@ -55,17 +65,21 @@ done
 set -- $import_names
 if [ "$#" -eq 0 ]; then
   echo "scottland: no configured session environment variables are set; not importing" >&2
+  start_session_watch
   exit 1
 fi
 
 # Update systemd directly, then D-Bus activation as well. A rejected systemd batch is logged and
-# stops startup; there is no retry because a failed import must remain visible to the session log.
+# reported to the autostart coordinator; there is no retry because the rejection must remain
+# visible to the session log.
 systemctl --user import-environment "$@" || {
   echo "scottland: systemd user manager rejected the live session environment" >&2
+  start_session_watch
   exit 1
 }
 dbus-update-activation-environment "$@" || {
   echo "scottland: D-Bus activation rejected the live session environment" >&2
+  start_session_watch
   exit 1
 }
 
@@ -74,14 +88,11 @@ dbus-update-activation-environment "$@" || {
 for portal in $portal_units; do
   systemctl --user restart "$portal" || {
     echo "scottland: could not restart portal service $portal after importing the session environment" >&2
+    start_session_watch
     exit 1
   }
 done
 
 # Start the user's graphical-session services with Scottland. The watcher stops them again when
 # this session's launcher goes away, however the session ends.
-if [ -n "${SCOTTLAND_SESSION_PID:-}" ]; then
-  systemctl --user start "scottland-session-watch@$SCOTTLAND_SESSION_PID.service"
-else
-  systemctl --user start scottland-session.target
-fi
+start_session_watch
