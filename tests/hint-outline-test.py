@@ -167,6 +167,7 @@ if peer_pid != compositor_pid or peer_uid != os.getuid():
     raise RuntimeError("isolated headless session required: IPC peer is not this run's owned Wayfire")
 clients = []
 passed = failed = 0
+hint_colors = {}
 BACKGROUND = "#1f232c"
 
 
@@ -378,44 +379,56 @@ def outside_point():
 
 def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_stroke=True):
     state = hints()
+    # The hint IPC omits color after a hint has been selected, but the tint remains
+    # attached to the window's assigned slot for the rest of the active session.
+    for identifier, item in state.items():
+        if "color" in item:
+            hint_colors[identifier] = item["color"]
     frames = frame_map(state)
     old = option("window_mode_tint")
-    set_tint(0)
-    before = Shot(name + "-base", scale)
-    set_tint(strength)
-    after = Shot(name + "-tint", scale)
-    screen_point = (point[0] + origin[0], point[1] + origin[1])
-    expected = before.pixel(*screen_point)
-    for identifier in order:
-        if identifier in frames and contains(frames[identifier], point):
-            expected = blend_pixel(expected, state[identifier]["color"], strength / 100)
-    actual = after.pixel(*screen_point)
-    check(name + f": {strength}% tint follows rear-first extent order",
-          near(actual, expected, 5))
-    if no_stroke:
-        point_out = outside_point()
-        if point_out is not None:
-            set_tint(0)
-            outside_base = Shot(name + "-outside-base", scale)
-            set_tint(100)
-            outside_full = Shot(name + "-outside-full", scale)
-            outside_screen = (point_out[0] + origin[0], point_out[1] + origin[1])
-            check(name + ": no tint stroke outside drawn extents",
-                  near(outside_base.pixel(*outside_screen), outside_full.pixel(*outside_screen), 3))
-    set_tint(old)
-    return point, before, after
+    try:
+        set_tint(0)
+        before = Shot(name + "-base", scale)
+        set_tint(strength)
+        after = Shot(name + "-tint", scale)
+        screen_point = (point[0] + origin[0], point[1] + origin[1])
+        expected = before.pixel(*screen_point)
+        for identifier in order:
+            if identifier in frames and contains(frames[identifier], point):
+                color = state.get(identifier, {}).get("color", hint_colors.get(identifier))
+                if color is None:
+                    raise RuntimeError(f"no retained hint color for tinted window {identifier}")
+                expected = blend_pixel(expected, color, strength / 100)
+        actual = after.pixel(*screen_point)
+        check(name + f": {strength}% tint follows rear-first extent order",
+              near(actual, expected, 5))
+        if no_stroke:
+            point_out = outside_point()
+            if point_out is not None:
+                set_tint(0)
+                outside_base = Shot(name + "-outside-base", scale)
+                set_tint(100)
+                outside_full = Shot(name + "-outside-full", scale)
+                outside_screen = (point_out[0] + origin[0], point_out[1] + origin[1])
+                check(name + ": no tint stroke outside drawn extents",
+                      near(outside_base.pixel(*outside_screen), outside_full.pixel(*outside_screen), 3))
+        return point, before, after
+    finally:
+        set_tint(old)
 
 
 def no_tint_when_inactive(name, point, scale=1, origin=(0, 0)):
     old = option("window_mode_tint")
-    set_tint(0)
-    zero = Shot(name + "-zero", scale)
-    set_tint(100)
-    full = Shot(name + "-full", scale)
-    screen_point = (point[0] + origin[0], point[1] + origin[1])
-    check(name + ": inactive Window mode draws no tint at any strength",
-          near(zero.pixel(*screen_point), full.pixel(*screen_point), 3))
-    set_tint(old)
+    try:
+        set_tint(0)
+        zero = Shot(name + "-zero", scale)
+        set_tint(100)
+        full = Shot(name + "-full", scale)
+        screen_point = (point[0] + origin[0], point[1] + origin[1])
+        check(name + ": inactive Window mode draws no tint at any strength",
+              near(zero.pixel(*screen_point), full.pixel(*screen_point), 3))
+    finally:
+        set_tint(old)
 
 
 def hidpi():
@@ -462,6 +475,19 @@ def section(function):
         import traceback
         traceback.print_exc()
         check(function.__name__ + " ran", False)
+    finally:
+        # A failed pixel assertion must not leave Alt held or fullscreen/always-on
+        # avoidance active and contaminate the remaining independent scenarios.
+        try:
+            if ipc("scottland/hints")["active"]:
+                release()
+            ipc("wayfire/set-config-options", {"scottland/window_avoidance_always": False})
+            if "front" in globals():
+                ipc("wm-actions/set-fullscreen", dict(view_id=front, state=False))
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            check(function.__name__ + " cleanup", False)
 
 
 def reset_layout():
