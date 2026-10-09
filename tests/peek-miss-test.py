@@ -277,8 +277,22 @@ try:
         until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
         # Clear the cover off it again, back where it started, so the case's own cover starts clear.
         ipc('window-rules/focus-view', {'id': B})
-        until(lambda: (focused_id() == B, focused_id()), 3, 'cover focused for reset drag')
-        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2)); release(); settled()
+        def reset_drag_ready():
+            drag = ipc('scottland/desktop-model').get('drag', {})
+            focused = focused_id()
+            return (focused == B and drag.get('dragged', 0) in (0, None),
+                    {'focused': focused, 'dragged': drag.get('dragged')})
+        until(reset_drag_ready, 3, 'cover focused and prior grab cleared for reset drag')
+        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2))
+        def reset_drag_is_b():
+            drag = ipc('scottland/desktop-model').get('drag', {})
+            focused = focused_id()
+            state = {'focused': focused, 'dragged': drag.get('dragged')}
+            return (focused == B and drag.get('dragged') == B, state)
+        reset_drag = until(reset_drag_is_b, 3, 'reset pointer drag belongs to focused cover B')
+        check(reset_drag['focused'] == B and reset_drag['dragged'] == B,
+              'cover B is the actual focused and dragged window during the reset')
+        release(); settled()
 
     def solo_big():
         ipc('window-rules/focus-view', {'id': B})
