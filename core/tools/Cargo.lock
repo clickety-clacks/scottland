@@ -487,11 +487,11 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "scottland"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "scottland-bluetooth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "scottland-lib",
  "zbus",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "scottland-lib"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "serde"

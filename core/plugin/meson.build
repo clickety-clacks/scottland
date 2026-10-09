@@ -1,4 +1,4 @@
-project('scottland', 'cpp', version: '0.1.0', license: 'MIT',
+project('scottland', 'cpp', version: '0.2.0', license: 'MIT',
   default_options: ['cpp_std=c++17', 'warning_level=2'])
 
 wayfire = dependency('wayfire')
