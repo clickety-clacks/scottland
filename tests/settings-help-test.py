@@ -1023,20 +1023,15 @@ try:
     close_panel(panel)
     set_test_identities([{"output": target_output["name"], **target_identity}])
 
-    # Put the two windows between the profiles' center boundaries, so one is centered and
-    # the other follows its continuous zone regardless of the suite's starting global size.
-    global_center = zone_baseline["center_width"]
-    placement_center = min(90.0, global_center + 12.0) if global_center <= 78.0 else global_center - 12.0
+    # Use separated profiles and a short global blend band, so one window is centered while
+    # the unnamed output is clearly scaled in its continuous zone.
+    placement_center = 80.0
     placement_zones = {**target_zones, "center_width": placement_center}
     placement_json = json.dumps([placement_zones, dormant_zones], ensure_ascii=False, separators=(",", ":"))
     subprocess.run([ctl, "set", "screen_zones", placement_json], check=True, capture_output=True, text=True)
-    own_center_edge = .5 + placement_center / 200
-    global_center_edge = .5 + global_center / 200
-    placement_fraction = (own_center_edge + global_center_edge) / 2
-    if placement_center > global_center:
-        own_expected, global_expected = "center", "continuous"
-    else:
-        own_expected, global_expected = "continuous", "center"
+    ipc("wayfire/set-config-options", {"scottland/center_width": 40.0, "scottland/blend_width": 20.0})
+    placement_fraction = .83
+    own_expected, global_expected = "center", "continuous"
     placement_windows = []
     for title, output in (("zones-own-placement", target_output), ("zones-global-placement", global_output)):
         process = subprocess.Popen(["foot", "-c", "/dev/null", "-T", title, "sleep", "60"],
@@ -1070,6 +1065,8 @@ try:
     if not placement_ok:
         print("S24 placement state: " + json.dumps({"own": own_view, "global": global_view}, sort_keys=True), flush=True)
     check("S24 actual placement resolves the target profile and leaves unnamed output global", placement_ok)
+    ipc("wayfire/set-config-options", {"scottland/center_width": zone_baseline["center_width"],
+                                        "scottland/blend_width": zone_baseline["blend_width"]})
 
     new_test_output = ipc("wayfire/create-headless-output", {"width": 5120, "height": 1440})["output"]
     deadline = time.monotonic() + 8
@@ -1093,7 +1090,7 @@ try:
         time.sleep(.05)
     assert hotplug_view, "hotplug placement fixture did not map"
     hotplug_width = new_test_output["geometry"]["width"]
-    hotplug_fraction = .5 + placement_center / 200 + .01
+    hotplug_fraction = .95
     ipc("window-rules/configure-view", {"id": hotplug_view["id"], "output_id": new_test_output["id"],
         "geometry": {"x": round(hotplug_width * hotplug_fraction - 150), "y": 180, "width": 300, "height": 180}})
     deadline = time.monotonic() + 5
