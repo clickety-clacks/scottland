@@ -13,6 +13,7 @@ ShellRoot {
   property bool ready: false
 
   readonly property string promptText: Quickshell.env("SCOTTLAND_LIST_PICKER_PROMPT") || ""
+  readonly property string focusedOutputName: Quickshell.env("SCOTTLAND_LIST_PICKER_OUTPUT") || ""
   readonly property string palettePath: Quickshell.env("SCOTTLAND_PALETTE") ||
     ((Quickshell.env("XDG_RUNTIME_DIR") || "") + "/scottland/" +
       (Quickshell.env("WAYLAND_DISPLAY") || "wayland") + ".palette.json")
@@ -22,9 +23,17 @@ ShellRoot {
       .filter(row => !needle || row.entry.toLowerCase().includes(needle))
   }
   readonly property var targetScreen: {
+    if (root.focusedOutputName.length > 0) {
+      for (let index = 0; index < Quickshell.screens.length; ++index) {
+        const screen = Quickshell.screens[index]
+        if (screen.name === root.focusedOutputName) return screen
+      }
+      return null
+    }
+
     const active = ToplevelManager.activeToplevel
     if (active && active.screens && active.screens.length > 0) return active.screens[0]
-    return Quickshell.screens.length > 0 ? Quickshell.screens[0] : null
+    return Quickshell.screens.length === 1 ? Quickshell.screens[0] : null
   }
   readonly property color background: palette.background || "#1c1d22"
   readonly property color foreground: palette.foreground || "#e6e6e9"
