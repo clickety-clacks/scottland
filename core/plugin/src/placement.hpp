@@ -19,8 +19,4 @@ double overlap(rectangle a, rectangle b);
 double largest_opening(rectangle region, const std::vector<rectangle>& obstacles);
 
 struct label_spot { point center; double clearance = 0; };
-// Share of the window's on-screen area left uncovered by the union of foreground rectangles
-// (exact sweep; O(n² log n) for n foreground rectangles). A window
-// wholly off screen counts as fully visible: an outline there would show nothing.
-double visible_fraction(rectangle window, rectangle screen, const std::vector<rectangle>& foreground);
 }

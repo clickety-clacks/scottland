@@ -41,13 +41,14 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 | 10-04 | Entering Window mode, windows are nudged so each hint gets full room, best effort; overlap the front window only when there's no room. | WK13 |
 | 10-04 | The frontmost window's hint is always at its exact center. | WK31 |
 | 10-04 | Grabbing a shifted (peeking) window keeps it exactly where it's drawn, which becomes its real position; selecting it by tapping its hint in Window mode instead brings it to its true position. | WK13, WK27 |
-| 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. | WK37 |
+| 10-04 | In Window mode, a mostly occluded window gets an opaque hint-color outline, in its own layer above all windows. (Superseded 2026-10-07 by the Window-mode tint layer in WK14/WK37.) | WK37 |
 | 10-04 | Window-mode tint strength is a setting. | WK38 |
 | 10-07 | per-screen: a glide on one screen switches only that screen to live window avoidance, not all screens. | WK13 |
 | 2026-10-06 | There should be a settings slider for opacity of the background behind hint letters. | WK42, S23 |
 | 2026-10-06 | "why does 100% mean 21% that makes no sense"; "it should set both. having them different is a bug." The slider is the absolute opacity of the background behind hint letters (100% solid, 0% none), one value and one default for window and widget hints. | WK42, WK26, S23 |
 | 2026-10-07 | "no, it should go from 0 to 100%, this is simple." This corrects an accidental choice to add a contrast floor for widget hint letters, which is void. Hint background opacity is user adjustable across the full 0-100% range, one value for window and widget hints, default 21%. No contrast floor, halo, minimum or automatic adjustment; low values show whatever lies beneath. | WK42, S23 |
 | 2026-10-07 | "Record option 2: both separate settings go 0–100%" (dr_ed09236e). The Window mode hint color overlay (`window_mode_tint`) widens from 0–30% to 0–100%, default still 7%; it stays a separate setting from hint background opacity, which is unchanged. | WK38, S14 |
+| 2026-10-07 | "can the tints in hint mode of the windows all be drawn on a layer above all windows, so where they intersect the colors mix, and then turn off the extra window border strokes". Each drawn window and widget card, including fullscreen windows, gets one tint over its whole extent in a layer above all windows and cards; overlapping tints use the PO-settled option A, ordinary rear-first translucent layering, at the `window_mode_tint` strength (0–100%, default 7%). Window mode draws no window/card outline, border or fullscreen rim. Hint circles, letters, backgrounds, rims, press flashes, goo dye and fallback halo dye remain unchanged; Scottland Settings and its other overlays stay above the tint, untinted. (Supersedes the 10-04 WK37 outline row.) | WK14, WK37, S14 |
 
 ## Window mode keys
 

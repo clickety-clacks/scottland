@@ -144,7 +144,7 @@
         <option name="window_mode_opacity_unfocused" type="double"><_short>Unfocused Window mode opacity</_short><default>1</default><min>0</min><max>1</max></option>
         <option name="window_mode_tint" type="double">
             <_short>Window mode hint color overlay (%)</_short>
-            <_long>How strongly Window mode tints each window and widget card with its hint color. Zero turns the overlay off. Hint circles, borders and outlines are unaffected.</_long>
+            <_long>How strongly Window mode tints each drawn window and widget card with its hint color. Zero turns the overlay off. Hint circles, letters, backgrounds, goo dye and press flashes are unaffected.</_long>
             <default>7</default><min>0</min><max>100</max>
         </option>
         <option name="hint_background_opacity" type="double">

@@ -1,5 +1,6 @@
 #!/bin/bash
-# WK37/WK38 in isolated headless sessions (one output, two outputs, then 2x scale); never reuse or change a
+# WK14 tint/WK37 replacement/WK38 scenarios in isolated headless sessions (one output, two outputs,
+# then 2x scale); never reuse or change a
 # running session. Builds this checkout's plugin and test helpers (make test-hooks) and uses
 # only those, so the result always belongs to this checkout.
 set -euo pipefail
