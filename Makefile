@@ -40,6 +40,28 @@ dev-install: plugin tools
 
 # Points the user's session at this tree (dev-install runs it inside a snapshot).
 link-dev:
+	# Validate both legacy names before changing any session links.
+	@check_legacy_link() { \
+	  link="$$1"; current="$$2"; suffix="$$3"; \
+	  if [ -L "$$link" ]; then \
+	    target=$$(readlink -- "$$link") || return 1; \
+	    case "$$target" in \
+	      "$$current"|"$(RELEASES)"/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/"$$suffix") return 0 ;; \
+	      *) echo "link-dev: refusing unrecognized legacy link target: $$link" >&2; return 1 ;; \
+	    esac; \
+	  elif [ -e "$$link" ]; then \
+	    echo "link-dev: refusing non-link occupant at legacy handover name: $$link" >&2; return 1; \
+	  fi; \
+	}; \
+	remove_legacy_link() { \
+	  link="$$1"; current="$$2"; suffix="$$3"; \
+	  check_legacy_link "$$link" "$$current" "$$suffix" || return 1; \
+	  if [ -L "$$link" ]; then rm -- "$$link"; fi; \
+	}; \
+	check_legacy_link "$(DEV)/autostart.d/40-handover" "$(CURDIR)/omarchy/autostart.d/40-handover" "omarchy/autostart.d/40-handover" || exit 1; \
+	check_legacy_link "$(DEV)/libexec/scottland-handover" "$(CURDIR)/omarchy/libexec/scottland-handover" "omarchy/libexec/scottland-handover" || exit 1; \
+	remove_legacy_link "$(DEV)/autostart.d/40-handover" "$(CURDIR)/omarchy/autostart.d/40-handover" "omarchy/autostart.d/40-handover" || exit 1; \
+	remove_legacy_link "$(DEV)/libexec/scottland-handover" "$(CURDIR)/omarchy/libexec/scottland-handover" "omarchy/libexec/scottland-handover" || exit 1
 	mkdir -p $(DEV)/plugins $(DEV)/metadata $(CONF) $(HOME)/.local/bin
 	ln -sf $(CURDIR)/build/libscottland.so $(DEV)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
@@ -48,21 +70,6 @@ link-dev:
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
 	ln -sf $(CURDIR)/omarchy/bin/scottland-omarchy-setup $(HOME)/.local/bin/scottland-omarchy-setup
 	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/override-report.d $(DEV)/prompts
-	# Keep mode's service handover is gone (2026-10-06); fail closed on any unknown occupant.
-	@remove_legacy_link() { \
-	  link="$$1"; current="$$2"; suffix="$$3"; \
-	  if [ -L "$$link" ]; then \
-	    target=$$(readlink -- "$$link") || return 1; \
-	    case "$$target" in \
-	      "$$current"|"$(RELEASES)"/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/"$$suffix") rm -- "$$link" ;; \
-	      *) echo "link-dev: refusing unrecognized legacy link target: $$link" >&2; return 1 ;; \
-	    esac; \
-	  elif [ -e "$$link" ]; then \
-	    echo "link-dev: refusing non-link occupant at legacy handover name: $$link" >&2; return 1; \
-	  fi; \
-	}; \
-	remove_legacy_link "$(DEV)/autostart.d/40-handover" "$(CURDIR)/omarchy/autostart.d/40-handover" "omarchy/autostart.d/40-handover" || exit 1; \
-	remove_legacy_link "$(DEV)/libexec/scottland-handover" "$(CURDIR)/omarchy/libexec/scottland-handover" "omarchy/libexec/scottland-handover" || exit 1
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(DEV)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/build/scottland-output-heads $(DEV)/libexec/scottland-output-heads

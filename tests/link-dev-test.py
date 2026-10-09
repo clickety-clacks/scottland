@@ -38,8 +38,9 @@ class LinkDevTests(unittest.TestCase):
 
             autostart.symlink_to(REPO / "omarchy/autostart.d/40-handover")
             handover.symlink_to(data / "scottland/releases/0123456789ab/omarchy/libexec/scottland-handover")
-            subprocess.run(["make", "link-dev"], cwd=REPO, env=env, check=True,
-                           text=True, capture_output=True)
+            installed = subprocess.run(["make", "link-dev"], cwd=REPO, env=env,
+                                       text=True, capture_output=True)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
             self.assertFalse(autostart.is_symlink())
             self.assertFalse(handover.is_symlink())
 
@@ -56,15 +57,26 @@ class LinkDevTests(unittest.TestCase):
 
             autostart.unlink()
             handover.unlink()
+            recognized_autostart = REPO / "omarchy/autostart.d/40-handover"
             unknown_target = root / "user-owned-handover"
             unknown_target.write_text("user target")
+            autostart.symlink_to(recognized_autostart)
             handover.symlink_to(unknown_target)
+            plugin = dev / "plugins/libscottland.so"
+            old_plugin_target = root / "old-plugin.so"
+            old_plugin_target.write_text("preserve this plugin link")
+            plugin.unlink()
+            plugin.symlink_to(old_plugin_target)
             refused = subprocess.run(["make", "link-dev"], cwd=REPO, env=env,
                                      text=True, capture_output=True)
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn("refusing unrecognized legacy link target", refused.stderr)
+            self.assertTrue(autostart.is_symlink())
+            self.assertEqual(os.readlink(autostart), str(recognized_autostart))
             self.assertTrue(handover.is_symlink())
             self.assertEqual(handover.resolve(), unknown_target)
+            self.assertTrue(plugin.is_symlink())
+            self.assertEqual(os.readlink(plugin), str(old_plugin_target))
 
 
 if __name__ == "__main__":
