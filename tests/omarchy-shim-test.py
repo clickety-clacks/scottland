@@ -24,6 +24,13 @@ fixture = Fixture(
     root,
     modules=["default.hypr.bindings.voxtype"],
     recorders=["mark"],
+    commands={
+        # Keep the stock launcher, but select the supported terminal explicitly and leave its
+        # animation process alive without requiring Omarchy's optional TTE renderer headlessly.
+        "xdg-terminal-exec": 'if [ "$1" = "--print-id" ]; then cat "$HOME/.config/xdg-terminals.list"; fi',
+        "ttfx": "exit 0",
+        "omarchy-screensaver": "exec sleep 60",
+    },
     lua=f'''
 -- An unsupported call while the config loads must not stop the bindings after it.
 hl.config({{ cursor = {{ zoom_factor = 1 }} }})
