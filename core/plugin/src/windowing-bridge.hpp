@@ -770,6 +770,7 @@
         using Z = scottland::windowing::zone;
         auto output = destination_output ? destination_output : window->get_output();
         auto screen = output->get_relative_geometry();
+        auto zone = zone_for(output);
         auto a = output->workarea->get_workarea(); auto g = window->get_geometry();
         auto& memory = ensure_window_memory(window->get_id());
         std::optional<scottland::windowing::point> remembered;
@@ -787,7 +788,6 @@
         if (z == Z::center)
         {
             // The zone constrains the window's CENTER; content stays full size, even if wider.
-            auto zone = zone_for(output);
             double edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
             // Strictly inside: a center exactly on the zone's edge is already the periphery's
             // (the softness band starts there), so it would be scaled (tenet 4).
