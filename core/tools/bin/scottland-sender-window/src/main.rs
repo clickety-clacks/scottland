@@ -166,7 +166,7 @@ fn run() -> Result<Value, String> {
         let machine = sender["identity"]["machine"]
             .as_str()
             .expect("validated sender machine");
-        let attributed = match session_attributions(
+        let (attributed, et_unproved) = match session_attributions(
             &resolver_dir,
             &windows,
             &window_facts,
@@ -186,15 +186,38 @@ fn run() -> Result<Value, String> {
                 return Ok(unknown_from_reasons(reasons));
             }
         };
-        if !attributed.is_empty() {
-            return Ok(json!({
-                "status": "found",
-                "windows": attributed.into_iter().map(|id| json!({"window": id, "relation": "attributed"})).collect::<Vec<_>>(),
-                "reasons": [],
-            }));
-        }
+        return Ok(format_attribution_result(
+            shows,
+            linked,
+            attributed,
+            et_unproved,
+        ));
     }
     Ok(format_result(shows, linked))
+}
+
+fn format_attribution_result(
+    shows: &RelationResult,
+    linked: Option<&RelationResult>,
+    attributed: BTreeSet<u64>,
+    et_unproved: bool,
+) -> Value {
+    if !attributed.is_empty() {
+        return json!({
+            "status": "found",
+            "windows": attributed.into_iter().map(|id| json!({"window": id, "relation": "attributed"})).collect::<Vec<_>>(),
+            "reasons": [],
+        });
+    }
+    if et_unproved {
+        return unknown_from_reasons(vec![reason(
+            "et_hint_not_exact_proof",
+            "transport",
+            "a same-host et window could not be attributed to a current session",
+            false,
+        )]);
+    }
+    format_result(shows, linked)
 }
 
 fn read_input() -> Result<Vec<u8>, String> {
@@ -645,7 +668,7 @@ fn session_attributions(
     sender_machine: &str,
     sender_session: &str,
     resolve: &impl Fn(&Path, &Value) -> Result<Value, String>,
-) -> Result<BTreeSet<u64>, Vec<Value>> {
+) -> Result<(BTreeSet<u64>, bool), Vec<Value>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let identities: Vec<Value> = windows
         .iter()
@@ -659,6 +682,7 @@ fn session_attributions(
         })
         .collect();
     let mut found = BTreeSet::new();
+    let mut et_unproved = false;
     let mut failures = Vec::new();
     for selected in &identities {
         let remaining = deadline
@@ -690,18 +714,26 @@ fn session_attributions(
             }
         };
         match attributed_response(&request, &response, facts, sender_machine, sender_session) {
-            Ok(Some(id)) => {
+            Ok(AttributionObservation::Window(id)) => {
                 found.insert(id);
             }
-            Ok(None) => {}
+            Ok(AttributionObservation::RelevantEtHint) => et_unproved = true,
+            Ok(AttributionObservation::None) => {}
             Err(mut reasons) => failures.append(&mut reasons),
         }
     }
     if failures.is_empty() {
-        Ok(found)
+        Ok((found, et_unproved))
     } else {
         Err(failures)
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AttributionObservation {
+    Window(u64),
+    RelevantEtHint,
+    None,
 }
 
 fn attributed_response(
@@ -710,7 +742,7 @@ fn attributed_response(
     facts: &BTreeMap<String, WindowFact>,
     sender_machine: &str,
     sender_session: &str,
-) -> Result<Option<u64>, Vec<Value>> {
+) -> Result<AttributionObservation, Vec<Value>> {
     let invalid = || {
         vec![reason(
             "resolver_protocol_error",
@@ -725,8 +757,37 @@ fn attributed_response(
     {
         return Err(invalid());
     }
+    if response["status"] != "none" && response.get("uncertainty").is_some() {
+        return Err(invalid());
+    }
     match response["status"].as_str() {
-        Some("none") if response["session"].is_null() => Ok(None),
+        Some("none") if response["session"].is_null() => {
+            let Some(hint) = response.get("uncertainty") else {
+                return Ok(AttributionObservation::None);
+            };
+            let object = hint.as_object().ok_or_else(invalid)?;
+            if object.len() != 4
+                || hint["code"] != "et_hint_not_exact_proof"
+                || hint["transport"] != "et"
+                || hint["window"] != request["window"]
+            {
+                return Err(invalid());
+            }
+            let host = hint["host"].as_str().ok_or_else(invalid)?;
+            let stable_id = hint["window"]["stableId"].as_str().ok_or_else(invalid)?;
+            let fact = facts.get(stable_id).ok_or_else(invalid)?;
+            if hint["window"]["address"] != fact.address
+                || hint["window"]["pid"] != fact.pid
+                || hint["window"]["startTimeTicks"] != fact.ticks
+            {
+                return Err(invalid());
+            }
+            if machine_matches(host, sender_machine) {
+                Ok(AttributionObservation::RelevantEtHint)
+            } else {
+                Ok(AttributionObservation::None)
+            }
+        }
         Some("unknown") => {
             let reasons = response["reasons"]
                 .as_array()
@@ -745,7 +806,7 @@ fn attributed_response(
                     )
                 )
             }) {
-                Ok(None)
+                Ok(AttributionObservation::None)
             } else {
                 Err(reasons)
             }
@@ -759,14 +820,14 @@ fn attributed_response(
             if basis == "current"
                 && session.get("method").and_then(Value::as_str) == Some("local-client")
             {
-                return Ok(None);
+                return Ok(AttributionObservation::None);
             }
             let host = session
                 .get("host")
                 .and_then(Value::as_str)
                 .ok_or_else(invalid)?;
             if !machine_matches(host, sender_machine) {
-                return Ok(None);
+                return Ok(AttributionObservation::None);
             }
             if basis == "launch" {
                 return Err(response["reasons"]
@@ -795,7 +856,7 @@ fn attributed_response(
                 .and_then(Value::as_str)
                 .ok_or_else(invalid)?;
             if name != sender_session {
-                return Ok(None);
+                return Ok(AttributionObservation::None);
             }
             let stable_id = request["window"]["stableId"].as_str().ok_or_else(invalid)?;
             let fact = facts.get(stable_id).ok_or_else(invalid)?;
@@ -805,7 +866,7 @@ fn attributed_response(
             {
                 return Err(invalid());
             }
-            Ok(Some(fact.id))
+            Ok(AttributionObservation::Window(fact.id))
         }
         _ => Err(invalid()),
     }
@@ -1216,15 +1277,15 @@ print("valid")
                 session_case(17, "deploy", "example-host.local", "current", method);
             assert_eq!(
                 attributed_response(&request, &response, &facts, "EXAMPLE-HOST", "deploy").unwrap(),
-                Some(17)
+                AttributionObservation::Window(17)
             );
             assert_eq!(
                 attributed_response(&request, &response, &facts, "other-host", "deploy").unwrap(),
-                None
+                AttributionObservation::None
             );
             assert_eq!(
                 attributed_response(&request, &response, &facts, "example-host", "other").unwrap(),
-                None
+                AttributionObservation::None
             );
         }
         let (request, response, facts) =
@@ -1276,7 +1337,7 @@ print("valid")
                 }))
             },
         );
-        assert_eq!(ids.unwrap(), BTreeSet::from([17, 21]));
+        assert_eq!(ids.unwrap(), (BTreeSet::from([17, 21]), false));
     }
 
     #[test]
@@ -1324,7 +1385,52 @@ print("valid")
         )]);
         assert_eq!(
             attributed_response(&request, &response, &facts, "example-host", "deploy").unwrap(),
-            None
+            AttributionObservation::None
+        );
+    }
+
+    #[test]
+    fn sr4_uses_only_same_host_et_uncertainty_with_matching_window_identity() {
+        let (request, mut response, facts) =
+            session_case(17, "deploy", "example-host", "current", "remote-ancestry");
+        response["status"] = json!("none");
+        response["session"] = Value::Null;
+        response["uncertainty"] = json!({
+            "code": "et_hint_not_exact_proof", "transport": "et",
+            "host": "example-host.local", "window": request["window"],
+        });
+        assert_eq!(
+            attributed_response(&request, &response, &facts, "EXAMPLE-HOST", "deploy").unwrap(),
+            AttributionObservation::RelevantEtHint
+        );
+        assert_eq!(
+            attributed_response(&request, &response, &facts, "different-host", "deploy").unwrap(),
+            AttributionObservation::None
+        );
+        response["uncertainty"]["window"]["startTimeTicks"] = json!("124");
+        assert!(
+            attributed_response(&request, &response, &facts, "example-host", "deploy").is_err()
+        );
+    }
+
+    #[test]
+    fn sr4_et_hint_is_unknown_only_without_a_qualifying_window() {
+        let shows = complete(&[], "candidate_count");
+        let linked = complete(&[], "candidate_count");
+        let unresolved = format_attribution_result(&shows, Some(&linked), BTreeSet::new(), true);
+        assert_eq!(unresolved["status"], "unknown");
+        assert_eq!(unresolved["windows"], json!([]));
+        assert_eq!(unresolved["reasons"][0]["code"], "et_hint_not_exact_proof");
+
+        let absent = format_attribution_result(&shows, Some(&linked), BTreeSet::new(), false);
+        assert_eq!(absent["status"], "none");
+
+        let attributed =
+            format_attribution_result(&shows, Some(&linked), BTreeSet::from([17]), true);
+        assert_eq!(attributed["status"], "found");
+        assert_eq!(
+            attributed["windows"],
+            json!([{"window": 17, "relation": "attributed"}])
         );
     }
 
