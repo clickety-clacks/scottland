@@ -5,7 +5,8 @@ Isolated headless --omarchy session loading the installed, unchanged utilities.l
 (switch:on:Lid Switch -> omarchy-system-lid-close, switch:off:Lid Switch ->
 omarchy-hyprland-monitor-clamshell) plus a user binding on either change. Input: core's
 test-only virtual switch device (scottland/test-switch), which takes Wayfire's own switch path;
-only libinput is bypassed. Oracle: which stand-in commands ran. The lid-close command must also
+only libinput is bypassed. Oracle: which stand-in commands ran. (What the clamshell reconcile does
+to the displays is tests/omarchy-monitors-test.py.) The lid-close command must also
 run on the lock screen (a real ext-session-lock client), as Omarchy marks it locked; a switch
 binding without locked must not.
 
@@ -49,9 +50,10 @@ with Session(fixture, "hl-omarchy-lid") as session:
     check("opening the lid does not run the lid-close command", count("omarchy-system-lid-close") == 1,
           fixture.calls())
     report = (session.dir / "state/scottland/omarchy-overrides.txt").read_text()
-    check("the untranslated clamshell reconcile (lid open) is reported, not run",
-          count("omarchy-hyprland-monitor-clamshell") == 0 and "Lid Switch (off)" in report,
-          [line for line in report.splitlines() if "Lid Switch" in line])
+    ok, calls = fixture.wait_calls(lambda c: c.count(("omarchy-hyprland-monitor-clamshell", "")) == 1)
+    check("opening the lid runs Omarchy's clamshell reconcile (translated since 10-06), unreported",
+          ok and "Lid Switch (off)" not in report,
+          (calls, [line for line in report.splitlines() if "Lid Switch" in line]))
 
     # Locked, as Omarchy marks it: lid close still runs on the lock screen. The user's binding
     # has no locked flag, so it does not run there (as in Hyprland).

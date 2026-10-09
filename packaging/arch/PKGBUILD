@@ -110,6 +110,7 @@ package_scottland-omarchy() {
   install -Dm755 "$o/accent.d/10-omarchy-theme" "$pkgdir/usr/lib/scottland/accent.d/10-omarchy-theme"
   install -Dm755 "$o/focus.d/10-omarchy-notifications" "$pkgdir/usr/lib/scottland/focus.d/10-omarchy-notifications"
   install -Dm755 "$o/libexec/scottland-lua-call" "$pkgdir/usr/lib/scottland/libexec/scottland-lua-call"
+  install -Dm644 "$o/libexec/scottland_hyprland_monitor.py" "$pkgdir/usr/lib/scottland/libexec/scottland_hyprland_monitor.py"
   install -Dm755 "$o/libexec/scottland-omarchy-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-omarchy-solar-theme"
   install -Dm755 "$o/autostart.d/30-lua-host" "$pkgdir/usr/lib/scottland/autostart.d/30-lua-host"
   install -Dm755 "$o/autostart.d/35-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/35-solar-theme"
