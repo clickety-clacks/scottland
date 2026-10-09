@@ -1186,6 +1186,12 @@ struct goo_t::impl
             bool test_changed = false;
             if (getenv("SCOTTLAND_TEST_MODEL"))
             {
+                if (data.has_member("dye_reset") && data["dye_reset"].is_bool() && data["dye_reset"].as_bool())
+                {
+                    n->state.renderer.clear_dye_for_test();
+                    s["dye_reset"] = true;
+                    test_changed = true;
+                }
                 if (data.has_member("breath_hold") &&
                     (data["breath_hold"].is_int() || data["breath_hold"].is_double()))
                 {

@@ -14,16 +14,23 @@ too). Screen pixels along the same rings (grim) are compared the same way.
 
 1. Settled: for each value across each slider's range (the others at Mike's), the same stimulus
    (a real Super-drag of the left window and back, a click-focus to the right one and back),
-   then rest; the captured dye is compared with Mike's value. The noise floor is Mike's value
-   run again. Every trial starts from the same state (the stimulus at Mike's values, at rest).
+   then rest; the captured dye is compared with Mike's value. Each trial clears both dye targets
+   through the isolated-test hook before the stimulus; repeated Mike runs estimate input noise.
 2. Moving: in the same trials, captures while the dragged window is held away (0.3 s, 1 s) and
-   after the focus change (0.25, 0.6, 1.5 s), compared the same way.
-3. Settings wake: each row set with real input in Scottland Settings while the goo sleeps:
-   does it wake (`wakes.settings`), step, and change the dye, beyond a control wake (an
-   unrelated row, Shine, nudged the same way)?
+   screen and dye samples are taken before release, then after the focus change (0.25, 0.6, 1.5 s).
+3. Coast: after the same stimulus, restart a five-second sleeping coast and sample dye, screen,
+   simulation steps, dye flows and coast ticks through the coast and after rest. Spread values
+   include this measurement because spread scaling is the candidate source change.
+4. Settings wake: each row set with real input in Scottland Settings while the goo sleeps:
+   does it wake (`wakes.settings`), step, and change the dye? Shine at its existing value is the
+   no-change control; its exact selected value is checked before comparing wakes.
+5. Hints: capture both the actual visible hint text exposed by the Settings test snapshot and a
+   screenshot of the hovered row.
 
 Test hooks: window-rules/configure-view places windows (setup); set-config-options sets values
-for experiment 1-2 (setup; experiment 3 uses the Settings panel); goo-state dye_points reads dye.
+for experiment 1-3 (setup; Settings wake uses real input); goo-state dye_reset clears both dye
+targets only in SCOTTLAND_TEST_MODEL sessions, dye_points reads dye, and water_coast restarts
+the sleeping coast.
 """
 import json, math, os, signal, socket, struct, subprocess, sys, time
 from pathlib import Path
@@ -75,6 +82,11 @@ def option(name): return float(ipc('wayfire/get-config-option', {'option': 'scot
 def views(): return ipc('scottland/layout-state')['views']
 def view(title): return next(v for v in views() if v['title'] == title)
 def state(**data): return ipc('scottland/goo-state', data)['screens'][0]
+def reset_dye():
+    s = state(dye_reset=True)
+    if not s.get('dye_reset') or not s.get('renderer_ready'):
+        raise AssertionError('isolated-test dye reset was not acknowledged by a ready renderer')
+    return s
 def pointer(x, y): ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
 def key(code, down): ipc('stipc/feed_key', {'key': code, 'state': down})
 def tap(code): key(code, True); key(code, False)
@@ -157,8 +169,9 @@ def place(title, x, y, w, h):
     ipc('window-rules/configure-view', {'id': view(title)['id'], 'geometry': {'x': x, 'y': y, 'width': w, 'height': h}})
     for _ in range(100):
         f = view(title)['frame']
-        if abs(f['x'] - x) < 2 and abs(f['width'] - w) < 2: return
+        if all(abs(f[k] - v) < 2 for k, v in (('x', x), ('y', y), ('width', w), ('height', h))): return
         time.sleep(.05)
+    raise AssertionError('requested geometry was not applied for ' + title)
 
 def wallpaper():
     changes = state()['wallpaper_node_changes']
@@ -244,24 +257,29 @@ A = (260, 170, 360, 260); B = (700, 210, 340, 240)
 
 def stimulus(tag, captures):
     """Super-drag A away and hold, captures; drop it back; focus B, captures; focus A; rest."""
-    fa, fb = view('win-a')['frame'], view('win-b')['frame']
+    fb = view('win-b')['frame']
     x, y = center('win-a')
     pointer(x, y); time.sleep(.1); key('KEY_LEFTMETA', True); time.sleep(.05); button('press'); time.sleep(.1)
     for i in range(1, 16): pointer(x - 120*i/15, y + 60*i/15); time.sleep(.02)
-    held = dict(fa); held['x'] -= 120; held['y'] += 60
     t0 = time.monotonic()
     for t in (.3, 1.):
         time.sleep(max(0, t0 + t - time.monotonic()))
-        captures['held-%.1f' % t] = capture(rings([view('win-a')['frame'], fb]))
+        frames = [view('win-a')['frame'], fb]
+        pts = rings(frames)
+        captures['held-%.1f' % t] = capture(pts)
+        s = shot(tag + '-held-%.1f' % t)
+        captures['screen-held-%.1f' % t] = [s(px, py) for px, py in pts]
     for i in range(1, 16): pointer(x - 120 + 120*i/15, y + 60 - 60*i/15); time.sleep(.02)
     button('release'); time.sleep(.05); key('KEY_LEFTMETA', False)
     place('win-a', *A)   # back exactly where it was (the drop is within a pixel or two)
     focus('win-b'); t0 = time.monotonic()
     for t in (.25, .6, 1.5):
         time.sleep(max(0, t0 + t - time.monotonic()))
-        captures['focus-%.2f' % t] = capture(rings([view('win-a')['frame'], view('win-b')['frame']]))
-    s = shot(tag + '-moving')
-    captures['screen-moving'] = [s(px, py) for px, py in rings([view('win-a')['frame'], view('win-b')['frame']])]
+        frames = [view('win-a')['frame'], view('win-b')['frame']]
+        pts = rings(frames)
+        captures['focus-%.2f' % t] = capture(pts)
+        s = shot(tag + '-focus-%.2f' % t)
+        captures['screen-focus-%.2f' % t] = [s(px, py) for px, py in pts]
     focus('win-a')
     rest(tag)
     pts = rings([view('win-a')['frame'], view('win-b')['frame']])
@@ -270,10 +288,58 @@ def stimulus(tag, captures):
     captures['screen-settled'] = [s(px, py) for px, py in pts]
     return captures
 
-def trial(name, value):
-    options(**MIKE); rest('reset'); stimulus('reset', {})          # same starting state every time
-    options(**{name: value}); rest('set')
-    return stimulus('%s-%g' % (name, value), {})
+def coast_measure(tag, duration=5.):
+    """Sample same-step dye and visible pixels through a sleeping coast and at convergence."""
+    pts = rings([view('win-a')['frame'], view('win-b')['frame']])
+    initial = capture(pts)
+    initial_shot = shot(tag + '-coast-before')
+    initial_screen = [initial_shot(px, py) for px, py in pts]
+    before = state()
+    if not before['sleeping'] or before['water_running']:
+        raise AssertionError('coast measurement must start asleep')
+    started = state(water_coast=duration)
+    if not started['water_running']:
+        raise AssertionError('test coast did not start')
+    t0 = time.monotonic(); prev_field = initial; prev_screen = initial_screen
+    rows = []; snapshots = []
+    for target in (.4, 1.2, 2.5, 4.5, duration + .5):
+        time.sleep(max(0, t0 + target - time.monotonic()))
+        counters = state()
+        field = capture(pts)
+        image = shot(tag + '-coast-%.1f' % target)
+        screen = [image(px, py) for px, py in pts]
+        rows.append({'elapsed_s': round(time.monotonic() - t0, 3),
+                     'water_ticks': counters['water_ticks'], 'dye_flows': counters['dye_flows'],
+                     'simulation_steps': counters['steps'], 'sleeping': counters['sleeping'],
+                     'water_running': counters['water_running'],
+                     'dye_from_start': diff(field, initial), 'dye_from_previous': diff(field, prev_field),
+                     'screen_from_start': diff(screen, initial_screen), 'screen_from_previous': diff(screen, prev_screen)})
+        snapshots.append((field, screen))
+        prev_field, prev_screen = field, screen
+    final = rest(tag + ' coast')
+    field = capture(pts)
+    image = shot(tag + '-coast-final')
+    screen = [image(px, py) for px, py in pts]
+    rows.append({'elapsed_s': round(time.monotonic() - t0, 3),
+                 'water_ticks': final['water_ticks'], 'dye_flows': final['dye_flows'],
+                 'simulation_steps': final['steps'], 'sleeping': final['sleeping'],
+                 'water_running': final['water_running'],
+                 'dye_from_start': diff(field, initial), 'dye_from_previous': diff(field, prev_field),
+                 'screen_from_start': diff(screen, initial_screen), 'screen_from_previous': diff(screen, prev_screen)})
+    snapshots.append((field, screen))
+    if rows[-1]['water_ticks'] <= before['water_ticks'] or rows[-1]['dye_flows'] <= before['dye_flows']:
+        raise AssertionError('coast ended without a dye-flow tick')
+    return {'duration_s': duration, 'start': {'water_ticks': before['water_ticks'],
+                                               'dye_flows': before['dye_flows'], 'steps': before['steps']},
+            'samples': rows}, snapshots
+
+def trial(name, value, include_coast=False):
+    settings = dict(MIKE); settings[name] = value
+    options(**settings); rest('apply ' + name)
+    reset_dye(); rest('fresh dye baseline')
+    captures = stimulus('%s-%g' % (name, value), {})
+    coast, snapshots = coast_measure('%s-%g' % (name, value)) if include_coast else (None, None)
+    return captures, coast, snapshots
 
 try:
     ipc('wayfire/set-config-options', {'output:HEADLESS-1/mode': '1280x720@60000'})
@@ -286,19 +352,31 @@ try:
     record['capture_ms'] = round(1000*(time.monotonic() - t)); log('capture ms', record['capture_ms'])
 
     if 'settled' in only:
-        base = [trial('goo_spread', MIKE['goo_spread']) for _ in range(3)]   # noise floor: Mike's values, three runs
-        keys = [k for k in base[0]]
-        record['noise'] = {k: [diff(base[0][k], base[i][k]) for i in (1, 2)] for k in keys}
+        base = [trial('goo_spread', MIKE['goo_spread'], include_coast=True) for _ in range(3)]
+        # Every repeated Mike run starts with both GPU dye targets cleared.
+        keys = [k for k in base[0][0]]
+        record['noise'] = {k: [diff(base[0][0][k], base[i][0][k]) for i in (1, 2)] for k in keys}
         log('noise floor', json.dumps({k: v for k, v in record['noise'].items()}))
-        record['base_spatial'] = {k: spatial(base[0][k]) for k in keys}
+        record['base_spatial'] = {k: spatial(base[0][0][k]) for k in keys
+                                  if k in ('settled', 'focus-0.25', 'held-1.0')}
+        record['coast_noise'] = [
+            {'sample': i, 'dye': diff(base[0][2][i][0], base[j][2][i][0]),
+             'screen': diff(base[0][2][i][1], base[j][2][i][1])}
+            for i in range(len(base[0][2])) for j in (1, 2)]
         record['sliders'] = {}
         for name, values in RANGES.items():
             rows = []
             for v in values:
-                c = trial(name, v)
-                row = {'value': v, 'vs_mike': {k: diff(c[k], base[0][k]) for k in keys},
+                c, coast, snapshots = trial(name, v, include_coast=(name == 'goo_spread'))
+                row = {'value': v, 'vs_mike': {k: diff(c[k], base[0][0][k]) for k in keys},
                        'sharpness': {k: spatial(c[k]) for k in ('settled', 'focus-0.25', 'held-1.0')},
                        'variation': {k: spread_of(c[k]) for k in ('settled', 'focus-0.25', 'held-1.0')}}
+                if coast:
+                    row['coast'] = coast
+                    row['coast_vs_mike'] = [
+                        {'sample': i, 'dye': diff(snapshots[i][0], base[0][2][i][0]),
+                         'screen': diff(snapshots[i][1], base[0][2][i][1])}
+                        for i in range(len(snapshots))]
                 rows.append(row)
                 log(name, v, json.dumps(row))
             record['sliders'][name] = rows
@@ -307,9 +385,14 @@ try:
     if 'hints' in only:
         # The rows' help, as Settings shows it when the pointer rests on a row.
         panel = open_panel(); q = snapshot(panel); x, top = origin(q)
+        record['help'] = {}
         for name in ('goo_spread', 'goo_swirl', 'goo_release'):
             q = snapshot(panel); g = q['goo']
             pointer(x + g['x'] + g['width']*.3, top + row_y(q, name)); time.sleep(1.2)
+            visible = snapshot(panel)['goo'].get('hint', '')
+            if not visible:
+                raise AssertionError('Settings did not expose visible help for ' + name)
+            record['help'][name] = {'text': visible, 'screenshot': 'hint-' + name + '.png'}
             shot('hint-' + name)
         pointer(5, 5); tap('KEY_ESC'); time.sleep(.5)
     if 'cross' in only:
@@ -320,11 +403,13 @@ try:
             out = {}
             for label, extra in (('mike', {}), ('mike-again', {}), ('swirl0', {'goo_swirl': 0.}),
                                  ('spread0', {'goo_spread': 0.}), ('both0', {'goo_swirl': 0., 'goo_spread': 0.})):
-                options(**MIKE); rest('reset'); stimulus('reset', {})
-                options(goo_release=release, **extra); rest('set')
+                settings = dict(MIKE); settings.update(extra); settings['goo_release'] = release
+                options(**settings); rest('cross settings')
+                reset_dye(); rest('cross fresh dye')
                 out[label] = stimulus('cross-%g-%s' % (release, label), {})
             keys = [k for k in out['mike'] if not k.startswith('screen')]
-            rows = {label: {k: diff(out[label][k], out['mike'][k]) for k in keys + ['screen-settled', 'screen-moving']}
+            screen_keys = [k for k in out['mike'] if k.startswith('screen')]
+            rows = {label: {k: diff(out[label][k], out['mike'][k]) for k in keys + screen_keys}
                     for label in out if label != 'mike'}
             for label in out:
                 rows.setdefault(label, {})['sharpness'] = {k: spatial(out[label][k]) for k in ('settled', 'focus-0.25', 'held-1.0')}
@@ -332,24 +417,29 @@ try:
             log('cross release', release, json.dumps(rows))
         options(**MIKE); rest('back to Mike')
     if 'wake' in only:
-        # 3. Each row set in Settings with real input while the goo sleeps; Shine is the control
-        # (it wakes the goo the same way but does not touch the dye).
+        # Each row set with real input while the goo sleeps; Shine at its existing value is the
+        # no-change control. Check that selecting any row preserves its starting value.
         record['wake'] = {}
-        LOW_HIGH = {'goo_spread': (0., .9), 'goo_swirl': (0., 3.), 'goo_release': (.005, .3)}
-        # (row, Shift+arrow presses: negative is Left); 0 presses is the control (the panel used,
-        # the row selected, no value changed).
-        for name, presses in (('goo_spread', 0), ('goo_spread', -9), ('goo_swirl', -6), ('goo_release', 3),
+        LOW_HIGH = {'goo_spread': (0., .9), 'goo_swirl': (0., 3.), 'goo_release': (.005, .3),
+                    'goo_shine': (0., 1.5)}
+        STEPS = {'goo_spread': .01, 'goo_swirl': .05, 'goo_release': .005, 'goo_shine': .01}
+        # (row, Shift+arrow presses); Shine with no arrow is the control.
+        for name, presses in (('goo_shine', 0), ('goo_spread', -9), ('goo_swirl', -6), ('goo_release', 3),
                               ('goo_spread', -4), ('goo_swirl', -3), ('goo_release', -2)):
-            options(**MIKE); rest('wake reset')
+            options(**MIKE); rest('wake reset'); reset_dye(); rest('wake fresh dye')
             pts = rings([view('win-a')['frame'], view('win-b')['frame']])
             f0 = capture(pts); px0 = shot('wake-%s-%d-before' % (name, presses))
             panel = open_panel(); rest('panel open')
+            lo, hi = LOW_HIGH[name]
+            set_row(panel, name, (MIKE[name] - lo)/(hi - lo))
+            before = rest('row selected'); selected = option(name)
+            if abs(selected - MIKE[name]) > STEPS[name] * .5 + 1e-6:
+                raise AssertionError('%s row selection changed the control value: %g to %g' %
+                                     (name, MIKE[name], selected))
             if presses == 0:
                 time.sleep(3); idle = state()
-                record['idle_with_panel'] = {'sleeping': idle['sleeping'], 'wakes': idle['wakes']}
-            lo, hi = LOW_HIGH[name]
-            set_row(panel, name, min(.98, (MIKE[name] - lo)/(hi - lo)))   # selects the row (a click moves focus)
-            before = rest('row selected'); selected = option(name)
+                record['idle_with_panel'] = {'sleeping': idle['sleeping'], 'wakes': idle['wakes'],
+                                             'water_ticks': idle['water_ticks'], 'steps': idle['steps']}
             t0 = time.monotonic(); woke = None; seen = None
             for _ in range(abs(presses)):
                 key('KEY_LEFTSHIFT', True); tap('KEY_RIGHT' if presses > 0 else 'KEY_LEFT'); key('KEY_LEFTSHIFT', False)
