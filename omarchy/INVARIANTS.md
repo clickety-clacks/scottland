@@ -5,7 +5,8 @@ Behaviors that exist because Scottland runs on Omarchy beside Hyprland and uwsm 
 project-wide scope and rules in [../AGENTS.md](../AGENTS.md).
 
 Status: **verified** = exercised with real input on a real session (plumbus); **implemented** =
-built and tested headless or by IPC only; **not built** = agreed but not implemented yet.
+built and tested headless or by IPC only; **candidate** = code is ported but exact-target
+verification is pending; **not built** = agreed but not implemented yet.
 
 ## Menu
 
@@ -19,13 +20,13 @@ built and tested headless or by IPC only; **not built** = agreed but not impleme
 | ID | Invariant | Status |
 |---|---|---|
 | W1 | Omarchy menu > System > "Switch Desktop" opens the switch dialog; Super+Escape in Scottland opens the Omarchy System menu, which has it. | implemented |
-| W2 | Switching always closes the current desktop and all its windows; there is no option to keep both desktops running. The dialog has no checkbox; it warns that switching WILL close all windows in the current desktop ("Switching will close all windows in <current desktop>."). A choice remembered from the former keep option is ignored (switching closes) and deleted the next time the switcher runs. (Mike, 2026-10-06) | verified (x86 test machine, 2026-10-06: the dialog on the real screen in Hyprland and in Scottland, Return by virtual keyboard, a stored "keep" switched in close mode both ways, `tests/omarchy-switch-seat-test.py`; dialog keys and pixels headless, script and root helper with stand-in system tools, `tests/omarchy-switch-test.py`. The test machine still has the previous root helper installed; its close path is the code kept here) |
+| W2 | Switching always closes the current desktop and all its windows; there is no option to keep both desktops running. The dialog has no checkbox; it warns that switching WILL close all windows in the current desktop ("Switching will close all windows in <current desktop>."). A choice remembered from the former keep option is ignored (switching closes) and deleted the next time the switcher runs. (Mike, 2026-10-06) | candidate (post-A1 0.3 exact-head verification pending; the 2026-10-06 result was on a different target and is not acceptance for this candidate) |
 | W3 | Switching needs no password. | verified |
 | W4 | The machine boots into whichever desktop was used last. | implemented |
-| W5 | Close mode, Hyprland to Scottland: Hyprland's apps get to close cleanly first; Scottland starts as the only desktop with the user's graphical-session services (Yoohoo, Voxtype, portals, 1Password, ClipMesh, …) running in it. | verified; in 1 of 2 runs (x86 test machine, 2026-10-06) xdg-desktop-portal was activated again before Scottland exported its environment and ran without `WAYLAND_DISPLAY` |
-| W6 | Close mode, Scottland to Hyprland: Hyprland starts cleanly (no stale session state blocks uwsm) and its services come back attached to it. | verified; not met for the portals (x86 test machine, 2026-10-06, 2 of 2 runs): xdg-desktop-portal, the document portal and the permission store were D-Bus-activated again while no desktop was up, took the user manager's leftover Scottland environment (`XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots`, a stale `WAYFIRE_SOCKET`) and kept it in Hyprland; the GTK portal backend failed to start |
+| W5 | Switching Hyprland to Scottland: Hyprland's apps get to close cleanly first; Scottland starts as the only desktop with the user's graphical-session services (Yoohoo, Voxtype, portals, 1Password, ClipMesh, …) running in it. | verified; in 1 of 2 runs (x86 test machine, 2026-10-06) xdg-desktop-portal was activated again before Scottland exported its environment and ran without `WAYLAND_DISPLAY` |
+| W6 | Switching Scottland to Hyprland: Hyprland starts cleanly (no stale session state blocks uwsm) and its services come back attached to it. | verified; not met for the portals (x86 test machine, 2026-10-06, 2 of 2 runs): xdg-desktop-portal, the document portal and the permission store were D-Bus-activated again while no desktop was up, took the user manager's leftover Scottland environment (`XDG_CURRENT_DESKTOP=Scottland:Wayfire:wlroots`, a stale `WAYFIRE_SOCKET`) and kept it in Hyprland; the GTK portal backend failed to start |
 | W10 | If Scottland dies within seconds of starting, the next boot goes to Hyprland (crash guard). | implemented |
-| W11 | Session services exit cleanly on a switch (no crash reports from apps losing their display). | implemented; not met (x86 test machine, 2026-10-06, two runs each way): 1Password started as an app rather than by its autostart service crashed when Hyprland closed, and xdg-desktop-portal-hyprland once crashed on the switch back |
+| W11 | Session services exit cleanly during a switch (no crash reports from apps losing their display). | implemented; not met (x86 test machine, 2026-10-06, two runs each way): 1Password started as an app rather than by its autostart service crashed when Hyprland closed, and xdg-desktop-portal-hyprland once crashed on the switch back |
 
 Keep mode (W7–W9: both desktops running on separate VTs, services handed to whichever is on screen,
 and back to Hyprland when Scottland quits) was removed on 2026-10-06 (Mike: "switching between the
