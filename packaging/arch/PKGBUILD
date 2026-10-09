@@ -24,6 +24,7 @@ build() {
 package_scottland() {
   # quickshell: the default widget (card) and the layout settings app
   # xdg-desktop-portal-wlr: screen sharing and screenshots (scottland-portals.conf); gtk: the rest
+  # wayland: scottland-output-power and scottland-output-heads (wayland-client)
   depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell'
            'wayland' 'xdg-desktop-portal' 'xdg-desktop-portal-wlr' 'xdg-desktop-portal-gtk')
   optdepends=('geoclue: automatic location for Sunlight')
@@ -37,9 +38,12 @@ package_scottland() {
   install -Dm644 "$_root/core/session/scottland.desktop" "$pkgdir/usr/share/wayland-sessions/scottland.desktop"
   install -Dm755 "$_root/core/session/scottland-autostart" "$pkgdir/usr/lib/scottland/libexec/scottland-autostart"
   install -Dm755 "$_root/core/session/scottland-build-config" "$pkgdir/usr/lib/scottland/libexec/scottland-build-config"
+  install -Dm755 "$_root/core/autostart.d/04-output-scale-auto" "$pkgdir/usr/lib/scottland/autostart.d/04-output-scale-auto"
   install -Dm755 "$_root/core/autostart.d/06-watch-config" "$pkgdir/usr/lib/scottland/autostart.d/06-watch-config"
   install -Dm755 "$_root/core/libexec/scottland-ctl" "$pkgdir/usr/lib/scottland/libexec/scottland-ctl"
   install -Dm755 "$_root/core/libexec/scottland-exec" "$pkgdir/usr/lib/scottland/libexec/scottland-exec"
+  install -Dm755 "$_root/core/libexec/scottland-output" "$pkgdir/usr/lib/scottland/libexec/scottland-output"
+  install -Dm644 "$_root/core/libexec/scottland_output_scale.py" "$pkgdir/usr/lib/scottland/libexec/scottland_output_scale.py"
   ln -s /usr/lib/scottland/libexec/scottland-exec "$pkgdir/usr/bin/scottland-exec"
   ln -s /usr/lib/scottland/libexec/scottland-ctl "$pkgdir/usr/bin/scottland-ctl"
   install -Dm644 "$_root/core/agents/skills/scottland/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland/SKILL.md"
@@ -63,6 +67,7 @@ package_scottland() {
   install -Dm755 "$_root/core/libexec/scottland-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-solar-theme"
   install -Dm755 "$_root/core/reload.d/07-color-scheme" "$pkgdir/usr/lib/scottland/reload.d/07-color-scheme"
   install -Dm755 "$_root/core/config.d/20-layout-settings" "$pkgdir/usr/lib/scottland/config.d/20-layout-settings"
+  install -Dm755 "$_root/core/config.d/85-session-outputs" "$pkgdir/usr/lib/scottland/config.d/85-session-outputs"
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
   ln -s /usr/bin/scottland-settings "$pkgdir/usr/lib/scottland/libexec/scottland-settings"

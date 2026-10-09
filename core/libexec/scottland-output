@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Display (output) control for integrations: list outputs, turn them on and off, set their mode,
+position, scale and transform.
+
+  scottland-output list
+      Every output the compositor knows, enabled or not, as a JSON array with its real metadata
+      (name, description, make, model, serial, physical size, enabled, current mode, modes,
+      position, scale, transform, adaptive sync), as Wayfire reports it over wlr-output-management.
+  scottland-output set NAME [--on | --off] [--mode MODE] [--position X,Y|auto] [--scale S|auto]
+                            [--transform T]
+      MODE: auto (the preferred mode), highres, highrr, WIDTHxHEIGHT or WIDTHxHEIGHT@HZ,
+      or "mirror OTHER". S: 0.1-10, or auto. T: 0-7 (wl_output numbering) or normal, 90, 180,
+      270, flipped, 90_flipped, 180_flipped, 270_flipped. Prints the output as the compositor
+      reports it after the change; exits 1 if the compositor did not apply what was asked.
+  scottland-output reset [NAME]
+      Drop this session's settings for NAME (or for every output); the config's own apply again.
+
+Changes go through Wayfire's own output configuration: they are this session's output settings,
+written into the session's config (after every other generator except the user's overrides.ini,
+which still wins) and applied by Wayfire when it reloads it. So they survive config rebuilds and an
+output reconnecting, and end with the session. Turning an output off keeps its other settings, so
+turning it on again brings it back at the same mode, position and scale. Persistent display
+settings belong in the config itself ([output:NAME] sections, e.g. in overrides.ini).
+
+Scale auto is the output's natural scale, from the physical size and mode the compositor reports
+for it: pixel density along the diagonal of 200 per inch or more gives 2, 140 or more 1.5, anything
+less 1 (rounded down to those steps); an output that reports no physical size (a projector, a
+virtual output) gets 1. The config can ask for it too: `scale = auto` in an [output:NAME] section
+(an integration's, or overrides.ini). It is worked out again at every config rebuild, for the
+output's mode then, so it follows a mode set here (this command rebuilds) and a mode changed
+elsewhere from the next rebuild; at session start an output shows scale 1 until the compositor
+reports it. A number in a later section (overrides.ini) still wins over auto. `list` reports the
+number.
+
+Exit status: 0 done, 1 not applied, 2 no session/compositor, 64 usage.
+"""
+import argparse
+import fcntl
+import json
+import os
+import re
+import socket
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOOKS = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+sys.path.insert(0, os.path.join(HOOKS, "libexec"))
+sys.path.append(str(Path(__file__).resolve().parent))  # running from a checkout
+from scottland_output_scale import natural_scale  # noqa: E402
+
+NAME = re.compile(r"[A-Za-z0-9._-]+")
+TRANSFORMS = ["normal", "90", "180", "270", "flipped", "90_flipped", "180_flipped", "270_flipped"]
+MODE = re.compile(r"(off|auto|default|highres|highrr|(\d+)x(\d+)(?:@(\d+(?:\.\d+)?))?|mirror ([A-Za-z0-9._-]+))")
+
+
+def settings_path():
+    """This session's output settings, beside the config file the session runs."""
+    config = os.environ.get("SCOTTLAND_CONFIG_OUTPUT")
+    directory = os.path.dirname(config) if config else os.environ.get("SCOTTLAND_SESSION_DIR") or os.path.join(
+        os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "scottland")
+    return os.path.join(directory, "session-outputs.json")
+
+
+def read_settings(handle):
+    handle.seek(0)
+    text = handle.read()
+    try:
+        value = json.loads(text) if text.strip() else {}
+        return value if isinstance(value, dict) else {}
+    except ValueError:
+        return {}
+
+
+def wayfire_mode(text):
+    """MODE as Wayfire's config writes it (refresh in mHz), or None if it isn't one."""
+    match = MODE.fullmatch(text.strip())
+    if not match:
+        return None
+    if match.group(2):
+        width, height, refresh = match.group(2), match.group(3), match.group(4)
+        if refresh is None:
+            return f"{width}x{height}"
+        return f"{width}x{height}@{round(float(refresh) * 1000)}"
+    if match.group(5):
+        return f"mirror {match.group(5)}"
+    return "auto" if match.group(1) == "default" else match.group(1)
+
+
+def wayfire_position(text):
+    text = text.strip()
+    if text in ("auto", "default"):
+        return "auto"
+    match = re.fullmatch(r"(-?\d+)\s*[,x]\s*(-?\d+)", text)
+    return f"{int(match.group(1))},{int(match.group(2))}" if match else None
+
+
+def wayfire_transform(text):
+    text = str(text).strip()
+    if re.fullmatch(r"[0-7]", text):
+        return TRANSFORMS[int(text)]
+    return text if text in TRANSFORMS else None
+
+
+class Wayfire:
+    """Wayfire IPC: 4-byte little-endian length, then JSON."""
+
+    def __init__(self):
+        path = os.environ.get("WAYFIRE_SOCKET")
+        if not path:
+            raise OSError("no WAYFIRE_SOCKET (run inside a Scottland session, e.g. with scottland-exec)")
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(5)
+        self.sock.connect(path)
+
+    def call(self, method, data=None):
+        body = json.dumps({"method": method, "data": data or {}}).encode()
+        self.sock.sendall(struct.pack("<I", len(body)) + body)
+        header = self._read(4)
+        return json.loads(self._read(struct.unpack("<I", header)[0]))
+
+    def _read(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise OSError("Wayfire closed the IPC socket")
+            data += chunk
+        return data
+
+    def reloads(self):
+        return (self.call("scottland/session-state") or {}).get("config-reloads")
+
+
+def heads():
+    result = subprocess.run([os.path.join(HOOKS, "libexec/scottland-output-heads")],
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise OSError(result.stderr.strip() or "scottland-output-heads failed")
+    return json.loads(result.stdout)
+
+
+def apply_config():
+    """Rebuild the session's config and wait until Wayfire has loaded it (its outputs applied)."""
+    wayfire = Wayfire()
+    before = wayfire.reloads()
+    build = subprocess.run([os.path.join(HOOKS, "libexec/scottland-build-config")],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    if build.returncode != 0:
+        lines = [line for line in build.stderr.splitlines() if line.strip()]
+        raise RuntimeError("config rebuild failed: " + " | ".join(lines[-2:]))
+    if before is None:
+        return  # a plugin from before config-reloads: Wayfire loads it shortly
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if wayfire.reloads() > before:
+            return
+        time.sleep(0.02)
+    raise RuntimeError("Wayfire did not reload the config within 10 s")
+
+
+def mismatches(head, wanted):
+    """What of wanted the compositor's report of head does not show."""
+    wrong = []
+    if "enabled" in wanted and head["enabled"] != wanted["enabled"]:
+        wrong.append(f"enabled is {str(head['enabled']).lower()}")
+    if not head["enabled"]:
+        return wrong
+    mode = MODE.fullmatch(wanted.get("mode", ""))
+    if mode and mode.group(2) and head["mode"]:
+        if (head["mode"]["width"], head["mode"]["height"]) != (int(mode.group(2)), int(mode.group(3))):
+            wrong.append(f"mode is {head['mode']['width']}x{head['mode']['height']}")
+        elif mode.group(4) and abs(head["mode"]["refresh"] - int(mode.group(4)) / 1000) > 0.5:
+            wrong.append(f"refresh is {head['mode']['refresh']}")
+    if wanted.get("position", "auto") != "auto":
+        x, y = (int(v) for v in wanted["position"].split(","))
+        if (head["x"], head["y"]) != (x, y):
+            wrong.append(f"position is {head['x']},{head['y']}")
+    scale = natural_scale(head) if wanted.get("scale") == "auto" else wanted.get("scale")
+    if scale is not None and abs(head["scale"] - float(scale)) > 1 / 120:
+        wrong.append(f"scale is {head['scale']}")
+    if "transform" in wanted and TRANSFORMS[head["transform"]] != wanted["transform"]:
+        wrong.append(f"transform is {TRANSFORMS[head['transform']]}")
+    return wrong
+
+
+def change(name, update):
+    """update(settings) edits this session's settings; then apply them. Returns the exit status."""
+    path = settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        settings = read_settings(handle)
+        wanted = update(settings)
+        new = path + ".new"
+        with open(new, "w") as out:
+            json.dump(settings, out, indent=1, sort_keys=True)
+        os.replace(new, path)
+        auto = (wanted or {}).get("scale") == "auto"
+        try:
+            found, wrong = [], []
+            # Auto scale is worked out for the mode in the config, or else the output's current
+            # one; a second build catches a mode this change moved the output to (e.g. highres).
+            for _ in range(2 if auto else 1):
+                apply_config()
+                # Another config build can land just before this one; give its reload a moment.
+                deadline = time.monotonic() + 2
+                while name:
+                    found = [h for h in heads() if h["name"] == name]
+                    wrong = mismatches(found[0], wanted or {}) if found else []
+                    if not wrong or time.monotonic() > deadline:
+                        break
+                    time.sleep(0.05)
+                if not wrong:
+                    break
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+            print(f"scottland-output: {error}", file=sys.stderr)
+            return 2
+    if not name:
+        return 0
+    if not found:
+        print(f"scottland-output: {name} is not connected; its settings apply when it is",
+              file=sys.stderr)
+        return 0
+    print(json.dumps(found[0]))
+    if wrong:
+        hint = " (the config keeps it off; set a mode to override)" \
+            if wanted.get("enabled") and not found[0]["enabled"] and "mode" not in wanted else ""
+        print(f"scottland-output: the compositor did not apply this to {name}: {', '.join(wrong)}{hint}",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="scottland-output", description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("list")
+    setter = commands.add_parser("set")
+    setter.add_argument("name")
+    power = setter.add_mutually_exclusive_group()
+    power.add_argument("--on", dest="enabled", action="store_const", const=True)
+    power.add_argument("--off", dest="enabled", action="store_const", const=False)
+    setter.add_argument("--mode")
+    setter.add_argument("--position")
+    setter.add_argument("--scale")
+    setter.add_argument("--transform")
+    reset = commands.add_parser("reset")
+    reset.add_argument("name", nargs="?")
+    try:
+        args = parser.parse_args()
+    except SystemExit as error:
+        sys.exit(64 if error.code else 0)
+
+    if args.command == "list":
+        try:
+            print(json.dumps(heads(), indent=1))
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"scottland-output: {error}", file=sys.stderr)
+            sys.exit(2)
+        return
+
+    if args.name is not None and not NAME.fullmatch(args.name):
+        print(f"scottland-output: not an output name: {args.name!r}", file=sys.stderr)
+        sys.exit(64)
+
+    if args.command == "reset":
+        def drop(settings):
+            if args.name:
+                settings.pop(args.name, None)
+            else:
+                settings.clear()
+            return None
+        sys.exit(change(args.name, drop))
+
+    wanted = {}
+    if args.enabled is not None:
+        wanted["enabled"] = args.enabled
+    for key, convert in (("mode", wayfire_mode), ("position", wayfire_position),
+                         ("transform", wayfire_transform)):
+        value = getattr(args, key)
+        if value is None:
+            continue
+        converted = convert(value)
+        if converted is None:
+            print(f"scottland-output: invalid {key}: {value!r}", file=sys.stderr)
+            sys.exit(64)
+        wanted[key] = converted
+    if wanted.get("mode") == "off":
+        del wanted["mode"]
+        wanted["enabled"] = False
+    if args.scale is not None and args.scale.strip() == "auto":
+        wanted["scale"] = "auto"
+    elif args.scale is not None:
+        try:
+            scale = float(args.scale)
+        except ValueError:
+            scale = 0
+        if not 0.1 <= scale <= 10:
+            print(f"scottland-output: invalid scale: {args.scale!r}", file=sys.stderr)
+            sys.exit(64)
+        wanted["scale"] = scale
+    if not wanted:
+        print("scottland-output: nothing to set", file=sys.stderr)
+        sys.exit(64)
+
+    def merge(settings):
+        settings.setdefault(args.name, {}).update(wanted)
+        return wanted
+    sys.exit(change(args.name, merge))
+
+
+if __name__ == "__main__":
+    main()
