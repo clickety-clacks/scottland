@@ -69,8 +69,11 @@ and receives a JSON object containing all window fields on stdin. JSON output ma
 string whose value is `current`, `launch`, `title`, `app` or `none`. A source defaults to a 1000 ms
 timeout. Commands are launched directly without a shell, and their stdout is capped at 1 MiB.
 
-Core ships only generic recipes: `media-player`, `media-player-title`, and `title-content`. App
-curation belongs in the XDG shared-data recipe directory; no terminal recipe is shipped here.
+Core also ships `terminal-tmux` (priority 60) and `terminal-tmux-local` (priority 50) for desktop
+entries in the `TerminalEmulator` category. They call `scottland-terminal-session`, which asks the
+shared agent-window-resolver for the selected window's live tmux session. A remote session is named
+`session (host)`; a local session is named `session`. If the session cannot be attributed, recipe
+evaluation falls through to the title. App curation belongs in the XDG shared-data recipe directory.
 
 ## Verification
 

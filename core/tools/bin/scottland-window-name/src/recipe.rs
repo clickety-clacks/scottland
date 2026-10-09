@@ -733,6 +733,47 @@ mod tests {
     }
 
     #[test]
+    fn shipped_terminal_recipes_are_valid_and_order_remote_before_local() {
+        let shipped = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../window-names.d");
+        let set = load(&[shipped]);
+        assert!(
+            set.warnings.is_empty(),
+            "{:?}",
+            set.warnings
+                .iter()
+                .map(|warning| (&warning.recipe, &warning.reason))
+                .collect::<Vec<_>>()
+        );
+        let remote = set
+            .recipes
+            .iter()
+            .find(|recipe| recipe.id == "terminal-tmux")
+            .unwrap();
+        let local = set
+            .recipes
+            .iter()
+            .find(|recipe| recipe.id == "terminal-tmux-local")
+            .unwrap();
+        assert_eq!(remote.priority, 60);
+        assert_eq!(local.priority, 50);
+        assert_eq!(
+            remote.matching.desktop_category.as_deref(),
+            Some("TerminalEmulator")
+        );
+        assert_eq!(
+            local.matching.desktop_category.as_deref(),
+            Some("TerminalEmulator")
+        );
+        for recipe in [remote, local] {
+            assert!(
+                matches!(&recipe.source, Some(Source::Command { argv, basis, .. })
+                if argv == &["scottland-terminal-session", "{window}"]
+                    && basis.as_deref() == Some("/session/basis"))
+            );
+        }
+    }
+
+    #[test]
     fn process_conditions_require_a_sole_owner() {
         let directory = TempDir::new();
         directory.write(

@@ -562,6 +562,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scottland-terminal-session"
+version = "0.2.0"
+dependencies = [
+ "scottland-lib",
+ "serde_json",
+]
+
+[[package]]
 name = "scottland-window-name"
 version = "0.2.0"
 dependencies = [
