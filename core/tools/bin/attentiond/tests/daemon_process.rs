@@ -9,6 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -292,17 +293,20 @@ fn stalled_subscriber_does_not_stall_healthy_delivery_or_lifecycle() {
         .map(|index| format!("backpressure-{index}"))
         .collect();
     let expected_from_reader = expected_ids.clone();
+    let (healthy_delivery_tx, healthy_delivery_rx) = mpsc::sync_channel(0);
     let healthy_read = thread::spawn(move || {
         let mut received_ids = Vec::with_capacity(MESSAGE_COUNT);
         for _ in 0..MESSAGE_COUNT {
             let frame = receive(&mut healthy_reader);
             assert_eq!(frame["type"], "delivery");
-            received_ids.push(
-                frame["message"]["message_id"]
-                    .as_str()
-                    .expect("delivered message id")
-                    .to_owned(),
-            );
+            let message_id = frame["message"]["message_id"]
+                .as_str()
+                .expect("delivered message id")
+                .to_owned();
+            received_ids.push(message_id.clone());
+            healthy_delivery_tx
+                .send(message_id)
+                .expect("producer waits for each healthy delivery");
         }
         let lifecycle = receive(&mut healthy_reader);
         (received_ids, lifecycle)
@@ -322,6 +326,10 @@ fn stalled_subscriber_does_not_stall_healthy_delivery_or_lifecycle() {
             }),
         );
         assert_eq!(receive(&mut sender_reader)["type"], "ok");
+        let observed_id = healthy_delivery_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("healthy subscriber observes delivery before next message");
+        assert_eq!(observed_id, *message_id);
     }
     send(
         &mut sender,

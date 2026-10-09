@@ -109,8 +109,8 @@ fn register_client_writer(
     Ok(client_id)
 }
 
-fn serve_client_writer(
-    mut writer: UnixStream,
+fn serve_client_writer<W: Write + Send + 'static>(
+    mut writer: W,
     outbound: Receiver<OutboundFrame>,
     pending_bytes: Arc<AtomicUsize>,
     client_id: u64,
@@ -132,6 +132,14 @@ fn serve_client_writer(
 fn unregister_client(shared: &Arc<Mutex<ServerState>>, client_id: u64) {
     if let Ok(mut state) = shared.lock() {
         remove_client(&mut state, client_id);
+    }
+}
+
+fn finish_client_input(shared: &Arc<Mutex<ServerState>>, client_id: u64) {
+    if let Ok(mut state) = shared.lock() {
+        // Read EOF only closes the peer's input half. Dropping the queue sender
+        // stops new deliveries while the writer drains replies already owed.
+        state.clients.remove(&client_id);
     }
 }
 
@@ -278,9 +286,13 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
 
 fn serve_connection(stream: UnixStream, client_id: u64, shared: Arc<Mutex<ServerState>>) {
     let mut reader = BufReader::new(stream);
+    let mut input_eof = false;
     loop {
         let frame = match read_frame(&mut reader) {
-            Ok(ReadFrame::Eof) => break,
+            Ok(ReadFrame::Eof) => {
+                input_eof = true;
+                break;
+            }
             Ok(ReadFrame::TooLong) => {
                 if send_error(&shared, client_id, WireError::new("bad_frame"), None).is_err() {
                     break;
@@ -289,6 +301,7 @@ fn serve_connection(stream: UnixStream, client_id: u64, shared: Arc<Mutex<Server
             }
             Ok(ReadFrame::Incomplete) => {
                 let _ = send_error(&shared, client_id, WireError::new("bad_frame"), None);
+                input_eof = true;
                 break;
             }
             Ok(ReadFrame::Line(bytes)) => match std::str::from_utf8(&bytes) {
@@ -322,7 +335,11 @@ fn serve_connection(stream: UnixStream, client_id: u64, shared: Arc<Mutex<Server
             std::process::exit(1);
         }
     }
-    unregister_client(&shared, client_id);
+    if input_eof {
+        finish_client_input(&shared, client_id);
+    } else {
+        unregister_client(&shared, client_id);
+    }
 }
 
 enum ReadFrame {
@@ -1326,6 +1343,7 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use std::io::{BufRead, Cursor};
+    use std::sync::mpsc;
     use std::time::Duration;
 
     struct TempDir(PathBuf);
@@ -1366,6 +1384,140 @@ mod tests {
         let bytes = reader.read_line(&mut line).expect("read output frame");
         assert!(bytes > 0, "connection closed before a frame");
         serde_json::from_str(&line).expect("valid output JSON")
+    }
+
+    struct GatedWriter {
+        stream: UnixStream,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        first_write: bool,
+    }
+
+    impl Write for GatedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.first_write {
+                self.first_write = false;
+                self.entered
+                    .send(())
+                    .map_err(|_| io::Error::other("test writer gate was dropped"))?;
+                self.release
+                    .recv()
+                    .map_err(|_| io::Error::other("test writer gate was not released"))?;
+            }
+            self.stream.write(bytes)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.stream.flush()
+        }
+    }
+
+    #[test]
+    fn half_closed_input_drains_owed_reply_and_subscribe_snapshot_in_order() {
+        let temp = TempDir::new();
+        let store_path = temp.path().join("messages.json");
+        let shared = Arc::new(Mutex::new(ServerState::new(
+            Store::default(),
+            store_path.clone(),
+        )));
+        let (server, mut client) = UnixStream::pair().expect("local socket pair");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set client read timeout");
+
+        let writer = server.try_clone().expect("clone writer stream");
+        let control = server.try_clone().expect("clone control stream");
+        let (outbound, receiver) = mpsc::sync_channel(OUTBOUND_QUEUE_CAPACITY);
+        let pending_bytes = Arc::new(AtomicUsize::new(0));
+        let client_id = shared.lock().expect("lock test state").add_client(
+            outbound,
+            Arc::clone(&pending_bytes),
+            control,
+        );
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_state = Arc::downgrade(&shared);
+        let writer_thread = thread::spawn(move || {
+            serve_client_writer(
+                GatedWriter {
+                    stream: writer,
+                    entered: entered_tx,
+                    release: release_rx,
+                    first_write: true,
+                },
+                receiver,
+                pending_bytes,
+                client_id,
+                writer_state,
+            );
+        });
+
+        let server_state = Arc::clone(&shared);
+        let server_thread = thread::spawn(move || {
+            serve_connection(server, client_id, server_state);
+        });
+
+        let sender_id = "agentd://host/instance/17:900";
+        for frame in [
+            json!({
+                "v":1,"type":"message","ref":"accepted-ref",
+                "sender_id":sender_id,"message_id":"half-close-1",
+                "created_at":1,"title":"Persist before half-close"
+            }),
+            json!({"v":1,"type":"subscribe","ref":"snapshot-ref","sender_ids":[]}),
+        ] {
+            serde_json::to_writer(&mut client, &frame).expect("serialize request");
+            client.write_all(b"\n").expect("terminate request frame");
+        }
+        client
+            .shutdown(Shutdown::Write)
+            .expect("half-close request side");
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer reaches deterministic gate");
+        server_thread
+            .join()
+            .expect("serve connection reaches input EOF");
+        assert!(
+            !shared
+                .lock()
+                .expect("lock state after EOF")
+                .clients
+                .contains_key(&client_id),
+            "EOF removes the client from future delivery"
+        );
+        let persisted = Store::load(&store_path).expect("load accepted message");
+        assert_eq!(persisted.records.len(), 1);
+        assert_eq!(persisted.records[0].message_id, "half-close-1");
+
+        release_tx.send(()).expect("release queued output");
+        let mut reader = BufReader::new(client);
+        let accepted = read_json(&mut reader);
+        assert_eq!(accepted["type"], "ok");
+        assert_eq!(accepted["ref"], "accepted-ref");
+        let subscribed = read_json(&mut reader);
+        assert_eq!(subscribed["type"], "ok");
+        assert_eq!(subscribed["ref"], "snapshot-ref");
+        let snapshot = read_json(&mut reader);
+        assert_eq!(snapshot["type"], "snapshot");
+        assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            snapshot["messages"][0]["message"]["message_id"],
+            "half-close-1"
+        );
+        assert_eq!(snapshot["messages"][0]["as"], "knock");
+
+        let mut trailing = String::new();
+        assert_eq!(
+            reader
+                .read_line(&mut trailing)
+                .expect("observe writer close"),
+            0,
+            "writer closes after draining all queued frames"
+        );
+        writer_thread.join().expect("writer exits after draining");
     }
 
     fn expect_no_frame(reader: &mut BufReader<UnixStream>) {
