@@ -547,8 +547,16 @@ version = "0.2.0"
 
 [[package]]
 name = "scottland-sender-window"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "scottland-terminal-session"
+version = "0.2.0"
+dependencies = [
+ "scottland-lib",
  "serde_json",
 ]
 
