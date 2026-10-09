@@ -655,6 +655,8 @@ def feature_report_group(section, option):
             return "window_mode"
         if option == "minimize_widget":
             return "widget_controls"
+        if option.startswith("navigate_"):
+            return "window_navigation"
         if option in ("move", "move_shift", "resize", "resize_alt"):
             return "window_controls"
         return "other_feature"
@@ -1101,6 +1103,11 @@ def main():
         was = omarchy_action_description(description, kind, action, group)
         report_overrides.append(report_entry(group, label, was, now))
 
+    def feature_owners_of(wanted):
+        return [(section, option, value) for section, option, value in used.get(normalized_combo(wanted), [])
+                if section == "scottland-key-remap" or section == "scottland" or
+                (section == "command" and option.split("binding_", 1)[-1].startswith("scottland_"))]
+
     scroll_speed, scroll_rules, monitor_rules = None, [], []
     for line in scan_stdout.splitlines():
         if line.startswith("@monitor\t"):
@@ -1208,6 +1215,9 @@ def main():
                 if arg.startswith(prefix):
                     target = (section, option)
                     break
+            # An untranslated action on keys a Scottland feature holds is reported as that feature.
+            if not target and feature_owners_of(wanted):
+                target = ("lua", arg)
             if not target:
                 omitted(label, description, f"window/workspace action: {arg[:60]}",
                         omission_report_group(kind, arg, description, "untranslated dispatcher"),
@@ -1263,6 +1273,11 @@ def main():
                         now = f"Scottland's Window mode previews the next center window on {pretty_keys(label)}."
                     elif option == "center_switcher_previous":
                         now = f"Scottland's Window mode previews the previous center window on {pretty_keys(label)}."
+                    elif option.startswith("navigate_"):
+                        side = option.split("_", 1)[1]
+                        where = f"to the {side}" if side in ("left", "right") else \
+                            {"up": "above", "down": "below"}.get(side, side)
+                        now = f"{pretty_keys(label)} now focuses the nearest window or widget {where} in Scottland."
                     elif option == "minimize_widget":
                         now = (f"{pretty_keys(label)} now cycles Scottland's widgets: expanded, icons only, hidden; "
                                "holding it hides them (or expands them) until released.")
