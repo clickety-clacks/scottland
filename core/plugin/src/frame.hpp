@@ -641,9 +641,10 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     double fallback_peek_occlusion_margin(double output_scale) const
     {
         double t = std::max(thickness(), hint_dye ? windowing::hint_border_width : 0.0);
-        // own_liquid() adds a bounded noise wave (1.2 times the shader ripple), and cover()
-        // antialiases through half a device pixel in logical coordinates.
-        double halo = t + 1.2 * halo_ripple() + 0.5 / std::max(0.01, output_scale);
+        // draw_halo() raises dyed frames to hint_border_width. own_liquid() adds a bounded
+        // noise wave (1.2 times the shader ripple); reserve one target raster pixel in logical
+        // coordinates for its antialiased edge.
+        double halo = t + 1.2 * halo_ripple() + 1.0 / std::max(0.01, output_scale);
         // The close-dot quad can exceed a very thin hint-dyed halo while the dot fades out.
         double dot = (!morphing() && dot_glow > 0.003) ? thickness() / 2 + DOT_RADIUS + 4 : 0;
         return std::max(halo, dot);
