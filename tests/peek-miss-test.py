@@ -72,7 +72,22 @@ def scene(id):
     return (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
 
 
-def capture(name, defer_png=False):
+def capture(name):
+    png = art / (name + '.png')
+    subprocess.run(['grim', str(png)], check=True)
+    data = subprocess.check_output(['grim', '-t', 'ppm', '-'])
+    parts, pos = [], 0
+    while len(parts) < 4:
+        while data[pos:pos + 1].isspace(): pos += 1
+        end = pos
+        while not data[end:end + 1].isspace(): end += 1
+        parts.append(data[pos:end]); pos = end
+    w, h = int(parts[1]), int(parts[2])
+    return w, h, data[pos + 1:]
+
+
+def capture_p14(name, defer_png=False):
+    """One primary frame for the grabbed-while-peeking visible P14 oracle."""
     data = subprocess.check_output(['grim', '-t', 'ppm', '-'])
     (art / (name + '.ppm')).write_bytes(data)
     header = re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s', data)
@@ -181,7 +196,7 @@ def zone_of(x):
 
 def observe(name, phase, covered, title, quiet=False, cover_title=None, image=None, frame=None, diagnostic=None):
     capture_name = f'{name}-{phase}'
-    if image is None: image = capture(capture_name)
+    if image is None: image = capture(capture_name) if cover_title is None else capture_p14(capture_name)
     else: save_png(capture_name, image)
     x1, y1, x2, y2 = frame if frame is not None else scene(covered)
     rows = labels_of(image)
@@ -189,13 +204,11 @@ def observe(name, phase, covered, title, quiet=False, cover_title=None, image=No
     h = diagnostic if diagnostic is not None else hint(covered)
     row = {'case': name, 'phase': phase, 'strip_in_pixels': found, 'pixels': count,
            'scene_frame': [round(v, 1) for v in (x1, y1, x2, y2)],
-           'ppm': capture_name + '.ppm',
-           'ppm_sha256': hashlib.sha256((art / (capture_name + '.ppm')).read_bytes()).hexdigest(),
-           'capture_size': list(image[:2]),
-           'png': capture_name + '.png',
            'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule')}}
     if cover_title is not None:
-        row['cover_title'] = cover_title
+        row.update(cover_title=cover_title, ppm=capture_name + '.ppm',
+            ppm_sha256=hashlib.sha256((art / (capture_name + '.ppm')).read_bytes()).hexdigest(),
+            capture_size=list(image[:2]), png=capture_name + '.png')
         try:
             row['cover_bounds'] = visible_bounds(rows, COLORS[cover_title])
         except Unready as e:
@@ -267,7 +280,8 @@ try:
             # The covering window is in front before it is dragged (as a click on it would leave it).
             ipc('window-rules/focus-view', {'id': covering})
             until(lambda: (focused_id() == covering, focused_id()), 3, 'cover focused')
-            cover_title = raw(covering)['title']
+            visible_p14 = name == 'grabbed-while-peeking'
+            if visible_p14: cover_title = raw(covering)['title']
             x1, y1, x2, y2 = scene(covered)
             pointer_drag(covering, ((x1 + x2) / 2, (y1 + y2) / 2), coast=coast)
             if coast:
@@ -275,31 +289,41 @@ try:
             else:
                 # Under 3 s: a build that still has the drag audition must not start one meanwhile.
                 ok, detail = strip_shows(name, 'held', covered, title, 2.5)
-                held_at = scene(covering)  # diagnostic only: not synchronized with the rendered frame
-                held_frame, held_hint = scene(covered), hint(covered)
-                held_image = capture(f'{name}-held-at-release', defer_png=True)
-                # No polling, PNG encoding, or pixel analysis between this final frame and release.
+                if visible_p14:
+                    held_at = scene(covering)  # diagnostic only: not synchronized with the rendered frame
+                    held_frame, held_hint = scene(covered), hint(covered)
+                    held_image = capture_p14(f'{name}-held-at-release', defer_png=True)
+                    # No polling, PNG encoding, or pixel analysis between this final frame and release.
+                else:
+                    check(ok, f'{name}: while the cover is held, the covered window shows a strip (pixels)', detail)
+                    held_at = scene(covering)  # where it is drawn under the pointer
                 release()
             if after_drop: after_drop()
             settled()
-            if not coast:
+            if visible_p14 and not coast:
                 final_ok, held = observe(name, 'held-at-release', covered, title, cover_title=cover_title,
                     image=held_image, frame=held_frame, diagnostic=held_hint)
                 held['cover_scene_frame'] = list(held_at)
                 check(ok and final_ok, f'{name}: while the cover is held, the covered window shows a strip (pixels)',
                       {'readiness': detail, 'at_release': held})
-            ok, detail = strip_shows(name, 'dropped', covered, title, 6, cover_title=cover_title if not coast else None)
+            ok, detail = strip_shows(name, 'dropped', covered, title, 6,
+                cover_title=cover_title if visible_p14 and not coast else None)
             check(ok, f'{name}: after the drop, the covered window shows a strip (pixels)', detail)
             if not coast:
                 now = scene(covering)
-                dropped = results[-1]
-                dropped['cover_scene_frame'] = list(now)
-                held_bounds, dropped_bounds = held['cover_bounds'], dropped.get('cover_bounds')
-                check(held_bounds is not None and dropped_bounds is not None and
-                      all(abs(a - b) <= 1 for a, b in zip(dropped_bounds, held_bounds)),
-                      f'{name}: the covering window stays exactly where it was dropped (P14)',
-                      {'visible_at_release': held, 'visible_dropped': dropped,
-                       'ipc_dropped': now, 'ipc_at_release': held_at})
+                if visible_p14:
+                    dropped = results[-1]
+                    dropped['cover_scene_frame'] = list(now)
+                    held_bounds, dropped_bounds = held['cover_bounds'], dropped.get('cover_bounds')
+                    check(held_bounds is not None and dropped_bounds is not None and
+                          all(abs(a - b) <= 1 for a, b in zip(dropped_bounds, held_bounds)),
+                          f'{name}: the covering window stays exactly where it was dropped (P14)',
+                          {'visible_at_release': held, 'visible_dropped': dropped,
+                           'ipc_dropped': now, 'ipc_at_release': held_at})
+                else:
+                    check(all(abs(a - b) <= 1 for a, b in zip(now, held_at)),
+                          f'{name}: the covering window stays exactly where it was dropped (P14)',
+                          f'drawn {[round(v, 1) for v in now]} vs at release {[round(v, 1) for v in held_at]}')
             if not after_drop:
                 check(geometry(covered) == true_before, f'{name}: the covered window\'s real geometry is unchanged (P3)',
                       f'{geometry(covered)} vs {true_before}')
