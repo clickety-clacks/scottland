@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Exercise the Rust session-control binary in an isolated, real Wayfire session.
+
+The login-manager fixture starts a real ext-session-lock surface in the headless session. It proves
+that lock requests reach the selected session without locking the test machine.
+"""
+import json
+import os
+import shutil
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+RUN_ID = uuid.uuid4().hex
+ROOT = REPO / "build" / f"ctl-core-fixture-{RUN_ID}"
+SCRATCH = ROOT / "headless-scratch"
+HEADLESS = SCRATCH / "session"
+HOME = ROOT / "home"
+BIN = ROOT / "bin"
+CALLS = ROOT / "calls.log"
+LOCK_PIDS = ROOT / "lock-pids"
+LOCK_QML = REPO / "tests/session-lock-fixture.qml"
+CTL = REPO / "build/hooks/libexec/scottland-ctl"
+PASSED = []
+FAILED = []
+
+
+def check(name, ok, detail=""):
+    (PASSED if ok else FAILED).append(name)
+    print(("PASS" if ok else "FAIL") + "  " + name + ("" if ok else f": {detail}"), flush=True)
+    return ok
+
+
+class Session:
+    def __init__(self):
+        ROOT.mkdir(mode=0o700, parents=True)
+        HOME.mkdir(parents=True)
+        BIN.mkdir(parents=True)
+        SCRATCH.mkdir(mode=0o700)
+        tmp = ROOT / "tmp"
+        tmp.mkdir(mode=0o700)
+        self.env = {
+            **os.environ,
+            "HOME": str(HOME),
+            "SCOTTLAND_HEADLESS_DIR": str(HEADLESS),
+            "SCOTTLAND_HEADLESS_ISOLATION": "1",
+            "SCOTTLAND_HEADLESS_OWNER": f"ctl-core-{RUN_ID}",
+            "SCOTTLAND_SESSION_DIR": str(HEADLESS / "session"),
+            "SCOTTLAND_TEST_SCRATCH": str(SCRATCH),
+            "SCOTTLAND_TEST_PATH": str(BIN),
+            "TMPDIR": str(tmp),
+        }
+        self.display = None
+        self.pids = []
+        calls = shlex.quote(str(CALLS))
+        lock_pids = shlex.quote(str(LOCK_PIDS))
+        qml = shlex.quote(str(LOCK_QML))
+        loginctl = BIN / "loginctl"
+        loginctl.write_text(
+            "#!/bin/sh\n"
+            f"printf 'loginctl\\t%s\\n' \"$*\" >> {calls}\n"
+            f"qs -p {qml} >/dev/null 2>&1 </dev/null &\n"
+            f"printf '%s\\n' \"$!\" >> {lock_pids}\n"
+        )
+        loginctl.chmod(0o755)
+        inhibitor = BIN / "systemd-inhibit"
+        inhibitor.write_text(
+            "#!/bin/sh\n"
+            f"printf 'systemd-inhibit\\t%s\\n' \"$*\" >> {calls}\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  case \"$1\" in --*) shift ;; *) break ;; esac\n"
+            "done\n"
+            "[ \"$#\" -gt 0 ] || exit 2\n"
+            "exec \"$@\"\n"
+        )
+        inhibitor.chmod(0o755)
+        monitor = BIN / "dbus-monitor"
+        monitor.write_text(
+            "#!/bin/sh\n"
+            f"printf 'dbus-monitor\\t%s\\n' \"$*\" >> {calls}\n"
+            "printf 'signal member=PrepareForSleep\\n   boolean false\\n"
+            "signal member=PrepareForSleep\\n   boolean true\\n'\n"
+        )
+        monitor.chmod(0o755)
+        busctl = BIN / "busctl"
+        busctl.write_text(
+            "#!/bin/sh\n"
+            f"printf 'busctl\\t%s\\n' \"$*\" >> {calls}\n"
+            "printf 'uint64 5000000\\n'\n"
+        )
+        busctl.chmod(0o755)
+        CALLS.touch()
+
+    def harness(self, *args, input=None, timeout=60):
+        return subprocess.run(
+            [str(REPO / "tests/headless.sh"), *args],
+            env=self.env,
+            text=True,
+            capture_output=True,
+            input=input,
+            timeout=timeout,
+        )
+
+    def start(self):
+        result = self.harness("start", timeout=120)
+        if result.returncode:
+            raise RuntimeError(f"headless start failed: {result.stdout}\n{result.stderr}")
+        self.display = (HEADLESS / "display").read_text().strip()
+
+    def run(self, *args, input=None, timeout=30):
+        return self.harness("run", *map(str, args), input=input, timeout=timeout)
+
+    def ipc(self, method, data=None):
+        result = self.harness("ipc", method, json.dumps(data or {}))
+        if result.returncode:
+            raise RuntimeError(f"Wayfire IPC {method} failed: {result.stdout}\n{result.stderr}")
+        return json.loads(result.stdout)
+
+    def spawn(self, command):
+        result = self.run("sh", "-c", f"{command} >/dev/null 2>&1 </dev/null & echo $!")
+        if result.returncode:
+            raise RuntimeError(f"cannot start fixture window: {result.stderr}")
+        pid = int(result.stdout.strip().splitlines()[-1])
+        self.pids.append(pid)
+        return pid
+
+    def terminate(self, pid):
+        owned = [current for current in (pid, *self.descendants(pid)) if self.owns(current)]
+        for current in owned:
+            try:
+                os.kill(current, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(self.owns(current) for current in owned):
+            time.sleep(0.05)
+        for current in owned:
+            if self.owns(current):
+                try:
+                    os.kill(current, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def owns(self, pid):
+        try:
+            marker = f"XDG_CONFIG_HOME={HEADLESS / 'config'}".encode()
+            return marker in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except OSError:
+            return False
+
+    def descendants(self, pid):
+        children = {}
+        for proc in Path("/proc").glob("[0-9]*"):
+            try:
+                parent = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            children.setdefault(parent, []).append(int(proc.name))
+        found, queue = [], list(children.get(pid, []))
+        while queue:
+            child = queue.pop()
+            if self.owns(child):
+                found.append(child)
+                queue.extend(children.get(child, []))
+        return found
+
+    def wait(self, predicate, timeout=10, interval=0.05):
+        deadline = time.monotonic() + timeout
+        value = predicate()
+        while not value and time.monotonic() < deadline:
+            time.sleep(interval)
+            value = predicate()
+        return bool(value), value
+
+    def tap(self, key):
+        self.ipc("stipc/feed_key", {"key": key, "state": True})
+        time.sleep(0.05)  # pace the key press; readiness is checked separately
+        self.ipc("stipc/feed_key", {"key": key, "state": False})
+
+    def state(self):
+        return self.ipc("scottland/layout-state").get("views", [])
+
+    def locked(self):
+        return self.run(CTL, "session-locked").returncode
+
+    def calls(self):
+        return [tuple(line.split("\t", 1)) for line in CALLS.read_text().splitlines() if line]
+
+    def screenshot(self, name):
+        path = ROOT / f"{name}.ppm"
+        path.unlink(missing_ok=True)
+        result = self.run("timeout", "5", "grim", "-t", "ppm", path)
+        if result.returncode or not path.exists():
+            return None
+        data = path.read_bytes()
+        fields, index = [], 0
+        while len(fields) < 4:
+            while data[index:index + 1].isspace():
+                index += 1
+            if data[index:index + 1] == b"#":
+                index = data.index(b"\n", index) + 1
+                continue
+            end = index
+            while not data[end:end + 1].isspace():
+                end += 1
+            fields.append(data[index:end])
+            index = end
+        if fields[0] != b"P6":
+            raise RuntimeError(f"unexpected screenshot format: {fields[0]!r}")
+        return int(fields[1]), int(fields[2]), data[index + 1:]
+
+    def pixel(self, name, point):
+        image = self.screenshot(name)
+        if image is None:
+            return None
+        width, _height, rgb = image
+        offset = (int(point[1]) * width + int(point[0])) * 3
+        return tuple(rgb[offset:offset + 3])
+
+    def stop(self):
+        for pid in self.pids:
+            self.terminate(pid)
+        if LOCK_PIDS.exists():
+            for pid in LOCK_PIDS.read_text().splitlines():
+                if pid.isdigit():
+                    self.terminate(int(pid))
+        result = self.harness("stop", timeout=90)
+        if result.returncode:
+            print(f"headless stop failed: {result.stdout}\n{result.stderr}", file=sys.stderr)
+            FAILED.append("headless session cleanup")
+        for pid in self.pids:
+            self.terminate(pid)
+        if result.returncode == 0 and ROOT.exists():
+            shutil.rmtree(ROOT)
+
+
+def focus_state(session):
+    return session.ipc("window-rules/get-focused-view").get("info", {}).get("id")
+
+
+def run_checks(session):
+    initial_lock = session.locked()
+    check("session starts unlocked", initial_lock == 1, initial_lock)
+
+    first = session.spawn(
+        f"python3 {shlex.quote(str(REPO / 'tests/solid-color-app.py'))} ctl-first '#3366CC'"
+    )
+    target = session.spawn(
+        f"python3 {shlex.quote(str(REPO / 'tests/solid-color-app.py'))} ctl-target '#CC6633'"
+    )
+    ok, views = session.wait(
+        lambda: (lambda items: items if len(items) == 2 else None)(session.state()), timeout=20
+    )
+    if not check("two windows map", ok, views):
+        return
+
+    ids = {view["app_id"].rsplit(".", 1)[-1]: view["id"] for view in views}
+    focus = session.run(CTL, "focus-app", "ctl-target")
+    focused = session.wait(lambda: focus_state(session) == ids["ctl-target"])[0]
+    check("focus-app selects the matching app id", focus.returncode == 0 and focused,
+          (focus.returncode, ids["ctl-target"]))
+
+    cwd = session.run(CTL, "terminal-cwd")
+    check("non-terminal focus falls back to session HOME",
+          cwd.returncode == 0 and cwd.stdout.strip() == str(HOME), cwd.stdout.strip())
+    terminal_workdir = ROOT / "terminal-workdir"
+    terminal_workdir.mkdir()
+    terminal_parent = ROOT / "terminal-parent.sh"
+    terminal_parent.write_text("#!/bin/sh\n/bin/sh -c 'cd \"$1\"; sleep 60' _ \"$1\" &\nwait\n")
+    terminal_parent.chmod(0o755)
+    terminal_pid = session.spawn(
+        f"{shlex.quote(str(terminal_parent))} {shlex.quote(str(terminal_workdir))}"
+    )
+    cwd = session.run(CTL, "terminal-cwd", str(terminal_pid))
+    check("terminal-cwd reads a listed login shell's live working directory",
+          cwd.returncode == 0 and cwd.stdout.strip() == str(terminal_workdir), cwd.stdout.strip())
+
+    listing = session.run(CTL, "windows")
+    check("windows lists both live views", listing.returncode == 0
+          and "ctl-first" in listing.stdout and "ctl-target" in listing.stdout, listing.stdout)
+    present = session.run(CTL, "present", str(ids["ctl-first"]))
+    check("present keeps the existing Scottland presentation behavior",
+          present.returncode == 0
+          and json.loads(present.stdout).get("presented") in {"window", "moved"}, present.stdout)
+
+    get = session.run(CTL, "get")
+    values = json.loads(get.stdout) if get.returncode == 0 else {}
+    check("get returns live values and the unsupported list",
+          "cycle_overshoot" in values and isinstance(values.get("unsupported"), list), get.stdout)
+    set_value = session.run(CTL, "set", "cycle_overshoot", "4")
+    option = session.run(CTL, "option", "scottland/cycle_overshoot")
+    observed = json.loads(option.stdout) if option.returncode == 0 else None
+    check("set and option preserve the live settings contract",
+          set_value.returncode == 0 and observed is not None and float(observed) == 4,
+          (set_value.returncode, option.stdout))
+    stream = session.run(
+        CTL, "stdin", input='cycle_overshoot 3\nflush\nbatch {"cycle_overshoot":"5"}\n'
+    )
+    option = session.run(CTL, "option", "scottland/cycle_overshoot")
+    observed = json.loads(option.stdout) if option.returncode == 0 else None
+    check("stdin applies line and batch updates and flushes", stream.returncode == 0
+          and "flushed" in stream.stdout and observed is not None and float(observed) == 5,
+          (stream.returncode, stream.stdout, option.stdout))
+
+    # Give only the isolated session a synthetic logind id. The fixture command starts the real
+    # session-lock surface; it never calls the host login manager.
+    env_file = HEADLESS / "session" / f"{session.display}.env"
+    env_file.write_bytes(env_file.read_bytes() + b"XDG_SESSION_ID=ctl-test\0")
+    first_window = next(view for view in session.ipc("window-rules/list-views")
+                        if view["id"] == ids["ctl-first"])
+    geometry = first_window["geometry"]
+    center = (geometry["x"] + geometry["width"] / 2,
+              geometry["y"] + geometry["height"] / 2)
+    locked_pixel = lambda name: session.pixel(name, center) == (255, 0, 255)
+
+    lock = session.run(CTL, "lock")
+    lock_shown, _ = session.wait(lambda: locked_pixel("lock"), timeout=15, interval=0.3)
+    locker_called = ("loginctl", "lock-session ctl-test") in session.calls()
+    check("lock asks the selected session's locker and locks it",
+          lock.returncode == 0 and locker_called and lock_shown and session.locked() == 0,
+          session.calls())
+    session.tap("KEY_ENTER")
+    unlocked, _ = session.wait(
+        lambda: session.pixel("unlock", center) == (51, 102, 204), timeout=15, interval=0.3
+    )
+    check("session-lock status returns to unlocked", unlocked and session.locked() == 1,
+          session.locked())
+
+    lid = session.run(CTL, "lid-close")
+    lid_shown, _ = session.wait(lambda: locked_pixel("lid-close"), timeout=15, interval=0.3)
+    check("lid-close uses the same session locker", lid.returncode == 0 and lid_shown
+          and session.locked() == 0, session.calls())
+    session.tap("KEY_ENTER")
+    session.wait(lambda: session.locked() == 1, timeout=15)
+
+    sleep_lock = session.run(CTL, "sleep-lock", "4000", timeout=10)
+    secure, _ = session.wait(lambda: locked_pixel("sleep-lock"), timeout=15, interval=0.3)
+    check("sleep-lock waits for the real lock surface",
+          sleep_lock.returncode == 0 and secure and session.locked() == 0,
+          (sleep_lock.returncode, sleep_lock.stderr))
+    session.tap("KEY_ENTER")
+    session.wait(lambda: session.locked() == 1, timeout=15)
+
+    monitor = session.run(CTL, "sleep-monitor", timeout=15)
+    secure, _ = session.wait(lambda: locked_pixel("sleep-monitor"), timeout=15, interval=0.3)
+    calls = session.calls()
+    inhibitor_args = next((args for name, args in calls if name == "systemd-inhibit"), "")
+    monitor_args = next((args for name, args in calls if name == "dbus-monitor"), "")
+    locker_called = ("loginctl", "lock-session ctl-test") in calls
+    check("sleep-monitor runs under a delay inhibitor and locks on PrepareForSleep true",
+          monitor.returncode == 0 and secure and session.locked() == 0 and locker_called
+          and "--what=sleep" in inhibitor_args and "--mode=delay" in inhibitor_args
+          and "sleep-monitor --inhibited" in inhibitor_args
+          and "PrepareForSleep" in monitor_args,
+          (monitor.returncode, monitor.stderr, calls))
+    session.tap("KEY_ENTER")
+    session.wait(lambda: session.locked() == 1, timeout=15)
+
+    close_all = session.run(CTL, "window-close-all")
+    closed, remaining = session.wait(lambda: not session.state())
+    check("window-close-all closes every Scottland window", close_all.returncode == 0 and closed,
+          (close_all.returncode, remaining))
+
+
+def main():
+    session = Session()
+    try:
+        session.start()
+        run_checks(session)
+    except Exception as error:
+        print(f"FAIL  control session test setup: {error}", file=sys.stderr)
+        FAILED.append("control session test setup")
+    finally:
+        session.stop()
+    print(f"\n{len(PASSED)} passed, {len(FAILED)} failed", flush=True)
+    return 0 if not FAILED else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
