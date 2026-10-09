@@ -4,12 +4,12 @@
 hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/autostart.d"
 import_hook="$hooks/05-import-environment"
 if [ -f "$import_hook" ] && [ -x "$import_hook" ]; then
-  "$import_hook" || {
+  "$import_hook" --login || {
     echo "scottland-autostart: session environment setup failed; continuing remaining hooks" >&2
   }
 fi
 
-# The other hooks are independent and can still start together once services have the live env.
+# The other hooks are independent; start them even if environment setup logged an error.
 for hook in "$hooks"/*; do
   [ -f "$hook" ] && [ -x "$hook" ] || continue
   [ "$hook" = "$import_hook" ] && continue
