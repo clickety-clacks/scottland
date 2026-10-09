@@ -11,6 +11,7 @@ shim's), hyprctl's exit status, and what a shortcut's own Lua code observed.
 """
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -52,6 +53,26 @@ end)
 (fixture.home / ".config/xdg-terminals.list").write_text("foot.desktop\n")
 (fixture.home / ".config/omarchy/branding").mkdir(parents=True)
 (fixture.home / ".config/omarchy/branding/screensaver.txt").write_text("Scottland\n")
+
+# A disposable author container may supply a pinned Foot binary without installing it. Place it
+# on this fixture's PATH before starting the headless session; otherwise use a system Foot, as on
+# an Omarchy host. Reject a configured missing or non-executable path instead of falling back.
+test_foot = os.environ.get("SCOTTLAND_TEST_FOOT")
+if test_foot is not None:
+    foot_path = Path(test_foot)
+    if not foot_path.is_absolute():
+        sys.exit("SCOTTLAND_TEST_FOOT must be an absolute path to an executable file")
+    try:
+        foot_path = foot_path.resolve(strict=True)
+    except OSError:
+        sys.exit("SCOTTLAND_TEST_FOOT does not resolve to an existing file")
+    if not foot_path.is_file() or not os.access(foot_path, os.X_OK):
+        sys.exit("SCOTTLAND_TEST_FOOT must be an absolute path to an executable file")
+    if Path("/tmp") in foot_path.parents:
+        sys.exit("SCOTTLAND_TEST_FOOT must be outside /tmp; headless tests isolate /tmp")
+    (fixture.bin / "foot").symlink_to(foot_path)
+elif shutil.which("foot", path="/usr/local/bin:/usr/bin:/bin") is None:
+    sys.exit("foot is required; set SCOTTLAND_TEST_FOOT to a task-scoped executable")
 
 # Expose the unmodified stock launcher and the helpers it invokes on the session's sanitized PATH.
 for name in ("omarchy-launch-screensaver", "omarchy-cmd-missing", "omarchy-toggle-enabled",
