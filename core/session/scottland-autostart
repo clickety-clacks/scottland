@@ -1,6 +1,18 @@
 #!/bin/sh
-# Started by Wayfire's autostart: run each integration hook in /usr/lib/scottland/autostart.d/, in order.
-for hook in "${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/autostart.d/*; do
-  [ -f "$hook" ] && [ -x "$hook" ] && "$hook" &
+# Started by Wayfire's autostart. Import the session environment before other hooks can launch
+# D-Bus-activated apps with the user manager's previous (or empty) environment.
+hooks="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/autostart.d"
+import_hook="$hooks/05-import-environment"
+if [ -f "$import_hook" ] && [ -x "$import_hook" ]; then
+  "$import_hook" --login || {
+    echo "scottland-autostart: session environment setup failed; continuing remaining hooks" >&2
+  }
+fi
+
+# The other hooks are independent; start them even if environment setup logged an error.
+for hook in "$hooks"/*; do
+  [ -f "$hook" ] && [ -x "$hook" ] || continue
+  [ "$hook" = "$import_hook" ] && continue
+  "$hook" &
 done
 wait
