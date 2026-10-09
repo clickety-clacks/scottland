@@ -144,11 +144,16 @@ with Session(fixture, "hl-portal") as session:
         uri = result.get("results", {}).get("uri", "")
         check("Screenshot portal answers with an image", result.get("response") == 0 and uri, result)
         if uri:
-            width, height, rgb = read_png(uri.removeprefix("file://"))
+            # The URI names the file as the session sees it; the session's /tmp is this run's
+            # scratch (tests/headless.sh), not the machine's.
+            image = Path(uri.removeprefix("file://"))
+            if image.is_relative_to("/tmp"):
+                image = session.dir / "tmp" / image.relative_to("/tmp")
+            width, height, rgb = read_png(image)
             offset = (sample[1] * width + sample[0]) * 3
             check("the screenshot shows the window's color where Wayfire placed it",
                   tuple(rgb[offset:offset + 3]) == COLOR, tuple(rgb[offset:offset + 3]))
-            Path(uri.removeprefix("file://")).unlink(missing_ok=True)
+            image.unlink(missing_ok=True)
 
         # Screen sharing: share a monitor, picked in the backend's chooser with a pointer click.
         out, frame = build / "portal-screencast.json", build / "portal-frame.rgb"
