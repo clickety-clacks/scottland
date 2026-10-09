@@ -6,8 +6,11 @@ cd "$(dirname "$0")/.."
 : "${SCOTTLAND_HEADLESS_DIR:?set an isolated headless directory under build/}"
 build_dir=$(realpath -m -- "$PWD/build")
 headless_dir=$(realpath -m -- "$SCOTTLAND_HEADLESS_DIR")
-[[ $headless_dir == "$build_dir"/* && $headless_dir != "$build_dir" ]] || {
-  echo 'headless directory must be a child of this checkout build/' >&2; exit 1;
+[[ -d $PWD/build && ! -L $PWD/build && $(realpath -e -- "$PWD/build") == "$build_dir" ]] || {
+  echo 'build/ must be a real directory in this checkout' >&2; exit 1;
+}
+[[ $(dirname -- "$headless_dir") == "$build_dir" ]] || {
+  echo 'headless directory must be a direct child of this checkout build/' >&2; exit 1;
 }
 [[ ! -e $SCOTTLAND_HEADLESS_DIR && ! -L $SCOTTLAND_HEADLESS_DIR && \
    ! -e $headless_dir && ! -L $headless_dir ]] || {
@@ -15,11 +18,23 @@ headless_dir=$(realpath -m -- "$SCOTTLAND_HEADLESS_DIR")
 }
 SCOTTLAND_HEADLESS_DIR=$headless_dir
 export SCOTTLAND_HEADLESS_DIR
-artifacts=$SCOTTLAND_HEADLESS_DIR.hint-settle-artifacts
-mkdir -p "$artifacts"
+artifacts_input=$SCOTTLAND_HEADLESS_DIR.hint-settle-artifacts
+artifacts=$(realpath -m -- "$artifacts_input")
+[[ $(dirname -- "$artifacts") == "$build_dir" && \
+   ! -e $artifacts_input && ! -L $artifacts_input && ! -e $artifacts && ! -L $artifacts ]] || {
+  echo 'hint-settle artifact directory must be a fresh direct child of build/' >&2; exit 1;
+}
+umask 077
+mkdir -m 700 -- "$artifacts"
 cleanup() {
+  status=$?
+  trap - EXIT
   cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$artifacts/wayfire.log" 2>/dev/null || true
-  tests/headless.sh stop
+  if ! tests/headless.sh stop; then
+    echo 'failed to clean the owned headless session; preserving its state directory' >&2
+    status=1
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 143' INT TERM

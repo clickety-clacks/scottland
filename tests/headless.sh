@@ -123,7 +123,11 @@ cleanup_created_scratch() {
   status=$?
   trap - EXIT
   if ((status != 0 && created_scratch)) && [[ -d $dir && ! -L $dir ]]; then
-    rm -rf -- "$dir"
+    if verify_owner && scratch_mounts_clear; then
+      rm -rf -- "$dir"
+    else
+      echo 'cannot verify failed-start scratch ownership; preserving its directory' >&2
+    fi
   fi
   exit "$status"
 }
@@ -697,11 +701,11 @@ PY
     ;;
   run)
     shift
-    exec "$exec_tool" --display "$(display)" -- "$@"
+    exec "$exec_tool" --display "$(display)" -- "$@" </dev/null
     ;;
   ipc)
     shift
-    exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
+    exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@" </dev/null
     ;;
   stop)
     if [[ $isolation == 1 ]]; then
