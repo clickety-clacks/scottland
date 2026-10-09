@@ -133,10 +133,13 @@ def capture_sample(points):
     meta = {'simulation_step': s.get('dye_field_step'), 'steps': s.get('steps'),
             'dye_flows': s.get('dye_field_flows'), 'water_ticks': s.get('dye_field_water_ticks'),
             'sleeping': s.get('sleeping'), 'water_running': s.get('water_running')}
-    record.setdefault('dye_capture_meta', []).append(meta)
     return [[255*v for v in c] for c in s['dye_field']], meta
 def capture(points):
     return capture_sample(points)[0]
+def capture_into(captures, name, points):
+    field, meta = capture_sample(points)
+    captures[name] = field
+    captures.setdefault('capture_meta', {})[name] = meta
 def shot(name):
     path = art / (name + '.png'); subprocess.run(['grim', str(path)], check=True)
     pix = GdkPixbuf.Pixbuf.new_from_file(str(path)); data = pix.get_pixels()
@@ -273,7 +276,8 @@ def stimulus(tag, captures):
         time.sleep(max(0, t0 + t - time.monotonic()))
         frames = [view('win-a')['frame'], fb]
         pts = rings(frames)
-        captures['held-%.1f' % t] = capture(pts)
+        name = 'held-%.1f' % t
+        capture_into(captures, name, pts)
         s = shot(tag + '-held-%.1f' % t)
         captures['screen-held-%.1f' % t] = [s(px, py) for px, py in pts]
     for i in range(1, 16): pointer(x - 120 + 120*i/15, y + 60 - 60*i/15); time.sleep(.02)
@@ -284,13 +288,14 @@ def stimulus(tag, captures):
         time.sleep(max(0, t0 + t - time.monotonic()))
         frames = [view('win-a')['frame'], view('win-b')['frame']]
         pts = rings(frames)
-        captures['focus-%.2f' % t] = capture(pts)
+        name = 'focus-%.2f' % t
+        capture_into(captures, name, pts)
         s = shot(tag + '-focus-%.2f' % t)
         captures['screen-focus-%.2f' % t] = [s(px, py) for px, py in pts]
     focus('win-a')
     rest(tag)
     pts = rings([view('win-a')['frame'], view('win-b')['frame']])
-    captures['settled'] = capture(pts)
+    capture_into(captures, 'settled', pts)
     s = shot(tag + '-settled')
     captures['screen-settled'] = [s(px, py) for px, py in pts]
     return captures
@@ -353,9 +358,10 @@ try:
     if 'settled' in only:
         base = [trial('goo_spread', MIKE['goo_spread'], include_coast=True) for _ in range(3)]
         # Every repeated Mike run starts with both GPU dye targets cleared.
-        keys = [k for k in base[0][0]]
+        keys = [k for k in base[0][0] if k != 'capture_meta']
         record['noise'] = {k: [diff(base[0][0][k], base[i][0][k]) for i in (1, 2)] for k in keys}
         log('noise floor', json.dumps({k: v for k, v in record['noise'].items()}))
+        record['base_capture_meta'] = base[0][0]['capture_meta']
         record['base_spatial'] = {k: spatial(base[0][0][k]) for k in keys
                                   if k in ('settled', 'focus-0.25', 'held-1.0')}
         record['coast_noise'] = [
@@ -369,7 +375,8 @@ try:
                 c, coast, snapshots = trial(name, v, include_coast=(name == 'goo_spread'))
                 row = {'value': v, 'vs_mike': {k: diff(c[k], base[0][0][k]) for k in keys},
                        'sharpness': {k: spatial(c[k]) for k in ('settled', 'focus-0.25', 'held-1.0')},
-                       'variation': {k: spread_of(c[k]) for k in ('settled', 'focus-0.25', 'held-1.0')}}
+                       'variation': {k: spread_of(c[k]) for k in ('settled', 'focus-0.25', 'held-1.0')},
+                       'capture_meta': c['capture_meta']}
                 if coast:
                     row['coast'] = coast
                     row['coast_vs_mike'] = [
@@ -413,12 +420,13 @@ try:
                 options(**settings); rest('cross settings')
                 reset_dye(); rest('cross fresh dye')
                 out[label] = stimulus('cross-%g-%s' % (release, label), {})
-            keys = [k for k in out['mike'] if not k.startswith('screen')]
+            keys = [k for k in out['mike'] if k != 'capture_meta' and not k.startswith('screen')]
             screen_keys = [k for k in out['mike'] if k.startswith('screen')]
             rows = {label: {k: diff(out[label][k], out['mike'][k]) for k in keys + screen_keys}
                     for label in out if label != 'mike'}
             for label in out:
                 rows.setdefault(label, {})['sharpness'] = {k: spatial(out[label][k]) for k in ('settled', 'focus-0.25', 'held-1.0')}
+                rows[label]['capture_meta'] = out[label]['capture_meta']
             record['cross']['release %g' % release] = rows
             log('cross release', release, json.dumps(rows))
         options(**MIKE); rest('back to Mike')
@@ -434,7 +442,7 @@ try:
                               ('goo_spread', -4), ('goo_swirl', -3), ('goo_release', -2)):
             options(**MIKE); rest('wake reset'); reset_dye(); rest('wake fresh dye')
             pts = rings([view('win-a')['frame'], view('win-b')['frame']])
-            f0 = capture(pts); px0 = shot('wake-%s-%d-before' % (name, presses))
+            f0, meta0 = capture_sample(pts); px0 = shot('wake-%s-%d-before' % (name, presses))
             panel = open_panel(); rest('panel open')
             lo, hi = LOW_HIGH[name]
             target = MIKE[name]
@@ -488,9 +496,10 @@ try:
             for _ in range(100):
                 if panel.poll() is not None: break
                 time.sleep(.05)
-            after = rest('panel closed'); f1 = capture(pts); px1 = shot('wake-%s-%d-after' % (name, presses))
+            after = rest('panel closed'); f1, meta1 = capture_sample(pts); px1 = shot('wake-%s-%d-after' % (name, presses))
             row = {'value': [selected, value], 'woke_after_s': woke, 'wake_reason': seen and seen['last_wake'],
                    'expected_value': expected, 'selection_wakes': selection_wakes,
+                   'capture_meta': {'before': meta0, 'after': meta1},
                    'settings_wakes': [before['wakes'].get('settings', 0), mid['wakes'].get('settings', 0)],
                    'other_wakes': [sum(v for k, v in before['wakes'].items() if k != 'settings'),
                                    sum(v for k, v in mid['wakes'].items() if k != 'settings')],
