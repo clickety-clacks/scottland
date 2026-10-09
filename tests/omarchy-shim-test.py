@@ -10,12 +10,13 @@ shim's), hyprctl's exit status, and what a shortcut's own Lua code observed.
   tests/omarchy-shim-test.py
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from omarchy_fixture import REPO, Checks, Fixture, Session  # noqa: E402
+from omarchy_fixture import OMARCHY, REPO, Checks, Fixture, Session  # noqa: E402
 
 check = Checks()
 root = REPO / "build/omarchy-shim-fixture"
@@ -51,6 +52,19 @@ end)
 (fixture.home / ".config/xdg-terminals.list").write_text("foot.desktop\n")
 (fixture.home / ".config/omarchy/branding").mkdir(parents=True)
 (fixture.home / ".config/omarchy/branding/screensaver.txt").write_text("Scottland\n")
+
+# Expose the unmodified stock launcher and the helpers it invokes on the session's sanitized PATH.
+for name in ("omarchy-launch-screensaver", "omarchy-cmd-missing", "omarchy-toggle-enabled",
+             "omarchy-hyprland-monitor-focused"):
+    source = OMARCHY / "bin" / name
+    if source.is_file():
+        (fixture.bin / name).symlink_to(source)
+
+# Author containers can provide the real Hyprland CLI without installing the compositor package.
+# On an Omarchy host the test uses the installed `hyprctl` from the normal system PATH.
+hyprctl = os.environ.get("SCOTTLAND_TEST_HYPRCTL")
+if hyprctl:
+    (fixture.bin / "hyprctl").symlink_to(hyprctl)
 
 # These implement only the stock launcher's exact monitor-list query and Hyprland event-socket
 # stream; the shim and Wayfire still produce and serve the observations under test.
@@ -131,7 +145,8 @@ with Session(fixture, "hl-omarchy-shim") as session:
 
     # The stock screensaver launcher opens its terminal.
     launch_log = root / "launch-screensaver.log"
-    session.run("sh", "-c", f"omarchy-launch-screensaver force >{launch_log} 2>&1 </dev/null &")
+    session.run("env", f"OMARCHY_PATH={OMARCHY}", "sh", "-c",
+                f"omarchy-launch-screensaver force >{launch_log} 2>&1 </dev/null &")
     ok, saver = session.wait(lambda: next((v for v in views(session)
                                            if v.get("app-id") == "org.omarchy.screensaver"
                                            and v.get("mapped")
