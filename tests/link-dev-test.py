@@ -44,12 +44,25 @@ class LinkDevTests(unittest.TestCase):
             self.assertFalse(handover.is_symlink())
 
             autostart.write_text("preserve this user file")
+            handover.symlink_to(data / "scottland/releases/abcdef012345/omarchy/libexec/scottland-handover")
+            refused = subprocess.run(["make", "link-dev"], cwd=REPO, env=env,
+                                     text=True, capture_output=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("refusing non-link occupant", refused.stderr)
+            self.assertEqual(autostart.read_text(), "preserve this user file")
+            self.assertTrue(handover.is_symlink())
+            self.assertEqual(os.readlink(handover),
+                             str(data / "scottland/releases/abcdef012345/omarchy/libexec/scottland-handover"))
+
+            autostart.unlink()
+            handover.unlink()
             unknown_target = root / "user-owned-handover"
             unknown_target.write_text("user target")
             handover.symlink_to(unknown_target)
-            subprocess.run(["make", "link-dev"], cwd=REPO, env=env, check=True,
-                           text=True, capture_output=True)
-            self.assertEqual(autostart.read_text(), "preserve this user file")
+            refused = subprocess.run(["make", "link-dev"], cwd=REPO, env=env,
+                                     text=True, capture_output=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("refusing unrecognized legacy link target", refused.stderr)
             self.assertTrue(handover.is_symlink())
             self.assertEqual(handover.resolve(), unknown_target)
 
