@@ -2,6 +2,7 @@
 """Weather's short-lived bridge to Scottland's existing location and widget services."""
 
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import os
 from pathlib import Path
@@ -19,11 +20,12 @@ def solar_helper():
     if path is None:
         raise FileNotFoundError("Scottland's Sunlight location helper is unavailable")
 
-    spec = importlib.util.spec_from_file_location("scottland_solar_theme", path)
-    if spec is None or spec.loader is None:
+    loader = SourceFileLoader("scottland_solar_theme", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
         raise ImportError("could not load Scottland's Sunlight location helper")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    loader.exec_module(module)
     return module
 
 
