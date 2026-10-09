@@ -368,7 +368,10 @@ def bands(name):
 
 
 try:
-    assert os.environ["WAYLAND_DISPLAY"] != "wayland-1", "isolated headless session required"
+    # Private runtimes can reuse wayland-1. Check this run's display record instead.
+    headless_dir = Path(os.environ["SCOTTLAND_HEADLESS_DIR"])
+    assert (headless_dir / "display").read_text().strip() == os.environ["WAYLAND_DISPLAY"], \
+        "run through tests/headless.sh in an owned session"
     outputs = sorted(ipc("window-rules/list-outputs"), key=lambda o:o["geometry"]["x"])
     assert len(outputs) == 2 and all(o["geometry"]["height"] == 720 for o in outputs)
     # Quickshell's first screen is where the panel is anchored (leftmost on this backend).
