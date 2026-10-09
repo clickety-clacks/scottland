@@ -82,14 +82,16 @@
     }
     void keyboard_resize_bounds(wayfire_toplevel_view view, keyboard_motion& m)
     {
-        auto screen = view->get_output()->get_relative_geometry();
-        auto area = view->get_output()->workarea->get_workarea();
+        auto output = view->get_output();
+        auto screen = output->get_relative_geometry();
+        auto area = output->workarea->get_workarea();
         auto g = view->get_geometry();
-        auto neighbors = keyboard_neighbors(view->get_output(), m.x, m.y);
-        double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        auto neighbors = keyboard_neighbors(output, m.x, m.y);
+        auto zone = zone_for(output);
+        double rail = screen.width * std::clamp(zone.rail / 100, 0.0, 0.25);
         auto fits = [&] (double x, bool left) {
             double scale = model.windows[view->get_id()].pinned_scale ?
-                *model.windows[view->get_id()].pinned_scale : place_at(x, screen.width).scale;
+                *model.windows[view->get_id()].pinned_scale : place_at(output, x, screen.width).scale;
             double w = g.width * scale;
             auto pa = padded(area, w, g.height * scale);
             return left ? x - w / 2 >= std::max(double(pa.x), rail) :
@@ -104,7 +106,7 @@
         if (neighbors[1]) hi = std::numeric_limits<double>::infinity();
         m.x = std::clamp(m.x, lo, std::max(lo, hi));
         double scale = model.windows[view->get_id()].pinned_scale ?
-            *model.windows[view->get_id()].pinned_scale : place_at(m.x, screen.width).scale;
+            *model.windows[view->get_id()].pinned_scale : place_at(output, m.x, screen.width).scale;
         auto pa = padded(area, g.width * scale, g.height * scale);
         double half = std::min(g.height * scale, double(pa.height)) / 2;
         lo = neighbors[2] ? -std::numeric_limits<double>::infinity() : pa.y + half;
@@ -125,9 +127,10 @@
         auto neighbors = keyboard_neighbors(output, m.x, m.y);
         auto scale_at = [&] (double x) {
             auto pin = model.windows[view->get_id()].pinned_scale;
-            return pin ? *pin : place_at(x, screen.width).scale;
+            return pin ? *pin : place_at(output, x, screen.width).scale;
         };
-        double rail = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
+        auto zone = zone_for(output);
+        double rail = screen.width * std::clamp(zone.rail / 100, 0.0, 0.25);
         double left = std::max(double(area.x), rail);
         double right = std::min(double(area.x + area.width), screen.width - rail);
         bool hit_left = dx < 0 && !neighbors[0] && m.x - g.width * scale_at(m.x) / 2 <= left;
@@ -326,7 +329,8 @@
             if (!m.released_rail.empty() && !is_widget(view))
             {
                 auto screen = view->get_output()->get_relative_geometry();
-                double edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
+                auto zone = zone_for(view->get_output());
+                double edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
                 if (m.released_rail == "left" && m.x >= edge - 1)
                 { m.x = edge - 1; m.vx.velocity = 0; }
                 if (m.released_rail == "right" && m.x <= screen.width - edge + 1)
