@@ -141,7 +141,14 @@ The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight t
 ## Desktop state
 
 The single desktop model and its reactive subscription/launch/audit contracts are in
-[../docs/desktop-model.md](../docs/desktop-model.md) (DM1-DM9).
+[../docs/desktop-model.md](../docs/desktop-model.md) (DM1–DM10).
+
+## Window notes
+
+Plain-text notes, their independent model slice, display rules and launch integration are in
+[../docs/notes.md](../docs/notes.md) (NT-1–NT-19). NT-1–NT-7 and NT-9–NT-16 are implemented;
+shared-runner acceptance is pending. NT-8 and NT-17–NT-19 follow the existing Rust controller and
+provenance launch path.
 
 ## Key layers
 

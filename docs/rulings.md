@@ -140,6 +140,13 @@ Specified in windowing-keys.md WK36 and WP1.
 |---|---|---|
 | 10-06 | Scottland's system tools are Rust: "group the scripts by subsystem and make a single binary for that subsystem", in one Cargo workspace with a shared library crate and a thin `scottland` front command for discovery. Like the rest of core they run on any distro and never know about Omarchy. | core/tools/README.md |
 
+## Window notes
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-09 | A widget shows one plugin-drawn note dot at its lower corner away from the screen edge; it shows no note text and the dot does not react to hover. The widget card, state file and D-Bus properties do not change. | NT-16 |
+| 10-09 | Notes are quiet labels. Adding, updating, removing or showing one does not request attention, change focus, raise a window or notify the user. | NT-7 |
+
 ## Knocks (concept in discussion; docs/knocks.md)
 
 | Date | Ruling |
