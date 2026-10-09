@@ -34,7 +34,8 @@ from pathlib import Path
 HYPR_CONFIG = os.path.expanduser("~/.config/hypr/hyprland.lua")
 
 LUA_SCAN = r'''
-local order, binds = {}, {}
+local order, binds, window_rules = {}, {}, {}
+local scroll_factor, scroll_rules, scroll_skipped = nil, {}, {}
 local baseline = os.getenv("SCOTTLAND_OMARCHY_BASELINE_SCAN") == "1"
 
 local function normalize(keys)
@@ -89,6 +90,23 @@ end
 
 local function dispatcher(kind, arg) return { __scottland = true, kind = kind, arg = arg } end
 
+-- "default" when the config call came from Omarchy's shipped files, else "custom".
+local function rule_origin()
+  local defaults = (os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/default/"
+  for level = 3, 18 do
+    local info = debug.getinfo(level, "S")
+    if not info then break end
+    local source = (info.source or ""):gsub("^@", "")
+    if not source:match("/default/hypr/helpers%.lua$") and source:sub(1, 1) == "/" then
+      if source:sub(1, #defaults) == defaults and not from_user_omarchy_plugin() then
+        return "default"
+      end
+      return "custom"
+    end
+  end
+  return "custom"
+end
+
 local function dsp_proxy(path)
   return setmetatable({ path = path }, {
     __index = function(self, key) return dsp_proxy(self.path .. "." .. tostring(key)) end,
@@ -110,7 +128,9 @@ hl = setmetatable({
   bind = function(keys, action, opts)
     opts = opts or {}
     local mods, key = normalize(keys)
-    local id = mods .. "+" .. key
+    -- A press and a release binding on the same keys are two shortcuts (e.g. push-to-talk:
+    -- start on press, stop on release), as in Hyprland; neither may replace the other.
+    local id = mods .. "+" .. key .. (opts.release and ":release" or "")
     local kind, arg, signature = "", "", ""
     if type(action) == "table" and action.__scottland then kind, arg = action.kind, action.arg
     elseif type(action) == "string" then kind, arg = "exec", action
@@ -123,7 +143,7 @@ hl = setmetatable({
                   (opts["repeat"] or opts.repeating) and "1" or "0",
                   opts.release and "1" or "0", opts.locked and "1" or "0",
                   opts.mouse and "1" or "0", signature, option_signature(opts),
-                  from_user_omarchy_plugin() and "1" or "0" }
+                  from_user_omarchy_plugin() and "1" or "0", opts.ignore_mods and "1" or "0" }
     if not binds[id] then order[#order + 1] = id end
     binds[id] = row
     return noop
@@ -131,9 +151,64 @@ hl = setmetatable({
   unbind = function(keys)
     local mods, key = normalize(keys)
     binds[mods .. "+" .. key] = nil
+    binds[mods .. "+" .. key .. ":release"] = nil
     return noop
   end,
   get_config = function() return nil end,
+  -- Touchpad scroll speed (input.touchpad.scroll_factor), last assignment winning as in Hyprland.
+  -- Flattened so nested tables and "input:touchpad:scroll_factor" style keys both count.
+  config = function(settings)
+    local function walk(value, path)
+      if type(value) ~= "table" then
+        if path == "input:touchpad:scroll_factor" and tonumber(value) then
+          scroll_factor = tonumber(value)
+        end
+        return
+      end
+      for key, inner in pairs(value) do
+        local name = tostring(key):gsub("%.", ":")
+        walk(inner, path == "" and name or (path .. ":" .. name))
+      end
+    end
+    walk(settings, "")
+    return noop
+  end,
+  -- Per-device scroll factors (hl.device): Scottland has no per-device speed, so report them.
+  device = function(settings)
+    if type(settings) == "table" and settings.scroll_factor ~= nil then
+      scroll_skipped[#scroll_skipped + 1] = { "device " .. tostring(settings.name or "?") ..
+        " scroll_factor " .. tostring(settings.scroll_factor), rule_origin() }
+    end
+    return noop
+  end,
+  -- Window rules that hide windows from screen sharing (no_screen_share): Scottland cannot honor
+  -- them, so the report must say so. Printed as "@rule" rows after the bindings.
+  window_rule = function(rules)
+    if type(rules) ~= "table" then return noop end
+    local match = type(rules.match) == "table" and rules.match or {}
+    local parts = {}
+    for k, v in pairs(match) do parts[#parts + 1] = tostring(k) .. " " .. tostring(v) end
+    table.sort(parts)
+    if rules.no_screen_share then
+      window_rules[#window_rules + 1] = { table.concat(parts, ", "), rule_origin() }
+    end
+    if tonumber(rules.scroll_touchpad) then
+      -- Scottland matches app-ids: class is the window's app-id now, initial_class the one it
+      -- mapped with; a rule on either or both carries over exactly.
+      local translatable = true
+      for k in pairs(match) do
+        if k ~= "class" and k ~= "initial_class" then translatable = false end
+      end
+      if translatable and (match.class or match.initial_class) then
+        scroll_rules[#scroll_rules + 1] = { tostring(match.class or ""), tostring(match.initial_class or ""),
+                                            tonumber(rules.scroll_touchpad) }
+      else
+        scroll_skipped[#scroll_skipped + 1] = { "window rule " .. table.concat(parts, ", ") ..
+          " scroll_touchpad " .. tostring(rules.scroll_touchpad), rule_origin() }
+      end
+    end
+    return noop
+  end,
 }, { __index = function() return noop end })
 
 local real_require = require
@@ -169,8 +244,13 @@ else
     package.loaded[name] = noop
     return noop
   end
+  -- The config itself failing (a syntax error, an error at its top level) is not partial: say so
+  -- and print nothing, so the caller keeps the shortcuts it has rather than losing them.
   local ok, err = pcall(dofile, os.getenv("HOME") .. "/.config/hypr/hyprland.lua")
-  if not ok then io.stderr:write("scan failed: " .. tostring(err) .. "\n") end
+  if not ok then
+    io.stderr:write("scan failed: " .. tostring(err) .. "\n")
+    os.exit(3)
+  end
 end
 local printed = {}
 for _, id in ipairs(order) do
@@ -180,6 +260,17 @@ for _, id in ipairs(order) do
     for i = 1, #b do b[i] = tostring(b[i]):gsub("[\t\n]", " ") end
     print(table.concat(b, "\t"))
   end
+end
+for _, rule in ipairs(window_rules) do
+  print("@rule\t" .. rule[1]:gsub("[\t\n]", " ") .. "\t" .. rule[2])
+end
+if scroll_factor then print("@scroll\t" .. string.format("%.15g", scroll_factor)) end
+for _, rule in ipairs(scroll_rules) do
+  print("@scrollrule\t" .. rule[1]:gsub("[\t\n]", " ") .. "\t" .. rule[2]:gsub("[\t\n]", " ") .. "\t" ..
+        string.format("%.15g", rule[3]))
+end
+for _, skipped in ipairs(scroll_skipped) do
+  print("@scrollskip\t" .. skipped[1]:gsub("[\t\n]", " ") .. "\t" .. skipped[2])
 end
 '''
 
@@ -204,9 +295,13 @@ KEYSYMS = {
     "xf86launch1": "PROG1", "xf86launcha": "SCALE", "xf86display": "SWITCHVIDEOMODE",
     "xf86kbdlightonoff": "KBDILLUMTOGGLE", "xf86touchpadtoggle": "TOUCHPAD_TOGGLE",
     "xf86touchpadon": "TOUCHPAD_ON", "xf86touchpadoff": "TOUCHPAD_OFF", "xf86eject": "EJECTCD",
+    "super_l": "LEFTMETA", "super_r": "RIGHTMETA", "alt_l": "LEFTALT", "alt_r": "RIGHTALT",
+    "control_l": "LEFTCTRL", "control_r": "RIGHTCTRL", "shift_l": "LEFTSHIFT", "shift_r": "RIGHTSHIFT",
 }
 
-HYPRLAND_ONLY = re.compile(r"hyprctl|omarchy-hyprland-|hyprsunset|hyprpicker|workspace")
+# Commands that only act on Hyprland itself. hyprpicker is not one: it uses the screencopy and
+# layer-shell protocols Wayfire has (tests/omarchy-color-picker-test.py).
+HYPRLAND_ONLY = re.compile(r"hyprctl|omarchy-hyprland-|hyprsunset|workspace")
 
 # Hyprland dispatchers with a Wayfire equivalent: expression prefix -> (section, option)
 DISPATCHERS = {
@@ -242,14 +337,22 @@ REPORT_GROUPS = {
                    "Scottland translates keys before bindings and the app see them, preserving their intended editing effect in matching apps."),
     "super_w": ("Scottland leaves Super+W unbound",
                 "A single press should not close a window; Scottland keeps closing an explicit action."),
+    "capture": ("Not hidden from screen sharing in Scottland",
+                "Hyprland blacked these windows out of screen sharing and screenshots. Scottland "
+                "cannot: every capture copies the screen as it is shown, so these windows appear in "
+                "shared screens, screenshots and recordings."),
+    "input": ("Input settings not carried over",
+              "Scottland takes Omarchy's touchpad scroll speed and its per-app speeds (window rules "
+              "matching the app); speeds that depend on a particular device or on another window "
+              "property have no equivalent."),
     "unsupported": ("Unsupported in Scottland",
                     "Scottland has no equivalent for these actions, so they have no shortcut here."),
 }
 
 REPORT_GROUP_ORDER = {name: index for index, name in enumerate((
-    "workspaces", "layout", "window_navigation", "groups", "window_mode",
+    "capture", "workspaces", "layout", "window_navigation", "groups", "window_mode",
     "widget_controls", "window_controls", "settings", "reload", "other_feature",
-    "app_remaps", "super_w", "unsupported"))}
+    "app_remaps", "super_w", "input", "unsupported"))}
 
 
 def evdev_names():
@@ -305,6 +408,8 @@ def report_identity(label):
 def parse_scan_rows(output):
     rows = []
     for line in output.splitlines():
+        if line.startswith("@"):
+            continue
         fields = (line.split("\t") + [""] * 12)[:12]
         mods, key, description, kind, arg, repeat, release, locked, mouse, function, options, _plugin = fields
         rows.append({"identity": scan_identity(mods, key),
@@ -497,9 +602,14 @@ def pretty_keys(value):
     return "+".join([names[mod] for mod in sorted(set(modifiers), key=modifier_order.get)] + pretty)
 
 
-def report_entry(group, label, description, now, origin=None):
+SWITCH_KEY = re.compile(r"switch:(?:(on|off):)?(.+)", re.IGNORECASE)
+
+
+def report_entry(group, label, description, now, origin=None, keys=None):
     heading, explanation = REPORT_GROUPS[group]
-    keys = pretty_keys(label)
+    switch = SWITCH_KEY.fullmatch(label)
+    keys = keys or (f"{switch.group(2).strip()} ({(switch.group(1) or 'either way').lower()})"
+                    if switch else pretty_keys(label))
     was = (description or f"Shortcut on {keys}").strip().rstrip(".")
     return {"heading": heading, "why": explanation, "keys": keys,
             "was": was, "now": now, "origin": origin or source_for_label(label),
@@ -525,6 +635,16 @@ def feature_report_group(section, option):
     if option == "scottland_reload":
         return "reload"
     return "other_feature"
+
+
+def app_id_regex(pattern):
+    """A whole-app-id regex (core's touchpad_scroll_apps / _initial_apps) for a Hyprland class or
+    initial_class pattern (RE2 FullMatch; "negative:" inverts); any app-id when there is none."""
+    if not pattern:
+        return ".*"
+    if pattern.startswith("negative:"):
+        return f"(?!(?:{pattern[9:]})$).*"
+    return pattern
 
 
 def omission_report_group(kind, action, description, note):
@@ -918,8 +1038,14 @@ def main():
     defaults_scan = None
     if os.path.exists(HYPR_CONFIG):
         scan = run_lua_scan()
-        if scan.returncode == 0:
-            defaults_scan = run_lua_scan(baseline=True)
+        if scan.returncode != 0:
+            # The Hyprland config could not be read at all: fail, so the config builder keeps the
+            # session's current shortcuts and `hyprctl reload` reports the error (O23).
+            reason = scan.stderr.strip().splitlines()[-1:] or [f"exit status {scan.returncode}"]
+            print(f"50-omarchy-shortcuts: cannot read ~/.config/hypr/hyprland.lua: {reason[0][:300]}",
+                  file=sys.stderr)
+            sys.exit(1)
+        defaults_scan = run_lua_scan(baseline=True)
     defaults_complete = bool(defaults_scan and defaults_scan.returncode == 0 and
                              not defaults_scan.stderr.strip())
     live_complete = bool(scan and scan.returncode == 0 and not scan.stderr.strip())
@@ -937,7 +1063,8 @@ def main():
     report_overrides = []
     reported_remaps = set()
     activators = {}  # (section, option) -> [(description, combo)]; one option can take several keys
-    releases = []  # (description, keysym, command) for key-release shortcuts
+    shortcuts = []  # (description, combo, command, flags) for core shortcuts (release, locked+repeat)
+    switches = []  # (description, device, on|off|toggle, locked, command) for hardware switches (lid)
 
     def omitted(label, description, note, group="unsupported", now="No shortcut in Scottland",
                 kind="", action=""):
@@ -950,29 +1077,86 @@ def main():
                 if section == "scottland-key-remap" or section == "scottland" or
                 (section == "command" and option.split("binding_", 1)[-1].startswith("scottland_"))]
 
+    scroll_speed, scroll_rules = None, []
     for line in scan_stdout.splitlines():
-        mods, key, description, kind, arg, repeat, release = (line.split("\t") + [""] * 7)[:7]
+        if line.startswith("@scroll\t"):
+            scroll_speed = line.split("\t")[1]
+            continue
+        if line.startswith("@scrollrule\t"):
+            _, current, initial, factor = (line.split("\t") + ["", "", ""])[:4]
+            scroll_rules.append((app_id_regex(current), app_id_regex(initial), factor))
+            continue
+        if line.startswith("@scrollskip\t"):
+            _, what, origin = (line.split("\t") + ["", ""])[:3]
+            report_overrides.append(report_entry(
+                "input", "", f"Touchpad scroll speed: {what}",
+                "Not carried over; the global or per-app speed applies",
+                origin="Omarchy default" if origin == "default" else "Your custom/changed shortcut",
+                keys=f"Touchpad scroll: {what.split(' scroll_')[0]}"))
+            continue
+        if line.startswith("@rule\t"):
+            # P10: a protection the user had is gone, so say so (adapter-gaps AG01).
+            _, match, origin = (line.split("\t") + ["", ""])[:3]
+            report_overrides.append(report_entry(
+                "capture", "", "Hidden from screen sharing and screenshots (no_screen_share)",
+                "Shown in screen sharing, screenshots and recordings like any other window",
+                origin="Omarchy default" if origin == "default" else "Your custom/changed shortcut",
+                keys=f"Window rule: {match or 'any window'}"))
+            continue
+        mods, key, description, kind, arg, repeat, release, locked = (line.split("\t") + [""] * 8)[:8]
+        ignore_mods = (line.split("\t") + [""] * 13)[12] == "1"
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
         if mods == "ALT" and not key:
             omitted(label, description, "Scottland Window mode Alt hold", "window_mode",
                     now="Holding Alt now enters Scottland's Window mode and shows window hints.")
             continue
         if release == "1" and kind in ("exec", "function"):
-            # The Scottland plugin runs these when the key is let go (Hyprland release binds).
+            # Hyprland release binds run when the pressed chord's key is let go; core shortcuts keep
+            # that together with the locked flag (core/plugin/src/shortcuts.hpp).
             if kind == "exec" and HYPRLAND_ONLY.search(arg):
                 omitted(label, description, f"Hyprland-only: {arg[:60]}",
                         omission_report_group(kind, arg, description, "Hyprland-only command"),
                         kind=kind, action=arg)
                 continue
-            if mods:
-                omitted(label, description, "release with modifiers not supported yet",
+            command = arg if kind == "exec" else (
+                '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
+                + shlex.quote(f"{mods}+{key}:release"))
+            # ignore_mods (e.g. Yoohoo's accept on Super_L release): the key alone, whatever is held.
+            wanted = combo("" if ignore_mods else mods, key)
+            if not wanted:
+                omitted(label, description, "key has no Wayfire name", kind=kind, action=arg)
+                continue
+            owners = used.get(normalized_combo(wanted), [])
+            if any(section in ("scottland", "scottland-key-remap") or
+                   (section == "command" and option.split("binding_", 1)[-1].startswith("scottland_"))
+                   for section, option, _value in owners):
+                omitted(label, description, "Scottland feature keys", "other_feature",
+                        now="Scottland uses these keys for one of its own features.",
                         kind=kind, action=arg)
                 continue
-            command = arg if kind == "exec" else (
-                '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call ' + shlex.quote(f"{mods}+{key}"))
-            releases.append((description or label, key, command))
+            shortcuts.append((f"{description or label} (on release)", wanted, command,
+                              {"locked": locked == "1", "release": True, "any_mods": ignore_mods}))
             kept += 1
             continue
+        switch = SWITCH_KEY.fullmatch(key) if not mods else None
+        if switch:
+            # Hyprland's switch:on:<device> / switch:off:<device> / switch:<device> (either way),
+            # e.g. the laptop lid; core's switch bindings run them, on the lock screen only when
+            # the binding is marked locked, as in Hyprland.
+            if kind == "exec" and HYPRLAND_ONLY.search(arg):
+                omitted(label, description, f"Hyprland-only: {arg[:60]}", kind=kind, action=arg)
+                continue
+            if kind not in ("exec", "function"):
+                omitted(label, description, "untranslated switch action", kind=kind, action=arg)
+                continue
+            command = arg if kind == "exec" else (
+                '"${SCOTTLAND_HOOKS:-/usr/lib/scottland}"/libexec/scottland-lua-call '
+                + shlex.quote(f"{mods}+{key}"))
+            switches.append((description or label, switch.group(2).strip(),
+                             (switch.group(1) or "toggle").lower(), locked == "1", command))
+            kept += 1
+            continue
+
         wanted = combo(mods, key)
         if not wanted:
             omitted(label, description, "key has no Wayfire name", kind=kind, action=arg)
@@ -1080,7 +1264,11 @@ def main():
         for section, option, value in owners:
             if target == (section, option):
                 continue  # this option is replaced by the imported activator below
-            if (section == "command" and option.startswith(("binding_", "repeatable_binding_"))
+            # Taking over the command of Scottland's binding keeps that binding's own flags, so
+            # only when they match: otherwise it steps aside and the shortcut comes in whole.
+            same_flags = locked != "1" and option.startswith(
+                "repeatable_binding_" if repeat == "1" else "binding_")
+            if (section == "command" and same_flags
                     and target[0] == "command" and not replaced_command):
                 name = option.split("binding_", 1)[1]
                 command_overrides.append((f"command_{name}", target[1], description))
@@ -1094,8 +1282,15 @@ def main():
             kept += 1
             continue
 
-        if target[0] == "command":
-            prefix = "repeatable_binding" if repeat == "1" else "binding"
+        if target[0] == "command" and repeat == "1" and locked == "1":
+            # Wayfire's command plugin has no binding that both repeats and runs on the lock
+            # screen; a core shortcut keeps both flags.
+            shortcuts.append((description or label, wanted, target[1], {"repeat": True, "locked": True}))
+        elif target[0] == "command":
+            # Hyprland's flags: repeating repeats while held; locked also works on the lock
+            # screen (Wayfire's always binding).
+            prefix = ("always_binding" if locked == "1" else
+                      "repeatable_binding" if repeat == "1" else "binding")
             name = f"omarchy_{kept}"
             sections.setdefault("command", []).append(
                 (f"# {description or label}", f"{prefix}_{name} = {wanted}", f"command_{name} = {target[1]}"))
@@ -1133,12 +1328,33 @@ def main():
     for (section, option), entries in activators.items():
         print(f"\n[{section}]\n# {', '.join(d for d, _ in entries)}")
         print(f"{option} = {' | '.join(c for _, c in entries)}")
-    if releases:
+    if scroll_speed is not None:
+        print("\n[input]\n# Omarchy's touchpad scroll speed (input.touchpad.scroll_factor)")
+        print(f"touchpad_scroll_speed = {scroll_speed}")
+    if scroll_rules:
+        # Hyprland: the last matching scroll_touchpad rule sets the speed. Core: the first entry by
+        # name. So the last rule gets the first name.
+        print("\n[scottland]\n# Omarchy's per-app touchpad scroll speeds (scroll_touchpad window rules)")
+        for index, (current, initial, factor) in enumerate(reversed(scroll_rules)):
+            print(f"touchpad_scroll_apps_omarchy_{index:03d} = {current}")
+            if initial != ".*":
+                print(f"touchpad_scroll_initial_apps_omarchy_{index:03d} = {initial}")
+            print(f"touchpad_scroll_factor_omarchy_{index:03d} = {factor}")
+    if shortcuts or switches:
         print("\n[scottland]")
-        for index, (description, key, command) in enumerate(releases):
-            print(f"# {description} (on release)")
-            print(f"release_key_omarchy_{index} = {key}")
-            print(f"release_command_omarchy_{index} = {command}")
+        for index, (description, keys, command, flags) in enumerate(shortcuts):
+            print(f"# {description}")
+            print(f"shortcut_keys_omarchy_{index} = {keys}")
+            print(f"shortcut_command_omarchy_{index} = {command}")
+            for flag in ("repeat", "locked", "release", "any_mods"):
+                if flags.get(flag):
+                    print(f"shortcut_{flag}_omarchy_{index} = true")
+        for index, (description, device, state, locked, command) in enumerate(switches):
+            print(f"# {description} ({device} {state}{', also locked' if locked else ''})")
+            print(f"switch_device_omarchy_{index} = {device}")
+            print(f"switch_state_omarchy_{index} = {state}")
+            print(f"switch_locked_omarchy_{index} = {'true' if locked else 'false'}")
+            print(f"switch_command_omarchy_{index} = {command}")
     if command_overrides:
         print("\n[command]")
         for option, command, description in command_overrides:

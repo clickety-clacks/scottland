@@ -2,6 +2,8 @@
 DEV := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/dev
 CONF := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/scottland
 RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
+# Portal selection for Scottland sessions (xdg-desktop-portal also reads $XDG_DATA_HOME).
+PORTALS := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/xdg-desktop-portal
 
 .PHONY: plugin tools tools-test dev-install link-dev test-hooks hooks dev-uninstall package clean
 
@@ -33,7 +35,7 @@ dev-install: plugin tools
 	  { echo "dev-install: commit first; the session runs exactly a commit" >&2; exit 1; }
 	@rev=$$(git rev-parse --short=12 HEAD); dest=$(RELEASES)/$$rev; \
 	rm -rf "$$dest.new" && mkdir -p "$$dest.new/build" && git archive HEAD | tar -x -C "$$dest.new" && \
-	cp build/libscottland.so "$$dest.new/build/" && cp -r build/tools "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
+	cp build/libscottland.so build/scottland-output-power "$$dest.new/build/" && cp -r build/tools "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
 	$(MAKE) --no-print-directory -C "$$dest" link-dev >/dev/null && echo "installed $$rev ($$dest)"
 
 # Points the user's session at this tree (dev-install runs it inside a snapshot).
@@ -42,10 +44,12 @@ link-dev:
 	ln -sf $(CURDIR)/build/libscottland.so $(DEV)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(DEV)/metadata/scottland.xml
 	ln -sf $(CURDIR)/core/config/scottland.ini $(CONF)/scottland.ini
+	mkdir -p $(PORTALS) && ln -sf $(CURDIR)/core/config/scottland-portals.conf $(PORTALS)/scottland-portals.conf
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
 	ln -sf $(CURDIR)/omarchy/bin/scottland-omarchy-setup $(HOME)/.local/bin/scottland-omarchy-setup
 	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/override-report.d $(DEV)/prompts
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
+	ln -sf $(CURDIR)/build/scottland-output-power $(DEV)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(DEV)/libexec/start-scottland
@@ -84,6 +88,7 @@ hooks:
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(HOOKS_DIR)/metadata/scottland.xml
 	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d $(HOOKS_DIR)/override-report.d $(HOOKS_DIR)/prompts
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(HOOKS_DIR)/libexec/scottland-hyprshim
+	ln -sf $(CURDIR)/build/scottland-output-power $(HOOKS_DIR)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(HOOKS_DIR)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(HOOKS_DIR)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOOKS_DIR)/libexec/start-scottland
@@ -111,7 +116,8 @@ test-hooks: plugin tools
 
 dev-uninstall:
 	rm -rf $(DEV)
-	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup
+	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup \
+	  $(PORTALS)/scottland-portals.conf
 
 package:
 	cd packaging/arch && makepkg -sif

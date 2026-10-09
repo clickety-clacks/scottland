@@ -14,7 +14,10 @@ import Quickshell.Wayland
 // between shape it, joined by the same monotone cubic spline the plugin uses.
 ShellRoot {
   id: root
-  Component.onCompleted: Qt.application.name = "Scottland Settings"
+  Component.onCompleted: {
+    Qt.application.name = "Scottland Settings"
+    root.captureTargetScreen()
+  }
 
   readonly property string ctl: Quickshell.env("SCOTTLAND_CTL") || "scottland-ctl"
   readonly property string layoutFile: Quickshell.env("SCOTTLAND_LAYOUT_FILE")
@@ -118,11 +121,26 @@ ShellRoot {
   property real railWidth: defaults.rail_width
   property real blendWidth: defaults.blend_width
   property var curvePoints: defaults.curve
+  property var globalZoneValues: ({ center_width: defaults.center_width, rail_width: defaults.rail_width,
+    blend_width: defaults.blend_width, min_scale: 0.2, max_scale: 1, scale_curve: "", curve: defaults.curve })
+  property var screenZones: []
+  property var outputs: []
+  property var targetOutput: null
+  property string targetOutputName: ""
+  property bool targetScreenCaptured: false
+  property string editScope: "all"
+  property var zoneOpening: null
+  property bool zonePending: false
+  property bool suppressZoneChanges: false
   readonly property real maxScale: curvePoints[0].y
   readonly property real minScale: curvePoints[curvePoints.length - 1].y
   property bool loaded: false
   // Settings the running Scottland doesn't support yet (its plugin predates them).
   property var unsupported: []
+  readonly property bool screenZonesSupported: unsupported.indexOf("screen_zones") < 0
+  readonly property string targetIdentity: targetOutput ? String(targetOutput.identity || "") : ""
+  readonly property bool targetHasOwnZones: targetIdentity.length > 0 && root.overrideForIdentity(targetOutput) !== null
+  readonly property bool thisScreenAvailable: screenZonesSupported && targetOutput !== null && targetIdentity.length > 0
   readonly property var settingNames: ({ center_width: "Center zone width", rail_width: "Widget rail width",
     min_scale: "Smallest scale", max_scale: "Largest scale", scale_curve: "Scale curve",
     blend_width: "Center edge softness", key_impulse:"Push strength", key_friction:"Movement deceleration",
@@ -200,6 +218,147 @@ ShellRoot {
     return Math.min(maximum, Math.max(minimum, y))
   }
 
+  function identityMatches(a, b) {
+    return !!a && !!b && String(a.make || "") === String(b.make || "")
+      && String(a.model || "") === String(b.model || "")
+      && String(a.serial || "") === String(b.serial || "")
+  }
+
+  function overrideForIdentity(output) {
+    if (!output || !output.identity || !output.make && !output.model && !output.serial) return null
+    return screenZones.find(entry => identityMatches(entry, output)) || null
+  }
+
+  function profileFromEntry(entry) {
+    const minimum = Number(entry.min_scale), maximum = Number(entry.max_scale)
+    const low = isFinite(minimum) ? minimum : 0.2
+    const high = isFinite(maximum) ? maximum : 1
+    return { center_width: Number(entry.center_width), rail_width: Number(entry.rail_width),
+      blend_width: Number(entry.blend_width), min_scale: low, max_scale: high,
+      scale_curve: String(entry.scale_curve || ""),
+      curve: parseCurve(entry.scale_curve) || [{ x: 0, y: high }, { x: 1, y: low }] }
+  }
+
+  function profileForOutput(output) {
+    if (!screenZonesSupported) return globalZoneValues
+    const entry = overrideForIdentity(output)
+    return entry ? profileFromEntry(entry) : globalZoneValues
+  }
+
+  function canEditOutput(output) {
+    if (editScope === "this") return thisScreenAvailable && identityMatches(targetOutput, output)
+    if (!screenZonesSupported) return true
+    return !overrideForIdentity(output)
+  }
+
+  function outputForName(name) {
+    return outputs.find(output => String(output.output) === String(name)) || null
+  }
+
+  function captureTargetScreen() {
+    if (!targetScreenCaptured && settingsWindow.screen && settingsWindow.screen.name) {
+      targetOutputName = String(settingsWindow.screen.name)
+      targetScreenCaptured = true
+    }
+    if (targetScreenCaptured) targetOutput = outputForName(targetOutputName)
+  }
+
+  function editorProfile() {
+    return { center_width: Number(centerWidth.toFixed(3)), rail_width: Number(railWidth.toFixed(3)),
+      blend_width: Number(blendWidth.toFixed(1)), min_scale: Number(minScale.toFixed(3)),
+      max_scale: Number(maxScale.toFixed(3)), scale_curve: curveText(curvePoints), curve: curvePoints }
+  }
+
+  function setEditorProfile(profile) {
+    suppressZoneChanges = true
+    centerWidth = profile.center_width
+    railWidth = profile.rail_width
+    blendWidth = profile.blend_width
+    curvePoints = profile.curve
+    suppressZoneChanges = false
+  }
+
+  function originalProfile(scope) {
+    if (!original) return globalZoneValues
+    if (scope === "this" && targetOutput) {
+      const entry = (original.screen_zones || []).find(item => identityMatches(item, targetOutput))
+      if (entry) return profileFromEntry(entry)
+    }
+    return original.globalZones
+  }
+
+  function zoneEntry(profile) {
+    return { make: String(targetOutput.make || ""), model: String(targetOutput.model || ""),
+      serial: String(targetOutput.serial || ""), scale_curve: profile.scale_curve,
+      center_width: profile.center_width, rail_width: profile.rail_width,
+      blend_width: profile.blend_width, min_scale: profile.min_scale, max_scale: profile.max_scale }
+  }
+
+  function replaceTargetOverride(profile) {
+    const entry = zoneEntry(profile)
+    screenZones = screenZones.filter(item => !identityMatches(item, targetOutput)).concat([entry])
+  }
+
+  function globalOptionValues(profile) {
+    return { center_width: profile.center_width, rail_width: profile.rail_width,
+      blend_width: profile.blend_width, scale_curve: profile.scale_curve,
+      min_scale: profile.min_scale, max_scale: profile.max_scale }
+  }
+
+  function previewZoneEdits() {
+    const profile = editorProfile()
+    if (editScope === "this" && thisScreenAvailable) {
+      replaceTargetOverride(profile)
+      sendBatch({ screen_zones: JSON.stringify(screenZones) })
+    } else {
+      globalZoneValues = profile
+      sendBatch(globalOptionValues(profile))
+    }
+  }
+
+  function selectZoneScope(scope) {
+    if (scope === "this" && !thisScreenAvailable) return
+    push.stop()
+    if (zonePending) previewZoneEdits()
+    zonePending = false
+    editScope = scope
+    zoneOpening = originalProfile(scope)
+    const entry = scope === "this" ? overrideForIdentity(targetOutput) : null
+    setEditorProfile(entry ? profileFromEntry(entry) : globalZoneValues)
+  }
+
+  function setZoneField(name, value) {
+    if (name === "center_width") centerWidth = value
+    else if (name === "rail_width") railWidth = value
+    else if (name === "blend_width") blendWidth = value
+  }
+
+  function setZoneBorderField(name, value) {
+    zoneSettings.set(name === "blend_width" ? 0 : name === "center_width" ? 1 : 2, value)
+  }
+
+  function resetTargetZones() {
+    if (editScope !== "this" || !targetHasOwnZones) return
+    push.stop()
+    zonePending = false
+    screenZones = screenZones.filter(item => !identityMatches(item, targetOutput))
+    sendBatch({ screen_zones: JSON.stringify(screenZones) })
+    setEditorProfile(globalZoneValues)
+  }
+
+  function connectedOverrideNames() {
+    const names = []
+    for (const output of outputs) {
+      if (!overrideForIdentity(output) || !output.identity || names.indexOf(output.identity) >= 0) continue
+      names.push(output.identity)
+    }
+    return names
+  }
+
+  function sameIdentityOutputCount() {
+    return targetIdentity.length ? outputs.filter(output => identityMatches(output, targetOutput)).length : 0
+  }
+
   // --- Live updates, load, save ---------------------------------------------------------------
 
   // Live updates go through one long-running scottland-ctl; a short timer coalesces drags.
@@ -214,45 +373,60 @@ ShellRoot {
   Timer {
     id: push
     interval: 30
-    onTriggered: { root.send(root.centerWidth, root.railWidth, root.curvePoints, root.blendWidth); root.sendGoo(root.gooValues); root.sendBatch(root.motionValues); root.sendBatch(root.opacityValues); root.sendBatch(root.widgetValues) }
+    onTriggered: {
+      if (root.zonePending) { root.previewZoneEdits(); root.zonePending = false }
+      root.sendGoo(root.gooValues); root.sendBatch(root.motionValues); root.sendBatch(root.opacityValues); root.sendBatch(root.widgetValues)
+    }
   }
 
-  function send(center, rail, points, blend) {
-    sendBatch({ center_width: Number(center.toFixed(3)), rail_width: Number(rail.toFixed(3)),
-      blend_width: Number(blend.toFixed(1)), scale_curve: curveText(points),
-      // Endpoints double as min/max for anything reading those.
-      min_scale: Number(points[points.length - 1].y.toFixed(3)), max_scale: Number(points[0].y.toFixed(3)) })
+  function scheduleZonePreview() {
+    if (loaded && !suppressZoneChanges) {
+      zonePending = true
+      if (!push.running) push.start()
+    }
   }
-
-  onCenterWidthChanged: if (loaded && !push.running) push.start()
-  onRailWidthChanged: if (loaded && !push.running) push.start()
-  onCurvePointsChanged: if (loaded && !push.running) push.start()
-  onBlendWidthChanged: if (loaded && !push.running) push.start()
+  onCenterWidthChanged: scheduleZonePreview()
+  onRailWidthChanged: scheduleZonePreview()
+  onCurvePointsChanged: scheduleZonePreview()
+  onBlendWidthChanged: scheduleZonePreview()
 
   Process {
     id: reader
-    command: [root.ctl, "get"]
+      command: [root.ctl, "get"]
     running: true
     stdout: StdioCollector {
       onStreamFinished: {
-        try {
-          const values = JSON.parse(text)
-          root.unsupported = values.unsupported || []
-          for (const name of ["center_width", "rail_width", "min_scale", "max_scale", "blend_width"])
-            if (values[name] === undefined) values[name] = root.savedValue(name, null)
-          if (values.scale_curve === undefined) values.scale_curve = root.savedText("scale_curve")
-          const points = root.parseCurve(values.scale_curve) || [
-            { x: 0, y: values.max_scale !== null ? Math.max(values.max_scale, values.min_scale || 0.05) : 1 },
-            { x: 1, y: values.min_scale !== null ? values.min_scale : 0.2 }]
-          root.original = { center_width: values.center_width ?? root.defaults.center_width,
-            rail_width: values.rail_width ?? root.defaults.rail_width,
-            blend_width: values.blend_width ?? root.defaults.blend_width, curve: points }
-        } catch (e) {
-          root.original = root.defaults
-        }
-        const goo = root.gooDefaults()
         let values = {}
         try { values = JSON.parse(text) } catch (e) {}
+        root.unsupported = values.unsupported || []
+        root.outputs = Array.isArray(values.outputs) ? values.outputs : []
+        let storedZones = values.screen_zones
+        if (!Array.isArray(storedZones)) {
+          try { storedZones = JSON.parse(root.savedText("screen_zones") || "[]") } catch (e) { storedZones = [] }
+        }
+        root.screenZones = Array.isArray(storedZones) ? storedZones : []
+        root.captureTargetScreen()
+        for (const name of ["center_width", "rail_width", "min_scale", "max_scale", "blend_width"])
+          if (values[name] === undefined) values[name] = root.savedValue(name, null)
+        if (values.scale_curve === undefined) values.scale_curve = root.savedText("scale_curve")
+        const points = root.parseCurve(values.scale_curve) || [
+          { x: 0, y: values.max_scale !== null ? Math.max(values.max_scale, values.min_scale || 0.05) : 1 },
+          { x: 1, y: values.min_scale !== null ? values.min_scale : 0.2 }]
+        const globalZones = { center_width: values.center_width ?? root.defaults.center_width,
+          rail_width: values.rail_width ?? root.defaults.rail_width,
+          blend_width: values.blend_width ?? root.defaults.blend_width,
+          min_scale: points[points.length - 1].y, max_scale: points[0].y,
+          scale_curve: root.curveText(points), curve: points }
+        root.globalZoneValues = globalZones
+        root.original = { globalZones: Object.assign({}, globalZones),
+          screen_zones: JSON.parse(JSON.stringify(root.screenZones)),
+          center_width: globalZones.center_width, rail_width: globalZones.rail_width,
+          blend_width: globalZones.blend_width, curve: points }
+        root.editScope = root.thisScreenAvailable && root.targetHasOwnZones ? "this" : "all"
+        root.zoneOpening = root.originalProfile(root.editScope)
+        const initialZones = root.editScope === "this" ? root.overrideForIdentity(root.targetOutput) : null
+        root.setEditorProfile(initialZones ? root.profileFromEntry(initialZones) : globalZones)
+        const goo = root.gooDefaults()
         for (const key of Object.keys(goo)) {
           if (values[key] !== undefined) goo[key] = values[key]
           else if (key === "goo") goo[key] = root.savedText(key) === "true"
@@ -262,10 +436,6 @@ ShellRoot {
         root.original = Object.assign({}, root.original, { goo: goo })
         root.gooValues = Object.assign({}, goo)
         root.gooPoints = root.parseCurve(goo.goo_falloff, 0) || root.exponentialPoints
-        root.centerWidth = root.original.center_width
-        root.railWidth = root.original.rail_width
-        root.blendWidth = root.original.blend_width
-        root.curvePoints = root.original.curve
         const motion = Object.assign({},root.motionDefaults)
         for (const k of Object.keys(motion))
           motion[k] = values[k] !== undefined ? values[k] : typeof motion[k] === "boolean" ? root.savedText(k) === "true" : typeof motion[k] === "string" ? root.savedText(k) : root.savedValue(k,motion[k])
@@ -327,19 +497,25 @@ ShellRoot {
 
   function save() {
     push.stop()
-    send(centerWidth, railWidth, curvePoints, blendWidth)
+    if (zonePending) { previewZoneEdits(); zonePending = false }
+    // Wayfire's config parser treats an unescaped # as the start of a comment. Keep
+    // screen_zones valid JSON while avoiding literal # bytes in its saved config line.
+    const serializedScreenZones = JSON.stringify(screenZones).replace(/#/g, "\\u0023")
+    sendBatch(globalOptionValues(globalZoneValues))
+    sendBatch({ screen_zones: serializedScreenZones })
     sendGoo(gooValues)
     sendBatch(motionValues)
     sendBatch(opacityValues)
     sendBatch(widgetValues)
     solarFile.setText("# Written by Scottland Settings.\n[solar]\n"+Object.keys(solarValues).map(k=>k+" = "+solarValues[k]+"\n").join(""))
     saved.setText("# Written by Scottland settings.\n[scottland]\n"
-      + "center_width = " + centerWidth.toFixed(3) + "\n"
-      + "rail_width = " + railWidth.toFixed(3) + "\n"
-      + "blend_width = " + blendWidth.toFixed(1) + "\n"
-      + "scale_curve = " + curveText(curvePoints) + "\n"
-      + "min_scale = " + minScale.toFixed(3) + "\n"
-      + "max_scale = " + maxScale.toFixed(3) + "\n"
+      + "center_width = " + globalZoneValues.center_width.toFixed(3) + "\n"
+      + "rail_width = " + globalZoneValues.rail_width.toFixed(3) + "\n"
+      + "blend_width = " + globalZoneValues.blend_width.toFixed(1) + "\n"
+      + "scale_curve = " + globalZoneValues.scale_curve + "\n"
+      + "min_scale = " + globalZoneValues.min_scale.toFixed(3) + "\n"
+      + "max_scale = " + globalZoneValues.max_scale.toFixed(3) + "\n"
+      + "screen_zones = " + serializedScreenZones + "\n"
       + Object.keys(gooValues).map(k => k + " = " + gooValues[k] + "\n").join("")
       + Object.keys(motionValues).map(k => k + " = " + motionValues[k] + "\n").join("")
       + Object.keys(opacityValues).map(k => k + " = " + opacityValues[k] + "\n").join("")
@@ -349,7 +525,17 @@ ShellRoot {
 
   function cancel() {
     push.stop()
-    if (original) { send(original.center_width, original.rail_width, original.curve, original.blend_width); sendGoo(original.goo); sendBatch(original.motion); sendBatch(original.opacity); sendBatch(original.widgets) }
+    zonePending = false
+    if (original) {
+      globalZoneValues = Object.assign({}, original.globalZones)
+      screenZones = JSON.parse(JSON.stringify(original.screen_zones || []))
+      sendBatch(globalOptionValues(globalZoneValues))
+      sendBatch({ screen_zones: JSON.stringify(screenZones) })
+      sendGoo(original.goo); sendBatch(original.motion); sendBatch(original.opacity); sendBatch(original.widgets)
+      const entry = editScope === "this" ? overrideForIdentity(targetOutput) : null
+      setEditorProfile(entry ? profileFromEntry(entry) : globalZoneValues)
+      zoneOpening = originalProfile(editScope)
+    }
     solarValues=Object.assign({},originalSolar)
     solarLatitudeEdited=originalSolar.location_set;solarLongitudeEdited=originalSolar.location_set
     live.write("flush\n")
@@ -379,6 +565,9 @@ ShellRoot {
       return JSON.stringify({title:Qt.application.name,heading:heading.text,screen:settingsWindow.screen.name,tab:root.tab,
       panel:{x:settingsWindow.x,y:settingsWindow.y,width:settingsWindow.width,height:settingsWindow.height},
       viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
+      zoneScope:Object.assign(root.testRect(zoneScope),{all:root.testRect(allScreensChoice),this:root.testRect(thisScreenChoice),reset:root.testRect(resetTargetZones),scope:root.editScope,note:zoneScopeNote.text}),
+      target:{output:root.targetOutputName,identity:root.targetIdentity,own:root.targetHasOwnZones,available:root.thisScreenAvailable},
+      zoneProfile:root.editorProfile(),screenZones:root.screenZones,outputs:root.outputs,
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
       goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint,
         edgeControls:root.edgeControls,rowHeight:gooSettings.rowHeight,rows:gooSettings.rows.map(row=>row.id)}),
@@ -429,20 +618,23 @@ ShellRoot {
         focus: true
         Keys.onEscapePressed: root.cancel()
         Keys.onReturnPressed: root.save()
-        readonly property real rail: width * root.railWidth / 100
-        readonly property real centerLeft: width * (0.5 - root.centerWidth / 200)
-        readonly property real centerRight: width * (0.5 + root.centerWidth / 200)
+        readonly property var outputRecord: root.outputForName(modelData.name)
+        readonly property var zoneProfile: root.profileForOutput(outputRecord)
+        readonly property bool editable: root.canEditOutput(outputRecord)
+        readonly property real rail: width * zoneProfile.rail_width / 100
+        readonly property real centerLeft: width * (0.5 - zoneProfile.center_width / 200)
+        readonly property real centerRight: width * (0.5 + zoneProfile.center_width / 200)
 
         // Match place() in scottland.cpp: softness is in logical points, capped at half
         // the available side span. Percent widths use this output, never the first screen.
-        readonly property real blend: Math.min(root.blendWidth, Math.max(0, centerLeft - rail) / 2)
+        readonly property real blend: Math.min(zoneProfile.blend_width, Math.max(0, centerLeft - rail) / 2)
         readonly property real blendLeft: centerLeft - blend
         readonly property real blendRight: centerRight + blend
 
         // Continuous zones: shading deepens as the curve takes windows smaller.
         component CurveShade: Rectangle {
           property bool mirrored: false
-          function shade(t) { return Qt.rgba(0.48, 0.64, 0.97, 0.04 + 0.30 * (1 - root.curveAt(root.curvePoints, t))) }
+          function shade(t) { return Qt.rgba(0.48, 0.64, 0.97, 0.04 + 0.30 * (1 - root.curveAt(zones.zoneProfile.curve, t))) }
           height: parent.height
           gradient: Gradient {
             orientation: Gradient.Horizontal
@@ -471,6 +663,7 @@ ShellRoot {
 
         component BorderHandle: Item {
           id: handle
+          visible: zones.editable
           required property string setting
           required property real edge
           required property bool rightSide
@@ -510,17 +703,17 @@ ShellRoot {
               zones.borderHeld = true
               zones.forceActiveFocus()
               startX = mapToItem(zones, mouse.x, mouse.y).x
-              startValue = handle.setting === "center_width" ? root.centerWidth
-                : handle.setting === "rail_width" ? root.railWidth : zones.blend
+              startValue = handle.setting === "center_width" ? zones.zoneProfile.center_width
+                : handle.setting === "rail_width" ? zones.zoneProfile.rail_width : zones.zoneProfile.blend_width
             }
             onPositionChanged: mouse => {
               if (!pressed) return
               const dx = mapToItem(zones, mouse.x, mouse.y).x - startX
               const direction = handle.rightSide ? 1 : -1
               zoneSettings.typed = ""
-              if (handle.setting === "center_width") zoneSettings.set(1, startValue + direction * dx * 200 / zones.width)
-              else if (handle.setting === "rail_width") zoneSettings.set(2, startValue - direction * dx * 100 / zones.width)
-              else zoneSettings.set(0, startValue + direction * dx)
+              if (handle.setting === "center_width") root.setZoneBorderField("center_width", startValue + direction * dx * 200 / zones.width)
+              else if (handle.setting === "rail_width") root.setZoneBorderField("rail_width", startValue - direction * dx * 100 / zones.width)
+              else root.setZoneBorderField("blend_width", startValue + direction * dx)
             }
           }
         }
@@ -544,12 +737,12 @@ ShellRoot {
         }
         ZoneLabel {
           x: Math.max(zones.rail + 4, (zones.rail + zones.centerLeft - width) / 2); y: parent.height * 0.3
-          text: Math.round(root.maxScale * 100) + "% → " + Math.round(root.minScale * 100) + "%"
+          text: Math.round(zones.zoneProfile.max_scale * 100) + "% → " + Math.round(zones.zoneProfile.min_scale * 100) + "%"
         }
         ZoneLabel {
           x: Math.min(zones.width - zones.rail - width - 4, (zones.centerRight + zones.width - zones.rail - width) / 2)
           y: parent.height * 0.3
-          text: Math.round(root.minScale * 100) + "% ← " + Math.round(root.maxScale * 100) + "%"
+          text: Math.round(zones.zoneProfile.min_scale * 100) + "% ← " + Math.round(zones.zoneProfile.max_scale * 100) + "%"
         }
         ZoneLabel {
           x: zones.rail + 6; y: parent.height * 0.3 + 44
@@ -576,6 +769,7 @@ ShellRoot {
     // never so short that a tab's rows get cramped on small screens.
     implicitHeight: Math.min((screen?.height || 800)-24,
       Math.max(520, Math.round((screen?.height || 800)*0.5)))
+    onScreenChanged: root.captureTargetScreen()
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.layer: WlrLayer.Overlay
@@ -609,11 +803,12 @@ ShellRoot {
 
         Text {
           Layout.fillWidth: true
-          visible: root.unsupported.length > 0
+          visible: root.unsupported.filter(n => n !== "screen_zones").length > 0
           wrapMode: Text.WordWrap
           color: root.railColor
           font.pixelSize: 13
-          text: "Restart Scottland to use: " + root.unsupported.map(n => root.settingNames[n] || root.gooControls.find(c => c.name === n)?.title || n).join(", ")
+          text: "Restart Scottland to use: " + root.unsupported.filter(n => n !== "screen_zones")
+            .map(n => root.settingNames[n] || root.gooControls.find(c => c.name === n)?.title || n).join(", ")
             + ". This session's plugin is older; your values are still saved."
         }
 
@@ -661,16 +856,65 @@ ShellRoot {
           Layout.fillHeight: true
           Layout.minimumHeight: 200
           contentHeight: contents.implicitHeight
-          ColumnLayout {
-            id: contents
-            width: gooScroll.availableWidth
-            spacing: 22
+      ColumnLayout {
+        id: contents
+        width: gooScroll.availableWidth
+        spacing: 22
+
+        RowLayout {
+          id: zoneScope
+          visible: root.tab === 0
+          Layout.fillWidth: true
+          spacing: 8
+          SettingAction {
+            id: allScreensChoice
+            onAcceptRequested: root.save()
+            design: theme
+            text: "All screens"
+            checked: root.editScope === "all"
+            onClicked: root.selectZoneScope("all")
+          }
+          SettingAction {
+            id: thisScreenChoice
+            onAcceptRequested: root.save()
+            design: theme
+            text: "This screen" + (root.targetIdentity.length ? " (" + root.targetIdentity + ")" : "")
+            enabled: root.thisScreenAvailable
+            checked: root.editScope === "this"
+            onClicked: root.selectZoneScope("this")
+          }
+          SettingAction {
+            id: resetTargetZones
+            onAcceptRequested: root.save()
+            design: theme
+            text: "Reset to global"
+            visible: root.editScope === "this" && root.targetHasOwnZones
+            onClicked: root.resetTargetZones()
+          }
+        }
+        Text {
+          id: zoneScopeNote
+          visible: root.tab === 0 && text.length > 0
+          Layout.fillWidth: true
+          color: root.dimText
+          font.pixelSize: 13 * root.textScale
+          elide: Text.ElideRight
+          text: !root.screenZonesSupported ? "Restart Scottland to use per-screen sizes."
+            : !root.targetIdentity.length ? "This screen doesn't report a make, model or serial; its sizes follow All screens."
+            : root.editScope === "all" ? (root.connectedOverrideNames().length === 0 ? ""
+              : root.connectedOverrideNames().join(", ") + (root.connectedOverrideNames().length === 1
+                ? " keeps its own sizes." : " keep their own sizes."))
+            : root.sameIdentityOutputCount() > 1
+              ? "This edit also applies to " + (root.sameIdentityOutputCount() - 1) + " other connected output" +
+                (root.sameIdentityOutputCount() === 2 ? "" : "s") + " with the same identity."
+              : ""
+        }
 
         // The zone settings: one stack of rows, each row a slider (ParameterStack.qml).
         ParameterStack {
           id: zoneSettings
           visible: root.tab === 0
-          readonly property real screenWidth: Quickshell.screens.length > 0 ? Quickshell.screens[0].width : 0
+          readonly property real screenWidth: settingsWindow.screen ? settingsWindow.screen.width : 0
           Layout.fillWidth: true
           foreground: root.textColor
           accent: root.accent
@@ -694,13 +938,9 @@ ShellRoot {
               display: v => v.toFixed(1) + "% · " + Math.round(screenWidth * v / 100) + " pt" },
           ]
           values: ({ blend_width: root.blendWidth, center_width: root.centerWidth, rail_width: root.railWidth })
-          opening: root.original ? ({ blend_width: root.original.blend_width, center_width: root.original.center_width,
-            rail_width: root.original.rail_width }) : ({})
-          onChanged: (id, value) => {
-            if (id === "blend_width") root.blendWidth = value
-            else if (id === "center_width") root.centerWidth = value
-            else if (id === "rail_width") root.railWidth = value
-          }
+          opening: root.zoneOpening ? ({ blend_width: root.zoneOpening.blend_width,
+            center_width: root.zoneOpening.center_width, rail_width: root.zoneOpening.rail_width }) : ({})
+          onChanged: (id, value) => root.setZoneField(id, value)
 
         }
 
@@ -796,7 +1036,8 @@ ShellRoot {
           design: theme
           title: root.gooTab ? "Density falloff" : "Scale across the side zones"
           points: root.editorPoints
-          opening: root.gooTab ? root.parseCurve(root.original?.goo?.goo_falloff,0) || root.exponentialPoints : root.original?.curve || root.defaults.curve
+          opening: root.gooTab ? root.parseCurve(root.original?.goo?.goo_falloff,0) || root.exponentialPoints
+            : root.zoneOpening?.curve || root.defaults.curve
           minimum: root.gooTab ? 0 : 0.05
           descending: root.gooTab
           leftLabel: root.gooTab ? "window edge" : "center edge"
