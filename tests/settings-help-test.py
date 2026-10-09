@@ -867,7 +867,7 @@ try:
     zone_baseline = {name: option(name) for name in
                      ("center_width", "rail_width", "blend_width", "min_scale", "max_scale")}
     target_output, global_output = outputs
-    target_identity = {"make": "Maker # = \"µ\"", "model": "Panel 漢字", "serial": "SN #= \"Ω\""}
+    target_identity = {"make": "Maker # = \"µ\"", "model": "Panel \\# = 漢字", "serial": "SN #= \"Ω\""}
     dormant_identity = {"make": "Dormant #= \"é\"", "model": "Desk display", "serial": "offline=1"}
     target_zones = {**target_identity, "center_width": 44.0, "rail_width": 3.0, "blend_width": 60.0,
         "min_scale": 0.25, "max_scale": 1.0, "scale_curve": "0:1 0.5:0.65 1:0.25"}
@@ -980,6 +980,35 @@ try:
     check("S24 Save writes one JSON line and preserves disconnected identity bytes",
           len(saved_lines) == 1 and json.loads(saved_lines[0]) == [target_zones, dormant_zones]
           and dormant_zones["serial"] == "offline=1")
+
+    # ST-3: exercise the actual persisted-config path, including wf-config's # comment parser.
+    # Copy the saved artifact into this headless session's isolated XDG config, rebuild the
+    # assembled Wayfire config, then read the value back from the running compositor.
+    private_layout = Path(os.environ["XDG_CONFIG_HOME"]) / "scottland/layout.ini"
+    private_layout.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(layout, private_layout)
+    subprocess.run([ctl, "set", "screen_zones", "[]"], check=True, capture_output=True, text=True)
+    before_rebuild = json.loads(subprocess.check_output([ctl, "get"], text=True, timeout=5))
+    check("S24 config round-trip clears the live value before reloading the saved file",
+          before_rebuild.get("screen_zones") == [])
+    subprocess.run([str(repo / "core/session/scottland-build-config")],
+                   check=True, capture_output=True, text=True, timeout=10)
+    assembled_config = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / "wayfire.ini"
+    assembled_zone_lines = [line for line in assembled_config.read_text().splitlines()
+                            if line.lstrip().startswith("screen_zones =")]
+    check("S24 saved identity hashes are JSON-escaped in assembled Wayfire config",
+          len(assembled_zone_lines) == 1 and "\\u0023" in assembled_zone_lines[0]
+          and "#" not in assembled_zone_lines[0])
+    roundtrip_values = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        roundtrip_values = json.loads(subprocess.check_output([ctl, "get"], text=True, timeout=5))
+        if roundtrip_values.get("screen_zones") == [target_zones, dormant_zones]:
+            break
+        time.sleep(.05)
+    check("S24 #, backslash, quotes and Unicode survive save, config rebuild and compositor readback",
+          roundtrip_values is not None
+          and roundtrip_values.get("screen_zones") == [target_zones, dormant_zones])
 
     panel = open_panel(); tab(0)
     click_ui_rect(snapshot()["zoneScope"]["reset"])

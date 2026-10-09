@@ -498,8 +498,11 @@ ShellRoot {
   function save() {
     push.stop()
     if (zonePending) { previewZoneEdits(); zonePending = false }
+    // Wayfire's config parser treats an unescaped # as the start of a comment. Keep
+    // screen_zones valid JSON while avoiding literal # bytes in its saved config line.
+    const serializedScreenZones = JSON.stringify(screenZones).replace(/#/g, "\\u0023")
     sendBatch(globalOptionValues(globalZoneValues))
-    sendBatch({ screen_zones: JSON.stringify(screenZones) })
+    sendBatch({ screen_zones: serializedScreenZones })
     sendGoo(gooValues)
     sendBatch(motionValues)
     sendBatch(opacityValues)
@@ -512,7 +515,7 @@ ShellRoot {
       + "scale_curve = " + globalZoneValues.scale_curve + "\n"
       + "min_scale = " + globalZoneValues.min_scale.toFixed(3) + "\n"
       + "max_scale = " + globalZoneValues.max_scale.toFixed(3) + "\n"
-      + "screen_zones = " + JSON.stringify(screenZones) + "\n"
+      + "screen_zones = " + serializedScreenZones + "\n"
       + Object.keys(gooValues).map(k => k + " = " + gooValues[k] + "\n").join("")
       + Object.keys(motionValues).map(k => k + " = " + motionValues[k] + "\n").join("")
       + Object.keys(opacityValues).map(k => k + " = " + opacityValues[k] + "\n").join("")
