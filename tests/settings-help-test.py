@@ -6,6 +6,7 @@ build/settings-help-evidence. No live config, session or services are used.
 from importlib.machinery import SourceFileLoader
 import json
 import os
+import shlex
 import shutil
 from pathlib import Path
 import socket
@@ -981,9 +982,10 @@ try:
           len(saved_lines) == 1 and json.loads(saved_lines[0]) == [target_zones, dormant_zones]
           and dormant_zones["serial"] == "offline=1")
 
-    # ST-3: exercise the actual persisted-config path, including wf-config's # comment parser.
-    # Copy the saved artifact into this headless session's isolated XDG config, rebuild the
-    # assembled Wayfire config, then read the value back from the running compositor.
+    # ST-3: exercise the actual persisted-config path, including Wayfire's wf-config parser.
+    # Copy the saved artifact into this headless session's isolated XDG config and rebuild the
+    # exact config Wayfire reads. The test compositor does not hot-reload its config file, so
+    # parse that file with wf-config itself, then pass its parsed value through Scottland IPC.
     private_layout = Path(os.environ["XDG_CONFIG_HOME"]) / "scottland/layout.ini"
     private_layout.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(layout, private_layout)
@@ -1002,16 +1004,26 @@ try:
     check("S24 saved identity hashes are JSON-escaped in assembled Wayfire config",
           len(assembled_zone_lines) == 1 and "\\u0023" in assembled_zone_lines[0]
           and "#" not in assembled_zone_lines[0])
-    roundtrip_values = None
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        roundtrip_values = json.loads(subprocess.check_output([ctl, "get"], text=True, timeout=5))
-        if roundtrip_values.get("screen_zones") == [target_zones, dormant_zones]:
-            break
-        time.sleep(.05)
+    wf_config_probe = art / "wf-config-screen-zones"
+    wf_config_flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "--libs", "wf-config"], text=True, timeout=5))
+    subprocess.run(["c++", "-std=c++17", str(repo / "tests/wf-config-screen-zones.cpp"),
+                    "-o", str(wf_config_probe), *wf_config_flags],
+                   check=True, capture_output=True, text=True, timeout=30)
+    parsed_config_value = subprocess.check_output(
+        [str(wf_config_probe), str(assembled_config)], text=True, timeout=5)
+    try:
+        parsed_config_zones = json.loads(parsed_config_value)
+    except json.JSONDecodeError:
+        parsed_config_zones = None
+    check("S24 wf-config and JSON parse the saved identities and zone values",
+          parsed_config_zones == [target_zones, dormant_zones])
+    if parsed_config_zones is not None:
+        subprocess.run([ctl, "set", "screen_zones", parsed_config_value],
+                       check=True, capture_output=True, text=True, timeout=5)
+    roundtrip_values = json.loads(subprocess.check_output([ctl, "get"], text=True, timeout=5))
     check("S24 #, backslash, quotes and Unicode survive save, config rebuild and compositor readback",
-          roundtrip_values is not None
-          and roundtrip_values.get("screen_zones") == [target_zones, dormant_zones])
+          roundtrip_values.get("screen_zones") == [target_zones, dormant_zones])
 
     panel = open_panel(); tab(0)
     click_ui_rect(snapshot()["zoneScope"]["reset"])
