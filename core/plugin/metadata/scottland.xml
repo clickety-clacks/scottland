@@ -388,16 +388,74 @@
 				<_long>Replacement combination, e.g. CTRL+BackSpace.</_long>
 			</entry>
 		</option>
-		<option name="release_bindings" type="dynamic-list" type-hint="dict">
-			<_short>Key release bindings</_short>
-			<_long>Run a command when a key is released.</_long>
-			<entry prefix="release_key_" type="string" name="key">
-				<_short>Key</_short>
-				<_long>xkb keysym name (e.g. Super_L) or code:N.</_long>
+		<option name="shortcuts" type="dynamic-list" type-hint="dict">
+			<_short>Shortcuts with flags</_short>
+			<_long>Run a command from a key combination, with flags that keep their meaning together: repeat while held, also run on the lock screen, run when the key is let go. A shortcut without the lock-screen flag runs only while the session is unlocked. A release shortcut runs only for a press it matched itself, while the same modifiers are still held.</_long>
+			<entry prefix="shortcut_keys_" type="activator" name="keys">
+				<_short>Keys</_short>
+				<_long>Key combination, e.g. KEY_F9 or &lt;super&gt; KEY_P.</_long>
 			</entry>
-			<entry prefix="release_command_" type="string" name="command">
+			<entry prefix="shortcut_command_" type="string" name="command">
 				<_short>Command</_short>
-				<_long>Command to run when the key is released.</_long>
+				<_long>Command to run.</_long>
+			</entry>
+			<entry prefix="shortcut_repeat_" type="bool" name="repeat">
+				<_short>Repeat while held</_short>
+				<_long>Run again at the keyboard repeat rate while the key is held.</_long>
+				<default>false</default>
+			</entry>
+			<entry prefix="shortcut_locked_" type="bool" name="locked">
+				<_short>Also on the lock screen</_short>
+				<_long>Also run while the session is locked.</_long>
+				<default>false</default>
+			</entry>
+			<entry prefix="shortcut_release_" type="bool" name="release">
+				<_short>On release</_short>
+				<_long>Run when the key is let go instead of when it is pressed.</_long>
+				<default>false</default>
+			</entry>
+			<entry prefix="shortcut_any_mods_" type="bool" name="any_mods">
+				<_short>Whatever modifiers are held</_short>
+				<_long>Match the key (named without modifiers, e.g. KEY_LEFTMETA) whatever modifiers are held. The key also reaches the focused app.</_long>
+				<default>false</default>
+			</entry>
+		</option>
+		<option name="touchpad_scroll_speeds" type="dynamic-list" type-hint="dict">
+			<_short>Touchpad scroll speed per app</_short>
+			<_long>Two-finger scrolling speed for particular apps, replacing the input touchpad scroll speed for the window under the pointer. The first entry (by name) whose regexes match the whole app-id (and the app-id the window opened with) applies.</_long>
+			<entry prefix="touchpad_scroll_apps_" type="string" name="apps">
+				<_short>Apps</_short>
+				<_long>Regex matching the whole app-id, e.g. (foot|kitty).</_long>
+			</entry>
+			<entry prefix="touchpad_scroll_initial_apps_" type="string" name="initial">
+				<_short>Initial apps</_short>
+				<_long>Regex matching the whole app-id the window had when it opened (apps may change theirs later). Default: any.</_long>
+				<default>.*</default>
+			</entry>
+			<entry prefix="touchpad_scroll_factor_" type="double" name="factor">
+				<_short>Speed</_short>
+				<_long>Scroll speed multiplier for those apps.</_long>
+			</entry>
+		</option>
+		<option name="switch_bindings" type="dynamic-list" type-hint="dict">
+			<_short>Switch bindings</_short>
+			<_long>Run a command when a hardware switch, such as a laptop lid, changes. Like other shortcuts, these run while the session is locked only when marked to.</_long>
+			<entry prefix="switch_device_" type="string" name="device">
+				<_short>Switch</_short>
+				<_long>Input device name, e.g. Lid Switch.</_long>
+			</entry>
+			<entry prefix="switch_state_" type="string" name="state">
+				<_short>When</_short>
+				<_long>on, off, or toggle (either).</_long>
+			</entry>
+			<entry prefix="switch_locked_" type="bool" name="locked">
+				<_short>Also on the lock screen</_short>
+				<_long>Also run while the session is locked.</_long>
+				<default>false</default>
+			</entry>
+			<entry prefix="switch_command_" type="string" name="command">
+				<_short>Command</_short>
+				<_long>Command to run.</_long>
 			</entry>
 		</option>
 	</plugin>

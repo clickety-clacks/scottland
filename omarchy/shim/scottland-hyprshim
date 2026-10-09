@@ -9,7 +9,9 @@ work unmodified. It never talks to a real Hyprland.
   $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock  event stream ("activewindow>>...")
 
 Scottland has no workspaces, so each output is presented as one workspace. Requests the shim
-cannot translate answer "ok" (or an error for queries) and are logged, so gaps are easy to find:
+cannot translate fail visibly: they answer "error: unsupported in Scottland: ...", which makes
+`hyprctl` exit non-zero (status 7) as it does for Hyprland's own errors, rather than claiming a
+success that did nothing. They are also logged, so gaps are easy to find:
   $XDG_STATE_HOME/scottland/hyprshim.log
 """
 
@@ -63,7 +65,8 @@ class Log:
         state = (os.environ.get("SCOTTLAND_TEST_STATE") or os.environ.get("XDG_STATE_HOME")
                  or os.path.expanduser("~/.local/state"))
         os.makedirs(os.path.join(state, "scottland"), exist_ok=True)
-        self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1)
+        self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1,
+                         errors="backslashreplace")
         self.seen = set()
 
     def __call__(self, message):
@@ -77,6 +80,11 @@ class Log:
 
 
 log = Log()
+
+
+def unsupported(request):
+    """The reply for a request with no Scottland translation; hyprctl exits 7 on "error:"."""
+    return f"error: unsupported in Scottland: {request[:200]}"
 
 
 class Wayfire:
@@ -174,6 +182,100 @@ class Wayfire:
                     pass
 
 
+LUA_ESCAPES = {"a": b"\a", "b": b"\b", "f": b"\f", "n": b"\n", "r": b"\r", "t": b"\t", "v": b"\v",
+               "\\": b"\\", '"': b'"', "'": b"'"}
+LUA_NEWLINE = re.compile(r"\r\n|\n\r|\r|\n")
+
+
+def lua_utf8(code):
+    """Lua's UTF-8 encoding of a \\u{XXX} escape (code points up to 2^31, as Lua allows)."""
+    if code < 0x80:
+        return bytes([code])
+    out, first_max = [], 0x3F
+    while True:
+        out.append(0x80 | (code & 0x3F))
+        code >>= 6
+        first_max >>= 1
+        if code <= first_max:
+            break
+    out.append(((~first_max << 1) & 0xFF) | code)
+    return bytes(reversed(out))
+
+
+def lua_string(text, pos=0):
+    """Read the Lua string literal at text[pos:] (after spaces): "...", '...', [[...]] or [==[...]==].
+
+    Returns (value, end) or None, the value as the bytes Lua would make of it: escapes such as
+    \\195\\169 or \\xC3 are bytes, \\u{E9} is UTF-8, and every line break in a long string is
+    one \\n. text is the request as received (decoded with surrogateescape, so any byte survives).
+    Omarchy writes commands in any of these forms, e.g. the screensaver's hl.dsp.exec_cmd([[...]]).
+    """
+    def raw(chars):
+        return chars.encode("utf-8", "surrogateescape")
+
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    long = re.compile(r"\[(=*)\[").match(text, pos)
+    if long:
+        close = "]" + long.group(1) + "]"
+        end = text.find(close, long.end())
+        if end < 0:
+            return None
+        value = text[long.end():end]
+        first = LUA_NEWLINE.match(value)  # Lua skips a line break right after the opening bracket
+        if first:
+            value = value[first.end():]
+        return raw(LUA_NEWLINE.sub("\n", value)), end + len(close)
+    if pos >= len(text) or text[pos] not in "\"'":
+        return None
+    quote, out, index = text[pos], bytearray(), pos + 1
+    while index < len(text):
+        char = text[index]
+        if char == quote:
+            return bytes(out), index + 1
+        if char in "\r\n":
+            return None  # unfinished string
+        if char != "\\":
+            out += raw(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(text):
+            return None
+        char = text[index]
+        if char in LUA_ESCAPES:
+            out += LUA_ESCAPES[char]
+            index += 1
+        elif char in "\r\n":  # a backslash before a line break: one \n
+            index += LUA_NEWLINE.match(text, index).end() - index
+            out += b"\n"
+        elif char == "z":  # skip the following whitespace
+            index += 1
+            while index < len(text) and text[index].isspace():
+                index += 1
+        elif char == "x":
+            digits = text[index + 1:index + 3]
+            if not re.fullmatch(r"[0-9A-Fa-f]{2}", digits):
+                return None
+            out.append(int(digits, 16))
+            index += 3
+        elif char in "0123456789":
+            digits = re.match(r"[0-9]{1,3}", text[index:]).group(0)
+            if int(digits) > 255:
+                return None  # Lua: decimal escape too large
+            out.append(int(digits))
+            index += len(digits)
+        elif char == "u":
+            code = re.match(r"u\{([0-9A-Fa-f]+)\}", text[index:])
+            if not code or int(code.group(1), 16) > 0x7FFFFFFF:
+                return None
+            out += lua_utf8(int(code.group(1), 16))
+            index += len(code.group(0))
+        else:
+            return None  # Lua rejects unknown escapes
+    return None
+
+
 class Translator:
     def __init__(self, wayfire):
         self.wf = wayfire
@@ -207,7 +309,29 @@ class Translator:
         index = self.monitor_index(outputs, output_id)
         return {"id": index + 1, "name": str(index + 1)}
 
-    def monitor(self, outputs, output, focused_id):
+    def session_locked(self):
+        reply = self.wf.call("scottland/session-state") or {}
+        return bool(reply.get("locked"))
+
+    @staticmethod
+    def output_power(*args):
+        """Run scottland-output-power (DPMS through wlr-output-power-management): (ok, {name: on?}, error)."""
+        hooks = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+        try:
+            result = subprocess.run([os.path.join(hooks, "libexec/scottland-output-power"), *args],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as error:
+            return False, {}, str(error)
+        power = {}
+        for line in result.stdout.splitlines():
+            try:
+                entry = json.loads(line)
+                power[entry["name"]] = entry["power"] == "on"
+            except (ValueError, KeyError):
+                pass
+        return result.returncode == 0, power, result.stderr.strip()
+
+    def monitor(self, outputs, output, focused_id, locked=False, power=None):
         geometry, workarea = output["geometry"], output["workarea"]
         reserved = [
             int(workarea["x"] - geometry["x"]),
@@ -226,10 +350,11 @@ class Translator:
             "specialWorkspace": {"id": 0, "name": ""},
             "reserved": reserved, "scale": 1, "transform": 0,
             "focused": output["id"] == focused_id,
-            "dpmsStatus": True, "vrr": False,
-            # omarchy-hyprland-session-locked reads lock state from here; "LOCK" means locked.
-            # TODO: report the real session-lock state.
-            "solitary": "0", "solitaryBlockedBy": ["CANDIDATE"],
+            "dpmsStatus": (power or {}).get(output["name"], True), "vrr": False,
+            # omarchy-hyprland-session-locked reads the session lock from here: Hyprland lists
+            # "LOCK" among the reasons a monitor can't go solitary while a lock holds the session,
+            # including one whose lock client died.
+            "solitary": "0", "solitaryBlockedBy": ["LOCK", "CANDIDATE"] if locked else ["CANDIDATE"],
             "activelyTearing": False, "tearingBlockedBy": ["CANDIDATE"],
             "directScanoutTo": "0", "directScanoutBlockedBy": ["CANDIDATE"],
             "disabled": False, "currentFormat": "XRGB8888", "mirrorOf": "none",
@@ -274,7 +399,11 @@ class Translator:
 
     def monitors(self):
         outputs, focused = self.outputs(), self.focused_output_id()
-        return [self.monitor(outputs, o, focused) for o in outputs]
+        locked = self.session_locked()
+        ok, power, error = self.output_power("status")
+        if not ok:
+            log(f"output power state unavailable: {error}")
+        return [self.monitor(outputs, o, focused, locked, power) for o in outputs]
 
     def workspaces(self):
         outputs, views = self.outputs(), self.views()
@@ -338,18 +467,52 @@ class Translator:
     WINDOW_ADDRESS = re.compile(r'address:(0x[0-9a-fA-F]+)')
     LUA_FIELD = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 
-    EXEC_LUA = re.compile(r'^hl\.dsp\.exec_cmd\(\s*"((?:[^"\\]|\\.)*)"')
+    EXEC_LUA = re.compile(r'^hl\.dsp\.exec_cmd\s*\(')
+
+    DPMS_LUA = re.compile(r'^hl\.dsp\.dpms\s*\(')
+    DPMS_CLASSIC = re.compile(r'^dpms(?:\s+(on|off|toggle))?(?:\s+(\S+))?\s*$')
+    DPMS_ACTIONS = {"enable": "on", "on": "on", "disable": "off", "off": "off", "toggle": "toggle",
+                    None: "toggle"}
+
+    def dpms(self, text, match):
+        """Turn displays off/on: hl.dsp.dpms({ action = "disable", monitor = "eDP-1" }) or the
+        classic `dpms off [name]`. Applied by the compositor's power management; the reply says
+        whether it took effect."""
+        if match.re is self.DPMS_LUA:
+            fields = dict(self.LUA_FIELD.findall(text))
+            action, monitor = fields.get("action"), fields.get("monitor")
+        else:
+            action, monitor = match.group(1), match.group(2)
+        if action not in self.DPMS_ACTIONS:
+            return f"error: unknown dpms action {action!r}"
+        args = (["--output", monitor] if monitor else []) + [self.DPMS_ACTIONS[action]]
+        ok, _power, error = self.output_power(*args)
+        return "ok" if ok else f"error: dpms {self.DPMS_ACTIONS[action]} failed: {error or 'refused'}"
+
+    @classmethod
+    def exec_command(cls, text):
+        """The command (bytes) of an exec dispatch: hl.dsp.exec_cmd(<Lua string>, ...) or classic
+        `exec`."""
+        text = text.strip()
+        match = cls.EXEC_LUA.match(text)
+        if match:
+            literal = lua_string(text, match.end())
+            if literal and re.match(r"\s*[,)]", text[literal[1]:]):
+                return literal[0]
+            return None
+        return text[5:].encode("utf-8", "surrogateescape") if text.startswith("exec ") else None
 
     def dispatch(self, text):
         """Translate the window dispatches the shell uses; everything else is a logged no-op."""
         # Run a command in this session, like Hyprland's exec dispatcher (Lua or classic form).
-        match = self.EXEC_LUA.match(text.strip())
-        command = json.loads(f'"{match.group(1)}"') if match else (
-            text.strip()[5:] if text.strip().startswith("exec ") else None)
+        command = self.exec_command(text)
         if command:
             subprocess.Popen(["sh", "-c", command], start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return "ok"
+        dpms = self.DPMS_LUA.match(text.strip()) or self.DPMS_CLASSIC.match(text.strip())
+        if dpms:
+            return self.dpms(text.strip(), dpms)
         if "send_key_state" in text or "send_shortcut" in text:
             # hl.dsp.send_key_state({ key = "Insert", mods = "CTRL", state = "down" })
             fields = dict(self.LUA_FIELD.findall(text))
@@ -359,15 +522,35 @@ class Translator:
             })
             if reply.get("error"):
                 log(f"send-key failed: {reply['error']} ({text[:120]})")
+                return f"error: {reply['error']}"
             return "ok"
         match = self.WINDOW_ADDRESS.search(text)
         if match and ("window.close" in text or "closewindow" in text):
-            self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})
-            return "ok"
+            reply = self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})
+            return f"error: {reply['error']}" if reply.get("error") else "ok"
         if match and ("focus" in text):
-            self.wf.call("window-rules/focus-view", {"id": view_id_from_address(match.group(1))})
-            return "ok"
+            reply = self.wf.call("window-rules/focus-view", {"id": view_id_from_address(match.group(1))})
+            return f"error: {reply['error']}" if reply.get("error") else "ok"
         log.unsupported(f"dispatch {text}")
+        return unsupported(f"dispatch {text}")
+
+    @staticmethod
+    def reload():
+        """Re-read the Hyprland config now, as far as Scottland translates it: rebuild the session's
+        config (imported shortcuts, Lua host), the same rebuild its config watcher runs when the
+        files change. Omarchy runs `hyprctl reload` after changes the watcher can't see, such as
+        installing Voxtype, whose F9 shortcuts depend on the command being present."""
+        hooks = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+        try:
+            result = subprocess.run([os.path.join(hooks, "libexec/scottland-build-config")],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                    timeout=60)
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"error: config rebuild failed: {error}"
+        if result.returncode != 0:
+            # The builder's own last line says what it kept; the generator's reason comes before it.
+            lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
+            return "error: config rebuild failed: " + " | ".join(lines[-2:])[:400]
         return "ok"
 
     # --- Requests ------------------------------------------------------------------------
@@ -388,7 +571,7 @@ class Translator:
             reply = self.query(command, args, as_json)
         except Exception as error:  # noqa: BLE001 - one bad request must not kill the shim
             log(f"error handling {request!r}: {error!r}")
-            return "error"
+            return f"error: {error}"
 
         if isinstance(reply, str):
             return reply
@@ -410,8 +593,6 @@ class Translator:
             return self.active_window()
         if command == "devices":
             return self.devices()
-        if command == "layers":
-            return {}
         if command == "plugin" and args.split(" ", 1)[0] == "list":
             return [] if as_json else "no plugins loaded"
         if command == "configerrors":
@@ -424,15 +605,15 @@ class Translator:
             if args in OPTIONS:
                 return {"option": args, **OPTIONS[args], "set": True}
             log.unsupported(f"getoption {args}")
-            return "no such option"
+            return unsupported(f"getoption {args}")
         if command == "dispatch":
             return self.dispatch(args)
-        if command in ("keyword", "eval", "reload", "switchxkblayout", "submap", "notify",
-                       "dismissnotify", "setcursor", "output", "plugin", "kill", "setprop"):
-            log.unsupported(f"{command} {args}")
-            return "ok"
+        if command == "reload":
+            return self.reload()
+        # Everything else (keyword, eval, switchxkblayout, layers, binds, cursorpos, ...) has no
+        # translation yet. Report that to the caller instead of answering a false "ok".
         log.unsupported(f"{command} {args}")
-        return "unknown request"
+        return unsupported(f"{command} {args}")
 
     @staticmethod
     def plain(command, reply):
@@ -512,8 +693,9 @@ class Server:
     def answer(self, conn):
         try:
             conn.settimeout(2)
-            request = conn.recv(65536).decode(errors="replace")
-            conn.sendall(self.translator.handle(request).encode())
+            # surrogateescape: bytes that aren't UTF-8 (e.g. in a command) reach handlers intact.
+            request = conn.recv(65536).decode(errors="surrogateescape")
+            conn.sendall(self.translator.handle(request).encode(errors="surrogateescape"))
         except OSError:
             pass
         finally:

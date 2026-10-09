@@ -1,5 +1,6 @@
 post_install() {
-  echo ":: Run 'scottland-omarchy-setup' as your user to add the Omarchy menu entries and install Scottland's default themes."
+  echo ":: Run 'scottland-omarchy-setup' as your user to add the Omarchy menu entries, install Scottland's default themes"
+  echo "   and replace xdg-desktop-portal-wlr with Gooarchy's build, which screen sharing in Scottland needs."
 }
 
 post_remove() {
