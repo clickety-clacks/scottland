@@ -1,0 +1,15 @@
+name = "{session} ({host})"
+priority = 60
+
+[match]
+desktop_category = "TerminalEmulator"
+
+[source]
+provider = "command"
+command = ["scottland-terminal-session", "{window}"]
+timeout_ms = 8000
+basis = "/session/basis"
+
+[source.fields]
+session = "/session/name"
+host = "/session/host"
