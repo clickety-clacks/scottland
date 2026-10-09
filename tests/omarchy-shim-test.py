@@ -80,16 +80,31 @@ with Session(fixture, "hl-omarchy-shim") as session:
     check("...and nothing else (no mis-encoded or CR-suffixed names)",
           {p.name for p in escapes.iterdir()} == expected, sorted(p.name for p in escapes.iterdir()))
 
-    # AG19: the stock screensaver launcher opens its terminal.
+    # AG19: fullscreen applies only to the stock screensaver; ordinary windows stay windowed.
+    ordinary_pid = session.spawn("foot --title=ordinary-window sleep 60")
+    ordinary_ok, ordinary = session.wait(lambda: next((v for v in views(session)
+                                                       if v.get("app-id") == "foot"
+                                                       and v.get("title") == "ordinary-window"
+                                                       and v.get("mapped")), None))
+    check("ordinary Foot window maps without fullscreen", ordinary_ok and not ordinary.get("fullscreen"),
+          ordinary)
+
+    # The stock screensaver launcher opens its terminal.
     launch_log = root / "launch-screensaver.log"
     session.run("sh", "-c", f"omarchy-launch-screensaver force >{launch_log} 2>&1 </dev/null &")
-    ok, found = session.wait(lambda: [v for v in views(session)
-                                      if v.get("app-id") == "org.omarchy.screensaver"
-                                      and v.get("mapped")], timeout=20)
-    check("omarchy-launch-screensaver maps an org.omarchy.screensaver window", ok,
+    ok, saver = session.wait(lambda: next((v for v in views(session)
+                                           if v.get("app-id") == "org.omarchy.screensaver"
+                                           and v.get("mapped")
+                                           and v.get("fullscreen")), None), timeout=20)
+    check("omarchy-launch-screensaver opens its mapped terminal fullscreen", ok,
           (launch_log.read_text()[-400:] if launch_log.exists() else "",
            [v.get("app-id") for v in views(session)]))
+    ordinary_id = ordinary["id"] if ordinary else None
+    ordinary = next((v for v in views(session) if v.get("id") == ordinary_id), {})
+    check("fullscreen screensaver leaves the ordinary Foot window windowed",
+          bool(ordinary) and not ordinary.get("fullscreen"), ordinary)
     session.terminate(*session.owned("org[.]omarchy[.]screensaver"))
+    session.terminate(ordinary_pid)
 
     # Unsupported requests fail visibly: hyprctl exits non-zero with the shim's error.
     for args in (["dispatch", 'hl.dsp.focus({ monitor = "NOWHERE-1" })'],
