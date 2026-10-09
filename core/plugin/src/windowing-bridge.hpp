@@ -1350,7 +1350,7 @@
                         double occlusion_margin = frame ?
                             frame->fallback_peek_occlusion_margin(output->get_scale()) : 0;
                         if (frame && scottland::goo_enabled())
-                            occlusion_margin = goo.peek_occlusion_margin(output, view->get_id()).value_or(occlusion_margin);
+                            occlusion_margin = goo.occlusion_margin(output, view->get_id()).value_or(occlusion_margin);
                         if (link_of_widget(view))
                         {
                             auto anchor = hint_anchor(view, true); double radius = hint_size(view) / 2;

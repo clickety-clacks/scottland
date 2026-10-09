@@ -22,7 +22,7 @@ class goo_t
     void start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed,
         std::function<void(wf::output_t *)> output_configured);
     void stop();
-    std::optional<double> peek_occlusion_margin(wf::output_t *output, uint64_t source_id);
+    std::optional<double> occlusion_margin(wf::output_t *output, uint64_t source_id) const;
 
   private:
     struct impl;
