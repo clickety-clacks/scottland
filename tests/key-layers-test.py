@@ -170,14 +170,14 @@ try:
     stroke("J", ("LEFTCTRL", "LEFTSHIFT"))
     check("extra Shift is not claimed by 4:j", "shift-j" in bindings())
 
-    options({"scottland/release_bindings": {"test": {"key": "F8", "command":
+    options({"scottland/shortcuts": {"test": {"keys": "KEY_F8", "release": "true", "command":
              "echo release >> " + shlex.quote(str(root / "bindings"))}}})
     bind("test", "KEY_F8", "press")
     set_layer("one", ["0:F8"])
     stroke("F8")
     check("claimed release suppresses release binding", "release" not in bindings())
     stroke("F9")
-    options({"scottland/release_bindings": {"test": {"key": "F9", "command":
+    options({"scottland/shortcuts": {"test": {"keys": "KEY_F9", "release": "true", "command":
              "echo release >> " + shlex.quote(str(root / "bindings"))}}})
     stroke("F9")
     check("unclaimed release binding bleeds through", bindings().count("release") == 1)
@@ -206,14 +206,16 @@ try:
     time.sleep(.2)
     check("new claim cannot take an already pressed native release binding", bindings().count("native-release") == 2)
     options({"command/release_bindings": {}})
-    options({"input/xkb_options": "lv3:ralt_switch"})
+    # Observed through a per-app remap (it ignores Mod5): an unclaimed F8 reaches the app as F7.
+    options({"input/xkb_options": "lv3:ralt_switch", "scottland/shortcuts": {},
+             "scottland/key_remaps": {"test": {"apps": "org.scottland.TestKeyLayer",
+                                               "from": "F8", "to": "F7"}}})
     set_layer("one", ["0:F8"])
-    before = bindings().count("release")
-    options({"scottland/release_bindings": {"test": {"key": "F8", "command":
-             "echo release >> " + shlex.quote(str(root / "bindings"))}}})
+    before = len(keys("one", 65)), len(keys("one", 66))
     stroke("F8", ("RIGHTALT",))
-    check("extra AltGr/Mod5 does not match an unmodified claim", bindings().count("release") == before + 1)
-    options({"input/xkb_options": "", "scottland/release_bindings": {}})
+    check("extra AltGr/Mod5 does not match an unmodified claim",
+          (len(keys("one", 65)), len(keys("one", 66))) == (before[0] + 2, before[1]))
+    options({"input/xkb_options": "", "scottland/key_remaps": {}})
 
     # Import a real Lua function binding into this private compositor. Only the fixture
     # host gets a sandbox HOME; the user's config and host are never changed.
@@ -379,7 +381,7 @@ try:
     before = len(keys("popup", 66))
     key("F8", True)
     ipc("scottland/key-layer", dict(action="clear", **selector))
-    options({"scottland/release_bindings": {"test": {"key": "F8", "command":
+    options({"scottland/shortcuts": {"test": {"keys": "KEY_F8", "release": "true", "command":
              "echo held-release >> " + shlex.quote(str(root / "bindings"))}}})
     key("F8", False)
     time.sleep(.15)

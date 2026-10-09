@@ -74,6 +74,8 @@ extern "C" {
 #include "hint-overlay.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
+#include "session.hpp"
+#include "shortcuts.hpp"
 #include "attention-color.hpp"
 #include "state-dye.hpp"
 
@@ -899,6 +901,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     public wf::per_output_tracker_mixin_t<center_resize_t>
 {
     scottland::key_layers_t key_layers;
+    scottland::session_t session_state;
+    scottland::shortcuts_t shortcuts;
 
     static constexpr const char *TRANSFORMER = "scottland-scale";
     scottland::goo_t goo;
@@ -5433,6 +5437,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         else if (event == "swipe_update") test_touchpad->swipe_update(fingers,
             data.has_member("dx") ? data["dx"].as_double() : 0.0, data.has_member("dy") ? data["dy"].as_double() : 0.0);
         else if (event == "swipe_end") test_touchpad->swipe_end(cancelled);
+        else if (event == "scroll") test_touchpad->scroll(  // two-finger scroll (finger source)
+            data.has_member("dx") ? data["dx"].as_double() : 0.0, data.has_member("dy") ? data["dy"].as_double() : 0.0);
         else if (event == "button") test_touchpad->press(
             data.has_member("button") && data["button"].as_string() == "left" ? BTN_LEFT : BTN_MIDDLE,
             data.has_member("pressed") && data["pressed"].as_bool());
@@ -5464,7 +5470,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // touchpad follows the shipped compositor multiplier before Qt sees it.
             double delta = data["scroll_y"].as_double();
             if (data.has_member("touchpad") && data["touchpad"].as_bool())
-                delta *= double(touchpad_scroll_speed);
+                delta *= touchpad_scroll_factor().first;
             touch_pointer->scroll(0, delta,
                 data.has_member("wheel") && data["wheel"].as_bool());
         }
@@ -7188,8 +7194,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
 
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
-    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string>> release_bindings{
-        "scottland/release_bindings"};
 
     wf::ipc::method_callback send_key = [] (wf::json_t data) -> wf::json_t
     {
@@ -7237,19 +7241,96 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // here, before Wayfire handles the event. Remove this
     // once the upstream fix ships (the ABI check below turns it off for newer Wayfire builds).
     wf::option_wrapper_t<double> touchpad_scroll_speed{"input/touchpad_scroll_speed"};
+    // Per-app speeds: [scottland] touchpad_scroll_apps_<name> = <regex matching the whole app-id>,
+    // touchpad_scroll_initial_apps_<name> = <regex matching the whole app-id the window had when it
+    // mapped> (default .*: any), touchpad_scroll_factor_<name> = <speed>. The window under the
+    // pointer takes the first entry (by name) whose regexes both match; that speed replaces
+    // touchpad_scroll_speed for it. Anything else (no match, a panel or other layer surface)
+    // scrolls at touchpad_scroll_speed.
+    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string, double>> touchpad_scroll_apps{
+        "scottland/touchpad_scroll_speeds"};
+    std::map<std::string, std::optional<std::regex>> touchpad_scroll_regexes;  // pattern -> compiled
+    // The app-id each window had when it mapped; apps may change theirs later. A window already
+    // mapped when the plugin loaded counts the app-id it had then.
+    std::map<uint32_t, std::string> initial_app_ids;
+
+    wf::signal::connection_t<wf::view_mapped_signal> on_initial_app_id = [=] (wf::view_mapped_signal *ev)
+    {
+        initial_app_ids[ev->view->get_id()] = ev->view->get_app_id();
+    };
+    wf::signal::connection_t<wf::view_unmapped_signal> on_forget_app_id = [=] (wf::view_unmapped_signal *ev)
+    {
+        initial_app_ids.erase(ev->view->get_id());
+    };
+
+    bool touchpad_scroll_matches(const std::string& name, const std::string& pattern, const std::string& app_id)
+    {
+        auto cached = touchpad_scroll_regexes.find(pattern);
+        if (cached == touchpad_scroll_regexes.end())
+        {
+            std::optional<std::regex> compiled;  // stays empty for a bad pattern, logged once
+            try
+            {
+                compiled = std::regex(pattern);
+            } catch (const std::regex_error&)
+            {
+                LOGE("scottland: bad touchpad_scroll regex for ", name, ": ", pattern);
+            }
+
+            cached = touchpad_scroll_regexes.emplace(pattern, std::move(compiled)).first;
+        }
+
+        return cached->second && std::regex_match(app_id, *cached->second);
+    }
+
+    /** The touchpad scroll speed for the window under the pointer, and whether an app entry set it. */
+    std::pair<double, bool> touchpad_scroll_factor()
+    {
+        double global = std::max(0.0, (double)touchpad_scroll_speed);
+        auto view = wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
+        if (!view)
+        {
+            return {global, false};
+        }
+
+        std::string app_id = view->get_app_id();
+        auto initial = initial_app_ids.find(view->get_id());
+        const std::string& initial_app_id = (initial != initial_app_ids.end()) ? initial->second : app_id;
+        for (const auto& [name, pattern, initial_pattern, factor] : touchpad_scroll_apps.value())
+        {
+            if (touchpad_scroll_matches(name, pattern, app_id) &&
+                touchpad_scroll_matches(name, initial_pattern, initial_app_id))
+            {
+                return {std::max(0.0, factor), true};
+            }
+        }
+
+        return {global, false};
+    }
+
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_axis_event>> on_axis =
         [=] (wf::input_event_signal<wlr_pointer_axis_event> *ev)
     {
-#if WAYFIRE_API_ABI_VERSION_MACRO <= 2026'07'26
-        if ((ev->event->source == WL_POINTER_AXIS_SOURCE_FINGER) && ev->device &&
-            (ev->device->type == WLR_INPUT_DEVICE_POINTER) &&
-            !(touch_pointer && (ev->device == &touch_pointer->pointer.base)))
+        if ((ev->event->source != WL_POINTER_AXIS_SOURCE_FINGER) || !ev->device ||
+            (ev->device->type != WLR_INPUT_DEVICE_POINTER) ||
+            (touch_pointer && (ev->device == &touch_pointer->pointer.base)))
         {
-            double speed = std::max(0.0, (double)touchpad_scroll_speed);
-            ev->event->delta *= speed;
-            ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
+            return;
         }
+
+        auto [speed, per_app] = touchpad_scroll_factor();
+#if WAYFIRE_API_ABI_VERSION_MACRO > 2026'07'26
+        // Newer Wayfire applies touchpad_scroll_speed itself: only an app's own speed is ours.
+        double global = std::max(0.0, (double)touchpad_scroll_speed);
+        if (!per_app || (global <= 0))
+        {
+            return;
+        }
+
+        speed /= global;
 #endif
+        ev->event->delta *= speed;
+        ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
     };
 
     // Per-app key remaps: [scottland] remap_apps_<name> (app-id regex, case-insensitive),
@@ -7339,27 +7420,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     };
 
-    wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
-        [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
-    {
-        if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
-        if (key_layers.handles(ev) || (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED))
-        {
-            return;
-        }
-
-        auto keyboard = wlr_seat_get_keyboard(wf::get_core().get_current_seat());
-        xkb_keymap *keymap = keyboard ? keyboard->keymap : nullptr;
-        for (const auto& [name, key, command] : release_bindings.value())
-        {
-            auto code = evdev_keycode(keymap, key);
-            if (code && (*code == ev->event->keycode))
-            {
-                wf::get_core().run(command);
-            }
-        }
-    };
-
   public:
     void init() override
     {
@@ -7372,6 +7432,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Compile the shared blend shader during plugin startup, before any input-driven morph.
         wf::gles::run_in_context_if_gles([] { scottland::widget_morph_renderer().prepare(); });
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
+        session_state.init();
         if (getenv("SCOTTLAND_TEST_MODEL"))
             wf::get_core().connect(&on_test_render_end);
         init_output_tracking();
@@ -7390,6 +7451,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_axis);
+        wf::get_core().connect(&on_initial_app_id);
+        wf::get_core().connect(&on_forget_app_id);
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            if (view->is_mapped())
+            {
+                initial_app_ids[view->get_id()] = view->get_app_id();
+            }
+        }
+
         wf::get_core().connect(&on_mapped);
         wf::get_core().scene()->connect(&on_scene_structure);
         wf::get_core().connect(&on_geometry);
@@ -7438,7 +7509,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_minimize_edge);
         wf::get_core().connect(&on_minimize_device_removed);
         wf::get_core().connect(&on_cancel_key);
-        wf::get_core().connect(&on_key);
+        shortcuts.init([this] (auto *ev) { return key_layers.handles(ev); });
         wf::get_core().connect(&on_remap_key);
         // Wayfire's promotion manager disables each output's TOP node while fullscreen is
         // promoted. Read that compositor fact for every screen, regardless of keyboard focus.
@@ -7527,14 +7598,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         goo.stop();
         fini_window_keys();
         key_layers.fini();
+        session_state.fini();
 
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
-        on_key.disconnect();
+        shortcuts.fini();
         on_axis.disconnect();
+        on_initial_app_id.disconnect();
+        on_forget_app_id.disconnect();
         on_remap_key.disconnect();
         on_mapped.disconnect();
         on_geometry.disconnect();

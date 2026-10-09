@@ -1,0 +1,43 @@
+#!/bin/sh
+# Run the Hyprland config's startup handlers (hl.on("hyprland.start"), Omarchy's o.exec_on_start
+# and o.launch_on_start: Sunshine, udiskie, power profiles, post-boot hooks, ...) once per session,
+# as Hyprland does when it starts. The Lua host runs them; reloads and config changes never do.
+#
+# Only when Scottland is the user's only graphical session. Beside Hyprland (keep mode) Hyprland
+# has already run them, and whether a second copy should start here is not decided yet.
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+mkdir -p "$state"
+log() { echo "$(date +%T) hyprland.start: $*" >>"$state/luahost.log"; }
+
+me=${XDG_SESSION_ID:-}
+if [ -n "$me" ]; then
+  for id in $(loginctl list-sessions --no-legend | awk -v u="$(id -un)" '$3 == u {print $1}'); do
+    [ "$id" = "$me" ] && continue
+    case $(loginctl show-session "$id" -p Type --value) in
+      wayland|x11)
+        if [ "$(loginctl show-session "$id" -p State --value)" != closing ]; then
+          log "another graphical session ($id) is running; not running startup handlers here"
+          exit 0
+        fi ;;
+    esac
+  done
+fi
+
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland"
+display=${WAYLAND_DISPLAY:-wayland}
+marker="$runtime/$display.hyprland-started"
+session_id=${HYPRLAND_INSTANCE_SIGNATURE:-$display}
+[ "$(cat "$marker" 2>/dev/null)" = "$session_id" ] && exit 0
+
+fifo="$runtime/$display.lua.fifo"
+for _ in $(seq 100); do
+  [ -p "$fifo" ] && break
+  sleep 0.1
+done
+if [ ! -p "$fifo" ]; then
+  log "no Lua host for $display; startup handlers not run"
+  exit 1
+fi
+mkdir -p "$runtime"
+echo "$session_id" >"$marker"
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-lua-call" "@hyprland.start"
