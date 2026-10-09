@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 class LinkDevTests(unittest.TestCase):
     def test_removes_known_old_links_and_preserves_other_occupants(self):
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(prefix=".link-dev-test-", dir=REPO) as temporary:
             root = Path(temporary)
             home = root / "home"
             data = home / "data"
