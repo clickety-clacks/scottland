@@ -23,10 +23,60 @@ if [ "$others" -gt 0 ]; then
     [ "$manager_current_desktop" = "$XDG_CURRENT_DESKTOP" ] || exit 0
 fi
 
-# Integrations add their own variables through SCOTTLAND_IMPORT_ENV (see session-env.d).
-dbus-update-activation-environment --systemd \
-  WAYLAND_DISPLAY DISPLAY XAUTHORITY WAYFIRE_SOCKET \
-  XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP XCURSOR_SIZE $SCOTTLAND_IMPORT_ENV
+# The user manager persists across Scottland logins. A portal already started here can still hold
+# the previous session's environment, so remember only portal units that predate this import.
+portal_units=$(systemctl --user list-units --all --type=service \
+  --no-legend 'xdg-desktop-portal*.service') || {
+  echo "scottland: could not inspect portal services before importing the session environment" >&2
+  exit 1
+}
+portal_units=$(printf '%s\n' "$portal_units" |
+  awk '($3 == "active" || $3 == "activating" || $3 == "deactivating" || $3 == "failed") {print $1}')
+
+# Integrations add variable names through SCOTTLAND_IMPORT_ENV (see session-env.d). Some adapters
+# repeat a core name such as XCURSOR_SIZE. systemd rejects the entire batch when a name repeats, so
+# pass each configured, currently-set variable once. The names are validated before eval so the
+# shell can distinguish an unset variable from one set to an empty value without importing values
+# into a new environment or requiring an indirect-expansion extension.
+import_candidates="WAYLAND_DISPLAY DISPLAY XAUTHORITY WAYFIRE_SOCKET XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP XCURSOR_SIZE ${SCOTTLAND_IMPORT_ENV:-}"
+seen_import_names=' '
+import_names=
+set -f
+for name in $import_candidates; do
+  case "$name" in
+    ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) continue ;;
+  esac
+  case "$seen_import_names" in *" $name "*) continue ;; esac
+  eval "is_set=\${$name+x}"
+  [ "$is_set" = x ] || continue
+  seen_import_names="${seen_import_names}${name} "
+  import_names="${import_names}${name} "
+done
+set -- $import_names
+if [ "$#" -eq 0 ]; then
+  echo "scottland: no configured session environment variables are set; not importing" >&2
+  exit 1
+fi
+
+# Update systemd directly, then D-Bus activation as well. A rejected systemd batch is logged and
+# stops startup; there is no retry because a failed import must remain visible to the session log.
+systemctl --user import-environment "$@" || {
+  echo "scottland: systemd user manager rejected the live session environment" >&2
+  exit 1
+}
+dbus-update-activation-environment "$@" || {
+  echo "scottland: D-Bus activation rejected the live session environment" >&2
+  exit 1
+}
+
+# Restart only portal services that predated the successful import. Other user services keep the
+# reload ruling: they retain their startup environment until restarted normally.
+for portal in $portal_units; do
+  systemctl --user restart "$portal" || {
+    echo "scottland: could not restart portal service $portal after importing the session environment" >&2
+    exit 1
+  }
+done
 
 # Start the user's graphical-session services with Scottland. The watcher stops them again when
 # this session's launcher goes away, however the session ends.
