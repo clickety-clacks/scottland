@@ -133,5 +133,11 @@ def set_arguments(settings):
     args = ["--on"]
     for key in ("mode", "position", "scale", "transform"):
         if key in settings:
-            args += [f"--{key}", str(settings[key])]
+            value = str(settings[key])
+            # argparse can mistake a negative X or Y in "-1920,0" for another option when
+            # passed as the separate value after --position. The equals form is unambiguous.
+            if key == "position" and value.startswith("-"):
+                args.append(f"--{key}={value}")
+            else:
+                args += [f"--{key}", value]
     return args
