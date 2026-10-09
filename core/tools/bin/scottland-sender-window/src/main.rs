@@ -530,7 +530,7 @@ fn call_resolver(resolver_dir: &Path, request: &Value) -> Result<Value, String> 
         .parent()
         .ok_or_else(|| "resolver package has no parent directory".to_string())?;
     let mut child = Command::new("python3")
-        .args(["-m", "agent_window_resolver.cli"])
+        .args(["-m", "agent_window_resolver"])
         .env("PYTHONPATH", library_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
