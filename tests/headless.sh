@@ -258,8 +258,9 @@ else
 fi
 export SCOTTLAND_SESSION_DIR=$session_dir
 # The checkout's own helpers (make test-hooks) when it has them, else the dev install, else the
-# package's.
-hooks=$repo/build/hooks
+# package's. SCOTTLAND_TEST_HOOKS: a test's own helper directory instead, e.g. a distro's test
+# adding its config.d generators to this checkout's helpers.
+hooks=${SCOTTLAND_TEST_HOOKS:-$repo/build/hooks}
 [[ -d $hooks/libexec ]] || hooks=${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev
 [[ -d $hooks/libexec ]] || hooks=/usr/lib/scottland
 exec_tool=$hooks/libexec/scottland-exec
