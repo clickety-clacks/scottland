@@ -182,6 +182,9 @@ fn resolve_session_fallback(
     linked: Option<&RelationResult>,
     resolve: &impl Fn(&Path, &Value) -> Result<Value, String>,
 ) -> Value {
+    if !shows.complete || linked.is_some_and(|result| !result.complete) {
+        return format_result(shows, linked);
+    }
     if has_tmux && shows.windows.is_empty() && linked.is_none_or(|result| result.windows.is_empty())
     {
         let session = sender["tmux"]["session"]
@@ -1305,6 +1308,41 @@ print("valid")
         assert_eq!(result["status"], "unknown");
         assert_eq!(result["windows"], json!([]));
         assert_eq!(result["reasons"][0]["code"], "transport_ambiguous");
+    }
+
+    #[test]
+    fn incomplete_v1_relation_keeps_its_unknown_reason_without_session_fallback() {
+        let (sender, windows, facts) = proof_case();
+        let shows = RelationResult {
+            complete: false,
+            windows: BTreeSet::new(),
+            reasons: vec![reason(
+                "remote_unreachable",
+                "transport",
+                "host unavailable",
+                true,
+            )],
+        };
+        let linked = complete(&[], "candidate_count");
+        let calls = Cell::new(0);
+        let result = resolve_session_fallback(
+            true,
+            &sender,
+            Path::new("."),
+            &windows,
+            &facts,
+            "desktop",
+            &shows,
+            Some(&linked),
+            &|_, _| {
+                calls.set(calls.get() + 1);
+                Err("session fallback must not erase v1 uncertainty".into())
+            },
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(result["status"], "unknown");
+        assert_eq!(result["windows"], json!([]));
+        assert_eq!(result["reasons"][0]["code"], "remote_unreachable");
     }
 
     #[test]
