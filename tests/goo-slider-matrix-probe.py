@@ -125,17 +125,18 @@ def ring(frame, d, step=4, margin=18):
 def rings(frames):
     d = MIKE['goo_thickness']/2
     return [p for f in frames for p in ring(f, d)]
-def capture(points):
-    """The dye at every point, read in one main-loop turn (one simulation step)."""
+def capture_sample(points):
+    """The dye and counters for every point, read in one main-loop turn (one simulation step)."""
     s = state(x=0, y=0, dye_points=[[float(x), float(y)] for x, y in points])
     if len(s.get('dye_field', [])) != len(points):
         raise AssertionError('batch dye sampler returned an incomplete field')
-    record.setdefault('dye_capture_meta', []).append({
-        'simulation_step': s.get('dye_field_step'),
-        'dye_flows': s.get('dye_field_flows'),
-        'water_ticks': s.get('dye_field_water_ticks'),
-    })
-    return [[255*v for v in c] for c in s['dye_field']]
+    meta = {'simulation_step': s.get('dye_field_step'), 'steps': s.get('steps'),
+            'dye_flows': s.get('dye_field_flows'), 'water_ticks': s.get('dye_field_water_ticks'),
+            'sleeping': s.get('sleeping'), 'water_running': s.get('water_running')}
+    record.setdefault('dye_capture_meta', []).append(meta)
+    return [[255*v for v in c] for c in s['dye_field']], meta
+def capture(points):
+    return capture_sample(points)[0]
 def shot(name):
     path = art / (name + '.png'); subprocess.run(['grim', str(path)], check=True)
     pix = GdkPixbuf.Pixbuf.new_from_file(str(path)); data = pix.get_pixels()
@@ -239,8 +240,8 @@ def open_panel():
         if snapshot(panel).get('goo', {}).get('rows'): break
         time.sleep(.1)
     return panel
-def set_row(panel, name, fraction):
-    """Scroll the row into view with the scrollbar, then press on the row at `fraction` of its width."""
+def reveal_row(panel, name):
+    """Scroll a Settings row fully into view without clicking or changing its value."""
     q = snapshot(panel); vp = q['viewport']; x, top = origin(q)
     if not vp['y'] + q['goo']['rowHeight'] <= row_y(q, name) <= vp['y'] + vp['height'] - q['goo']['rowHeight']:
         content = q['contentHeight']; thumb = vp['height']*vp['height']/content
@@ -249,7 +250,13 @@ def set_row(panel, name, fraction):
         end = top + vp['y'] + target/content*vp['height'] + thumb/2
         drag(x + vp['x'] + vp['width'] - 5, start, 0, end - start)
         rest('scrolled')
-        q = snapshot(panel)
+        q = snapshot(panel); vp = q['viewport']
+    if not vp['y'] + q['goo']['rowHeight'] <= row_y(q, name) <= vp['y'] + vp['height'] - q['goo']['rowHeight']:
+        raise AssertionError(name + ' row did not enter the visible Settings viewport')
+    return q
+def set_row(panel, name, fraction):
+    """Reveal a row, then press on it at `fraction` of its width."""
+    q = reveal_row(panel, name); x, top = origin(q)
     g = q['goo']
     click(x + g['x'] + g['width']*fraction, top + row_y(q, name)); pointer(5, 5)
 
@@ -291,7 +298,7 @@ def stimulus(tag, captures):
 def coast_measure(tag, duration=5.):
     """Sample same-step dye and visible pixels through a sleeping coast and at convergence."""
     pts = rings([view('win-a')['frame'], view('win-b')['frame']])
-    initial = capture(pts)
+    initial, initial_meta = capture_sample(pts)
     initial_shot = shot(tag + '-coast-before')
     initial_screen = [initial_shot(px, py) for px, py in pts]
     before = state()
@@ -304,33 +311,25 @@ def coast_measure(tag, duration=5.):
     rows = []; snapshots = []
     for target in (.4, 1.2, 2.5, 4.5, duration + .5):
         time.sleep(max(0, t0 + target - time.monotonic()))
-        counters = state()
-        field = capture(pts)
+        field, meta = capture_sample(pts)
         image = shot(tag + '-coast-%.1f' % target)
         screen = [image(px, py) for px, py in pts]
-        rows.append({'elapsed_s': round(time.monotonic() - t0, 3),
-                     'water_ticks': counters['water_ticks'], 'dye_flows': counters['dye_flows'],
-                     'simulation_steps': counters['steps'], 'sleeping': counters['sleeping'],
-                     'water_running': counters['water_running'],
+        rows.append({'elapsed_s': round(time.monotonic() - t0, 3), **meta,
                      'dye_from_start': diff(field, initial), 'dye_from_previous': diff(field, prev_field),
                      'screen_from_start': diff(screen, initial_screen), 'screen_from_previous': diff(screen, prev_screen)})
         snapshots.append((field, screen))
         prev_field, prev_screen = field, screen
     final = rest(tag + ' coast')
-    field = capture(pts)
+    field, meta = capture_sample(pts)
     image = shot(tag + '-coast-final')
     screen = [image(px, py) for px, py in pts]
-    rows.append({'elapsed_s': round(time.monotonic() - t0, 3),
-                 'water_ticks': final['water_ticks'], 'dye_flows': final['dye_flows'],
-                 'simulation_steps': final['steps'], 'sleeping': final['sleeping'],
-                 'water_running': final['water_running'],
+    rows.append({'elapsed_s': round(time.monotonic() - t0, 3), **meta,
                  'dye_from_start': diff(field, initial), 'dye_from_previous': diff(field, prev_field),
                  'screen_from_start': diff(screen, initial_screen), 'screen_from_previous': diff(screen, prev_screen)})
     snapshots.append((field, screen))
-    if rows[-1]['water_ticks'] <= before['water_ticks'] or rows[-1]['dye_flows'] <= before['dye_flows']:
+    if rows[-1]['water_ticks'] <= initial_meta['water_ticks'] or rows[-1]['dye_flows'] <= initial_meta['dye_flows']:
         raise AssertionError('coast ended without a dye-flow tick')
-    return {'duration_s': duration, 'start': {'water_ticks': before['water_ticks'],
-                                               'dye_flows': before['dye_flows'], 'steps': before['steps']},
+    return {'duration_s': duration, 'start': initial_meta,
             'samples': rows}, snapshots
 
 def trial(name, value, include_coast=False):
@@ -384,15 +383,22 @@ try:
 
     if 'hints' in only:
         # The rows' help, as Settings shows it when the pointer rests on a row.
-        panel = open_panel(); q = snapshot(panel); x, top = origin(q)
+        panel = open_panel()
         record['help'] = {}
         for name in ('goo_spread', 'goo_swirl', 'goo_release'):
-            q = snapshot(panel); g = q['goo']
-            pointer(x + g['x'] + g['width']*.3, top + row_y(q, name)); time.sleep(1.2)
-            visible = snapshot(panel)['goo'].get('hint', '')
-            if not visible:
+            q = reveal_row(panel, name); x, top = origin(q); g = q['goo']
+            pointer(x + g['x'] + g['width']*.3, top + row_y(q, name))
+            expected_index = g['rows'].index(name)
+            visible = {}
+            for _ in range(30):
+                time.sleep(.05)
+                visible = snapshot(panel)['goo']
+                if visible.get('hinted') == expected_index and visible.get('hintText'):
+                    break
+            if visible.get('hinted') != expected_index or not visible.get('hintText'):
                 raise AssertionError('Settings did not expose visible help for ' + name)
-            record['help'][name] = {'text': visible, 'screenshot': 'hint-' + name + '.png'}
+            record['help'][name] = {'label': visible.get('hint'), 'text': visible['hintText'],
+                                    'screenshot': 'hint-' + name + '.png'}
             shot('hint-' + name)
         pointer(5, 5); tap('KEY_ESC'); time.sleep(.5)
     if 'cross' in only:
@@ -431,15 +437,32 @@ try:
             f0 = capture(pts); px0 = shot('wake-%s-%d-before' % (name, presses))
             panel = open_panel(); rest('panel open')
             lo, hi = LOW_HIGH[name]
-            set_row(panel, name, (MIKE[name] - lo)/(hi - lo))
-            before = rest('row selected'); selected = option(name)
+            target = MIKE[name]
+            if target >= hi: target -= STEPS[name] * .25
+            elif target <= lo: target += STEPS[name] * .25
+            before_select = state()
+            set_row(panel, name, (target - lo)/(hi - lo))
+            selected_row = snapshot(panel)['goo']
+            expected_index = selected_row['rows'].index(name)
+            if selected_row.get('selected') != expected_index:
+                raise AssertionError('Settings selected row %s instead of %s' %
+                                     (selected_row.get('selected'), expected_index))
+            selected = option(name); after_select = state()
             if abs(selected - MIKE[name]) > STEPS[name] * .5 + 1e-6:
                 raise AssertionError('%s row selection changed the control value: %g to %g' %
                                      (name, MIKE[name], selected))
+            selection_wakes = (after_select['wakes'].get('settings', 0)
+                               - before_select['wakes'].get('settings', 0))
+            if selection_wakes or not after_select['sleeping']:
+                raise AssertionError('%s row selection woke the sleeping goo' % name)
+            before = rest('row selected')
             if presses == 0:
                 time.sleep(3); idle = state()
                 record['idle_with_panel'] = {'sleeping': idle['sleeping'], 'wakes': idle['wakes'],
                                              'water_ticks': idle['water_ticks'], 'steps': idle['steps']}
+                if (not idle['sleeping'] or idle['steps'] != before['steps'] or
+                    idle['wakes'].get('settings', 0) != before['wakes'].get('settings', 0)):
+                    raise AssertionError('no-change Shine control did not remain asleep')
             t0 = time.monotonic(); woke = None; seen = None
             for _ in range(abs(presses)):
                 key('KEY_LEFTSHIFT', True); tap('KEY_RIGHT' if presses > 0 else 'KEY_LEFT'); key('KEY_LEFTSHIFT', False)
@@ -451,12 +474,23 @@ try:
                 time.sleep(.01)
             value = option(name)
             mid = rest('after ' + name)
+            expected = min(hi, max(lo, selected + presses * STEPS[name] * 10))
+            expected = math.floor(expected / STEPS[name] + .5) * STEPS[name]
+            if abs(value - expected) > 1e-5:
+                raise AssertionError('%s key input produced %g, expected %g' % (name, value, expected))
+            after_keys = snapshot(panel)['goo']
+            if after_keys.get('selected') != expected_index:
+                raise AssertionError('Settings focus moved away from %s during key input' % name)
+            if presses and (mid['wakes'].get('settings', 0) <= before['wakes'].get('settings', 0) or
+                            mid['steps'] <= before['steps']):
+                raise AssertionError('%s change did not wake and step the sleeping goo' % name)
             tap('KEY_ENTER')   # Save closes the panel; the value stays
             for _ in range(100):
                 if panel.poll() is not None: break
                 time.sleep(.05)
             after = rest('panel closed'); f1 = capture(pts); px1 = shot('wake-%s-%d-after' % (name, presses))
             row = {'value': [selected, value], 'woke_after_s': woke, 'wake_reason': seen and seen['last_wake'],
+                   'expected_value': expected, 'selection_wakes': selection_wakes,
                    'settings_wakes': [before['wakes'].get('settings', 0), mid['wakes'].get('settings', 0)],
                    'other_wakes': [sum(v for k, v in before['wakes'].items() if k != 'settings'),
                                    sum(v for k, v in mid['wakes'].items() if k != 'settings')],
