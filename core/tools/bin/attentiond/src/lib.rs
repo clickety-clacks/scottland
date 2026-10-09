@@ -6,20 +6,27 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_FRAME_BYTES: usize = 65_536;
 const MAX_OPEN_PER_SENDER: usize = 100;
 const MAX_OPEN_TOTAL: usize = 1_000;
 const MAX_CLOSED_TOTAL: usize = 10_000;
 const CLOSED_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+const OUTBOUND_QUEUE_CAPACITY: usize = 8;
+// A snapshot can contain every open record. Count in-flight writes as well as queued
+// frames so repeated subscribes cannot accumulate multiple maximum-sized snapshots.
+const MAX_OUTBOUND_PENDING_BYTES: usize = MAX_OPEN_TOTAL * (MAX_FRAME_BYTES + 64) + 64;
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -55,21 +62,19 @@ pub fn run() -> io::Result<()> {
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
-                let writer = stream.try_clone()?;
-                let client_id = shared
-                    .lock()
-                    .map_err(|_| io::Error::other("attention state lock poisoned"))?
-                    .add_client(writer);
+                let client_id = match register_client_writer(&shared, &stream) {
+                    Ok(client_id) => client_id,
+                    Err(error) => {
+                        eprintln!("attentiond: could not start client writer: {error}");
+                        continue;
+                    }
+                };
                 let state = Arc::clone(&shared);
                 if let Err(error) = thread::Builder::new()
                     .name(format!("attention-client-{client_id}"))
                     .spawn(move || serve_connection(stream, client_id, state))
                 {
-                    shared
-                        .lock()
-                        .map_err(|_| io::Error::other("attention state lock poisoned"))?
-                        .clients
-                        .remove(&client_id);
+                    unregister_client(&shared, client_id);
                     eprintln!("attentiond: could not start client thread: {error}");
                 }
             }
@@ -78,6 +83,62 @@ pub fn run() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn register_client_writer(
+    shared: &Arc<Mutex<ServerState>>,
+    stream: &UnixStream,
+) -> io::Result<u64> {
+    let writer = stream.try_clone()?;
+    writer.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))?;
+    let control = stream.try_clone()?;
+    let (outbound, receiver) = mpsc::sync_channel(OUTBOUND_QUEUE_CAPACITY);
+    let pending_bytes = Arc::new(AtomicUsize::new(0));
+    let client_id = shared
+        .lock()
+        .map_err(|_| io::Error::other("attention state lock poisoned"))?
+        .add_client(outbound, Arc::clone(&pending_bytes), control);
+    let weak_state = Arc::downgrade(shared);
+    if let Err(error) = thread::Builder::new()
+        .name(format!("attention-writer-{client_id}"))
+        .spawn(move || serve_client_writer(writer, receiver, pending_bytes, client_id, weak_state))
+    {
+        unregister_client(shared, client_id);
+        return Err(error);
+    }
+    Ok(client_id)
+}
+
+fn serve_client_writer(
+    mut writer: UnixStream,
+    outbound: Receiver<OutboundFrame>,
+    pending_bytes: Arc<AtomicUsize>,
+    client_id: u64,
+    shared: Weak<Mutex<ServerState>>,
+) {
+    for frame in outbound {
+        let result = writer.write_all(&frame.bytes);
+        pending_bytes.fetch_sub(frame.bytes.len(), Ordering::AcqRel);
+        if let Err(error) = result {
+            eprintln!("attentiond: client {client_id} write failed: {error}");
+            break;
+        }
+    }
+    if let Some(shared) = shared.upgrade() {
+        unregister_client(&shared, client_id);
+    }
+}
+
+fn unregister_client(shared: &Arc<Mutex<ServerState>>, client_id: u64) {
+    if let Ok(mut state) = shared.lock() {
+        remove_client(&mut state, client_id);
+    }
+}
+
+fn remove_client(state: &mut ServerState, client_id: u64) {
+    if let Some(client) = state.clients.remove(&client_id) {
+        let _ = client.control.shutdown(Shutdown::Both);
+    }
 }
 
 fn required_absolute_env(name: &str) -> io::Result<PathBuf> {
@@ -256,14 +317,12 @@ fn serve_connection(stream: UnixStream, client_id: u64, shared: Arc<Mutex<Server
         };
 
         if let Err(error) = handle_value(&shared, client_id, frame) {
-            eprintln!("attentiond: fatal store or client write failure: {error}");
+            eprintln!("attentiond: fatal request or store failure: {error}");
             // A failed durable write must not be acknowledged or followed by more mutations.
             std::process::exit(1);
         }
     }
-    if let Ok(mut state) = shared.lock() {
-        state.clients.remove(&client_id);
-    }
+    unregister_client(&shared, client_id);
 }
 
 enum ReadFrame {
@@ -839,10 +898,51 @@ fn send_error(
 }
 
 fn send_reply(state: &mut ServerState, client_id: u64, frame: Value) -> io::Result<()> {
-    if let Some(client) = state.clients.get_mut(&client_id) {
-        if write_frame(&mut client.writer, &frame).is_err() {
-            state.clients.remove(&client_id);
-        }
+    if !state.clients.contains_key(&client_id) {
+        return Ok(());
+    }
+    let mut bytes = serde_json::to_vec(&frame).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    let frame_bytes = bytes.len();
+
+    // Never wait for a socket while holding ServerState. Evicting a slow reader is
+    // recoverable because AD-8 gives it a fresh snapshot when it reconnects.
+    let pending_bytes = Arc::clone(
+        &state
+            .clients
+            .get(&client_id)
+            .expect("client checked above")
+            .pending_bytes,
+    );
+    let reserved = pending_bytes
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+            pending
+                .checked_add(frame_bytes)
+                .filter(|total| *total <= MAX_OUTBOUND_PENDING_BYTES)
+        })
+        .is_ok();
+    if !reserved {
+        remove_client(state, client_id);
+        return Ok(());
+    }
+
+    let queued = state
+        .clients
+        .get(&client_id)
+        .expect("client remains registered under state lock")
+        .outbound
+        .try_send(OutboundFrame {
+            bytes,
+            pending_bytes: Arc::clone(&pending_bytes),
+        });
+    if let Err(error) = queued {
+        let frame = match error {
+            TrySendError::Full(frame) | TrySendError::Disconnected(frame) => frame,
+        };
+        frame
+            .pending_bytes
+            .fetch_sub(frame.bytes.len(), Ordering::AcqRel);
+        remove_client(state, client_id);
     }
     Ok(())
 }
@@ -924,12 +1024,6 @@ impl DeliverySeam for LocalFirehose {
             .collect::<Vec<_>>();
         json!({"v": 1, "type": "snapshot", "messages": messages})
     }
-}
-
-fn write_frame(writer: &mut UnixStream, frame: &Value) -> io::Result<()> {
-    serde_json::to_writer(&mut *writer, frame).map_err(io::Error::other)?;
-    writer.write_all(b"\n")?;
-    writer.flush()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1129,10 +1223,18 @@ struct LifecycleRecord {
 }
 
 struct Client {
-    writer: UnixStream,
+    // One FIFO writer preserves reply/snapshot/delta order for this connection.
+    outbound: SyncSender<OutboundFrame>,
+    pending_bytes: Arc<AtomicUsize>,
+    control: UnixStream,
     is_client: bool,
     subscriptions: HashSet<String>,
     posted_senders: HashSet<String>,
+}
+
+struct OutboundFrame {
+    bytes: Vec<u8>,
+    pending_bytes: Arc<AtomicUsize>,
 }
 
 struct ServerState {
@@ -1152,13 +1254,20 @@ impl ServerState {
         }
     }
 
-    fn add_client(&mut self, writer: UnixStream) -> u64 {
+    fn add_client(
+        &mut self,
+        outbound: SyncSender<OutboundFrame>,
+        pending_bytes: Arc<AtomicUsize>,
+        control: UnixStream,
+    ) -> u64 {
         let id = self.next_client_id;
         self.next_client_id = self.next_client_id.wrapping_add(1).max(1);
         self.clients.insert(
             id,
             Client {
-                writer,
+                outbound,
+                pending_bytes,
+                control,
                 is_client: false,
                 subscriptions: HashSet::new(),
                 posted_senders: HashSet::new(),
@@ -1245,9 +1354,10 @@ mod tests {
     fn add_connection(shared: &Arc<Mutex<ServerState>>) -> (u64, BufReader<UnixStream>) {
         let (server, client) = UnixStream::pair().expect("local socket pair");
         client
-            .set_read_timeout(Some(Duration::from_millis(40)))
+            .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("set reader timeout");
-        let id = shared.lock().expect("state lock").add_client(server);
+        let id = register_client_writer(shared, &server).expect("start test client writer");
+        drop(server);
         (id, BufReader::new(client))
     }
 
@@ -1259,6 +1369,10 @@ mod tests {
     }
 
     fn expect_no_frame(reader: &mut BufReader<UnixStream>) {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(40)))
+            .expect("set no-frame timeout");
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Err(error)
@@ -1268,6 +1382,10 @@ mod tests {
             Ok(_) => panic!("unexpected pushed frame: {line}"),
             Err(error) => panic!("unexpected read error: {error}"),
         }
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("restore reader timeout");
     }
 
     fn open_record(sender_id: &str, message_id: &str, order: u64, touched: i64) -> Record {

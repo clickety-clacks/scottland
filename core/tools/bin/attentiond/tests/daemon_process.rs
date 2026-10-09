@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -131,6 +132,41 @@ fn receive(reader: &mut BufReader<UnixStream>) -> Value {
     serde_json::from_str(&line).expect("response is JSON")
 }
 
+fn set_receive_buffer_size(stream: &UnixStream, bytes: libc::c_int) {
+    let result = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&bytes as *const libc::c_int).cast(),
+            std::mem::size_of_val(&bytes) as libc::socklen_t,
+        )
+    };
+    assert_eq!(
+        result,
+        0,
+        "set slow-reader socket buffer: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+fn read_until_disconnect(reader: &mut BufReader<UnixStream>) {
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return,
+            Ok(_) => {} // Drain frames already in the socket after the server evicts the reader.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                panic!("stalled subscriber was not disconnected")
+            }
+            Err(error) => panic!("unexpected slow-reader socket error: {error}"),
+        }
+    }
+}
+
 #[test]
 fn daemon_owns_one_private_socket_and_restores_idempotent_state_after_restart() {
     let temp = TempDir::new();
@@ -221,4 +257,89 @@ fn daemon_owns_one_private_socket_and_restores_idempotent_state_after_restart() 
     assert!(store_path.is_file(), "the store lives under XDG_STATE_HOME");
 
     restarted.stop();
+}
+
+#[test]
+fn stalled_subscriber_does_not_stall_healthy_delivery_or_lifecycle() {
+    const MESSAGE_COUNT: usize = 48;
+    let temp = TempDir::new();
+    let socket = temp.path().join("r/attention/attention.sock");
+    let mut daemon = RunningDaemon::start(temp.path());
+
+    let (mut slow, mut slow_reader) = connect(&socket);
+    slow.set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set slow-reader deadline");
+    set_receive_buffer_size(&slow, 4096);
+    send(
+        &mut slow,
+        &json!({"v":1,"type":"subscribe","sender_ids":["agentd://host/slow-reader"]}),
+    );
+    assert_eq!(receive(&mut slow_reader)["type"], "ok");
+    assert_eq!(receive(&mut slow_reader)["type"], "snapshot");
+
+    let (mut healthy, mut healthy_reader) = connect(&socket);
+    healthy
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set healthy-reader deadline");
+    send(
+        &mut healthy,
+        &json!({"v":1,"type":"subscribe","sender_ids":["agentd://host/slow-reader"]}),
+    );
+    assert_eq!(receive(&mut healthy_reader)["type"], "ok");
+    assert_eq!(receive(&mut healthy_reader)["type"], "snapshot");
+
+    let expected_ids: Vec<String> = (0..MESSAGE_COUNT)
+        .map(|index| format!("backpressure-{index}"))
+        .collect();
+    let expected_from_reader = expected_ids.clone();
+    let healthy_read = thread::spawn(move || {
+        let mut received_ids = Vec::with_capacity(MESSAGE_COUNT);
+        for _ in 0..MESSAGE_COUNT {
+            let frame = receive(&mut healthy_reader);
+            assert_eq!(frame["type"], "delivery");
+            received_ids.push(
+                frame["message"]["message_id"]
+                    .as_str()
+                    .expect("delivered message id")
+                    .to_owned(),
+            );
+        }
+        let lifecycle = receive(&mut healthy_reader);
+        (received_ids, lifecycle)
+    });
+
+    let (mut sender, mut sender_reader) = connect(&socket);
+    sender
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set sender deadline");
+    let title = "x".repeat(60_000);
+    for (index, message_id) in expected_ids.iter().enumerate() {
+        send(
+            &mut sender,
+            &json!({
+                "v":1,"type":"message","sender_id":"agentd://host/slow-reader",
+                "message_id":message_id,"created_at":index,"title":title
+            }),
+        );
+        assert_eq!(receive(&mut sender_reader)["type"], "ok");
+    }
+    send(
+        &mut sender,
+        &json!({
+            "v":1,"type":"lifecycle","sender_id":"agentd://host/slow-reader",
+            "message_id":expected_ids[0],"state":"cleared","at":MESSAGE_COUNT
+        }),
+    );
+    assert_eq!(receive(&mut sender_reader)["type"], "ok");
+
+    let (received_ids, lifecycle) = healthy_read.join().expect("healthy reader completes");
+    assert_eq!(
+        received_ids, expected_from_reader,
+        "delivery order is preserved"
+    );
+    assert_eq!(lifecycle["type"], "lifecycle");
+    assert_eq!(lifecycle["message_id"], expected_ids[0]);
+    assert_eq!(lifecycle["state"], "cleared");
+    read_until_disconnect(&mut slow_reader);
+    daemon.stop();
 }
