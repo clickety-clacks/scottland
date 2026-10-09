@@ -1023,8 +1023,20 @@ try:
     close_panel(panel)
     set_test_identities([{"output": target_output["name"], **target_identity}])
 
-    # Compare placement at the same 80% position: the own-sized output is in its continuous
-    # zone, while the unnamed output still follows the wider global center zone.
+    # Put the two windows between the profiles' center boundaries, so one is centered and
+    # the other follows its continuous zone regardless of the suite's starting global size.
+    global_center = zone_baseline["center_width"]
+    placement_center = min(90.0, global_center + 12.0) if global_center <= 78.0 else global_center - 12.0
+    placement_zones = {**target_zones, "center_width": placement_center}
+    placement_json = json.dumps([placement_zones, dormant_zones], ensure_ascii=False, separators=(",", ":"))
+    subprocess.run([ctl, "set", "screen_zones", placement_json], check=True, capture_output=True, text=True)
+    own_center_edge = .5 + placement_center / 200
+    global_center_edge = .5 + global_center / 200
+    placement_fraction = (own_center_edge + global_center_edge) / 2
+    if placement_center > global_center:
+        own_expected, global_expected = "center", "continuous"
+    else:
+        own_expected, global_expected = "continuous", "center"
     placement_windows = []
     for title, output in (("zones-own-placement", target_output), ("zones-global-placement", global_output)):
         process = subprocess.Popen(["foot", "-c", "/dev/null", "-T", title, "sleep", "60"],
@@ -1042,17 +1054,19 @@ try:
     for title, output in placement_windows:
         width = output["geometry"]["width"]
         ipc("window-rules/configure-view", {"id": placement_views[title]["id"], "output_id": output["id"],
-            "geometry": {"x": round(width * .8 - 150), "y": 180, "width": 300, "height": 180}})
+            "geometry": {"x": round(width * placement_fraction - 150), "y": 180, "width": 300, "height": 180}})
     def placement_state(title):
         return next(view for view in ipc("scottland/layout-state")["views"] if view["title"] == title)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         own_view, global_view = placement_state("zones-own-placement"), placement_state("zones-global-placement")
-        if own_view["zone"] == "continuous" and own_view["applied_scale"] < .999 \
-                and global_view["zone"] == "center" and abs(global_view["applied_scale"] - 1.0) < .001: break
+        if own_view["zone"] == own_expected and global_view["zone"] == global_expected: break
         time.sleep(.05)
-    placement_ok = own_view["zone"] == "continuous" and own_view["applied_scale"] < .999 \
-        and global_view["zone"] == "center" and abs(global_view["applied_scale"] - 1.0) < .001
+    placement_ok = own_view["zone"] == own_expected and global_view["zone"] == global_expected \
+        and (own_view["applied_scale"] < .999 if own_expected == "continuous"
+             else abs(own_view["applied_scale"] - 1.0) < .001) \
+        and (global_view["applied_scale"] < .999 if global_expected == "continuous"
+             else abs(global_view["applied_scale"] - 1.0) < .001)
     if not placement_ok:
         print("S24 placement state: " + json.dumps({"own": own_view, "global": global_view}, sort_keys=True), flush=True)
     check("S24 actual placement resolves the target profile and leaves unnamed output global", placement_ok)
@@ -1066,7 +1080,7 @@ try:
                          {"output": new_test_output["name"], **target_identity}])
     hotplug_row = layout_zone_entry(new_test_output["name"])
     check("S24 newly added output resolves persisted identity sizes",
-          hotplug_row["own"] and abs(hotplug_row["center_width"] - 44.0) < .01)
+          hotplug_row["own"] and abs(hotplug_row["center_width"] - placement_center) < .01)
     hotplug_title = "zones-hotplug-placement"
     hotplug_process = subprocess.Popen(["foot", "-c", "/dev/null", "-T", hotplug_title, "sleep", "60"],
         stdout=log, stderr=log)
@@ -1079,8 +1093,9 @@ try:
         time.sleep(.05)
     assert hotplug_view, "hotplug placement fixture did not map"
     hotplug_width = new_test_output["geometry"]["width"]
+    hotplug_fraction = .5 + placement_center / 200 + .01
     ipc("window-rules/configure-view", {"id": hotplug_view["id"], "output_id": new_test_output["id"],
-        "geometry": {"x": round(hotplug_width * .8 - 150), "y": 180, "width": 300, "height": 180}})
+        "geometry": {"x": round(hotplug_width * hotplug_fraction - 150), "y": 180, "width": 300, "height": 180}})
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         hotplug_placed = next(view for view in ipc("scottland/layout-state")["views"] if view["title"] == hotplug_title)
