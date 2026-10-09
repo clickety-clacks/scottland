@@ -55,7 +55,7 @@ portal_units=
 if [ "$restart_preimport_portals" -eq 1 ]; then
   # The user manager persists across Scottland logins. A portal already started here can still
   # hold the previous session's environment, so remember only pre-import portals that are running
-  # or transitioning. Failed services are not restarted.
+  # or transitioning.
   portal_units=$(systemctl --user list-units --all --type=service \
     --no-legend 'xdg-desktop-portal*.service') || {
     echo "scottland: could not inspect portal services before importing the session environment" >&2
