@@ -368,8 +368,10 @@ def bands(name):
 
 
 try:
-    # Private runtimes can reuse wayland-1. Check this run's display record instead.
+    # Private runtimes can reuse wayland-1. Check the owned runtime and display record.
     headless_dir = Path(os.environ["SCOTTLAND_HEADLESS_DIR"])
+    assert os.path.samefile(os.environ["XDG_RUNTIME_DIR"], headless_dir / "runtime"), \
+        "run through tests/headless.sh in an owned session"
     assert (headless_dir / "display").read_text().strip() == os.environ["WAYLAND_DISPLAY"], \
         "run through tests/headless.sh in an owned session"
     outputs = sorted(ipc("window-rules/list-outputs"), key=lambda o:o["geometry"]["x"])
