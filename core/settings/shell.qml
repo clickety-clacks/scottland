@@ -333,6 +333,10 @@ ShellRoot {
     else if (name === "blend_width") blendWidth = value
   }
 
+  function setZoneBorderField(name, value) {
+    zoneSettings.set(name === "blend_width" ? 0 : name === "center_width" ? 1 : 2, value)
+  }
+
   function resetTargetZones() {
     if (editScope !== "this" || !targetHasOwnZones) return
     push.stop()
@@ -704,9 +708,9 @@ ShellRoot {
               const dx = mapToItem(zones, mouse.x, mouse.y).x - startX
               const direction = handle.rightSide ? 1 : -1
               zoneSettings.typed = ""
-              if (handle.setting === "center_width") root.setZoneField("center_width", startValue + direction * dx * 200 / zones.width)
-              else if (handle.setting === "rail_width") root.setZoneField("rail_width", startValue - direction * dx * 100 / zones.width)
-              else root.setZoneField("blend_width", startValue + direction * dx)
+              if (handle.setting === "center_width") root.setZoneBorderField("center_width", startValue + direction * dx * 200 / zones.width)
+              else if (handle.setting === "rail_width") root.setZoneBorderField("rail_width", startValue - direction * dx * 100 / zones.width)
+              else root.setZoneBorderField("blend_width", startValue + direction * dx)
             }
           }
         }

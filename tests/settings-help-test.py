@@ -420,23 +420,23 @@ try:
     panel=open_panel()
     tab(0)
     for i,label in enumerate(["Center edge softness","Center zone width","Widget rail width"]):
-        point = reveal("zones",200,34+69*i)
+        point = reveal("zones",200,34+69*i,margin=60)
         row_top = point[1]-34
         pointer(*point);time.sleep(.25)
         check(label+" hover hint",snapshot()["zones"]["hint"]==label)
         if i == 0:
             check("first Layout hint has its expected visible bubble",
                   shot("02-layout-hover").hint(row_top,label))
-    point = reveal("zones",200,34+69*2)
+    point = reveal("zones",200,34+69*2,margin=60)
     row_top = point[1]-34
     pointer(10,690);time.sleep(.15)
     check("leaving a hovered row hides its bubble",
           not shot("02a-layout-leave").hint(row_top,"Widget rail width",expected=False))
-    click(*reveal("zones",200,34));pointer(10,690);key("KEY_BACKSPACE")
+    click(*reveal("zones",200,34,margin=60));pointer(10,690);key("KEY_BACKSPACE")
     before=option("center_width");key("KEY_DOWN");key("KEY_RIGHT")
     check("keyboard step previews zone live",option_reaches("center_width",round((before+.5)*2)/2))
     check("keyboard hint follows selection",snapshot()["zones"]["hint"]=="Center zone width")
-    center_row = reveal("zones",200,34+69)[1]-29
+    center_row = reveal("zones",200,34+69,margin=60)[1]-29
     check("keyboard selection draws its hint bubble",
           shot("02b-keyboard-hint").hint(center_row,"Center zone width"))
     key("KEY_UP");key("KEY_1");key("KEY_2");key("KEY_0")
@@ -715,16 +715,16 @@ try:
 
     # Cap and zero: actual geometry follows place(), and coincident handles remain reachable.
     panel = open_panel()
-    click(*reveal("zones",470,34))  # softness near 300, visibly capped at half the side span
+    click(*reveal("zones",470,34,margin=60))  # softness near 300, visibly capped at half the side span
     bands("08-capped-softness")
     check("slider can exceed the effective band width", option("blend_width") > geometry(outputs[1])[-1])
-    click(*reveal("zones",20,34));key("KEY_0")  # zero softness
+    click(*reveal("zones",20,34,margin=60));key("KEY_0")  # zero softness
     check("softness reaches zero", option("blend_width") == 0)
     unobscured = next(o for o in outputs if not o["geometry"]["x"] <= panel_x < o["geometry"]["x"]+o["geometry"]["width"])
     origin, width, center, rail, blend = geometry(unobscured)
     drag(origin+center, 600, -30, live_name="blend_width")
     check("coincident softness handle can open a zero band", option("blend_width") == 30)
-    click(*reveal("zones",20,34));key("KEY_0")
+    click(*reveal("zones",20,34,margin=60));key("KEY_0")
     origin, width, center, rail, blend = geometry(outputs[1])
     before = option("center_width")
     drag(origin+center, 40, -32)
@@ -763,8 +763,8 @@ try:
     origin = next(o["geometry"]["x"] for o in outputs if o["id"] == output_id)
     frame = view["frame"]
     # Keep the keyboard hint visible while moving onto the app beneath it.
-    hint_row = reveal("zones",250,34)[1]-34
-    click(*reveal("zones",250,34))
+    hint_row = reveal("zones",250,34,margin=60)[1]-34
+    click(*reveal("zones",250,34,margin=60))
     key("KEY_RIGHT")
     pointer(panel_x+snapshot()["panel"]["width"]+40, 205); time.sleep(.15)
     p = shot("09a-popout-over-app")
@@ -781,7 +781,7 @@ try:
           received.exists() and received.read_text() == "a"
           and not shot("09b-popout-focus-lost").hint(hint_row,"Center edge softness",expected=False))
     shot("09-click-through")
-    click(*reveal("zones",250,34))  # focus settings again to exercise Escape
+    click(*reveal("zones",250,34,margin=60))  # focus settings again to exercise Escape
     close_panel(panel)
     panel=open_panel();tab(3)
     check("Translucency tab selects",snapshot()["tab"]==3)
@@ -864,6 +864,8 @@ try:
           ("enabled = true","allow_ip = true","location_set = true")))
 
     # S24: screen identities resolve one complete profile, while Settings edits one fixed target.
+    zone_baseline = {name: option(name) for name in
+                     ("center_width", "rail_width", "blend_width", "min_scale", "max_scale")}
     target_output, global_output = outputs
     target_identity = {"make": "Maker # = \"µ\"", "model": "Panel 漢字", "serial": "SN #= \"Ω\""}
     dormant_identity = {"make": "Dormant #= \"é\"", "model": "Desk display", "serial": "offline=1"}
@@ -888,7 +890,7 @@ try:
         click_ui_rect(q["zoneScope"][scope])
 
     def set_center_slider(value):
-        reveal("zones", 0, 103)
+        reveal("zones", 0, 103, margin=60)
         rect = snapshot()["zones"]
         x = rect["x"] + rect["width"] * (value - 10) / 80
         click(*screen_point({"x": x, "y": rect["y"] + 103}))
@@ -920,14 +922,14 @@ try:
           and (target_row["make"], target_row["model"], target_row["serial"]) == tuple(target_identity.values())
           and target_row["own"])
     check("S24 unnamed output follows global sizes", not global_row["identity"] and not global_row["own"]
-          and abs(global_row["center_width"] - initial_zone_options["center_width"]) < .01)
+          and abs(global_row["center_width"] - zone_baseline["center_width"]) < .01)
     check("S24 disconnected identity remains in ctl get", ctl_values["screen_zones"][1] == dormant_zones)
 
     subprocess.run([ctl, "set", "screen_zones", "not-json"], check=True, capture_output=True, text=True)
     malformed_rows = zone_outputs()
     check("S24 malformed screen_zones falls back to globals for every output",
           all(not row["own"] for row in malformed_rows.values())
-          and all(abs(row["center_width"] - initial_zone_options["center_width"]) < .01
+          and all(abs(row["center_width"] - zone_baseline["center_width"]) < .01
                   for row in malformed_rows.values()))
     invalid_curve = [{**target_zones, "scale_curve": "not-a-curve"}, dormant_zones]
     subprocess.run([ctl, "set", "screen_zones", json.dumps(invalid_curve, ensure_ascii=False)],
@@ -949,7 +951,7 @@ try:
     check("S24 All screens explains which connected identity keeps its own sizes",
           q["zoneScope"]["scope"] == "all" and target_key in q["zoneScope"]["note"]
           and "keeps its own sizes" in q["zoneScope"]["note"]
-          and abs(q["zoneProfile"]["center_width"] - initial_zone_options["center_width"]) < .01)
+          and abs(q["zoneProfile"]["center_width"] - zone_baseline["center_width"]) < .01)
     set_center_slider(42.5)
     check("S24 All screens edits global sizes and leaves the target override intact",
           option_reaches("center_width", 42.5) and abs(layout_zone_entry(target_output["name"])["center_width"] - 44.0) < .01)
@@ -967,7 +969,7 @@ try:
           and json.loads(string_option("screen_zones")) == [dormant_zones])
     close_panel(panel)
     check("S24 Cancel restores global and all per-screen values",
-          abs(option("center_width") - initial_zone_options["center_width"]) < .01
+          abs(option("center_width") - zone_baseline["center_width"]) < .01
           and json.loads(string_option("screen_zones")) == [target_zones, dormant_zones])
 
     panel = open_panel(); tab(0)
@@ -986,7 +988,7 @@ try:
                    if line.lstrip().startswith("screen_zones =")]
     check("S24 Reset followed by Save removes only the target's own sizes",
           len(saved_lines) == 1 and json.loads(saved_lines[0]) == [dormant_zones]
-          and abs(option("center_width") - initial_zone_options["center_width"]) < .01)
+          and abs(option("center_width") - zone_baseline["center_width"]) < .01)
 
     panel = open_panel(); tab(0)
     choose_zone_scope("this")
@@ -996,7 +998,7 @@ try:
     check("S24 Defaults in This screen creates shipped own sizes without changing globals",
           default_preview is not None and abs(default_preview["center_width"] - 33.333) < .01
           and abs(default_preview["rail_width"] - 2.0) < .01
-          and abs(option("center_width") - initial_zone_options["center_width"]) < .01)
+          and abs(option("center_width") - zone_baseline["center_width"]) < .01)
     close_panel(panel)
     check("S24 Cancel removes a previewed default override", json.loads(string_option("screen_zones")) == [dormant_zones])
 
@@ -1049,9 +1051,11 @@ try:
         if own_view["zone"] == "continuous" and own_view["applied_scale"] < .999 \
                 and global_view["zone"] == "center" and abs(global_view["applied_scale"] - 1.0) < .001: break
         time.sleep(.05)
-    check("S24 actual placement resolves the target profile and leaves unnamed output global",
-          own_view["zone"] == "continuous" and own_view["applied_scale"] < .999
-          and global_view["zone"] == "center" and abs(global_view["applied_scale"] - 1.0) < .001)
+    placement_ok = own_view["zone"] == "continuous" and own_view["applied_scale"] < .999 \
+        and global_view["zone"] == "center" and abs(global_view["applied_scale"] - 1.0) < .001
+    if not placement_ok:
+        print("S24 placement state: " + json.dumps({"own": own_view, "global": global_view}, sort_keys=True), flush=True)
+    check("S24 actual placement resolves the target profile and leaves unnamed output global", placement_ok)
 
     new_test_output = ipc("wayfire/create-headless-output", {"width": 5120, "height": 1440})["output"]
     deadline = time.monotonic() + 8
