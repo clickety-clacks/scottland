@@ -176,6 +176,22 @@ check("reset: the session's settings are dropped; the configured default scale 1
       status == 0 and wait(lambda: outputs().get('HEADLESS-2', {}).get('width') == 1024)
       and capture('HEADLESS-2', 'reset') == (1024, 768), (status, error, outputs()))
 
+# Integrations changing outputs at the same time: each change is kept, through every rebuild.
+changes = [('HEADLESS-1', '--scale', '2'), ('HEADLESS-1', '--transform', '90'),
+           ('HEADLESS-2', '--transform', '90'), ('HEADLESS-2', '--scale', '2')]
+running = [subprocess.Popen([tool, 'set', *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+           for args in changes]
+results = [(process.wait(timeout=120), process.stderr.read().strip()) for process in running]
+both = lambda: {name: (g['width'], g['height']) for name, g in outputs().items()} == {
+    'HEADLESS-1': (360, 640), 'HEADLESS-2': (384, 512)}
+check('four set commands at once on two outputs: each applied when it returns, none lost',
+      all(status == 0 for status, _ in results) and both(), (results, outputs()))
+ok, error = rebuild()
+check('and a config rebuild keeps all four', ok and both(), (error, outputs()))
+status, reported, error = output('reset')
+check('setup: reset drops them all', status == 0 and wait(lambda: width('HEADLESS-1') == 1280 and width() == 1024),
+      (status, error, outputs()))
+
 # Auto through scottland-output (HEADLESS-2 runs 1024x768 here). Each case starts from the other
 # scale, so the change shows.
 cases = [('an ordinary monitor', ORDINARY, 1), ('a HiDPI panel', HIDPI, 2), ('no physical size', None, 1)]
@@ -209,6 +225,14 @@ check("a number in the user's config wins over an integration's auto", ok and wa
 overrides.unlink()
 ok, error = rebuild()
 check("without it, the integration's auto applies again", ok and wait(lambda: width() == 512), (error, outputs()))
+# A later section for the output without a scale line: Wayfire takes its position and keeps the
+# earlier auto's scale 2.
+overrides.write_text('[output:HEADLESS-2]\nposition = 0,720\n')
+ok, error = rebuild()
+check("an integration's auto, then a later section with no scale line: placed by it, still at scale 2",
+      ok and wait(lambda: outputs().get('HEADLESS-2') == {'x': 0, 'y': 720, 'width': 512, 'height': 384}),
+      (error, outputs()))
+overrides.unlink()
 display.unlink()
 size(None)
 ok, error = rebuild()

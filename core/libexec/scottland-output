@@ -19,7 +19,8 @@ Changes go through Wayfire's own output configuration: they are this session's o
 written into the session's config (after every other generator except the user's overrides.ini,
 which still wins) and applied by Wayfire when it reloads it. So they survive config rebuilds and an
 output reconnecting, and end with the session. Turning an output off keeps its other settings, so
-turning it on again brings it back at the same mode, position and scale. Persistent display
+turning it on again brings it back at the same mode, position and scale. Changes made at the same
+time (several integrations) are made one after another, each kept. Persistent display
 settings belong in the config itself ([output:NAME] sections, e.g. in overrides.ini).
 
 Scale auto is the output's natural scale, from the physical size and mode the compositor reports
@@ -43,6 +44,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -189,15 +191,22 @@ def mismatches(head, wanted):
 def change(name, update):
     """update(settings) edits this session's settings; then apply them. Returns the exit status."""
     path = settings_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a+") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        settings = read_settings(handle)
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    # One change at a time, through its rebuild and check. The lock is a file of its own: the
+    # settings file is replaced at every change, so a lock on it would hold an old inode.
+    with open(path + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(path) as handle:
+                settings = read_settings(handle)
+        except FileNotFoundError:
+            settings = {}
         wanted = update(settings)
-        new = path + ".new"
-        with open(new, "w") as out:
+        with tempfile.NamedTemporaryFile("w", dir=directory, prefix=".session-outputs.",
+                                         delete=False) as out:
             json.dump(settings, out, indent=1, sort_keys=True)
-        os.replace(new, path)
+        os.replace(out.name, path)
         auto = (wanted or {}).get("scale") == "auto"
         try:
             found, wrong = [], []
