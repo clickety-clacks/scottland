@@ -212,7 +212,7 @@ try:
     time.sleep(1)
     check(stable == {i: (h['badge'], h['dx'], h['dy']) for i, h in hints().items()},
           'hint anchors and sizes stay exactly stable during an unchanged Alt hold')
-    # Explicitly raising a rear window must update occlusion without changing its letter.
+    # Raising a rear window changes scene stacking without changing its assigned letter.
     def centers(state):
         return {i: (h['badge']['x']+h['badge']['size']/2, h['badge']['y']+h['badge']['size']/2)
                 for i, h in state.items() if h.get('visible') and 'badge' in h}

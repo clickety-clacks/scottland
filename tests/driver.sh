@@ -5,14 +5,14 @@ umask 077
 
 case ${I:-} in
   tint|acceptance) ;;
-  *) echo 'set I=tint for WK37/WK38 and WK36, or I=acceptance to include WK41/WK42' >&2; exit 2 ;;
+  *) echo 'set I=tint for Window-mode tint/WK38 and WK36, or I=acceptance to include WK41/WK42' >&2; exit 2 ;;
 esac
 
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
 [[ -x tests/hint-outline-test.sh && -f tests/hint-outline-test.py && \
    -f tests/pairing-opaque-test.py ]] || {
-  echo 'item2 WK37/WK38 or pairing opaque-once source is missing' >&2; exit 2;
+  echo 'Window-mode tint/WK38 or pairing opaque-once source is missing' >&2; exit 2;
 }
 if [[ $I == acceptance ]]; then
   [[ -f tests/hint-stuck-offset-test.py && -f tests/hint-background-opacity-test.py ]] || {
@@ -63,7 +63,7 @@ unset SCOTTLAND_TEST_GOO
 mkdir -m 700 -- "$SCOTTLAND_TEST_EVIDENCE_DIR"
 tests/hint-outline-test.sh
 [[ ! -e $SCOTTLAND_HEADLESS_DIR ]] || {
-  echo 'WK37/WK38 headless session was not cleaned from its private scratch' >&2; exit 1;
+  echo 'Window-mode tint/WK38 headless session was not cleaned from its private scratch' >&2; exit 1;
 }
 
 export SCOTTLAND_HEADLESS_DIR="$scratch/headless-pairing-opaque"

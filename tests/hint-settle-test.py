@@ -201,7 +201,7 @@ TOLERANCE = 6
 
 def letter_pixels(frame, colors):
     """Per hint, the thick letter-colored pixels (a pixel and its four neighbours all within
-    TOLERANCE of that hint's letter color). Two-pixel outlines (WK37) are thinner than that."""
+    TOLERANCE of that hint's letter color)."""
     def span(c):
         return b'[' + re.escape(bytes([max(0, c - TOLERANCE)])) + b'-' + re.escape(bytes([min(255, c + TOLERANCE)])) + b']'
     classes = [span(c[0]) + span(c[1]) + span(c[2]) for c in colors.values()]
@@ -218,25 +218,6 @@ def letter_pixels(frame, colors):
                 break
     return {name: [i for i in s if i + 1 in s and i - 1 in s and i + W in s and i - W in s]
             for name, s in found.items()}
-
-
-def outline_pixels(frame, hint, discs):
-    """Known hint-color pixels on straight outline edges, outside every hint circle."""
-    f = hint['outline_frame']
-    color = tuple(round(c * 255) for c in hint['color'])
-    x1, y1, x2, y2 = f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height']
-    points = set()
-    for t in (.2, .3, .4, .5, .6, .7, .8):
-        for x, y in ((x1 + (x2 - x1) * t, y1 + 1), (x1 + (x2 - x1) * t, y2 - 1),
-                     (x1 + 1, y1 + (y2 - y1) * t), (x2 - 1, y1 + (y2 - y1) * t)):
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    px, py = round(x + dx), round(y + dy)
-                    if 0 <= px < W and 0 <= py < H and all(
-                            (px - cx) ** 2 + (py - cy) ** 2 > (r + 4) ** 2 for cx, cy, r in discs.values()):
-                        points.add((px, py))
-    return sum(max(abs(a - b) for a, b in zip(pixel(frame, x, y), color)) <= TOLERANCE
-               for x, y in points)
 
 
 def judge(label, video, final, baseline):
@@ -263,23 +244,16 @@ def judge(label, video, final, baseline):
     outside_noise = {name: len(pixels) - noise[name] for name, pixels in absent.items()}
     inside_series = {name: [] for name in colors}
     outside_series = {name: [] for name in colors}
-    outlines = {name: h for name, h in hints.items() if h.get('outline') and h.get('outline_frame')}
-    check(bool(outlines), f'{label}: fixture includes an occluded window outline')
-    outline_series = {name: [] for name in outlines}
-    outline_noise = {name: outline_pixels(baseline, h, discs) for name, h in outlines.items()}
     for frame in frames(video):
         for name, pixels in letter_pixels(frame, colors).items():
             cx, cy, r = discs[name]
             inside = sum((i % W - cx) ** 2 + (i // W - cy) ** 2 <= r * r for i in pixels)
             inside_series[name].append(inside)
             outside_series[name].append(len(pixels) - inside)
-        for name, h in outlines.items():
-            outline_series[name].append(outline_pixels(frame, h, discs))
     report = {'times': times, 'colors': {k: list(v) for k, v in colors.items()},
-              'inside': inside_series, 'outside': outside_series, 'absence': noise,
-              'outline': outline_series, 'outline_absence': outline_noise}
+              'inside': inside_series, 'outside': outside_series, 'absence': noise}
     (art / (label + '-pixels.json')).write_text(json.dumps(report))
-    ok_all = bool(outlines)
+    ok_all = True
     for name in colors:
         inside, outside = inside_series[name], outside_series[name]
         settled = inside[-1]
@@ -295,14 +269,6 @@ def judge(label, video, final, baseline):
         ok_all &= not stray
         check(not stray, f'{label}: hint {name.upper()} is never drawn anywhere else',
               f'frames with its letter elsewhere: {stray[:8]}')
-    for name, series in outline_series.items():
-        threshold = outline_noise[name] + 3
-        first = next((i for i, n in enumerate(series) if n > threshold), None)
-        dips = [i for i in range(first or 0, len(series)) if series[i] <= threshold] if first is not None else []
-        ok = first is not None and series[-1] > threshold and not dips
-        ok_all &= ok
-        check(ok, f'{label}: outline {name.upper()} appears once on its settled edges and stays',
-              f'first visible frame {first}, absence threshold {threshold}, disappearances: {dips[:8]}')
     return ok_all
 
 

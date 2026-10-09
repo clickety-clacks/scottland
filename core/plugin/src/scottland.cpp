@@ -944,7 +944,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         scottland::palette.unfocused_edge_tone_light = unfocused_edge_tone_light;
         scottland::palette.unfocused_edge_tone_dark = unfocused_edge_tone_dark;
         scottland::palette.unfocused_edge_strength = unfocused_edge_strength;
-        scottland::palette.hint_tint = window_mode_tint_strength();
         scottland::palette.dye_strength = std::clamp(float(goo_dye_density), 0.f, 1.5f);
         wf::color_t accent = accent_color;
         scottland::palette.accent = {accent.r, accent.g, accent.b};
@@ -7553,7 +7552,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         unfocused_edge_tone_dark.set_callback([=] { load_color_scheme(); });
         unfocused_edge_strength.set_callback([=] { load_color_scheme(); });
         goo_dye_density.set_callback([=] { load_color_scheme(); });
-        window_mode_tint.set_callback([=] { load_color_scheme(); refresh_layout_avoidance(); });
+        window_mode_tint.set_callback([=] { refresh_layout_avoidance(); });
         hint_background_opacity.set_callback([=] { refresh_layout_avoidance(); });
         auto avoidance_setting_changed = [=] {
             declutter_signature.clear();
@@ -7754,7 +7753,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         scottland::gl_programs().release();
-        scottland::windowing::release_hint_gl();
+        scottland::windowing::release_window_tint_gl();
         fini_widget_spawn();
         fini_hint_palette_watch();
         release_stale_pointer_focus();  // e.g. the live drag's grab: its owner and code go next
