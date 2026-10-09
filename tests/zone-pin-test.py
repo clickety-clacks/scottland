@@ -456,14 +456,27 @@ try:
     runtime = Path(os.environ['XDG_RUNTIME_DIR'])
     display = (Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'display').read_text().strip()
     mark = runtime / 'scottland' / (display + '.reloading')
+    wayfire_log = Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'wayfire.log'
+    before_loaded = wayfire_log.read_text(errors='replace').count('scottland: plugin loaded')
+    before_unloaded = wayfire_log.read_text(errors='replace').count('scottland: plugin unloaded')
     mark.touch()
     fresh = Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'libscottland-zone-pin-reload.so'
     subprocess.run(['cp', 'build/libscottland.so', str(fresh)], check=True)
     plugins = ipc('wayfire/get-config-option', {'option': 'core/plugins'})['value']
-    ipc('wayfire/set-config-options', {'core/plugins': ' '.join(
-        str(fresh) if p == 'scottland' else p for p in plugins.split())})
-    time.sleep(1)
-    mark.unlink()
+    try:
+        ipc('wayfire/set-config-options', {'core/plugins': ' '.join(
+            str(fresh) if p == 'scottland' else p for p in plugins.split())})
+
+        def reload_logged(needle, previous_count):
+            return wayfire_log.read_text(errors='replace').count(needle) > previous_count
+
+        wait_for(lambda: reload_logged('scottland: plugin unloaded', before_unloaded), timeout=10)
+        # The marker must remain until the replacement plugin has taken the persisted model.
+        # A fixed sleep can expire just before Wayfire enters fini(), making a successful reload
+        # look like lost state because the outgoing plugin never sees its handover marker.
+        wait_for(lambda: reload_logged('scottland: plugin loaded', before_loaded), timeout=10)
+    finally:
+        mark.unlink(missing_ok=True)
     after = [(h['window'], h['memories']) for h in ipc('scottland/hints')['hints']]
     check(before == after and dict(after)[a][1].get('pin') == pin, 'a reload keeps the zone pins', after)
     cycle(a, 'Pinned')
