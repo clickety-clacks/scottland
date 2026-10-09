@@ -991,9 +991,12 @@ try:
     before_rebuild = json.loads(subprocess.check_output([ctl, "get"], text=True, timeout=5))
     check("S24 config round-trip clears the live value before reloading the saved file",
           before_rebuild.get("screen_zones") == [])
+    headless_dir = Path(os.environ["SCOTTLAND_HEADLESS_DIR"])
+    assembled_config = headless_dir / "wayfire.ini"
+    build_env = dict(os.environ, SCOTTLAND_CONFIG_OUTPUT=str(assembled_config),
+                     SCOTTLAND_CONFIG_EDIT=str(headless_dir / "config-edit.sed"))
     subprocess.run([str(repo / "core/session/scottland-build-config")],
-                   check=True, capture_output=True, text=True, timeout=10)
-    assembled_config = Path(os.environ["SCOTTLAND_SESSION_DIR"]) / "wayfire.ini"
+                   check=True, capture_output=True, text=True, timeout=10, env=build_env)
     assembled_zone_lines = [line for line in assembled_config.read_text().splitlines()
                             if line.lstrip().startswith("screen_zones =")]
     check("S24 saved identity hashes are JSON-escaped in assembled Wayfire config",
