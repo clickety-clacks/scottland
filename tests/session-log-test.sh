@@ -2,6 +2,7 @@
 # Launcher-only fixture: no display, services or live files. Run on the test host.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$repo/build"
 work=$(mktemp -d "$repo/build/session-log-test.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/data/scottland/dev/libexec" "$work/bin" "$work/runtime"
@@ -34,6 +35,9 @@ for ((index=0; index<${#sessions[@]}; index++)); do
     if (( age <= index )); then
       [[ -f $log && $(stat -c %s "$log") -le 1048576 ]]
       [[ $(tail -n 1 "$log") == "session=${sessions[index-age]} core-limit=unlimited" ]]
+      if [[ ${sessions[index-age]} == first ]]; then
+        [[ $(stat -c %s "$log") -eq 1048576 ]]
+      fi
     else
       [[ ! -e $log ]]
     fi

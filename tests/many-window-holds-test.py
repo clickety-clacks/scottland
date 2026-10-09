@@ -26,6 +26,21 @@ sock.connect(os.environ['WAYFIRE_SOCKET'])
 clients = []
 
 
+def interrupted(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+def signal_client(client, signum):
+    try:
+        os.killpg(client.pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+for signum in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, interrupted)
+
+
 def ipc(method, data=None):
     body = json.dumps({'method': method, 'data': data or {}}).encode()
     sock.sendall(struct.pack('<I', len(body)) + body)
@@ -156,13 +171,15 @@ try:
         key('LEFTALT', False)
         wait(lambda: not hints()['active'], 'Window mode exited')
 finally:
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, signal.SIG_IGN)
     for client in clients:
         if client.poll() is None:
-            os.killpg(client.pid, signal.SIGTERM)
+            signal_client(client, signal.SIGTERM)
     for client in clients:
         try:
             client.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            os.killpg(client.pid, signal.SIGKILL)
+            signal_client(client, signal.SIGKILL)
             client.wait(timeout=3)
     sock.close()
