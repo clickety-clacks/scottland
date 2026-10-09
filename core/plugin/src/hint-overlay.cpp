@@ -376,7 +376,8 @@ class window_tint_render : public wf::scene::simple_render_instance_t<window_tin
                 int x1 = int(std::floor(x)), y1 = int(std::floor(y));
                 int x2 = int(std::ceil(x + width)), y2 = int(std::ceil(y + height));
                 if (x2 > x1 && y2 > y1)
-                    data.pass->add_rect(fill, data.target, {x1, y1, x2 - x1, y2 - y1}, data.damage);
+                    data.pass->add_rect(fill, data.target,
+                        {double(x1), double(y1), double(x2 - x1), double(y2 - y1)}, data.damage);
             };
             if (radius <= 0)
             {
