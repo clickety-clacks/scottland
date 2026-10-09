@@ -351,6 +351,11 @@
 			<_long>Scale across the continuous zones as points "t:scale", t from 0 (center zone edge) to 1 (widget rail), joined smoothly. Empty: straight line from max_scale to min_scale.</_long>
 			<default></default>
 		</option>
+		<option name="screen_zones" type="string">
+			<_short>Per-screen zone sizes</_short>
+			<_long>JSON array of zone-size overrides keyed by each output's reported make, model and serial.</_long>
+			<default>[]</default>
+		</option>
 		<option name="move" type="button">
 			<_short>Move a window live</_short>
 			<default>&lt;super&gt; BTN_LEFT</default>

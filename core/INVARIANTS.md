@@ -35,11 +35,11 @@ tenets themselves. Status says whether every feature that should follow one does
 
 | ID | Invariant | Status |
 |---|---|---|
-| L1 | Each screen has five vertical zones: widget rail, continuous zone, center zone, continuous zone, widget rail. | verified |
-| L2 | Center zone: default one third of the width (33.333%); windows there are at 100%. | verified |
-| L3 | Widget rails: thin strips at the far left and right, default 2% of the width (~50 pt on a 2560-wide screen). | verified |
-| L4 | Continuous zones: scale follows the scale curve from the largest scale (next to the center, default 100%) to the smallest (next to the rails, default 20%); without a curve it's a straight line between them. | verified |
-| L18 | Just outside the center zone, a blend band (default 40 pt, "Center edge softness" slider, up to 300 pt) eases the scale from 100% into the scale curve: flat where it meets the center, matching the curve's starting slope where it meets the curve, so there is no jump or corner at the edge. | implemented |
+| L1 | Each screen has five vertical zones: widget rail, continuous zone, center zone, continuous zone, widget rail. Each uses its own saved sizes when the compositor reports a matching exact make/model/serial identity; outputs with the same triple share an override, and outputs with no identity follow global sizes. | verified |
+| L2 | Center zone: default one third of the width (33.333%); windows there are at 100%. A screen's own center width overrides the global default for its identity. | verified |
+| L3 | Widget rails: thin strips at the far left and right, default 2% of the width (~50 pt on a 2560-wide screen); rail width is part of the same per-screen identity override. | verified |
+| L4 | Continuous zones: scale follows the screen's scale curve from its largest scale (next to the center, default 100%) to its smallest (next to the rails, default 20%); without a curve it's a straight line between them. A screen without an override uses the global curve and scales. | verified |
+| L18 | Just outside the center zone, a blend band (default 40 pt, "Center edge softness" slider, up to 300 pt) eases the scale from 100% into that screen's scale curve: flat where it meets the center, matching the curve's starting slope where it meets the curve, so there is no jump or corner at the edge. The blend width is part of the per-screen identity override and remains in logical points. | implemented |
 | L5 | A window's zone and scale are set by its center. It scales around its center. | verified |
 | L6 | True scaling: the real window is transformed, not a thumbnail, and stays fully interactive (click, type, scroll) at any scale. | verified (scale); interaction at small scale: implemented |
 | L7 | Scaling is the only transform: no rotation or other distortion. Wayfire's window rotation (flat and 3D) and desktop cube are not enabled. | implemented |
