@@ -117,6 +117,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-03 | Watercolor wallpaper: local pickup and spread, in all of the goo (stronger where thick), persistent after motion settles. | GO24 |
 | 10-04 | Pre-computed breath frames: a ceiling (about 50) and widen spacing above it; never fall off a cliff to the expensive path silently. | GO26 |
 
+## Sunlight
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-07 | Sunlight changes light/dark only when day becomes night or night becomes day; a manual change holds until the next transition. | A15, S21, O18 |
+
 ## Omarchy adapter, distro and flavorings
 
 | Date | Ruling | Where |

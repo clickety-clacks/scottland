@@ -1,6 +1,6 @@
 # Local build: cd packaging/arch && makepkg -si
 pkgbase=scottland
-pkgname=(scottland scottland-omarchy)
+pkgname=(scottland scottland-omarchy scottland-sunlight)
 pkgver=0.2.0
 pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
@@ -13,7 +13,7 @@ _root="$startdir/../.."
 
 build() {
   arch-meson "$_root/core/plugin" build
-  meson compile -C build
+  meson compile -C build --jobs 2
   # Scottland's system tools: every crate under core/tools/bin is one command.
   local crate
   for crate in "$_root"/core/tools/bin/*/; do
@@ -24,7 +24,6 @@ build() {
 package_scottland() {
   # quickshell: the default widget (card) and the layout settings app
   depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell')
-  optdepends=('geoclue: automatic location for Sunlight')
 
   meson install -C build --destdir "$pkgdir"
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
@@ -56,8 +55,6 @@ package_scottland() {
   install -Dm755 "$_root/core/libexec/scottland-color-scheme" "$pkgdir/usr/lib/scottland/libexec/scottland-color-scheme"
   install -Dm644 "$_root/core/session-env.d/10-cursor-size.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-cursor-size.sh"
   install -Dm755 "$_root/core/autostart.d/07-follow-color-scheme" "$pkgdir/usr/lib/scottland/autostart.d/07-follow-color-scheme"
-  install -Dm755 "$_root/core/autostart.d/07-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/07-solar-theme"
-  install -Dm755 "$_root/core/libexec/scottland-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-solar-theme"
   install -Dm755 "$_root/core/reload.d/07-color-scheme" "$pkgdir/usr/lib/scottland/reload.d/07-color-scheme"
   install -Dm755 "$_root/core/config.d/20-layout-settings" "$pkgdir/usr/lib/scottland/config.d/20-layout-settings"
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
@@ -77,6 +74,17 @@ package_scottland() {
     install -Dm755 "$tool" "$pkgdir/usr/lib/scottland/libexec/${tool##*/}"
     ln -sf "/usr/lib/scottland/libexec/${tool##*/}" "$pkgdir/usr/bin/${tool##*/}"
   done
+}
+
+package_scottland-sunlight() {
+  pkgdesc="Automatic day/night mode transitions for Scottland"
+  arch=('any')
+  depends=('scottland')
+  optdepends=('geoclue: automatic location for Sunlight')
+
+  install -Dm755 "$_root/core/autostart.d/07-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/07-solar-theme"
+  install -Dm755 "$_root/core/libexec/scottland-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-solar-theme"
+  install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
 package_scottland-omarchy() {

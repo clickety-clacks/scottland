@@ -3,15 +3,16 @@ DEV := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/dev
 CONF := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/scottland
 RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 
-.PHONY: plugin tools tools-test dev-install link-dev test-hooks hooks dev-uninstall package clean
+.PHONY: plugin tools tools-test solar-transition-test dev-install link-dev test-hooks hooks dev-uninstall package clean
 
 # Optimized with debug info, asserts and frame pointers: unoptimized builds ran the plugin's CPU
 # paths 7-9x slower and froze the pointer (docs/compositor-hangs.md); cores and stacks stay readable.
 PLUGIN_OPTS := -Dbuildtype=debugoptimized -Db_ndebug=false -Dcpp_args=-fno-omit-frame-pointer
+MESON_JOBS ?=
 
 plugin:
 	meson setup build core/plugin --reconfigure $(PLUGIN_OPTS) 2>/dev/null || meson setup build core/plugin $(PLUGIN_OPTS)
-	meson compile -C build
+	meson compile -C build $(if $(MESON_JOBS),--jobs $(MESON_JOBS),)
 
 # Scottland's system tools (core/tools), installed into build/tools/bin. Every crate under
 # core/tools/bin is one command and is built, installed and linked by name: a new tool needs no
@@ -24,6 +25,9 @@ tools:
 
 tools-test:
 	$(CARGO) test --locked --manifest-path core/tools/Cargo.toml --target-dir build/cargo
+
+solar-transition-test:
+	python3 tests/solar-transition-test.py
 
 # The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
 # here doesn't touch it until the next dev-install (and reload). Refuses uncommitted work, so what
@@ -106,7 +110,8 @@ hooks:
 # The same, inside this checkout (build/hooks), for its headless test sessions only
 # (tests/headless.sh): test sessions of different checkouts on one machine never run each other's
 # helpers, and the user's own session is untouched.
-test-hooks: plugin tools
+test-hooks: tools
+	$(MAKE) --no-print-directory plugin MESON_JOBS=2
 	$(MAKE) --no-print-directory hooks HOOKS_DIR=$(CURDIR)/build/hooks
 
 dev-uninstall:

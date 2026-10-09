@@ -10,15 +10,17 @@ import subprocess
 from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
-art = root/"build/solar-test-evidence"
-art.mkdir(parents=True, exist_ok=True)
+art = root/"build"/f"solar-test-evidence-{os.getpid()}"
+art.mkdir(parents=True, exist_ok=False)
 os.environ["XDG_CONFIG_HOME"] = str(art/"config")
 os.environ["XDG_STATE_HOME"] = str(art/"state")
 os.environ["WAYLAND_DISPLAY"] = "wayland-solar-test"
 os.environ["SCOTTLAND_SOLAR_MODE_FILE"] = str(art/"state/scottland/wayland-solar-test.solar-mode")
+os.environ["SCOTTLAND_SOLAR_TRANSITION_FILE"] = str(art/"state/scottland/solar-transition.json")
 os.environ["SCOTTLAND_OMARCHY_CURRENT"] = str(art/"state/omarchy/current")
 core = SourceFileLoader("scottland_solar", str(root/"core/libexec/scottland-solar-theme")).load_module()
 adapter = SourceFileLoader("scottland_omarchy_solar", str(root/"omarchy/libexec/scottland-omarchy-solar-theme")).load_module()
+core.TRANSITION.unlink(missing_ok=True)
 adapter.config_file.unlink(missing_ok=True)
 passed = 0
 
@@ -42,8 +44,8 @@ core.CONFIG.write_text("[solar]\nenabled = false\nallow_ip = false\n")
 with patch.object(core,"geoclue_location",side_effect=AssertionError("disabled called Geoclue")), patch.object(core,"ip_location",side_effect=AssertionError("disabled used network")):
     check("disabled schedule does not locate", core.run_once() is None)
 core.CONFIG.write_text("[solar]\nenabled = true\nlocation_set = true\nlatitude = 37.77\nlongitude = -122.42\nallow_ip = false\n")
-with patch.object(core,"geoclue_location",return_value=None), patch.object(core,"ip_location",side_effect=AssertionError("network without consent")), patch.object(core,"solar_mode",return_value="light"), patch.object(core,"current_mode",return_value="light"), patch.object(core.subprocess,"run",side_effect=AssertionError("matching mode changed")):
-    core.run_once()
+with patch.object(core,"geoclue_location",return_value=None), patch.object(core,"ip_location",side_effect=AssertionError("network without consent")), patch.object(core,"solar_transition",return_value=("light","2026-06-21T12:00Z")), patch.object(core,"current_mode",return_value="light"), patch.object(core.subprocess,"run",side_effect=AssertionError("matching mode changed")):
+    core.run_once(datetime(2026,6,21,20,tzinfo=timezone.utc),location_override=(37.77,-122.42))
 check("matching mode retained and desired mode published",core.MODE.read_text().strip() in ("light","dark"))
 core.CONFIG.write_text("[solar]\nenabled = true\nlocation_set = false\nallow_ip = true\n")
 with patch.object(core,"geoclue_location",return_value=None), patch.object(core,"ip_location",return_value=(37.77,-122.42)) as network, patch.object(core,"apply"):

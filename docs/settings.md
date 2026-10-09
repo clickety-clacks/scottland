@@ -24,7 +24,7 @@ Super+, opens Scottland Settings: Layout, Goo, Window mode, Translucency, Widget
 | S18 | Curve knobs are easy to grab: generous hit targets (at least ~24 pt) with a visible hover/selected state. A clicked knob is selected; Delete or Backspace removes the selected knob (endpoints can't be removed); double-click/right-click removal may remain. (Mike, 2026-10-02) | implemented; isolated headless real-input checks and screenshots; see redesign validation below |
 | S19 | Scottland Settings has a Widgets tab for widget behavior: elastic expand/contract bounce (WG23), hover and attention peek timing (WG19), the live `widget_make_room_dwell` rail-pause setting (WG26; default 350 ms, range 100–1500 ms) and the Super+M hold delay (WG16). The controls share the S16 design system and live preview with Save/Cancel/Defaults. | implemented; Plumbus headless settings and rail-pause input checks (2026-10-04); Super+M hold delay headless |
 | S20 | The Translucency tab has focused/unfocused opacity pairs for center windows, side-zone windows and widgets (all default fully opaque); Window mode has its own focused/unfocused pair, applied while active. Values preview live and ease over 180 ms as focus or zone changes. Fullscreen stays opaque. S11 hints and Save/Cancel/Defaults cover every pair. | implemented (headless) |
-| S21 | Sunlight follows local sunrise and sunset when enabled, changing the standard light/dark preference only if its current mode is wrong, leaving a matching user-picked theme alone. System Geoclue city-level location comes first, followed by coordinates saved once in Settings; IP location is the last fallback. On by default, location included (Mike, 2026-10-02: he didn't ask for this panel but keeps it); both can be turned off; Save/Cancel/Defaults apply to `solar.ini`. The distro's cross-app theme engine and named day/night defaults stay outside core. | implemented (headless) |
+| S21 | Sunlight follows local sunrise and sunset when enabled, applying the standard light/dark preference once for each new period. It applies the current period on first enable or after a transition missed while disabled or asleep. Manual changes hold between transitions; Settings Save does not apply. System Geoclue city-level location comes first, followed by coordinates saved once in Settings; IP location is the last fallback. On by default, location included (Mike, 2026-10-02: he didn't ask for this panel but keeps it); both can be turned off; Save/Cancel/Defaults apply to `solar.ini`. The distro's cross-app theme engine and named day/night defaults stay outside core. | candidate; isolated 0.3 author checks and real-session acceptance pending |
 | S22 | The Goo settings appearance rows tune the unfocused edge on both render paths: the active scheme's neutral gray level (with separate saved light/dark values) and its continuous tint strength from clear refraction to the existing look. Changes preview live; this A16 control leaves focus, attention and Window mode hint colors at full strength, while the separate GO23 Dye strength control scales them. Defaults, Save and Cancel include both tone values and strength. | implemented; plumbus headless two-output slider, save/reset coverage (2026-10-03) |
 
 | S23 | Window mode has one “Hint background opacity” slider (WK42), 0–100%, default 21. It sets the absolute opacity of the background behind window and widget hint letters alike, previewed live: 100% is a solid backing, 0% none. Letter foreground and window opacity are unchanged. It uses the existing parameter row, help, saved/current value readback and Save/Cancel/Defaults transaction. (Mike, 2026-10-06; made absolute and shared by both hint kinds the same day: "it should set both. having them different is a bug.") | prior integration-tree checks passed; current main-based runner result pending |
@@ -253,11 +253,17 @@ control. Widget peek delays default to 150 ms on hover, 100 ms on leave and 5000
 Sunlight writes `~/.config/scottland/solar.ini`. Latitude and longitude are used only if the
 system location service is unavailable; entering both coordinates enables the saved pair.
 The network lookup switch is off by default and calls ipapi.co only after explicit permission.
-A matching current light/dark preference is left alone. The per-session desired mode is published
-in `<XDG_STATE_HOME>/scottland/<WAYLAND_DISPLAY>.solar-mode` for adapters.
-An isolated headless `once` run used the keyfile GSettings backend and saved coordinates when
-Geoclue was unavailable: it changed `prefer-dark` to `prefer-light` for daylight and published
-`light` in that session's state directory. No live preference or personal solar config was changed.
+The core watcher may poll to notice a boundary, re-enable, or a missed interval, but it applies
+the preference only when the persisted transition identity advances. The record at
+`<XDG_STATE_HOME>/scottland/solar-transition.json` carries the enabled state, location, mode,
+`transition_id`, `last_applied` and adapter `consumer_ack`; repeated checks with the same identity
+leave a manual light/dark choice unchanged.
+First enable, re-enable, or wake after a missed boundary applies the current period once. Settings
+Save updates the future location schedule and does not apply. The per-session desired mode remains
+published in `<XDG_STATE_HOME>/scottland/<WAYLAND_DISPLAY>.solar-mode` for adapters. The Omarchy
+adapter's separate source change consumes the same transition identity and acknowledges it after
+a successful theme action; it must not rewrite a manual theme on a same-period mismatch.
+Fresh-process transition restart coverage is pending the isolated 0.3 author-check route.
 
 ## Hint background opacity (S23 / WK42, 2026-10-06)
 
