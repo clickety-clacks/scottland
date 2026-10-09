@@ -149,6 +149,27 @@ fn list_short_names(program: &str, args: &[&str], action: &str) -> Result<Vec<St
         .collect())
 }
 
+fn move_streams<F>(
+    stream_ids: Vec<String>,
+    target: &str,
+    mut move_stream: F,
+) -> Result<(), Vec<String>>
+where
+    F: FnMut(&str, &str) -> Result<(), String>,
+{
+    let mut failures = Vec::new();
+    for id in stream_ids {
+        if let Err(error) = move_stream(&id, target) {
+            failures.push(error);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures)
+    }
+}
+
 fn input_set_default(source_name: &str) -> Result<(), String> {
     if source_name.is_empty() {
         return Err("usage: scottland audio input set <source-name>".into());
@@ -173,17 +194,25 @@ fn input_set_default(source_name: &str) -> Result<(), String> {
         &["list", "short", "source-outputs"],
         "list recording streams",
     )?;
-    for id in active
+    let stream_ids = active
         .lines()
         .filter_map(|line| line.split_whitespace().next())
-    {
+        .map(str::to_string)
+        .collect();
+    move_streams(stream_ids, source_name, |id, target| {
         run_checked(
             "pactl",
-            &["move-source-output", id, source_name],
-            &format!("move recording stream {id} to {source_name}"),
+            &["move-source-output", id, target],
+            &format!("move recording stream {id} to {target}"),
         )
-        .map_err(|error| format!("default input is {source_name}, but {error}"))?;
-    }
+        .map(|_| ())
+    })
+    .map_err(|failures| {
+        format!(
+            "default input is {source_name}, but {}",
+            failures.join("; ")
+        )
+    })?;
     Ok(())
 }
 
@@ -249,18 +278,20 @@ fn output_set_default(sink_name: &str) -> Result<(), OutputSetFailure> {
         "list playback streams",
     )
     .map_err(OutputSetFailure::after_confirmation)?;
-    for id in application_sink_inputs(&active) {
+    move_streams(application_sink_inputs(&active), sink_name, |id, target| {
         run_checked(
             "timeout",
-            &["2", "pactl", "move-sink-input", &id, sink_name],
-            &format!("move playback stream {id} to {sink_name}"),
+            &["2", "pactl", "move-sink-input", id, target],
+            &format!("move playback stream {id} to {target}"),
         )
-        .map_err(|error| {
-            OutputSetFailure::after_confirmation(format!(
-                "default output is {sink_name}, but {error}"
-            ))
-        })?;
-    }
+        .map(|_| ())
+    })
+    .map_err(|failures| {
+        OutputSetFailure::after_confirmation(format!(
+            "default output is {sink_name}, but {}",
+            failures.join("; ")
+        ))
+    })?;
     Ok(())
 }
 
@@ -1155,6 +1186,39 @@ mod tests {
             Err("default output is headphones, but stream 44 could not move".into())
         );
         assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn stream_moves_continue_after_failure_and_report_each_failed_stream() {
+        let mut attempted = Vec::new();
+        let result = move_streams(
+            vec!["11".into(), "12".into(), "13".into()],
+            "headphones",
+            |id, target| {
+                attempted.push((id.to_string(), target.to_string()));
+                if id == "12" {
+                    Ok(())
+                } else {
+                    Err(format!("stream {id} could not move to {target}"))
+                }
+            },
+        );
+
+        assert_eq!(
+            attempted,
+            vec![
+                ("11".to_string(), "headphones".to_string()),
+                ("12".to_string(), "headphones".to_string()),
+                ("13".to_string(), "headphones".to_string()),
+            ]
+        );
+        assert_eq!(
+            result,
+            Err(vec![
+                "stream 11 could not move to headphones".into(),
+                "stream 13 could not move to headphones".into(),
+            ])
+        );
     }
 
     #[test]
