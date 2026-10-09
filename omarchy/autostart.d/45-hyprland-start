@@ -3,8 +3,9 @@
 # and o.launch_on_start: Sunshine, udiskie, power profiles, post-boot hooks, ...) once per session,
 # as Hyprland does when it starts. The Lua host runs them; reloads and config changes never do.
 #
-# Only when Scottland is the user's only graphical session. Beside Hyprland (keep mode) Hyprland
-# has already run them, and whether a second copy should start here is not decided yet.
+# Only when Scottland is the user's only graphical session, as core's 05-import-environment does
+# for user services. Switching always closes the other desktop; a Hyprland still running beside
+# this session (Scottland started some other way, e.g. from a text console) has run them already.
 state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
 mkdir -p "$state"
 log() { echo "$(date +%T) hyprland.start: $*" >>"$state/luahost.log"; }
