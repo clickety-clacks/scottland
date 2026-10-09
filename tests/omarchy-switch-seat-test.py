@@ -37,10 +37,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from omarchy_fixture import REPO, Checks, read_ppm  # noqa: E402
-from seat_test_scratch import OwnedScratch  # noqa: E402
+from seat_test_scratch import create_after_preflight  # noqa: E402
 
-SCRATCH = OwnedScratch(REPO / "build")
-OUT = SCRATCH.path
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 REMEMBERED = CONFIG / "scottland/switch.json"
@@ -50,6 +48,7 @@ KEY_SERVICES = ["xdg-desktop-portal.service", "app-com.onepassword.OnePassword@a
                 "voxtype.service", "omarchy-fcitx5.service"]
 check = Checks()
 log_lines = []
+ppm_outputs = set()
 
 
 def log(message):
@@ -201,6 +200,7 @@ def grab(name, runner):
     """Screenshot through `runner` (a function running grim inside the desktop): (ppm, png)."""
     ppm = SCRATCH.output(f"{name}.ppm")
     png = SCRATCH.output(f"{name}.png")
+    ppm_outputs.add(ppm)
     SCRATCH.remove(ppm)
     SCRATCH.remove(png)
     runner(["timeout", "5", "grim", "-t", "ppm", str(ppm)])
@@ -281,8 +281,9 @@ before = hyprland()
 sessions = graphical_sessions()
 start = active_session()
 log(f"start: seat0 active session {start}, graphical sessions {sessions}, Hyprland {before}")
-if not before or len(sessions) != 1:
-    log("not starting from a single Hyprland session; nothing done")
+SCRATCH = create_after_preflight(REPO / "build", before, sessions, start)
+if SCRATCH is None:
+    log("preflight refused: expected one active Hyprland graphical session; no evidence directory created")
     sys.exit(2)
 had_remembered = REMEMBERED.exists()
 sig, hdisplay, hpid = before
@@ -383,6 +384,7 @@ for path_ in quickshell_logs(qs_pids):
         path_.unlink()
     elif path_.is_dir() and path_.is_relative_to(RUNTIME / "quickshell"):
         shutil.rmtree(path_)
-SCRATCH.remove_suffix(".ppm")
+for ppm in sorted(ppm_outputs):
+    SCRATCH.remove(ppm)
 SCRATCH.output("seat.log").write_text("\n".join(log_lines) + "\n")
 sys.exit(check.summary())

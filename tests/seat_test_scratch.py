@@ -53,8 +53,10 @@ class OwnedScratch:
             raise RuntimeError("refusing to remove a redirected seat-test output")
         path.unlink(missing_ok=True)
 
-    def remove_suffix(self, suffix):
-        """Remove only this run's allocated files with the requested suffix."""
-        for path in tuple(self._outputs):
-            if path.suffix == suffix:
-                self.remove(path)
+
+def create_after_preflight(parent, before, sessions, active):
+    """Allocate evidence scratch only for one active graphical Hyprland session."""
+    if (not before or len(sessions) != 1 or active not in sessions
+            or "hyprland" not in str(sessions[active]).lower()):
+        return None
+    return OwnedScratch(parent)
