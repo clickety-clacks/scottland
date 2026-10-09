@@ -102,7 +102,7 @@ def toward_paper(before, after, paper):
     """Project each measured change onto its same-position paper-color direction."""
     if not (len(before) == len(after) == len(paper)):
         raise AssertionError('paired scene samples have different lengths')
-    dots = []; norms = []; magnitudes = []
+    dots = []; norms = []; magnitudes = []; shifts = []; targets = []
     for b, a, p in zip(before, after, paper):
         d = [x-y for x, y in zip(a, b)]
         t = [x-y for x, y in zip(p, b)]
@@ -111,13 +111,23 @@ def toward_paper(before, after, paper):
         dots.append(sum(x*y for x, y in zip(d, t)))
         norms.append(norm)
         magnitudes.append(sum(abs(x) for x in d)/3)
+        shifts.append(d); targets.append(t)
     if not norms:
         raise AssertionError('paper control has no color direction at sampled points')
+    # Remove each channel's spatial mean. A uniform RGB wash then has no spatial
+    # variation to correlate with the local paper pattern.
+    mean_d = [sum(sample[c] for sample in shifts)/len(shifts) for c in range(3)]
+    mean_t = [sum(sample[c] for sample in targets)/len(targets) for c in range(3)]
+    centered_d = [sample[c]-mean_d[c] for sample in shifts for c in range(3)]
+    centered_t = [sample[c]-mean_t[c] for sample in targets for c in range(3)]
+    d_energy = sum(v*v for v in centered_d); t_energy = sum(v*v for v in centered_t)
+    pattern = (sum(x*y for x, y in zip(centered_d, centered_t))/math.sqrt(d_energy*t_energy)
+               if d_energy > 1e-9 and t_energy > 1e-9 else 0.)
     return {'toward_fraction': round(sum(dots)/sum(norms), 6),
             'projected_shift': round(sum(d/math.sqrt(n) for d, n in zip(dots, norms))/len(norms), 6),
             'toward_points': sum(d > 0 for d in dots), 'sampled_points': len(norms),
             'mean_abs_shift': round(sum(magnitudes)/len(magnitudes), 6),
-            'max_abs_shift': differ(before, after)}
+            'max_abs_shift': differ(before, after), 'local_pattern_correlation': round(pattern, 6)}
 
 clients = []
 try:
@@ -191,7 +201,7 @@ try:
     def measurable(signal, noise_floor):
         return (signal['toward_fraction'] > 0 and
                 signal['toward_points'] >= (signal['sampled_points'] + 1)//2 and
-                signal['projected_shift'] > noise_floor)
+                signal['projected_shift'] > math.sqrt(3)*noise_floor)
     check('full-band dye shifts toward paper at the shipped soak',
           measurable(full_dye_signal, noise['full_dye']),
           {'signal': full_dye_signal, 'noise_max': noise['full_dye']})
@@ -207,6 +217,16 @@ try:
     check('thin-band paper-directed dye shift remains a fair part of full band',
           thin_dye_signal['projected_shift'] > .25*full_dye_signal['projected_shift'] > 0,
           {'thin': thin_dye_signal['projected_shift'], 'full': full_dye_signal['projected_shift']})
+    check('dye shift co-varies positively with local paper pattern in both bands',
+          full_dye_signal['local_pattern_correlation'] > 0 and
+          thin_dye_signal['local_pattern_correlation'] > 0,
+          {'full': full_dye_signal['local_pattern_correlation'],
+           'thin': thin_dye_signal['local_pattern_correlation']})
+    check('screen pixel shift co-varies positively with local paper pattern in both bands',
+          full_pixel_signal['local_pattern_correlation'] > 0 and
+          thin_pixel_signal['local_pattern_correlation'] > 0,
+          {'full': full_pixel_signal['local_pattern_correlation'],
+           'thin': thin_pixel_signal['local_pattern_correlation']})
 
     def rows(path, ys):
         import gi
@@ -219,16 +239,15 @@ try:
                 for y in ys]
     f = view('water-full')['frame']
     ys = (f['y']-2, f['y']-8)
-    # The band row follows the wallpaper's patches beneath it. (GO28 retired the GO24 wall
-    # band: the wall row now mixes the state color with what lies beneath too; its spread is
-    # reported, not judged.)
+    # GO28's same-scene point pairs measure local color pickup. Row spread is retained as
+    # a descriptive diagnostic; the watercolor mixes state color with the wallpaper beneath.
     def spread(row):
         total = 0
         for c in range(3):
             v = row[c::3]; mean = sum(v)/len(v); total += (sum((x-mean)**2 for x in v)/len(v))**.5
         return total/3
     wall_row, band_row = rows(out/'rest-a.png', ys)
-    check('on screen the band follows the wallpaper beneath it',
+    check('screen-band pixels vary along the window edge',
           spread(band_row) > 5,
           {'wall spread': spread(wall_row), 'band spread': spread(band_row)})
     print(json.dumps({'path': {'packed': s0['packed']}, 'noise': noise,
