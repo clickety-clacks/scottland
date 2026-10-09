@@ -1010,8 +1010,11 @@ try:
     subprocess.run(["c++", "-std=c++17", str(repo / "tests/wf-config-screen-zones.cpp"),
                     "-o", str(wf_config_probe), *wf_config_flags],
                    check=True, capture_output=True, text=True, timeout=30)
-    parsed_config_value = subprocess.check_output(
+    wf_config_output = subprocess.check_output(
         [str(wf_config_probe), str(assembled_config)], text=True, timeout=5)
+    parsed_config_value = next((line.removeprefix("WF_CONFIG_SCREEN_ZONES=")
+                                for line in reversed(wf_config_output.splitlines())
+                                if line.startswith("WF_CONFIG_SCREEN_ZONES=")), "")
     try:
         parsed_config_zones = json.loads(parsed_config_value)
     except json.JSONDecodeError:

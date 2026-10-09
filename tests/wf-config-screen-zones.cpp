@@ -26,6 +26,6 @@ int main(int argc, char **argv)
         return 3;
     }
 
-    std::cout << screen_zones->get_value_str();
+    std::cout << "WF_CONFIG_SCREEN_ZONES=" << screen_zones->get_value_str() << '\n';
     return 0;
 }
