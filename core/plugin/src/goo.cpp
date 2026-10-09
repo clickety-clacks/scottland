@@ -161,13 +161,6 @@ class goo_node_t : public wf::scene::node_t
     std::function<void()> failed;
     goo_t::source_provider_t snapshot;
     uint64_t topology_prepares = 0;
-    wf::signal::connection_t<wf::output_configuration_changed_signal> configuration_changed =
-        [this] (wf::output_configuration_changed_signal *e)
-    {
-        if (e->changed_fields & (wf::OUTPUT_MODE_CHANGE | wf::OUTPUT_SCALE_CHANGE |
-                                 wf::OUTPUT_POSITION_CHANGE | wf::OUTPUT_TRANSFORM_CHANGE))
-            prepare_output();
-    };
     goo_node_t(wf::output_t *o, goo_t::source_provider_t provider) : node_t(false), snapshot(std::move(provider))
     {
         state.output = o;
@@ -175,12 +168,10 @@ class goo_node_t : public wf::scene::node_t
         state.wake = [this] { wake("frame"); };
         pre = [this] { prepare(); };
         o->render->add_effect(&pre, wf::OUTPUT_EFFECT_PRE);
-        o->connect(&configuration_changed);
     }
     ~goo_node_t() { detach(); }
     void detach()
     {
-        configuration_changed.disconnect();
         wallpaper_nodes.clear();
         pickup_timer.disconnect();
         check_timer.disconnect();
@@ -1040,16 +1031,58 @@ struct goo_t::impl
     wf::wl_idle_call fallback;
     goo_t::source_provider_t snapshot;
     std::function<void(wf::output_t *, bool)> screen_changed;
+    std::function<void(wf::output_t *)> output_configured;
     wf::option_wrapper_t<bool> enabled{"scottland/goo"};
     wf::option_wrapper_t<bool> breath_keys{"scottland/goo_breath_keys"};
     wf::option_wrapper_t<std::string> curve{"scottland/goo_falloff"};
     std::vector<std::unique_ptr<wf::option_wrapper_t<double>>> options;
     std::map<wf::output_t *, std::shared_ptr<goo_node_t>> nodes;
+    struct output_listener_t
+    {
+        impl *owner;
+        wf::output_t *output;
+        wf::signal::connection_t<wf::output_configuration_changed_signal> changed =
+            [this] (wf::output_configuration_changed_signal *e)
+        {
+            if (!(e->changed_fields & (wf::OUTPUT_MODE_CHANGE | wf::OUTPUT_SCALE_CHANGE |
+                wf::OUTPUT_POSITION_CHANGE | wf::OUTPUT_TRANSFORM_CHANGE)))
+                return;
+            auto node = owner->nodes.find(output);
+            if (node != owner->nodes.end()) node->second->prepare_output();
+            if (owner->output_configured) owner->output_configured(output);
+        };
+        output_listener_t(impl *owner, wf::output_t *output) : owner(owner), output(output)
+        {
+            output->connect(&changed);
+        }
+    };
+    std::map<wf::output_t *, std::unique_ptr<output_listener_t>> output_listeners;
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc;
     wf::signal::connection_t<wf::output_added_signal> added = [this](wf::output_added_signal *e)
-    { add(e->output); };
+    {
+        watch_output(e->output);
+        add(e->output);
+        if (output_configured) output_configured(e->output);
+    };
     wf::signal::connection_t<wf::output_removed_signal> removed = [this](wf::output_removed_signal *e)
-    { remove(e->output); };
+    {
+        unwatch_output(e->output);
+        remove(e->output);
+    };
+    void watch_output(wf::output_t *output)
+    {
+        if (!output_listeners.count(output))
+            output_listeners[output] = std::make_unique<output_listener_t>(this, output);
+    }
+    void unwatch_output(wf::output_t *output)
+    {
+        auto found = output_listeners.find(output);
+        if (found != output_listeners.end())
+        {
+            found->second->changed.disconnect();
+            output_listeners.erase(found);
+        }
+    }
     struct option_t
     {
         const char *name;
@@ -1371,11 +1404,13 @@ struct goo_t::impl
 };
 goo_t::goo_t() : p(std::make_unique<impl>()) {}
 goo_t::~goo_t() = default;
-void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed)
+void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed,
+    std::function<void(wf::output_t *)> output_configured)
 {
     goo::shape_cache_t::prepare();
     p->snapshot = std::move(snapshot);
     p->screen_changed = std::move(screen_changed);
+    p->output_configured = std::move(output_configured);
     for (auto &field : p->fields)
     {
         auto o = std::make_unique<wf::option_wrapper_t<double>>(std::string("scottland/goo_") + field.name);
@@ -1393,6 +1428,8 @@ void goo_t::start(source_provider_t snapshot, std::function<void(wf::output_t *,
     p->curve.set_callback([this] { p->config(); });
     wf::get_core().output_layout->connect(&p->added);
     wf::get_core().output_layout->connect(&p->removed);
+    for (auto output : wf::get_core().output_layout->get_outputs())
+        p->watch_output(output);
     p->ipc->register_method("scottland/goo-state", p->state);
     p->config();
 }
@@ -1401,6 +1438,8 @@ void goo_t::stop()
     p->fallback.disconnect();
     p->added.disconnect();
     p->removed.disconnect();
+    while (!p->output_listeners.empty())
+        p->unwatch_output(p->output_listeners.begin()->first);
     p->ipc->unregister_method("scottland/goo-state");
     while (!p->nodes.empty())
         p->remove(p->nodes.begin()->first);
