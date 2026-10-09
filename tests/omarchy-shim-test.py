@@ -52,6 +52,39 @@ end)
 (fixture.home / ".config/omarchy/branding").mkdir(parents=True)
 (fixture.home / ".config/omarchy/branding/screensaver.txt").write_text("Scottland\n")
 
+# These implement only the stock launcher's exact monitor-list query and Hyprland event-socket
+# stream; the shim and Wayfire still produce and serve the observations under test.
+jq = fixture.bin / "jq"
+jq.write_text('''#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1:] != ["-r", ".[] | .name"]:
+    sys.exit(f"unexpected jq query: {sys.argv[1:]}")
+for output in json.load(sys.stdin):
+    print(output["name"])
+''')
+jq.chmod(0o755)
+
+socat = fixture.bin / "socat"
+socat.write_text('''#!/usr/bin/env python3
+import socket
+import sys
+
+args = sys.argv[1:]
+if len(args) != 3 or args[:2] != ["-U", "-"] or not args[2].startswith("UNIX-CONNECT:"):
+    sys.exit(f"unexpected socat request: {args}")
+sock = socket.socket(socket.AF_UNIX)
+sock.connect(args[2].split(":", 1)[1])
+while True:
+    data = sock.recv(65536)
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+''')
+socat.chmod(0o755)
+
 
 def views(session):
     reply = session.ipc("window-rules/list-views")
