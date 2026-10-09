@@ -158,9 +158,10 @@ The generic list picker command and its command/IO contract are in
 
 | ID | Invariant | Status |
 |---|---|---|
-| CH1–CH14 | Clipboard history watches the regular clipboard, keeps up to 50 recent text/image entries in session memory, honors password-manager secret markers, uses the generic picker, and supports copy, paste, open and clear commands without a new package dependency. Full contract and commands: [../docs/clipboard.md](../docs/clipboard.md). | not built; source candidate awaiting the shared build and session run |
-| KB1–KB8 | The searchable shortcut sheet reads the assembled session configuration when opened, lists each chord and plain label, supports the print mode, and runs runnable actions through the compositor. Full contract and command: [../docs/keybinding-cheat-sheet.md](../docs/keybinding-cheat-sheet.md). | not built; source candidate awaiting the shared build and session run |
-| EM1–EM8 | The emoji command searches the bundled fully-qualified Unicode emoji list, inserts into the window focused before the picker while restoring the clipboard, and supports copy mode. Full contract and command: [../docs/emoji.md](../docs/emoji.md). | not built; source candidate awaiting the shared build and session run |
+| CH1–CH10, CH12–CH14 | Clipboard history watches the regular clipboard, keeps up to 50 recent text/image entries in session memory, honors password-manager secret markers, uses the generic picker, and supports copy, paste and open commands without a new package dependency. Full contract and commands: [../docs/clipboard.md](../docs/clipboard.md). | source present; build and session validation pending; CH11 has an open empty-list contract conflict |
+| CH11 | Clear history and show the empty history list. | blocked: generic picker contract cancels on empty input; owner ruling pending |
+| KB1–KB8 | The searchable shortcut sheet reads the assembled session configuration when opened, lists each chord and plain label, supports the print mode, and runs runnable actions through the compositor. Full contract and command: [../docs/keybinding-cheat-sheet.md](../docs/keybinding-cheat-sheet.md). | source present; build and session validation pending |
+| EM1–EM8 | The emoji command searches the bundled fully-qualified Unicode emoji list, inserts into the window focused before the picker while restoring the clipboard, and supports copy mode. Full contract and command: [../docs/emoji.md](../docs/emoji.md). | source and generated data present; build and session validation pending |
 
 ## Session
 

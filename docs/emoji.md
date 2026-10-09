@@ -25,9 +25,9 @@ network. The source file and Unicode License v3 notice are included in the repos
 
 | ID | Invariant | Status |
 |---|---|---|
-| EM1–EM2 | Search the shipped fully-qualified emoji list by its Unicode name in the generic picker. | not built |
-| EM3–EM4 | Insert into the original target and restore the earlier clipboard without adding the emoji to history. | not built |
-| EM5–EM7 | Copy mode does not paste; cancel and a closed target do not alter the clipboard. | not built |
-| EM8 | Generate and package the data locally with no new package dependency or runtime network use. | not built |
+| EM1–EM2 | Search the shipped fully-qualified emoji list by its Unicode name in the generic picker. | source and generated data present; build and session validation pending |
+| EM3–EM4 | Insert into the original target and restore the earlier clipboard without adding the emoji to history. | source present; build and session validation pending |
+| EM5–EM7 | Copy mode does not paste; cancel and a closed target do not alter the clipboard. | source present; build and session validation pending |
+| EM8 | Generate and package the data locally with no new package dependency or runtime network use. | source and generated data present; packaging validation pending |
 
 Unicode source data: https://www.unicode.org/Public/18.0.0/emoji/emoji-test.txt

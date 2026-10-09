@@ -27,7 +27,7 @@ If no registered compositor action can be invoked directly, choosing it also doe
 
 | ID | Invariant | Status |
 |---|---|---|
-| KB1–KB2 | Show every shortcut in the current assembled configuration at invocation time. | not built |
-| KB3–KB4 | Give base shortcuts plain labels and display multi-chord bindings on one line. | not built |
-| KB5–KB7 | Narrow in the generic picker, run runnable actions against their target, and leave holds/pointer chords as no-ops. | not built |
-| KB8 | Fail with one reason and no partial list when configuration cannot be read. | not built |
+| KB1–KB2 | Show every shortcut in the current assembled configuration at invocation time. | source present; build and session validation pending |
+| KB3–KB4 | Give base shortcuts plain labels and display multi-chord bindings on one line. | source present; build and session validation pending |
+| KB5–KB7 | Narrow in the generic picker, run runnable actions against their target, and leave holds/pointer chords as no-ops. | source present; build and session validation pending |
+| KB8 | Fail with one reason and no partial list when configuration cannot be read. | source present; build and session validation pending |

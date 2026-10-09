@@ -50,9 +50,9 @@ ruling before the picker contract is changed.
 
 | ID | Invariant | Status |
 |---|---|---|
-| CH1–CH4 | Add copies newest-first, deduplicate, cap history at 50, and honor the secret marker. | not built |
-| CH5 | Keep history only in the session service's memory and restrict its socket to the user. | not built |
-| CH6–CH9 | Search with the generic picker; select exact entries; copy, paste or open them. | not built |
-| CH10, CH12–CH13 | Copy text/files and preserve the specified failure behavior. | not built |
+| CH1–CH4 | Add copies newest-first, deduplicate, cap history at 50, and honor the secret marker. | source present; build and session validation pending |
+| CH5 | Keep history only in the session service's memory and restrict its socket to the user. | source present; build and session validation pending |
+| CH6–CH9 | Search with the generic picker; select exact entries; copy, paste or open them. | source present; build and session validation pending |
+| CH10, CH12–CH13 | Copy text/files and preserve the specified failure behavior. | source present; build and session validation pending |
 | CH11 | Clear history and show the empty history list. | blocked: conflicts with LP empty-input contract; owner ruling pending |
-| CH14 | Use compositor protocols without adding a package dependency or borrowing a clipboard tool. | not built |
+| CH14 | Use compositor protocols without adding a package dependency or borrowing a clipboard tool. | source present; protocol availability and session validation pending |
