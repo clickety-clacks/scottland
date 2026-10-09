@@ -17,7 +17,7 @@ import socket
 import struct
 import sys
 
-NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", "blend_width")
+NAMES = ("center_width", "rail_width", "min_scale", "max_scale", "scale_curve", "blend_width", "screen_zones")
 GOO = ("goo", "goo_breath_keys", "goo_falloff", "goo_thickness", "goo_reach", "goo_thinning", "goo_swell",
        "goo_noise", "goo_lump", "goo_drift", "goo_wave_speed", "goo_wave_damp", "goo_wave_height",
        "goo_spread", "goo_swirl", "goo_release", "goo_shine", "goo_relief", "goo_depth", "goo_profile", "goo_soak", "goo_pickup_balance",
@@ -32,7 +32,7 @@ UNFOCUSED_EDGE = ("unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfo
 NAMES += GOO + UNFOCUSED_EDGE + ("cycle_overshoot", "key_impulse", "key_friction", "resize_impulse", "resize_friction",
                 "key_max_velocity", "alt_hold_delay", "window_double_tap_delay", "window_mode_tint", "hint_background_opacity", "window_hold_delay") + WIDGETS + OPACITY
 NAMES += ("window_avoidance_always", "solo_audition_hotspot")
-TEXT = ("scale_curve", "goo_falloff", "attention_color_family")
+TEXT = ("scale_curve", "screen_zones", "goo_falloff", "attention_color_family")
 # Renamed settings: the old name is still accepted (Mike, 2026-10-05: dye strength is dye density).
 LEGACY_OPTIONS = {"hint_avoidance_always": "window_avoidance_always", "goo_dye_strength": "goo_dye_density"}
 ACCEPTED_NAMES = set(NAMES) | set(LEGACY_OPTIONS)
@@ -85,6 +85,13 @@ def main():
             if "value" in reply:
                 if name in BOOL:
                     values[name] = str(reply["value"]).lower() in ("true", "1")
+                elif name == "screen_zones":
+                    try:
+                        values[name] = json.loads(reply["value"] or "[]")
+                        if not isinstance(values[name], list):
+                            values[name] = []
+                    except (TypeError, json.JSONDecodeError):
+                        values[name] = []
                 else:
                     values[name] = reply["value"] if name in TEXT else float(reply["value"])
                 if name == "window_avoidance_always":
@@ -107,6 +114,7 @@ def main():
                 else:
                     unsupported.append(name)
         values["unsupported"] = unsupported
+        values["outputs"] = call(sock, "scottland/layout-state", {}).get("outputs", [])
         print(json.dumps(values))
     elif command == "set" and len(sys.argv) == 4 and sys.argv[2] in ACCEPTED_NAMES:
         print(json.dumps(call(sock, "wayfire/set-config-options", setting_updates(sys.argv[2], sys.argv[3], sock))))

@@ -27,7 +27,7 @@ Super+, opens Scottland Settings: Layout, Goo, Window mode, Translucency, Widget
 | S21 | Sunlight follows local sunrise and sunset when enabled, changing the standard light/dark preference only if its current mode is wrong, leaving a matching user-picked theme alone. System Geoclue city-level location comes first, followed by coordinates saved once in Settings; IP location is the last fallback. On by default, location included (Mike, 2026-10-02: he didn't ask for this panel but keeps it); both can be turned off; Save/Cancel/Defaults apply to `solar.ini`. The distro's cross-app theme engine and named day/night defaults stay outside core. | implemented (headless) |
 | S22 | The Goo settings appearance rows tune the unfocused edge on both render paths: the active scheme's neutral gray level (with separate saved light/dark values) and its continuous tint strength from clear refraction to the existing look. Changes preview live; this A16 control leaves focus, attention and Window mode hint colors at full strength, while the separate GO23 Dye strength control scales them. Defaults, Save and Cancel include both tone values and strength. | implemented; plumbus headless two-output slider, save/reset coverage (2026-10-03) |
 
-| S23 | Window mode has one “Hint background opacity” slider (WK42), 0–100%, default 21. It sets the absolute opacity of the background behind window and widget hint letters alike, previewed live: 100% is a solid backing, 0% none. Letter foreground and window opacity are unchanged. It uses the existing parameter row, help, saved/current value readback and Save/Cancel/Defaults transaction. (Mike, 2026-10-06; made absolute and shared by both hint kinds the same day: "it should set both. having them different is a bug.") | prior integration-tree checks passed; current main-based runner result pending |
+| S24 | Layout can edit all screens' global zone sizes or the screen Settings opened on. Its six sizes are keyed by the exact reported make/model/serial triple; outputs with the same triple share the override, and outputs with all three fields empty use global sizes. All-screens edits leave overrides intact. This-screen edits start from the override or current globals, apply to matching identities, and can reset an existing override to globals. Overlays draw each output's resolved sizes and show handles only where the current choice applies. Save stores every override in `layout.ini`; Cancel restores globals and overrides from opening. | implemented; validation pending |
 
 ## Preview and help
 
@@ -62,12 +62,27 @@ wallpaper refraction, rather than changing the goo's hit area.
 
 ## Overlay geometry and input
 
-Each screen uses its own logical width. The center boundaries are symmetric about its middle,
-and rail widths are percentages of that screen. Softness is in logical points, outside the
+Each output uses its own logical width. The center boundaries are symmetric about its middle,
+and rail widths are percentages of that output. Softness is in logical points, outside the
 center on each side. As in the compositor's `place()`, its visible width is capped at half the
 available center-to-rail span. The shaded blend band is separate from the curve shading; the
 curve shading starts at the outer edge of the band. No band is drawn where rails overlap the
-center. Changing one value previews it on every screen.
+center.
+
+The six zone sizes (center width, rail width, softness, scale curve, minimum scale and maximum
+scale) can be global or saved for one screen identity: the exact make, model and serial reported
+by the compositor. Outputs with the same triple share one override. An output with no reported
+identity follows the global sizes. The connector name is used only to match the Settings window
+to its output while the app is running; it is never saved as an identity.
+
+The Layout choice opens on “This screen” when that screen already has an override, otherwise on
+“All screens”. The target stays the screen Settings opened on, even if the window moves. “All
+screens” changes global sizes while screens with overrides keep theirs. “This screen” starts from
+its override or the current globals and edits every connected output with the same identity; an
+existing override can be reset to the global sizes. The overlay draws each output's resolved
+sizes and exposes border handles only on outputs affected by the current choice. Preview is live.
+Save writes globals and every override, including disconnected screens, to `layout.ini`; Cancel
+restores both from when Settings opened.
 
 Each border has a narrow 12-point input strip, a visible grip, and a horizontal resize cursor;
 hover brightens the border. The layer-shell input region is the union of these six strips.
@@ -85,7 +100,7 @@ and step logic as the sliders (center 10–90%, step 0.5%; rails 0.5–10%, step
 the configured width is capped, keeping the visible edge attached to the pointer.
 
 Preview updates are coalesced every 30 ms, including continuous motion. Save/Return persists
-the current shared values; Cancel/Escape restores all opening values and writes nothing,
+the current global values and all screen overrides; Cancel/Escape restores all opening values and writes nothing,
 including when Escape interrupts a held border. Borders take keyboard focus on demand to
 retain those shortcuts after a drag. Reopening reads the saved/current settings.
 

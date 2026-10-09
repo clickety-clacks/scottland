@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S1-S19 via real stipc input in a caller-owned headless session.
+"""S1-S19, S24 via real stipc input in a caller-owned headless session.
 Run with tests/headless.sh run. Requires two outputs; screenshots and logs are retained in
 build/settings-help-evidence. No live config, session or services are used.
 """
@@ -28,6 +28,8 @@ solar.unlink(missing_ok=True)
 probe_panel = None
 probe_instance_pid = None
 last_snapshot = {}
+initial_zone_options = {}
+new_test_output = None
 def settings_quickshell_pid(wrapper_pid):
     """Resolve the QML process below the headless qs/bwrap wrapper for targeted IPC."""
     deadline = time.monotonic() + 5
@@ -375,6 +377,8 @@ try:
     panel_x = outputs[0]["geometry"]["x"] + (outputs[0]["geometry"]["width"]-806)/2
     panel_y = 58
     initial = values()
+    initial_zone_options = {name: (string_option(name) if name in ("scale_curve", "screen_zones") else option(name))
+        for name in ("center_width", "rail_width", "blend_width", "min_scale", "max_scale", "scale_curve", "screen_zones")}
     initial_edge = {name: option(name) for name in (
         "unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfocused_edge_strength")}
     initial_attention_family = string_option("attention_color_family")
@@ -416,23 +420,23 @@ try:
     panel=open_panel()
     tab(0)
     for i,label in enumerate(["Center edge softness","Center zone width","Widget rail width"]):
-        point = control_point("zones",200,34+69*i)
+        point = reveal("zones",200,34+69*i)
         row_top = point[1]-34
         pointer(*point);time.sleep(.25)
         check(label+" hover hint",snapshot()["zones"]["hint"]==label)
         if i == 0:
             check("first Layout hint has its expected visible bubble",
                   shot("02-layout-hover").hint(row_top,label))
-    point = control_point("zones",200,34+69*2)
+    point = reveal("zones",200,34+69*2)
     row_top = point[1]-34
     pointer(10,690);time.sleep(.15)
     check("leaving a hovered row hides its bubble",
           not shot("02a-layout-leave").hint(row_top,"Widget rail width",expected=False))
-    click(*control_point("zones",200,34));pointer(10,690);key("KEY_BACKSPACE")
+    click(*reveal("zones",200,34));pointer(10,690);key("KEY_BACKSPACE")
     before=option("center_width");key("KEY_DOWN");key("KEY_RIGHT")
     check("keyboard step previews zone live",option_reaches("center_width",round((before+.5)*2)/2))
     check("keyboard hint follows selection",snapshot()["zones"]["hint"]=="Center zone width")
-    center_row = control_point("zones",200,34+69)[1]-29
+    center_row = reveal("zones",200,34+69)[1]-29
     check("keyboard selection draws its hint bubble",
           shot("02b-keyboard-hint").hint(center_row,"Center zone width"))
     key("KEY_UP");key("KEY_1");key("KEY_2");key("KEY_0")
@@ -711,16 +715,16 @@ try:
 
     # Cap and zero: actual geometry follows place(), and coincident handles remain reachable.
     panel = open_panel()
-    click(*control_point("zones",470,34))  # softness near 300, visibly capped at half the side span
+    click(*reveal("zones",470,34))  # softness near 300, visibly capped at half the side span
     bands("08-capped-softness")
     check("slider can exceed the effective band width", option("blend_width") > geometry(outputs[1])[-1])
-    click(*control_point("zones",20,34));key("KEY_0")  # zero softness
+    click(*reveal("zones",20,34));key("KEY_0")  # zero softness
     check("softness reaches zero", option("blend_width") == 0)
     unobscured = next(o for o in outputs if not o["geometry"]["x"] <= panel_x < o["geometry"]["x"]+o["geometry"]["width"])
     origin, width, center, rail, blend = geometry(unobscured)
     drag(origin+center, 600, -30, live_name="blend_width")
     check("coincident softness handle can open a zero band", option("blend_width") == 30)
-    click(*control_point("zones",20,34));key("KEY_0")
+    click(*reveal("zones",20,34));key("KEY_0")
     origin, width, center, rail, blend = geometry(outputs[1])
     before = option("center_width")
     drag(origin+center, 40, -32)
@@ -759,8 +763,8 @@ try:
     origin = next(o["geometry"]["x"] for o in outputs if o["id"] == output_id)
     frame = view["frame"]
     # Keep the keyboard hint visible while moving onto the app beneath it.
-    hint_row = control_point("zones",250,34)[1]-34
-    click(*control_point("zones",250,34))
+    hint_row = reveal("zones",250,34)[1]-34
+    click(*reveal("zones",250,34))
     key("KEY_RIGHT")
     pointer(panel_x+snapshot()["panel"]["width"]+40, 205); time.sleep(.15)
     p = shot("09a-popout-over-app")
@@ -777,7 +781,7 @@ try:
           received.exists() and received.read_text() == "a"
           and not shot("09b-popout-focus-lost").hint(hint_row,"Center edge softness",expected=False))
     shot("09-click-through")
-    click(*control_point("zones",250,34))  # focus settings again to exercise Escape
+    click(*reveal("zones",250,34))  # focus settings again to exercise Escape
     close_panel(panel)
     panel=open_panel();tab(3)
     check("Translucency tab selects",snapshot()["tab"]==3)
@@ -858,14 +862,250 @@ try:
     close_panel(panel)
     check("Sunlight Cancel retains saved location policy",all(line in solar.read_text() for line in
           ("enabled = true","allow_ip = true","location_set = true")))
+
+    # S24: screen identities resolve one complete profile, while Settings edits one fixed target.
+    target_output, global_output = outputs
+    target_identity = {"make": "Maker # = \"µ\"", "model": "Panel 漢字", "serial": "SN #= \"Ω\""}
+    dormant_identity = {"make": "Dormant #= \"é\"", "model": "Desk display", "serial": "offline=1"}
+    target_zones = {**target_identity, "center_width": 44.0, "rail_width": 3.0, "blend_width": 60.0,
+        "min_scale": 0.25, "max_scale": 1.0, "scale_curve": "0:1 0.5:0.65 1:0.25"}
+    dormant_zones = {**dormant_identity, "center_width": 51.5, "rail_width": 4.0, "blend_width": 75.0,
+        "min_scale": 0.3, "max_scale": 0.95, "scale_curve": "0:0.95 1:0.3"}
+    target_key = " ".join(target_identity.values())
+
+    def set_test_identities(rows):
+        return ipc("scottland/test-screen-identities", {"outputs": rows})
+
+    def zone_outputs():
+        return {row["output"]: row for row in ipc("scottland/layout-state")["outputs"]}
+
+    def click_ui_rect(rect):
+        click(*screen_point({"x": rect["x"] + rect["width"] / 2,
+                             "y": rect["y"] + rect["height"] / 2}))
+
+    def choose_zone_scope(scope):
+        q = snapshot()
+        click_ui_rect(q["zoneScope"][scope])
+
+    def set_center_slider(value):
+        reveal("zones", 0, 103)
+        rect = snapshot()["zones"]
+        x = rect["x"] + rect["width"] * (value - 10) / 80
+        click(*screen_point({"x": x, "y": rect["y"] + 103}))
+
+    def layout_zone_entry(output_name):
+        return zone_outputs()[output_name]
+
+    def wait_zone_output(output_name, predicate, timeout=3):
+        deadline = time.monotonic() + timeout
+        latest = None
+        while time.monotonic() < deadline:
+            latest = zone_outputs().get(output_name)
+            if latest and predicate(latest):
+                return latest
+            time.sleep(.03)
+        return latest
+
+    set_test_identities([{"output": target_output["name"], **target_identity}])
+    encoded_zones = json.dumps([target_zones, dormant_zones], ensure_ascii=False, separators=(",", ":"))
+    ctl = str(repo / "core/libexec/scottland-ctl")
+    subprocess.run([ctl, "set", "screen_zones", encoded_zones], check=True, capture_output=True, text=True)
+    ctl_values = json.loads(subprocess.check_output([ctl, "get"], text=True, timeout=5))
+    resolved = zone_outputs()
+    target_row, global_row = resolved[target_output["name"]], resolved[global_output["name"]]
+    check("S24 scottland-ctl get/set preserves complete screen_zones JSON",
+          ctl_values["screen_zones"] == [target_zones, dormant_zones])
+    check("S24 output report exposes connector and exact identity without using connector as identity",
+          target_row["output"] == target_output["name"] and target_row["identity"] == target_key
+          and (target_row["make"], target_row["model"], target_row["serial"]) == tuple(target_identity.values())
+          and target_row["own"])
+    check("S24 unnamed output follows global sizes", not global_row["identity"] and not global_row["own"]
+          and abs(global_row["center_width"] - initial_zone_options["center_width"]) < .01)
+    check("S24 disconnected identity remains in ctl get", ctl_values["screen_zones"][1] == dormant_zones)
+
+    subprocess.run([ctl, "set", "screen_zones", "not-json"], check=True, capture_output=True, text=True)
+    malformed_rows = zone_outputs()
+    check("S24 malformed screen_zones falls back to globals for every output",
+          all(not row["own"] for row in malformed_rows.values())
+          and all(abs(row["center_width"] - initial_zone_options["center_width"]) < .01
+                  for row in malformed_rows.values()))
+    invalid_curve = [{**target_zones, "scale_curve": "not-a-curve"}, dormant_zones]
+    subprocess.run([ctl, "set", "screen_zones", json.dumps(invalid_curve, ensure_ascii=False)],
+                   check=True, capture_output=True, text=True)
+    invalid_rows = zone_outputs()
+    check("S24 invalid curve falls back within its own valid identity entry",
+          invalid_rows[target_output["name"]]["own"]
+          and invalid_rows[target_output["name"]]["scale_curve"] == "not-a-curve"
+          and not invalid_rows[global_output["name"]]["own"])
+    subprocess.run([ctl, "set", "screen_zones", encoded_zones], check=True, capture_output=True, text=True)
+
+    panel = open_panel(); tab(0)
+    q = snapshot()
+    check("S24 opens on the target screen's own sizes", q["target"]["output"] == target_output["name"]
+          and q["target"]["identity"] == target_key and q["target"]["own"] and q["zoneScope"]["scope"] == "this"
+          and abs(q["zoneProfile"]["center_width"] - 44.0) < .01)
+    choose_zone_scope("all")
+    q = snapshot()
+    check("S24 All screens explains which connected identity keeps its own sizes",
+          q["zoneScope"]["scope"] == "all" and target_key in q["zoneScope"]["note"]
+          and "keeps its own sizes" in q["zoneScope"]["note"]
+          and abs(q["zoneProfile"]["center_width"] - initial_zone_options["center_width"]) < .01)
+    set_center_slider(42.5)
+    check("S24 All screens edits global sizes and leaves the target override intact",
+          option_reaches("center_width", 42.5) and abs(layout_zone_entry(target_output["name"])["center_width"] - 44.0) < .01)
+    choose_zone_scope("this")
+    check("S24 This screen starts from its own profile", abs(snapshot()["zoneProfile"]["center_width"] - 44.0) < .01)
+    set_center_slider(45.5)
+    own_edited = wait_zone_output(target_output["name"], lambda row: abs(row["center_width"] - 45.5) < .01)
+    check("S24 This screen edits its own sizes without changing global sizes",
+          own_edited is not None and abs(option("center_width") - 42.5) < .01)
+    click_ui_rect(snapshot()["zoneScope"]["reset"])
+    reset_row = wait_zone_output(target_output["name"], lambda row: not row["own"] and
+                                 abs(row["center_width"] - 42.5) < .01)
+    check("S24 Reset previews global sizes and removes only the target identity",
+          not snapshot()["target"]["own"] and reset_row is not None
+          and json.loads(string_option("screen_zones")) == [dormant_zones])
+    close_panel(panel)
+    check("S24 Cancel restores global and all per-screen values",
+          abs(option("center_width") - initial_zone_options["center_width"]) < .01
+          and json.loads(string_option("screen_zones")) == [target_zones, dormant_zones])
+
+    panel = open_panel(); tab(0)
+    check("S24 reopened target defaults to This screen", snapshot()["zoneScope"]["scope"] == "this")
+    close_panel(panel, save=True, via_button=True)
+    saved_lines = [line.split("=", 1)[1].strip() for line in layout.read_text().splitlines()
+                   if line.lstrip().startswith("screen_zones =")]
+    check("S24 Save writes one JSON line and preserves disconnected identity bytes",
+          len(saved_lines) == 1 and json.loads(saved_lines[0]) == [target_zones, dormant_zones]
+          and dormant_zones["serial"] == "offline=1")
+
+    panel = open_panel(); tab(0)
+    click_ui_rect(snapshot()["zoneScope"]["reset"])
+    close_panel(panel, save=True, via_button=True)
+    saved_lines = [line.split("=", 1)[1].strip() for line in layout.read_text().splitlines()
+                   if line.lstrip().startswith("screen_zones =")]
+    check("S24 Reset followed by Save removes only the target's own sizes",
+          len(saved_lines) == 1 and json.loads(saved_lines[0]) == [dormant_zones]
+          and abs(option("center_width") - initial_zone_options["center_width"]) < .01)
+
+    panel = open_panel(); tab(0)
+    choose_zone_scope("this")
+    click(panel_x + 80, panel_y + snapshot()["panel"]["height"] - 56)  # Defaults in This screen scope.
+    default_preview = wait_zone_output(target_output["name"], lambda row: row["own"] and
+                                       abs(row["center_width"] - 33.333) < .01)
+    check("S24 Defaults in This screen creates shipped own sizes without changing globals",
+          default_preview is not None and abs(default_preview["center_width"] - 33.333) < .01
+          and abs(default_preview["rail_width"] - 2.0) < .01
+          and abs(option("center_width") - initial_zone_options["center_width"]) < .01)
+    close_panel(panel)
+    check("S24 Cancel removes a previewed default override", json.loads(string_option("screen_zones")) == [dormant_zones])
+
+    # Two live outputs with one reported identity share the same own profile and Settings note.
+    subprocess.run([ctl, "set", "screen_zones", encoded_zones], check=True, capture_output=True, text=True)
+    set_test_identities([{"output": target_output["name"], **target_identity},
+                         {"output": global_output["name"], **target_identity}])
+    duplicate_rows = zone_outputs()
+    check("S24 equal identities share one override on both connectors",
+          duplicate_rows[target_output["name"]]["own"] and duplicate_rows[global_output["name"]]["own"]
+          and abs(duplicate_rows[global_output["name"]]["center_width"] - 44.0) < .01)
+    panel = open_panel(); tab(0)
+    check("S24 This screen says when an edit applies to a matching identity",
+          "1 other connected output" in snapshot()["zoneScope"]["note"])
+    close_panel(panel)
+    set_test_identities([{"output": global_output["name"], **target_identity}])
+    panel = open_panel(); tab(0)
+    unnamed_target = snapshot()
+    check("S24 unnamed target disables This screen and explains global sizing",
+          unnamed_target["zoneScope"]["scope"] == "all" and not unnamed_target["target"]["available"]
+          and "doesn't report a make, model or serial" in unnamed_target["zoneScope"]["note"])
+    close_panel(panel)
+    set_test_identities([{"output": target_output["name"], **target_identity}])
+
+    # Compare placement at the same 80% position: the own-sized output is in its continuous
+    # zone, while the unnamed output still follows the wider global center zone.
+    placement_windows = []
+    for title, output in (("zones-own-placement", target_output), ("zones-global-placement", global_output)):
+        process = subprocess.Popen(["foot", "-c", "/dev/null", "-T", title, "sleep", "60"],
+            stdout=log, stderr=log)
+        clients.append(process); placement_windows.append((title, output))
+    placement_views = {}
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current_views = ipc("window-rules/list-views")
+        placement_views = {title: next((view for view in current_views if view.get("title") == title), None)
+                           for title, _ in placement_windows}
+        if all(placement_views.values()): break
+        time.sleep(.05)
+    assert all(placement_views.values()), "per-screen placement fixtures did not map"
+    for title, output in placement_windows:
+        width = output["geometry"]["width"]
+        ipc("window-rules/configure-view", {"id": placement_views[title]["id"], "output_id": output["id"],
+            "geometry": {"x": round(width * .8 - 150), "y": 180, "width": 300, "height": 180}})
+    def placement_state(title):
+        return next(view for view in ipc("scottland/layout-state")["views"] if view["title"] == title)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        own_view, global_view = placement_state("zones-own-placement"), placement_state("zones-global-placement")
+        if own_view["zone"] == "continuous" and own_view["applied_scale"] < .999 \
+                and global_view["zone"] == "center" and abs(global_view["applied_scale"] - 1.0) < .001: break
+        time.sleep(.05)
+    check("S24 actual placement resolves the target profile and leaves unnamed output global",
+          own_view["zone"] == "continuous" and own_view["applied_scale"] < .999
+          and global_view["zone"] == "center" and abs(global_view["applied_scale"] - 1.0) < .001)
+
+    new_test_output = ipc("wayfire/create-headless-output", {"width": 5120, "height": 1440})["output"]
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if any(row["id"] == new_test_output["id"] for row in ipc("window-rules/list-outputs")): break
+        time.sleep(.05)
+    set_test_identities([{"output": target_output["name"], **target_identity},
+                         {"output": new_test_output["name"], **target_identity}])
+    hotplug_row = layout_zone_entry(new_test_output["name"])
+    check("S24 newly added output resolves persisted identity sizes",
+          hotplug_row["own"] and abs(hotplug_row["center_width"] - 44.0) < .01)
+    hotplug_title = "zones-hotplug-placement"
+    hotplug_process = subprocess.Popen(["foot", "-c", "/dev/null", "-T", hotplug_title, "sleep", "60"],
+        stdout=log, stderr=log)
+    clients.append(hotplug_process)
+    deadline = time.monotonic() + 5
+    hotplug_view = None
+    while time.monotonic() < deadline:
+        hotplug_view = next((view for view in ipc("window-rules/list-views") if view.get("title") == hotplug_title), None)
+        if hotplug_view: break
+        time.sleep(.05)
+    assert hotplug_view, "hotplug placement fixture did not map"
+    hotplug_width = new_test_output["geometry"]["width"]
+    ipc("window-rules/configure-view", {"id": hotplug_view["id"], "output_id": new_test_output["id"],
+        "geometry": {"x": round(hotplug_width * .8 - 150), "y": 180, "width": 300, "height": 180}})
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        hotplug_placed = next(view for view in ipc("scottland/layout-state")["views"] if view["title"] == hotplug_title)
+        if hotplug_placed["zone"] == "continuous" and hotplug_placed["applied_scale"] < .999: break
+        time.sleep(.05)
+    check("S24 first window placement on the added output uses its resolved own sizes",
+          hotplug_placed["zone"] == "continuous" and hotplug_placed["applied_scale"] < .999)
+
     # Restore caller's session settings; the saved fixture remains evidence.
-    ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in {**initial,**initial_edge}.items()})
+    ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in {**initial_zone_options,**initial_edge}.items()})
     ipc("wayfire/set-config-options", {"scottland/attention_color_family":initial_attention_family})
 finally:
     for proc in clients:
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
+    if new_test_output:
+        try:
+            ipc("wayfire/destroy-headless-output", {"output-id": new_test_output["id"]})
+        except Exception as error:
+            print("FAIL S24 hotplug output cleanup: " + str(error), flush=True)
+            failed += 1
+    if initial_zone_options:
+        try:
+            set_test_identities([])
+            ipc("wayfire/set-config-options", {"scottland/"+k:v for k,v in initial_zone_options.items()})
+        except Exception as error:
+            print("FAIL S24 config cleanup: " + str(error), flush=True)
+            failed += 1
     if "palette_path" in globals():
         palette_path.unlink(missing_ok=True)
     log.close()
