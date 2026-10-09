@@ -135,6 +135,12 @@ Specified in windowing-keys.md WK36 and WP1.
 |---|---|---|
 | 10-06 | Scottland's system tools are Rust: "group the scripts by subsystem and make a single binary for that subsystem", in one Cargo workspace with a shared library crate and a thin `scottland` front command for discovery. Like the rest of core they run on any distro and never know about Omarchy. | core/tools/README.md |
 
+## Session environment
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying; login still starts the session watcher and ordinary hooks, and reload continues its plugin/config work. At login, restart only active or transitioning portal units that predate the successful import; do not restart failed portal units. On reload, import the live values without restarting already-running services. | E1, `core/autostart.d/05-import-environment` |
+
 ## Knocks (concept in discussion; docs/knocks.md)
 
 | Date | Ruling |
