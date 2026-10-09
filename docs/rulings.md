@@ -139,7 +139,7 @@ Specified in windowing-keys.md WK36 and WP1.
 
 | Date | Ruling | Where |
 |---|---|---|
-| 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying, then continue starting the session watcher and ordinary autostart hooks. Because the manager persists across logins, restart only portal units already active, starting, stopping or failed before a successful import; other services keep their startup environment. | E1, `core/autostart.d/05-import-environment` |
+| 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying; login still starts the session watcher and ordinary hooks, and reload continues its plugin/config work. At login, restart only active, activating or deactivating portal units that predate the successful import; do not restart failed units. On reload, import the live values without restarting already-running services. | E1, `core/autostart.d/05-import-environment` |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 
