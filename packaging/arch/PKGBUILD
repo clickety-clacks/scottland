@@ -31,6 +31,8 @@ package_scottland() {
 
   meson install -C build --destdir "$pkgdir"
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
+  install -dm755 "$pkgdir/usr/lib/scottland/window-names.d"
+  install -m644 "$_root"/core/window-names.d/*.toml "$pkgdir/usr/lib/scottland/window-names.d/"
   install -Dm644 "$_root/core/config/scottland-portals.conf" "$pkgdir/usr/share/xdg-desktop-portal/scottland-portals.conf"
   install -Dm755 "$_root/core/session/start-scottland" "$pkgdir/usr/bin/start-scottland"
   install -Dm644 "$_root/core/systemd/scottland-session.target" "$pkgdir/usr/lib/systemd/user/scottland-session.target"
