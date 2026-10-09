@@ -183,8 +183,8 @@ def settled_hints(count):
 # ---------------------------------------------------------------------------- frames
 def frames(video):
     """Decoded frames, as presented and in order (no duplicates or drops added)."""
-    process = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', str(video), '-fps_mode', 'passthrough',
-        '-f', 'rawvideo', '-pix_fmt', 'rgb0', '-'], stdout=subprocess.PIPE)
+    process = subprocess.Popen(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(video), '-fps_mode', 'passthrough',
+        '-f', 'rawvideo', '-pix_fmt', 'rgb0', '-'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
     size = W * H * 4
     try:
         while True:
