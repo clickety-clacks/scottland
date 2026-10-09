@@ -155,7 +155,7 @@ fn call_resolver(resolver_dir: &Path, request: &Value) -> Result<Value, String> 
         .parent()
         .ok_or_else(|| "resolver package has no parent directory".to_string())?;
     let mut child = Command::new("python3")
-        .args(["-m", "agent_window_resolver.cli"])
+        .args(["-m", "agent_window_resolver"])
         .env("PYTHONPATH", library_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -197,8 +197,9 @@ fn call_resolver(resolver_dir: &Path, request: &Value) -> Result<Value, String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{build_request, parse_start_ticks};
+    use super::{RESPONSE_SCHEMA, build_request, call_resolver, parse_start_ticks};
     use crate::ipc::Window;
+    use std::path::PathBuf;
 
     #[test]
     fn request_contains_every_window_and_exact_process_identity() {
@@ -228,5 +229,22 @@ mod tests {
         let mut stat = b"41 (a ) name) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 123".to_vec();
         stat.extend_from_slice(b" 1 1\n");
         assert_eq!(parse_start_ticks(41, &stat).unwrap(), "123");
+    }
+
+    #[test]
+    fn vendored_cli_accepts_the_scottland_window_session_request() {
+        let view = Window {
+            id: 17,
+            pid: 4_194_304,
+            app_id: String::new(),
+            title: String::new(),
+        };
+        let request = build_request(17, &[view], "example-host", &|_| Ok("1".into())).unwrap();
+        let resolver =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/agent_window_resolver");
+        let response = call_resolver(&resolver, &request).unwrap();
+        assert_eq!(response["schema"], RESPONSE_SCHEMA);
+        assert_eq!(response["requestId"], request["requestId"]);
+        assert_eq!(response["status"], "unknown");
     }
 }
