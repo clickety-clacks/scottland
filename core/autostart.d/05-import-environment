@@ -32,39 +32,16 @@ start_session_watch() {
   fi
 }
 
-# Only login startup may restart portals that were already running before the first working
-# import. An in-place reload imports the current values but leaves every already-running service
-# alone, as required by the reload ruling.
-restart_preimport_portals=0
-case "${1:-}" in
-  --login) restart_preimport_portals=1; shift ;;
-  '') ;;
-  *)
-    echo "scottland: unsupported session environment import mode" >&2
-    start_session_watch
-    exit 1
-    ;;
-esac
-if [ "$#" -ne 0 ]; then
-  echo "scottland: unexpected arguments to session environment importer" >&2
+# The user manager persists across Scottland logins. A portal already started here can still hold
+# the previous session's environment, so remember only portal units that predate this import.
+portal_units=$(systemctl --user list-units --all --type=service \
+  --no-legend 'xdg-desktop-portal*.service') || {
+  echo "scottland: could not inspect portal services before importing the session environment" >&2
   start_session_watch
   exit 1
-fi
-
-portal_units=
-if [ "$restart_preimport_portals" -eq 1 ]; then
-  # The user manager persists across Scottland logins. A portal already started here can still
-  # hold the previous session's environment, so remember only pre-import portals that are running
-  # or transitioning. Failed services are not restarted.
-  portal_units=$(systemctl --user list-units --all --type=service \
-    --no-legend 'xdg-desktop-portal*.service') || {
-    echo "scottland: could not inspect portal services before importing the session environment" >&2
-    start_session_watch
-    exit 1
-  }
-  portal_units=$(printf '%s\n' "$portal_units" |
-    awk '($3 == "active" || $3 == "activating" || $3 == "deactivating") {print $1}')
-fi
+}
+portal_units=$(printf '%s\n' "$portal_units" |
+  awk '($3 == "active" || $3 == "activating" || $3 == "deactivating" || $3 == "failed") {print $1}')
 
 # Integrations add variable names through SCOTTLAND_IMPORT_ENV (see session-env.d). Some adapters
 # repeat a core name such as XCURSOR_SIZE. systemd rejects the entire batch when a name repeats, so
