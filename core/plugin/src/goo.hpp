@@ -17,7 +17,8 @@ class goo_t
     goo_t();
     ~goo_t();
     using source_provider_t = std::function<std::vector<goo::source_t>(wf::output_t *)>;
-    void start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed);
+    void start(source_provider_t snapshot, std::function<void(wf::output_t *, bool)> screen_changed,
+        std::function<void(wf::output_t *)> output_configured);
     void stop();
 
   private:
