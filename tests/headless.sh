@@ -3,7 +3,7 @@
 # config (shipped base + generated fragments, e.g. imported shortcuts) and the repo's plugin
 # build, driven with Wayfire's stipc virtual input. It runs only hooks that stay inside the test
 # session: never 05-import-environment (would repoint the user's systemd services), 06-watch-
-# config (would rewrite the live session's config), 20-omarchy-shell or 40-handover.
+# config (would rewrite the live session's config) or 20-omarchy-shell.
 #
 #   tests/headless.sh start [--omarchy] [--widgets]   start; --omarchy adds the Hyprland shim and
 #                                         Lua host (--hyprland-start also runs the config's

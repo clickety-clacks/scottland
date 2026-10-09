@@ -139,6 +139,8 @@ Specified in windowing-keys.md WK36 and WP1.
 | Date | Ruling | Where |
 |---|---|---|
 | 10-06 | Scottland's system tools are Rust: "group the scripts by subsystem and make a single binary for that subsystem", in one Cargo workspace with a shared library crate and a thin `scottland` front command for discovery. Like the rest of core they run on any distro and never know about Omarchy. | core/tools/README.md |
+| 10-06 | Remove keep mode: "wrt to keep mode i vote we just remove it. switching between the two just closes all the windows, keeps it clean". Switching between Scottland and Hyprland always closes the current desktop; no checkbox, no remembered choice, no service handover between running desktops. Adapter-gaps question 1 and the 1Password keep-mode crash are moot. | W2, W11 (W7–W9 removed); docs/adapter-gaps.md AG20/AG36 |
+| 10-06 | "please keep a warning in the switcher that it WILL close all windows": the switch dialog warns, in place of the checkbox, that switching will close all windows in the current desktop. | W2 |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 
