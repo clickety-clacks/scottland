@@ -55,7 +55,8 @@ portal_units=
 if [ "$restart_preimport_portals" -eq 1 ]; then
   # The user manager persists across Scottland logins. A portal already started here can still
   # hold the previous session's environment, so remember only pre-import portals that are running
-  # or transitioning.
+  # or transitioning. Failed portal units are deliberately left alone: restarting one cannot
+  # recover it and is not part of the session environment handoff.
   portal_units=$(systemctl --user list-units --all --type=service \
     --no-legend 'xdg-desktop-portal*.service') || {
     echo "scottland: could not inspect portal services before importing the session environment" >&2
@@ -63,7 +64,15 @@ if [ "$restart_preimport_portals" -eq 1 ]; then
     exit 1
   }
   portal_units=$(printf '%s\n' "$portal_units" |
-    awk '($3 == "active" || $3 == "activating" || $3 == "deactivating") {print $1}')
+    awk '{
+      unit = $1
+      state = $3
+      if ($1 == "●") {
+        unit = $2
+        state = $4
+      }
+      if (state == "active" || state == "activating" || state == "deactivating") print unit
+    }')
 fi
 
 # Integrations add variable names through SCOTTLAND_IMPORT_ENV (see session-env.d). Some adapters
