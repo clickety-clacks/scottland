@@ -1,0 +1,3 @@
+#!/bin/sh
+# A plugin reload resets per-device enable state; restore the user's choice afterward.
+exec scottland input restore
