@@ -643,7 +643,7 @@ Config concurrency counts five rounds, each containing 20 simultaneous config bu
 | `tests/windowing-test.sh` | 74 |
 | `tests/key-layers-test.sh` | 59 |
 | `tests/widgets-test.sh` | 146 |
-| `tests/widget-morph-test.sh` | 76 |
+| Retired widget-morph suite (historical) | 76 |
 | `tests/state-model-test.sh 271828 50` | 95 |
 | `tests/state-model-test.sh 104729 50`, legacy D-Bus | 100 |
 | `tests/state-regressions-test.sh` | 7 |
@@ -1305,7 +1305,7 @@ zone-edge choice remains pending.
 The eight requested suites ran on `de2af42` in separate headless directories.
 `windowing-test.sh` passed **102/102**, hang stress **10/10**, always-on stress
 **42/42** (settled Wayfire CPU **6.3% of one core**), `widgets-test.sh` passed,
-and `widget-morph-test.sh` passed **270/270**. `hint-visible-test.sh` reported
+and the retired widget-morph suite passed **270/270**. `hint-visible-test.sh` reported
 **83 passed, 2 failed**: a raised-stack circle did not remain inside the
 reported exposed region, and no rear window received the fixture's expected
 greater-than-100 px shift in the exact-overlap stack. The latter is a

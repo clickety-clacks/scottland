@@ -60,11 +60,6 @@ Every suite runs through these; an excellent assertion is worthless against the 
   the focused-widget timeout exits before `results.json` is written. Exact boundaries stay in
   `windowing-unit`; GUI cases sit well inside/outside the window and record received event times;
   write results in `finally`. (Top 6)
-- **`widget-morph-test` measures its poller as if it were the animation:** sample counts, last
-  sampled width vs settled width (a skipped frame reads as a snap), polling timestamps as duration;
-  "entry reload: no snapshots retained" after a fixed 1 s sleep without logging the count. Easing
-  math with supplied timestamps; frame-tagged pixels for integration; bounded lifecycle wait with a
-  state dump. (Top 4)
 - **`translucency-test` checks only the published opacity**; a shader that ignores it passes.
   Check the foreground/background pixel mix. (Top 3)
 
