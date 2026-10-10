@@ -95,9 +95,21 @@ class Session:
         test_env = {**os.environ, **(env or {})}
         isolated = test_env.get("SCOTTLAND_HEADLESS_ISOLATION") == "1"
         if isolated:
-            scratch = Path(test_env["SCOTTLAND_TEST_SCRATCH"]).resolve()
-            self.dir = scratch / name
-            tmpdir = scratch / "tmp"
+            scratch_value = test_env.get("SCOTTLAND_TEST_SCRATCH")
+            if not scratch_value:
+                raise ValueError("SCOTTLAND_TEST_SCRATCH must name a private run directory")
+            build = (self.repo / "build").resolve(strict=True)
+            scratch = Path(scratch_value).resolve(strict=True)
+            scratch_stat = scratch.stat()
+            if (not scratch.is_dir() or build not in scratch.parents or
+                    scratch_stat.st_uid != os.getuid() or
+                    scratch_stat.st_mode & 0o077 or
+                    (scratch_stat.st_mode & 0o700) != 0o700):
+                raise ValueError("SCOTTLAND_TEST_SCRATCH must be an owned private child of build/")
+            self.dir = (scratch / name).resolve()
+            tmpdir = (scratch / "tmp").resolve()
+            if scratch not in self.dir.parents or scratch not in tmpdir.parents:
+                raise ValueError("isolated session and temp paths must be children of SCOTTLAND_TEST_SCRATCH")
         else:
             self.dir = self.repo / "build" / name
             tmpdir = REPO / "build" / "tmp"
