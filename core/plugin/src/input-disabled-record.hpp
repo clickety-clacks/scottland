@@ -85,4 +85,10 @@ void apply_disabled_record(const std::string& requested,
         }
     }
 }
+
+template<class Mode, class SetMode, class GetMode>
+bool set_send_events_mode(Mode requested, SetMode set_mode, GetMode get_mode)
+{
+    return set_mode(requested) && get_mode() == requested;
+}
 }

@@ -157,6 +157,31 @@ bool input_device_matches_kind(const std::string& requested, wlr_input_device *d
     return scottland::input::device_matches_kind(requested, input_device_kind(device));
 }
 
+bool set_input_device_enabled(wf::input_device_t& device, bool enabled)
+{
+    // Wayfire's bool setter can treat DISABLED_ON_EXTERNAL_MOUSE as already disabled and return
+    // without changing the mode. Set and verify the exact libinput mode so OFF stays OFF when the
+    // external mouse goes away.
+    auto handle = device.get_wlr_handle();
+    if (!handle || !wlr_input_device_is_libinput(handle)) return false;
+
+    auto libinput_device = wlr_libinput_get_device_handle(handle);
+    if (!libinput_device) return false;
+
+    const uint32_t requested_mode = enabled ? LIBINPUT_CONFIG_SEND_EVENTS_ENABLED :
+        LIBINPUT_CONFIG_SEND_EVENTS_DISABLED;
+    return scottland::input::set_send_events_mode(requested_mode,
+        [libinput_device] (uint32_t mode)
+        {
+            return libinput_device_config_send_events_set_mode(libinput_device, mode) ==
+                LIBINPUT_CONFIG_STATUS_SUCCESS;
+        },
+        [libinput_device] ()
+        {
+            return libinput_device_config_send_events_get_mode(libinput_device);
+        });
+}
+
 std::string input_disabled_record_path(const std::string& kind)
 {
     const char *base = getenv("XDG_STATE_HOME");
@@ -2295,8 +2320,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto disabled = input_disabled_name(kind);
         if (!scottland::input::disabled_record_matches(kind, disabled, class_name, name)) return;
 
-        ev->device->set_enabled(false);
-        if (ev->device->is_enabled())
+        if (!set_input_device_enabled(*ev->device, false))
         {
             LOGE("scottland: could not keep newly added ", kind, " device disabled: ", name);
         }
@@ -2324,10 +2348,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             },
             [=] (auto& device)
             {
-                device->set_enabled(false);
-                if (device->is_enabled())
+                if (!device || !set_input_device_enabled(*device, false))
                 {
-                    auto handle = device->get_wlr_handle();
+                    auto handle = device ? device->get_wlr_handle() : nullptr;
                     LOGE("scottland: could not restore touchpad disabled after config reload: ",
                         handle && handle->name ? handle->name : "(unnamed)");
                 }
@@ -7565,8 +7588,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 continue;
             }
 
-            device->set_enabled(enabled);
-            if (device->is_enabled() != enabled)
+            if (!set_input_device_enabled(*device, enabled))
             {
                 return wf::ipc::json_error(std::string("compositor refused to ") +
                     (enabled ? "enable " : "disable ") + kind + " device " + name);
