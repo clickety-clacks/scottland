@@ -7101,7 +7101,56 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (data["action"].as_string() != "arm" || outputs.size() != 1 || !drag->view ||
             drag->view->get_id() != data["cover"].as_int() || drag->view->get_title() != "Big" ||
             !drag->is_live() || drag->view->get_output() != outputs[0])
-            return wf::ipc::json_error("P14 live blue-B drag on one output required");
+        {
+            auto reply = wf::ipc::json_error("P14 live blue-B drag on one output required");
+            auto view = drag->view;
+            auto output = view ? view->get_output() : nullptr;
+            auto action = data["action"].as_string();
+            auto bounded = [] (std::string text, size_t limit)
+            {
+                if (text.size() > limit)
+                {
+                    while (limit && ((unsigned char)text[limit] & 0xc0) == 0x80) --limit;
+                    text.resize(limit);
+                }
+                return text;
+            };
+            bool cover_is_int = data.has_member("cover") && data["cover"].is_int();
+            bool action_matches = action == "arm", one_output = outputs.size() == 1;
+            bool id_matches = view && cover_is_int && view->get_id() == uint32_t(data["cover"].as_int());
+            bool title_matches = view && view->get_title() == "Big";
+            bool live = view && drag->is_live();
+            bool output_matches = view && one_output && output == outputs[0];
+            wf::json_t diagnostic;
+            diagnostic["requested_action"] = bounded(action, 32);
+            diagnostic["requested_cover_is_int"] = cover_is_int;
+            diagnostic["requested_cover"] = cover_is_int ? (int64_t)data["cover"].as_int() : (int64_t)-1;
+            diagnostic["output_count"] = (int64_t)outputs.size();
+            diagnostic["sole_output"] = one_output ? bounded(outputs[0]->to_string(), 128) : "";
+            diagnostic["drag_present"] = bool(view);
+            diagnostic["drag_id"] = view ? (int64_t)view->get_id() : (int64_t)-1;
+            diagnostic["drag_title"] = view ? bounded(view->get_title(), 128) : "";
+            diagnostic["drag_title_truncated"] = view && view->get_title().size() > 128;
+            diagnostic["drag_live"] = live;
+            diagnostic["drag_output"] = output ? bounded(output->to_string(), 128) : "";
+            diagnostic["drag_id_matches_cover"] = id_matches;
+            diagnostic["drag_title_matches_big"] = title_matches;
+            diagnostic["drag_output_matches_sole"] = output_matches;
+            diagnostic["first_failed_predicate"] = !action_matches ? "action" : !one_output ? "output-count" :
+                !view ? "drag-view" : !id_matches ? "drag-id" : !title_matches ? "drag-title" :
+                !live ? "drag-live" : "drag-output";
+            if (auto link = view ? link_of_widget(view) : nullptr)
+            {
+                if (auto backing = link->window.lock())
+                {
+                    diagnostic["widget_backing_id"] = (int64_t)backing->get_id();
+                    diagnostic["widget_backing_title"] = bounded(backing->get_title(), 128);
+                    diagnostic["widget_backing_title_truncated"] = backing->get_title().size() > 128;
+                }
+            }
+            reply["diagnostic"] = diagnostic;
+            return reply;
+        }
         if (!data["directory"].is_string() || !data["nonce"].is_string())
             return wf::ipc::json_error("P14 observation path and nonce required");
         if (!p14_observer.arm(outputs[0]->handle, drag->view->get_id(),
