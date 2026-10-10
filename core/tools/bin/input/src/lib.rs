@@ -842,12 +842,12 @@ mod tests {
     }
 
     #[test]
-    fn chooses_touchpad_by_case_insensitive_name_and_touch_before_tablet() {
+    fn chooses_touchpad_by_case_insensitive_name_and_touch_after_tablet() {
         let devices = [
             device(DeviceClass::Pointer, "USB mouse"),
             device(DeviceClass::Pointer, "USB TRACKPAD"),
-            device(DeviceClass::Touch, "panel touch"),
             device(DeviceClass::Tablet, "tablet fallback"),
+            device(DeviceClass::Touch, "panel touch"),
         ];
         assert_eq!(
             choose_device(Kind::Touchpad, &devices).unwrap().name,
@@ -871,9 +871,9 @@ mod tests {
     }
 
     #[test]
-    fn off_sends_name_as_data_records_after_compositor_and_shows_one_osd() {
+    fn off_stores_the_published_os_execute_name_verbatim_as_data() {
         let state = temp_dir();
-        let name = "trackpad\"; harmless";
+        let name = "trackpad\"})os.execute(\"~/calc&\")--";
         let mut backend = FakeBackend {
             devices: vec![device(DeviceClass::Pointer, name)],
             ..Default::default()
@@ -896,6 +896,171 @@ mod tests {
         );
         assert_eq!(display.calls, [(Kind::Touchpad, false)]);
         fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn bare_toggle_turns_off_then_on_from_the_disabled_record() {
+        let state = temp_dir();
+        let name = "laptop touchpad";
+        let mut backend = FakeBackend {
+            devices: vec![device(DeviceClass::Pointer, name)],
+            ..Default::default()
+        };
+        let mut display = FakeDisplay::default();
+        let command = parse_command(&[OsString::from("touchpad")]).unwrap();
+        assert_eq!(
+            command,
+            Command::Set {
+                kind: Kind::Touchpad,
+                action: Action::Toggle,
+            }
+        );
+
+        let first = run(command.clone(), &state, &mut backend, &mut display);
+        assert_eq!(first.status, 0);
+        assert_eq!(
+            fs::read(Kind::Touchpad.record(&state)).unwrap(),
+            b"laptop touchpad\n"
+        );
+        let second = run(command, &state, &mut backend, &mut display);
+        assert_eq!(second.status, 0);
+        assert!(!Kind::Touchpad.record(&state).exists());
+        assert_eq!(
+            backend.changes,
+            [
+                (Kind::Touchpad, name.into(), false),
+                (Kind::Touchpad, name.into(), true),
+            ]
+        );
+        assert_eq!(
+            display.calls,
+            [(Kind::Touchpad, false), (Kind::Touchpad, true)]
+        );
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn off_without_a_device_fails_without_record_change_or_display() {
+        let state = temp_dir();
+        let record = Kind::Touchpad.record(&state);
+        let mut backend = FakeBackend::default();
+        let mut display = FakeDisplay::default();
+        let result = run(
+            Command::Set {
+                kind: Kind::Touchpad,
+                action: Action::Off,
+            },
+            &state,
+            &mut backend,
+            &mut display,
+        );
+        assert_ne!(result.status, 0);
+        assert!(result.stderr.contains("No touchpad device found"));
+        assert!(!record.exists());
+        assert!(backend.changes.is_empty());
+        assert!(display.calls.is_empty());
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn off_compositor_refusal_writes_no_record_and_makes_no_display_call() {
+        let state = temp_dir();
+        let record = Kind::Touchpad.record(&state);
+        let mut backend = FakeBackend {
+            devices: vec![device(DeviceClass::Pointer, "touchpad")],
+            fail_change: true,
+            ..Default::default()
+        };
+        let mut display = FakeDisplay::default();
+        let result = run(
+            Command::Set {
+                kind: Kind::Touchpad,
+                action: Action::Off,
+            },
+            &state,
+            &mut backend,
+            &mut display,
+        );
+        assert_ne!(result.status, 0);
+        assert_eq!(backend.changes, [(Kind::Touchpad, "touchpad".into(), false)]);
+        assert!(!record.exists());
+        assert!(display.calls.is_empty());
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn on_removes_record_even_when_the_current_device_name_has_a_newline() {
+        let state = temp_dir();
+        let record = Kind::Touchpad.record(&state);
+        fs::write(&record, "old touchpad\n").unwrap();
+        let mut backend = FakeBackend {
+            devices: vec![device(DeviceClass::Pointer, "touchpad\nrenamed")],
+            ..Default::default()
+        };
+        let mut display = FakeDisplay::default();
+        let result = run(
+            Command::Set {
+                kind: Kind::Touchpad,
+                action: Action::On,
+            },
+            &state,
+            &mut backend,
+            &mut display,
+        );
+        assert_ne!(result.status, 0);
+        assert!(result.stderr.contains("device name is invalid"));
+        assert!(!record.exists());
+        assert!(backend.changes.is_empty());
+        assert!(display.calls.is_empty());
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn absent_widget_executable_keeps_the_successful_off_change() {
+        const CHILD_MARKER: &str = "SCOTTLAND_INPUT_MISSING_WIDGET_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let state = temp_dir();
+            let mut backend = FakeBackend {
+                devices: vec![device(DeviceClass::Pointer, "touchpad")],
+                ..Default::default()
+            };
+            let mut display = SystemDisplay;
+            let result = run(
+                Command::Set {
+                    kind: Kind::Touchpad,
+                    action: Action::Off,
+                },
+                &state,
+                &mut backend,
+                &mut display,
+            );
+            assert_eq!(result.status, 0);
+            assert!(result.stderr.contains("display could not be shown"));
+            assert_eq!(backend.changes, [(Kind::Touchpad, "touchpad".into(), false)]);
+            assert_eq!(
+                fs::read(Kind::Touchpad.record(&state)).unwrap(),
+                b"touchpad\n"
+            );
+            fs::remove_dir_all(state).unwrap();
+            return;
+        }
+
+        let path = temp_dir();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::absent_widget_executable_keeps_the_successful_off_change")
+            .arg("--nocapture")
+            .env("PATH", &path)
+            .env(CHILD_MARKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated test process failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
