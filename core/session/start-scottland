@@ -50,9 +50,26 @@ main() {
   export SCOTTLAND_SESSION_PID
 
   started=$(date +%s)
-  # Keep the last session's evidence when a frozen compositor needs a new login.
+  # Keep the last three sessions, capped at 1 MiB each. Preserve the existing
+  # .previous name for the most recent log and bound a legacy oversized log too.
   if [ -f "$state/wayfire.log" ]; then
-    mv -f "$state/wayfire.log" "$state/wayfire.log.previous" || exit 1
+    rm -f "$state/wayfire.log.previous.3" || exit 1
+    for generation in 2 1 0; do
+      case "$generation" in
+        0) source_log="$state/wayfire.log"; destination_log="$state/wayfire.log.previous" ;;
+        1) source_log="$state/wayfire.log.previous"; destination_log="$state/wayfire.log.previous.2" ;;
+        2) source_log="$state/wayfire.log.previous.2"; destination_log="$state/wayfire.log.previous.3" ;;
+      esac
+      if [ -f "$source_log" ]; then
+        bounded_log=$(mktemp "$state/.wayfire.log.XXXXXX") || exit 1
+        if ! tail -c 1048576 "$source_log" >"$bounded_log" ||
+           ! mv -f "$bounded_log" "$destination_log"; then
+          rm -f "$bounded_log"
+          exit 1
+        fi
+        rm -f "$source_log" || exit 1
+      fi
+    done
   fi
   # SIGQUIT (or SIGABRT after the core plugin loads) must reach systemd-coredump.
   # A hard limit imposed by the login manager cannot be raised here.
