@@ -43,8 +43,9 @@ def read_config():
     section = cfg["solar"] if cfg.has_section("solar") else {}
     def yes(name, default="false"):
         return str(section.get(name, default)).lower() in ("true", "yes", "1", "on")
-    # Preserve existing scheduling and location policy until explicit opt-in.
-    return dict(enabled=yes("enabled"), allow_ip=yes("allow_ip"), config_mtime_ns=config_mtime_ns,
+    # An integration may retain its existing scheduler until explicit opt-in.
+    default = "false" if os.environ.get("SCOTTLAND_SOLAR_OPT_IN") == "1" else "true"
+    return dict(enabled=yes("enabled", default), allow_ip=yes("allow_ip", default), config_mtime_ns=config_mtime_ns,
                 location=coordinates(section.get("latitude"), section.get("longitude")) if yes("location_set") else None)
 
 

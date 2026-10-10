@@ -36,7 +36,7 @@ class SolarOptIn(unittest.TestCase):
                    SCOTTLAND_OMARCHY_SOLAR_FILE=str(self.home/"themes.ini"),
                    SCOTTLAND_OMARCHY_CURRENT=str(self.home/"current"),
                    WAYLAND_DISPLAY="test", PATH=str(self.bin)+":"+os.environ["PATH"],
-                   SOLAR_COMMAND_LOG=str(self.log), SOLAR_TEST_MODE="dark")
+                   SOLAR_COMMAND_LOG=str(self.log), SOLAR_TEST_MODE="dark", SCOTTLAND_SOLAR_OPT_IN="1")
         self.environment = patch.dict(os.environ, env)
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -87,8 +87,11 @@ class SolarOptIn(unittest.TestCase):
         self.assertTrue(self.core.read_config()["enabled"])
         self.assertFalse(self.core.read_config()["allow_ip"])
 
-    def test_standalone_core_defaults_stay_off_without_integration_flag(self):
+    def test_standalone_core_defaults_preserved_without_integration_flag(self):
         os.environ.pop("SCOTTLAND_SOLAR_OPT_IN", None)
+        self.assertTrue(self.core.read_config()["enabled"])
+        self.assertTrue(self.core.read_config()["allow_ip"])
+        self.config("[solar]\nenabled = false\nallow_ip = false\n")
         self.assertFalse(self.core.read_config()["enabled"])
         self.assertFalse(self.core.read_config()["allow_ip"])
 
