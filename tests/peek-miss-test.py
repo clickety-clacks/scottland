@@ -421,14 +421,16 @@ try:
             if coast:
                 release()
             else:
-                # Under 3 s: a build that still has the drag audition must not start one meanwhile.
-                ok, detail = strip_shows(name, 'held', covered, title, 2.5)
                 if visible_p14:
                     trace = art / 'p14-presented'
                     trace.mkdir(exist_ok=False)
                     nonce = os.urandom(16).hex()
                     ipc('scottland/test-p14-observe', {'action': 'arm', 'case': name,
                         'cover': covering, 'nonce': nonce, 'directory': str(trace)})
+                # Observe the existing readiness captures: do not depend on an incidental
+                # presentation between readiness and the final-held capture.
+                # Under 3 s: a build that still has the drag audition must not start one meanwhile.
+                ok, detail = strip_shows(name, 'held', covered, title, 2.5)
                 if visible_p14:
                     held_at = scene(covering)  # diagnostic only: not synchronized with the rendered frame
                     held_frame, held_hint = scene(covered), hint(covered)
