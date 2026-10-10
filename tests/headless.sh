@@ -47,20 +47,139 @@ if [[ ${1:-} == __scottland_headless_private_runtime ]]; then
   inside=1
   shift
 fi
+private_wrap_present=0
+private_wrap_path=
+private_wrap_identity=
+if ((inside)) && [[ ${1:-} == __scottland_headless_test_wrap ]]; then
+  shift
+  [[ $# -ge 2 ]] || { echo 'private compositor wrapper record is incomplete' >&2; exit 2; }
+  private_wrap_path=$1
+  private_wrap_identity=$2
+  shift 2
+  private_wrap_present=1
+fi
 isolation=${SCOTTLAND_HEADLESS_ISOLATION:-0}
-# This is the only ingress for a compositor wrapper. Remove the environment variable immediately;
-# a validated path is passed across the private-runtime boundary explicitly and later used only as
-# the Wayfire command prefix.
+# Capture before the clean-environment purge, then remove it. It is never exported, added to PATH,
+# or accepted from the private-runtime environment; the outer process transports only a validated
+# path and identity as private argv.
 test_wrap=${SCOTTLAND_TEST_WRAP:-}
 unset SCOTTLAND_TEST_WRAP
 compositor_command=(wayfire)
-wrapper_env_args=()
-if [[ ${1:-} == start && -n $test_wrap ]]; then
-  start_omarchy=0
-  for option in "${@:2}"; do
-    [[ $option == --omarchy ]] && start_omarchy=1
+private_runtime_args=(__scottland_headless_private_runtime)
+wrapper_received_path=
+wrapper_received_identity=
+
+wrapper_start_requested() {
+  [[ ${1:-} == start ]] || return 1
+  shift
+  for option in "$@"; do
+    [[ $option == --omarchy ]] && return 0
   done
-  [[ $isolation != 1 && $start_omarchy == 1 ]] || {
+  return 1
+}
+
+safe_owned_directory() {
+  local path=$1 mode canonical
+  [[ -d $path && ! -L $path ]] || return 1
+  canonical=$(realpath -e -- "$path") || return 1
+  [[ $canonical == "$path" && $(stat -c %u -- "$path") == "$uid" ]] || return 1
+  mode=$(stat -c %a -- "$path") || return 1
+  (( (8#$mode & 0022) == 0 && (8#$mode & 07000) == 0 ))
+}
+
+safe_build_subtree() {
+  local root=$1 relative current component
+  [[ $root == "$build_root"/* && $root != "$build_root" ]] || return 1
+  relative=${root#"$build_root"/}
+  current=$build_root
+  local -a components=()
+  IFS=/ read -r -a components <<<"$relative"
+  for component in "${components[@]}"; do
+    [[ -n $component ]] || return 1
+    current="$current/$component"
+    safe_owned_directory "$current" || return 1
+  done
+}
+
+wrapper_identity() {
+  local path=$1 stat_record digest
+  stat_record=$(stat -c '%d:%i:%h:%u:%a:%s:%y:%z' -- "$path") || return 1
+  digest=$(sha256sum -- "$path") || return 1
+  printf '%s:%s\n' "$stat_record" "${digest%% *}"
+}
+
+validate_test_wrapper() {
+  local path=$1 expected_identity=${2:-} build_root fixture_root scratch_root canonical mode current_identity
+  [[ $path == /* ]] || { echo 'SCOTTLAND_TEST_WRAP must be absolute' >&2; return 1; }
+  build_root=$(realpath -e -- "$repo/build") || {
+    echo 'SCOTTLAND_TEST_WRAP requires an existing checkout build/ directory' >&2; return 1;
+  }
+  [[ $build_root == "$repo/build" ]] && safe_owned_directory "$repo" && \
+    safe_owned_directory "$build_root" || {
+    echo 'SCOTTLAND_TEST_WRAP requires canonical, run-owned, safe checkout/build parents' >&2
+    return 1
+  }
+
+  fixture_root="$build_root/omarchy-monitors-fixture"
+  scratch_root=${SCOTTLAND_TEST_SCRATCH:-}
+  if [[ $path == "$fixture_root/wrap-compositor" ]]; then
+    safe_owned_directory "$fixture_root" || {
+      echo 'SCOTTLAND_TEST_WRAP fixture parent must be a canonical, run-owned safe directory' >&2
+      return 1
+    }
+  elif [[ -n $scratch_root && $path == "$scratch_root/wrap-compositor" ]]; then
+    [[ $scratch_root == /* ]] || {
+      echo 'SCOTTLAND_TEST_SCRATCH must be absolute for a compositor wrapper' >&2; return 1;
+    }
+    canonical=$(realpath -e -- "$scratch_root") || {
+      echo 'SCOTTLAND_TEST_SCRATCH does not exist' >&2; return 1;
+    }
+    [[ $canonical == "$scratch_root" && $canonical == "$build_root"/* && $canonical != "$build_root" ]] && \
+      safe_build_subtree "$canonical" || {
+      echo 'SCOTTLAND_TEST_SCRATCH must be a canonical, run-owned safe child of build/' >&2
+      return 1
+    }
+    mode=$(stat -c %a -- "$canonical") || return 1
+    (( 8#$mode == 0700 )) || {
+      echo 'SCOTTLAND_TEST_SCRATCH must be mode 700 for a compositor wrapper' >&2; return 1;
+    }
+  else
+    echo 'SCOTTLAND_TEST_WRAP is allowed only as wrap-compositor in the run-owned build fixture or scratch' >&2
+    return 1
+  fi
+
+  canonical=$(realpath -e -- "$path") || {
+    echo 'SCOTTLAND_TEST_WRAP target does not exist' >&2; return 1;
+  }
+  [[ $canonical == "$path" && ! -L $path && -f $path && -x $path && \
+     $(stat -c %h -- "$path") == 1 && \
+     $(stat -c %u -- "$path") == "$uid" ]] || {
+    echo 'SCOTTLAND_TEST_WRAP must be a canonical, run-owned regular executable, not a symlink' >&2
+    return 1
+  }
+  mode=$(stat -c %a -- "$path") || return 1
+  (( (8#$mode & 0022) == 0 && (8#$mode & 07000) == 0 && (8#$mode & 0111) != 0 )) || {
+    echo 'SCOTTLAND_TEST_WRAP has unsafe permissions' >&2; return 1;
+  }
+  current_identity=$(wrapper_identity "$path") || return 1
+  if [[ -n $expected_identity && $current_identity != "$expected_identity" ]]; then
+    echo 'SCOTTLAND_TEST_WRAP changed after outer validation' >&2
+    return 1
+  fi
+  wrapper_received_path=$canonical
+  wrapper_received_identity=$current_identity
+}
+
+if ((inside)) && [[ -n $test_wrap ]]; then
+  echo 'SCOTTLAND_TEST_WRAP is accepted only at the outer headless entry' >&2
+  exit 2
+fi
+if [[ -n $test_wrap || $private_wrap_present == 1 ]]; then
+  [[ $isolation != 1 ]] || {
+    echo 'SCOTTLAND_TEST_WRAP is allowed only for normal start --omarchy' >&2
+    exit 2
+  }
+  wrapper_start_requested "$@" || {
     echo 'SCOTTLAND_TEST_WRAP is allowed only for normal start --omarchy' >&2
     exit 2
   }
@@ -68,33 +187,16 @@ if [[ ${1:-} == start && -n $test_wrap ]]; then
     echo 'SCOTTLAND_TEST_WRAP cannot be combined with SCOTTLAND_TEST_PRELOAD' >&2
     exit 2
   }
-  build_root=$(realpath -e -- "$repo/build") || {
-    echo 'SCOTTLAND_TEST_WRAP requires an existing checkout build/ directory' >&2
-    exit 2
-  }
-  [[ $build_root == "$repo/build" ]] || {
-    echo 'SCOTTLAND_TEST_WRAP requires the checkout build/ directory to be real, not redirected' >&2
-    exit 2
-  }
-  expected_wrap="$build_root/omarchy-monitors-fixture/wrap-compositor"
-  [[ $test_wrap == "$expected_wrap" && ! -L $test_wrap && -f $test_wrap && -x $test_wrap ]] || {
-    echo 'SCOTTLAND_TEST_WRAP is allowlisted only at build/omarchy-monitors-fixture/wrap-compositor' >&2
-    exit 2
-  }
-  wrap_path=$(realpath -e -- "$test_wrap") || {
-    echo 'SCOTTLAND_TEST_WRAP target does not exist' >&2
-    exit 2
-  }
-  [[ $wrap_path == "$expected_wrap" && $(stat -c '%u:%a' -- "$wrap_path") == "$uid:755" ]] || {
-    echo 'SCOTTLAND_TEST_WRAP must be the run-owned mode-755 file at the allowlisted path' >&2
-    exit 2
-  }
-  compositor_command=("$wrap_path" wayfire)
-  if ((inside == 0)); then
-    # This one validated variable is the explicit environment allowlist across bwrap.
-    wrapper_env_args=(--setenv SCOTTLAND_TEST_WRAP "$wrap_path")
+  if ((inside)); then
+    [[ $private_wrap_present == 1 ]] || { echo 'private compositor wrapper record is missing' >&2; exit 2; }
+    validate_test_wrapper "$private_wrap_path" "$private_wrap_identity" || exit 2
+  else
+    validate_test_wrapper "$test_wrap" || exit 2
+    private_runtime_args+=(__scottland_headless_test_wrap "$wrapper_received_path" "$wrapper_received_identity")
   fi
+  compositor_command=("$wrapper_received_path" wayfire)
 fi
+private_runtime_args+=("$@")
 case "$dir/" in
   "$build"/*) ;;
   *) echo 'SCOTTLAND_HEADLESS_DIR must be a child of this checkout build/' >&2; exit 2 ;;
@@ -257,15 +359,12 @@ if ((inside == 0)); then
   fi
   bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
-  if ((${#wrapper_env_args[@]})); then
-    bwrap_args+=("${wrapper_env_args[@]}")
-  fi
   # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
   # compositor can see its render node. Reuse a live session's user namespace for later
   # invocations so run processes retain access to that session's /proc entries; runtime and
   # TMPDIR are still privately bound to this run's owned scratch.
   if bwrap "${bwrap_args[@]}" -- \
-    "$repo/tests/headless.sh" __scottland_headless_private_runtime "$@"; then
+    "$repo/tests/headless.sh" "${private_runtime_args[@]}"; then
     status=0
   else
     status=$?
@@ -698,6 +797,10 @@ WRAPPER
         elif [[ $test_gles == no-derivatives ]]; then
           MESA_EXTENSION_OVERRIDE+=" -GL_OES_standard_derivatives"
         fi
+      fi
+      if [[ -n $wrapper_received_path ]]; then
+        validate_test_wrapper "$wrapper_received_path" "$wrapper_received_identity" || exit 2
+        compositor_command=("$wrapper_received_path" wayfire)
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
