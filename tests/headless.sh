@@ -14,6 +14,8 @@
 #                                         all thread stacks into wayfire.log, then resumes
 #                                         --stock omits Scottland for a protocol control
 #                                         SCOTTLAND_TEST_PRELOAD=LIB preloads LIB into Wayfire only
+#                                         SCOTTLAND_TEST_WRAP=EXE wraps only the Omarchy monitor
+#                                         fixture's run-owned --omarchy Wayfire launch
 #   tests/headless.sh run CMD [ARGS...]   run CMD inside it (scottland-exec: its own environment)
 #   tests/headless.sh ipc METHOD [JSON]   call its Wayfire IPC (e.g. stipc/feed_key)
 #   tests/headless.sh stop [--preserve-scratch]
@@ -44,6 +46,54 @@ inside=0
 if [[ ${1:-} == __scottland_headless_private_runtime ]]; then
   inside=1
   shift
+fi
+isolation=${SCOTTLAND_HEADLESS_ISOLATION:-0}
+# This is the only ingress for a compositor wrapper. Remove the environment variable immediately;
+# a validated path is passed across the private-runtime boundary explicitly and later used only as
+# the Wayfire command prefix.
+test_wrap=${SCOTTLAND_TEST_WRAP:-}
+unset SCOTTLAND_TEST_WRAP
+compositor_command=(wayfire)
+wrapper_env_args=()
+if [[ ${1:-} == start && -n $test_wrap ]]; then
+  start_omarchy=0
+  for option in "${@:2}"; do
+    [[ $option == --omarchy ]] && start_omarchy=1
+  done
+  [[ $isolation != 1 && $start_omarchy == 1 ]] || {
+    echo 'SCOTTLAND_TEST_WRAP is allowed only for normal start --omarchy' >&2
+    exit 2
+  }
+  [[ -z ${SCOTTLAND_TEST_PRELOAD:-} ]] || {
+    echo 'SCOTTLAND_TEST_WRAP cannot be combined with SCOTTLAND_TEST_PRELOAD' >&2
+    exit 2
+  }
+  build_root=$(realpath -e -- "$repo/build") || {
+    echo 'SCOTTLAND_TEST_WRAP requires an existing checkout build/ directory' >&2
+    exit 2
+  }
+  [[ $build_root == "$repo/build" ]] || {
+    echo 'SCOTTLAND_TEST_WRAP requires the checkout build/ directory to be real, not redirected' >&2
+    exit 2
+  }
+  expected_wrap="$build_root/omarchy-monitors-fixture/wrap-compositor"
+  [[ $test_wrap == "$expected_wrap" && ! -L $test_wrap && -f $test_wrap && -x $test_wrap ]] || {
+    echo 'SCOTTLAND_TEST_WRAP is allowlisted only at build/omarchy-monitors-fixture/wrap-compositor' >&2
+    exit 2
+  }
+  wrap_path=$(realpath -e -- "$test_wrap") || {
+    echo 'SCOTTLAND_TEST_WRAP target does not exist' >&2
+    exit 2
+  }
+  [[ $wrap_path == "$expected_wrap" && $(stat -c '%u:%a' -- "$wrap_path") == "$uid:755" ]] || {
+    echo 'SCOTTLAND_TEST_WRAP must be the run-owned mode-755 file at the allowlisted path' >&2
+    exit 2
+  }
+  compositor_command=("$wrap_path" wayfire)
+  if ((inside == 0)); then
+    # This one validated variable is the explicit environment allowlist across bwrap.
+    wrapper_env_args=(--setenv SCOTTLAND_TEST_WRAP "$wrap_path")
+  fi
 fi
 case "$dir/" in
   "$build"/*) ;;
@@ -207,6 +257,9 @@ if ((inside == 0)); then
   fi
   bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
+  if ((${#wrapper_env_args[@]})); then
+    bwrap_args+=("${wrapper_env_args[@]}")
+  fi
   # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
   # compositor can see its render node. Reuse a live session's user namespace for later
   # invocations so run processes retain access to that session's /proc entries; runtime and
@@ -232,7 +285,6 @@ if ((inside == 0)); then
 fi
 verify_owner || exit 2
 export XDG_RUNTIME_DIR=$runtime TMPDIR=$tmp_scratch SCOTTLAND_HEADLESS_DIR=$dir
-isolation=${SCOTTLAND_HEADLESS_ISOLATION:-0}
 if [[ $isolation == 1 ]]; then
   scratch=${SCOTTLAND_TEST_SCRATCH:?isolated headless mode requires a private scratch directory}
   scratch=$(realpath -m -- "$scratch")
@@ -648,7 +700,8 @@ WRAPPER
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
-        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
+        setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" \
+        "${compositor_command[@]}" -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
     for _ in $(seq 100); do
