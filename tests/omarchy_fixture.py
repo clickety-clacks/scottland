@@ -8,7 +8,8 @@ name and arguments to a log, so a test observes what actually ran without touchi
 desktop, microphone, lock screen or displays.
 
 A Session wraps tests/headless.sh (start --omarchy) with that HOME, its own
-SCOTTLAND_HEADLESS_DIR under this checkout's build/, and cleanup of exactly what it created.
+SCOTTLAND_HEADLESS_DIR under this checkout's build/ (or the isolated run scratch), and cleanup of
+exactly what it created.
 Processes a test starts in the session are recorded by PID (Session.spawn) and stopped by PID.
 pkill and pgrep on the fixture PATH (stock Omarchy commands call them, e.g. the color picker's
 `pkill hyprpicker || hyprpicker -a`) see only this session's processes, never the machine's.
@@ -91,12 +92,28 @@ class Session:
         checkout for reload rehearsals."""
         self.fixture = fixture
         self.repo = Path(repo)
-        self.dir = self.repo / "build" / name
+        test_env = {**os.environ, **(env or {})}
+        isolated = test_env.get("SCOTTLAND_HEADLESS_ISOLATION") == "1"
+        if isolated:
+            scratch = Path(test_env["SCOTTLAND_TEST_SCRATCH"]).resolve()
+            self.dir = scratch / name
+            tmpdir = scratch / "tmp"
+        else:
+            self.dir = self.repo / "build" / name
+            tmpdir = REPO / "build" / "tmp"
         self.env = {**os.environ, "HOME": str(fixture.home),
                     "SCOTTLAND_HEADLESS_DIR": str(self.dir),
                     "SCOTTLAND_TEST_PATH": str(fixture.bin),
-                    "TMPDIR": str(REPO / "build" / "tmp"), **(env or {})}
-        (REPO / "build" / "tmp").mkdir(parents=True, exist_ok=True)
+                    "TMPDIR": str(tmpdir), **(env or {})}
+        if isolated:
+            # Keep the test-created session strictly below the runner-owned scratch, even if a
+            # caller supplied a conflicting SCOTTLAND_HEADLESS_DIR or TMPDIR override.
+            self.env["SCOTTLAND_HEADLESS_DIR"] = str(self.dir)
+            self.env["TMPDIR"] = str(tmpdir)
+        if isolated:
+            tmpdir.mkdir(exist_ok=True)
+        else:
+            tmpdir.mkdir(parents=True, exist_ok=True)
         self.extra_args = list(extra_args)
         self.omarchy = omarchy  # False: core alone, no adapter hooks
         self.started = False
