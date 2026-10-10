@@ -195,6 +195,13 @@ def launch(name, x=None, y=None):
 def delivered(name):
     return [json.loads(line)['key'] for line in (artifacts/(name+'.keys')).read_text().splitlines()]
 
+def ctl_windows(*args):
+    command = str(Path('core/libexec/scottland-ctl').resolve())
+    return subprocess.check_output(['tests/headless.sh', 'run', command, 'windows', *args], text=True)
+
+def rectangle_tuple(rectangle):
+    return tuple(float(rectangle[key]) for key in ('x', 'y', 'width', 'height'))
+
 def focus(identifier):
     ipc('window-rules/focus-view', {'id': identifier})
     time.sleep(.1)
@@ -226,10 +233,44 @@ def close_all():
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300})
-    output = ipc('window-rules/list-outputs')[0]['geometry']
+    output_info = ipc('window-rules/list-outputs')[0]
+    output = output_info['geometry']
     width, height = output['width'], output['height']
     a = launch('Alpha')
     b = launch('Beta')
+    layout_state = ipc('scottland/layout-state')
+    rectangles = layout_state['window_rectangles']
+    record_keys = {'id', 'app_id', 'title', 'hidden', 'preview', 'output', 'rect'}
+    expected_windows = {window['title']: window for window in layout_state['views']}
+    views_by_id = {window['id']: window for window in layout_state['views']}
+    records_by_id = {window['id']: window for window in rectangles}
+    check(len(rectangles) == len(layout_state['views']) and
+          len(records_by_id) == len(rectangles) and
+          set(records_by_id) == set(views_by_id) and
+          all(set(window) == record_keys for window in rectangles),
+          'layout-state gives each mapped view one identity/output/rectangle record')
+    for title in ('Alpha', 'Beta'):
+        window = expected_windows[title]
+        record = records_by_id[window['id']]
+        shown = window.get('scene_frame', window.get('frame'))
+        expected_rectangle = (output['x'] + shown['x'], output['y'] + shown['y'],
+                              shown['width'], shown['height'])
+        check(record['app_id'] == window.get('app_id', '') and
+              record['title'] == title and record['hidden'] == window['hidden'] and
+              record['preview'] == window['preview'] and
+              record['output'] == output_info['name'] and record['rect'] is not None and
+              rectangle_tuple(record['rect']) == expected_rectangle,
+              f'{title}: record binds owner output and global drawn rectangle to window id')
+    cli_records = json.loads(ctl_windows('--json'))
+    check(all(set(window) == record_keys for window in cli_records) and
+          {window['id']: window for window in cli_records} == records_by_id,
+          'scottland-ctl windows --json projects the exact per-window records')
+    text_windows = ctl_windows()
+    expected_text = [f"{window['id']:>5}  {window.get('app_id', ''):32} "
+                     f"{window['zone']:11} {window['applied_scale']:.2f}  "
+                     f"{window['title'][:60]}" for window in layout_state['views']]
+    check(sorted(text_windows.splitlines()) == sorted(expected_text),
+          'scottland-ctl windows keeps its existing text listing')
     check(hint(a)['hint'] == 'a' and hint(b)['hint'] == 's', 'home-row hints assigned in opening order')
     focus(a)
     key('LEFTALT', True)
@@ -563,7 +604,24 @@ try:
     full_memory = hint(b)['memories'][0]
     ipc('wm-actions/set-fullscreen', {'view_id': b, 'state': True})
     time.sleep(.7)
-    check(next(v for v in views() if v['widget'])['hidden'], 'full screen hides rail widgets')
+    fullscreen_state = ipc('scottland/layout-state')
+    fullscreen_rectangles = fullscreen_state['window_rectangles']
+    fullscreen_records = {window['id']: window for window in fullscreen_rectangles}
+    output_rectangle = (output['x'], output['y'], output['width'], output['height'])
+    fullscreen_target = next(window for window in fullscreen_state['views'] if window['id'] == b)
+    target_record = fullscreen_records[fullscreen_target['id']]
+    check(target_record['output'] == output_info['name'] and
+          rectangle_tuple(target_record['rect']) == output_rectangle,
+          'fullscreen window record names its owner and uses output bounds')
+    hidden_widget = next(window for window in fullscreen_state['views'] if window['widget'])
+    hidden_widget_record = fullscreen_records[hidden_widget['id']]
+    check(hidden_widget['hidden'] and hidden_widget_record['hidden'] and
+          hidden_widget_record['rect'] is None,
+          'hidden mapped window retains identity with a null rectangle')
+    fullscreen_cli_records = json.loads(ctl_windows('--json'))
+    check(all(set(window) == record_keys for window in fullscreen_cli_records) and
+          {window['id']: window for window in fullscreen_cli_records} == fullscreen_records,
+          'scottland-ctl JSON keeps fullscreen and hidden record fields aligned')
     hold()
     check(hint(a)['visible'] and not next(v for v in views() if v['widget'])['hidden'], 'Alt in full screen reveals widgets and hints')
     release()
