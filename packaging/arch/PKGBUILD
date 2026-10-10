@@ -1,7 +1,7 @@
 # Local build: cd packaging/arch && makepkg -si
 pkgbase=scottland
 pkgname=(scottland scottland-omarchy)
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64')
@@ -96,7 +96,8 @@ package_scottland-omarchy() {
   pkgdesc="Omarchy integration for Scottland: switch between Scottland and Hyprland"
   arch=('any')
   # base-devel and curl: setup builds Gooarchy's xdg-desktop-portal-wlr (scottland-omarchy-setup)
-  depends=('scottland' 'omarchy' 'quickshell' 'jq' 'polkit' 'sddm' 'python' 'lua' 'base-devel' 'curl')
+  # The adapter and core are a matched pair from this split-package build.
+  depends=("scottland=${pkgver}-${pkgrel}" 'omarchy' 'quickshell' 'jq' 'polkit' 'sddm' 'python' 'lua' 'base-devel' 'curl')
   install=scottland-omarchy.install
 
   local o="$_root/omarchy"
