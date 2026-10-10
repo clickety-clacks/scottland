@@ -630,10 +630,14 @@ static void gather_ga11_best_effort_and_too_wide()
         auto placed = solve(side);
         auto wide_final = gather_final(side, placed, 3), small_final = gather_final(side, placed, 4);
         const auto& wide_input = gather_input(side, 3);
-        box wide_box = rect_of(wide_input, wide_final), small_box = rect_of(gather_input(side, 4), small_final);
+        const auto& small_input = gather_input(side, 4);
+        box wide_box = rect_of(wide_input, wide_final), small_box = rect_of(small_input, small_final);
+        box small_before_box = rect_of(small_input, {small_input.cx, small_input.cy, small_input.scale, false});
         CHECK(width > band && width <= 2 * band, "GA11 wide fixture: width is in the disputed interval");
         CHECK(wide_final.cx == wide_input.cx && wide_final.cy == wide_input.cy && wide_final.s == wide_input.scale,
             "GA11 wide fixture: too-wide resident stays position- and scale-identical (%s side)", left ? "left" : "right");
+        CHECK(normalized_overlap(wide_box, small_before_box) > 0.10,
+            "GA11 wide fixture: later resident starts beyond the overlap limit (%s side)", left ? "left" : "right");
         CHECK(normalized_overlap(wide_box, small_box) <= 0.10 + 1e-9,
             "GA11 wide fixture: later resident treats the fixed wide resident as an obstacle (%s side)",
             left ? "left" : "right");
