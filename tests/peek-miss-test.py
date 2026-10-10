@@ -15,13 +15,16 @@ without shine, relief and overlap film, so a strip's pixels keep their client's 
 Usage: peek-miss-test.py ARTIFACTS [CASE ...]
 """
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import time
+import zlib
 
 here = Path(__file__).resolve().parent
 args = sys.argv[1:]
@@ -31,6 +34,7 @@ sys.argv = [sys.argv[0], str(art)]
 src = open(here / 'pairing-test.py').read()
 exec(src[:src.index('\ntry:\n')])  # its helpers: ipc, wait, check, setup, press_hint, alt, hint, layout, ...
 results = []
+p14_times = {}
 FOCUSED_PEEKS = False  # WK13: the focused window never moves for avoidance (not yet decided otherwise)
 STRIP_D, STRIP_L, EDGE = 24, 100, 2   # EDGE: the frame's own antialiased outline
 COLORS = {'Small': '#e02828', 'Big': '#2850c8', 'Other': '#28b450', 'Cover': '#c8a028', 'Probe': '#c828b4'}
@@ -83,6 +87,165 @@ def capture(name):
     return w, h, data[pos + 1:]
 
 
+def capture_p14(name, defer_png=False):
+    """One primary frame for the grabbed-while-peeking visible P14 oracle."""
+    began = time.monotonic_ns()
+    data = subprocess.check_output(['grim', '-t', 'ppm', '-'])
+    p14_times[name] = {'begin_ns': began, 'ready_ns': time.monotonic_ns()}
+    (art / (name + '.ppm')).write_bytes(data)
+    header = re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s', data)
+    if header is None:
+        raise Unready(f'{name}: invalid RGB PPM header')
+    w, h = int(header[1]), int(header[2])
+    px = data[header.end():]
+    if w <= 0 or h <= 0 or len(px) != w * h * 3:
+        raise Unready(f'{name}: invalid RGB PPM capture')
+    image = w, h, px
+    if not defer_png: save_png(name, image)
+    return image
+
+
+def p14_lineage(directory, nonce, cover, held_bounds, dropped_bounds, held_time, stopped):
+    """Join actual submitted bytes to every commit/presentation and processed release or fail.
+    Relative video cadence and IPC geometry cannot fill a gap in this ledger.
+    """
+    report = {'complete': False, 'frames': [], 'gaps': [], 'backend': 'headless-synthetic'}
+    try:
+        if stopped.get('error'): raise Unready(stopped['error'])
+        raw = (directory / 'events.jsonl').read_bytes()
+        report['events_sha256'] = hashlib.sha256(raw).hexdigest()
+        rows = [json.loads(line) for line in raw.splitlines()]
+        if not rows or rows[0]['type'] != 'arm' or rows[-1]['type'] != 'stop':
+            raise Unready('missing observation endpoints')
+        if any(row.get('nonce') != nonce or row['event'] != i + 1 for i, row in enumerate(rows)):
+            raise Unready('missing event or wrong run identity')
+        if any(b['ns'] < a['ns'] for a, b in zip(rows, rows[1:])):
+            raise Unready('ambiguous observer clock order')
+        if not rows[0]['ns'] <= held_time['begin_ns'] <= held_time['ready_ns']:
+            raise Unready('final-held capture outside observation interval')
+        if rows[-1]['ns'] - rows[0]['ns'] > 8_000_000_000 or len(rows) > 1024:
+            raise Unready('observation bounds exceeded')
+        if rows[0].get('cover') != cover or rows[0].get('backend') != 'headless-synthetic' or \
+                (rows[0].get('width'), rows[0].get('height')) != (1280, 720):
+            raise Unready('wrong B or output identity')
+        if any(row['type'] == 'gap' for row in rows) or rows[-1].get('error'):
+            raise Unready('explicit observer gap')
+        markers = {}
+        for kind in ('release-received', 'drag-done-begin', 'drag-done-end', 'release-processed'):
+            found = [r for r in rows if r['type'] == kind]
+            if len(found) != 1 or found[0].get('cover') != cover or found[0].get('cancelled'):
+                raise Unready('missing/ambiguous B release: ' + kind)
+            markers[kind] = found[0]
+        chain = list(markers.values())
+        if any(b['event'] <= a['event'] for a, b in zip(chain, chain[1:])):
+            raise Unready('B release/drag processing order changed')
+        if held_time['ready_ns'] > chain[0]['ns']:
+            raise Unready('release began before the final-held capture completed')
+        for key in ('input_time_ms', 'pointer', 'button', 'state', 'modifiers'):
+            if chain[0][key] != chain[-1][key]:
+                raise Unready('release reception/processing identity differs: ' + key)
+        if chain[0]['button'] != 272 or chain[0]['state'] != 0 or not chain[0]['pointer']:
+            raise Unready('release is not an identified left-button release')
+        report['release'] = markers
+        pending, current_file, seq = None, None, rows[0]['seq']
+        commits, presentations = {}, []
+        files = set()
+        for row in rows[1:-1]:
+            kind = row['type']
+            if kind == 'precommit':
+                if pending is not None or row['seq'] != (seq + 1) % 2**32:
+                    raise Unready('unresolved or unaccounted submission')
+                pending = row
+            elif kind == 'commit':
+                if pending is None or row['seq'] != pending['seq'] or row['fields'] != pending['fields']:
+                    raise Unready('commit missing its exact submitted-buffer record')
+                seq = row['seq']
+                if seq in commits: raise Unready('ambiguous wrapped commit identity')
+                if pending['fields'] & 1:
+                    current_file = pending.get('file')
+                    if not current_file or Path(current_file).name != current_file or current_file in files:
+                        raise Unready('missing/ambiguous submitted pixels')
+                    files.add(current_file)
+                elif pending['fields'] & ~((1 << 1) | (1 << 11)):
+                    raise Unready('unknown visible state in a carried image')
+                if not current_file: raise Unready('carried starting image has no pixel lineage')
+                commits[seq] = {'submission': pending, 'commit': row, 'file': current_file}
+                pending = None
+            elif kind == 'present':
+                if row['seq'] not in commits or 'presentation' in commits[row['seq']]:
+                    raise Unready('presentation missing a unique committed pixel image')
+                if not isinstance(row.get('presented'), bool): raise Unready('unknown presentation outcome')
+                entry = commits[row['seq']]
+                entry['presentation'] = row
+                if row['presented']: presentations.append(entry)
+            elif kind not in markers:
+                raise Unready('unknown observation event: ' + kind)
+            elif row['seq'] != seq:
+                raise Unready('release marker disagrees with output commit lineage')
+        if pending or not commits or any('presentation' not in c for c in commits.values()):
+            raise Unready('unresolved submission/presentation at the interval end')
+        if seq != rows[-1]['seq'] or len(files) > 128 or rows[-1].get('images') != len(files):
+            raise Unready('commit/image endpoint mismatch')
+        if any(b['commit']['event'] <= a['commit']['event'] for a,b in zip(presentations,presentations[1:])):
+            raise Unready('presentation order does not establish one displayed sequence')
+        # Headless present is synthetic, reported in this event loop: retain delayed callbacks
+        # and inspect every image. Require a covered display before the final grim call began.
+        before = [c for c in presentations if c['presentation']['ns'] <= held_time['begin_ns']]
+        after = [c for c in presentations if c['commit']['event'] > markers['release-processed']['event']]
+        if not before or not after: raise Unready('missing covered held/dropped endpoint')
+        baseline = before[-1]
+        selected = presentations[presentations.index(baseline):]
+        decoded, file_hashes = {}, {}
+        for filename in files:
+            data = (directory / filename).read_bytes()
+            header = re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s', data)
+            if not header or tuple(map(int, header.groups())) != (1280, 720) or \
+                    len(data) - header.end() != 1280 * 720 * 3:
+                raise Unready('invalid submitted RGB image')
+            file_hashes[filename] = hashlib.sha256(data).hexdigest()
+        report['submitted_hashes'] = file_hashes
+        for entry in presentations:
+            filename = entry['file']
+            if filename not in decoded:
+                data = (directory / filename).read_bytes()
+                header = re.match(rb'P6\s+(\d+)\s+(\d+)\s+255\s', data)
+                decoded[filename] = visible_bounds(labels_of((1280,720,data[header.end():])), COLORS['Big'])
+            bounds, digest = decoded[filename], file_hashes[filename]
+            frame = {'seq': entry['commit']['seq'], 'file': filename, 'ppm_sha256': digest,
+                     'bounds': bounds, 'submission_event': entry['submission']['event'],
+                     'commit_event': entry['commit']['event'], 'presentation': entry['presentation'],
+                     'cost_ns': entry['submission'].get('cost_ns')}
+            if entry in selected:
+                if held_bounds is None or dropped_bounds is None: raise Unready('primary B bounds missing')
+                frame['delta_from_held'] = [b - a for a, b in zip(held_bounds, bounds)]
+                if any(abs(d) > 1 for d in frame['delta_from_held']):
+                    report['frames'].append(frame)
+                    raise Unready('presented B edge moved more than one pixel')
+            report['frames'].append(frame)
+        last_bounds = decoded[presentations[-1]['file']]
+        if any(abs(a-b) > 1 for a, b in zip(last_bounds, dropped_bounds)):
+            raise Unready('primary dropped image does not agree with covered final display')
+        report.update(complete=True, held_capture=held_time,
+                      begin_event=baseline['presentation']['event'], end_event=rows[-1]['event'],
+                      observer_cost_ns=[c['submission'].get('cost_ns') for c in commits.values()],
+                      event_gaps_ns=[b['ns']-a['ns'] for a,b in zip(rows,rows[1:])])
+    except (Unready, OSError, ValueError, KeyError, TypeError) as e:
+        report['gaps'].append(str(e))
+    (directory / 'lineage.json').write_text(json.dumps(report, indent=2))
+    return report
+
+
+def save_png(name, image):
+    """The review image and pixel assertions describe the same captured frame."""
+    w, h, px = image
+    def chunk(kind, body):
+        return struct.pack('!I', len(body)) + kind + body + struct.pack('!I', zlib.crc32(kind + body))
+    scanlines = b''.join(b'\0' + px[y * w * 3:(y + 1) * w * 3] for y in range(h))
+    (art / (name + '.png')).write_bytes(b'\x89PNG\r\n\x1a\n' +
+        chunk(b'IHDR', struct.pack('!2I5B', w, h, 8, 2, 0, 0, 0)) +
+        chunk(b'IDAT', zlib.compress(scanlines)) + chunk(b'IEND', b''))
+
+
 def labels_of(image):
     """Each pixel labelled with the nearest known color (window colors, then the neutrals of the
     background and the goo); 0 for a neutral."""
@@ -103,6 +266,37 @@ def labels_of(image):
             line[x] = label
         rows.append(bytes(line))
     return rows
+
+
+def visible_bounds(rows, color):
+    """Bounds of one connected fixture-color region; absent or competing regions fail closed.
+    Coordinates are pixel edges (right/bottom exclusive), with no IPC geometry fallback.
+    """
+    index = list(dict.fromkeys(COLORS.values())).index(color) + 1
+    table = bytes(1 if k == index else 0 for k in range(256))
+    mask = [bytearray(row.translate(table)) for row in rows]
+    if not mask or not mask[0] or any(len(row) != len(mask[0]) for row in mask):
+        raise Unready('invalid pixel labels')
+    seed = next(((row.index(1), y) for y, row in enumerate(mask) if 1 in row), None)
+    if seed is None:
+        raise Unready('cover color missing from capture')
+    w, h = len(mask[0]), len(mask)
+    bounds, pending = [w, h, 0, 0], [seed]
+    while pending:
+        x, y = pending.pop()
+        if not mask[y][x]: continue
+        left, right = x, x + 1
+        while left > 0 and mask[y][left - 1]: left -= 1
+        while right < w and mask[y][right]: right += 1
+        mask[y][left:right] = b'\0' * (right - left)
+        bounds = [min(bounds[0], left), min(bounds[1], y), max(bounds[2], right), max(bounds[3], y + 1)]
+        for ny in (y - 1, y + 1):
+            if 0 <= ny < h:
+                for match in re.finditer(b'\x01+', mask[ny][left:right]):
+                    pending.append((left + match.start(), ny))
+    if any(1 in row for row in mask):
+        raise Unready('ambiguous cover color: disconnected regions in capture')
+    return bounds
 
 
 def strip_of(rows, color, size):
@@ -133,14 +327,25 @@ def zone_of(x):
     return 'center' if abs(x - W / 2) <= half else 'left' if x < W / 2 else 'right'
 
 
-def observe(name, phase, covered, title, quiet=False):
-    image = capture(f'{name}-{phase}')
-    x1, y1, x2, y2 = scene(covered)
-    found, count = strip_of(labels_of(image), COLORS[title], (x2 - x1, y2 - y1))
-    h = hint(covered)
+def observe(name, phase, covered, title, quiet=False, cover_title=None, image=None, frame=None, diagnostic=None):
+    capture_name = f'{name}-{phase}'
+    if image is None: image = capture(capture_name) if cover_title is None else capture_p14(capture_name)
+    else: save_png(capture_name, image)
+    x1, y1, x2, y2 = frame if frame is not None else scene(covered)
+    rows = labels_of(image)
+    found, count = strip_of(rows, COLORS[title], (x2 - x1, y2 - y1))
+    h = diagnostic if diagnostic is not None else hint(covered)
     row = {'case': name, 'phase': phase, 'strip_in_pixels': found, 'pixels': count,
            'scene_frame': [round(v, 1) for v in (x1, y1, x2, y2)],
            'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule')}}
+    if cover_title is not None:
+        row.update(cover_title=cover_title, ppm=capture_name + '.ppm',
+            ppm_sha256=hashlib.sha256((art / (capture_name + '.ppm')).read_bytes()).hexdigest(),
+            capture_size=list(image[:2]), png=capture_name + '.png')
+        try:
+            row['cover_bounds'] = visible_bounds(rows, COLORS[cover_title])
+        except Unready as e:
+            row.update(cover_bounds=None, cover_bounds_error=str(e))
     if not quiet:
         results.append(row)
         print(f'      {name} [{phase}]: {json.dumps(row)}', flush=True)
@@ -170,11 +375,11 @@ def release():
     button(False); key('LEFTMETA', False)
 
 
-def strip_shows(name, phase, covered, title, timeout):
+def strip_shows(name, phase, covered, title, timeout, cover_title=None):
     """Wait for the covered window's strip to show in captured pixels; fail with the last capture."""
     last = {}
     def look():
-        found, row = observe(name, phase, covered, title, quiet=True)
+        found, row = observe(name, phase, covered, title, quiet=True, cover_title=cover_title)
         last.clear(); last.update(row)
         return found, {k: row[k] for k in ('pixels', 'scene_frame', 'diagnostic')}
     try:
@@ -198,6 +403,7 @@ try:
 
     def case(name, before, focus, covered=S, covering=B, coast=False, spec=None, after_drop=None, title='Small'):
         if only and name not in only: return
+        trace = None
         try:
             setup(spec or base, focus)
             settled()
@@ -208,25 +414,63 @@ try:
             # The covering window is in front before it is dragged (as a click on it would leave it).
             ipc('window-rules/focus-view', {'id': covering})
             until(lambda: (focused_id() == covering, focused_id()), 3, 'cover focused')
+            visible_p14 = name == 'grabbed-while-peeking'
+            if visible_p14: cover_title = raw(covering)['title']
             x1, y1, x2, y2 = scene(covered)
             pointer_drag(covering, ((x1 + x2) / 2, (y1 + y2) / 2), coast=coast)
             if coast:
                 release()
             else:
+                if visible_p14:
+                    trace = art / 'p14-presented'
+                    trace.mkdir(exist_ok=False)
+                    nonce = os.urandom(16).hex()
+                    ipc('scottland/test-p14-observe', {'action': 'arm', 'case': name,
+                        'cover': covering, 'nonce': nonce, 'directory': str(trace)})
+                # Observe the existing readiness captures: do not depend on an incidental
+                # presentation between readiness and the final-held capture.
                 # Under 3 s: a build that still has the drag audition must not start one meanwhile.
                 ok, detail = strip_shows(name, 'held', covered, title, 2.5)
-                check(ok, f'{name}: while the cover is held, the covered window shows a strip (pixels)', detail)
-                held_at = scene(covering)  # where it is drawn under the pointer
+                if visible_p14:
+                    held_at = scene(covering)  # diagnostic only: not synchronized with the rendered frame
+                    held_frame, held_hint = scene(covered), hint(covered)
+                    held_image = capture_p14(f'{name}-held-at-release', defer_png=True)
+                    # No polling, PNG encoding, or pixel analysis between this final frame and release.
+                else:
+                    check(ok, f'{name}: while the cover is held, the covered window shows a strip (pixels)', detail)
+                    held_at = scene(covering)  # where it is drawn under the pointer
                 release()
             if after_drop: after_drop()
             settled()
-            ok, detail = strip_shows(name, 'dropped', covered, title, 6)
+            if visible_p14 and not coast:
+                final_ok, held = observe(name, 'held-at-release', covered, title, cover_title=cover_title,
+                    image=held_image, frame=held_frame, diagnostic=held_hint)
+                held['cover_scene_frame'] = list(held_at)
+                check(ok and final_ok, f'{name}: while the cover is held, the covered window shows a strip (pixels)',
+                      {'readiness': detail, 'at_release': held})
+            ok, detail = strip_shows(name, 'dropped', covered, title, 6,
+                cover_title=cover_title if visible_p14 and not coast else None)
             check(ok, f'{name}: after the drop, the covered window shows a strip (pixels)', detail)
             if not coast:
                 now = scene(covering)
-                check(all(abs(a - b) <= 1 for a, b in zip(now, held_at)),
-                      f'{name}: the covering window stays exactly where it was dropped (P14)',
-                      f'drawn {[round(v, 1) for v in now]} vs at release {[round(v, 1) for v in held_at]}')
+                if visible_p14:
+                    dropped = results[-1]
+                    dropped['cover_scene_frame'] = list(now)
+                    held_bounds, dropped_bounds = held['cover_bounds'], dropped.get('cover_bounds')
+                    stopped = ipc('scottland/test-p14-observe', {'action': 'stop', 'case': name})
+                    lineage = p14_lineage(trace, nonce, covering, held_bounds, dropped_bounds,
+                        p14_times[f'{name}-held-at-release'], stopped)
+                    dropped['presentation_lineage'] = lineage
+                    trace = None
+                    check(held_bounds is not None and dropped_bounds is not None and
+                          all(abs(a - b) <= 1 for a, b in zip(dropped_bounds, held_bounds)) and lineage['complete'],
+                          f'{name}: the covering window stays exactly where it was dropped (P14)',
+                          {'visible_at_release': held, 'visible_dropped': dropped,
+                           'ipc_dropped': now, 'ipc_at_release': held_at})
+                else:
+                    check(all(abs(a - b) <= 1 for a, b in zip(now, held_at)),
+                          f'{name}: the covering window stays exactly where it was dropped (P14)',
+                          f'drawn {[round(v, 1) for v in now]} vs at release {[round(v, 1) for v in held_at]}')
             if not after_drop:
                 check(geometry(covered) == true_before, f'{name}: the covered window\'s real geometry is unchanged (P3)',
                       f'{geometry(covered)} vs {true_before}')
@@ -237,6 +481,9 @@ try:
             import traceback
             check(False, f'{name}: setup', f'{type(e).__name__}: {e} at {traceback.format_exc().splitlines()[-3].strip()}')
         finally:
+            if trace is not None:
+                try: ipc('scottland/test-p14-observe', {'action': 'stop', 'case': name})
+                except Exception: pass
             release()
             if hints()['active']: alt(False)
 
