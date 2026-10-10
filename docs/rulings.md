@@ -7,6 +7,12 @@ rules on something, add it here in the same change that updates the spec. Princi
 
 Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the session record.
 
+## Omarchy solar compatibility
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-10 | Omarchy sessions require Sunlight and network lookup opt-in for missing/unset settings, preserving standalone Core/Settings defaults and explicit choices; preserve the existing solar timer and user configuration until explicit opt-in, and guard the adapter against stale producer state. Keep this compatibility repair separate from broader Sunlight work. | O18; S21 opt-in defaults |
+
 ## Principles
 
 | Date | Ruling | Where |

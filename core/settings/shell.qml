@@ -78,7 +78,8 @@ ShellRoot {
   readonly property var widgetDefaults: ({widget_bounce:0.04,widget_peek_enter_delay:150,
     widget_peek_leave_delay:100,widget_attention_peek_duration:5000,widget_make_room_dwell:350,minimize_hold_delay:300})
   property var widgetValues: Object.assign({},widgetDefaults)
-  readonly property var solarDefaults: ({enabled:true,allow_ip:true,location_set:false,latitude:0,longitude:0})
+  readonly property bool solarOptIn: Quickshell.env("SCOTTLAND_SOLAR_OPT_IN") === "1"
+  readonly property var solarDefaults: ({enabled:!solarOptIn,allow_ip:!solarOptIn,location_set:false,latitude:0,longitude:0})
   property var solarValues: Object.assign({},solarDefaults)
   property var originalSolar: Object.assign({},solarDefaults)
   property bool solarLatitudeEdited:false
