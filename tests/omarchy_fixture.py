@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -103,8 +104,7 @@ class Session:
             scratch_stat = scratch.stat()
             if (not scratch.is_dir() or build not in scratch.parents or
                     scratch_stat.st_uid != os.getuid() or
-                    scratch_stat.st_mode & 0o077 or
-                    (scratch_stat.st_mode & 0o700) != 0o700):
+                    stat.S_IMODE(scratch_stat.st_mode) != 0o700):
                 raise ValueError("SCOTTLAND_TEST_SCRATCH must be an owned private child of build/")
             self.dir = (scratch / name).resolve()
             tmpdir = (scratch / "tmp").resolve()
@@ -122,6 +122,9 @@ class Session:
             # caller supplied a conflicting SCOTTLAND_HEADLESS_DIR or TMPDIR override.
             self.env["SCOTTLAND_HEADLESS_DIR"] = str(self.dir)
             self.env["TMPDIR"] = str(tmpdir)
+        # A compositor wrapper belongs to one explicit Omarchy start request only. Removing it
+        # here keeps later run/ipc/stop requests and the sanitized environment wrapper-free.
+        self.test_wrap = self.env.pop("SCOTTLAND_TEST_WRAP", None)
         if isolated:
             tmpdir.mkdir(exist_ok=True)
         else:
@@ -138,8 +141,13 @@ class Session:
         self.stop()
 
     def harness(self, *args, check=True, timeout=60, input=None):
+        env = self.env
+        if args and args[0] == "start":
+            if "--omarchy" in args[1:] and self.test_wrap is not None:
+                env = {**self.env, "SCOTTLAND_TEST_WRAP": self.test_wrap}
+            self.test_wrap = None
         try:
-            return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=self.env,
+            return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=env,
                                   text=True, capture_output=True, check=check, timeout=timeout,
                                   input=input)
         except subprocess.CalledProcessError as error:
