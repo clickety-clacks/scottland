@@ -148,6 +148,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-06 | Remove keep mode: "wrt to keep mode i vote we just remove it. switching between the two just closes all the windows, keeps it clean". Switching between Scottland and Hyprland always closes the current desktop; no checkbox, no remembered choice, no service handover between running desktops. Adapter-gaps question 1 and the 1Password keep-mode crash are moot. | W2, W11 (W7–W9 removed); docs/adapter-gaps.md AG20/AG36 |
 | 10-06 | "please keep a warning in the switcher that it WILL close all windows": the switch dialog warns, in place of the checkbox, that switching will close all windows in the current desktop. | W2 |
 
+## Session environment
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying; login still starts the session watcher and ordinary hooks, and reload continues its plugin/config work. At login, restart only active or transitioning portal units that predate the successful import; do not restart failed portal units. On reload, import the live values without restarting already-running services. | E1, `core/autostart.d/05-import-environment` |
+
 ## Knocks (concept in discussion; docs/knocks.md)
 
 | Date | Ruling |
