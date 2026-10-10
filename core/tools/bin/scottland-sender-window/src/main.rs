@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_INPUT_BYTES: usize = 262_144;
 const MAX_RESOLVER_OUTPUT_BYTES: usize = 1_048_576;
 const MAX_WINDOWS: usize = 4096;
+const MAX_PID: u64 = 4_194_304;
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -62,9 +63,8 @@ fn run() -> Result<Value, String> {
     let sender = root
         .get("sender")
         .ok_or_else(|| "missing sender resolver target".to_string())?;
-    let has_tmux = validate_target(sender)?;
-
-    let (windows, window_facts) = match collect_windows() {
+    let (has_tmux, collection) = validate_target_then_collect(sender, collect_windows)?;
+    let (windows, window_facts) = match collection {
         Ok(snapshot) => snapshot,
         Err(message) => {
             return Ok(unknown(
@@ -173,6 +173,14 @@ fn read_input() -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+fn validate_target_then_collect<T>(
+    target: &Value,
+    collect: impl FnOnce() -> Result<T, String>,
+) -> Result<(bool, Result<T, String>), String> {
+    let has_tmux = validate_target(target)?;
+    Ok((has_tmux, collect()))
+}
+
 fn validate_target(target: &Value) -> Result<bool, String> {
     let object = target
         .as_object()
@@ -188,13 +196,13 @@ fn validate_target(target: &Value) -> Result<bool, String> {
         &["machine", "instanceId", "pid", "startTimeTicks"],
         "sender.identity",
     )?;
-    validate_text_field(identity, "machine", "sender.identity.machine", 255)?;
+    validate_machine_field(identity, "machine", "sender.identity.machine", 255)?;
     validate_text_field(identity, "instanceId", "sender.identity.instanceId", 512)?;
     let pid = identity
         .get("pid")
         .and_then(Value::as_u64)
         .ok_or_else(|| "sender.identity.pid must be a positive integer".to_string())?;
-    if pid == 0 || pid > i32::MAX as u64 {
+    if pid == 0 || pid > MAX_PID {
         return Err("sender.identity.pid is outside the resolver-v1 range".to_string());
     }
     let ticks = identity
@@ -275,7 +283,7 @@ fn validate_socket(value: &Value) -> Result<(), String> {
     match kind {
         "name"
             if !socket_value.is_empty()
-                && socket_value.len() <= 128
+                && socket_value.chars().count() <= 128
                 && !socket_value.contains('/')
                 && safe_text(socket_value) =>
         {
@@ -284,7 +292,7 @@ fn validate_socket(value: &Value) -> Result<(), String> {
         "path"
             if socket_value.starts_with('/')
                 && socket_value.len() >= 2
-                && socket_value.len() <= 4096
+                && socket_value.chars().count() <= 4096
                 && safe_text(socket_value) =>
         {
             Ok(())
@@ -315,18 +323,43 @@ fn validate_text_field(
     validate_text_value(value, path, maximum)
 }
 
+fn validate_machine_field(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    path: &str,
+    maximum: usize,
+) -> Result<(), String> {
+    let value = object.get(field).ok_or_else(|| format!("missing {path}"))?;
+    let text = value
+        .as_str()
+        .ok_or_else(|| format!("{path} must be a string"))?;
+    validate_text_value(value, path, maximum)?;
+    if !valid_machine(text) {
+        return Err(format!("{path} is invalid"));
+    }
+    Ok(())
+}
+
 fn validate_text_value(value: &Value, path: &str, maximum: usize) -> Result<(), String> {
     let text = value
         .as_str()
         .ok_or_else(|| format!("{path} must be a string"))?;
-    if text.is_empty() || text.len() > maximum || !safe_text(text) {
+    if text.is_empty() || text.chars().count() > maximum || !safe_text(text) {
         return Err(format!("{path} is invalid"));
     }
     Ok(())
 }
 
 fn safe_text(text: &str) -> bool {
-    !text.chars().any(char::is_control)
+    !text.chars().any(|character| character.is_ascii_control())
+}
+
+fn valid_machine(machine: &str) -> bool {
+    let mut bytes = machine.bytes();
+    matches!(bytes.next(), Some(byte) if byte.is_ascii_alphanumeric())
+        && bytes.all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
+        })
 }
 
 fn canonical_ticks(value: &str) -> bool {
@@ -404,7 +437,11 @@ fn collect_windows() -> Result<(Vec<Value>, BTreeMap<String, WindowFact>), Strin
             .get("title")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("window {id} has no title"))?;
-        if class.len() > 256 || title.len() > 512 || !safe_text(class) || !safe_text(title) {
+        if class.chars().count() > 256
+            || title.chars().count() > 512
+            || !safe_text(class)
+            || !safe_text(title)
+        {
             return Err(format!("window {id} has invalid app-id or title text"));
         }
 
@@ -474,7 +511,7 @@ fn local_machine() -> Result<String, String> {
         return Err("hostname command failed".to_string());
     }
     let machine = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if machine.is_empty() || machine.len() > 255 || !safe_text(&machine) {
+    if machine.chars().count() > 255 || !safe_text(&machine) || !valid_machine(&machine) {
         return Err("hostname returned an invalid local host name".to_string());
     }
     Ok(machine)
@@ -794,6 +831,41 @@ fn diagnostic(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    fn resolver_v1_accepts_target(target: &Value) -> bool {
+        let script = r#"
+import json, sys
+from agent_window_resolver.model import RequestError, parse_target
+try:
+    parse_target(json.load(sys.stdin))
+except RequestError as error:
+    print(error.code)
+    raise SystemExit(3)
+print("valid")
+"#;
+        let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor");
+        let mut child = Command::new("python3")
+            .args(["-c", script])
+            .env("PYTHONPATH", vendor)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("python3 should be available for resolver-v1 parity tests");
+        let mut stdin = child.stdin.take().expect("parity stdin is piped");
+        serde_json::to_writer(&mut stdin, target).expect("target JSON should serialize");
+        drop(stdin);
+        let output = child.wait_with_output().expect("parity process should exit");
+        match output.status.code() {
+            Some(0) => true,
+            Some(3) => false,
+            code => panic!(
+                "resolver-v1 parity helper exited unexpectedly ({code:?}): {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        }
+    }
 
     fn complete(windows: &[u64], reason_code: &str) -> RelationResult {
         RelationResult {
@@ -877,6 +949,63 @@ mod tests {
                 .unwrap_err()
                 .contains("sender.identity.startTimeTicks")
         );
+    }
+
+    #[test]
+    fn target_validation_matches_resolver_v1_unicode_and_boundary_rules() {
+        let sender = json!({
+            "identity": {
+                "machine": "example-host",
+                "instanceId": format!("{}\u{0085}", "é".repeat(299)),
+                "pid": MAX_PID,
+                "startTimeTicks": "1"
+            },
+            "name": "🚀".repeat(512),
+            "tmux": {
+                "session": "界".repeat(200),
+                "windowIndex": "0",
+                "paneId": "%1",
+                "socket": {"kind": "name", "value": "é".repeat(128)}
+            }
+        });
+
+        assert_eq!(validate_target(&sender), Ok(true));
+        assert!(resolver_v1_accepts_target(&sender));
+    }
+
+    #[test]
+    fn malformed_targets_match_resolver_v1_and_precede_unavailable_collection() {
+        let invalid_targets = [
+            json!({
+                "identity": {
+                    "machine": "bad host",
+                    "instanceId": "sender",
+                    "pid": 1,
+                    "startTimeTicks": "1"
+                }
+            }),
+            json!({
+                "identity": {
+                    "machine": "example-host",
+                    "instanceId": "sender",
+                    "pid": MAX_PID + 1,
+                    "startTimeTicks": "1"
+                }
+            }),
+        ];
+
+        for sender in invalid_targets {
+            assert!(validate_target(&sender).is_err());
+            assert!(!resolver_v1_accepts_target(&sender));
+
+            let collection_called = Cell::new(false);
+            let result = validate_target_then_collect(&sender, || {
+                collection_called.set(true);
+                Err::<(), _>("window collection is unavailable".to_string())
+            });
+            assert!(result.is_err());
+            assert!(!collection_called.get());
+        }
     }
 
     #[test]
