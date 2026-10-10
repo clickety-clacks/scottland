@@ -264,8 +264,9 @@ class solver_t
                     double border = side == 0 ? mid - S.center_half : mid + S.center_half;
                     double band = side == 0 ? border - (S.rail_width + EDGE_MARGIN) :
                         (W - S.rail_width - EDGE_MARGIN) - border;
-                    // A footprint too wide for its side at its current scale stays exactly put.
-                    if (w.width * w.scale / 2 > band + EPS)
+                    // GA11: a footprint wider than the rail-to-border band stays exactly put;
+                    // keeping its original box in `fixed` makes later placements avoid it.
+                    if (w.width * w.scale > band + EPS)
                     {
                         fixed.push_back(before);
                         continue;
