@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -103,8 +104,7 @@ class Session:
             scratch_stat = scratch.stat()
             if (not scratch.is_dir() or build not in scratch.parents or
                     scratch_stat.st_uid != os.getuid() or
-                    scratch_stat.st_mode & 0o077 or
-                    (scratch_stat.st_mode & 0o700) != 0o700):
+                    stat.S_IMODE(scratch_stat.st_mode) != 0o700):
                 raise ValueError("SCOTTLAND_TEST_SCRATCH must be an owned private child of build/")
             self.dir = (scratch / name).resolve()
             tmpdir = (scratch / "tmp").resolve()
