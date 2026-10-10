@@ -1,7 +1,7 @@
 # Local build: cd packaging/arch && makepkg -si
 pkgbase=scottland
 pkgname=(scottland scottland-omarchy)
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Spatial desktop on Wayfire, after Scott Jenson's working-memory concept"
 arch=('x86_64')
@@ -24,22 +24,31 @@ build() {
 package_scottland() {
   # quickshell: the default widget (card) and the layout settings app
   # xdg-desktop-portal-wlr: screen sharing and screenshots (scottland-portals.conf); gtk: the rest
+  # wayland: scottland-output-power and scottland-output-heads (wayland-client)
   depends=('wayfire' 'cairo' 'inotify-tools' 'python' 'python-dbus' 'python-gobject' 'glib2' 'quickshell'
            'wayland' 'xdg-desktop-portal' 'xdg-desktop-portal-wlr' 'xdg-desktop-portal-gtk')
   optdepends=('geoclue: automatic location for Sunlight')
 
   meson install -C build --destdir "$pkgdir"
   install -Dm644 "$_root/core/config/scottland.ini" "$pkgdir/usr/share/scottland/scottland.ini"
+  install -dm755 "$pkgdir/usr/lib/scottland/window-names.d"
+  install -m644 "$_root"/core/window-names.d/*.toml "$pkgdir/usr/lib/scottland/window-names.d/"
   install -Dm644 "$_root/core/config/scottland-portals.conf" "$pkgdir/usr/share/xdg-desktop-portal/scottland-portals.conf"
   install -Dm755 "$_root/core/session/start-scottland" "$pkgdir/usr/bin/start-scottland"
   install -Dm644 "$_root/core/systemd/scottland-session.target" "$pkgdir/usr/lib/systemd/user/scottland-session.target"
   install -Dm644 "$_root/core/systemd/scottland-session-watch@.service" "$pkgdir/usr/lib/systemd/user/scottland-session-watch@.service"
+  install -Dm644 "$_root/core/systemd/attentiond.service" "$pkgdir/usr/lib/systemd/user/attentiond.service"
+  install -dm755 "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s ../attentiond.service "$pkgdir/usr/lib/systemd/user/default.target.wants/attentiond.service"
   install -Dm644 "$_root/core/session/scottland.desktop" "$pkgdir/usr/share/wayland-sessions/scottland.desktop"
   install -Dm755 "$_root/core/session/scottland-autostart" "$pkgdir/usr/lib/scottland/libexec/scottland-autostart"
   install -Dm755 "$_root/core/session/scottland-build-config" "$pkgdir/usr/lib/scottland/libexec/scottland-build-config"
+  install -Dm755 "$_root/core/autostart.d/04-output-scale-auto" "$pkgdir/usr/lib/scottland/autostart.d/04-output-scale-auto"
   install -Dm755 "$_root/core/autostart.d/06-watch-config" "$pkgdir/usr/lib/scottland/autostart.d/06-watch-config"
   install -Dm755 "$_root/core/libexec/scottland-ctl" "$pkgdir/usr/lib/scottland/libexec/scottland-ctl"
   install -Dm755 "$_root/core/libexec/scottland-exec" "$pkgdir/usr/lib/scottland/libexec/scottland-exec"
+  install -Dm755 "$_root/core/libexec/scottland-output" "$pkgdir/usr/lib/scottland/libexec/scottland-output"
+  install -Dm644 "$_root/core/libexec/scottland_output_scale.py" "$pkgdir/usr/lib/scottland/libexec/scottland_output_scale.py"
   ln -s /usr/lib/scottland/libexec/scottland-exec "$pkgdir/usr/bin/scottland-exec"
   ln -s /usr/lib/scottland/libexec/scottland-ctl "$pkgdir/usr/bin/scottland-ctl"
   install -Dm644 "$_root/core/agents/skills/scottland/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland/SKILL.md"
@@ -63,6 +72,7 @@ package_scottland() {
   install -Dm755 "$_root/core/libexec/scottland-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-solar-theme"
   install -Dm755 "$_root/core/reload.d/07-color-scheme" "$pkgdir/usr/lib/scottland/reload.d/07-color-scheme"
   install -Dm755 "$_root/core/config.d/20-layout-settings" "$pkgdir/usr/lib/scottland/config.d/20-layout-settings"
+  install -Dm755 "$_root/core/config.d/85-session-outputs" "$pkgdir/usr/lib/scottland/config.d/85-session-outputs"
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
   ln -s /usr/bin/scottland-settings "$pkgdir/usr/lib/scottland/libexec/scottland-settings"
@@ -86,7 +96,8 @@ package_scottland-omarchy() {
   pkgdesc="Omarchy integration for Scottland: switch between Scottland and Hyprland"
   arch=('any')
   # base-devel and curl: setup builds Gooarchy's xdg-desktop-portal-wlr (scottland-omarchy-setup)
-  depends=('scottland' 'omarchy' 'quickshell' 'jq' 'polkit' 'sddm' 'python' 'lua' 'base-devel' 'curl')
+  # The adapter and core are a matched pair from this split-package build.
+  depends=("scottland=${pkgver}-${pkgrel}" 'omarchy' 'quickshell' 'jq' 'polkit' 'sddm' 'python' 'lua' 'base-devel' 'curl')
   install=scottland-omarchy.install
 
   local o="$_root/omarchy"
@@ -103,6 +114,7 @@ package_scottland-omarchy() {
   install -Dm755 "$o/accent.d/10-omarchy-theme" "$pkgdir/usr/lib/scottland/accent.d/10-omarchy-theme"
   install -Dm755 "$o/focus.d/10-omarchy-notifications" "$pkgdir/usr/lib/scottland/focus.d/10-omarchy-notifications"
   install -Dm755 "$o/libexec/scottland-lua-call" "$pkgdir/usr/lib/scottland/libexec/scottland-lua-call"
+  install -Dm644 "$o/libexec/scottland_hyprland_monitor.py" "$pkgdir/usr/lib/scottland/libexec/scottland_hyprland_monitor.py"
   install -Dm755 "$o/libexec/scottland-omarchy-solar-theme" "$pkgdir/usr/lib/scottland/libexec/scottland-omarchy-solar-theme"
   install -Dm755 "$o/autostart.d/30-lua-host" "$pkgdir/usr/lib/scottland/autostart.d/30-lua-host"
   install -Dm755 "$o/autostart.d/35-solar-theme" "$pkgdir/usr/lib/scottland/autostart.d/35-solar-theme"
@@ -111,9 +123,7 @@ package_scottland-omarchy() {
   install -dm755 "$pkgdir/usr/share/scottland-omarchy/themes"
   cp -a "$o/themes/." "$pkgdir/usr/share/scottland-omarchy/themes/"
   install -Dm755 "$o/reload.d/30-lua-host" "$pkgdir/usr/lib/scottland/reload.d/30-lua-host"
-  install -Dm755 "$o/autostart.d/40-handover" "$pkgdir/usr/lib/scottland/autostart.d/40-handover"
   install -Dm755 "$o/autostart.d/45-hyprland-start" "$pkgdir/usr/lib/scottland/autostart.d/45-hyprland-start"
-  install -Dm755 "$o/libexec/scottland-handover" "$pkgdir/usr/lib/scottland/libexec/scottland-handover"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
   install -Dm644 "$o/prompts/omarchy-overrides-agent.txt" "$pkgdir/usr/lib/scottland/prompts/omarchy-overrides-agent.txt"
   install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
