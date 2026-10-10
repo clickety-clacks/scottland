@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Show Scottland's generic list picker and print the chosen input line."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+
+
+def read_entries(data):
+    text = data.decode("utf-8")
+    if not text:
+        return []
+
+    parts = text.split("\n")
+    entries = []
+    for line in parts[:-1]:
+        entries.append(line[:-1] if line.endswith("\r") else line)
+    if not text.endswith("\n"):
+        entries.append(parts[-1])
+    return entries
+
+
+def write_private(path, text):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        output.write(text)
+
+
+def read_exact(connection, size):
+    data = bytearray()
+    while len(data) < size:
+        chunk = connection.recv(size - len(data))
+        if not chunk:
+            raise OSError("Wayfire closed its IPC connection")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def wayfire_call(connection, method):
+    body = json.dumps({"method": method, "data": {}}).encode("utf-8")
+    connection.sendall(struct.pack("<I", len(body)) + body)
+    size = struct.unpack("<I", read_exact(connection, 4))[0]
+    reply = json.loads(read_exact(connection, size))
+    if isinstance(reply, dict) and "error" in reply:
+        raise RuntimeError(f"Wayfire IPC {method} failed: {reply!r}")
+    if not isinstance(reply, (dict, list)):
+        raise RuntimeError(f"Wayfire IPC {method} returned invalid data: {reply!r}")
+    return reply
+
+
+def focused_output_name():
+    socket_path = os.environ.get("WAYFIRE_SOCKET")
+    if not socket_path:
+        raise RuntimeError("WAYFIRE_SOCKET is unavailable")
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(2)
+        connection.connect(socket_path)
+        focused = wayfire_call(connection, "window-rules/get-focused-output")
+        if not isinstance(focused, dict):
+            raise RuntimeError("Wayfire returned invalid focused-output data")
+        info = focused.get("info")
+        if not isinstance(info, dict) or info.get("id") is None:
+            raise RuntimeError(f"Wayfire did not report a focused output: {focused!r}")
+
+        outputs = wayfire_call(connection, "window-rules/list-outputs")
+        if not isinstance(outputs, list):
+            raise RuntimeError("Wayfire returned an invalid output list")
+        output = next((row for row in outputs
+                       if isinstance(row, dict) and row.get("id") == info["id"]), None)
+        name = output.get("name") if output else None
+        if not isinstance(name, str) or not name:
+            raise RuntimeError(f"Wayfire did not name focused output {info['id']!r}")
+        return name
+
+
+def enter_scottland_session():
+    if os.environ.get("WAYFIRE_SOCKET") or os.environ.get("SCOTTLAND_EXEC"):
+        return True
+
+    script = Path(__file__).resolve()
+    launcher = script.with_name("scottland-exec")
+    try:
+        os.execv(str(launcher), ["scottland-exec", "--", str(script), *sys.argv[1:]])
+    except OSError as error:
+        print(f"scottland-list-picker: could not enter a Scottland session: {error}", file=sys.stderr)
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="scottland-list-picker")
+    parser.add_argument("--prompt", help="instruction text shown above the list")
+    args = parser.parse_args()
+
+    try:
+        entries = read_entries(sys.stdin.buffer.read())
+    except UnicodeDecodeError as error:
+        print(f"scottland-list-picker: stdin is not valid UTF-8: {error}", file=sys.stderr)
+        return 2
+
+    if not entries:
+        return 1
+
+    if not enter_scottland_session():
+        return 2
+
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.path.isdir(runtime):
+        print("scottland-list-picker: XDG_RUNTIME_DIR is unavailable", file=sys.stderr)
+        return 2
+
+    hooks = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+    app = Path(hooks) / "list-picker"
+    if not app.is_dir():
+        app = Path("/usr/share/scottland/list-picker")
+    if not (app / "shell.qml").is_file():
+        print("scottland-list-picker: the Quickshell app is not installed", file=sys.stderr)
+        return 2
+
+    try:
+        output_name = focused_output_name()
+    except (OSError, RuntimeError, ValueError, struct.error) as error:
+        print(f"scottland-list-picker: could not determine the focused output: {error}", file=sys.stderr)
+        return 2
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="scottland-list-picker-", dir=runtime) as scratch:
+            input_path = os.path.join(scratch, "entries.json")
+            result_path = os.path.join(scratch, "selection")
+            write_private(input_path, json.dumps(entries, ensure_ascii=False))
+            write_private(result_path, "")
+
+            environment = os.environ.copy()
+            environment["SCOTTLAND_LIST_PICKER_INPUT"] = input_path
+            environment["SCOTTLAND_LIST_PICKER_RESULT"] = result_path
+            environment["SCOTTLAND_LIST_PICKER_PROMPT"] = args.prompt or ""
+            environment["SCOTTLAND_LIST_PICKER_OUTPUT"] = output_name
+            result = subprocess.run(
+                ["qs", "-n", "-p", str(app)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                env=environment,
+                check=False,
+            )
+
+            if result.returncode != 0:
+                if result.stderr:
+                    sys.stderr.buffer.write(result.stderr)
+                return result.returncode
+
+            selected = Path(result_path).read_text(encoding="utf-8")
+            if not selected:
+                if result.stderr:
+                    sys.stderr.buffer.write(result.stderr)
+                return 1
+            try:
+                index = int(selected)
+            except ValueError:
+                print("scottland-list-picker: Quickshell returned an invalid selection", file=sys.stderr)
+                return 2
+            if index < 0 or index >= len(entries):
+                print("scottland-list-picker: Quickshell returned an out-of-range selection", file=sys.stderr)
+                return 2
+            sys.stdout.buffer.write(entries[index].encode("utf-8") + b"\n")
+            return 0
+    except OSError as error:
+        print(f"scottland-list-picker: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
