@@ -15,6 +15,10 @@ mode_file = Path(os.environ.get("SCOTTLAND_SOLAR_MODE_FILE", str(state/"scottlan
 current = Path(os.environ.get("SCOTTLAND_OMARCHY_CURRENT", str(state/"omarchy/current")))
 config_file = Path(os.environ.get("SCOTTLAND_OMARCHY_SOLAR_FILE",
                                   str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/omarchy-solar.ini")))
+solar_file = Path(os.environ.get("SCOTTLAND_SOLAR_FILE",
+                                str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
+# Producer polls every ten seconds. Old modes must not replay after it stops.
+MAX_MODE_AGE = 30
 
 
 def themes():
@@ -26,9 +30,17 @@ def themes():
 
 
 def run_once():
-    if not mode_file.is_file():
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(solar_file)
+        if not cfg.getboolean("solar", "enabled", fallback=False):
+            return "off"
+        age = time.time() - mode_file.stat().st_mtime
+        if age < 0 or age > MAX_MODE_AGE or mode_file.stat().st_mtime_ns < solar_file.stat().st_mtime_ns:
+            return "off"
+        desired = mode_file.read_text().strip()
+    except (OSError, ValueError, configparser.Error):
         return "off"
-    desired = mode_file.read_text().strip()
     if desired not in ("light", "dark"):
         return "off"
     colors = current/"theme/colors.toml"

@@ -37,8 +37,9 @@ def read_config():
     section = cfg["solar"] if cfg.has_section("solar") else {}
     def yes(name, default="false"):
         return str(section.get(name, default)).lower() in ("true", "yes", "1", "on")
-    # On by default, finding the location by itself (Mike, 2026-10-02); either can be turned off.
-    return dict(enabled=yes("enabled", "true"), allow_ip=yes("allow_ip", "true"),
+    # An integration may retain its existing scheduler until explicit opt-in.
+    default = "false" if os.environ.get("SCOTTLAND_SOLAR_OPT_IN") == "1" else "true"
+    return dict(enabled=yes("enabled", default), allow_ip=yes("allow_ip", default),
                 location=coordinates(section.get("latitude"), section.get("longitude")) if yes("location_set") else None)
 
 
@@ -118,8 +119,8 @@ def current_mode():
 
 def publish(mode):
     STATE.mkdir(parents=True, exist_ok=True)
-    if MODE.exists() and MODE.read_text().strip() == mode:
-        return
+    # Refresh even an unchanged mode: consumers must distinguish a live producer
+    # from a leftover file after it stops or loses its location source.
     temporary = MODE.with_name(MODE.name + "." + str(os.getpid()))
     temporary.write_text(mode + "\n")
     temporary.replace(MODE)
