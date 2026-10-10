@@ -10,12 +10,14 @@ shim's), hyprctl's exit status, and what a shortcut's own Lua code observed.
   tests/omarchy-shim-test.py
 """
 import json
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from omarchy_fixture import REPO, Checks, Fixture, Session  # noqa: E402
+from omarchy_fixture import OMARCHY, REPO, Checks, Fixture, Session  # noqa: E402
 
 check = Checks()
 root = REPO / "build/omarchy-shim-fixture"
@@ -24,6 +26,13 @@ fixture = Fixture(
     root,
     modules=["default.hypr.bindings.voxtype"],
     recorders=["mark"],
+    commands={
+        # Keep the stock launcher, but select the supported terminal explicitly and leave its
+        # animation process alive without requiring Omarchy's optional TTE renderer headlessly.
+        "xdg-terminal-exec": 'if [ "$1" = "--print-id" ]; then cat "$HOME/.config/xdg-terminals.list"; fi',
+        "ttfx": "exit 0",
+        "omarchy-screensaver": "exec sleep 60",
+    },
     lua=f'''
 -- An unsupported call while the config loads must not stop the bindings after it.
 hl.config({{ cursor = {{ zoom_factor = 1 }} }})
@@ -44,6 +53,72 @@ end)
 (fixture.home / ".config/xdg-terminals.list").write_text("foot.desktop\n")
 (fixture.home / ".config/omarchy/branding").mkdir(parents=True)
 (fixture.home / ".config/omarchy/branding/screensaver.txt").write_text("Scottland\n")
+
+# A disposable author container may supply a pinned Foot binary without installing it. Place it
+# on this fixture's PATH before starting the headless session; otherwise use a system Foot, as on
+# an Omarchy host. Reject a configured missing or non-executable path instead of falling back.
+test_foot = os.environ.get("SCOTTLAND_TEST_FOOT")
+if test_foot is not None:
+    foot_path = Path(test_foot)
+    if not foot_path.is_absolute():
+        sys.exit("SCOTTLAND_TEST_FOOT must be an absolute path to an executable file")
+    try:
+        foot_path = foot_path.resolve(strict=True)
+    except OSError:
+        sys.exit("SCOTTLAND_TEST_FOOT does not resolve to an existing file")
+    if not foot_path.is_file() or not os.access(foot_path, os.X_OK):
+        sys.exit("SCOTTLAND_TEST_FOOT must be an absolute path to an executable file")
+    if Path("/tmp") in foot_path.parents:
+        sys.exit("SCOTTLAND_TEST_FOOT must be outside /tmp; headless tests isolate /tmp")
+    (fixture.bin / "foot").symlink_to(foot_path)
+elif shutil.which("foot", path="/usr/local/bin:/usr/bin:/bin") is None:
+    sys.exit("foot is required; set SCOTTLAND_TEST_FOOT to a task-scoped executable")
+
+# Expose the unmodified stock launcher and the helpers it invokes on the session's sanitized PATH.
+for name in ("omarchy-launch-screensaver", "omarchy-cmd-missing", "omarchy-toggle-enabled",
+             "omarchy-hyprland-monitor-focused"):
+    source = OMARCHY / "bin" / name
+    if source.is_file():
+        (fixture.bin / name).symlink_to(source)
+
+# Author containers can provide the real Hyprland CLI without installing the compositor package.
+# On an Omarchy host the test uses the installed `hyprctl` from the normal system PATH.
+hyprctl = os.environ.get("SCOTTLAND_TEST_HYPRCTL")
+if hyprctl:
+    (fixture.bin / "hyprctl").symlink_to(hyprctl)
+
+# These implement only the stock launcher's exact monitor-list query and Hyprland event-socket
+# stream; the shim and Wayfire still produce and serve the observations under test.
+jq = fixture.bin / "jq"
+jq.write_text('''#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1:] != ["-r", ".[] | .name"]:
+    sys.exit(f"unexpected jq query: {sys.argv[1:]}")
+for output in json.load(sys.stdin):
+    print(output["name"])
+''')
+jq.chmod(0o755)
+
+socat = fixture.bin / "socat"
+socat.write_text('''#!/usr/bin/env python3
+import socket
+import sys
+
+args = sys.argv[1:]
+if len(args) != 3 or args[:2] != ["-U", "-"] or not args[2].startswith("UNIX-CONNECT:"):
+    sys.exit(f"unexpected socat request: {args}")
+sock = socket.socket(socket.AF_UNIX)
+sock.connect(args[2].split(":", 1)[1])
+while True:
+    data = sock.recv(65536)
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+''')
+socat.chmod(0o755)
 
 
 def views(session):
@@ -80,16 +155,32 @@ with Session(fixture, "hl-omarchy-shim") as session:
     check("...and nothing else (no mis-encoded or CR-suffixed names)",
           {p.name for p in escapes.iterdir()} == expected, sorted(p.name for p in escapes.iterdir()))
 
-    # AG19: the stock screensaver launcher opens its terminal.
+    # AG19: fullscreen applies only to the stock screensaver; ordinary windows stay windowed.
+    ordinary_pid = session.spawn("foot --title=ordinary-window sleep 60")
+    ordinary_ok, ordinary = session.wait(lambda: next((v for v in views(session)
+                                                       if v.get("app-id") == "foot"
+                                                       and v.get("title") == "ordinary-window"
+                                                       and v.get("mapped")), None))
+    check("ordinary Foot window maps without fullscreen", ordinary_ok and not ordinary.get("fullscreen"),
+          ordinary)
+
+    # The stock screensaver launcher opens its terminal.
     launch_log = root / "launch-screensaver.log"
-    session.run("sh", "-c", f"omarchy-launch-screensaver force >{launch_log} 2>&1 </dev/null &")
-    ok, found = session.wait(lambda: [v for v in views(session)
-                                      if v.get("app-id") == "org.omarchy.screensaver"
-                                      and v.get("mapped")], timeout=20)
-    check("omarchy-launch-screensaver maps an org.omarchy.screensaver window", ok,
+    session.run("env", f"OMARCHY_PATH={OMARCHY}", "sh", "-c",
+                f"omarchy-launch-screensaver force >{launch_log} 2>&1 </dev/null &")
+    ok, saver = session.wait(lambda: next((v for v in views(session)
+                                           if v.get("app-id") == "org.omarchy.screensaver"
+                                           and v.get("mapped")
+                                           and v.get("fullscreen")), None), timeout=20)
+    check("omarchy-launch-screensaver opens its mapped terminal fullscreen", ok,
           (launch_log.read_text()[-400:] if launch_log.exists() else "",
            [v.get("app-id") for v in views(session)]))
+    ordinary_id = ordinary["id"] if ordinary else None
+    ordinary = next((v for v in views(session) if v.get("id") == ordinary_id), {})
+    check("fullscreen screensaver leaves the ordinary Foot window windowed",
+          bool(ordinary) and not ordinary.get("fullscreen"), ordinary)
     session.terminate(*session.owned("org[.]omarchy[.]screensaver"))
+    session.terminate(ordinary_pid)
 
     # Unsupported requests fail visibly: hyprctl exits non-zero with the shim's error.
     for args in (["dispatch", 'hl.dsp.focus({ monitor = "NOWHERE-1" })'],

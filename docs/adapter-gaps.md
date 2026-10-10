@@ -268,7 +268,7 @@ real screen or real hardware; statuses are **implemented**.
 | Row | Now | Evidence | Remaining |
 |---|---|---|---|
 | AG09 | F9 press runs `voxtype record start`, release `record stop`; a Lua-function press/release pair keeps both. | `tests/omarchy-bindings-test.py`; fails on the previous adapter as H1 did | Real dictation untested. |
-| AG19 | `exec_cmd` runs the bytes any Lua string literal makes (byte escapes, `\u{…}`, long strings' line breaks); the stock `omarchy-launch-screensaver` maps its terminal. | `tests/omarchy-shim-test.py` | The screensaver opens as an ordinary window: its fullscreen rule and monitor focus are untranslated (AG28 territory). |
+| AG19 | Lua exec preserves string bytes and long-string line breaks; the shim requests fullscreen only for a mapped `org.omarchy.screensaver` view. | `tests/omarchy-shim-test.py` checks the stock-launcher view and an ordinary window through Wayfire's view list (focused run pending). | After a passing headless check, physical-screen and multi-monitor acceptance remain post-merge; monitor-focus behavior and cursor rules are not translated. |
 | AG15 | Super+Print starts hyprpicker; a click puts the picked color on the clipboard. | `tests/omarchy-color-picker-test.py` | — |
 | AG10 | `repeating` repeats while held, also on the lock screen when `locked`; `locked` runs on the lock screen; a release shortcut runs on release, on the lock screen too when `locked`, and only for a press it matched with the same modifiers still held (Ctrl+F9 runs neither half of F9); other shortcuts don't run while locked. Combinations Wayfire can't express go through core shortcuts (E13). Scottland's own volume/brightness bindings step aside so Omarchy's flags hold. | `tests/omarchy-bindings-test.py` with a real lock client | — |
 | AG20 | Startup handlers run once per session when Scottland is the only graphical session; never on reload or Lua host restart; the stock environment import and shell launch are left to Scottland's own hooks. | `tests/omarchy-startup-test.py` | Not run beside a desktop that is still running (one started some other way); keep mode, and with it question 1, is gone (ruled 10-06). |
@@ -295,8 +295,7 @@ Questions for Mike (no choice made; 1, 2, 7, 8 and 9 have since been ruled):
 3. Lid (AG04): a docked lid close (laptop panel off) and lid open's reconcile
    (`omarchy-hyprland-monitor-clamshell`, panel back on) both need monitor config translation
    (AG03): approve that work, or keep lid open reported and not run?
-4. Screensaver (AG19): should it open full screen (translating its window rule), or stay out of
-   scope for now?
+4. ~~Screensaver (AG19)~~: ruled 10-09 (Mike’s make-full-screen choice, dr_74ff9be5): translate the existing Omarchy screensaver window rule so org.omarchy.screensaver opens fullscreen; keep Omarchy unmodified. Other screensaver rules, including cursor hiding, stay untranslated and are reported. Real-screen acceptance follows merge.
 5. Shim updates: should `scottland-reload` restart the shim and the Omarchy shell together (the
    shell's bar and menus reload), or keep shim changes for the next session start?
 6. Screen sharing picks an output by clicking it (xdg-desktop-portal-wlr's slurp chooser). Keep,
