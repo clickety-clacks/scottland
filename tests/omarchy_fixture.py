@@ -96,6 +96,9 @@ class Session:
                     "SCOTTLAND_HEADLESS_DIR": str(self.dir),
                     "SCOTTLAND_TEST_PATH": str(fixture.bin),
                     "TMPDIR": str(REPO / "build" / "tmp"), **(env or {})}
+        # A compositor wrapper belongs to the outer start request only. Keeping it in the
+        # session environment makes every later run/ipc/stop request fail closed in headless.sh.
+        self.test_wrap = self.env.pop("SCOTTLAND_TEST_WRAP", None)
         (REPO / "build" / "tmp").mkdir(parents=True, exist_ok=True)
         self.extra_args = list(extra_args)
         self.omarchy = omarchy  # False: core alone, no adapter hooks
@@ -109,8 +112,12 @@ class Session:
         self.stop()
 
     def harness(self, *args, check=True, timeout=60, input=None):
+        env = self.env
+        if args and args[0] == "start" and self.test_wrap is not None:
+            env = {**self.env, "SCOTTLAND_TEST_WRAP": self.test_wrap}
+            self.test_wrap = None
         try:
-            return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=self.env,
+            return subprocess.run([str(self.repo / "tests/headless.sh"), *args], env=env,
                                   text=True, capture_output=True, check=check, timeout=timeout,
                                   input=input)
         except subprocess.CalledProcessError as error:
