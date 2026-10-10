@@ -51,7 +51,7 @@ with patch.object(core,"geoclue_location",return_value=None), patch.object(core,
     check("network lookup occurs after explicit opt-in",network.call_count==1)
 with patch.object(core,"geoclue_location",return_value=(37.77,-122.42)), patch.object(core,"ip_location",side_effect=AssertionError("Geoclue available")), patch.object(core,"apply"):
     core.run_once()  # the IP lookup raises if Geoclue's location is not preferred
-core.publish("light")
+core.publish("light", core.read_config()["config_mtime_ns"])
 with patch.object(adapter.subprocess,"run") as run:
     run.return_value.returncode=0; run.return_value.stdout="light\n"
     check("matching Omarchy theme is preserved",adapter.run_once()=="kept")

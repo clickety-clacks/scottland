@@ -55,7 +55,7 @@ class SolarOptIn(unittest.TestCase):
         os.utime(self.core.CONFIG, (100, 100))
 
     def mode(self, text="light", stamp=110):
-        self.core.publish(text)
+        self.core.publish(text, self.core.CONFIG.stat().st_mtime_ns if self.core.CONFIG.exists() else 0)
         os.utime(self.core.MODE, (stamp, stamp))
         os.utime(self.core.PRODUCER, (stamp, stamp))
 
@@ -112,7 +112,7 @@ class SolarOptIn(unittest.TestCase):
         self.config("[solar]\nenabled = true\n")
         subprocess.run([sys.executable, "-c",
                         "from importlib.machinery import SourceFileLoader; import sys; "
-                        "m=SourceFileLoader('producer',sys.argv[1]).load_module(); m.publish('light')",
+                        "m=SourceFileLoader('producer',sys.argv[1]).load_module(); m.publish('light',m.read_config()['config_mtime_ns'])",
                         str(ROOT/"core/libexec/scottland-solar-theme")], check=True)
         os.utime(self.core.MODE, (110, 110))
         os.utime(self.core.PRODUCER, (110, 110))
@@ -137,6 +137,31 @@ class SolarOptIn(unittest.TestCase):
              patch.object(self.core.subprocess, "run", side_effect=AssertionError("preference changed")):
             self.assertEqual(self.core.run_once(), "light")
         self.assertEqual(self.core.MODE.read_text(), "light\n")
+
+    def test_settings_save_during_location_lookup_rejects_old_result(self):
+        for entry in ("once", "watch"):
+            with self.subTest(entry=entry):
+                self.config("[solar]\nenabled = true\nallow_ip = true\n")
+                self.core.MODE.unlink(missing_ok=True)
+                self.core.PRODUCER.unlink(missing_ok=True)
+                def save_during_lookup():
+                    self.config("[solar]\nenabled = true\nlocation_set = true\nlatitude = 0\nlongitude = 0\n")
+                    os.utime(self.core.CONFIG, (115, 115))
+                    return (37.77, -122.42)
+                with patch.object(self.core, "geoclue_location", side_effect=save_during_lookup), \
+                     patch.object(self.core, "solar_mode", return_value="light"), \
+                     patch.object(self.core, "current_mode", side_effect=AssertionError("old preference")), \
+                     patch.object(self.core, "ip_location", side_effect=AssertionError("network")), \
+                     patch.object(self.core.time, "sleep", side_effect=InterruptedError):
+                    if entry == "once":
+                        self.assertIsNone(self.core.run_once())
+                    else:
+                        with self.assertRaises(InterruptedError):
+                            self.core.watch()
+                self.assertFalse(self.core.MODE.exists())
+                self.assertFalse(self.core.PRODUCER.exists())
+                self.assertEqual(self.once(), "off")
+                self.assertFalse(self.log.exists())
 
     def test_missing_invalid_stale_future_or_pre_config_mode_is_ignored(self):
         self.config("[solar]\nenabled = true\n")
@@ -177,7 +202,7 @@ class SolarOptIn(unittest.TestCase):
 
     def test_unchanged_publication_refreshes_liveness(self):
         self.mode(stamp=1)
-        self.core.publish("light")
+        self.core.publish("light", 0)
         self.assertEqual(self.core.MODE.read_text(), "light\n")
         self.assertGreater(self.core.MODE.stat().st_mtime, 1)
 

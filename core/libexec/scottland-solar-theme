@@ -34,12 +34,17 @@ def coordinates(lat, lon):
 
 def read_config():
     cfg = configparser.ConfigParser()
-    cfg.read(CONFIG)
+    try:
+        with CONFIG.open() as source:
+            config_mtime_ns = os.fstat(source.fileno()).st_mtime_ns
+            cfg.read_file(source)
+    except FileNotFoundError:
+        config_mtime_ns = 0
     section = cfg["solar"] if cfg.has_section("solar") else {}
     def yes(name, default="false"):
         return str(section.get(name, default)).lower() in ("true", "yes", "1", "on")
     # Preserve existing scheduling and location policy until explicit opt-in.
-    return dict(enabled=yes("enabled"), allow_ip=yes("allow_ip"),
+    return dict(enabled=yes("enabled"), allow_ip=yes("allow_ip"), config_mtime_ns=config_mtime_ns,
                 location=coordinates(section.get("latitude"), section.get("longitude")) if yes("location_set") else None)
 
 
@@ -117,7 +122,18 @@ def current_mode():
     return "dark" if "prefer-dark" in result.stdout else "light"
 
 
-def publish(mode):
+def config_is_current(config_mtime_ns):
+    try:
+        return CONFIG.stat().st_mtime_ns == config_mtime_ns
+    except FileNotFoundError:
+        return config_mtime_ns == 0
+
+
+def publish(mode, config_mtime_ns):
+    # Location lookup can outlive a Settings save. Never certify an old result
+    # with the identity of configuration that was not used to calculate it.
+    if not config_is_current(config_mtime_ns):
+        return False
     STATE.mkdir(parents=True, exist_ok=True)
     # Refresh even an unchanged mode: consumers must distinguish a live producer
     # from a leftover file after it stops or loses its location source.
@@ -129,18 +145,21 @@ def publish(mode):
     identity = dict(pid=os.getpid(),
                     start=Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19],
                     boot=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-                    config_mtime_ns=CONFIG.stat().st_mtime_ns if CONFIG.exists() else 0,
+                    config_mtime_ns=config_mtime_ns,
                     mode=mode)
     temporary = PRODUCER.with_name(PRODUCER.name + "." + str(os.getpid()))
     temporary.write_text(json.dumps(identity) + "\n")
     temporary.replace(PRODUCER)
+    return True
 
 
-def apply(mode):
-    publish(mode)
-    if current_mode() != mode:
+def apply(mode, config_mtime_ns):
+    if not publish(mode, config_mtime_ns):
+        return False
+    if current_mode() != mode and config_is_current(config_mtime_ns):
         subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
                         "prefer-" + mode], check=True)
+    return True
 
 
 def run_once():
@@ -156,8 +175,7 @@ def run_once():
         print("scottland-solar-theme: set fallback coordinates in Settings", file=sys.stderr)
         return None
     desired = solar_mode(datetime.now(timezone.utc), *location)
-    apply(desired)
-    return desired
+    return desired if apply(desired, config["config_mtime_ns"]) else None
 
 
 def watch():
@@ -180,7 +198,7 @@ def watch():
                 location_at = now
             if location is not None:
                 try:
-                    apply(solar_mode(datetime.now(timezone.utc), *location))
+                    apply(solar_mode(datetime.now(timezone.utc), *location), config["config_mtime_ns"])
                 except (OSError, subprocess.CalledProcessError) as error:
                     print(f"scottland-solar-theme: apply failed: {error}", file=sys.stderr)
         last_config = config
