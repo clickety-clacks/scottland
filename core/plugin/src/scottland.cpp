@@ -78,6 +78,7 @@ extern "C" {
 #include "shortcuts.hpp"
 #include "attention-color.hpp"
 #include "state-dye.hpp"
+#include "input-disabled-record.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -136,49 +137,7 @@ namespace
 {
 bool valid_input_device_name(const std::string& name)
 {
-    if (name.empty()) return false;
-    for (size_t i = 0; i < name.size();)
-    {
-        auto first = (unsigned char)name[i];
-        uint32_t codepoint = 0;
-        size_t length = 0;
-        if (first < 0x80)
-        {
-            codepoint = first;
-            length = 1;
-        } else if (first >= 0xc2 && first <= 0xdf)
-        {
-            codepoint = first & 0x1f;
-            length = 2;
-        } else if (first >= 0xe0 && first <= 0xef)
-        {
-            codepoint = first & 0x0f;
-            length = 3;
-        } else if (first >= 0xf0 && first <= 0xf4)
-        {
-            codepoint = first & 0x07;
-            length = 4;
-        } else
-        {
-            return false;
-        }
-
-        if (i + length > name.size()) return false;
-        for (size_t j = 1; j < length; ++j)
-        {
-            auto byte = (unsigned char)name[i + j];
-            if ((byte & 0xc0) != 0x80) return false;
-            codepoint = (codepoint << 6) | (byte & 0x3f);
-        }
-        if ((length == 3 && codepoint < 0x800) || (length == 4 && codepoint < 0x10000) ||
-            (codepoint >= 0xd800 && codepoint <= 0xdfff) || codepoint > 0x10ffff ||
-            codepoint <= 0x1f || (codepoint >= 0x7f && codepoint <= 0x9f))
-        {
-            return false;
-        }
-        i += length;
-    }
-    return true;
+    return scottland::input::valid_device_name(name);
 }
 
 std::string input_device_kind(wlr_input_device *device)
@@ -195,9 +154,7 @@ std::string input_device_kind(wlr_input_device *device)
 
 bool input_device_matches_kind(const std::string& requested, wlr_input_device *device)
 {
-    const auto kind = input_device_kind(device);
-    return (requested == "touchpad" && kind == "pointer") ||
-        (requested == "touchscreen" && (kind == "touch" || kind == "tablet"));
+    return scottland::input::device_matches_kind(requested, input_device_kind(device));
 }
 
 std::string input_disabled_record_path(const std::string& kind)
@@ -2336,13 +2293,45 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         const std::string name = handle->name;
         if (!valid_input_device_name(name)) return;
         auto disabled = input_disabled_name(kind);
-        if (!disabled || *disabled != name) return;
+        if (!scottland::input::disabled_record_matches(kind, disabled, class_name, name)) return;
 
         ev->device->set_enabled(false);
         if (ev->device->is_enabled())
         {
             LOGE("scottland: could not keep newly added ", kind, " device disabled: ", name);
         }
+    };
+
+    wf::signal::connection_t<wf::reload_config_signal> on_input_config_reloaded =
+        [=] (wf::reload_config_signal *)
+    {
+        // Wayfire updates input options in its earlier reload listener. Reapply synchronously here,
+        // so the stored off state wins before the event loop handles the next input event.
+        const std::string kind = "touchpad";
+        const auto disabled = input_disabled_name(kind);
+        auto devices = wf::get_core().get_input_devices();
+        scottland::input::apply_disabled_record(kind, disabled, devices,
+            [] (const auto& device) -> std::optional<std::string>
+            {
+                if (!device) return std::nullopt;
+                auto handle = device->get_wlr_handle();
+                if (!handle || !handle->name) return std::nullopt;
+                return std::string(handle->name);
+            },
+            [] (const auto& device)
+            {
+                return device ? input_device_kind(device->get_wlr_handle()) : std::string{};
+            },
+            [=] (auto& device)
+            {
+                device->set_enabled(false);
+                if (device->is_enabled())
+                {
+                    auto handle = device->get_wlr_handle();
+                    LOGE("scottland: could not restore touchpad disabled after config reload: ",
+                        handle && handle->name ? handle->name : "(unnamed)");
+                }
+            });
     };
 
     wf::key_callback on_minimize_key = [=] (const wf::keybinding_t& key)
@@ -7991,6 +7980,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             [this](wf::output_t *) { apply_all(); });
         refresh_layout_avoidance();
         wf::get_core().connect(&on_input_device_added);
+        wf::get_core().connect(&on_input_config_reloaded);
         LOGI("scottland: plugin loaded");
     }
 
@@ -8016,6 +8006,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
         on_input_device_added.disconnect();
+        on_input_config_reloaded.disconnect();
         shortcuts.fini();
         on_axis.disconnect();
         on_initial_app_id.disconnect();

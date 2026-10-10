@@ -32,6 +32,10 @@ shared_module('scottland', ['src/scottland.cpp', 'src/placement.cpp', 'src/declu
   install: true,
   install_dir: wayfire.get_variable(pkgconfig: 'plugindir'))
 
+input_disabled_record_test = executable('input-disabled-record-test',
+  'tests/input-disabled-record-test.cpp')
+test('input-disabled-record', input_disabled_record_test)
+
 # DPMS through the compositor's own wlr-output-power-management path (see the tool's header).
 scanner = find_program('wayland-scanner')
 power_xml = 'protocols/wlr-output-power-management-unstable-v1.xml'
