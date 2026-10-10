@@ -982,7 +982,10 @@ mod tests {
             &mut display,
         );
         assert_ne!(result.status, 0);
-        assert_eq!(backend.changes, [(Kind::Touchpad, "touchpad".into(), false)]);
+        assert_eq!(
+            backend.changes,
+            [(Kind::Touchpad, "touchpad".into(), false)]
+        );
         assert!(!record.exists());
         assert!(display.calls.is_empty());
         fs::remove_dir_all(state).unwrap();
@@ -1036,7 +1039,10 @@ mod tests {
             );
             assert_eq!(result.status, 0);
             assert!(result.stderr.contains("display could not be shown"));
-            assert_eq!(backend.changes, [(Kind::Touchpad, "touchpad".into(), false)]);
+            assert_eq!(
+                backend.changes,
+                [(Kind::Touchpad, "touchpad".into(), false)]
+            );
             assert_eq!(
                 fs::read(Kind::Touchpad.record(&state)).unwrap(),
                 b"touchpad\n"
