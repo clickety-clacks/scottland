@@ -19,6 +19,8 @@ build() {
   for crate in "$_root"/core/tools/bin/*/; do
     cargo install --locked --path "$crate" --root tools --target-dir cargo --force --no-track
   done
+  mkdir -p tools/lib
+  cp -a "$_root/core/tools/vendor/agent_window_resolver" tools/lib/
 }
 
 package_scottland() {
@@ -76,6 +78,8 @@ package_scottland() {
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
   ln -s /usr/bin/scottland-settings "$pkgdir/usr/lib/scottland/libexec/scottland-settings"
+  install -dm755 "$pkgdir/usr/lib/scottland/lib"
+  cp -a "$srcdir/tools/lib/agent_window_resolver" "$pkgdir/usr/lib/scottland/lib/"
   install -Dm755 "$_root/core/session/scottland-reload" "$pkgdir/usr/lib/scottland/libexec/scottland-reload"
   ln -s /usr/lib/scottland/libexec/scottland-reload "$pkgdir/usr/bin/scottland-reload"
   install -dm755 "$pkgdir/usr/share/scottland/settings"
