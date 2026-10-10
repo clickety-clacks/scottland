@@ -19,6 +19,7 @@ from urllib.request import urlopen
 CONFIG = Path(os.environ.get("SCOTTLAND_SOLAR_FILE", str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
 STATE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/"scottland"
 MODE = STATE/(os.environ.get("WAYLAND_DISPLAY", "wayland") + ".solar-mode")
+PRODUCER = MODE.with_name(MODE.name + ".producer")
 
 
 def coordinates(lat, lon):
@@ -37,9 +38,8 @@ def read_config():
     section = cfg["solar"] if cfg.has_section("solar") else {}
     def yes(name, default="false"):
         return str(section.get(name, default)).lower() in ("true", "yes", "1", "on")
-    # An integration may retain its existing scheduler until explicit opt-in.
-    default = "false" if os.environ.get("SCOTTLAND_SOLAR_OPT_IN") == "1" else "true"
-    return dict(enabled=yes("enabled", default), allow_ip=yes("allow_ip", default),
+    # Preserve existing scheduling and location policy until explicit opt-in.
+    return dict(enabled=yes("enabled"), allow_ip=yes("allow_ip"),
                 location=coordinates(section.get("latitude"), section.get("longitude")) if yes("location_set") else None)
 
 
@@ -124,6 +124,16 @@ def publish(mode):
     temporary = MODE.with_name(MODE.name + "." + str(os.getpid()))
     temporary.write_text(mode + "\n")
     temporary.replace(MODE)
+    # Bind the publication to this process incarnation, boot and configuration.
+    # A fresh leftover file alone is not proof of a running producer.
+    identity = dict(pid=os.getpid(),
+                    start=Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19],
+                    boot=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                    config_mtime_ns=CONFIG.stat().st_mtime_ns if CONFIG.exists() else 0,
+                    mode=mode)
+    temporary = PRODUCER.with_name(PRODUCER.name + "." + str(os.getpid()))
+    temporary.write_text(json.dumps(identity) + "\n")
+    temporary.replace(PRODUCER)
 
 
 def apply(mode):
@@ -137,6 +147,7 @@ def run_once():
     config = read_config()
     if not config["enabled"]:
         MODE.unlink(missing_ok=True)
+        PRODUCER.unlink(missing_ok=True)
         return None
     location = geoclue_location() or config["location"]
     if location is None and config["allow_ip"]:
@@ -158,6 +169,7 @@ def watch():
         config = read_config()
         if not config["enabled"]:
             MODE.unlink(missing_ok=True)
+            PRODUCER.unlink(missing_ok=True)
             location = None
         else:
             now = time.monotonic()

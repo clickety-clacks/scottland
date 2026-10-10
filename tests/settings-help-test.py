@@ -822,12 +822,12 @@ try:
     check("Widgets Cancel restores saved rail pause",
           option_reaches("widget_make_room_dwell",saved_widgets["widget_make_room_dwell"]))
 
-    # S21: an integration can require opt-in for Sunlight and network location. Saving another
+    # S21: Sunlight and network location require explicit opt-in. Saving another
     # tab rewrites solar.ini, so the panel must read a missing file or key as the shipped default.
     # Judged by what scottland-solar-theme itself reads back from the file the panel wrote.
     solar_reader = SourceFileLoader("scottland_solar", str(repo/"core/libexec/scottland-solar-theme")).load_module()
     solar_reader.CONFIG = solar
-    solar_default = os.environ.get("SCOTTLAND_SOLAR_OPT_IN") != "1"
+    solar_default = False
     for name, fixture, saved_tab, expected in (
             ("missing solar.ini", None, 4, (solar_default, solar_default, None)),
             ("solar.ini without enabled or allow_ip",

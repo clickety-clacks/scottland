@@ -4,6 +4,7 @@
 A current theme whose light/dark mode already matches is never replaced.
 """
 import configparser
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +20,24 @@ solar_file = Path(os.environ.get("SCOTTLAND_SOLAR_FILE",
                                 str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
 # Producer polls every ten seconds. Old modes must not replay after it stops.
 MAX_MODE_AGE = 30
+
+
+def live_producer(desired):
+    record = mode_file.with_name(mode_file.name + ".producer")
+    age = time.time() - record.stat().st_mtime
+    if age < 0 or age > MAX_MODE_AGE:
+        return False
+    identity = json.loads(record.read_text())
+    pid = identity.get("pid")
+    if type(pid) is not int or pid <= 0:
+        return False
+    process = Path("/proc")/str(pid)
+    fields = (process/"stat").read_text().rsplit(")", 1)[1].split()
+    return (process.stat().st_uid == os.getuid() and fields[0] not in ("Z", "X", "x")
+            and fields[19] == identity.get("start")
+            and Path("/proc/sys/kernel/random/boot_id").read_text().strip() == identity.get("boot")
+            and identity.get("mode") == desired
+            and identity.get("config_mtime_ns") == solar_file.stat().st_mtime_ns)
 
 
 def themes():
@@ -39,7 +58,9 @@ def run_once():
         if age < 0 or age > MAX_MODE_AGE or mode_file.stat().st_mtime_ns < solar_file.stat().st_mtime_ns:
             return "off"
         desired = mode_file.read_text().strip()
-    except (OSError, ValueError, configparser.Error):
+        if not live_producer(desired):
+            return "off"
+    except (OSError, ValueError, IndexError, AttributeError, configparser.Error):
         return "off"
     if desired not in ("light", "dark"):
         return "off"

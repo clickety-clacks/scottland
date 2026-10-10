@@ -3,8 +3,11 @@
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import os
+import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -27,7 +30,7 @@ class SolarOptIn(unittest.TestCase):
         self.bin.mkdir()
         self.log = self.home/"commands"
         env = dict(HOME=str(self.home), XDG_CONFIG_HOME=str(self.home/"config"),
-                   XDG_STATE_HOME=str(self.home/"state"), SCOTTLAND_SOLAR_OPT_IN="1",
+                   XDG_STATE_HOME=str(self.home/"state"),
                    SCOTTLAND_SOLAR_FILE=str(self.home/"solar.ini"),
                    SCOTTLAND_SOLAR_MODE_FILE=str(self.home/"state/scottland/test.solar-mode"),
                    SCOTTLAND_OMARCHY_SOLAR_FILE=str(self.home/"themes.ini"),
@@ -52,15 +55,16 @@ class SolarOptIn(unittest.TestCase):
         os.utime(self.core.CONFIG, (100, 100))
 
     def mode(self, text="light", stamp=110):
-        self.core.MODE.write_text(text+"\n")
+        self.core.publish(text)
         os.utime(self.core.MODE, (stamp, stamp))
+        os.utime(self.core.PRODUCER, (stamp, stamp))
 
     def once(self, now=120):
         with patch.object(self.adapter.time, "time", return_value=now):
             return self.adapter.run_once()
 
     def test_missing_or_partial_config_does_not_locate_or_change_theme(self):
-        for contents in (None, "[solar]\n", "[solar]\nenabled = false\n", "[solar]\nenabled = invalid\n"):
+        for contents in (None, "[solar]\n", "[solar]\nenabled = false\n", "[solar]\nenabled = false\nallow_ip = true\n", "[solar]\nenabled = invalid\n"):
             with self.subTest(contents=contents):
                 self.core.CONFIG.unlink(missing_ok=True)
                 if contents is not None:
@@ -83,10 +87,46 @@ class SolarOptIn(unittest.TestCase):
         self.assertTrue(self.core.read_config()["enabled"])
         self.assertFalse(self.core.read_config()["allow_ip"])
 
-    def test_standalone_core_defaults_stay_on(self):
-        with patch.dict(os.environ, {"SCOTTLAND_SOLAR_OPT_IN": "0"}):
-            self.assertTrue(self.core.read_config()["enabled"])
-            self.assertTrue(self.core.read_config()["allow_ip"])
+    def test_standalone_core_defaults_stay_off_without_integration_flag(self):
+        os.environ.pop("SCOTTLAND_SOLAR_OPT_IN", None)
+        self.assertFalse(self.core.read_config()["enabled"])
+        self.assertFalse(self.core.read_config()["allow_ip"])
+
+    def test_fresh_mode_without_matching_live_producer_is_ignored(self):
+        self.config("[solar]\nenabled = true\n")
+        self.mode()
+        self.core.PRODUCER.unlink()
+        self.assertEqual(self.once(), "off")
+        for change in ({"pid": 2147483647}, {"start": "wrong-incarnation"},
+                       {"boot": "previous-boot"}, {"mode": "dark"}, {"config_mtime_ns": 0}):
+            with self.subTest(change=change):
+                self.mode()
+                data = json.loads(self.core.PRODUCER.read_text())
+                data.update(change)
+                self.core.PRODUCER.write_text(json.dumps(data))
+                os.utime(self.core.PRODUCER, (110, 110))
+                self.assertEqual(self.once(), "off")
+                self.assertFalse(self.log.exists())
+
+    def test_exited_producer_cannot_replay_fresh_mode(self):
+        self.config("[solar]\nenabled = true\n")
+        subprocess.run([sys.executable, "-c",
+                        "from importlib.machinery import SourceFileLoader; import sys; "
+                        "m=SourceFileLoader('producer',sys.argv[1]).load_module(); m.publish('light')",
+                        str(ROOT/"core/libexec/scottland-solar-theme")], check=True)
+        os.utime(self.core.MODE, (110, 110))
+        os.utime(self.core.PRODUCER, (110, 110))
+        self.assertEqual(self.once(), "off")
+        self.assertFalse(self.log.exists())
+
+    def test_network_lookup_requires_both_explicit_choices(self):
+        self.config("[solar]\nenabled = true\nallow_ip = true\n")
+        with patch.object(self.core, "geoclue_location", return_value=None), \
+             patch.object(self.core, "ip_location", return_value=(37.77, -122.42)) as network, \
+             patch.object(self.core, "solar_mode", return_value="light"), \
+             patch.object(self.core, "current_mode", return_value="light"):
+            self.assertEqual(self.core.run_once(), "light")
+            network.assert_called_once_with()
 
     def test_opt_in_uses_saved_location_without_network_or_matching_preference_change(self):
         self.config("[solar]\nenabled = true\nlocation_set = true\nlatitude = 37.77\nlongitude = -122.42\n")
