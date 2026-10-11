@@ -1,0 +1,13 @@
+#!/bin/sh
+# Scottland-session entrypoint: keep Omarchy's other commands in its own tree.
+if [ "${1:-}" = display ] && [ "${2:-}" = text ] && [ "${3:-}" = size ]; then
+  shift 3
+  exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/omarchy-bin/omarchy-display-text-size" "$@"
+fi
+
+vendor="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy"
+if [ ! -x "$vendor" ] || [ "$vendor" -ef "$0" ]; then
+  echo "Scottland: Omarchy command unavailable: $vendor" >&2
+  exit 127
+fi
+exec "$vendor" "$@"

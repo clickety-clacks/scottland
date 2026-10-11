@@ -47,7 +47,8 @@ link-dev:
 	mkdir -p $(PORTALS) && ln -sf $(CURDIR)/core/config/scottland-portals.conf $(PORTALS)/scottland-portals.conf
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOME)/.local/bin/start-scottland
 	ln -sf $(CURDIR)/omarchy/bin/scottland-omarchy-setup $(HOME)/.local/bin/scottland-omarchy-setup
-	mkdir -p $(DEV)/libexec $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/override-report.d $(DEV)/prompts
+	mkdir -p $(DEV)/libexec $(DEV)/omarchy-bin $(DEV)/session-env.d $(DEV)/autostart.d $(DEV)/early-exit.d $(DEV)/config.d $(DEV)/reload.d $(DEV)/accent.d $(DEV)/focus.d $(DEV)/override-report.d $(DEV)/prompts
+	for f in omarchy/bin/omarchy omarchy/bin/omarchy-display-text-size; do ln -sf $(CURDIR)/$$f $(DEV)/omarchy-bin/$$(basename $$f); done
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(DEV)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
@@ -86,7 +87,8 @@ hooks:
 	mkdir -p $(HOOKS_DIR)/plugins $(HOOKS_DIR)/metadata
 	ln -sf $(CURDIR)/build/libscottland.so $(HOOKS_DIR)/plugins/libscottland.so
 	ln -sf $(CURDIR)/core/plugin/metadata/scottland.xml $(HOOKS_DIR)/metadata/scottland.xml
-	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d $(HOOKS_DIR)/override-report.d $(HOOKS_DIR)/prompts
+	mkdir -p $(HOOKS_DIR)/libexec $(HOOKS_DIR)/omarchy-bin $(HOOKS_DIR)/session-env.d $(HOOKS_DIR)/autostart.d $(HOOKS_DIR)/early-exit.d $(HOOKS_DIR)/config.d $(HOOKS_DIR)/reload.d $(HOOKS_DIR)/accent.d $(HOOKS_DIR)/focus.d $(HOOKS_DIR)/override-report.d $(HOOKS_DIR)/prompts
+	for f in omarchy/bin/omarchy omarchy/bin/omarchy-display-text-size; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/omarchy-bin/$$(basename $$f); done
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(HOOKS_DIR)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(HOOKS_DIR)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(HOOKS_DIR)/libexec/scottland-build-config
