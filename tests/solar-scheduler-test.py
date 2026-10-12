@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from importlib.machinery import SourceFileLoader
 import atexit
+import configparser
 import json
 import os
 from pathlib import Path
@@ -191,7 +192,7 @@ restart = subprocess.run([sys.executable, str(root/"omarchy/libexec/scottland-om
 check("new adapter process after restart reads durable ack without theme command",
       restart.stdout.strip() == "unchanged" and not invocations.exists())
 
-observed_digest = adapter._transition_digest()
+observed_digest = adapter._watch_digest()
 record = core.read_transition()
 record.update(mode="light", transition_id="adapter-watch-race", consumer_ack=None)
 core.write_transition(record)
@@ -202,6 +203,58 @@ with patch.object(adapter.subprocess, "run") as run:
           adapter.run_once() == "Test Light")
     check("adapter watcher event is acknowledged after consume",
           core.read_transition()["consumer_ack"] == "adapter-watch-race")
+
+# Two session autostarts may run the adapter at once. The dedicated consumer
+# lock must serialize the theme command and durable acknowledgement.
+record = core.read_transition()
+record.update(mode="dark", transition_id="adapter-concurrent-event", consumer_ack=None)
+core.write_transition(record)
+invocations.unlink(missing_ok=True)
+fake_omarchy.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SOLAR_TEST_INVOCATIONS\"\nsleep 0.2\n")
+fake_omarchy.chmod(0o755)
+concurrent_env = dict(restart_env, SOLAR_TEST_INVOCATIONS=str(invocations))
+consumers = [subprocess.Popen([sys.executable, str(root/"omarchy/libexec/scottland-omarchy-solar-theme"), "once"],
+                              env=concurrent_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+             for _ in range(2)]
+consumer_outputs = [consumer.communicate(timeout=5) for consumer in consumers]
+check("concurrent session adapters apply one transition only once",
+      all(consumer.returncode == 0 for consumer in consumers)
+      and invocations.read_text().splitlines() == ["theme set Test Dark"]
+      and sorted(output[0].strip() for output in consumer_outputs) == ["Test Dark", "unchanged"])
+
+# A theme map is a separate settings file. The same inotify wait must recover
+# promptly when a malformed mapping is corrected, without restarting session.
+record = core.read_transition()
+record.update(mode="light", transition_id="adapter-malformed-theme", consumer_ack=None)
+core.write_transition(record)
+omarchy_cfg.write_text("bad theme mapping\n")
+observed_digest = adapter._watch_digest()
+try:
+    adapter.run_once()
+except configparser.Error:
+    malformed_theme_rejected = True
+else:
+    malformed_theme_rejected = False
+check("malformed theme mapping fails closed without acknowledging transition",
+      malformed_theme_rejected and core.read_transition()["consumer_ack"] is None)
+config_thread = threading.Thread(target=lambda: (time.sleep(.03), omarchy_cfg.write_text("[themes]\nday = Fixed\n")),
+                                 daemon=True)
+config_thread.start()
+adapter.wait_for_transition_change(observed_digest)
+config_thread.join(timeout=1)
+check("theme mapping save wakes adapter without polling", adapter.themes()["light"] == "Fixed")
+
+# Verify parser failures are caught by the long-lived watcher and that its
+# recovery wait is armed before the next session iteration.
+with patch.object(adapter, "run_once", side_effect=[
+        configparser.MissingSectionHeaderError("omarchy-solar.ini", 1, "bad line"), KeyboardInterrupt()]), \
+     patch.object(adapter, "wait_for_transition_change") as wait_for_change:
+    try:
+        adapter.watch()
+    except KeyboardInterrupt:
+        pass
+check("malformed theme config waits for a save instead of killing the watcher",
+      wait_for_change.call_count == 1)
 
 # Failure isolation: absent location, disabled settings, malformed state and
 # a failed theme command each fail closed without falsely acknowledging a change.
