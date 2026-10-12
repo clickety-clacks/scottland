@@ -13,6 +13,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 10-10 | Omarchy sessions require Sunlight and network lookup opt-in for missing/unset settings, preserving standalone Core/Settings defaults and explicit choices; preserve the existing solar timer and user configuration until explicit opt-in, and guard the adapter against stale producer state. Keep this compatibility repair separate from broader Sunlight work. | O18; S21 opt-in defaults |
 
+## Sunlight transition scheduling
+
+| Date | Ruling | Where |
+|---|---|---|
+| 2026-10-12 | Sunlight schedules actual sunrise and sunset boundaries. A manual choice holds until the next boundary; first enable, re-enable and one current-period catch-up after sleep/reboot are the only immediate applications. Persist one transition record so an acknowledged boundary is not replayed, and keep the existing solar.ini control and stock Omarchy timer/configuration unchanged. | A15, S21, O18; `scottland-sunlight` package |
+
 ## Principles
 
 | Date | Ruling | Where |

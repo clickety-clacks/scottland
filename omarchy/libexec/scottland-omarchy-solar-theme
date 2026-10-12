@@ -1,43 +1,34 @@
 #!/usr/bin/env python3
-"""Choose the configured Omarchy day/night theme for Scottland's solar preference.
-
-A current theme whose light/dark mode already matches is never replaced.
-"""
+"""Consume each core Sunlight transition once; never poll for theme mismatch."""
 import configparser
+import ctypes
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
+import select
+import struct
 import subprocess
 import sys
 import time
 
-state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))
-mode_file = Path(os.environ.get("SCOTTLAND_SOLAR_MODE_FILE", str(state/"scottland"/(os.environ.get("WAYLAND_DISPLAY", "wayland")+".solar-mode"))))
-current = Path(os.environ.get("SCOTTLAND_OMARCHY_CURRENT", str(state/"omarchy/current")))
+state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/"scottland"
+transition_file = Path(os.environ.get("SCOTTLAND_SOLAR_TRANSITION_FILE", str(state/"solar-transition.json")))
 config_file = Path(os.environ.get("SCOTTLAND_OMARCHY_SOLAR_FILE",
                                   str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/omarchy-solar.ini")))
 solar_file = Path(os.environ.get("SCOTTLAND_SOLAR_FILE",
                                 str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
-# Producer polls every ten seconds. Old modes must not replay after it stops.
-MAX_MODE_AGE = 30
 
 
-def live_producer(desired):
-    record = mode_file.with_name(mode_file.name + ".producer")
-    age = time.time() - record.stat().st_mtime
-    if age < 0 or age > MAX_MODE_AGE:
+def solar_enabled():
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(solar_file)
+        default = os.environ.get("SCOTTLAND_SOLAR_OPT_IN") != "1"
+        return cfg.getboolean("solar", "enabled", fallback=default)
+    except (OSError, ValueError, configparser.Error):
         return False
-    identity = json.loads(record.read_text())
-    pid = identity.get("pid")
-    if type(pid) is not int or pid <= 0:
-        return False
-    process = Path("/proc")/str(pid)
-    fields = (process/"stat").read_text().rsplit(")", 1)[1].split()
-    return (process.stat().st_uid == os.getuid() and fields[0] not in ("Z", "X", "x")
-            and fields[19] == identity.get("start")
-            and Path("/proc/sys/kernel/random/boot_id").read_text().strip() == identity.get("boot")
-            and identity.get("mode") == desired
-            and identity.get("config_mtime_ns") == solar_file.stat().st_mtime_ns)
 
 
 def themes():
@@ -48,39 +39,160 @@ def themes():
             "dark": section.get("night", "watercolor-dream-dark")}
 
 
-def run_once():
-    cfg = configparser.ConfigParser()
+def transition_lock():
+    transition_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(transition_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
+def read_transition():
     try:
-        cfg.read(solar_file)
-        if not cfg.getboolean("solar", "enabled", fallback=False):
-            return "off"
-        age = time.time() - mode_file.stat().st_mtime
-        if age < 0 or age > MAX_MODE_AGE or mode_file.stat().st_mtime_ns < solar_file.stat().st_mtime_ns:
-            return "off"
-        desired = mode_file.read_text().strip()
-        if not live_producer(desired):
-            return "off"
-    except (OSError, ValueError, IndexError, AttributeError, configparser.Error):
+        record = json.loads(transition_file.read_text())
+    except FileNotFoundError:
+        return None
+    if not isinstance(record, dict) or record.get("schema") != 1:
+        raise ValueError(f"unsupported Sunlight transition record at {transition_file}")
+    return record
+
+
+def _atomic_write(record):
+    transition_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = transition_file.with_name(transition_file.name+"."+str(os.getpid())+".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as target:
+            target.write(json.dumps(record, sort_keys=True)+"\n")
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, transition_file)
+        directory_fd = os.open(transition_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def acknowledge(transition_id):
+    descriptor = transition_lock()
+    try:
+        record = read_transition()
+        if (record is None or not record.get("enabled")
+                or record.get("transition_id") != transition_id):
+            return False
+        record["consumer_ack"] = transition_id
+        _atomic_write(record)
+        return True
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def run_once():
+    if not solar_enabled():
         return "off"
-    if desired not in ("light", "dark"):
+    record = read_transition()
+    if record is None or not record.get("enabled"):
         return "off"
-    colors = current/"theme/colors.toml"
-    result = subprocess.run(["omarchy-theme-color", "--file", str(colors), "mode"],
-                            capture_output=True, text=True)
-    if result.returncode == 0 and result.stdout.strip().lower() == desired:
-        return "kept"
+    desired = record.get("mode")
+    transition_id = record.get("transition_id")
+    if desired not in ("light", "dark") or not isinstance(transition_id, str) or not transition_id:
+        return "off"
+    if record.get("consumer_ack") == transition_id:
+        return "unchanged"
+
+    # At a real transition the selected day/night theme is the new choice, even
+    # when the current theme happens to report the same light/dark mode.
     target = themes()[desired]
     subprocess.run(["omarchy", "theme", "set", target], check=True)
+    if not acknowledge(transition_id):
+        return "superseded"
     return target
+
+
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.inotify_init1.argtypes = [ctypes.c_int]
+_libc.inotify_init1.restype = ctypes.c_int
+_libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+_libc.inotify_add_watch.restype = ctypes.c_int
+IN_CLOSE_WRITE = 0x00000008
+IN_MOVED_TO = 0x00000080
+IN_CREATE = 0x00000100
+IN_DELETE = 0x00000200
+IN_ATTRIB = 0x00000004
+IN_DELETE_SELF = 0x00000400
+IN_MOVE_SELF = 0x00000800
+IN_Q_OVERFLOW = 0x00004000
+IN_IGNORED = 0x00008000
+IN_WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF
+
+
+def wait_for_transition_change(observed_digest=None):
+    """Block until the core atomically publishes a transition or consumer ack."""
+    directory = transition_file.parent
+    filename = transition_file.name
+    while not directory.exists() and directory != directory.parent:
+        filename = directory.name
+        directory = directory.parent
+    if not directory.is_dir():
+        raise FileNotFoundError(f"no directory to watch for {transition_file}")
+    fd = _libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+    if fd < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), "inotify_init1")
+    wd = _libc.inotify_add_watch(fd, os.fsencode(directory), IN_WATCH_MASK)
+    if wd < 0:
+        error = ctypes.get_errno()
+        os.close(fd)
+        raise OSError(error, os.strerror(error), str(directory))
+    if observed_digest is not None and _transition_digest() != observed_digest:
+        os.close(fd)
+        return
+    poller = select.poll()
+    poller.register(fd, select.POLLIN | select.POLLERR)
+    try:
+        while True:
+            poller.poll()
+            data = os.read(fd, 65536)
+            offset = 0
+            while offset+16 <= len(data):
+                _watch, mask, _cookie, name_len = struct.unpack_from("iIII", data, offset)
+                start = offset+16
+                name = data[start:start+name_len].split(b"\0", 1)[0].decode(errors="replace")
+                offset = start+name_len
+                if (mask & (IN_Q_OVERFLOW | IN_IGNORED | IN_DELETE_SELF | IN_MOVE_SELF)
+                        or name == filename):
+                    return
+    finally:
+        os.close(fd)
+
+
+def _transition_digest():
+    try:
+        raw = transition_file.read_bytes()
+    except FileNotFoundError:
+        raw = b""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def watch():
+    # Recover an unacknowledged boundary on start, then sleep on inotify. A manual
+    # theme pick cannot trigger this path; only a new core event or its ack can.
+    while True:
+        try:
+            observed_digest = _transition_digest()
+            run_once()
+            wait_for_transition_change(observed_digest)
+        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            print(f"scottland-omarchy-solar-theme: {error}; retrying in five minutes", file=sys.stderr)
+            time.sleep(300)
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "once":
         print(run_once())
     else:
-        while True:
-            try:
-                run_once()
-            except (OSError, subprocess.CalledProcessError) as error:
-                print(f"scottland-omarchy-solar-theme: {error}", file=sys.stderr)
-            time.sleep(10)
+        watch()

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Follow local sunrise/sunset while preserving a user-picked matching theme.
-
-Configuration: ~/.config/scottland/solar.ini, written by Scottland Settings.
-The current desired mode is published per Wayland session for distro adapters.
-"""
+"""Schedule light/dark preference changes at local sunrise and sunset."""
 import configparser
-from datetime import datetime, timezone
+import ctypes
+import errno
+from datetime import datetime, time as datetime_time, timedelta, timezone
+import fcntl
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
+import select
+import struct
 import subprocess
 import sys
 import time
@@ -18,8 +20,10 @@ from urllib.request import urlopen
 
 CONFIG = Path(os.environ.get("SCOTTLAND_SOLAR_FILE", str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
 STATE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/"scottland"
-MODE = STATE/(os.environ.get("WAYLAND_DISPLAY", "wayland") + ".solar-mode")
-PRODUCER = MODE.with_name(MODE.name + ".producer")
+MODE = Path(os.environ.get("SCOTTLAND_SOLAR_MODE_FILE", str(STATE/(os.environ.get("WAYLAND_DISPLAY", "wayland")+".solar-mode"))))
+TRANSITION = Path(os.environ.get("SCOTTLAND_SOLAR_TRANSITION_FILE", str(STATE/"solar-transition.json")))
+LOCATION_REFRESH_SECONDS = 12 * 60 * 60
+NO_LOCATION_RETRY_SECONDS = 5 * 60
 
 
 def coordinates(lat, lon):
@@ -35,18 +39,33 @@ def coordinates(lat, lon):
 def read_config():
     cfg = configparser.ConfigParser()
     try:
-        with CONFIG.open() as source:
-            config_mtime_ns = os.fstat(source.fileno()).st_mtime_ns
-            cfg.read_file(source)
+        raw = CONFIG.read_bytes()
     except FileNotFoundError:
-        config_mtime_ns = 0
+        raw = b""
+    if raw:
+        cfg.read_string(raw.decode("utf-8"))
     section = cfg["solar"] if cfg.has_section("solar") else {}
+
     def yes(name, default="false"):
         return str(section.get(name, default)).lower() in ("true", "yes", "1", "on")
-    # An integration may retain its existing scheduler until explicit opt-in.
+
+    # The Omarchy adapter keeps Sunlight opt-in until the user enables it.
     default = "false" if os.environ.get("SCOTTLAND_SOLAR_OPT_IN") == "1" else "true"
-    return dict(enabled=yes("enabled", default), allow_ip=yes("allow_ip", default), config_mtime_ns=config_mtime_ns,
+    return dict(enabled=yes("enabled", default), allow_ip=yes("allow_ip", default),
+                config_fingerprint=hashlib.sha256(raw).hexdigest(),
                 location=coordinates(section.get("latitude"), section.get("longitude")) if yes("location_set") else None)
+
+
+def config_is_current(config_fingerprint):
+    return current_config_fingerprint() == config_fingerprint
+
+
+def current_config_fingerprint():
+    try:
+        raw = CONFIG.read_bytes()
+    except FileNotFoundError:
+        raw = b""
+    return hashlib.sha256(raw).hexdigest()
 
 
 def geoclue_location():
@@ -90,21 +109,84 @@ def ip_location():
         return None
 
 
-def solar_mode(now, latitude, longitude):
-    """NOAA solar position: day begins/ends with the sun's upper limb at the horizon."""
+def solar_parameters(now):
+    """Return UTC time, minutes since midnight, equation of time and declination."""
     now = now.astimezone(timezone.utc)
     day = now.timetuple().tm_yday
-    minutes = now.hour * 60 + now.minute + now.second / 60
-    gamma = 2 * math.pi / 365 * (day - 1 + (minutes / 60 - 12) / 24)
-    eq = 229.18 * (0.000075 + 0.001868*math.cos(gamma) - 0.032077*math.sin(gamma)
-                   - 0.014615*math.cos(2*gamma) - 0.040849*math.sin(2*gamma))
-    decl = (0.006918 - 0.399912*math.cos(gamma) + 0.070257*math.sin(gamma)
-            - 0.006758*math.cos(2*gamma) + 0.000907*math.sin(2*gamma)
-            - 0.002697*math.cos(3*gamma) + 0.00148*math.sin(3*gamma))
-    hour_angle = math.radians(((minutes + eq + 4*longitude) % 1440) / 4 - 180)
-    lat = math.radians(latitude)
-    altitude_sine = math.sin(lat)*math.sin(decl) + math.cos(lat)*math.cos(decl)*math.cos(hour_angle)
+    minutes = now.hour*60 + now.minute + now.second/60 + now.microsecond/60_000_000
+    gamma = 2*math.pi/365*(day-1+(minutes/60-12)/24)
+    equation = 229.18*(0.000075 + 0.001868*math.cos(gamma) - 0.032077*math.sin(gamma)
+                       - 0.014615*math.cos(2*gamma) - 0.040849*math.sin(2*gamma))
+    declination = (0.006918 - 0.399912*math.cos(gamma) + 0.070257*math.sin(gamma)
+                   - 0.006758*math.cos(2*gamma) + 0.000907*math.sin(2*gamma)
+                   - 0.002697*math.cos(3*gamma) + 0.00148*math.sin(3*gamma))
+    return now, minutes, equation, declination
+
+
+def solar_noon(day, longitude):
+    """Find true solar noon in UTC for a UTC calendar date."""
+    guess = datetime.combine(day, datetime_time.min, timezone.utc)+timedelta(minutes=720-4*longitude)
+    for _ in range(5):
+        _, minutes, equation, _ = solar_parameters(guess)
+        apparent_minutes = minutes + equation + 4*longitude
+        target_noon = 720 + 1440*round((apparent_minutes-720)/1440)
+        guess += timedelta(minutes=target_noon-apparent_minutes)
+    return guess
+
+
+def solar_mode(now, latitude, longitude):
+    """NOAA solar position; light begins when the sun's upper limb clears the horizon."""
+    now, minutes, equation, declination = solar_parameters(now)
+    hour_angle = math.radians(((minutes+equation+4*longitude) % 1440)/4-180)
+    latitude = math.radians(latitude)
+    altitude_sine = (math.sin(latitude)*math.sin(declination)
+                     + math.cos(latitude)*math.cos(declination)*math.cos(hour_angle))
     return "light" if altitude_sine > math.sin(math.radians(-0.833)) else "dark"
+
+
+def _crossing(lower, upper, latitude, longitude):
+    lower_mode = solar_mode(lower, latitude, longitude)
+    upper_mode = solar_mode(upper, latitude, longitude)
+    if lower_mode == upper_mode:
+        return None
+    target_mode = upper_mode
+    while (upper-lower).total_seconds() > .25:
+        middle = lower+(upper-lower)/2
+        if solar_mode(middle, latitude, longitude) == target_mode:
+            upper = middle
+        else:
+            lower = middle
+    event = datetime.fromtimestamp(math.ceil(upper.timestamp()), timezone.utc)
+    return target_mode, event.strftime("%Y-%m-%dT%H:%M:%SZ"), event
+
+
+def solar_transition(now, latitude, longitude):
+    """Return the current mode and latest actual sunrise/sunset identity."""
+    now = now.astimezone(timezone.utc)
+    mode = solar_mode(now, latitude, longitude)
+    for days_back in range(371):
+        noon = solar_noon(now.date()-timedelta(days=days_back), longitude)
+        lower = noon if mode == "dark" else noon-timedelta(hours=12)
+        if lower >= now or solar_mode(lower, latitude, longitude) == mode:
+            continue
+        return _crossing(lower, now, latitude, longitude)
+    # Polar day/night can persist past the search window. It is one stable period.
+    return mode, "no-recent-transition:"+mode, None
+
+
+def next_solar_transition(now, latitude, longitude):
+    """Return the first future sunrise/sunset, including seasonal polar boundaries."""
+    now = now.astimezone(timezone.utc)
+    for day_offset in range(371):
+        noon = solar_noon(now.date()+timedelta(days=day_offset), longitude)
+        for lower, upper in ((noon-timedelta(hours=12), noon),
+                             (noon, noon+timedelta(hours=12))):
+            if upper <= now:
+                continue
+            candidate = _crossing(lower, upper, latitude, longitude)
+            if candidate is not None and candidate[2] > now:
+                return candidate
+    return None
 
 
 def current_mode():
@@ -119,91 +201,331 @@ def current_mode():
         pass
     result = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
                             capture_output=True, text=True)
-    # GSettings' "default" is no dark preference, so it is the light state.
     return "dark" if "prefer-dark" in result.stdout else "light"
 
 
-def config_is_current(config_mtime_ns):
-    try:
-        return CONFIG.stat().st_mtime_ns == config_mtime_ns
-    except FileNotFoundError:
-        return config_mtime_ns == 0
-
-
-def publish(mode, config_mtime_ns):
-    # Location lookup can outlive a Settings save. Never certify an old result
-    # with the identity of configuration that was not used to calculate it.
-    if not config_is_current(config_mtime_ns):
-        return False
-    STATE.mkdir(parents=True, exist_ok=True)
-    # Refresh even an unchanged mode: consumers must distinguish a live producer
-    # from a leftover file after it stops or loses its location source.
-    temporary = MODE.with_name(MODE.name + "." + str(os.getpid()))
-    temporary.write_text(mode + "\n")
-    temporary.replace(MODE)
-    # Bind the publication to this process incarnation, boot and configuration.
-    # A fresh leftover file alone is not proof of a running producer.
-    identity = dict(pid=os.getpid(),
-                    start=Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19],
-                    boot=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-                    config_mtime_ns=config_mtime_ns,
-                    mode=mode)
-    temporary = PRODUCER.with_name(PRODUCER.name + "." + str(os.getpid()))
-    temporary.write_text(json.dumps(identity) + "\n")
-    temporary.replace(PRODUCER)
-    return True
-
-
-def apply(mode, config_mtime_ns):
-    if not publish(mode, config_mtime_ns):
-        return False
-    if current_mode() != mode and config_is_current(config_mtime_ns):
+def set_mode(mode):
+    if current_mode() != mode:
         subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
-                        "prefer-" + mode], check=True)
-    return True
+                        "prefer-"+mode], check=True)
 
 
-def run_once():
-    config = read_config()
-    if not config["enabled"]:
-        MODE.unlink(missing_ok=True)
-        PRODUCER.unlink(missing_ok=True)
+def _fsync_directory(directory):
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write(path, contents):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(path.name+"."+str(os.getpid())+".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as target:
+            target.write(contents)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def publish(mode):
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if MODE.is_file() and MODE.read_text().strip() == mode:
+        return
+    _atomic_write(MODE, mode+"\n")
+
+
+def transition_lock():
+    TRANSITION.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(TRANSITION.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
+def read_transition():
+    try:
+        record = json.loads(TRANSITION.read_text())
+    except FileNotFoundError:
         return None
+    if not isinstance(record, dict) or record.get("schema") != 1:
+        raise ValueError(f"unsupported transition record at {TRANSITION}")
+    return record
+
+
+def write_transition(record):
+    _atomic_write(TRANSITION, json.dumps(record, sort_keys=True)+"\n")
+
+
+def location_key(location):
+    return [round(location[0], 6), round(location[1], 6)]
+
+
+def empty_transition_record():
+    return {"schema": 1, "enabled": False, "location": None, "mode": None,
+            "transition_id": None, "schedule_transition_id": None,
+            "last_applied": None, "consumer_ack": None}
+
+
+def disable():
+    descriptor = transition_lock()
+    try:
+        record = read_transition() or empty_transition_record()
+        if record.get("enabled"):
+            record["enabled"] = False
+            record["consumer_ack"] = record.get("transition_id")
+            write_transition(record)
+        MODE.unlink(missing_ok=True)
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def reconcile(config, location, now, event=None):
+    """Apply only a new solar event; first-enable and re-enable are explicit exceptions."""
+    if not config["enabled"]:
+        disable()
+        return None
+    if location is None:
+        return None
+    if event is None:
+        event = solar_transition(now, *location)
+    mode, transition_id = event[:2]
+    current_location = location_key(location)
+    descriptor = transition_lock()
+    try:
+        previous = read_transition()
+        first_run = previous is None
+        reenabled = previous is not None and not previous.get("enabled", False)
+        location_changed = previous is not None and previous.get("location") != current_location
+        if location_changed and not (first_run or reenabled):
+            # Rebase only the schedule baseline. The last real event and adapter delivery
+            # identity remain untouched, so a settings save cannot synthesize a transition.
+            rebased = dict(previous)
+            rebased.update(enabled=True, location=current_location,
+                           schedule_transition_id=transition_id)
+            write_transition(rebased)
+            return mode
+
+        previous_schedule_id = (previous.get("schedule_transition_id", previous.get("transition_id"))
+                                if previous is not None else None)
+        new_transition = (not first_run and previous is not None
+                          and previous_schedule_id != transition_id)
+        apply_now = first_run or reenabled or new_transition
+        if apply_now:
+            set_mode(mode)
+            publish(mode)
+            write_transition({"schema": 1, "enabled": True, "location": current_location,
+                              "mode": mode, "transition_id": transition_id,
+                              "schedule_transition_id": transition_id,
+                              "last_applied": {"mode": mode, "transition_id": transition_id},
+                              "consumer_ack": None})
+        # Same-period checks deliberately perform no preference, mode-file or state write.
+        return mode
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def locate(config):
     location = geoclue_location() or config["location"]
     if location is None and config["allow_ip"]:
         location = ip_location()
-    if location is None:
-        print("scottland-solar-theme: set fallback coordinates in Settings", file=sys.stderr)
+    return location
+
+
+def run_once(now=None, location_override=None):
+    config = read_config()
+    now = now or datetime.now(timezone.utc)
+    if not config["enabled"]:
+        return reconcile(config, None, now)
+    location = location_override if location_override is not None else locate(config)
+    if location is None or not config_is_current(config["config_fingerprint"]):
         return None
-    desired = solar_mode(datetime.now(timezone.utc), *location)
-    return desired if apply(desired, config["config_mtime_ns"]) else None
+    return reconcile(config, location, now, solar_transition(now, *location))
+
+
+# Linux timerfd uses CLOCK_REALTIME so it fires after suspend and can be canceled
+# when the wall clock changes. inotify wakes the same process for Settings saves.
+class _Timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+
+class _Itimerspec(ctypes.Structure):
+    _fields_ = [("it_interval", _Timespec), ("it_value", _Timespec)]
+
+
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.timerfd_create.argtypes = [ctypes.c_int, ctypes.c_int]
+_libc.timerfd_create.restype = ctypes.c_int
+_libc.timerfd_settime.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(_Itimerspec), ctypes.c_void_p]
+_libc.timerfd_settime.restype = ctypes.c_int
+_libc.inotify_init1.argtypes = [ctypes.c_int]
+_libc.inotify_init1.restype = ctypes.c_int
+_libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+_libc.inotify_add_watch.restype = ctypes.c_int
+
+TFD_TIMER_ABSTIME = 1
+TFD_TIMER_CANCEL_ON_SET = 2
+IN_CLOEXEC = os.O_CLOEXEC
+IN_NONBLOCK = os.O_NONBLOCK
+IN_CLOSE_WRITE = 0x00000008
+IN_MOVED_TO = 0x00000080
+IN_CREATE = 0x00000100
+IN_DELETE = 0x00000200
+IN_ATTRIB = 0x00000004
+IN_DELETE_SELF = 0x00000400
+IN_MOVE_SELF = 0x00000800
+IN_Q_OVERFLOW = 0x00004000
+IN_IGNORED = 0x00008000
+IN_WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF
+
+
+def _fd_or_error(fd, operation):
+    if fd < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), operation)
+    return fd
+
+
+def _timerfd(deadline):
+    fd = _fd_or_error(_libc.timerfd_create(time.CLOCK_REALTIME, os.O_CLOEXEC | os.O_NONBLOCK), "timerfd_create")
+    if deadline is None:
+        return fd
+    stamp = deadline.astimezone(timezone.utc).timestamp()
+    seconds = math.floor(stamp)
+    nanos = round((stamp-seconds)*1_000_000_000)
+    if nanos >= 1_000_000_000:
+        seconds += 1
+        nanos = 0
+    spec = _Itimerspec(_Timespec(0, 0), _Timespec(seconds, nanos))
+    result = _libc.timerfd_settime(fd, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET,
+                                   ctypes.byref(spec), None)
+    if result != 0:
+        error = ctypes.get_errno()
+        os.close(fd)
+        raise OSError(error, os.strerror(error), "timerfd_settime")
+    return fd
+
+
+def _watch_config_directory():
+    directory = CONFIG.parent
+    filename = CONFIG.name
+    while not directory.exists() and directory != directory.parent:
+        filename = directory.name
+        directory = directory.parent
+    if not directory.is_dir():
+        raise FileNotFoundError(f"no directory to watch for {CONFIG}")
+    fd = _fd_or_error(_libc.inotify_init1(IN_CLOEXEC | IN_NONBLOCK), "inotify_init1")
+    wd = _libc.inotify_add_watch(fd, os.fsencode(directory), IN_WATCH_MASK)
+    if wd < 0:
+        error = ctypes.get_errno()
+        os.close(fd)
+        raise OSError(error, os.strerror(error), str(directory))
+    return fd, filename
+
+
+def wait_for_config_or_deadline(deadline, observed_config_fingerprint=None):
+    """Wait for a config replacement, a scheduled event, or a wall-clock change."""
+    notify_fd, watched_name = _watch_config_directory()
+    if (observed_config_fingerprint is not None
+            and not config_is_current(observed_config_fingerprint)):
+        os.close(notify_fd)
+        return "config"
+    timer_fd = None
+    try:
+        timer_fd = _timerfd(deadline)
+        poller = select.poll()
+        poller.register(notify_fd, select.POLLIN | select.POLLERR)
+        poller.register(timer_fd, select.POLLIN | select.POLLERR)
+        while True:
+            for fd, _ in poller.poll():
+                if fd == timer_fd:
+                    try:
+                        os.read(timer_fd, 8)
+                    except OSError as error:
+                        if error.errno == errno.ECANCELED:
+                            return "clock-changed"
+                        if error.errno != errno.EAGAIN:
+                            raise
+                    return "deadline"
+                data = os.read(notify_fd, 65536)
+                offset = 0
+                changed = False
+                while offset+16 <= len(data):
+                    wd, mask, _cookie, name_len = struct.unpack_from("iIII", data, offset)
+                    start = offset+16
+                    name = data[start:start+name_len].split(b"\0", 1)[0].decode(errors="replace")
+                    offset = start+name_len
+                    if mask & (IN_Q_OVERFLOW | IN_IGNORED | IN_DELETE_SELF | IN_MOVE_SELF) or name == watched_name:
+                        changed = True
+                if changed:
+                    return "config"
+    finally:
+        if timer_fd is not None:
+            os.close(timer_fd)
+        os.close(notify_fd)
 
 
 def watch():
-    # A saved preference is observed promptly; location is refreshed between days.
-    last_config = None
     location = None
-    location_at = 0
+    location_at = 0.0
+    last_config = None
     while True:
-        config = read_config()
+        now = datetime.now(timezone.utc)
+        try:
+            config = read_config()
+        except (OSError, configparser.Error, UnicodeError, ValueError) as error:
+            print(f"scottland-solar-theme: invalid solar.ini; waiting for a save: {error}", file=sys.stderr)
+            try:
+                wait_for_config_or_deadline(now+timedelta(seconds=NO_LOCATION_RETRY_SECONDS),
+                                            current_config_fingerprint())
+            except (OSError, ValueError) as wait_error:
+                print(f"scottland-solar-theme: scheduler wait failed: {wait_error}; retrying in five minutes", file=sys.stderr)
+                time.sleep(NO_LOCATION_RETRY_SECONDS)
+            continue
+        monotonic_now = time.monotonic()
         if not config["enabled"]:
-            MODE.unlink(missing_ok=True)
-            PRODUCER.unlink(missing_ok=True)
+            try:
+                disable()
+            except (OSError, ValueError) as error:
+                print(f"scottland-solar-theme: state update failed: {error}", file=sys.stderr)
             location = None
         else:
-            now = time.monotonic()
-            if config != last_config or now-location_at > 12*3600:
-                location = geoclue_location() or config["location"]
-                if location is None and config["allow_ip"]:
-                    location = ip_location()
-                location_at = now
-            if location is not None:
+            if config != last_config or location is None or monotonic_now-location_at >= LOCATION_REFRESH_SECONDS:
+                location = locate(config)
+                location_at = monotonic_now
+            if location is None:
+                print("scottland-solar-theme: no location; will retry without changing the theme", file=sys.stderr)
+            elif not config_is_current(config["config_fingerprint"]):
+                # A Settings save during Geoclue/IP lookup invalidates that result.
+                location = None
+                continue
+            else:
                 try:
-                    apply(solar_mode(datetime.now(timezone.utc), *location), config["config_mtime_ns"])
-                except (OSError, subprocess.CalledProcessError) as error:
-                    print(f"scottland-solar-theme: apply failed: {error}", file=sys.stderr)
+                    current_event = solar_transition(now, *location)
+                    reconcile(config, location, now, current_event)
+                except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                    print(f"scottland-solar-theme: transition apply failed: {error}", file=sys.stderr)
+
         last_config = config
-        time.sleep(10)
+        if location is None or not config["enabled"]:
+            deadline = now+timedelta(seconds=NO_LOCATION_RETRY_SECONDS)
+        else:
+            next_event = next_solar_transition(now, *location)
+            event_deadline = next_event[2] if next_event else None
+            refresh_deadline = now+timedelta(seconds=max(0, LOCATION_REFRESH_SECONDS-(monotonic_now-location_at)))
+            deadline = min(event_deadline, refresh_deadline) if event_deadline else refresh_deadline
+        try:
+            wait_for_config_or_deadline(deadline, config["config_fingerprint"])
+        except (OSError, ValueError) as error:
+            print(f"scottland-solar-theme: scheduler wait failed: {error}; retrying in five minutes", file=sys.stderr)
+            time.sleep(NO_LOCATION_RETRY_SECONDS)
 
 
 if __name__ == "__main__":

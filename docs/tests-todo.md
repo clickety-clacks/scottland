@@ -37,7 +37,6 @@ Every suite runs through these; an excellent assertion is worthless against the 
 | `tests/settings-coverage-test.py`: 24 source-text asserts removed, 2 trimmed (QML snippets, help prose, element ids, function names, the `CoastGraph` count, row literals matching metadata). Option membership and metadata checks stay | Open Settings and check at runtime that each Goo row shows its metadata title, hint, default and range verbatim (GO9, GO14, GO15, GO23); the attention-color choices (GO22) and the unfocused-edge tone row per scheme; that `window_mode_tint`, `widget_bounce` and both coast graphs are reachable and change their option | Top 10; suite row | Medium |
 | `tests/goo-shader-variants-test.sh`: 37 checks that grepped preprocessed shader text (the 39 compile checks stay) | Each variant (fast, cached, refraction, intrinsic, cache_both) renders what the general path renders: specialization equivalence by pixels, as `goo-exact-test` does for caches | Top 10; goo-release-review2 row | Low |
 | `tests/state-model-test.py`: "headless scene renders" was `check()` with no condition (the screenshot is still saved) | After the randomized inputs, the scene shows the windows the model says are mapped: pixel check against known window colors | Top 3; suite row | Medium |
-| `tests/solar-test.py`: "Geoclue has priority" was `check(..., True)` (the mock that raises on an IP lookup still guards it) | Assert the Geoclue location is what reached `apply` | suite row | Low |
 | Wall-clock gates: `windowing-unit` (50-window occlusion pass < 2 ms, whole block), `hint-outline-test` (occlusion pass < 2 ms), `hint-avoidance-hang-test` (solve < 4 ms; now printed), `peek-strip-test` G (every refresh ≤ 2 ms; now printed) | P8 as a performance lane: occlusion pass, avoidance refresh and slice cost under a real drag, with machine, renderer, build type, load, warm-up and sample count recorded. The functional checks that settled drags stop solving and IPC stays responsive remain | Top 5; suite rows | Medium |
 | `tests/peek-unit.cpp` slice calibration block (units per ms) | A benchmark that measures units/ms and reports what `peek_slice_units` costs on the machine, outside the unit run | peek-unit row | Low |
 | `tests/rail-make-room-unit.cpp`: the fuzz check required exactly 600,000 solves (its own loop count) | Nothing: the properties stay checked and the count is still printed as solves | rail-pause row; Top 14 | — |
@@ -111,7 +110,6 @@ Every suite runs through these; an excellent assertion is worthless against the 
 
 - `peek-unit` "every no_room window has no strip anywhere" samples the first three windows on an
   8 px grid; say so or use an exact reference. (window-peek-strip row)
-- `solar-test` accepts light or dark after requesting light; assert light. (suite row)
 - `goo-strip-test`'s dry-content precondition defaults to passing when the field is missing.
   (suite row)
 - `goo-watercolor-test` compares the same PNG bytes twice (`read_bytes` or `cmp`); decode pixels.

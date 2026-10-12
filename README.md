@@ -21,6 +21,7 @@ with his blessing. Scottland is an independent project, not his.
 | `core/plugin/` | `scottland` | Wayfire layout plugin (C++, meson) |
 | `core/config/` | `scottland` | Default Wayfire config |
 | `core/session/` | `scottland` | `start-scottland` launcher and login-session entry |
+| `core/autostart.d/07-solar-theme`, `core/libexec/scottland-solar-theme` | `scottland-sunlight` | Standalone sunrise/sunset scheduler for the standard light/dark preference |
 | `omarchy/shim/` | `scottland-omarchy` | `scottland-hyprshim`: serves Hyprland's IPC sockets from Wayfire's IPC so the stock Omarchy shell, `hyprctl` and Quickshell run unmodified. Unsupported requests are logged to `~/.local/state/scottland/hyprshim.log` |
 | `omarchy/shell-plugins/` | `scottland-omarchy` | Replacements for Hyprland-only shell plugins (workspaces, displays) |
 | `omarchy/bin/` | `scottland-omarchy` | `scottland-switch` and setup for per-user menu entries, default themes and the screen-sharing portal |
@@ -34,7 +35,8 @@ Rule: nothing under `core/` knows Omarchy exists. Omarchy integration lives only
 
 ## Running it
 
-On Omarchy, install `scottland-omarchy`, run `scottland-omarchy-setup` once, then use
+On Omarchy, install `scottland-omarchy`; install `scottland-sunlight` to enable the generic
+Sunlight scheduler. Run `scottland-omarchy-setup` once, then use
 Omarchy menu > System > Switch Desktop (Super+Escape inside Scottland). Setup also builds
 Gooarchy's xdg-desktop-portal-wlr (from [its fork](https://github.com/clickety-clacks/xdg-desktop-portal-wlr))
 and installs it in place of Arch's, saying so: with Arch's, screen sharing in Scottland fails in
