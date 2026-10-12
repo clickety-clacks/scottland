@@ -17,6 +17,17 @@ verdict), **Low** (cost, duplication, diagnostics).
 
 Every suite runs through these; an excellent assertion is worthless against the wrong session.
 
+New headless launches use `tests/headless-owner.py` to persist the task runtime/owner
+and guardian/child birth identities before releasing the compositor. The guardian
+reaps only its own descendants through pidfds, including a failed Omarchy start
+that never publishes its environment record. Missing or changed identities still
+refuse cleanup and retain scratch; the failed start remains a failure even when
+its owned subtree was stopped. `tests/headless-owner-test.py` exercises the real
+mount/entry/recording path with fake compositor and shim children, plus identity,
+interruption, timeout and persistence failures. This adds a guardian process and
+does not establish a native compositor task budget or a real-session pass.
+Legacy scratch without the new record retains the conservative existing stop path.
+
 | Problem | What to do | Finding |
 |---|---|---|
 | `tests/wfipc.py` picks the newest `wayfire-*.socket` when `WAYFIRE_SOCKET` is unset, so a test can drive someone else's session | Require the session's recorded environment (or an explicit socket); fail without it | Top 1; harness table |
