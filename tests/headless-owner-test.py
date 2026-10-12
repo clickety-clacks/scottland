@@ -148,6 +148,12 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(json.loads(p.stdout),e['backing'])
         p=self.call('stop');self.assertEqual(p.returncode,0,p.stderr);self.assertFalse(self.scratch.exists())
 
+    def test_plain_private_launch_uses_same_owned_stop(self):
+        self.assertEqual(self.call('start').returncode,0)
+        self.assertEqual(self.call('run','true').returncode,0)
+        self.assertEqual(self.call('stop').returncode,0)
+        self.assertFalse(self.scratch.exists())
+
     def test_missing_record_stops_owned_subtree_and_preserves_failure(self):
         (self.repo/'build/omit-record').touch()
         p=self.call('start','--omarchy');self.assertEqual(p.returncode,1,p.stderr)
