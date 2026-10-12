@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import time
+import uuid
 from urllib.request import urlopen
 
 CONFIG = Path(os.environ.get("SCOTTLAND_SOLAR_FILE", str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/solar.ini")))
@@ -269,7 +270,7 @@ def location_key(location):
 def empty_transition_record():
     return {"schema": 1, "enabled": False, "location": None, "mode": None,
             "transition_id": None, "schedule_transition_id": None,
-            "last_applied": None, "consumer_ack": None}
+            "consumer_delivery_id": None, "last_applied": None, "consumer_ack": None}
 
 
 def disable():
@@ -278,7 +279,7 @@ def disable():
         record = read_transition() or empty_transition_record()
         if record.get("enabled"):
             record["enabled"] = False
-            record["consumer_ack"] = record.get("transition_id")
+            record["consumer_ack"] = record.get("consumer_delivery_id", record.get("transition_id"))
             write_transition(record)
         MODE.unlink(missing_ok=True)
     finally:
@@ -323,6 +324,7 @@ def reconcile(config, location, now, event=None):
             write_transition({"schema": 1, "enabled": True, "location": current_location,
                               "mode": mode, "transition_id": transition_id,
                               "schedule_transition_id": transition_id,
+                              "consumer_delivery_id": uuid.uuid4().hex,
                               "last_applied": {"mode": mode, "transition_id": transition_id},
                               "consumer_ack": None})
         # Same-period checks deliberately perform no preference, mode-file or state write.

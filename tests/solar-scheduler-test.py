@@ -164,14 +164,15 @@ solar_config()
 omarchy_cfg = scratch / "config/scottland/omarchy-solar.ini"
 omarchy_cfg.write_text("[themes]\nday = Test Light\nnight = Test Dark\n")
 record = core.read_transition()
-record.update(enabled=True, mode="dark", transition_id="adapter-reboot-event", consumer_ack=None)
+record.update(enabled=True, mode="dark", transition_id="adapter-reboot-event",
+              consumer_delivery_id="adapter-reboot-delivery", consumer_ack=None)
 core.write_transition(record)
 with patch.object(adapter.subprocess, "run") as run:
     run.return_value.returncode = 0
     check("adapter applies a new transition even when the theme's mode already matches",
           adapter.run_once() == "Test Dark")
     check("adapter acknowledges only after theme set succeeds",
-          core.read_transition()["consumer_ack"] == "adapter-reboot-event")
+          core.read_transition()["consumer_ack"] == "adapter-reboot-delivery")
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("fresh adapter replayed acknowledged transition")):
     check("fresh adapter process after ack preserves manual theme", adapter.run_once() == "unchanged")
 
@@ -194,7 +195,8 @@ check("new adapter process after restart reads durable ack without theme command
 
 observed_digest = adapter._watch_digest()
 record = core.read_transition()
-record.update(mode="light", transition_id="adapter-watch-race", consumer_ack=None)
+record.update(mode="light", transition_id="adapter-watch-race",
+              consumer_delivery_id="adapter-watch-delivery", consumer_ack=None)
 core.write_transition(record)
 adapter.wait_for_transition_change(observed_digest)
 with patch.object(adapter.subprocess, "run") as run:
@@ -202,12 +204,13 @@ with patch.object(adapter.subprocess, "run") as run:
     check("adapter watch catches a transition published before inotify wait begins",
           adapter.run_once() == "Test Light")
     check("adapter watcher event is acknowledged after consume",
-          core.read_transition()["consumer_ack"] == "adapter-watch-race")
+          core.read_transition()["consumer_ack"] == "adapter-watch-delivery")
 
 # Two session autostarts may run the adapter at once. The dedicated consumer
 # lock must serialize the theme command and durable acknowledgement.
 record = core.read_transition()
-record.update(mode="dark", transition_id="adapter-concurrent-event", consumer_ack=None)
+record.update(mode="dark", transition_id="adapter-concurrent-event",
+              consumer_delivery_id="adapter-concurrent-delivery", consumer_ack=None)
 core.write_transition(record)
 invocations.unlink(missing_ok=True)
 fake_omarchy.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SOLAR_TEST_INVOCATIONS\"\nsleep 0.2\n")
@@ -225,7 +228,8 @@ check("concurrent session adapters apply one transition only once",
 # A theme map is a separate settings file. The same inotify wait must recover
 # promptly when a malformed mapping is corrected, without restarting session.
 record = core.read_transition()
-record.update(mode="light", transition_id="adapter-malformed-theme", consumer_ack=None)
+record.update(mode="light", transition_id="adapter-malformed-theme",
+              consumer_delivery_id="adapter-malformed-delivery", consumer_ack=None)
 core.write_transition(record)
 omarchy_cfg.write_text("bad theme mapping\n")
 observed_digest = adapter._watch_digest()
@@ -278,7 +282,8 @@ with patch.object(adapter.subprocess, "run", side_effect=AssertionError("disable
 
 solar_config()
 record = core.read_transition()
-record.update(enabled=True, mode="light", transition_id="adapter-failed-command", consumer_ack=None)
+record.update(enabled=True, mode="light", transition_id="adapter-failed-command",
+              consumer_delivery_id="adapter-failed-delivery", consumer_ack=None)
 core.write_transition(record)
 with patch.object(adapter.subprocess, "run", side_effect=subprocess.CalledProcessError(1, ["omarchy"])):
     try:
@@ -287,6 +292,32 @@ with patch.object(adapter.subprocess, "run", side_effect=subprocess.CalledProces
         pass
 check("failed theme command leaves transition unacknowledged",
       core.read_transition()["consumer_ack"] is None)
+
+# Disable and re-enable can retain the same solar-boundary identity. A unique
+# consumer delivery ID fences an ack from the command already in flight.
+old_delivery = "adapter-aba-old-delivery"
+record = core.read_transition()
+record.update(enabled=True, mode="dark", transition_id="same-solar-boundary",
+              schedule_transition_id="same-solar-boundary",
+              consumer_delivery_id=old_delivery, consumer_ack=None)
+core.write_transition(record)
+
+def disable_and_reenable_during_theme_set(*_args, **_kwargs):
+    core.disable()
+    config = solar_config(enabled=True)
+    with patch.object(core, "set_mode"):
+        core.reconcile(config, (37.77, -122.42), datetime(2026, 6, 24, 20, tzinfo=timezone.utc),
+                       ("dark", "same-solar-boundary", datetime(2026, 6, 24, 19, 38, tzinfo=timezone.utc)))
+    return subprocess.CompletedProcess([], 0, "")
+
+with patch.object(adapter.subprocess, "run", side_effect=disable_and_reenable_during_theme_set):
+    check("stale in-flight adapter ack cannot consume a re-enabled same-period apply",
+          adapter.run_once() == "superseded")
+current_delivery = core.read_transition()
+check("re-enable creates a fresh consumer delivery ID for the same solar boundary",
+      current_delivery["transition_id"] == "same-solar-boundary"
+      and current_delivery["consumer_delivery_id"] != old_delivery
+      and current_delivery["consumer_ack"] is None)
 
 bad = dict(core.read_transition(), schema=99)
 core.write_transition(bad)

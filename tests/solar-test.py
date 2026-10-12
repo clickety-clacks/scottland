@@ -84,14 +84,15 @@ core.CONFIG.write_text("[solar]\nenabled = true\nallow_ip = false\n")
 adapter.config_file.parent.mkdir(parents=True, exist_ok=True)
 adapter.config_file.write_text("[themes]\nday = Test Day\nnight = Test Night\n")
 record = core.read_transition()
-record.update(mode="dark", transition_id="policy-adapter-event", consumer_ack=None)
+record.update(mode="dark", transition_id="policy-adapter-event",
+              consumer_delivery_id="policy-adapter-delivery", consumer_ack=None)
 core.write_transition(record)
 with patch.object(adapter.subprocess, "run") as run:
     run.return_value = CompletedProcess([], 0, "")
     check("adapter applies selected theme for an unacknowledged event",
           adapter.run_once() == "Test Night" and run.call_args.args[0] == ["omarchy", "theme", "set", "Test Night"])
 check("adapter ack persists after successful theme command",
-      core.read_transition()["consumer_ack"] == "policy-adapter-event")
+      core.read_transition()["consumer_ack"] == "policy-adapter-delivery")
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("acknowledged event replayed")):
     check("acknowledged adapter event does not run again", adapter.run_once() == "unchanged")
 
