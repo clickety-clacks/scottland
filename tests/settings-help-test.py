@@ -120,6 +120,11 @@ def ipc(method, data=None):
     return result
 
 
+def set_test_identities(rows):
+    # Cleanup uses this even when an earlier scenario fails before S24 begins.
+    return ipc("scottland/test-screen-identities", {"outputs": rows})
+
+
 def check(name, condition):
     global passed, failed
     print(("PASS " if condition else "FAIL ") + name, flush=True)
@@ -318,11 +323,19 @@ def motion_trial(resize=False):
     name="SettingsMotion"+str(time.monotonic_ns())
     fixture=subprocess.Popen(["python3",str(repo/"tests/windowing-key-recorder.py"),name,str(art/(name+".keys"))],stdout=log,stderr=log)
     clients.append(fixture)
+    view = None
     for _ in range(80):
+        if fixture.poll() is not None:
+            break
         view=next((v for v in ipc("window-rules/list-views") if v.get("title")==name),None)
         if view:break
         time.sleep(.05)
-    assert view
+    if not view:
+        log.flush()
+        details = "\n".join((art / "panel.log").read_text(errors="replace").splitlines()[-12:])
+        raise AssertionError(
+            f"motion recorder did not map (process_exit={fixture.poll()!r}); "
+            f"recorder log tail:\n{details}")
     ipc("window-rules/configure-view",dict(id=view["id"],geometry=dict(x=480,y=250,width=250,height=150)))
     ipc("window-rules/focus-view",dict(id=view["id"]))
     time.sleep(.3)
@@ -882,9 +895,6 @@ try:
     dormant_zones = {**dormant_identity, "center_width": 51.5, "rail_width": 4.0, "blend_width": 75.0,
         "min_scale": 0.3, "max_scale": 0.95, "scale_curve": "0:0.95 1:0.3"}
     target_key = " ".join(target_identity.values())
-
-    def set_test_identities(rows):
-        return ipc("scottland/test-screen-identities", {"outputs": rows})
 
     def zone_outputs():
         return {row["output"]: row for row in ipc("scottland/layout-state")["outputs"]}
