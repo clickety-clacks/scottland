@@ -193,6 +193,32 @@ restart = subprocess.run([sys.executable, str(root/"omarchy/libexec/scottland-om
 check("new adapter process after restart reads durable ack without theme command",
       restart.stdout.strip() == "unchanged" and not invocations.exists())
 
+# An earlier candidate format stored acknowledgements under delivery IDs.
+# Preserve those durable acknowledgements across a source upgrade.
+record = core.read_transition()
+record.update(mode="dark", transition_id="upgrade-transition",
+              schedule_transition_id="upgrade-boundary",
+              consumer_delivery_id="upgrade-delivery", consumer_ack="upgrade-delivery")
+core.write_transition(record)
+with patch.object(adapter.subprocess, "run", side_effect=AssertionError("upgrade replayed acknowledged transition")):
+    check("upgrade honors an acknowledged consumer_delivery_id record",
+          adapter.run_once() == "unchanged")
+record = core.read_transition()
+record["consumer_ack"] = None
+core.write_transition(record)
+with patch.object(adapter.subprocess, "run") as run:
+    run.return_value.returncode = 0
+    check("upgrade consumes an unacknowledged delivery ID using its existing ack key",
+          adapter.run_once() == "Test Dark"
+          and core.read_transition()["consumer_ack"] == "upgrade-delivery")
+with patch.object(adapter.subprocess, "run", side_effect=AssertionError("fresh adapter replayed delivery ack")):
+    check("fresh adapter after upgrade preserves delivery-format ack", adapter.run_once() == "unchanged")
+
+record = core.read_transition()
+record.pop("consumer_delivery_id", None)
+record["consumer_ack"] = None
+core.write_transition(record)
+
 observed_digest = adapter._watch_digest()
 record = core.read_transition()
 record.update(mode="light", transition_id="adapter-watch-race",

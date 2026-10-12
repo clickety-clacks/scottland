@@ -85,15 +85,18 @@ def _atomic_write(record):
         temporary.unlink(missing_ok=True)
 
 
-def acknowledge(transition_id):
+def acknowledge(transition_id, acknowledgement_id):
     descriptor = transition_lock()
     try:
         record = read_transition()
+        current_acknowledgement_id = (record.get("consumer_delivery_id", record.get("transition_id"))
+                                      if record else None)
         if (record is None or not record.get("enabled")
                 or record.get("transition_id") != transition_id
-                or record.get("consumer_ack") == transition_id):
+                or current_acknowledgement_id != acknowledgement_id
+                or record.get("consumer_ack") == acknowledgement_id):
             return False
-        record["consumer_ack"] = transition_id
+        record["consumer_ack"] = acknowledgement_id
         _atomic_write(record)
         return True
     finally:
@@ -111,9 +114,12 @@ def run_once():
             return "off"
         desired = record.get("mode")
         transition_id = record.get("transition_id")
+        acknowledgement_id = record.get("consumer_delivery_id", transition_id)
         if desired not in ("light", "dark") or not isinstance(transition_id, str) or not transition_id:
             return "off"
-        if record.get("consumer_ack") == transition_id:
+        if not isinstance(acknowledgement_id, str) or not acknowledgement_id:
+            return "off"
+        if record.get("consumer_ack") == acknowledgement_id:
             return "unchanged"
 
         # At a real transition the selected day/night theme is the new choice,
@@ -122,7 +128,7 @@ def run_once():
         # cannot apply the same event twice.
         target = themes()[desired]
         subprocess.run(["omarchy", "theme", "set", target], check=True)
-        if not acknowledge(transition_id):
+        if not acknowledge(transition_id, acknowledgement_id):
             return "superseded"
         return target
     finally:
