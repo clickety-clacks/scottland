@@ -270,7 +270,7 @@ def location_key(location):
 def empty_transition_record():
     return {"schema": 1, "enabled": False, "location": None, "mode": None,
             "transition_id": None, "schedule_transition_id": None,
-            "consumer_delivery_id": None, "last_applied": None, "consumer_ack": None}
+            "last_applied": None, "consumer_ack": None}
 
 
 def disable():
@@ -279,7 +279,7 @@ def disable():
         record = read_transition() or empty_transition_record()
         if record.get("enabled"):
             record["enabled"] = False
-            record["consumer_ack"] = record.get("consumer_delivery_id", record.get("transition_id"))
+            record["consumer_ack"] = record.get("transition_id")
             write_transition(record)
         MODE.unlink(missing_ok=True)
     finally:
@@ -296,7 +296,7 @@ def reconcile(config, location, now, event=None):
         return None
     if event is None:
         event = solar_transition(now, *location)
-    mode, transition_id = event[:2]
+    mode, schedule_transition_id = event[:2]
     current_location = location_key(location)
     descriptor = transition_lock()
     try:
@@ -309,23 +309,27 @@ def reconcile(config, location, now, event=None):
             # identity remain untouched, so a settings save cannot synthesize a transition.
             rebased = dict(previous)
             rebased.update(enabled=True, location=current_location,
-                           schedule_transition_id=transition_id)
+                           schedule_transition_id=schedule_transition_id)
             write_transition(rebased)
             return mode
 
         previous_schedule_id = (previous.get("schedule_transition_id", previous.get("transition_id"))
                                 if previous is not None else None)
         new_transition = (not first_run and previous is not None
-                          and previous_schedule_id != transition_id)
+                          and previous_schedule_id != schedule_transition_id)
         apply_now = first_run or reenabled or new_transition
         if apply_now:
             set_mode(mode)
             publish(mode)
+            # Keep the consumer-visible transition_id unique for each apply.
+            # This preserves the existing consumer_ack contract while fencing
+            # stale acks when re-enable occurs within the same solar boundary.
+            transition_id = f"{schedule_transition_id}#{uuid.uuid4().hex}"
             write_transition({"schema": 1, "enabled": True, "location": current_location,
                               "mode": mode, "transition_id": transition_id,
-                              "schedule_transition_id": transition_id,
-                              "consumer_delivery_id": uuid.uuid4().hex,
-                              "last_applied": {"mode": mode, "transition_id": transition_id},
+                              "schedule_transition_id": schedule_transition_id,
+                              "last_applied": {"mode": mode, "transition_id": transition_id,
+                                               "schedule_transition_id": schedule_transition_id},
                               "consumer_ack": None})
         # Same-period checks deliberately perform no preference, mode-file or state write.
         return mode

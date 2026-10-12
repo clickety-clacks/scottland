@@ -65,7 +65,7 @@ with patch.object(core, "geoclue_location", return_value=None), \
      patch.object(core.subprocess, "run", side_effect=AssertionError("matching preference changed")):
     check("saved coordinates work without network and publish transition mode", core.run_once(day) == "light"
           and core.MODE.read_text().strip() == "light")
-check("transition record stores the applied identity", core.read_transition()["last_applied"]["transition_id"] == event[1])
+check("transition record stores the applied solar boundary", core.read_transition()["last_applied"]["schedule_transition_id"] == event[1])
 
 core.CONFIG.write_text("[solar]\nenabled = true\nlocation_set = false\nallow_ip = true\n")
 with patch.object(core, "geoclue_location", return_value=None), \
@@ -84,15 +84,14 @@ core.CONFIG.write_text("[solar]\nenabled = true\nallow_ip = false\n")
 adapter.config_file.parent.mkdir(parents=True, exist_ok=True)
 adapter.config_file.write_text("[themes]\nday = Test Day\nnight = Test Night\n")
 record = core.read_transition()
-record.update(mode="dark", transition_id="policy-adapter-event",
-              consumer_delivery_id="policy-adapter-delivery", consumer_ack=None)
+record.update(mode="dark", transition_id="policy-adapter-event", consumer_ack=None)
 core.write_transition(record)
 with patch.object(adapter.subprocess, "run") as run:
     run.return_value = CompletedProcess([], 0, "")
     check("adapter applies selected theme for an unacknowledged event",
           adapter.run_once() == "Test Night" and run.call_args.args[0] == ["omarchy", "theme", "set", "Test Night"])
-check("adapter ack persists after successful theme command",
-      core.read_transition()["consumer_ack"] == "policy-adapter-delivery")
+check("adapter ack keeps the existing transition_id format",
+      core.read_transition()["consumer_ack"] == "policy-adapter-event")
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("acknowledged event replayed")):
     check("acknowledged adapter event does not run again", adapter.run_once() == "unchanged")
 
