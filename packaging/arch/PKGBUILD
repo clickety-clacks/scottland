@@ -121,7 +121,8 @@ package_scottland-omarchy() {
   install -Dm755 "$o/autostart.d/25-omarchy-override-report" "$pkgdir/usr/lib/scottland/autostart.d/25-omarchy-override-report"
   install -dm755 "$pkgdir/usr/lib/scottland/override-report.d"
   install -dm755 "$pkgdir/usr/share/scottland-omarchy/themes"
-  cp -a "$o/themes/." "$pkgdir/usr/share/scottland-omarchy/themes/"
+  # Keep theme links/modes/content; package ownership comes from fakeroot, not the checkout.
+  cp -a --no-preserve=ownership "$o/themes/." "$pkgdir/usr/share/scottland-omarchy/themes/"
   install -Dm755 "$o/reload.d/30-lua-host" "$pkgdir/usr/lib/scottland/reload.d/30-lua-host"
   install -Dm755 "$o/autostart.d/45-hyprland-start" "$pkgdir/usr/lib/scottland/autostart.d/45-hyprland-start"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
