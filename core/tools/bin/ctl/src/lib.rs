@@ -3,6 +3,7 @@ use scottland::session::Session;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -396,38 +397,18 @@ fn stdin_updates() -> Result<u8> {
     Ok(0)
 }
 
-fn focused_info(ctl: &mut Ctl) -> Result<Value> {
-    let reply = ctl.call("window-rules/get-focused-view", json!({}))?;
-    Ok(reply.get("info").cloned().unwrap_or(Value::Null))
-}
-
 fn terminal_cwd(pid_arg: Option<&str>) -> Result<u8> {
-    let mut ctl = Ctl::connect()?;
-    let info = if let Some(pid) = pid_arg {
-        json!({"pid": pid.parse::<u32>().map_err(|_| "PID must be a positive integer".to_string())?})
-    } else {
-        focused_info(&mut ctl)?
-    };
-    let pid = info
-        .get("pid")
-        .and_then(Value::as_u64)
-        .map(|pid| pid as u32);
-    let home =
-        session_home(&ctl.session).ok_or_else(|| "the session has no usable HOME".to_string())?;
-    let cwd = pid
-        .and_then(|pid| terminal_directory(pid, &ctl.session))
-        .filter(|path| path.is_dir())
-        .unwrap_or(home);
+    let ctl = Ctl::connect()?;
+    let cwd = scottland::terminal_cwd::resolve(&ctl.session, pid_arg.map(OsStr::new))
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::InvalidInput {
+                "PID must be a positive integer".to_string()
+            } else {
+                error.to_string()
+            }
+        })?;
     println!("{}", cwd.display());
     Ok(0)
-}
-
-fn session_home(session: &Session) -> Option<PathBuf> {
-    session
-        .var("HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(PathBuf::from))
-        .filter(|path| path.is_dir())
 }
 
 fn current_session() -> Result<Session> {
@@ -438,118 +419,6 @@ fn current_session() -> Result<Session> {
     let caller_socket = env::var_os("WAYFIRE_SOCKET");
     scottland::session::select(&runtime, None, caller_socket.as_deref())
         .map_err(|error| error.to_string())
-}
-
-fn terminal_directory(pid: u32, session: &Session) -> Option<PathBuf> {
-    if let Some(socket) = kitty_socket(pid) {
-        if let Some(path) = kitty_focused_cwd(&socket, session) {
-            return Some(path);
-        }
-    }
-    let shell_pid = newest_child(pid)?;
-    let shell = fs::canonicalize(format!("/proc/{shell_pid}/exe")).ok()?;
-    if !is_login_shell(&shell) {
-        return None;
-    }
-    fs::canonicalize(format!("/proc/{shell_pid}/cwd")).ok()
-}
-
-fn newest_child(pid: u32) -> Option<u32> {
-    let task_dir = PathBuf::from(format!("/proc/{pid}/task"));
-    let tasks = fs::read_dir(task_dir).ok()?;
-    let mut newest = None;
-    for task in tasks.flatten() {
-        let children = task.path().join("children");
-        let Ok(contents) = fs::read_to_string(children) else {
-            continue;
-        };
-        for child in contents
-            .split_ascii_whitespace()
-            .filter_map(|pid| pid.parse::<u32>().ok())
-        {
-            newest = Some(newest.map_or(child, |current: u32| current.max(child)));
-        }
-    }
-    newest
-}
-
-fn is_login_shell(exe: &Path) -> bool {
-    fs::read_to_string("/etc/shells").is_ok_and(|shells| {
-        shells
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .any(|shell| fs::canonicalize(shell).is_ok_and(|path| path == exe))
-    })
-}
-
-fn kitty_socket(pid: u32) -> Option<String> {
-    let proc_env = fs::read(format!("/proc/{pid}/environ")).ok()?;
-    for entry in proc_env.split(|byte| *byte == 0) {
-        if let Some(value) = entry.strip_prefix(b"KITTY_LISTEN_ON=") {
-            let value = String::from_utf8_lossy(value);
-            if value.starts_with("unix:") {
-                return Some(value.trim_start_matches("unix:").to_string());
-            }
-            if !value.is_empty() && !value.starts_with("tcp:") {
-                return Some(value.to_string());
-            }
-        }
-    }
-    // A terminal may not export KITTY_LISTEN_ON to its window process. Discover an active
-    // process-owned Unix listener by inode instead of relying on a distro-specific socket name.
-    let fds = fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
-    let mut inodes = Vec::new();
-    for fd in fds.flatten() {
-        if let Ok(link) = fs::read_link(fd.path()) {
-            if let Some(inode) = link
-                .to_string_lossy()
-                .strip_prefix("socket:[")
-                .and_then(|value| value.strip_suffix(']'))
-            {
-                inodes.push(inode.to_string());
-            }
-        }
-    }
-    let unix = fs::read_to_string("/proc/net/unix").ok()?;
-    unix.lines().skip(1).find_map(|line| {
-        let columns: Vec<_> = line.split_ascii_whitespace().collect();
-        if columns.len() < 8
-            || columns[4] != "0001"
-            || columns[5] != "01"
-            || !inodes.iter().any(|inode| inode == columns[6])
-        {
-            return None;
-        }
-        let path = columns.get(7)?;
-        path.starts_with('/').then(|| path.to_string())
-    })
-}
-
-fn kitty_focused_cwd(socket: &str, session: &Session) -> Option<PathBuf> {
-    let mut command = session_command(session, "kitten");
-    let output = command
-        .args(["@", "--to"])
-        .arg(format!("unix:{socket}"))
-        .args(["ls", "--match", "state:focused"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
-    let cwd = value.as_array()?.iter().find_map(|tab| {
-        tab.get("windows")?.as_array()?.iter().find_map(|window| {
-            window
-                .get("cwd")
-                .and_then(Value::as_str)
-                .filter(|path| !path.is_empty())
-        })
-    })?;
-    let path = PathBuf::from(cwd);
-    path.is_dir().then_some(path)
 }
 
 fn focus_app(pattern: &str) -> Result<u8> {
