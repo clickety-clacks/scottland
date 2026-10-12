@@ -187,6 +187,72 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(self.call('stop').returncode,0)
         self.assertFalse(self.scratch.exists())
 
+    def observe_owned_graph(self):
+        record=json.loads((self.scratch/'launch-owner.json').read_text())
+        pending=[record['guardian']['pid']];nodes=[]
+        while pending:
+            pid=pending.pop()
+            first=OWN.birth(pid)
+            tids=sorted(int(p.name) for p in Path(f'/proc/{pid}/task').iterdir())
+            child_ids=[int(v) for v in Path(f'/proc/{pid}/task/{pid}/children').read_text().split()]
+            self.assertEqual(first,OWN.birth(pid))
+            nodes.append(dict(first,tids=tids,children=child_ids))
+            pending.extend(child_ids)
+            self.assertLessEqual(len(nodes)+len(pending),16)
+        self.assertTrue(OWN.same_birth(nodes[0],record['guardian']))
+        e=self.spawn_evidence()
+        self.assertTrue({e['compositor']['pid'],e['shim']['pid']} <= {n['pid'] for n in nodes})
+        self.receipt['owned_graph']={'nodes':nodes,'observed_tasks':sum(len(n['tids']) for n in nodes),
+                                     'scope':'stable fake-compositor subtree, not native peak or cgroup headroom'}
+        return nodes
+
+    def test_repeat_stop_refuses_and_preserves_owner_evidence(self):
+        self.assertEqual(self.call('start','--omarchy').returncode,0)
+        nodes=self.observe_owned_graph()
+        self.assertEqual(self.call('stop','--preserve-scratch').returncode,0)
+        names=['launch-owner.json','launch-terminal.json','.scottland-headless-owner']
+        before={n:(identity(self.scratch/n),(self.scratch/n).read_bytes()) for n in names}
+        for node in nodes:
+            try:fd=os.pidfd_open(node['pid'])
+            except ProcessLookupError:continue
+            try:
+                self.assertTrue(OWN.same_birth(OWN.birth(node['pid']),node))
+                poll=select.poll();poll.register(fd,select.POLLIN);self.assertTrue(poll.poll(1000))
+            finally:os.close(fd)
+        # Instrument actual Bash builtin calls on the second wrapper invocation;
+        # refuse any attempted signal so a regression cannot reach an unrelated PID.
+        log=self.root/'bare-pid-signals';envfile=self.root/'stop-env.sh'
+        envfile.write_text('kill() { if [[ ${1:-} == -0 ]]; then builtin kill "$@"; '
+                           'else printf "%s\\n" "$*" >> "$SCOTTLAND_SIGNAL_AUDIT"; return 97; fi; }\n')
+        self.env.update(BASH_ENV=str(envfile),SCOTTLAND_SIGNAL_AUDIT=str(log))
+        stopped=self.call('stop')
+        self.assertEqual(stopped.returncode,2,stopped.stderr)
+        self.assertIn('headless owner refused',stopped.stderr)
+        self.assertFalse(log.exists(),'wrapper attempted bare-PID signal after guardian refusal')
+        self.assertEqual(before,{n:(identity(self.scratch/n),(self.scratch/n).read_bytes()) for n in names})
+        self.receipt['owned_postflight']={'all_recorded_processes_exited':True,'owner_evidence_unchanged':True,
+                                         'bare_pid_signal_calls':0,'scratch_retained':True}
+
+    def test_repeat_stop_cannot_mask_test_exit(self):
+        self.assertEqual(self.call('start','--omarchy').returncode,0)
+        result=self.repo/'build/launcher-statuses'
+        command='''set +e
+"$1" run sh -c 'exit 37'; primary=$?
+"$1" stop --preserve-scratch; first=$?
+"$1" stop; second=$?
+printf '%s %s %s\\n' "$primary" "$first" "$second" > "$2"
+((primary != 0)) && exit "$primary"
+((first != 0)) && exit "$first"
+exit "$second"
+'''
+        p=subprocess.run(['/bin/bash','-c',command,'fixture-launcher',str(self.repo/'tests/headless.sh'),str(result)],
+                         env=self.env,capture_output=True,text=True,timeout=25)
+        self.receipt['launcher']={'exit':p.returncode,'phase_exits':result.read_text().split(),
+                                  'stdout':p.stdout,'stderr':p.stderr}
+        self.assertEqual(p.returncode,37)
+        self.assertEqual(result.read_text().split(),['37','0','2'])
+        self.assertTrue((self.scratch/'launch-owner.json').exists())
+
     def test_missing_record_stops_owned_subtree_and_preserves_failure(self):
         (self.repo/'build/omit-record').touch()
         p=self.call('start','--omarchy');self.assertEqual(p.returncode,1,p.stderr)

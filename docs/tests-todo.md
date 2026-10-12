@@ -36,6 +36,10 @@ at the final commit boundary veto success; handled controls are then blocked
 through exit so no late handler can silently change an unchecked status. The
 fixtures include concurrent directory-fsync failure, failed invalidation and a
 termination signal during final descriptor closure.
+Wrapper checks exercise a successful scratch-preserving stop followed by refusal,
+retained owner evidence, no bare-PID signalling and preservation of a failed test's
+exit status. Their stable fixture subtree census includes the guardian; fake
+compositor counts do not measure native unit peak or establish PID headroom.
 
 | Problem | What to do | Finding |
 |---|---|---|
