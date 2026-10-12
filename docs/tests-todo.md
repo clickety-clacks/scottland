@@ -27,6 +27,15 @@ mount/entry/recording path with fake compositor and shim children, plus identity
 interruption, timeout and persistence failures. This adds a guardian process and
 does not establish a native compositor task budget or a real-session pass.
 Legacy scratch without the new record retains the conservative existing stop path.
+Stop requires a fresh nonce-bound reply from the authenticated guardian after its
+terminal receipt is persisted and custody descriptors are closed; it rereads the
+receipt after guardian exit. A saved zero receipt alone never permits cleanup,
+including a second stop after a scratch-preserving stop. Failed finalization
+retains scratch even when receipt invalidation fails. Controls delivered or pending
+at the final commit boundary veto success; handled controls are then blocked
+through exit so no late handler can silently change an unchecked status. The
+fixtures include concurrent directory-fsync failure, failed invalidation and a
+termination signal during final descriptor closure.
 
 | Problem | What to do | Finding |
 |---|---|---|

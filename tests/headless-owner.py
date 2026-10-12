@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import select
+import secrets
 import signal
 import socket
 import stat
@@ -147,6 +148,18 @@ def stop_children(deadline):
         time.sleep(0.01)
 
 
+def read_message(peer):
+    data = bytearray()
+    while len(data) <= 4096:
+        part = peer.recv(1)
+        if not part:
+            raise Refusal('finalization channel closed without a full message')
+        if part == b'\n':
+            return bytes(data)
+        data.extend(part)
+    raise Refusal('oversize finalization message')
+
+
 def launch(directory, argv):
     state = State(directory)
     control = {'signal': 0}
@@ -157,6 +170,9 @@ def launch(directory, argv):
     result = 75
     error = None
     server = None
+    client = None
+    nonce = None
+    terminal_hash = None
     read_gate = write_gate = None
     record = None
     try:
@@ -199,16 +215,19 @@ def launch(directory, argv):
             ready, _, _ = select.select([server], [], [], 0.1)
             if not ready:
                 continue
-            with server.accept()[0] as client:
-                client.settimeout(1)
-                _, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                request = client.recv(256)
-                if uid != os.getuid() or request != ('stop ' + binding['owner']).encode():
-                    raise Refusal('unowned stop request')
-                if state.binding() != binding:
-                    raise Refusal('task ownership changed before stop')
-                result = 0
-                break
+            client = server.accept()[0]
+            client.settimeout(1)
+            _, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            request = json.loads(read_message(client))
+            nonce = request.get('nonce')
+            if (uid != os.getuid() or request.get('stop') != binding['owner'] or
+                    not isinstance(nonce, str) or len(nonce) != 64 or
+                    any(c not in '0123456789abcdef' for c in nonce)):
+                raise Refusal('unowned stop request')
+            if state.binding() != binding:
+                raise Refusal('task ownership changed before stop')
+            result = 0
+            break
         if control['signal']:
             result = 128 + control['signal']
     except Exception as exc:
@@ -228,15 +247,34 @@ def launch(directory, argv):
                 raise Refusal('task ownership changed during finalization')
             state.write('launch-terminal.json', {'exit': result, 'error': error, 'owner': record,
                                                 'children': children(), 'signal': control['signal']})
-            if control['signal'] and result != 128 + control['signal']:
-                os.unlink('launch-terminal.json', dir_fd=state.fd)
-                result = 128 + control['signal']
+            terminal_hash = hashlib.sha256(state.read('launch-terminal.json')).hexdigest()
         except Exception as exc:
             print('cannot persist launch terminal: ' + str(exc), file=sys.stderr)
             result = 75
-        if server is not None:
-            server.close()
-        os.close(state.fd)
+        try:
+            if server is not None:
+                server.close()
+            os.close(state.fd)
+        except Exception as exc:
+            print('cannot close launch custody: ' + str(exc), file=sys.stderr)
+            result = 75
+        # Commit boundary: finish all persistence/custody work first, then block
+        # handled controls through process exit. No installed handler can set an
+        # unchecked flag after this decision. A signal already delivered or
+        # pending at the boundary vetoes acknowledgement. Later controls are
+        # after completed finalization; this helper never restores the mask.
+        controls = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+        signal.pthread_sigmask(signal.SIG_BLOCK, controls)
+        pending = signal.sigpending() & controls
+        if control['signal'] or pending:
+            result = 128 + (control['signal'] or min(pending))
+        if client is not None:
+            try:
+                client.sendall((json.dumps({'nonce': nonce, 'exit': result,
+                                            'terminal_sha256': terminal_hash}) + '\n').encode())
+            except OSError:
+                result = 75
+
     return result
 
 
@@ -254,35 +292,31 @@ def stop(directory):
                 raise Refusal('guardian PID birth identity changed')
         except ProcessLookupError:
             pass
-        terminal = None
-        try:
-            terminal = json.loads(state.read('launch-terminal.json'))
-        except FileNotFoundError:
-            pass
-        if terminal is None:
-            if guardian_fd is None or not same_birth(birth(guardian['pid']), guardian):
-                raise Refusal('guardian PID birth identity changed')
-            with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(2)
-                client.connect(directory + '/owner.sock')
-                pid, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                if pid != guardian['pid'] or uid != os.getuid() or not same_birth(birth(pid), guardian):
-                    raise Refusal('stop socket belongs to another guardian')
-                client.sendall(('stop ' + record['binding']['owner']).encode())
-            deadline = time.monotonic() + 7
-            while time.monotonic() < deadline:
-                try:
-                    terminal = json.loads(state.read('launch-terminal.json')); break
-                except FileNotFoundError:
-                    time.sleep(0.02)
-            if terminal is None:
-                raise Refusal('guardian terminal receipt absent')
+        # A disk receipt alone is never an authority to remove scratch. Every
+        # successful controller needs a fresh authenticated finalization reply.
+        if guardian_fd is None or not same_birth(birth(guardian['pid']), guardian):
+            raise Refusal('guardian is not live; preserve retained receipts')
+        nonce = secrets.token_hex(32)
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(8)
+            client.connect(directory + '/owner.sock')
+            pid, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if pid != guardian['pid'] or uid != os.getuid() or not same_birth(birth(pid), guardian):
+                raise Refusal('stop socket belongs to another guardian')
+            client.sendall((json.dumps({'stop': record['binding']['owner'], 'nonce': nonce}) + '\n').encode())
+            answer = json.loads(read_message(client))
+        if answer.get('nonce') != nonce or answer.get('exit') != 0:
+            raise Refusal('guardian did not acknowledge completed finalization')
+        poll = select.poll(); poll.register(guardian_fd, select.POLLIN)
+        if not poll.poll(2000):
+            raise Refusal('guardian has not exited after finalization')
+        # Read after exit; never reuse a provisional pre-fsync snapshot.
+        terminal_bytes = state.read('launch-terminal.json')
+        if hashlib.sha256(terminal_bytes).hexdigest() != answer.get('terminal_sha256'):
+            raise Refusal('terminal changed after finalization acknowledgement')
+        terminal = json.loads(terminal_bytes)
         if terminal['owner'] != record or terminal['children'] or terminal['exit'] != 0:
             raise Refusal('guardian terminal is not a clean requested stop')
-        if guardian_fd is not None:
-            poll = select.poll(); poll.register(guardian_fd, select.POLLIN)
-            if not poll.poll(2000):
-                raise Refusal('guardian has not exited after its terminal receipt')
         if state.binding() != record['binding']:
             raise Refusal('task ownership changed after stop')
         return 0

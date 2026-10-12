@@ -50,6 +50,37 @@ while True:
 '''
 
 
+# Faults exercise the real controller concurrently with guardian finalization.
+BOUNDARY_BOOTSTRAP = r'''#!/usr/bin/python3
+import importlib.util,sys,os,signal,json,time
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('exact_owner',SOURCE)
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+d=Path(sys.argv[2]); injected=[]
+if sys.argv[1]=='launch':
+ old_fsync=m.os.fsync;old_unlink=m.os.unlink;old_close=m.os.close
+ def fsync(fd):
+  if CASE in ('fsync_and_invalidation_fail','fsync_after_receipt_read') and (d/'launch-terminal.json').exists() and os.path.realpath('/proc/self/fd/'+str(fd))==str(d):
+   injected.append('directory_fsync')
+   if CASE=='fsync_after_receipt_read':time.sleep(.3)
+   raise OSError(5,'injected directory fsync failure')
+  return old_fsync(fd)
+ def unlink(name,*a,**kw):
+  if CASE=='fsync_and_invalidation_fail' and name=='launch-terminal.json':
+   injected.append('invalidation_unlink');raise OSError(5,'injected invalidation failure')
+  return old_unlink(name,*a,**kw)
+ def close(fd):
+  target=CASE=='late_term' and (d/'launch-terminal.json').exists() and os.path.realpath('/proc/self/fd/'+str(fd))==str(d)
+  result=old_close(fd)
+  if target:
+   injected.append('late_SIGTERM');os.kill(os.getpid(),signal.SIGTERM)
+  return result
+ m.os.fsync=fsync;m.os.unlink=unlink;m.os.close=close
+rc=m.main()
+if sys.argv[1]=='launch':(d.parent/'guardian-result.json').write_text(json.dumps({'return':rc,'injected':injected}))
+raise SystemExit(rc)
+'''
+
 def identity(path):
     s = path.lstat()
     return [s.st_dev, s.st_ino, s.st_mode, s.st_uid]
@@ -73,7 +104,9 @@ class Lifecycle(unittest.TestCase):
                         ('core/autostart.d/01-record-environment','build/hooks/autostart.d/01-record-environment')]:
             original = (Path(os.environ['SCOTTLAND_OWNER_TEST_HEADLESS_BASELINE'])
                         if src == 'tests/headless.sh' and os.environ.get('SCOTTLAND_OWNER_TEST_HEADLESS_BASELINE')
-                        else SOURCE/src)
+                        else (Path(os.environ['SCOTTLAND_OWNER_TEST_HELPER_BASELINE'])
+                              if src == 'tests/headless-owner.py' and os.environ.get('SCOTTLAND_OWNER_TEST_HELPER_BASELINE')
+                              else SOURCE/src))
             q=self.repo/dst;q.write_bytes(original.read_bytes());q.chmod(0o755)
         self.script(self.repo/'build/hooks/libexec/scottland-build-config',
                     '#!/bin/sh\n: >"$SCOTTLAND_CONFIG_OUTPUT"\n')
@@ -162,7 +195,8 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual((self.scratch/'.scottland-headless-mode').read_text(),'shim-pending\n')
         self.assertFalse((self.scratch/'display').exists())
         e=self.spawn_evidence();self.assertEqual(e['runtime'],e['backing'])
-        p=self.call('stop','--preserve-scratch');self.assertEqual(p.returncode,0,p.stderr)
+        p=self.call('stop','--preserve-scratch');self.assertEqual(p.returncode,2,p.stderr)
+        # Automatic cleanup already committed; cached receipts do not authorize a second stop.
         terminal=json.loads((self.scratch/'launch-terminal.json').read_text())
         self.assertEqual(terminal['exit'],0);self.assertEqual(terminal['children'],[])
         for child in [e['shim'],e['compositor']]:
@@ -248,6 +282,38 @@ class Lifecycle(unittest.TestCase):
         while not path.exists() and time.monotonic()<deadline:time.sleep(.02)
         terminal=json.loads(path.read_text())
         self.assertNotEqual(terminal['exit'],0);self.assertEqual(terminal['children'],[])
+
+
+    def boundary_case(self, case):
+        helper = self.repo/'tests/headless-owner.py'
+        source = self.root/'exact-owner.py'
+        source.write_bytes(helper.read_bytes())
+        helper.write_text(BOUNDARY_BOOTSTRAP.replace('SOURCE', repr(str(source))).replace('CASE', repr(case)))
+        self.assertEqual(self.call('start','--omarchy').returncode,0)
+        stopped = self.call('stop','--preserve-scratch')
+        result = self.repo/'build/guardian-result.json'
+        deadline = time.monotonic()+3
+        while not result.exists() and time.monotonic()<deadline:time.sleep(.01)
+        actual = json.loads(result.read_text())
+        self.receipt['boundary_result'] = actual
+        expected = {'fsync_after_receipt_read': ['directory_fsync'],
+                    'fsync_and_invalidation_fail': ['directory_fsync', 'invalidation_unlink'],
+                    'late_term': ['late_SIGTERM']}
+        self.assertEqual(actual['injected'], expected[case])
+        self.assertNotEqual(actual['return'],0)
+        self.assertEqual(stopped.returncode,2,stopped.stderr)
+        self.assertTrue(self.scratch.exists())
+        self.assertNotEqual(self.call('stop').returncode,0)
+        self.assertTrue(self.scratch.exists())
+
+    def test_concurrent_fsync_invalidation_refuses_cached_success(self):
+        self.boundary_case('fsync_after_receipt_read')
+
+    def test_fsync_and_invalidation_failure_refuses_stale_success(self):
+        self.boundary_case('fsync_and_invalidation_fail')
+
+    def test_late_term_after_custody_close_is_nonzero(self):
+        self.boundary_case('late_term')
 
 
 class FailureControls(unittest.TestCase):
