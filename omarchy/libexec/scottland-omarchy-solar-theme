@@ -149,7 +149,7 @@ IN_WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_ATTRIB
 
 def wait_for_transition_change(observed_digest=None):
     """Block until transition state or the theme mapping changes."""
-    watched_paths = (transition_file, config_file)
+    watched_paths = (transition_file, config_file, solar_file)
     fd = _libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
     if fd < 0:
         error = ctypes.get_errno()
@@ -202,7 +202,7 @@ def _transition_digest():
 
 def _watch_digest():
     digest = hashlib.sha256()
-    for path in (transition_file, config_file):
+    for path in (transition_file, config_file, solar_file):
         digest.update(os.fsencode(path))
         try:
             digest.update(path.read_bytes())

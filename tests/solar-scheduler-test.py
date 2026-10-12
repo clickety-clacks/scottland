@@ -244,6 +244,14 @@ adapter.wait_for_transition_change(observed_digest)
 config_thread.join(timeout=1)
 check("theme mapping save wakes adapter without polling", adapter.themes()["light"] == "Fixed")
 
+observed_digest = adapter._watch_digest()
+solar_thread = threading.Thread(target=lambda: (time.sleep(.03), core.CONFIG.write_text("[solar]\nenabled = false\n")),
+                                daemon=True)
+solar_thread.start()
+adapter.wait_for_transition_change(observed_digest)
+solar_thread.join(timeout=1)
+check("solar.ini save wakes adapter to observe disable", not adapter.solar_enabled())
+
 # Verify parser failures are caught by the long-lived watcher and that its
 # recovery wait is armed before the next session iteration.
 with patch.object(adapter, "run_once", side_effect=[
