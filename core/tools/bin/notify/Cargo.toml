@@ -1,0 +1,15 @@
+[package]
+name = "scottland-notify"
+description = "Notification tools for Scottland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-io = "=2.6.0"
+futures-lite = "=2.6.1"
+libc = "=0.2.190"
+scottland.workspace = true
+zbus.workspace = true
