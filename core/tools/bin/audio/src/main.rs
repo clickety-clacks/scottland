@@ -170,6 +170,22 @@ where
     }
 }
 
+fn finish_input_stream_moves<F>(
+    source_name: &str,
+    stream_ids: Vec<String>,
+    move_stream: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str, &str) -> Result<(), String>,
+{
+    move_streams(stream_ids, source_name, move_stream).map_err(|failures| {
+        format!(
+            "default input is {source_name}, but {}",
+            failures.join("; ")
+        )
+    })
+}
+
 fn input_set_default(source_name: &str) -> Result<(), String> {
     if source_name.is_empty() {
         return Err("usage: scottland audio input set <source-name>".into());
@@ -199,19 +215,13 @@ fn input_set_default(source_name: &str) -> Result<(), String> {
         .filter_map(|line| line.split_whitespace().next())
         .map(str::to_string)
         .collect();
-    move_streams(stream_ids, source_name, |id, target| {
+    finish_input_stream_moves(source_name, stream_ids, |id, target| {
         run_checked(
             "pactl",
             &["move-source-output", id, target],
             &format!("move recording stream {id} to {target}"),
         )
         .map(|_| ())
-    })
-    .map_err(|failures| {
-        format!(
-            "default input is {source_name}, but {}",
-            failures.join("; ")
-        )
     })?;
     Ok(())
 }
@@ -278,21 +288,31 @@ fn output_set_default(sink_name: &str) -> Result<(), OutputSetFailure> {
         "list playback streams",
     )
     .map_err(OutputSetFailure::after_confirmation)?;
-    move_streams(application_sink_inputs(&active), sink_name, |id, target| {
+    finish_output_stream_moves(sink_name, application_sink_inputs(&active), |id, target| {
         run_checked(
             "timeout",
             &["2", "pactl", "move-sink-input", id, target],
             &format!("move playback stream {id} to {target}"),
         )
         .map(|_| ())
-    })
-    .map_err(|failures| {
+    })?;
+    Ok(())
+}
+
+fn finish_output_stream_moves<F>(
+    sink_name: &str,
+    stream_ids: Vec<String>,
+    move_stream: F,
+) -> Result<(), OutputSetFailure>
+where
+    F: FnMut(&str, &str) -> Result<(), String>,
+{
+    move_streams(stream_ids, sink_name, move_stream).map_err(|failures| {
         OutputSetFailure::after_confirmation(format!(
             "default output is {sink_name}, but {}",
             failures.join("; ")
         ))
-    })?;
-    Ok(())
+    })
 }
 
 fn finish_output_switch(
@@ -1218,6 +1238,68 @@ mod tests {
                 "stream 11 could not move to headphones".into(),
                 "stream 13 could not move to headphones".into(),
             ])
+        );
+    }
+
+    #[test]
+    fn input_default_attempts_every_recording_stream_and_reports_each_failure() {
+        let mut attempted = Vec::new();
+        let result = finish_input_stream_moves(
+            "usb_mic",
+            vec!["11".into(), "12".into(), "13".into()],
+            |id, target| {
+                attempted.push((id.to_string(), target.to_string()));
+                if id == "12" {
+                    Ok(())
+                } else {
+                    Err(format!("recording stream {id} could not move to {target}"))
+                }
+            },
+        );
+
+        assert_eq!(
+            attempted,
+            vec![
+                ("11".to_string(), "usb_mic".to_string()),
+                ("12".to_string(), "usb_mic".to_string()),
+                ("13".to_string(), "usb_mic".to_string()),
+            ]
+        );
+        assert_eq!(
+            result,
+            Err("default input is usb_mic, but recording stream 11 could not move to usb_mic; recording stream 13 could not move to usb_mic".into())
+        );
+    }
+
+    #[test]
+    fn output_default_attempts_every_playback_stream_and_reports_each_failure() {
+        let mut attempted = Vec::new();
+        let result = finish_output_stream_moves(
+            "headphones",
+            vec!["41".into(), "42".into(), "43".into()],
+            |id, target| {
+                attempted.push((id.to_string(), target.to_string()));
+                if id == "42" {
+                    Ok(())
+                } else {
+                    Err(format!("playback stream {id} could not move to {target}"))
+                }
+            },
+        );
+
+        assert_eq!(
+            attempted,
+            vec![
+                ("41".to_string(), "headphones".to_string()),
+                ("42".to_string(), "headphones".to_string()),
+                ("43".to_string(), "headphones".to_string()),
+            ]
+        );
+        let failure = result.unwrap_err();
+        assert!(failure.default_confirmed);
+        assert_eq!(
+            failure.message,
+            "default output is headphones, but playback stream 41 could not move to headphones; playback stream 43 could not move to headphones"
         );
     }
 
