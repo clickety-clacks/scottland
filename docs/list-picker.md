@@ -38,11 +38,11 @@ appears in the selected output.
 
 | ID | Invariant | Status |
 |---|---|---|
-| LP1 | `scottland-list-picker` reads line-delimited entries from stdin and returns exactly one chosen entry plus LF on stdout with status 0; cancel returns no stdout and a nonzero status. | source implemented; plumbus verification pending |
-| LP2 | The picker narrows by case-insensitive substring while preserving input order; keyboard and pointer can choose an entry, and Escape or clicking outside cancels. | source implemented; plumbus verification pending |
-| LP3 | The optional prompt argument affects presentation only; it never appears in the selected output. | source implemented; plumbus verification pending |
-| LP4 | The picker uses Scottland's core palette, opens on the focused output, and runs in the existing Quickshell layer. | source implemented; plumbus verification pending |
-| LP5 | The command is part of the core installation and can be called by any distro and any Scottland tool without a distro-specific adapter. | source implemented; plumbus verification pending |
+| LP1 | `scottland-list-picker` reads line-delimited entries from stdin and returns exactly one chosen entry plus LF on stdout with status 0; cancel returns no stdout and a nonzero status. | source implemented; behavior verification pending |
+| LP2 | The picker narrows by case-insensitive substring while preserving input order; keyboard and pointer can choose an entry, and Escape or clicking outside cancels. | source implemented; behavior verification pending |
+| LP3 | The optional prompt argument affects presentation only; it never appears in the selected output. | source implemented; behavior verification pending |
+| LP4 | The picker uses Scottland's core palette, opens on the focused output, and runs in the existing Quickshell layer. | source implemented; behavior verification pending |
+| LP5 | The command is part of the core installation and can be called by any distro and any Scottland tool without a distro-specific adapter. | source implemented; behavior verification pending |
 
 This contract defines one single-choice list picker. It does not include icons,
 previews, multi-select, history, ranking, other picker modes, a new dependency,
