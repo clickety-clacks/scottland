@@ -28,6 +28,10 @@ a development plugin: reload prefers its plugin over packaged `/usr/lib` code. P
 user-owned dev links and config; make selection deliberate rather than assuming package
 installation changed the running session. Do not run `make dev-install` as an ordinary
 package upgrade: it builds and links a committed development snapshot into the user's session.
+If retiring an earlier development install, inspect its links and saved files first; the
+checkout's `make dev-uninstall` removes the dev selection and linked commands but also
+removes `~/.config/scottland/scottland.ini`. It does not uninstall Arch packages. Preserve
+personal config and use a fresh Scottland login to verify the packaged plugin afterward.
 
 ## Inspect before changing
 
