@@ -401,7 +401,7 @@ try:
     initial_edge = {name: option(name) for name in (
         "unfocused_edge_tone_light", "unfocused_edge_tone_dark", "unfocused_edge_strength")}
     initial_attention_family = string_option("attention_color_family")
-    check("GO22 defaults to the palette attention color", initial_attention_family == "theme")
+    check("GO22 defaults to Mike's cool attention color", initial_attention_family == "cool")
     palette_path = art / "palette.json"
     palette_path.write_text(json.dumps(dict(scheme="dark",background="#1c1d22",foreground="#e6e6e9",accent="#7aa2f7")))
     baseline_motion=motion_trial()
@@ -432,9 +432,9 @@ try:
     rect = snapshot()["attentionColor"]["warm"]
     click(*screen_point({"x":rect["x"]+rect["width"]/2,"y":rect["y"]+rect["height"]/2}))
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
-    check("GO22 Defaults previews Theme", string_option_reaches("attention_color_family", "theme"))
+    check("GO22 Defaults previews Cool", string_option_reaches("attention_color_family", "cool"))
     close_panel(panel,save=True,via_button=True)
-    check("GO22 Theme choice saves", "attention_color_family = theme" in layout.read_text())
+    check("GO22 Cool choice saves", "attention_color_family = cool" in layout.read_text())
     layout.unlink(missing_ok=True)  # Keep the existing suite's fresh-file Save/Cancel baseline.
     panel=open_panel()
     tab(0)
@@ -502,7 +502,7 @@ try:
             if snapshot()["goo"]["hint"]==label:break
             time.sleep(.025)
         check(label+" keyboard hint and automatic reveal",snapshot()["goo"]["hint"]==label)
-    key("KEY_RIGHT");check("GO23 Dye density previews live",option_reaches("goo_dye_density",1.01))
+    key("KEY_LEFT");check("GO23 Dye density previews live",option_reaches("goo_dye_density",1.49))
     shot("04-goo-keyboard")
     tab(0);tab(1)
     # A discrete wheel burst ends before the position samples; the coast must continue,
@@ -614,18 +614,18 @@ try:
 
     panel=open_panel();tab(2)
     check("Window mode tab selects",snapshot()["tab"]==2)
-    check("always-avoid setting defaults off", not bool_option("window_avoidance_always") and
-          snapshot()["motion"]["window_avoidance_always"] is False)
-    click(*reveal("alwaysAvoidance",160,21))
-    check("Window mode toggle switches always-avoid on live",
-          bool_option_reaches("window_avoidance_always",True) and
+    check("always-avoid setting defaults on", bool_option("window_avoidance_always") and
           snapshot()["motion"]["window_avoidance_always"] is True)
     click(*reveal("alwaysAvoidance",160,21))
-    check("Window mode toggle switches always-avoid off live", bool_option_reaches("window_avoidance_always",False))
+    check("Window mode toggle switches always-avoid off live",
+          bool_option_reaches("window_avoidance_always",False) and
+          snapshot()["motion"]["window_avoidance_always"] is False)
+    click(*reveal("alwaysAvoidance",160,21))
+    check("Window mode toggle switches always-avoid on live", bool_option_reaches("window_avoidance_always",True))
     playground = snapshot()["playground"]
     click(*reveal("playground",playground["width"]/2,192))
     key("KEY_RIGHT");time.sleep(.7)
-    check("playground arrow moves and stops at analytic distance",abs(snapshot()["playground"]["distance"]-335**2/(2*608))<.1 and snapshot()["playground"]["velocity"]==0)
+    check("playground arrow moves and stops at analytic distance",abs(snapshot()["playground"]["distance"]-924.76516**2/(2*3375.209086))<.1 and snapshot()["playground"]["velocity"]==0)
     # The velocity arrow edits its compositor option live; rail motion has no rebound control.
     click(*reveal("playground",200,325))
     check("impulse arrow edits live option",option_reaches("key_impulse",10000))
@@ -665,6 +665,7 @@ try:
     shot("06-window-coast")
     edit_coast("resize","resize_impulse","resize_friction")
     click(*reveal("alwaysAvoidance",160,21))
+    click(*reveal("alwaysAvoidance",160,21))
     check("always-avoid toggle previews on before Save", bool_option("window_avoidance_always"))
     saved_motion=dict(snapshot()["motion"])
     close_panel(panel,save=True,via_button=True)
@@ -692,21 +693,27 @@ try:
     click(*reveal("hintHoldTiming",180,60));key("KEY_RIGHT")
     check("hint hold timeline edits live timing",option("window_hold_delay")>500)
     click(*reveal("soloHotspot",180,60));key("KEY_RIGHT")
-    check("hold hotspot row edits the live hotspot",option_reaches_change("solo_audition_hotspot",50))
+    check("hold hotspot row edits the live hotspot",option_reaches_change("solo_audition_hotspot",28))
     shot("06a-window-timelines")
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);time.sleep(.2)
-    check("Window Defaults restores original feel",option("key_impulse")==335 and option("key_friction")==608
-          and option("resize_impulse")==335 and option("resize_friction")==608
-          and not bool_option("window_avoidance_always") and option("solo_audition_hotspot")==50)
+    check("Window Defaults restores shipped feel",abs(option("key_impulse")-924.76516)<.01 and
+          abs(option("key_friction")-3375.209086)<.01 and
+          abs(option("resize_impulse")-1928.766078)<.01 and
+          abs(option("resize_friction")-8360.332425)<.01 and
+          bool_option("window_avoidance_always") and option("solo_audition_hotspot")==28 and
+          abs(option("window_mode_opacity_unfocused")-.8)<.001)
     close_panel(panel,via_button=True)
     check("Cancel restores saved motion after Defaults",all(abs(option(k)-saved_motion[k])<.01 for k in
           ("key_impulse","key_friction","resize_impulse","resize_friction")))
     # Reset via the actual Defaults action and Save before the border regression checks.
     panel=open_panel();tab(2);click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);close_panel(panel,save=True)
-    check("Window Defaults saves always-avoid off", not bool_option("window_avoidance_always") and
-          "window_avoidance_always = false" in layout.read_text())
+    check("Window Defaults saves always-avoid on", bool_option("window_avoidance_always") and
+          "window_avoidance_always = true" in layout.read_text())
+    check("Window Defaults Save persists and reads back approved unfocused opacity",
+          "window_mode_opacity_unfocused = 0.8" in layout.read_text() and
+          abs(option("window_mode_opacity_unfocused")-.8)<.001)
     check("Save drops the removed solo audition pause from an older layout.ini and keeps the hotspot",
-          "solo_audition_delay" not in layout.read_text() and "solo_audition_hotspot = 50" in layout.read_text())
+          "solo_audition_delay" not in layout.read_text() and "solo_audition_hotspot = 28" in layout.read_text())
     layout.unlink()
     # Theme applies to every control, not only hints.
     panel=open_panel()
@@ -1092,10 +1099,10 @@ try:
     choose_zone_scope("this")
     click(panel_x + 80, panel_y + snapshot()["panel"]["height"] - 56)  # Defaults in This screen scope.
     default_preview = wait_zone_output(target_output["name"], lambda row: row["own"] and
-                                       abs(row["center_width"] - 33.333) < .01)
+                                       abs(row["center_width"] - 30.0) < .01)
     check("S24 Defaults in This screen creates shipped own sizes without changing globals",
-          default_preview is not None and abs(default_preview["center_width"] - 33.333) < .01
-          and abs(default_preview["rail_width"] - 2.0) < .01
+          default_preview is not None and abs(default_preview["center_width"] - 30.0) < .01
+          and abs(default_preview["rail_width"] - 1.9) < .01
           and abs(option("center_width") - zone_baseline["center_width"]) < .01)
     close_panel(panel)
     check("S24 Cancel removes a previewed default override", json.loads(string_option("screen_zones")) == [dormant_zones])
