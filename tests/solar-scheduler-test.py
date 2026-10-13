@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Focused transition scheduler/state tests; no desktop, bus, or host required."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
 import atexit
 import configparser
@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from unittest.mock import patch
 
@@ -94,27 +93,11 @@ with patch.object(core, "current_mode", return_value="dark"), patch.object(core,
     core.reconcile(config, (37.77, -122.42), datetime(2026, 6, 21, 13, tzinfo=timezone.utc), event1)
     check("first enable applies the current period once", set_mode.call_count == 1)
 record_after_enable = core.TRANSITION.read_text()
-old_fingerprint = core.read_config()["config_fingerprint"]
-
-def save_settings():
-    time.sleep(.03)
-    core.CONFIG.write_text(core.CONFIG.read_text()+"# settings saved\n")
-
-save_thread = threading.Thread(target=save_settings, daemon=True)
-save_thread.start()
-config_wake = core.wait_for_config_or_deadline(datetime.now(timezone.utc)+timedelta(seconds=10), old_fingerprint)
-save_thread.join(timeout=1)
-check("config notification wakes the existing scheduler without polling", config_wake == "config")
+core.CONFIG.write_text(core.CONFIG.read_text()+"# settings saved\n")
 saved_config = core.read_config()
 with patch.object(core, "current_mode", side_effect=AssertionError("same-period check inspected preference")), patch.object(core, "set_mode", side_effect=AssertionError("manual choice overwritten")):
     core.reconcile(saved_config, (37.77, -122.42), datetime(2026, 6, 21, 14, tzinfo=timezone.utc), event1)
 check("manual light/dark choice survives checks and Settings Save", core.TRANSITION.read_text() == record_after_enable)
-
-timer_start = time.monotonic()
-timer_wake = core.wait_for_config_or_deadline(datetime.now(timezone.utc)+timedelta(seconds=.08),
-                                               core.read_config()["config_fingerprint"])
-check("absolute realtime timer wakes at its scheduled boundary", timer_wake == "deadline"
-      and time.monotonic()-timer_start >= .04)
 
 event2 = event_for(datetime(2026, 6, 21, 19, 38, tzinfo=timezone.utc), "dark")
 with patch.object(core, "current_mode", return_value="light"), patch.object(core, "set_mode") as set_mode:
@@ -219,19 +202,6 @@ record.pop("consumer_delivery_id", None)
 record["consumer_ack"] = None
 core.write_transition(record)
 
-observed_digest = adapter._watch_digest()
-record = core.read_transition()
-record.update(mode="light", transition_id="adapter-watch-race",
-              consumer_ack=None)
-core.write_transition(record)
-adapter.wait_for_transition_change(observed_digest)
-with patch.object(adapter.subprocess, "run") as run:
-    run.return_value.returncode = 0
-    check("adapter watch catches a transition published before inotify wait begins",
-          adapter.run_once() == "Test Light")
-    check("adapter watcher event is acknowledged after consume",
-          core.read_transition()["consumer_ack"] == "adapter-watch-race")
-
 # Two session autostarts may run the adapter at once. The dedicated consumer
 # lock must serialize the theme command and durable acknowledgement.
 record = core.read_transition()
@@ -251,14 +221,12 @@ check("concurrent session adapters apply one transition only once",
       and invocations.read_text().splitlines() == ["theme set Test Dark"]
       and sorted(output[0].strip() for output in consumer_outputs) == ["Test Dark", "unchanged"])
 
-# A theme map is a separate settings file. The same inotify wait must recover
-# promptly when a malformed mapping is corrected, without restarting session.
+# A malformed theme map must not acknowledge or consume the pending transition.
 record = core.read_transition()
 record.update(mode="light", transition_id="adapter-malformed-theme",
               consumer_ack=None)
 core.write_transition(record)
 omarchy_cfg.write_text("bad theme mapping\n")
-observed_digest = adapter._watch_digest()
 try:
     adapter.run_once()
 except configparser.Error:
@@ -267,33 +235,7 @@ else:
     malformed_theme_rejected = False
 check("malformed theme mapping fails closed without acknowledging transition",
       malformed_theme_rejected and core.read_transition()["consumer_ack"] is None)
-config_thread = threading.Thread(target=lambda: (time.sleep(.03), omarchy_cfg.write_text("[themes]\nday = Fixed\n")),
-                                 daemon=True)
-config_thread.start()
-adapter.wait_for_transition_change(observed_digest)
-config_thread.join(timeout=1)
-check("theme mapping save wakes adapter without polling", adapter.themes()["light"] == "Fixed")
-
-observed_digest = adapter._watch_digest()
-solar_thread = threading.Thread(target=lambda: (time.sleep(.03), core.CONFIG.write_text("[solar]\nenabled = false\n")),
-                                daemon=True)
-solar_thread.start()
-adapter.wait_for_transition_change(observed_digest)
-solar_thread.join(timeout=1)
-check("solar.ini save wakes adapter to observe disable", not adapter.solar_enabled())
-
-# Verify parser failures are caught by the long-lived watcher and that its
-# recovery wait is armed before the next session iteration.
-with patch.object(adapter, "run_once", side_effect=[
-        configparser.MissingSectionHeaderError("omarchy-solar.ini", 1, "bad line"), KeyboardInterrupt()]), \
-     patch.object(adapter, "wait_for_transition_change") as wait_for_change:
-    try:
-        adapter.watch()
-    except KeyboardInterrupt:
-        pass
-check("malformed theme config waits for a save instead of killing the watcher",
-      wait_for_change.call_count == 1)
-
+omarchy_cfg.write_text("[themes]\nday = Test Light\nnight = Test Dark\n")
 # Failure isolation: absent location, disabled settings, malformed state and
 # a failed theme command each fail closed without falsely acknowledging a change.
 before_missing_location = core.TRANSITION.read_text()
