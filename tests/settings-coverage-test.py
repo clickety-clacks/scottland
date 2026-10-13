@@ -27,8 +27,8 @@ assert edge_rows == edge_options, (
     f"Unfocused edge Settings mismatch: missing {edge_options - edge_rows}; "
     f"unknown {edge_rows - edge_options}")
 assert options["attention_color_family"].attrib["type"] == "string"
-assert options["attention_color_family"].findtext("default") == "theme"
-assert options["goo_dye_density"].findtext("default") == "1"
+assert options["attention_color_family"].findtext("default") == "cool"
+assert options["goo_dye_density"].findtext("default") == "1.5"
 assert options["goo_dye_density"].findtext("min") == "0"
 assert options["goo_dye_density"].findtext("max") == "1.5"
 ctl = (root / "core/libexec/scottland-ctl").read_text()
@@ -49,7 +49,7 @@ assert inertia <= motion_rows | motion_special, f"Missing inertial Settings rows
 assert "key_restitution" not in options
 assert "move_friction_curve" not in options and "resize_friction_curve" not in options
 
-assert options["window_mode_tint"].findtext("default") == "7"
+assert options["window_mode_tint"].findtext("default") == "17.5"
 assert options["window_mode_tint"].findtext("min") == "0"
 assert options["window_mode_tint"].findtext("max") == "100"
 assert '"window_mode_tint"' in (root / "core/libexec/scottland-ctl").read_text()

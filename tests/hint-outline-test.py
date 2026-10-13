@@ -773,7 +773,7 @@ try:
     q = snapshot()
     panel_x = (1280 - q["panel"]["width"]) / 2
     panel_y = 720 - max(24, round(720 * .04)) - q["panel"]["height"]
-    check("default strength is 7%", abs(q["motion"]["window_mode_tint"] - 7) < .01 and option("window_mode_tint") == 7)
+    check("outline fixture strength is 7%", abs(q["motion"]["window_mode_tint"] - 7) < .01 and option("window_mode_tint") == 7)
     for _ in range(3):
         click(panel_x + 36 + 2.5 * (q["panel"]["width"] - 72) / 6, panel_y + 100)
         if snapshot()["tab"] == 2:
@@ -869,7 +869,7 @@ try:
     # scottland-ctl takes both separate settings across 0-100%; Wayfire bounds a stored value by
     # the option's metadata range, so a tint above the old 30% maximum must read back unclamped.
     ctl = [str(repo / "core/libexec/scottland-ctl"), "set"]
-    for name, values, default in (("window_mode_tint", (0, 45, 100), 7), ("hint_background_opacity", (0, 100), 21)):
+    for name, values, default in (("window_mode_tint", (0, 45, 100), 17.5), ("hint_background_opacity", (0, 100), 80)):
         for value in values:
             subprocess.run(ctl + [name, str(value)], check=True, timeout=10, stdout=log, stderr=log)
             check(f"scottland-ctl sets {name} to {value}%", option_reaches(name, value, tolerance=.01))
