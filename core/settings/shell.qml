@@ -1274,7 +1274,9 @@ ShellRoot {
             text: "Defaults"
             onClicked: {
               if (root.tab === 2) { root.motionValues=Object.assign({},root.motionDefaults);
-                root.opacityValues=Object.assign({},root.opacityValues,{window_mode_opacity_focused:1,window_mode_opacity_unfocused:1});return }
+                root.opacityValues=Object.assign({},root.opacityValues,{
+                  window_mode_opacity_focused:root.opacityDefaults.window_mode_opacity_focused,
+                  window_mode_opacity_unfocused:root.opacityDefaults.window_mode_opacity_unfocused});return }
               if (root.tab === 3) {root.opacityValues=Object.assign({},root.opacityDefaults);return}
               if (root.tab === 4) {root.widgetValues=Object.assign({},root.widgetDefaults);return}
               if (root.tab === 5) {root.solarValues=Object.assign({},root.solarDefaults);

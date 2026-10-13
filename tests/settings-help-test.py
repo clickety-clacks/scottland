@@ -700,7 +700,8 @@ try:
           abs(option("key_friction")-3375.209086)<.01 and
           abs(option("resize_impulse")-1928.766078)<.01 and
           abs(option("resize_friction")-8360.332425)<.01 and
-          bool_option("window_avoidance_always") and option("solo_audition_hotspot")==28)
+          bool_option("window_avoidance_always") and option("solo_audition_hotspot")==28 and
+          abs(option("window_mode_opacity_unfocused")-.8)<.001)
     close_panel(panel,via_button=True)
     check("Cancel restores saved motion after Defaults",all(abs(option(k)-saved_motion[k])<.01 for k in
           ("key_impulse","key_friction","resize_impulse","resize_friction")))
@@ -708,6 +709,9 @@ try:
     panel=open_panel();tab(2);click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56);close_panel(panel,save=True)
     check("Window Defaults saves always-avoid on", bool_option("window_avoidance_always") and
           "window_avoidance_always = true" in layout.read_text())
+    check("Window Defaults Save persists and reads back approved unfocused opacity",
+          "window_mode_opacity_unfocused = 0.8" in layout.read_text() and
+          abs(option("window_mode_opacity_unfocused")-.8)<.001)
     check("Save drops the removed solo audition pause from an older layout.ini and keeps the hotspot",
           "solo_audition_delay" not in layout.read_text() and "solo_audition_hotspot = 28" in layout.read_text())
     layout.unlink()
