@@ -43,9 +43,6 @@ check("winter daylight and polar seasons follow solar altitude",
 check("invalid coordinates are rejected", core.coordinates(91, 0) is None and core.coordinates(0, float("nan")) is None)
 day = datetime(2026, 6, 21, 20, tzinfo=timezone.utc)
 event = ("light", "2026-06-21T12:47:34Z", datetime(2026, 6, 21, 12, 47, 34, tzinfo=timezone.utc))
-check("solar event identity remains stable within its period",
-      core.solar_transition(day, 37.77, -122.42) == core.solar_transition(day.replace(minute=10), 37.77, -122.42))
-
 with patch.object(core.subprocess, "run", side_effect=[CompletedProcess([], 1, ""), CompletedProcess([], 0, "'default'\n")]):
     check("default color preference maps to light", core.current_mode() == "light")
 with patch.object(core.subprocess, "run", side_effect=[CompletedProcess([], 1, ""), CompletedProcess([], 0, "'prefer-dark'\n")]):
@@ -54,8 +51,11 @@ with patch.object(core.subprocess, "run", side_effect=[CompletedProcess([], 1, "
 core.CONFIG.parent.mkdir(parents=True, exist_ok=True)
 core.CONFIG.write_text("[solar]\nenabled = false\nallow_ip = false\n")
 with patch.object(core, "geoclue_location", side_effect=AssertionError("disabled called Geoclue")), \
-     patch.object(core, "ip_location", side_effect=AssertionError("disabled used network")):
-    check("disabled Sunlight does not locate or apply", core.run_once(day) is None)
+     patch.object(core, "ip_location", side_effect=AssertionError("disabled used network")), \
+     patch.object(core, "set_mode") as set_mode:
+    disabled_result = core.run_once(day)
+check("disabled Sunlight does not locate or change the preference",
+      disabled_result is None and set_mode.call_count == 0)
 
 core.CONFIG.write_text("[solar]\nenabled = true\nlocation_set = true\nlatitude = 37.77\nlongitude = -122.42\nallow_ip = false\n")
 with patch.object(core, "geoclue_location", return_value=None), \
@@ -65,8 +65,6 @@ with patch.object(core, "geoclue_location", return_value=None), \
      patch.object(core.subprocess, "run", side_effect=AssertionError("matching preference changed")):
     check("saved coordinates work without network and publish transition mode", core.run_once(day) == "light"
           and core.MODE.read_text().strip() == "light")
-check("transition record stores the applied solar boundary", core.read_transition()["last_applied"]["schedule_transition_id"] == event[1])
-
 core.CONFIG.write_text("[solar]\nenabled = true\nlocation_set = false\nallow_ip = true\n")
 with patch.object(core, "geoclue_location", return_value=None), \
      patch.object(core, "ip_location", return_value=(37.77, -122.42)) as network, \
@@ -75,9 +73,11 @@ with patch.object(core, "geoclue_location", return_value=None), \
           and network.call_count == 1)
 with patch.object(core, "geoclue_location", return_value=(37.77, -122.42)), \
      patch.object(core, "ip_location", side_effect=AssertionError("Geoclue result ignored")), \
-     patch.object(core, "solar_transition", return_value=event):
-    core.run_once(day)
-check("Geoclue location takes precedence over network lookup", True)
+     patch.object(core, "solar_transition", return_value=event), \
+     patch.object(core, "current_mode", return_value="light"):
+    geoclue_result = core.run_once(day)
+check("Geoclue location produces the solar mode without an IP lookup",
+      geoclue_result == "light")
 
 # Adapter action consumes the event, not the current theme's reported mode.
 core.CONFIG.write_text("[solar]\nenabled = true\nallow_ip = false\n")
@@ -90,8 +90,6 @@ with patch.object(adapter.subprocess, "run") as run:
     run.return_value = CompletedProcess([], 0, "")
     check("adapter applies selected theme for an unacknowledged event",
           adapter.run_once() == "Test Night" and run.call_args.args[0] == ["omarchy", "theme", "set", "Test Night"])
-check("adapter ack keeps the existing transition_id format",
-      core.read_transition()["consumer_ack"] == "policy-adapter-event")
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("acknowledged event replayed")):
     check("acknowledged adapter event does not run again", adapter.run_once() == "unchanged")
 

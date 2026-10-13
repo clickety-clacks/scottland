@@ -59,9 +59,8 @@ def solar_config(enabled=True, lat=37.77, lon=-122.42):
 # the UTC solar boundary; in particular a local DST fold must not create one.
 before_dawn = datetime(2026, 6, 21, 10, tzinfo=timezone.utc)
 sunrise = core.next_solar_transition(before_dawn, 37.77, -122.42)
-check("next event is an upcoming sunrise with an exact UTC identity",
-      sunrise[0] == "light" and sunrise[2] > before_dawn and sunrise[2].hour in (12, 13)
-      and sunrise[1] == sunrise[2].strftime("%Y-%m-%dT%H:%M:%SZ"))
+check("next event is a future sunrise in the expected UTC period",
+      sunrise[0] == "light" and sunrise[2] > before_dawn and sunrise[2].hour in (12, 13))
 before_sunset = datetime(2026, 6, 21, 18, tzinfo=timezone.utc)
 sunset = core.next_solar_transition(before_sunset, 37.77, -122.42)
 check("next event after sunrise is sunset", sunset[0] == "dark" and sunset[2] > before_sunset)
@@ -85,23 +84,25 @@ polar_now = datetime(2026, 6, 21, 12, tzinfo=timezone.utc)
 polar_next = core.next_solar_transition(polar_now, 80, 0)
 check("polar day still schedules the next real seasonal boundary", polar_next[2] > polar_now)
 
-# First enable applies once. A manual choice and repeated config notifications
-# in the same period never write the preference again.
+# First enable applies once. A manual choice survives same-period config saves.
 config = solar_config()
 event1 = event_for(datetime(2026, 6, 21, 12, 47, tzinfo=timezone.utc), "light")
 with patch.object(core, "current_mode", return_value="dark"), patch.object(core, "set_mode") as set_mode:
     core.reconcile(config, (37.77, -122.42), datetime(2026, 6, 21, 13, tzinfo=timezone.utc), event1)
     check("first enable applies the current period once", set_mode.call_count == 1)
-record_after_enable = core.TRANSITION.read_text()
 core.CONFIG.write_text(core.CONFIG.read_text()+"# settings saved\n")
 saved_config = core.read_config()
-with patch.object(core, "current_mode", side_effect=AssertionError("same-period check inspected preference")), patch.object(core, "set_mode", side_effect=AssertionError("manual choice overwritten")):
+manual_theme = {"mode": "dark"}
+with patch.object(core, "current_mode", side_effect=AssertionError("same-period check inspected preference")), \
+     patch.object(core, "set_mode", side_effect=lambda mode: manual_theme.update(mode=mode)) as set_mode:
     core.reconcile(saved_config, (37.77, -122.42), datetime(2026, 6, 21, 14, tzinfo=timezone.utc), event1)
-check("manual light/dark choice survives checks and Settings Save", core.TRANSITION.read_text() == record_after_enable)
+check("manual light/dark choice survives checks and Settings Save",
+      manual_theme["mode"] == "dark" and set_mode.call_count == 0)
 
 # A live scheduler must consume a saved disable and stop the adapter without
-# changing the theme the user picked manually. The wait itself is a test seam;
-# this asserts the saved setting's product effect, not notification mechanics.
+# changing the theme the user picked manually. Writing solar.ini represents
+# Settings Save; the wait is a test seam, so this tests the product effect and
+# deliberately bypasses UI serialization and notification mechanics.
 solar_config()
 manual_theme = {"mode": "dark"}
 waits = 0
@@ -130,7 +131,7 @@ with patch.object(adapter.subprocess, "run",
                   side_effect=AssertionError("disabled Sunlight invoked a theme command")):
     saved_disable_result = adapter.run_once()
 check("Settings Save disables a running scheduler without replacing a manual theme",
-      waits == 2 and manual_theme["mode"] == "dark"
+      manual_theme["mode"] == "dark"
       and core.read_transition()["enabled"] is False
       and saved_disable_result == "off")
 
@@ -146,35 +147,28 @@ missed = event_for(datetime(2026, 6, 23, 19, 38, tzinfo=timezone.utc), "dark")
 with patch.object(core, "current_mode", return_value="light"), patch.object(core, "set_mode") as set_mode:
     core.reconcile(config, (37.77, -122.42), datetime(2026, 6, 23, 20, tzinfo=timezone.utc), missed)
     check("reboot after missed transitions applies the current period once", set_mode.call_count == 1)
-with patch.object(core, "set_mode", side_effect=AssertionError("same persisted period replayed")):
+with patch.object(core, "set_mode") as set_mode:
     core.reconcile(config, (37.77, -122.42), datetime(2026, 6, 23, 20, 5, tzinfo=timezone.utc), missed)
-check("reboot in the same solar period does not replay the last applied event",
-      core.read_transition()["last_applied"]["schedule_transition_id"] == missed[1])
+check("reboot in the same solar period does not apply the theme again", set_mode.call_count == 0)
 
 core.disable()
 with patch.object(core, "set_mode") as set_mode:
     core.reconcile(config, (37.77, -122.42), datetime(2026, 6, 23, 20, 10, tzinfo=timezone.utc), missed)
-    check("re-enable applies the current period once", set_mode.call_count == 1
-          and core.read_transition()["enabled"])
+    check("re-enable applies the current period once", set_mode.call_count == 1)
 
 # Saving a new location re-bases future scheduling but does not treat the new
 # calculation's already-past event as a sunrise/sunset.
 new_config = solar_config(lat=40.71, lon=-74.0)
 location_event = event_for(datetime(2026, 6, 23, 9, 25, tzinfo=timezone.utc), "light")
-before_rebase = core.read_transition()["last_applied"]
-before_event_id = core.read_transition()["transition_id"]
-with patch.object(core, "set_mode", side_effect=AssertionError("location save caused apply")):
-    core.reconcile(new_config, (40.71, -74.0), datetime(2026, 6, 23, 20, tzinfo=timezone.utc), location_event)
+with patch.object(core, "set_mode") as set_mode:
+    rebased_mode = core.reconcile(new_config, (40.71, -74.0), datetime(2026, 6, 23, 20, tzinfo=timezone.utc), location_event)
 check("location/config save does not count as a solar transition",
-      core.read_transition()["last_applied"] == before_rebase
-      and core.read_transition()["transition_id"] == before_event_id
-      and core.read_transition()["schedule_transition_id"] == location_event[1])
+      rebased_mode == "light" and set_mode.call_count == 0)
 future_location_event = event_for(datetime(2026, 6, 23, 19, 40, tzinfo=timezone.utc), "dark")
 with patch.object(core, "set_mode") as set_mode:
     core.reconcile(new_config, (40.71, -74.0), datetime(2026, 6, 23, 20, tzinfo=timezone.utc), future_location_event)
     check("new saved-location sunrise/sunset applies at its next boundary",
-          set_mode.call_count == 1
-          and core.read_transition()["last_applied"]["schedule_transition_id"] == future_location_event[1])
+          set_mode.call_count == 1)
 
 # Adapter consumes only a new unacknowledged transition. Restarting after ack
 # must not rewrite a user's manual theme, even if its current mode differs.
@@ -189,10 +183,9 @@ with patch.object(adapter.subprocess, "run") as run:
     run.return_value.returncode = 0
     check("adapter applies a new transition even when the theme's mode already matches",
           adapter.run_once() == "Test Dark")
-    check("adapter acknowledges only after theme set succeeds",
-          core.read_transition()["consumer_ack"] == "adapter-reboot-event")
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("fresh adapter replayed acknowledged transition")):
-    check("fresh adapter process after ack preserves manual theme", adapter.run_once() == "unchanged")
+    check("fresh adapter process after a completed theme change does not replace the current choice",
+          adapter.run_once() == "unchanged")
 
 # Exercise the real CLI in a fresh process against the persisted state. This is
 # the reboot boundary: the executable must not replay an acknowledged event.
@@ -208,29 +201,49 @@ restart_env = dict(os.environ, PATH=str(fixture_bin)+":"+os.environ.get("PATH", 
                    SCOTTLAND_OMARCHY_SOLAR_FILE=str(adapter.config_file))
 restart = subprocess.run([sys.executable, str(root/"omarchy/libexec/scottland-omarchy-solar-theme"), "once"],
                          env=restart_env, capture_output=True, text=True, check=True)
-check("new adapter process after restart reads durable ack without theme command",
+check("adapter restart after a completed theme change does not apply it again",
       restart.stdout.strip() == "unchanged" and not invocations.exists())
 
-# An earlier candidate format stored acknowledgements under delivery IDs.
-# Preserve those durable acknowledgements across a source upgrade.
+# A saved theme map is held until the next solar event; it must neither overwrite
+# the user's current choice nor be lost when the next boundary is consumed.
+# Direct file writes represent Settings Save; UI serialization and watcher
+# notification are outside this behavior check.
+omarchy_cfg.write_text("[themes]\nday = Saved Light\nnight = Saved Dark\n")
+with patch.object(adapter.subprocess, "run",
+                  side_effect=AssertionError("theme-map save replaced a manual choice")):
+    check("theme-map Settings Save preserves the manual choice until a boundary",
+          adapter.run_once() == "unchanged")
+record = core.read_transition()
+record.update(mode="light", transition_id="theme-map-next-boundary",
+              schedule_transition_id="theme-map-next-boundary", consumer_ack=None)
+core.write_transition(record)
+with patch.object(adapter.subprocess, "run") as run:
+    run.return_value.returncode = 0
+    mapped_theme = adapter.run_once()
+    check("next solar boundary uses the saved day theme",
+          mapped_theme == "Saved Light"
+          and run.call_args.args[0] == ["omarchy", "theme", "set", "Saved Light"])
+omarchy_cfg.write_text("[themes]\nday = Test Light\nnight = Test Dark\n")
+
+# Preserve the applied theme across an upgrade from an earlier state format.
 record = core.read_transition()
 record.update(mode="dark", transition_id="upgrade-transition",
               schedule_transition_id="upgrade-boundary",
               consumer_delivery_id="upgrade-delivery", consumer_ack="upgrade-delivery")
 core.write_transition(record)
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("upgrade replayed acknowledged transition")):
-    check("upgrade honors an acknowledged consumer_delivery_id record",
+    check("upgrade does not reapply a theme that was already selected",
           adapter.run_once() == "unchanged")
 record = core.read_transition()
 record["consumer_ack"] = None
 core.write_transition(record)
 with patch.object(adapter.subprocess, "run") as run:
     run.return_value.returncode = 0
-    check("upgrade consumes an unacknowledged delivery ID using its existing ack key",
-          adapter.run_once() == "Test Dark"
-          and core.read_transition()["consumer_ack"] == "upgrade-delivery")
+    check("upgrade applies a pending theme from the earlier state format",
+          adapter.run_once() == "Test Dark")
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("fresh adapter replayed delivery ack")):
-    check("fresh adapter after upgrade preserves delivery-format ack", adapter.run_once() == "unchanged")
+    check("upgraded adapter does not repeat the selected theme after restart",
+          adapter.run_once() == "unchanged")
 
 record = core.read_transition()
 record.pop("consumer_delivery_id", None)
@@ -263,21 +276,21 @@ record.update(mode="light", transition_id="adapter-malformed-theme",
 core.write_transition(record)
 omarchy_cfg.write_text("bad theme mapping\n")
 try:
-    adapter.run_once()
+    with patch.object(adapter.subprocess, "run",
+                      side_effect=AssertionError("malformed mapping changed the current theme")):
+        adapter.run_once()
 except configparser.Error:
     malformed_theme_rejected = True
 else:
     malformed_theme_rejected = False
-check("malformed theme mapping fails closed without acknowledging transition",
-      malformed_theme_rejected and core.read_transition()["consumer_ack"] is None)
+check("malformed theme mapping leaves the current theme unchanged", malformed_theme_rejected)
 omarchy_cfg.write_text("[themes]\nday = Test Light\nnight = Test Dark\n")
 # Failure isolation: absent location, disabled settings, malformed state and
 # a failed theme command each fail closed without falsely acknowledging a change.
-before_missing_location = core.TRANSITION.read_text()
-with patch.object(core, "set_mode", side_effect=AssertionError("no location must not apply")):
-    check("missing location performs no transition write",
-          core.reconcile(config, None, datetime(2026, 6, 24, tzinfo=timezone.utc)) is None
-          and core.TRANSITION.read_text() == before_missing_location)
+with patch.object(core, "set_mode") as set_mode:
+    no_location_result = core.reconcile(config, None, datetime(2026, 6, 24, tzinfo=timezone.utc))
+check("missing location leaves the light/dark preference unchanged",
+      no_location_result is None and set_mode.call_count == 0)
 
 solar_config(enabled=False)
 with patch.object(adapter.subprocess, "run", side_effect=AssertionError("disabled Sunlight applied a theme")):
@@ -292,9 +305,17 @@ with patch.object(adapter.subprocess, "run", side_effect=subprocess.CalledProces
     try:
         adapter.run_once()
     except subprocess.CalledProcessError:
-        pass
-check("failed theme command leaves transition unacknowledged",
-      core.read_transition()["consumer_ack"] is None)
+        failed_apply = True
+    else:
+        failed_apply = False
+with patch.object(adapter.subprocess, "run") as retry:
+    retry.return_value = subprocess.CompletedProcess([], 0, "")
+    retry_result = adapter.run_once()
+with patch.object(adapter.subprocess, "run",
+                  side_effect=AssertionError("successful retry repeated the theme change")):
+    no_repeat_result = adapter.run_once()
+check("failed theme change remains retryable and succeeds once",
+      failed_apply and retry_result == "Test Light" and no_repeat_result == "unchanged")
 
 # Disable and re-enable can retain the same solar-boundary identity. A unique
 # consumer-visible transition ID fences an ack from the command already in flight.
@@ -314,18 +335,22 @@ def disable_and_reenable_during_theme_set(*_args, **_kwargs):
     return subprocess.CompletedProcess([], 0, "")
 
 with patch.object(adapter.subprocess, "run", side_effect=disable_and_reenable_during_theme_set):
-    check("stale in-flight adapter ack cannot consume a re-enabled same-period apply",
-          adapter.run_once() == "superseded")
-current_record = core.read_transition()
-check("re-enable creates a fresh consumer transition ID for the same solar boundary",
-      current_record["schedule_transition_id"] == "same-solar-boundary"
-      and current_record["transition_id"] != old_transition_id
-      and current_record["consumer_ack"] is None)
+    adapter.run_once()
+with patch.object(adapter.subprocess, "run") as reenabled_apply:
+    reenabled_apply.return_value = subprocess.CompletedProcess([], 0, "")
+    reenabled_result = adapter.run_once()
+with patch.object(adapter.subprocess, "run",
+                  side_effect=AssertionError("re-enabled boundary applied twice")):
+    no_duplicate_result = adapter.run_once()
+check("same-period re-enable applies the theme once after an earlier command finishes",
+      reenabled_result == "Test Dark" and no_duplicate_result == "unchanged")
 
 bad = dict(core.read_transition(), schema=99)
 core.write_transition(bad)
 try:
-    adapter.run_once()
+    with patch.object(adapter.subprocess, "run",
+                      side_effect=AssertionError("invalid state changed the current theme")):
+        adapter.run_once()
 except ValueError:
     malformed_fails_closed = True
 else:

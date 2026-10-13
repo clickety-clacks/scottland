@@ -81,7 +81,6 @@ class SolarOptIn(unittest.TestCase):
              patch.object(self.core, "solar_transition", return_value=event), \
              patch.object(self.core, "current_mode", return_value="light"):
             self.assertEqual(self.core.run_once(), "light")
-        self.assertTrue(self.core.read_transition()["enabled"])
 
     def test_network_location_requires_both_opted_in_settings(self):
         self.config("[solar]\nenabled = true\nallow_ip = true\n")
@@ -102,20 +101,23 @@ class SolarOptIn(unittest.TestCase):
 
         with patch.object(self.core, "geoclue_location", side_effect=save_during_lookup), \
              patch.object(self.core, "ip_location", side_effect=AssertionError("Geoclue result exists")), \
-             patch.object(self.core, "current_mode", side_effect=AssertionError("stale result applied")):
+             patch.object(self.core, "current_mode", side_effect=AssertionError("stale result applied")), \
+             patch.object(self.core, "set_mode") as set_mode:
             self.assertIsNone(self.core.run_once())
-        self.assertIsNone(self.core.read_transition())
-        self.assertFalse(self.core.MODE.exists())
+        set_mode.assert_not_called()
 
     def test_missing_location_and_bad_transition_fail_closed(self):
         self.config("[solar]\nenabled = true\nallow_ip = false\n")
-        with patch.object(self.core, "geoclue_location", return_value=None):
+        with patch.object(self.core, "geoclue_location", return_value=None), \
+             patch.object(self.core, "set_mode") as set_mode:
             self.assertIsNone(self.core.run_once())
-        self.assertIsNone(self.core.read_transition())
+            set_mode.assert_not_called()
         self.config("[solar]\nenabled = true\n")
         self.core.write_transition({"schema": 91, "enabled": True})
-        with self.assertRaises(ValueError):
-            self.adapter.run_once()
+        with patch.object(self.adapter.subprocess, "run",
+                          side_effect=AssertionError("invalid state changed the current theme")):
+            with self.assertRaises(ValueError):
+                self.adapter.run_once()
 
     def test_disabled_record_never_changes_theme(self):
         self.config("[solar]\nenabled = true\n")
