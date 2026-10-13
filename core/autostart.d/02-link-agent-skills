@@ -10,6 +10,28 @@ for harness in "$HOME/.claude" "$HOME/.codex" "$HOME/.agents" "$HOME/.pi/agent" 
   for skill in "$src"/*/; do
     [ -f "$skill/SKILL.md" ] || continue
     name=$(basename "$skill")
-    ln -sfn "${skill%/}" "$harness/skills/$name"
+    target=${skill%/}
+    link=$harness/skills/$name
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
+      continue
+    fi
+    if [ -e "$link" ] || [ -L "$link" ]; then
+      printf 'Scottland: keeping existing agent skill %s\n' "$link" >&2
+      continue
+    fi
+    # -T treats a link to a directory as the destination itself. Without -f,
+    # another login hook cannot make this command replace a user's skill.
+    if ln -sT -- "$target" "$link" 2>/dev/null; then
+      continue
+    fi
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
+      continue
+    fi
+    if [ -e "$link" ] || [ -L "$link" ]; then
+      printf 'Scottland: keeping existing agent skill %s\n' "$link" >&2
+      continue
+    fi
+    printf 'Scottland: could not link agent skill %s\n' "$link" >&2
+    exit 1
   done
 done

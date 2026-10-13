@@ -14,6 +14,7 @@ verification is pending; **not built** = agreed but not implemented yet.
 |---|---|---|
 | S8 | Omarchy menu > System has "Reload Scottland" (shown only inside Scottland). | implemented |
 | S7 | Omarchy menu > System has "Scottland Settings" to open it (added by `scottland-omarchy-setup`). | implemented |
+| S9 | Omarchy menu > System > Logout closes apps and ends the current Scottland compositor so the login manager can offer a new session; Hyprland keeps its stock logout path. A failed session lookup must leave other Wayfire processes untouched. | candidate |
 
 ## Switching between Scottland and Hyprland
 
