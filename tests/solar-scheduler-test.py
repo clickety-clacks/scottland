@@ -99,6 +99,41 @@ with patch.object(core, "current_mode", side_effect=AssertionError("same-period 
     core.reconcile(saved_config, (37.77, -122.42), datetime(2026, 6, 21, 14, tzinfo=timezone.utc), event1)
 check("manual light/dark choice survives checks and Settings Save", core.TRANSITION.read_text() == record_after_enable)
 
+# A live scheduler must consume a saved disable and stop the adapter without
+# changing the theme the user picked manually. The wait itself is a test seam;
+# this asserts the saved setting's product effect, not notification mechanics.
+solar_config()
+manual_theme = {"mode": "dark"}
+waits = 0
+
+def save_disable_then_stop(*_args, **_kwargs):
+    global waits
+    waits += 1
+    if waits == 1:
+        solar_config(enabled=False)
+        return "config"
+    raise KeyboardInterrupt
+
+try:
+    with patch.object(core, "locate", return_value=(37.77, -122.42)), \
+         patch.object(core, "solar_transition", return_value=event1), \
+         patch.object(core, "next_solar_transition",
+                      return_value=("dark", "2026-06-21T19:38:00Z",
+                                    datetime(2026, 6, 21, 19, 38, tzinfo=timezone.utc))), \
+         patch.object(core, "set_mode",
+                      side_effect=lambda mode: manual_theme.update(mode=mode)), \
+         patch.object(core, "wait_for_config_or_deadline", side_effect=save_disable_then_stop):
+        core.watch()
+except KeyboardInterrupt:
+    pass
+with patch.object(adapter.subprocess, "run",
+                  side_effect=AssertionError("disabled Sunlight invoked a theme command")):
+    saved_disable_result = adapter.run_once()
+check("Settings Save disables a running scheduler without replacing a manual theme",
+      waits == 2 and manual_theme["mode"] == "dark"
+      and core.read_transition()["enabled"] is False
+      and saved_disable_result == "off")
+
 event2 = event_for(datetime(2026, 6, 21, 19, 38, tzinfo=timezone.utc), "dark")
 with patch.object(core, "current_mode", return_value="light"), patch.object(core, "set_mode") as set_mode:
     core.reconcile(config, (37.77, -122.42), datetime(2026, 6, 21, 20, tzinfo=timezone.utc), event2)
