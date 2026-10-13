@@ -62,6 +62,19 @@ the adapter opens Omarchy's selected coding agent with a prompt to walk through 
 selected or its tools are missing, it uses Omarchy's editor launcher. It opens only when the report
 content changes.
 
+If setup fails while generating the report (for example, a stale hook treats `--report-only` as a
+filename), inspect `SCOTTLAND_HOOKS` and the selected hook under
+`${XDG_DATA_HOME:-$HOME/.local/share}/scottland/dev`. When `SCOTTLAND_HOOKS` is unset or invalid,
+setup prefers that dev snapshot over the packaged hook. To use the installed package hook for this
+setup run, select it explicitly and rerun setup:
+
+```sh
+SCOTTLAND_HOOKS=/usr/lib/scottland scottland-omarchy-setup
+```
+
+This regenerates the report with the packaged hook. Do not delete or rewrite the user's Omarchy
+config or shortcut overrides to resolve hook precedence.
+
 ### Moving a displaced shortcut to a free key
 
 Lead with the user's own shortcuts; explain each reason plainly; ask before changing anything.
