@@ -67,8 +67,8 @@ if test_foot is not None:
     if not foot_path.is_file() or not os.access(foot_path, os.X_OK):
         sys.exit("SCOTTLAND_TEST_FOOT must resolve to an executable file")
     (fixture.bin / "foot").symlink_to(foot_path)
-elif shutil.which("foot", path="/usr/local/bin:/usr/bin:/bin") is None:
-    sys.exit("foot is required; set SCOTTLAND_TEST_FOOT to a task-scoped executable")
+elif shutil.which("foot") is None:
+    sys.exit("foot is required on PATH; set SCOTTLAND_TEST_FOOT to a task-scoped executable")
 
 # Expose the unmodified stock launcher and the helpers it invokes on the session's sanitized PATH.
 for name in ("omarchy-launch-screensaver", "omarchy-cmd-missing", "omarchy-toggle-enabled",
