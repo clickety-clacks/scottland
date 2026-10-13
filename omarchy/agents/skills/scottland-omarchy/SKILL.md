@@ -12,9 +12,9 @@ The `scottland-omarchy` package lets Scottland run on Omarchy beside Hyprland. R
 `scottland` skill first: everything there holds. This skill covers only what the adapter adds or
 changes. The adapter does not modify Hyprland or uwsm. Its per-user setup adds entries to Omarchy's
 user menu extension and installs its shipped themes; Omarchy's stock shell and scripts run
-unmodified inside Scottland. Rerun `scottland-omarchy-setup` after an adapter upgrade that adds
-menu entries; a package upgrade alone does not update the user's menu extension. Setup preserves
-existing same-named themes.
+unmodified inside Scottland. Rerun `scottland-omarchy-setup` after each adapter package upgrade:
+a package upgrade alone does not update the user's menu extension or check the pinned screen-sharing
+portal. Setup preserves existing same-named themes.
 
 Inside Scottland, `XDG_CURRENT_DESKTOP` starts with `Scottland`; `scottland-exec --list` lists
 running Scottland sessions. An empty list does not establish which desktop is currently active;
