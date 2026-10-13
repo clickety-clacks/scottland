@@ -104,12 +104,24 @@ development install and you have saved anything personal. It does not uninstall
 the Arch packages. Start a fresh Scottland session afterward to select the
 packaged plugin.
 
-The packaged [Core Scottland skill](core/agents/skills/scottland/SKILL.md) is
-installed under `/usr/share/scottland/agents/skills/scottland/`. At session
-startup, `02-link-agent-skills` links available packaged skills into installed
-agent harnesses (`~/.codex/skills`, `~/.claude/skills`, `~/.agents/skills` and
-others). Core configuration belongs in that skill; the separate Omarchy adapter
-skill belongs to `scottland-omarchy` and covers adapter-specific behavior.
+Agents working on Scottland should install and read the
+[Core Scottland skill](core/agents/skills/scottland/SKILL.md). On Omarchy, also
+install and read the separate
+[Scottland Omarchy adapter skill](omarchy/agents/skills/scottland-omarchy/SKILL.md).
+For Gooarchy distribution or configuration work, also install and read the
+[Gooarchy skill](https://github.com/clickety-clacks/gooarchy/blob/main/agents/skills/gooarchy/SKILL.md).
+Their package directories are, respectively,
+`/usr/share/scottland/agents/skills/scottland/`,
+`/usr/share/scottland-omarchy/agents/skills/scottland-omarchy/`, and
+`/usr/share/gooarchy/agents/skills/gooarchy/`. Link each applicable installed
+directory into your agent's skills directory under its skill name, preserving
+any existing user-owned entry. For Codex that directory is `~/.codex/skills`;
+other harnesses have their own skills directories. Scottland's login hook links
+the Core skill for installed harnesses; Gooarchy's hook links the Core and
+Gooarchy skills when their packages provide them. Install the adapter skill
+separately in your harness. The published `v0.3.0` Scottland assets contain
+only the Core skill; use package versions that actually contain the other
+skills before following their installed paths.
 
 ## Running it
 
