@@ -113,17 +113,11 @@ For Gooarchy distribution or configuration work, also install and read the
 Their package directories are, respectively,
 `/usr/share/scottland/agents/skills/scottland/`,
 `/usr/share/scottland-omarchy/agents/skills/scottland-omarchy/`, and
-`/usr/share/gooarchy/agents/skills/gooarchy/`. Link each applicable installed
-directory into your agent's skills directory under its skill name, preserving
-any existing user-owned entry. For Codex that directory is `~/.codex/skills`;
-other harnesses have their own skills directories. Scottland's login hook
-discovers only the Core skill under `/usr/share/scottland/agents/skills/`;
-it does not discover the separate adapter package directory. Link the adapter
-skill into your harness's skills directory yourself after installing a package
-that provides it. Check the installed Gooarchy package for its skill before
-linking that path. The published `v0.3.0` Scottland assets contain only the
-Core skill; use package versions that actually contain the other skills before
-following their installed paths.
+`/usr/share/gooarchy/agents/skills/gooarchy/`. Confirm each applicable skill
+is available in your agent's skills directory before using it; for Codex that
+directory is `~/.codex/skills`. The published `v0.3.0` Scottland assets
+contain only the Core skill. Use package versions that actually contain the
+other skills before following their installed paths.
 
 ## Running it
 

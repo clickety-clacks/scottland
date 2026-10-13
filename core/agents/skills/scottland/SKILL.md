@@ -24,11 +24,11 @@ For Scottland on Omarchy, also install and read the separate
 `/usr/share/scottland-omarchy/agents/skills/scottland-omarchy/`. For Gooarchy
 distribution or configuration work, also install and read the
 [Gooarchy skill](https://github.com/clickety-clacks/gooarchy/blob/main/agents/skills/gooarchy/SKILL.md)
-from `/usr/share/gooarchy/agents/skills/gooarchy/`. Link each applicable
-installed skill directory into the agent harness's skills directory under its
-skill name, leaving any user-owned entry intact. The `v0.3.0` Scottland
-packages ship this Core skill; check later packages for the adapter and
-Gooarchy skills rather than assuming those paths are installed.
+from `/usr/share/gooarchy/agents/skills/gooarchy/`. Confirm each applicable
+skill is available in the agent harness's skills directory before using it.
+The `v0.3.0` Scottland packages ship this Core skill; check later packages
+for the adapter and Gooarchy skills rather than assuming those paths are
+installed.
 
 Start a new session from the login manager's Scottland entry or run `start-scottland` from
 a text console. Inside Scottland, `scottland-reload` reloads the selected plugin in place.
