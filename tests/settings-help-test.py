@@ -523,7 +523,13 @@ try:
     before_pad=snapshot()["scroll"]
     for _ in range(4):
         ipc("scottland/test-input",dict(scroll_y=20,wheel=False,touchpad=True));time.sleep(.02)
-    check("touchpad content tracks 80 pt gesture",abs(snapshot()["scroll"]-before_pad-80)<16)
+    touchpad_after=snapshot()["scroll"]
+    touchpad_delta=touchpad_after-before_pad
+    touchpad_direct={"before":before_pad,"after":touchpad_after,"delta":touchpad_delta,
+                     "expected_delta":80,"tolerance":16}
+    (art/"touchpad-direct.json").write_text(json.dumps(touchpad_direct,sort_keys=True)+"\n")
+    print("touchpad direct scroll: "+json.dumps(touchpad_direct,sort_keys=True),flush=True)
+    check("touchpad content tracks 80 pt gesture",abs(touchpad_delta-80)<16)
     ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
     pad_samples=[]
     for _ in range(30):
@@ -1114,20 +1120,31 @@ try:
         width = output["geometry"]["width"]
         ipc("window-rules/configure-view", {"id": placement_views[title]["id"], "output_id": output["id"],
             "geometry": {"x": round(width * placement_fraction - 150), "y": 180, "width": 300, "height": 180}})
-    def placement_state(title):
-        return next(view for view in ipc("scottland/layout-state")["views"] if view["title"] == title)
+    def placement_state(title, views):
+        return next((view for view in views if view.get("title") == title), None)
+    def placement_matches(view, expected_zone):
+        if view is None:
+            return False
+        scale=view.get("applied_scale")
+        if not isinstance(scale,(int,float)) or view.get("zone") != expected_zone:
+            return False
+        return scale < .999 if expected_zone == "continuous" else abs(scale-1.0) < .001
+    layout_views=[]
+    own_view=global_view=None
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        own_view, global_view = placement_state("zones-own-placement"), placement_state("zones-global-placement")
-        if own_view["zone"] == own_expected and global_view["zone"] == global_expected: break
+        layout_views=ipc("scottland/layout-state").get("views",[])
+        own_view=placement_state("zones-own-placement",layout_views)
+        global_view=placement_state("zones-global-placement",layout_views)
+        if placement_matches(own_view,own_expected) and placement_matches(global_view,global_expected): break
         time.sleep(.05)
-    placement_ok = own_view["zone"] == own_expected and global_view["zone"] == global_expected \
-        and (own_view["applied_scale"] < .999 if own_expected == "continuous"
-             else abs(own_view["applied_scale"] - 1.0) < .001) \
-        and (global_view["applied_scale"] < .999 if global_expected == "continuous"
-             else abs(global_view["applied_scale"] - 1.0) < .001)
+    placement_ok = placement_matches(own_view,own_expected) and placement_matches(global_view,global_expected)
     if not placement_ok:
-        print("S24 placement state: " + json.dumps({"own": own_view, "global": global_view}, sort_keys=True), flush=True)
+        print("S24 placement state: " + json.dumps({
+            "own":own_view,"global":global_view,
+            "visible_titles":[view.get("title") for view in layout_views],
+            "expected":{"own":own_expected,"global":global_expected}
+        },sort_keys=True),flush=True)
     check("S24 actual placement resolves the target profile and leaves unnamed output global", placement_ok)
     ipc("wayfire/set-config-options", {"scottland/center_width": zone_baseline["center_width"],
                                         "scottland/blend_width": zone_baseline["blend_width"]})
