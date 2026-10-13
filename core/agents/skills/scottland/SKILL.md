@@ -22,8 +22,8 @@ After installing the packages, install and read this Core skill from
 For Scottland on Omarchy, also install and read the separate
 [adapter skill](../../../../omarchy/agents/skills/scottland-omarchy/SKILL.md) from
 `/usr/share/scottland/agents/skills/scottland-omarchy/`. The Scottland login
-hook links it into installed agent harnesses when an adapter package provides
-it there. For Gooarchy
+hook links it into installed agent harnesses at the next fresh Scottland login
+when an adapter package provides it there. For Gooarchy
 distribution or configuration work, also install and read the
 [Gooarchy skill](https://github.com/clickety-clacks/gooarchy/blob/main/agents/skills/gooarchy/SKILL.md)
 from `/usr/share/gooarchy/agents/skills/gooarchy/`. Confirm each applicable
