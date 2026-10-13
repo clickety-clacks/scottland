@@ -8,7 +8,10 @@ if [[ ${1:-} != --inside-scottland ]]; then
     # recorded by Scottland, matching the caller's Wayfire socket when more than one is running.
     exec scottland-exec -- "$0" --inside-scottland
   fi
-  exec omarchy-system-logout "$@"
+  if command -v omarchy-system-logout >/dev/null 2>&1; then
+    exec omarchy-system-logout "$@"
+  fi
+  exec omarchy-system logout "$@"
 fi
 
 [[ ${XDG_CURRENT_DESKTOP:-} == Scottland* && -n ${WAYFIRE_SOCKET:-} ]] || {

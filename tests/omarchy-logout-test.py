@@ -42,6 +42,16 @@ with tempfile.TemporaryDirectory(prefix="scottland-logout-") as directory:
     assert log.read_text() == "stock\n"
     log.unlink()
 
+    # Newer Omarchy exposes the same stock action as `omarchy-system logout`.
+    (bin_dir / "omarchy-system-logout").unlink()
+    stub(bin_dir / "omarchy-system", 'test "$1" = logout || exit 2\nprintf "stock-new\\n" >>"$LOGOUT_TEST_LOG"\n')
+    result = subprocess.run([str(LOGOUT)],
+                            env=dict(env, PATH=str(bin_dir), XDG_CURRENT_DESKTOP="Hyprland"),
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text() == "stock-new\n"
+    log.unlink()
+
     # A missing recorded session must refuse before closing any user windows.
     result = subprocess.run([str(LOGOUT), "--inside-scottland"],
                             env=dict(env, XDG_CURRENT_DESKTOP="Scottland:Wayfire",
@@ -64,10 +74,15 @@ for i in {1..40}; do
   sleep 0.05
 done
 LOGOUT_TEST_LAUNCHER=$$ XDG_CURRENT_DESKTOP=Scottland:Wayfire WAYFIRE_SOCKET=/tmp/fixture-wayfire "$2"
-wait "$own" 2>/dev/null || true
-if kill -0 "$own" 2>/dev/null; then exit 42; fi
+if wait "$own" 2>/dev/null; then
+  own_status=0
+else
+  own_status=$?
+fi
+if [[ $own_status -ne 143 ]]; then exit 42; fi
 '''
-        result = subprocess.run(["bash", "-c", fixture, "fixture", FAKE_WAYFIRE, str(LOGOUT)],
+        own_wayfire = FAKE_WAYFIRE.replace("time.sleep(60)", "time.sleep(3)")
+        result = subprocess.run(["bash", "-c", fixture, "fixture", own_wayfire, str(LOGOUT)],
                                 env=env, capture_output=True, text=True, check=False)
         assert result.returncode == 0, (result.returncode, result.stdout, result.stderr,
                                         log.read_text() if log.exists() else "no calls")
