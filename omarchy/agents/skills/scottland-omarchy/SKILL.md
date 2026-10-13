@@ -126,7 +126,7 @@ override, wins. A named `hl.monitor` rule sent through `hyprctl eval` applies un
 rebuild. Unsupported parts of a rule return an error. Other `hyprctl eval` expressions remain
 unsupported.
 
-These O30 capabilities are in the landed 0.3 source. O30 remains marked candidate while its exact
+These O30 capabilities ship in v0.3.0, but O30 remains marked candidate while its exact
 headless automatic-scale assertion is pending, so do not present the adapter as release-verified
 for every monitor or hardware combination. Bit depth, VRR, color management and reserved areas are
 not translated.
@@ -147,7 +147,9 @@ and every window in it.** There is no mode that keeps both desktops running. The
 agree before invoking either form; never switch on their behalf to test something. The shipped
 PolicyKit rule authorizes an active local session without authentication; inactive sessions and
 remote callers are denied, so do not promise password-free switching outside an active local
-session. The helper sets the SDDM autologin session to the selected desktop. If Scottland dies
+session. W2's close-only behavior ships in v0.3.0, but its exact-head verification remains pending;
+do not claim the switch behavior was validated on the published build. The helper sets the SDDM
+autologin session to the selected desktop. If Scottland dies
 within seconds of starting, the crash guard sets the next boot back to Hyprland.
 
 ## Theme and notifications
