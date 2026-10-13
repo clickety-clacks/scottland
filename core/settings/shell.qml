@@ -22,6 +22,7 @@ ShellRoot {
   readonly property string ctl: Quickshell.env("SCOTTLAND_CTL") || "scottland-ctl"
   readonly property string layoutFile: Quickshell.env("SCOTTLAND_LAYOUT_FILE")
     || (Quickshell.env("HOME") + "/.config/scottland/layout.ini")
+  property real touchpadScrollSpeed: 0.2
 
   readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 40,
     curve: [{ x: 0, y: 1 }, { x: 1, y: 0.2 }] })
@@ -400,6 +401,8 @@ ShellRoot {
         let values = {}
         try { values = JSON.parse(text) } catch (e) {}
         root.unsupported = values.unsupported || []
+        const inputSpeed = Number(values.touchpad_scroll_speed)
+        if (Number.isFinite(inputSpeed) && inputSpeed >= 0) root.touchpadScrollSpeed = inputSpeed
         root.outputs = Array.isArray(values.outputs) ? values.outputs : []
         let storedZones = values.screen_zones
         if (!Array.isArray(storedZones)) {
@@ -457,6 +460,27 @@ ShellRoot {
         root.loaded = true
       }
     }
+  }
+
+  // The compositor can change touchpad speed while Settings stays open. Keep
+  // scroll conversion in sync without reloading the editable Settings state.
+  Process {
+    id: inputSpeedReader
+    command: [root.ctl, "option", "input/touchpad_scroll_speed"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        let value
+        try { value = JSON.parse(text) } catch (e) { return }
+        const speed = Number(value)
+        if (Number.isFinite(speed) && speed >= 0) root.touchpadScrollSpeed = speed
+      }
+    }
+  }
+  Timer {
+    interval: 500
+    repeat: true
+    running: true
+    onTriggered: if (!inputSpeedReader.running) inputSpeedReader.running = true
   }
 
   FileView {
@@ -565,7 +589,7 @@ ShellRoot {
       if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return "{}"
       return JSON.stringify({title:Qt.application.name,heading:heading.text,screen:settingsWindow.screen.name,tab:root.tab,
       panel:{x:settingsWindow.x,y:settingsWindow.y,width:settingsWindow.width,height:settingsWindow.height},
-      viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
+      viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,touchpadSpeed:root.touchpadScrollSpeed,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
       zoneScope:Object.assign(root.testRect(zoneScope),{all:root.testRect(allScreensChoice),this:root.testRect(thisScreenChoice),reset:root.testRect(resetTargetZones),scope:root.editScope,note:zoneScopeNote.text}),
       target:{output:root.targetOutputName,identity:root.targetIdentity,own:root.targetHasOwnZones,available:root.thisScreenAvailable},
       zoneProfile:root.editorProfile(),screenZones:root.screenZones,outputs:root.outputs,
@@ -853,6 +877,7 @@ ShellRoot {
         CoastView {
           id: gooScroll
           design:theme
+          touchpadScrollSpeed: root.touchpadScrollSpeed
           Layout.fillWidth: true
           Layout.fillHeight: true
           Layout.minimumHeight: 200
