@@ -1,13 +1,51 @@
 ---
 name: scottland
-description: Configure Scottland, the spatial desktop (windows scale toward the screen edges; no workspaces). Use for any change to how Scottland behaves for the user — per-app touchscreen scrolling, input and layout settings, per-app key remaps — and to find an app's app-id. Triggers: Scottland, touchscreen scrolling in an app, "this app doesn't scroll with my finger", window scaling zones, halos, rail widgets.
+description: Operate and configure Scottland, the Wayfire spatial desktop. Use for its tagged Arch install or upgrade, session selection and reload, window/layout/input settings, app IDs, touch scrolling, widgets, attention and troubleshooting. Omarchy-specific setup belongs to the separate adapter.
 ---
 
 # Scottland
 
 Scottland is a spatial desktop on Wayfire: a full-size center zone, windows shrinking toward
-the screen edges, widget rails at the edges, and no workspaces. Use this skill to change how it
-behaves for the user.
+the screen edges, widget rails at the edges, and no workspaces. Use this skill for the core
+desktop. Keep Omarchy-specific changes in the adapter; `core/` has no Omarchy dependency.
+
+## Install, upgrade, and select a session
+
+Follow the repository `README.md` install/upgrade section for the current published tag.
+The Arch `packaging/arch/PKGBUILD` builds `scottland` and `scottland-omarchy` as a matched
+split pair; install both on Omarchy or only the core package on another Arch desktop.
+Check the selected tag and installed package versions before attributing behavior to a
+release. Package installation does not replace a plugin already loaded by Wayfire.
+
+Start a new session from the login manager's Scottland entry or run `start-scottland` from
+a text console. Inside Scottland, `scottland-reload` reloads the selected plugin in place.
+From another desktop or shell, list running sessions with `scottland-exec --list` and use
+`scottland-exec --display <wayland-name> -- scottland-reload` for an explicitly selected
+session. When several sessions exist, do not guess which one to change.
+
+Before claiming an upgrade is active, check whether `~/.local/share/scottland/dev` selects
+a development plugin: reload prefers its plugin over packaged `/usr/lib` code. Preserve any
+user-owned dev links and config; make selection deliberate rather than assuming package
+installation changed the running session. Do not run `make dev-install` as an ordinary
+package upgrade: it builds and links a committed development snapshot into the user's session.
+If retiring an earlier development install, inspect its links and saved files first; the
+checkout's `make dev-uninstall` removes the dev selection and linked commands but also
+removes `~/.config/scottland/scottland.ini`. It does not uninstall Arch packages. Preserve
+personal config and use a fresh Scottland login to verify the packaged plugin afterward.
+
+## Inspect before changing
+
+Use `scottland-ctl windows` for live window IDs and app IDs, `scottland-ctl get` for the
+running layout settings, and `scottland-ctl option section/key` for a specific Wayfire
+option. `scottland-ctl set name value` is a live, unsaved change; use Scottland Settings
+or the user's override file for persistence. Outside the session, `scottland-ctl` routes
+through `scottland-exec`; choose an explicit display when multiple sessions are running.
+
+Scottland Settings (`scottland-settings`, Super+, in the shipped bindings) owns Layout,
+Goo, Window mode, Translucency, Widgets and Sunlight. Use its Save/Cancel behavior when
+changing those values. `~/.config/scottland/layout.ini` records its saved layout values;
+do not hand-edit it while the app owns a pending edit. See `docs/settings.md` for the
+current controls and `docs/windowing-keys.md` for window-mode gestures and keys.
 
 ## Where settings live
 

@@ -32,9 +32,88 @@ with his blessing. Scottland is an independent project, not his.
 
 Rule: nothing under `core/` knows Omarchy exists. Omarchy integration lives only in `omarchy/`.
 
+## Install and upgrade (Arch Linux)
+
+The [published `v0.3.0` release](https://github.com/clickety-clacks/scottland/releases/tag/v0.3.0)
+has two matched Arch package assets: `scottland` is the Wayfire desktop;
+`scottland-omarchy` adds the Omarchy switcher and requires that exact core
+package version. On Omarchy, download both assets and install them together:
+
+```sh
+curl -fLO https://github.com/clickety-clacks/scottland/releases/download/v0.3.0/scottland-0.3.0-1-x86_64.pkg.tar.zst
+curl -fLO https://github.com/clickety-clacks/scottland/releases/download/v0.3.0/scottland-omarchy-0.3.0-1-any.pkg.tar.zst
+sudo pacman -U ./scottland-0.3.0-1-x86_64.pkg.tar.zst ./scottland-omarchy-0.3.0-1-any.pkg.tar.zst
+pacman -Q scottland scottland-omarchy
+```
+
+Inspect the release assets and pacman transaction before installing. On a
+non-Omarchy Arch desktop, install only the `scottland` asset. To build the
+matched pair from source instead, run the following as your normal user on an
+Arch system with `base-devel` and the PKGBUILD's build dependencies available:
+
+```sh
+git clone https://github.com/clickety-clacks/scottland.git
+cd scottland
+git switch --detach v0.3.0
+cd packaging/arch
+makepkg -si
+pacman -Q scottland scottland-omarchy
+```
+
+`makepkg -si` builds and installs both split packages in one invocation. For a
+source build on a non-Omarchy Arch desktop, use `makepkg -s` and install only
+the generated `scottland` archive. Review the PKGBUILD and package transaction.
+
+To upgrade, obtain both assets of the same newer published release and install
+them together with `sudo pacman -U`, substituting that release's exact asset
+filenames for the `v0.3.0` example. If you build from source, fetch and select
+the desired published tag in the same checkout, then rebuild the matched pair:
+
+```sh
+cd /path/to/scottland
+git fetch --tags origin
+git switch --detach <new-tag>
+cd packaging/arch
+makepkg -si
+pacman -Q scottland scottland-omarchy
+```
+
+Replace `/path/to/scottland` with your checkout. Use a real published tag in place of `<new-tag>`;
+do not mix core and adapter archives from different builds. A package upgrade
+does not replace code already loaded by a running Wayfire session. Enter a new
+Scottland session to use the new package, or use `scottland-reload` from that
+session when an in-place reload is appropriate. A development plugin linked
+under `~/.local/share/scottland/dev` can take precedence over `/usr/lib` on
+reload; remove or deliberately update that development selection before
+attributing a running result to the newly installed package. Keep your user
+config files when upgrading.
+
+On Omarchy, rerun `scottland-omarchy-setup` after a package upgrade so its
+per-user menu, themes, shortcut report and portal setup match the installed
+adapter. It keeps existing theme directories and menu entries, but can build
+and replace the screen-sharing portal package; read its output and package
+transaction. For a packaged upgrade, prefer a fresh Scottland login before
+checking the new plugin and helpers.
+
+If a prior `make dev-install` selected a development snapshot, inspect the
+links under `~/.local/share/scottland/dev` and preserve any personal files
+before changing them. From that checkout, `make dev-uninstall` removes its
+development selection and several linked command/config paths, including
+`~/.config/scottland/scottland.ini`; run it only when those paths belong to the
+development install and you have saved anything personal. It does not uninstall
+the Arch packages. Start a fresh Scottland session afterward to select the
+packaged plugin.
+
+The packaged [Core Scottland skill](core/agents/skills/scottland/SKILL.md) is
+installed under `/usr/share/scottland/agents/skills/scottland/`. At session
+startup, `02-link-agent-skills` links available packaged skills into installed
+agent harnesses (`~/.codex/skills`, `~/.claude/skills`, `~/.agents/skills` and
+others). Core configuration belongs in that skill; the separate Omarchy adapter
+skill belongs to `scottland-omarchy` and covers adapter-specific behavior.
+
 ## Running it
 
-On Omarchy, install `scottland-omarchy`, run `scottland-omarchy-setup` once, then use
+On Omarchy, after installing the matched packages, run `scottland-omarchy-setup` once, then use
 Omarchy menu > System > Switch Desktop (Super+Escape inside Scottland). Setup also builds
 Gooarchy's xdg-desktop-portal-wlr (from [its fork](https://github.com/clickety-clacks/xdg-desktop-portal-wlr))
 and installs it in place of Arch's, saying so: with Arch's, screen sharing in Scottland fails in
