@@ -94,7 +94,6 @@ with Session(fixture, "hl-omarchy-shim") as session:
     # Unsupported requests fail visibly: hyprctl exits non-zero with the shim's error.
     for args in (["dispatch", 'hl.dsp.focus({ monitor = "NOWHERE-1" })'],
                  ["keyword", "monitor", "NOWHERE-1,disable"],
-                 ["eval", 'hl.monitor({ output = "NOWHERE-1", scale = 1.5 })'],
                  ["switchxkblayout", "all", "next"],
                  ["binds"], ["cursorpos"], ["-j", "layers"],
                  ["getoption", "cursor:zoom_factor"]):
@@ -102,6 +101,12 @@ with Session(fixture, "hl-omarchy-shim") as session:
         check(f"unsupported `hyprctl {' '.join(args)}` fails visibly",
               result.returncode != 0 and result.stdout.startswith("error:"),
               (result.returncode, result.stdout[:120]))
+    # Omarchy monitor translation now supports this eval command. Keep the
+    # acceptance assertion aligned with the command's shipped behavior.
+    result = session.hyprctl("eval", 'hl.monitor({ output = "NOWHERE-1", scale = 1.5 })')
+    check("hyprctl eval accepts a translated hl.monitor rule",
+          result.returncode == 0 and result.stdout.strip() == "ok",
+          (result.returncode, result.stdout[:120]))
     for args in (["-j", "monitors"], ["-j", "clients"], ["-j", "getoption", "general:gaps_out"]):
         result = session.hyprctl(*args)
         valid = False
