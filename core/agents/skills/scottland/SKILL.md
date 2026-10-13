@@ -17,7 +17,7 @@ split pair; install both on Omarchy or only the core package on another Arch des
 Check the selected tag and installed package versions before attributing behavior to a
 release. Package installation does not replace a plugin already loaded by Wayfire.
 
-Install and read this Core skill from
+After installing the packages, install and read this Core skill from
 `/usr/share/scottland/agents/skills/scottland/` before working on Scottland.
 For Scottland on Omarchy, also install and read the separate
 [adapter skill](../../../../omarchy/agents/skills/scottland-omarchy/SKILL.md) from

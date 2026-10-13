@@ -104,7 +104,7 @@ development install and you have saved anything personal. It does not uninstall
 the Arch packages. Start a fresh Scottland session afterward to select the
 packaged plugin.
 
-Agents working on Scottland should install and read the
+After installing the packages, agents working on Scottland should install and read the
 [Core Scottland skill](core/agents/skills/scottland/SKILL.md). On Omarchy, also
 install and read the separate
 [Scottland Omarchy adapter skill](omarchy/agents/skills/scottland-omarchy/SKILL.md).
