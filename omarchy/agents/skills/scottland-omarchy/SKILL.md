@@ -10,9 +10,11 @@ description: >-
 
 The `scottland-omarchy` package lets Scottland run on Omarchy beside Hyprland. Read the
 `scottland` skill first: everything there holds. This skill covers only what the adapter adds or
-changes. The adapter does not modify Hyprland or uwsm. Its one-time setup adds entries to Omarchy's
+changes. The adapter does not modify Hyprland or uwsm. Its per-user setup adds entries to Omarchy's
 user menu extension and installs its shipped themes; Omarchy's stock shell and scripts run
-unmodified inside Scottland.
+unmodified inside Scottland. Rerun `scottland-omarchy-setup` after an adapter upgrade that adds
+menu entries; a package upgrade alone does not update the user's menu extension. Setup preserves
+existing same-named themes.
 
 Inside Scottland, `XDG_CURRENT_DESKTOP` starts with `Scottland`; `scottland-exec --list` lists
 running Scottland sessions. An empty list does not establish which desktop is currently active;
@@ -133,9 +135,13 @@ not translated.
 
 ## Menus and keys
 
-- Omarchy menu > System has **Switch Desktop**, **Reload Scottland** (only inside Scottland) and
-  **Scottland Settings**. `scottland-omarchy-setup` adds them (once per user) and installs the
-  Watercolor Dream Light and Dark themes if those names are free.
+- Omarchy menu > System has **Switch Desktop**, **Reload Scottland** (only inside Scottland),
+  **Scottland Settings**, and a Scottland-aware **Logout**. `scottland-omarchy-setup` adds these
+  entries to the user's menu extension and installs the Watercolor Dream Light and Dark themes if
+  those names are free. After an upgrade, rerun setup to add a newly shipped entry such as Logout.
+  In Scottland, Logout closes apps and ends only the Wayfire process owned by that Scottland
+  session; in Hyprland it delegates to Omarchy's stock logout. This is merged source behavior,
+  while real login-manager return after logout remains unverified (Scottland issue #59).
 - Super+Escape in Scottland opens Omarchy's System menu.
 
 ## Switching between Scottland and Hyprland
