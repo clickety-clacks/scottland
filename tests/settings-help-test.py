@@ -537,9 +537,24 @@ try:
     (art/"touchpad-samples.json").write_text(json.dumps(pad_samples))
     check("touchpad coasts after axis stop",len(set(round(y,1) for y,v in pad_samples))>=3)
     a=snapshot()["scroll"];time.sleep(.25);check("touchpad coast settles",abs(snapshot()["scroll"]-a)<.1)
-    # Changing compositor scroll speed must affect this same Settings window.
+    # Exercise two distinct configured speeds in this same Settings window.
+    original_speed=float(ipc("wayfire/get-config-option", {"option":"input/touchpad_scroll_speed"})["value"])
+    def wait_speed(target):
+        for _ in range(40):
+            if abs(snapshot().get("touchpadSpeed",-1)-target)<.001:return True
+            time.sleep(.05)
+        return False
+    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.4})
+    check("Settings observes live touchpad speed 0.4",wait_speed(0.4))
+    tab(0);tab(1)
+    pointer(*control_point("viewport",300,200))
+    before_fast=snapshot()["scroll"]
+    for _ in range(4):
+        ipc("scottland/test-input",dict(scroll_y=20,wheel=False,touchpad=True));time.sleep(.02)
+    check("touchpad tracks 80 pt gesture at live speed 0.4",abs(snapshot()["scroll"]-before_fast-80)<16)
+    ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
     ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.2})
-    time.sleep(1.2)
+    check("Settings observes live touchpad speed 0.2",wait_speed(0.2))
     tab(0);tab(1)
     pointer(*control_point("viewport",300,200))
     before_live=snapshot()["scroll"]
@@ -549,7 +564,7 @@ try:
     print("touchpad changed-speed scroll: "+str(delta_live),flush=True)
     check("touchpad follows live 0.4 to 0.2 speed change",abs(delta_live-80)<16)
     ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
-    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.4})
+    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": original_speed})
     tab(0);tab(1)
     # After mouse editing that same row, touch must still be able to take over for scrolling.
     click(*reveal("goo",250,4*69+34));key("KEY_BACKSPACE")
