@@ -32,9 +32,52 @@ with his blessing. Scottland is an independent project, not his.
 
 Rule: nothing under `core/` knows Omarchy exists. Omarchy integration lives only in `omarchy/`.
 
+## Install and upgrade (Arch Linux)
+
+The published `v0.3.0` tag builds two matched packages: `scottland` is the Wayfire
+desktop; `scottland-omarchy` adds the Omarchy switcher and depends on the same
+`scottland` package version. Build as your normal user on an Arch system with
+`base-devel` and the PKGBUILD's build dependencies available:
+
+```sh
+git clone https://github.com/clickety-clacks/scottland.git
+cd scottland
+git switch --detach v0.3.0
+cd packaging/arch
+makepkg -si
+pacman -Q scottland scottland-omarchy
+```
+
+`makepkg -si` builds and installs both split packages in one invocation. On a
+non-Omarchy Arch desktop, build with `makepkg -s` and install only its generated
+`scottland` archive; the Omarchy adapter requires Omarchy and is optional there.
+Review the PKGBUILD and package transaction before accepting installation.
+
+To upgrade an existing tagged installation, fetch the desired published tag in
+the same checkout, select it, and rebuild the matched pair:
+
+```sh
+cd /path/to/scottland
+git fetch --tags origin
+git switch --detach <new-tag>
+cd packaging/arch
+makepkg -si
+pacman -Q scottland scottland-omarchy
+```
+
+Replace `/path/to/scottland` with your checkout. Use a real published tag in place of `<new-tag>`;
+do not mix core and adapter archives from different builds. A package upgrade
+does not replace code already loaded by a running Wayfire session. Enter a new
+Scottland session to use the new package, or use `scottland-reload` from that
+session when an in-place reload is appropriate. A development plugin linked
+under `~/.local/share/scottland/dev` can take precedence over `/usr/lib` on
+reload; remove or deliberately update that development selection before
+attributing a running result to the newly installed package. Keep your user
+config files when upgrading.
+
 ## Running it
 
-On Omarchy, install `scottland-omarchy`, run `scottland-omarchy-setup` once, then use
+On Omarchy, after installing the matched packages, run `scottland-omarchy-setup` once, then use
 Omarchy menu > System > Switch Desktop (Super+Escape inside Scottland). Setup also builds
 Gooarchy's xdg-desktop-portal-wlr (from [its fork](https://github.com/clickety-clacks/xdg-desktop-portal-wlr))
 and installs it in place of Arch's, saying so: with Arch's, screen sharing in Scottland fails in
