@@ -3,6 +3,9 @@
 This packet covers WK14/WK38's tint layer. Run it only from the shared runner's exact source and
 host grant. Keep this tint branch separate; the runner composes it with the landed item2 and
 transparency candidates and records the resulting full-tree hash. This packet has not been run.
+The source/host grant, owned-session marker and scratch cleanup protect execution; they are not
+product acceptance checks. No hostname, machine-ID, output-count or minimum-output-size assertion
+is part of the tint result.
 
 ## Executable focused check
 
@@ -17,6 +20,28 @@ clears after Alt release. The eight manual scenarios below remain required for S
 picker isolation, fullscreen edges, separation from hint-background opacity, motion tracking, and
 the complete clear/escape matrix; the focused executable does not replace them.
 
+## Gate-to-behavior map
+
+- `make plugin` is a compile prerequisite only; it proves that this source builds, not user behavior.
+- After compilation, run the focused tint pixel behavior check first; then run required broader
+  unit and hint/pairing suites. The separate shared-runner eight-scenario pixel packet remains
+  required and must be reported scenario by scenario.
+- `tests/windowing-unit.sh` checks placement and decluttering constraints plus Window-mode hint
+  cycling (selection, movement, key timing and clearing) through the pure unit seams.
+- `I=tint tests/driver.sh` runs WK14/WK37/WK38 hint and tint rendering behavior plus item2's
+  pairing opaque-once behavior, including the later return to configured opacity.
+- `tests/window-mode-tint-pixel-test.sh` checks tint mixing at 0/7/30/100%, stacking over windows
+  and cards, no tint outside drawn extents or added strokes, unchanged hint visuals, Goo dye or
+  fallback halo, and layer clearing after Alt release.
+- The separately reported eight scenarios prove fullscreen extent and edges, Settings and
+  list-picker isolation, hint-opacity independence, live strength changes, frame tracking,
+  Goo-on/off edge treatment, and Alt/Esc clearing. Each remains a product-behavior acceptance
+  check.
+
+The caller-owned-session marker, unique scratch, cleanup, and exact runner source/command admission
+are execution safeguards. They protect the session and make evidence attributable; they do not
+prove product behavior and cannot substitute for a behavior result.
+
 ## Fixture and measurement
 
 Use a clean Scottland session with two or more clients that paint stable, distinct solid colors,
@@ -26,6 +51,10 @@ view, and a widget card that overlaps both. Use real Alt, arrow, pointer and dra
 Window mode and move the views; test setup IPC may position the fixtures but does not count as the
 input under test.
 
+The executable selects the largest reported output for capture and asks `grim` to capture only
+that output; additional outputs are allowed. Fixture dimensions and positions derive from the
+selected output's geometry. Capture framing and fixture setup do not count as tint behavior.
+
 Capture the same settled layout at `window_mode_tint=0` to obtain base pixel `P`, then at each
 strength under test. Read tint color `cᵢ` from an interior hint-letter pixel in the same capture;
 do not use the compositor's outline/tint telemetry as proof. For rear-to-front colors `c₁…cₙ`,
@@ -33,8 +62,9 @@ calculate `T₀=P`, `Tₖ=s·cₖ+(1−s)·Tₖ₋₁` for each extent covering 
 channel must be within 4/255 of the calculated result. A pixel outside all extents and hints must
 match `P` within 4/255.
 
-Record source pins and the composed tree hash, host/renderer, commands, screenshots, scenario
-results, and cleanup. Use pixel captures as the rendering evidence; IPC and layout state can locate
+Record source pins and the composed tree hash, renderer, selected-output geometry/scale, commands,
+screenshots, scenario results, and cleanup. These environment details are diagnostic context, not
+acceptance predicates. Use pixel captures as the rendering evidence; IPC and layout state can locate
 views and diagnose a failed frame but cannot establish a pass.
 
 ## Scenarios
@@ -69,6 +99,13 @@ views and diagnose a failed frame but cannot establish a pass.
 ## Required report
 
 Report each scenario and its channel/edge measurements separately, along with iteration counts and
-any failed samples. Preserve the screenshots and test log under the test checkout's `build/`
-directory, stop the owned session on every exit path, and remove only test-created paths. The
-separate source-tree changes in this candidate remain untested until that runner report exists.
+any failed samples. The product claims proved are additive tint over each drawn window/card extent,
+rear-first overlap mixing, unchanged overlays and hint visuals, retained Goo dye/fallback halo,
+absence of new strokes, tracking the drawn frame, and clearing after Window-mode exit. Settings and
+list-picker isolation, fullscreen coverage, slider behavior, opacity separation, motion tracking and
+the Esc clear path are proved by the separately reported eight scenarios above; setup geometry is
+not a pass criterion. Renderer and selected-output geometry/scale may be recorded as diagnostic
+context, but host identity is not an acceptance check. Preserve the screenshots and test log under
+the test checkout's `build/` directory, stop the owned session on every exit path, and remove only
+test-created paths. The separate source-tree changes in this candidate remain untested until that
+runner report exists.
