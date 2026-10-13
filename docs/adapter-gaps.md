@@ -288,7 +288,7 @@ through a reload, and a Quickshell Hyprland client (the Omarchy shell) does not 
 shim is restarted, so the shim fixes (AG17, AG18, AG19, visible failure, reload) reach a running
 session at its next start.
 
-Questions for Mike (no choice made; 1, 2, 7, 8 and 9 have since been ruled):
+Questions for Mike (unresolved: 3, 5 and 6):
 
 1. ~~Keep mode and startup apps (AG20)~~: moot, ruled 10-06: keep mode is removed; switching
    always closes the current desktop.
