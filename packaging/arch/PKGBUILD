@@ -102,6 +102,7 @@ package_scottland-omarchy() {
 
   local o="$_root/omarchy"
   install -Dm755 "$o/bin/scottland-switch" "$pkgdir/usr/bin/scottland-switch"
+  install -Dm755 "$o/bin/scottland-omarchy-logout" "$pkgdir/usr/bin/scottland-omarchy-logout"
   install -Dm755 "$o/bin/scottland-omarchy-setup" "$pkgdir/usr/bin/scottland-omarchy-setup"
   install -Dm755 "$o/helper/scottland-session-helper" "$pkgdir/usr/lib/scottland/scottland-session-helper"
   install -Dm644 "$o/helper/org.scottland.session.policy" "$pkgdir/usr/share/polkit-1/actions/org.scottland.session.policy"

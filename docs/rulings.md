@@ -128,6 +128,7 @@ Specified in windowing-keys.md WK36 and WP1.
 | Date | Ruling | Where |
 |---|---|---|
 | 10-03 | Overrides of Omarchy are reported with reasons, grouped by reason, explained by the user's default coding agent in plain words, leading with the user's own custom shortcuts. | O20 |
+| 10-13 | Omarchy's Logout in Scottland must close apps and end Scottland's own session so a user can log in again, as Logout does in Omarchy; `uwsm stop` alone leaves Scottland running with an empty screen. | S9; docs/adapter-gaps.md AG39 |
 | 10-03 | Gooarchy flavorings (curated widgets and defaults) install with the distro and with the Omarchy adapter; they may override Omarchy only where that's better for Gooarchy, always reported. | O21, P9 |
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
