@@ -537,6 +537,19 @@ try:
     (art/"touchpad-samples.json").write_text(json.dumps(pad_samples))
     check("touchpad coasts after axis stop",len(set(round(y,1) for y,v in pad_samples))>=3)
     a=snapshot()["scroll"];time.sleep(.25);check("touchpad coast settles",abs(snapshot()["scroll"]-a)<.1)
+    # Changing compositor scroll speed must affect this same Settings window.
+    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.2})
+    time.sleep(1.2)
+    tab(0);tab(1)
+    pointer(*control_point("viewport",300,200))
+    before_live=snapshot()["scroll"]
+    for _ in range(4):
+        ipc("scottland/test-input",dict(scroll_y=20,wheel=False,touchpad=True));time.sleep(.02)
+    delta_live=snapshot()["scroll"]-before_live
+    print("touchpad changed-speed scroll: "+str(delta_live),flush=True)
+    check("touchpad follows live 0.4 to 0.2 speed change",abs(delta_live-80)<16)
+    ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
+    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.4})
     tab(0);tab(1)
     # After mouse editing that same row, touch must still be able to take over for scrolling.
     click(*reveal("goo",250,4*69+34));key("KEY_BACKSPACE")
