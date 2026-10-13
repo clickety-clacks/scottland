@@ -102,6 +102,7 @@ package_scottland-omarchy() {
 
   local o="$_root/omarchy"
   install -Dm755 "$o/bin/scottland-switch" "$pkgdir/usr/bin/scottland-switch"
+  install -Dm755 "$o/bin/scottland-omarchy-logout" "$pkgdir/usr/bin/scottland-omarchy-logout"
   install -Dm755 "$o/bin/scottland-omarchy-setup" "$pkgdir/usr/bin/scottland-omarchy-setup"
   install -Dm755 "$o/helper/scottland-session-helper" "$pkgdir/usr/lib/scottland/scottland-session-helper"
   install -Dm644 "$o/helper/org.scottland.session.policy" "$pkgdir/usr/share/polkit-1/actions/org.scottland.session.policy"
@@ -127,6 +128,7 @@ package_scottland-omarchy() {
   install -Dm755 "$o/autostart.d/45-hyprland-start" "$pkgdir/usr/lib/scottland/autostart.d/45-hyprland-start"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
   install -Dm644 "$o/prompts/omarchy-overrides-agent.txt" "$pkgdir/usr/lib/scottland/prompts/omarchy-overrides-agent.txt"
+  install -Dm644 "$o/agents/skills/scottland-omarchy/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland-omarchy/SKILL.md"
   install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
   install -Dm755 "$o/reload.d/10-hyprshim" "$pkgdir/usr/lib/scottland/reload.d/10-hyprshim"
   install -Dm755 "$o/autostart.d/20-omarchy-shell" "$pkgdir/usr/lib/scottland/autostart.d/20-omarchy-shell"
