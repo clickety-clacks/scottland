@@ -275,7 +275,7 @@
         auto g = placed_geometry(view);
         double width = view->get_output()->get_relative_geometry().width;
         auto zone_at = [&] (double shift) {
-            double x = g.x + g.width / 2.0 + shift; auto z = place_at(x, width).zone;
+            double x = g.x + g.width / 2.0 + shift; auto z = place_at(view->get_output(), x, width).zone;
             return z == zone_t::center ? 0 : x < width / 2 ? 1 : 2;
         };
         if (zone_at(dx) != zone_at(0))
@@ -346,10 +346,11 @@
     }
     // A side spot reads as lower priority than the center once its scale has visibly fallen: by 5%,
     // or halfway to the rail's scale when the curve has less range than that (WP4, WP8).
-    double periphery_threshold(double screen_width)
+    double periphery_threshold(wf::output_t *output, double screen_width)
     {
-        double rail = screen_width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
-        double outer_scale = place_at(rail + 1, screen_width).scale;
+        auto zone = zone_for(output);
+        double rail = screen_width * std::clamp(zone.rail / 100, 0.0, 0.25);
+        double outer_scale = place_at(output, rail + 1, screen_width).scale;
         return 1 - std::min(0.05, std::max(0.0, (1 - outer_scale) / 2));
     }
     // Whether a spot at x reads as zone z (WP8): the center inside the center zone, and just past its
@@ -357,12 +358,13 @@
     // scale; a periphery anywhere else in the side zone. A Shift pin makes a side spot a periphery
     // spot wherever it is: the user put it there at that scale, even at full size (L31). A pin
     // never applies inside the center zone (tenet 4). Rails are what they are.
-    bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin, double screen_width)
+    bool reads_as(scottland::windowing::zone z, double x, std::optional<double> pin,
+        wf::output_t *output, double screen_width)
     {
         using Z = scottland::windowing::zone;
-        auto place = place_at(x, screen_width);
+        auto place = place_at(output, x, screen_width);
         bool center = place.zone == zone_t::center ||
-            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(screen_width));
+            (place.zone == zone_t::continuous && !pin && place.scale > periphery_threshold(output, screen_width));
         if (z == Z::center) return center;
         if (z == Z::left_periphery || z == Z::right_periphery)
             return place.zone == zone_t::continuous && !center && ((x < screen_width / 2) == (z == Z::left_periphery));
@@ -378,7 +380,8 @@
         auto g = placed_geometry(view);
         auto found = model.windows.find(view->get_id());
         auto pin = found == model.windows.end() ? std::nullopt : found->second.pinned_scale;
-        return reads_as(Z::center, g.x + g.width / 2.0, pin, view->get_output()->get_relative_geometry().width) ?
+        return reads_as(Z::center, g.x + g.width / 2.0, pin, view->get_output(),
+            view->get_output()->get_relative_geometry().width) ?
             Z::center : z;
     }
     wayfire_toplevel_view represented_view(uint64_t id)
@@ -734,8 +737,9 @@
     scottland::windowing::rectangle side_region(wf::output_t *output, bool left, bool rail)
     {
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
-        double edge = screen.width * std::clamp(double(rail_width) / 100, 0.0, 0.25);
-        double center_edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
+        auto zone = zone_for(output);
+        double edge = screen.width * std::clamp(zone.rail / 100, 0.0, 0.25);
+        double center_edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
         double lo = rail ? 0 : edge + 1, hi = rail ? edge : center_edge - 1;
         if (hi < lo) hi = lo;
         if (!rail)  // (rails keep their own inset, WIDGET_INSET, which is wider)
@@ -766,12 +770,13 @@
         using Z = scottland::windowing::zone;
         auto output = destination_output ? destination_output : window->get_output();
         auto screen = output->get_relative_geometry();
+        auto zone = zone_for(output);
         auto a = output->workarea->get_workarea(); auto g = window->get_geometry();
         auto& memory = ensure_window_memory(window->get_id());
         std::optional<scottland::windowing::point> remembered;
         if (auto p = memory.positions[size_t(z)]) remembered = {p->x * screen.width, p->y * screen.height};
         // A memory counts only while its spot still reads as its zone (WP8).
-        if (remembered && !reads_as(z, remembered->x, scottland::windowing::remembered_pin(memory, z), screen.width))
+        if (remembered && !reads_as(z, remembered->x, scottland::windowing::remembered_pin(memory, z), output, screen.width))
             remembered.reset();
         double w = g.width, h = g.height;
         if (z == Z::center)
@@ -783,7 +788,7 @@
         if (z == Z::center)
         {
             // The zone constrains the window's CENTER; content stays full size, even if wider.
-            double edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
+            double edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
             // Strictly inside: a center exactly on the zone's edge is already the periphery's
             // (the softness band starts there), so it would be scaled (tenet 4).
             double lo = std::max(edge + 1.0, a.x + std::min(w, double(a.width)) / 2);
@@ -815,8 +820,8 @@
                 {
                     double inner = left ? side.x + side.width : side.x;
                     double outer = left ? side.x : side.x + side.width;
-                    double threshold = periphery_threshold(screen.width);
-                    double center_edge = screen.width * (1 - std::clamp(double(center_width) / 100, 0.0, 1.0)) / 2;
+                    double threshold = periphery_threshold(output, screen.width);
+                    double center_edge = screen.width * (1 - std::clamp(zone.center / 100, 0.0, 1.0)) / 2;
                     double boundary = left ? center_edge : screen.width - center_edge;
                     auto area = output->workarea->get_workarea();
                     std::optional<double> chosen;
@@ -825,8 +830,8 @@
                         double trial = inner + (outer - inner) * step / 512;
                         // A pixel inward too, so rounding the landing can't bring it back.
                         double inward = trial + (left ? 1 : -1);
-                        double scale = place_at(trial, screen.width).scale;
-                        if (std::max(scale, place_at(inward, screen.width).scale) > threshold) continue;
+                        double scale = place_at(output, trial, screen.width).scale;
+                        if (std::max(scale, place_at(output, inward, screen.width).scale) > threshold) continue;
                         double half = g.width * scale / 2;
                         auto pa = padded(area, g.width * scale, g.height * scale);
                         if (left ? trial - half < pa.x : trial + half > pa.x + pa.width) continue;
@@ -849,7 +854,7 @@
                 scottland::windowing::point spot;
                 for (int iteration = 0; iteration < 16; ++iteration)
                 {
-                    double scale = place_at(x, screen.width).scale;
+                    double scale = place_at(output, x, screen.width).scale;
                     w = g.width * scale; h = g.height * scale;
                     region.x = side.x - w / 2; region.width = side.width + w;
                     // ...and wholly on screen with its padding (WP7), when it fits.
@@ -918,7 +923,8 @@
         auto screen = window->get_output()->get_relative_geometry();
         auto& memory = ensure_window_memory(id);
         auto pin = scottland::windowing::remembered_pin(memory, z);
-        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z, p->x * screen.width, pin, screen.width)))
+        if (auto p = memory.positions[size_t(z)]; pin && !(p && reads_as(z, p->x * screen.width, pin,
+            window->get_output(), screen.width)))
             pin.reset();
         pin_scale(window, pin);
         // Where its center actually lands, after pixel rounding: the drawn scale must be that
@@ -937,7 +943,7 @@
             ensure_window_memory(id).last_side = left ? -1 : 1;
             publish_model();
         } else { remember_window(window); start_cycle_glide(window, from, from_scale,
-            landed, pin ? *pin : place_at(landed.x, screen.width).scale); }
+            landed, pin ? *pin : place_at(window->get_output(), landed.x, screen.width).scale); }
         declutter_signature.clear();
     }
     bool place_cycled_widget(wayfire_toplevel_view widget, uint64_t id, const std::string& rail)
@@ -1197,10 +1203,12 @@
             output_live[name] = local_live;
             auto bounds = output->get_relative_geometry();
             auto area = output->workarea->get_workarea();
+            auto zone = zone_for(output);
             std::ostringstream common;
             common << "active:" << window_keys.active << ";avoidance:" << avoidance_active
                 << ";live:" << local_live << ";text:" << hints_palette.text_scale
-                << ";center:" << double(center_width) << ";rail:" << double(rail_width)
+                << ";center:" << zone.center << ";rail:" << zone.rail << ";blend:" << zone.blend
+                << ";min:" << zone.minimum << ";max:" << zone.maximum << ";curve:" << *zone.curve_text
                 << ";screen:" << bounds.width << ',' << bounds.height
                 << ";workarea:" << area.x << ',' << area.y << ',' << area.width << ',' << area.height;
             // The same anchoring predicate the solver uses (input.anchored below, WK13).
@@ -1328,8 +1336,9 @@
                     // P13: a displayed center stays in its own zone. Zone extents as the layout
                     // model draws them (center_width, rail_width); a periphery excludes its rail.
                     const double width = screen.width;
-                    const double center_half = width * std::clamp(double(center_width), 0.0, 100.0) / 200.0;
-                    const double rail = width * std::clamp(double(rail_width), 0.0, 50.0) / 100.0;
+                    auto zone = zone_for(output);
+                    const double center_half = width * std::clamp(zone.center, 0.0, 100.0) / 200.0;
+                    const double rail = width * std::clamp(zone.rail, 0.0, 50.0) / 100.0;
                     std::vector<rectangle> fixed_above;
                     std::ostringstream order;
                     for (auto id : ordered)

@@ -34,8 +34,10 @@ main() {
     [ -r "$env_hook" ] && . "$env_hook"
   done
 
-  # A new session starts from the installed (or dev) plugin, not a previous session's reload copy.
+  # A new session starts from the installed (or dev) plugin, not a previous session's reload copy,
+  # and with the configured displays, not a previous session's output settings (scottland-output).
   rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/plugins"
+  rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/session-outputs.json"
 
   state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
   mkdir -p "$state"

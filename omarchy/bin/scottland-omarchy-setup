@@ -1,6 +1,8 @@
 #!/bin/bash
-# Per-user setup for Omarchy: add "Switch to Scottland" to the Omarchy menu (System submenu).
-# Omarchy only reads menu additions from the user's extension file, so a package can't ship this.
+# Per-user setup for Omarchy: add "Switch to Scottland" to the Omarchy menu (System submenu), install
+# Scottland's default themes and Gooarchy's xdg-desktop-portal-wlr (screen sharing), and show the
+# shortcut report.
+# Omarchy only reads menu additions from the user's extension file, so a package can't ship them.
 set -euo pipefail
 
 script_dir=$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")
@@ -71,6 +73,72 @@ for theme in "${themes[@]}"; do
   fi
 done
 
+# Screen sharing: Gooarchy's xdg-desktop-portal-wlr, built from its fork, in place of Arch's, whose
+# shared streams freeze or drop under Wayfire in most attempts (docs/adapter-gaps.md AG02). Built
+# here from Gooarchy's recipe at a pinned commit, each file checked by sha256, because Gooarchy has
+# no package repository yet; once it has one, install the package from there instead. Whatever
+# provided xdg-desktop-portal-wlr before is replaced in one pacman transaction, and setup says so.
+portal_pkg=xdg-desktop-portal-wlr-gooarchy
+portal_fork=https://github.com/clickety-clacks/xdg-desktop-portal-wlr
+portal_recipe=https://raw.githubusercontent.com/clickety-clacks/gooarchy/09cf174e7fb35a71dd32aeead5c546e23270a354/packaging/arch/xdg-desktop-portal-wlr
+portal_files=(
+  'PKGBUILD 35c918f845be78be3109ffb58ba82a05b47315d9599dc0863cfa8f06fb109761'
+  'wlr-portals.conf 85b84ba8ba69e41295e7f02045c67b547df6eab1b137502b089ddf354f2a04de'
+)
+
+# Every step returns on failure by hand: the caller tests the result, which turns off set -e here.
+install_portal() {
+  local work=$1 item name want previous previous_name reason=() built
+  for item in "${portal_files[@]}"; do
+    name=${item%% *}
+    curl -fsSL --proto '=https' -o "$work/$name" "$portal_recipe/$name" ||
+      { echo "scottland-omarchy-setup: could not download $portal_recipe/$name" >&2; return 1; }
+    echo "${item#* }  $work/$name" | sha256sum --check --quiet --strict ||
+      { echo "scottland-omarchy-setup: $name from $portal_recipe is not the pinned file" >&2; return 1; }
+  done
+  want=$(cd "$work" && makepkg --printsrcinfo | sed -n 's/^\tpkgver = //p; s/^\tpkgrel = //p' | paste -sd-) &&
+    [[ -n $want ]] || return 1
+  # pacman -Q also answers for a package that only provides the name: this is whatever provides it.
+  previous=$(pacman -Q xdg-desktop-portal-wlr 2>/dev/null || true)
+  previous_name=${previous%% *}
+  if [[ $previous == "$portal_pkg $want" ]]; then
+    echo "Gooarchy's xdg-desktop-portal-wlr ($portal_pkg $want) is already installed."
+    return 0
+  fi
+  echo "Building Gooarchy's xdg-desktop-portal-wlr $want for screen sharing (needs sudo for pacman)..."
+  (cd "$work" && makepkg --syncdeps --rmdeps --noconfirm --needed --cleanbuild) || return 1
+  built=$(cd "$work" && makepkg --packagelist | grep -F "/$portal_pkg-$want-") && [[ -f $built ]] ||
+    { echo "scottland-omarchy-setup: makepkg did not leave $portal_pkg $want" >&2; return 1; }
+  if [[ -n $previous && $previous_name != "$portal_pkg" ]]; then
+    # The replacement keeps the install reason of what it replaces.
+    LC_ALL=C pacman -Qi "$previous_name" | grep -q '^Install Reason *: Installed as a dependency' &&
+      reason=(--asdeps)
+    echo "Replacing $previous with Gooarchy's xdg-desktop-portal-wlr ($portal_pkg $want," \
+         "built from $portal_fork): with $previous_name, screen sharing in Scottland freezes or" \
+         "drops in most attempts. To go back: sudo pacman -S xdg-desktop-portal-wlr"
+  elif [[ -n $previous ]]; then
+    echo "Updating $previous to $want."
+  fi
+  # --ask=4 answers pacman's "remove the conflicting package?" with yes, so the swap is one
+  # transaction (the hidden --ask option is pacman's own, used for unattended conflict resolution).
+  sudo pacman -U --noconfirm --ask=4 "${reason[@]}" "$built" || return 1
+  # Exact names: Gooarchy's build is installed and nothing named xdg-desktop-portal-wlr is.
+  [[ $(pacman -Q "$portal_pkg" 2>/dev/null) == "$portal_pkg $want" ]] &&
+    ! pacman -Qq | grep -qx xdg-desktop-portal-wlr ||
+    { echo "scottland-omarchy-setup: $portal_pkg $want is not the installed xdg-desktop-portal-wlr" >&2; return 1; }
+  echo "Installed Gooarchy's xdg-desktop-portal-wlr ($portal_pkg $want)${previous:+ in place of $previous}." \
+       "pacman -Syu keeps it. A portal already running keeps the old one until it restarts (next login)."
+}
+
+portal_ok=true
+portal_work=$(mktemp -d "${TMPDIR:-/tmp}/scottland-portal.XXXXXX")
+if ! install_portal "$portal_work"; then
+  portal_ok=false
+  echo "scottland-omarchy-setup: Gooarchy's xdg-desktop-portal-wlr is not installed (see above), so" \
+       "screen sharing in Scottland fails most of the time. Run scottland-omarchy-setup again to retry." >&2
+fi
+rm -rf "$portal_work"
+
 # Generate and show the current report at setup. The adapter records the report digest so session
 # startup will not open the same content again. Prefer the active dev snapshot when present.
 hooks=${SCOTTLAND_HOOKS:-}
@@ -91,3 +159,4 @@ if [[ -x $hooks/config.d/50-omarchy-shortcuts ]]; then
 else
   echo "scottland-omarchy-setup: shortcut report generator not found under $hooks" >&2
 fi
+$portal_ok || exit 1

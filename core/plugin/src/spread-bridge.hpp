@@ -52,8 +52,9 @@
         std::ostringstream out;
         if (!output_alive(output)) return "";
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
-        out << double(center_width) << ',' << double(rail_width) << ',' << double(min_scale) << ',' <<
-            double(max_scale) << ',' << double(blend_width) << ',' << std::string(scale_curve_text) << ';' <<
+        auto zone = zone_for(output);
+        out << zone.center << ',' << zone.rail << ',' << zone.minimum << ',' <<
+            zone.maximum << ',' << zone.blend << ',' << *zone.curve_text << ';' <<
             screen.width << 'x' << screen.height << ';' << a.x << ',' << a.y << ',' << a.width << ',' << a.height << ';';
         for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY))
         {
@@ -82,15 +83,16 @@
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
         sp::snapshot_t s;
         double W = screen.width;
+        auto zone = zone_for(output);
         s.screen_width = W; s.screen_height = screen.height;
         s.workarea = {double(a.x), double(a.y), double(a.x + a.width), double(a.y + a.height)};
         s.padding = std::ceil(SCREEN_PADDING);
-        double cw = center_width, rw = rail_width, mn = std::clamp((double)min_scale, 0.05, 1.0);
-        double mx = std::clamp((double)max_scale, 0.05, 1.0), bl = std::max(0.0, (double)blend_width);
+        double cw = zone.center, rw = zone.rail, mn = zone.minimum;
+        double mx = zone.maximum, bl = std::max(0.0, zone.blend);
         s.center_half = W * std::clamp(cw, 0.0, 100.0) / 200.0;
         s.rail_width = W * std::clamp(rw, 0.0, 50.0) / 100.0;
         // An immutable copy of the scale function: the snapshot never reads the plugin.
-        s.scale = scale_function(W, cw, rw, mn, mx, scale_curve, bl);
+        s.scale = scale_function(W, cw, rw, mn, mx, *zone.curve, bl);
         // WP4: the first center whose natural scale reads as scaled (zone_spot's search).
         double inner = W / 2 - s.center_half - 1, outer = s.rail_width + 1;
         double outer_scale = s.scale(outer);
@@ -125,9 +127,9 @@
             auto found = model.windows.find(e.id);
             w.pinned = found != model.windows.end() && found->second.pinned_scale.has_value();
             w.scale = std::clamp(scale_for(window), 0.05, 1.0);
-            auto zone = place_at(w.cx, W).zone;
-            w.role = zone == zone_t::center ? sp::role_t::arrival :
-                (zone == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed);
+            auto placement = place_at(output, w.cx, W).zone;
+            w.role = placement == zone_t::center ? sp::role_t::arrival :
+                (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed);
             auto rank = std::find(focus_recency.begin(), focus_recency.end(), e.id);
             w.recency = uint32_t(rank - focus_recency.begin());
             w.side_memory = int8_t(ensure_window_memory(e.id).last_side);
@@ -296,7 +298,7 @@
         auto g = window->get_geometry();
         wf::pointf_t at{g.x + g.width / 2.0, g.y + g.height / 2.0};
         bool shown_as_window = !link_of_window(window);
-        if (!(shown_as_window && window->get_output() == output && place_at(at.x, screen.width).zone == zone_t::center))
+        if (!(shown_as_window && window->get_output() == output && place_at(output, at.x, screen.width).zone == zone_t::center))
         {
             auto& memory = ensure_window_memory(window->get_id());
             if (auto p = memory.positions[size_t(scottland::windowing::zone::center)])

@@ -24,10 +24,10 @@ Super+, opens Scottland Settings: Layout, Goo, Window mode, Translucency, Widget
 | S18 | Curve knobs are easy to grab: generous hit targets (at least ~24 pt) with a visible hover/selected state. A clicked knob is selected; Delete or Backspace removes the selected knob (endpoints can't be removed); double-click/right-click removal may remain. (Mike, 2026-10-02) | implemented; isolated headless real-input checks and screenshots; see redesign validation below |
 | S19 | Scottland Settings has a Widgets tab for widget behavior: elastic expand/contract bounce (WG23), hover and attention peek timing (WG19), the live `widget_make_room_dwell` rail-pause setting (WG26; default 350 ms, range 100–1500 ms) and the Super+M hold delay (WG16). The controls share the S16 design system and live preview with Save/Cancel/Defaults. | implemented; Plumbus headless settings and rail-pause input checks (2026-10-04); Super+M hold delay headless |
 | S20 | The Translucency tab has focused/unfocused opacity pairs for center windows, side-zone windows and widgets (all default fully opaque); Window mode has its own focused/unfocused pair, applied while active. Values preview live and ease over 180 ms as focus or zone changes. Fullscreen stays opaque. S11 hints and Save/Cancel/Defaults cover every pair. | implemented (headless) |
-| S21 | Sunlight follows local sunrise and sunset when enabled, changing the standard light/dark preference only if its current mode is wrong, leaving a matching user-picked theme alone. System Geoclue city-level location comes first, followed by coordinates saved once in Settings; IP location is the last fallback. On by default, location included (Mike, 2026-10-02: he didn't ask for this panel but keeps it); both can be turned off; Save/Cancel/Defaults apply to `solar.ini`. The distro's cross-app theme engine and named day/night defaults stay outside core. | implemented (headless) |
+| S21 | Sunlight follows local sunrise and sunset when enabled, changing the standard light/dark preference only if its current mode is wrong, leaving a matching user-picked theme alone. System Geoclue city-level location comes first, followed by coordinates saved once in Settings; IP location is the last fallback. Standalone Sunlight and network lookup default on; integrations may require explicit opt-in through `SCOTTLAND_SOLAR_OPT_IN=1`, making missing keys default off in both producer and Settings; explicit enabled/allow_ip choices are preserved; Save/Cancel/Defaults apply to `solar.ini`. The distro's cross-app theme engine and named day/night defaults stay outside core. | implemented (headless) |
 | S22 | The Goo settings appearance rows tune the unfocused edge on both render paths: the active scheme's neutral gray level (with separate saved light/dark values) and its continuous tint strength from clear refraction to the existing look. Changes preview live; this A16 control leaves focus, attention and Window mode hint colors at full strength, while the separate GO23 Dye strength control scales them. Defaults, Save and Cancel include both tone values and strength. | implemented; plumbus headless two-output slider, save/reset coverage (2026-10-03) |
 
-| S23 | Window mode has one “Hint background opacity” slider (WK42), 0–100%, default 21. It sets the absolute opacity of the background behind window and widget hint letters alike, previewed live: 100% is a solid backing, 0% none. Letter foreground and window opacity are unchanged. It uses the existing parameter row, help, saved/current value readback and Save/Cancel/Defaults transaction. (Mike, 2026-10-06; made absolute and shared by both hint kinds the same day: "it should set both. having them different is a bug.") | prior integration-tree checks passed; current main-based runner result pending |
+| S24 | Layout can edit all screens' global zone sizes or the screen Settings opened on. Its six sizes are keyed by the exact reported make/model/serial triple; outputs with the same triple share the override, and outputs with all three fields empty use global sizes. All-screens edits leave overrides intact. This-screen edits start from the override or current globals, apply to matching identities, and can reset an existing override to globals. Overlays draw each output's resolved sizes and show handles only where the current choice applies. Save stores every override in `layout.ini`; Cancel restores globals and overrides from opening. | implemented; verified by S24 headless acceptance (241/0) and added-output placement |
 
 ## Preview and help
 
@@ -62,12 +62,27 @@ wallpaper refraction, rather than changing the goo's hit area.
 
 ## Overlay geometry and input
 
-Each screen uses its own logical width. The center boundaries are symmetric about its middle,
-and rail widths are percentages of that screen. Softness is in logical points, outside the
+Each output uses its own logical width. The center boundaries are symmetric about its middle,
+and rail widths are percentages of that output. Softness is in logical points, outside the
 center on each side. As in the compositor's `place()`, its visible width is capped at half the
 available center-to-rail span. The shaded blend band is separate from the curve shading; the
 curve shading starts at the outer edge of the band. No band is drawn where rails overlap the
-center. Changing one value previews it on every screen.
+center.
+
+The six zone sizes (center width, rail width, softness, scale curve, minimum scale and maximum
+scale) can be global or saved for one screen identity: the exact make, model and serial reported
+by the compositor. Outputs with the same triple share one override. An output with no reported
+identity follows the global sizes. The connector name is used only to match the Settings window
+to its output while the app is running; it is never saved as an identity.
+
+The Layout choice opens on “This screen” when that screen already has an override, otherwise on
+“All screens”. The target stays the screen Settings opened on, even if the window moves. “All
+screens” changes global sizes while screens with overrides keep theirs. “This screen” starts from
+its override or the current globals and edits every connected output with the same identity; an
+existing override can be reset to the global sizes. The overlay draws each output's resolved
+sizes and exposes border handles only on outputs affected by the current choice. Preview is live.
+Save writes globals and every override, including disconnected screens, to `layout.ini`; Cancel
+restores both from when Settings opened.
 
 Each border has a narrow 12-point input strip, a visible grip, and a horizontal resize cursor;
 hover brightens the border. The layer-shell input region is the union of these six strips.
@@ -85,7 +100,7 @@ and step logic as the sliders (center 10–90%, step 0.5%; rails 0.5–10%, step
 the configured width is capped, keeping the visible edge attached to the pointer.
 
 Preview updates are coalesced every 30 ms, including continuous motion. Save/Return persists
-the current shared values; Cancel/Escape restores all opening values and writes nothing,
+the current global values and all screen overrides; Cancel/Escape restores all opening values and writes nothing,
 including when Escape interrupts a held border. Borders take keyboard focus on demand to
 retain those shortcuts after a drag. Reopening reads the saved/current settings.
 
@@ -252,7 +267,12 @@ control. Widget peek delays default to 150 ms on hover, 100 ms on leave and 5000
 
 Sunlight writes `~/.config/scottland/solar.ini`. Latitude and longitude are used only if the
 system location service is unavailable; entering both coordinates enables the saved pair.
-The network lookup switch is off by default and calls ipapi.co only after explicit permission.
+Standalone Sunlight and network lookup retain their on defaults. Integrations setting
+`SCOTTLAND_SOLAR_OPT_IN=1` default missing keys off, including Settings Save of another
+tab and Defaults. Saved explicit choices still win; existing timers and configuration are not
+migrated. The mode producer refreshes its publication each polling cycle and records its PID,
+process start time, boot identity and configuration timestamp beside the mode. An adapter
+requires that matching live process and configuration, as well as a fresh mode, before acting.
 A matching current light/dark preference is left alone. The per-session desired mode is published
 in `<XDG_STATE_HOME>/scottland/<WAYLAND_DISPLAY>.solar-mode` for adapters.
 An isolated headless `once` run used the keyfile GSettings backend and saved coordinates when

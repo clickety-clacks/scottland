@@ -9,7 +9,9 @@ work unmodified. It never talks to a real Hyprland.
   $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock  event stream ("activewindow>>...")
 
 Scottland has no workspaces, so each output is presented as one workspace. Requests the shim
-cannot translate answer "ok" (or an error for queries) and are logged, so gaps are easy to find:
+cannot translate fail visibly: they answer "error: unsupported in Scottland: ...", which makes
+`hyprctl` exit non-zero (status 7) as it does for Hyprland's own errors, rather than claiming a
+success that did nothing. They are also logged, so gaps are easy to find:
   $XDG_STATE_HOME/scottland/hyprshim.log
 """
 
@@ -22,6 +24,10 @@ import subprocess
 import sys
 import threading
 import time
+
+# Hyprland monitor rules in Scottland's terms, shared with the shortcut importer.
+sys.path.insert(0, os.path.join(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"), "libexec"))
+import scottland_hyprland_monitor as hyprmonitor  # noqa: E402
 
 # Answers for `getoption`, standing in for Hyprland config the shell reads to match its look.
 OPTIONS = {
@@ -63,7 +69,8 @@ class Log:
         state = (os.environ.get("SCOTTLAND_TEST_STATE") or os.environ.get("XDG_STATE_HOME")
                  or os.path.expanduser("~/.local/state"))
         os.makedirs(os.path.join(state, "scottland"), exist_ok=True)
-        self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1)
+        self.file = open(os.path.join(state, "scottland", "hyprshim.log"), "a", buffering=1,
+                         errors="backslashreplace")
         self.seen = set()
 
     def __call__(self, message):
@@ -77,6 +84,11 @@ class Log:
 
 
 log = Log()
+
+
+def unsupported(request):
+    """The reply for a request with no Scottland translation; hyprctl exits 7 on "error:"."""
+    return f"error: unsupported in Scottland: {request[:200]}"
 
 
 class Wayfire:
@@ -174,9 +186,139 @@ class Wayfire:
                     pass
 
 
+LUA_ESCAPES = {"a": b"\a", "b": b"\b", "f": b"\f", "n": b"\n", "r": b"\r", "t": b"\t", "v": b"\v",
+               "\\": b"\\", '"': b'"', "'": b"'"}
+LUA_NEWLINE = re.compile(r"\r\n|\n\r|\r|\n")
+
+
+def lua_utf8(code):
+    """Lua's UTF-8 encoding of a \\u{XXX} escape (code points up to 2^31, as Lua allows)."""
+    if code < 0x80:
+        return bytes([code])
+    out, first_max = [], 0x3F
+    while True:
+        out.append(0x80 | (code & 0x3F))
+        code >>= 6
+        first_max >>= 1
+        if code <= first_max:
+            break
+    out.append(((~first_max << 1) & 0xFF) | code)
+    return bytes(reversed(out))
+
+
+def lua_string(text, pos=0):
+    """Read the Lua string literal at text[pos:] (after spaces): "...", '...', [[...]] or [==[...]==].
+
+    Returns (value, end) or None, the value as the bytes Lua would make of it: escapes such as
+    \\195\\169 or \\xC3 are bytes, \\u{E9} is UTF-8, and every line break in a long string is
+    one \\n. text is the request as received (decoded with surrogateescape, so any byte survives).
+    Omarchy writes commands in any of these forms, e.g. the screensaver's hl.dsp.exec_cmd([[...]]).
+    """
+    def raw(chars):
+        return chars.encode("utf-8", "surrogateescape")
+
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    long = re.compile(r"\[(=*)\[").match(text, pos)
+    if long:
+        close = "]" + long.group(1) + "]"
+        end = text.find(close, long.end())
+        if end < 0:
+            return None
+        value = text[long.end():end]
+        first = LUA_NEWLINE.match(value)  # Lua skips a line break right after the opening bracket
+        if first:
+            value = value[first.end():]
+        return raw(LUA_NEWLINE.sub("\n", value)), end + len(close)
+    if pos >= len(text) or text[pos] not in "\"'":
+        return None
+    quote, out, index = text[pos], bytearray(), pos + 1
+    while index < len(text):
+        char = text[index]
+        if char == quote:
+            return bytes(out), index + 1
+        if char in "\r\n":
+            return None  # unfinished string
+        if char != "\\":
+            out += raw(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(text):
+            return None
+        char = text[index]
+        if char in LUA_ESCAPES:
+            out += LUA_ESCAPES[char]
+            index += 1
+        elif char in "\r\n":  # a backslash before a line break: one \n
+            index += LUA_NEWLINE.match(text, index).end() - index
+            out += b"\n"
+        elif char == "z":  # skip the following whitespace
+            index += 1
+            while index < len(text) and text[index].isspace():
+                index += 1
+        elif char == "x":
+            digits = text[index + 1:index + 3]
+            if not re.fullmatch(r"[0-9A-Fa-f]{2}", digits):
+                return None
+            out.append(int(digits, 16))
+            index += 3
+        elif char in "0123456789":
+            digits = re.match(r"[0-9]{1,3}", text[index:]).group(0)
+            if int(digits) > 255:
+                return None  # Lua: decimal escape too large
+            out.append(int(digits))
+            index += len(digits)
+        elif char == "u":
+            code = re.match(r"u\{([0-9A-Fa-f]+)\}", text[index:])
+            if not code or int(code.group(1), 16) > 0x7FFFFFFF:
+                return None
+            out += lua_utf8(int(code.group(1), 16))
+            index += len(code.group(0))
+        else:
+            return None  # Lua rejects unknown escapes
+    return None
+
+
+def libexec(name):
+    return os.path.join(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"), "libexec", name)
+
+
+def lua_table(text, pos):
+    """Read the flat Lua table constructor at text[pos:] ("{ key = value, ... }") whose values are
+    string literals, numbers or booleans, as hyprctl eval sends a monitor rule. Returns
+    (fields, end) or None for anything else (a variable, an expression, a nested table)."""
+    if not text.startswith("{", pos):
+        return None
+    fields, index = {}, pos + 1
+    while True:
+        match = re.compile(r"\s*(?:\}|([A-Za-z_]\w*)\s*=\s*)").match(text, index)
+        if not match:
+            return None
+        if match.group(1) is None:
+            return fields, match.end()
+        key, index = match.group(1), match.end()
+        literal = lua_string(text, index)
+        if literal:
+            fields[key], index = literal[0].decode("utf-8", "surrogateescape"), literal[1]
+        else:
+            value = re.compile(r"(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|true|false)(?![\w.])").match(text, index)
+            if not value:
+                return None
+            word = value.group(1)
+            fields[key] = word == "true" if word in ("true", "false") else float(word)
+            index = value.end()
+        separator = re.compile(r"\s*([,;]|(?=\}))").match(text, index)
+        if not separator:
+            return None
+        index = separator.end()
+
+
 class Translator:
     def __init__(self, wayfire):
         self.wf = wayfire
+        self.rebuild_timer = None
+        self.rebuild_lock = threading.Lock()
 
     # --- Wayfire state -------------------------------------------------------------------
 
@@ -207,7 +349,63 @@ class Translator:
         index = self.monitor_index(outputs, output_id)
         return {"id": index + 1, "name": str(index + 1)}
 
-    def monitor(self, outputs, output, focused_id):
+    def session_locked(self):
+        reply = self.wf.call("scottland/session-state") or {}
+        return bool(reply.get("locked"))
+
+    @staticmethod
+    def output_power(*args):
+        """Run scottland-output-power (DPMS through wlr-output-power-management): (ok, {name: on?}, error)."""
+        hooks = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+        try:
+            result = subprocess.run([os.path.join(hooks, "libexec/scottland-output-power"), *args],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as error:
+            return False, {}, str(error)
+        power = {}
+        for line in result.stdout.splitlines():
+            try:
+                entry = json.loads(line)
+                power[entry["name"]] = entry["power"] == "on"
+            except (ValueError, KeyError):
+                pass
+        return result.returncode == 0, power, result.stderr.strip()
+
+    @staticmethod
+    def heads():
+        """Every output the compositor knows, enabled or not, with its real metadata (core's
+        scottland-output-heads, wlr-output-management): {name: head}, or {} if unavailable."""
+        try:
+            result = subprocess.run([libexec("scottland-output-heads")], stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return {head["name"]: head for head in json.loads(result.stdout)}
+            log(f"output metadata unavailable: {result.stderr.strip()}")
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            log(f"output metadata unavailable: {error!r}")
+        return {}
+
+    @staticmethod
+    def head_fields(head, fallback_size=(0, 0)):
+        """The Hyprland monitor fields that come from an output's own metadata."""
+        head = head or {}
+        mode = head.get("mode") or {}
+        name = head.get("name", "")
+        return {
+            "description": hyprmonitor.describe(head) or head.get("description") or name,
+            "make": head.get("make", ""), "model": head.get("model", ""), "serial": head.get("serial", ""),
+            # Hyprland reports the mode's pixels (not the scaled layout size) and its refresh rate.
+            "width": int(mode.get("width") or fallback_size[0]),
+            "height": int(mode.get("height") or fallback_size[1]),
+            "physicalWidth": head.get("physical_width", 0), "physicalHeight": head.get("physical_height", 0),
+            "refreshRate": float(mode.get("refresh") or 0.0),
+            "scale": head.get("scale", 1), "transform": head.get("transform", 0),
+            "vrr": bool(head.get("adaptive_sync")),
+            "availableModes": [f"{m['width']}x{m['height']}@{m['refresh']:.2f}Hz"
+                               for m in head.get("modes", [])],
+        }
+
+    def monitor(self, outputs, output, focused_id, locked=False, power=None, head=None):
         geometry, workarea = output["geometry"], output["workarea"]
         reserved = [
             int(workarea["x"] - geometry["x"]),
@@ -215,25 +413,25 @@ class Translator:
             int(geometry["x"] + geometry["width"] - workarea["x"] - workarea["width"]),
             int(geometry["y"] + geometry["height"] - workarea["y"] - workarea["height"]),
         ]
+        scale = (head or {}).get("scale", 1)
         return {
             "id": self.monitor_index(outputs, output["id"]),
-            "name": output["name"], "description": output["name"],
-            "make": "", "model": "", "serial": "",
-            "width": int(geometry["width"]), "height": int(geometry["height"]),
-            "physicalWidth": 0, "physicalHeight": 0, "refreshRate": 60.0,
+            "name": output["name"],
+            **self.head_fields(head, (round(geometry["width"] * scale), round(geometry["height"] * scale))),
             "x": int(geometry["x"]), "y": int(geometry["y"]),
             "activeWorkspace": self.workspace_ref(outputs, output["id"]),
             "specialWorkspace": {"id": 0, "name": ""},
-            "reserved": reserved, "scale": 1, "transform": 0,
+            "reserved": reserved,
             "focused": output["id"] == focused_id,
-            "dpmsStatus": True, "vrr": False,
-            # omarchy-hyprland-session-locked reads lock state from here; "LOCK" means locked.
-            # TODO: report the real session-lock state.
-            "solitary": "0", "solitaryBlockedBy": ["CANDIDATE"],
+            "dpmsStatus": (power or {}).get(output["name"], True),
+            # omarchy-hyprland-session-locked reads the session lock from here: Hyprland lists
+            # "LOCK" among the reasons a monitor can't go solitary while a lock holds the session,
+            # including one whose lock client died.
+            "solitary": "0", "solitaryBlockedBy": ["LOCK", "CANDIDATE"] if locked else ["CANDIDATE"],
             "activelyTearing": False, "tearingBlockedBy": ["CANDIDATE"],
             "directScanoutTo": "0", "directScanoutBlockedBy": ["CANDIDATE"],
             "disabled": False, "currentFormat": "XRGB8888", "mirrorOf": "none",
-            "availableModes": [], "colorManagementPreset": "srgb",
+            "colorManagementPreset": "srgb",
             "sdrBrightness": 1, "sdrSaturation": 1, "sdrMinLuminance": 0.2, "sdrMaxLuminance": 80,
             "hardwareCursorsInUse": True,
         }
@@ -272,9 +470,42 @@ class Translator:
         focus_order = {v["id"]: i for i, v in enumerate(ranked)}
         return [self.client(outputs, v, focus_order) for v in views]
 
-    def monitors(self):
+    def disabled_monitor(self, head, monitor_id):
+        """A connected output that is turned off, as `monitors all` lists it."""
+        preferred = next((m for m in head.get("modes", []) if m.get("preferred")), None)
+        fields = self.head_fields(head)
+        if preferred:
+            fields.update(width=preferred["width"], height=preferred["height"],
+                          refreshRate=float(preferred["refresh"]))
+        return {
+            "id": monitor_id, "name": head["name"], **fields,
+            "x": head.get("x", 0), "y": head.get("y", 0),
+            "activeWorkspace": {"id": -1, "name": ""}, "specialWorkspace": {"id": 0, "name": ""},
+            "reserved": [0, 0, 0, 0], "focused": False, "dpmsStatus": False,
+            "solitary": "0", "solitaryBlockedBy": ["CANDIDATE"],
+            "activelyTearing": False, "tearingBlockedBy": ["CANDIDATE"],
+            "directScanoutTo": "0", "directScanoutBlockedBy": ["CANDIDATE"],
+            "disabled": True, "currentFormat": "XRGB8888", "mirrorOf": "none",
+            "colorManagementPreset": "srgb",
+            "sdrBrightness": 1, "sdrSaturation": 1, "sdrMinLuminance": 0.2, "sdrMaxLuminance": 80,
+            "hardwareCursorsInUse": False,
+        }
+
+    def monitors(self, include_disabled=False):
+        """`monitors`: the enabled outputs; `monitors all` adds the connected ones turned off."""
         outputs, focused = self.outputs(), self.focused_output_id()
-        return [self.monitor(outputs, o, focused) for o in outputs]
+        locked = self.session_locked()
+        ok, power, error = self.output_power("status")
+        if not ok:
+            log(f"output power state unavailable: {error}")
+        heads = self.heads()
+        result = [self.monitor(outputs, o, focused, locked, power, heads.get(o["name"])) for o in outputs]
+        if include_disabled:
+            enabled = {o["name"] for o in outputs}
+            for head in heads.values():
+                if head["name"] not in enabled:
+                    result.append(self.disabled_monitor(head, len(result)))
+        return result
 
     def workspaces(self):
         outputs, views = self.outputs(), self.views()
@@ -338,18 +569,52 @@ class Translator:
     WINDOW_ADDRESS = re.compile(r'address:(0x[0-9a-fA-F]+)')
     LUA_FIELD = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 
-    EXEC_LUA = re.compile(r'^hl\.dsp\.exec_cmd\(\s*"((?:[^"\\]|\\.)*)"')
+    EXEC_LUA = re.compile(r'^hl\.dsp\.exec_cmd\s*\(')
+
+    DPMS_LUA = re.compile(r'^hl\.dsp\.dpms\s*\(')
+    DPMS_CLASSIC = re.compile(r'^dpms(?:\s+(on|off|toggle))?(?:\s+(\S+))?\s*$')
+    DPMS_ACTIONS = {"enable": "on", "on": "on", "disable": "off", "off": "off", "toggle": "toggle",
+                    None: "toggle"}
+
+    def dpms(self, text, match):
+        """Turn displays off/on: hl.dsp.dpms({ action = "disable", monitor = "eDP-1" }) or the
+        classic `dpms off [name]`. Applied by the compositor's power management; the reply says
+        whether it took effect."""
+        if match.re is self.DPMS_LUA:
+            fields = dict(self.LUA_FIELD.findall(text))
+            action, monitor = fields.get("action"), fields.get("monitor")
+        else:
+            action, monitor = match.group(1), match.group(2)
+        if action not in self.DPMS_ACTIONS:
+            return f"error: unknown dpms action {action!r}"
+        args = (["--output", monitor] if monitor else []) + [self.DPMS_ACTIONS[action]]
+        ok, _power, error = self.output_power(*args)
+        return "ok" if ok else f"error: dpms {self.DPMS_ACTIONS[action]} failed: {error or 'refused'}"
+
+    @classmethod
+    def exec_command(cls, text):
+        """The command (bytes) of an exec dispatch: hl.dsp.exec_cmd(<Lua string>, ...) or classic
+        `exec`."""
+        text = text.strip()
+        match = cls.EXEC_LUA.match(text)
+        if match:
+            literal = lua_string(text, match.end())
+            if literal and re.match(r"\s*[,)]", text[literal[1]:]):
+                return literal[0]
+            return None
+        return text[5:].encode("utf-8", "surrogateescape") if text.startswith("exec ") else None
 
     def dispatch(self, text):
         """Translate the window dispatches the shell uses; everything else is a logged no-op."""
         # Run a command in this session, like Hyprland's exec dispatcher (Lua or classic form).
-        match = self.EXEC_LUA.match(text.strip())
-        command = json.loads(f'"{match.group(1)}"') if match else (
-            text.strip()[5:] if text.strip().startswith("exec ") else None)
+        command = self.exec_command(text)
         if command:
             subprocess.Popen(["sh", "-c", command], start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return "ok"
+        dpms = self.DPMS_LUA.match(text.strip()) or self.DPMS_CLASSIC.match(text.strip())
+        if dpms:
+            return self.dpms(text.strip(), dpms)
         if "send_key_state" in text or "send_shortcut" in text:
             # hl.dsp.send_key_state({ key = "Insert", mods = "CTRL", state = "down" })
             fields = dict(self.LUA_FIELD.findall(text))
@@ -359,15 +624,77 @@ class Translator:
             })
             if reply.get("error"):
                 log(f"send-key failed: {reply['error']} ({text[:120]})")
+                return f"error: {reply['error']}"
             return "ok"
         match = self.WINDOW_ADDRESS.search(text)
         if match and ("window.close" in text or "closewindow" in text):
-            self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})
-            return "ok"
+            reply = self.wf.call("window-rules/close-view", {"id": view_id_from_address(match.group(1))})
+            return f"error: {reply['error']}" if reply.get("error") else "ok"
         if match and ("focus" in text):
-            self.wf.call("window-rules/focus-view", {"id": view_id_from_address(match.group(1))})
-            return "ok"
+            reply = self.wf.call("window-rules/focus-view", {"id": view_id_from_address(match.group(1))})
+            return f"error: {reply['error']}" if reply.get("error") else "ok"
         log.unsupported(f"dispatch {text}")
+        return unsupported(f"dispatch {text}")
+
+    @staticmethod
+    def reload():
+        """Re-read the Hyprland config now, as far as Scottland translates it: rebuild the session's
+        config (imported shortcuts, monitor rules, Lua host), the same rebuild its config watcher
+        runs when the files change, and answer once Wayfire has applied it (its outputs too), as
+        Hyprland answers after its reload. Monitor rules set with `hyprctl eval` end here, as in
+        Hyprland: this session's output settings are dropped (core scottland-output reset). Omarchy
+        runs `hyprctl reload` after changes the watcher can't see, such as installing Voxtype,
+        whose F9 shortcuts depend on the command being present, or writing a monitor toggle."""
+        try:
+            result = subprocess.run([libexec("scottland-output"), "reset"], stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=90)
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"error: config rebuild failed: {error}"
+        if result.returncode != 0:
+            lines = [line.removeprefix("scottland-output: ")
+                     for line in result.stderr.strip().splitlines() if line.strip()]
+            return "error: " + " | ".join(lines[-2:])[:400]
+        return "ok"
+
+    def schedule_rebuild(self):
+        """Rebuild the config shortly after an output appears: Hyprland's catch-all and desc:
+        monitor rules name no output, so they are written for the outputs present at each build."""
+        def rebuild():
+            subprocess.run([libexec("scottland-build-config")], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+        with self.rebuild_lock:
+            if self.rebuild_timer:
+                self.rebuild_timer.cancel()
+            self.rebuild_timer = threading.Timer(0.5, rebuild)
+            self.rebuild_timer.daemon = True
+            self.rebuild_timer.start()
+
+    MONITOR_EVAL = re.compile(r"^\s*hl\.monitor\s*\(\s*")
+
+    def eval(self, code):
+        """`hyprctl eval "hl.monitor({ output = …, mode = …, position = …, scale = … })"`: apply the
+        rule to that output now, through core's output control, until the next `hyprctl reload`
+        (as in Hyprland). Other Lua is not run."""
+        match = self.MONITOR_EVAL.match(code)
+        table = lua_table(code, match.end()) if match else None
+        if not table or not re.fullmatch(r"\s*\)\s*;?\s*", code[table[1]:]):
+            log.unsupported(f"eval {code}")
+            return unsupported(f"eval {code}")
+        output, settings, notes = hyprmonitor.translate(table[0])
+        if not hyprmonitor.NAME.fullmatch(output):
+            return f"error: unsupported in Scottland: eval hl.monitor for output {output!r} (only a named output)"
+        try:
+            result = subprocess.run([libexec("scottland-output"), "set", output,
+                                     *hyprmonitor.set_arguments(settings)],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"error: {error}"
+        if result.returncode != 0:
+            lines = [line.removeprefix("scottland-output: ")
+                     for line in result.stderr.strip().splitlines() if line.strip()]
+            return "error: " + " | ".join(lines[-2:])[:400]
+        if notes:
+            return "error: not applied in Scottland: " + "; ".join(notes)
         return "ok"
 
     # --- Requests ------------------------------------------------------------------------
@@ -388,7 +715,7 @@ class Translator:
             reply = self.query(command, args, as_json)
         except Exception as error:  # noqa: BLE001 - one bad request must not kill the shim
             log(f"error handling {request!r}: {error!r}")
-            return "error"
+            return f"error: {error}"
 
         if isinstance(reply, str):
             return reply
@@ -399,7 +726,7 @@ class Translator:
             self.wf.drop_connections_for_test()
             return "ok"
         if command == "monitors":
-            return self.monitors()
+            return self.monitors(include_disabled=args.split(" ", 1)[0] == "all")
         if command == "workspaces":
             return self.workspaces()
         if command == "activeworkspace":
@@ -410,8 +737,6 @@ class Translator:
             return self.active_window()
         if command == "devices":
             return self.devices()
-        if command == "layers":
-            return {}
         if command == "plugin" and args.split(" ", 1)[0] == "list":
             return [] if as_json else "no plugins loaded"
         if command == "configerrors":
@@ -424,15 +749,17 @@ class Translator:
             if args in OPTIONS:
                 return {"option": args, **OPTIONS[args], "set": True}
             log.unsupported(f"getoption {args}")
-            return "no such option"
+            return unsupported(f"getoption {args}")
         if command == "dispatch":
             return self.dispatch(args)
-        if command in ("keyword", "eval", "reload", "switchxkblayout", "submap", "notify",
-                       "dismissnotify", "setcursor", "output", "plugin", "kill", "setprop"):
-            log.unsupported(f"{command} {args}")
-            return "ok"
+        if command == "reload":
+            return self.reload()
+        if command == "eval":
+            return self.eval(args)
+        # Everything else (keyword, other eval, switchxkblayout, layers, binds, cursorpos, ...) has no
+        # translation yet. Report that to the caller instead of answering a false "ok".
         log.unsupported(f"{command} {args}")
-        return "unknown request"
+        return unsupported(f"{command} {args}")
 
     @staticmethod
     def plain(command, reply):
@@ -512,8 +839,9 @@ class Server:
     def answer(self, conn):
         try:
             conn.settimeout(2)
-            request = conn.recv(65536).decode(errors="replace")
-            conn.sendall(self.translator.handle(request).encode())
+            # surrogateescape: bytes that aren't UTF-8 (e.g. in a command) reach handlers intact.
+            request = conn.recv(65536).decode(errors="surrogateescape")
+            conn.sendall(self.translator.handle(request).encode(errors="surrogateescape"))
         except OSError:
             pass
         finally:
@@ -543,6 +871,8 @@ class Server:
         state = {"output": None}
         for event in self.translator.wf.events():
             try:
+                if event.get("event") == "output-added":
+                    self.translator.schedule_rebuild()
                 self.broadcast(self.translator.event_lines(event, state))
             except Exception as error:  # noqa: BLE001
                 log(f"error translating event {event.get('event')}: {error!r}")

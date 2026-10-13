@@ -14,11 +14,15 @@ behaves for the user.
 | File | Who writes it | Notes |
 |---|---|---|
 | `~/.config/scottland/overrides.ini` | The user (and you, on their behalf) | Wayfire-ini format. Applied last, so it wins over everything. Scottland never writes it. |
-| `~/.config/scottland/layout.ini` | The Scottland settings app | Zone widths and the scale curve. Prefer the app (`scottland-settings`). |
+| `~/.config/scottland/layout.ini` | The Scottland settings app | Global zone sizes and per-screen zone overrides, keyed by exact reported make/model/serial identity. Prefer the app (`scottland-settings`). |
 | Scottland's shipped config | The package | Defaults. Never edit it; override in `overrides.ini`. |
 
 Changes to `overrides.ini` apply to the running session automatically within a second or two
 (Scottland rebuilds its config when the file changes). No restart or reload needed.
+
+The Layout tab edits either global sizes or the screen it opened on. Screens with the same
+reported make/model/serial share an override; a screen with no identity follows the global sizes.
+Use “Reset to global” to remove a screen's override.
 
 Put settings under the section they belong to, e.g. `[scottland]` or `[input]`. Only add the
 keys you're changing; keep the user's existing lines.

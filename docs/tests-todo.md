@@ -145,6 +145,14 @@ Every suite runs through these; an excellent assertion is worthless against the 
   visible surviving clients and working input afterwards.
 - An integrated smoke on merged builds where widget modes, pairing/spread, peeking and reload
   share state: branches passing separately don't establish the combination.
+- Omarchy adapter fixes (adapter-fixes branch, 2026-10-05): the lid uses core's virtual switch
+  (`scottland/test-switch`), not libinput or a real lid; DPMS is judged by screencopy on a headless
+  output, not a physical panel; dictation, keyboard media hardware and real password managers are
+  stand-ins. Each needs a physical acceptance check on the test machine.
+- `tests/portal-test.py` fails in most runs with Arch's xdg-desktop-portal-wlr 0.8.4 (a frozen
+  stream or a duplicate-frame disconnect; docs/adapter-gaps.md, AG02): a real defect in that build,
+  not a flaky test. It passes with Gooarchy's build from our fork. It needs xdg-desktop-portal-wlr installed or
+  `XDPW_ROOT` (and `GST_PLUGIN_PATH` for GStreamer's pipewiresrc) pointing at extracted packages.
 
 ## On unlanded branches (fix there before landing; not edited by the cleanup)
 

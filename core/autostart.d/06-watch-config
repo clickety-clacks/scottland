@@ -17,5 +17,6 @@ while :; do
     sleep 2
   fi
   sleep 0.3  # let editors finish writing
-  "$build" >/dev/null
+  "$build" >/dev/null 2>>"$log" ||
+    echo "$(date '+%F %T') rebuild failed (above); the session keeps its previous config" >>"$log"
 done

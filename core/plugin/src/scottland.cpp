@@ -74,6 +74,8 @@ extern "C" {
 #include "hint-overlay.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
+#include "session.hpp"
+#include "shortcuts.hpp"
 #include "attention-color.hpp"
 #include "state-dye.hpp"
 
@@ -85,6 +87,7 @@ extern "C" {
 #include <set>
 #include <regex>
 #include <optional>
+#include <tuple>
 #include <signal.h>
 extern "C" {
 #include <sys/pidfd.h>  // glibc declares it without C linkage for C++
@@ -899,6 +902,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     public wf::per_output_tracker_mixin_t<center_resize_t>
 {
     scottland::key_layers_t key_layers;
+    scottland::session_t session_state;
+    scottland::shortcuts_t shortcuts;
 
     static constexpr const char *TRANSFORMER = "scottland-scale";
     scottland::goo_t goo;
@@ -909,6 +914,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<double> max_scale{"scottland/max_scale"};
     wf::option_wrapper_t<std::string> scale_curve_text{"scottland/scale_curve"};
     wf::option_wrapper_t<double> blend_width{"scottland/blend_width"};
+    wf::option_wrapper_t<std::string> screen_zones_text{"scottland/screen_zones"};
     wf::option_wrapper_t<double> center_opacity_focused{"scottland/center_opacity_focused"};
     wf::option_wrapper_t<double> center_opacity_unfocused{"scottland/center_opacity_unfocused"};
     wf::option_wrapper_t<double> side_opacity_focused{"scottland/side_opacity_focused"};
@@ -933,6 +939,25 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     wf::option_wrapper_t<std::string> attention_color_family{"scottland/attention_color_family"};
 
     #include "windowing-bridge.hpp"
+
+    using screen_identity_t = std::tuple<std::string, std::string, std::string>;
+    struct screen_zone_t
+    {
+        double center = 33.333, rail = 2, blend = 40, minimum = 0.2, maximum = 1.0;
+        std::string curve_text;
+        scale_curve_t curve;
+    };
+    struct resolved_zone_t
+    {
+        double center, rail, blend, minimum, maximum;
+        const scale_curve_t *curve;
+        const std::string *curve_text;
+    };
+    std::map<screen_identity_t, screen_zone_t> screen_zones;
+    std::string global_scale_curve_text;
+    // Headless acceptance can name otherwise unidentified outputs. This seam is registered only
+    // in SCOTTLAND_TEST_MODEL=1 sessions and never wins over identity reported by the compositor.
+    std::map<std::string, screen_identity_t> test_identity_by_output;
 
     void load_color_scheme()
     {
@@ -966,6 +991,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     void load_curve()
     {
         std::string text = scale_curve_text;
+        global_scale_curve_text = text;
         if (!scale_curve.parse(text))
         {
             if (!text.empty())
@@ -977,10 +1003,144 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     }
 
-    placement_t place_at(double x, double width)
+    static std::string output_identity_part(const char *part)
     {
-        return place(x, width, center_width, rail_width, std::clamp((double)min_scale, 0.05, 1.0),
-            std::clamp((double)max_scale, 0.05, 1.0), scale_curve, std::max(0.0, (double)blend_width));
+        return part ? std::string(part) : std::string();
+    }
+
+    static std::string output_name(wf::output_t *output)
+    {
+        if (!output) return {};
+        return output->handle && output->handle->name ? std::string(output->handle->name) : output->to_string();
+    }
+
+    screen_identity_t reported_screen_identity(wf::output_t *output) const
+    {
+        if (!output || !output->handle)
+            return {};
+        return {output_identity_part(output->handle->make),
+            output_identity_part(output->handle->model), output_identity_part(output->handle->serial)};
+    }
+
+    screen_identity_t screen_identity(wf::output_t *output) const
+    {
+        auto identity = reported_screen_identity(output);
+        if (std::get<0>(identity).empty() && std::get<1>(identity).empty() && std::get<2>(identity).empty())
+        {
+            auto synthetic = test_identity_by_output.find(output_name(output));
+            if (synthetic != test_identity_by_output.end())
+                identity = synthetic->second;
+        }
+        return identity;
+    }
+
+    static std::string display_identity(const screen_identity_t& identity)
+    {
+        std::string result;
+        for (const auto& part : {std::get<0>(identity), std::get<1>(identity), std::get<2>(identity)})
+        {
+            if (part.empty()) continue;
+            if (!result.empty()) result += ' ';
+            result += part;
+        }
+        return result;
+    }
+
+    static bool json_number(const wf::json_t& value)
+    {
+        return value.is_double() || value.is_int() || value.is_int64();
+    }
+
+    static double json_number_value(const wf::json_t& value)
+    {
+        if (value.is_double()) return value.as_double();
+        if (value.is_int64()) return double(value.as_int64());
+        return double(value.as_int());
+    }
+
+    void load_screen_zones()
+    {
+        screen_zones.clear();
+        std::string text = screen_zones_text;
+        if (text.empty()) return;
+        wf::json_t entries;
+        if (wf::json_t::parse_string(text, entries) || !entries.is_array())
+        {
+            LOGE("scottland: invalid screen_zones JSON; using global zone sizes on every output");
+            return;
+        }
+        for (size_t i = 0; i < entries.size(); ++i)
+        {
+            auto entry = entries[i];
+            if (!entry.is_object() || !entry.has_member("make") || !entry["make"].is_string() ||
+                !entry.has_member("model") || !entry["model"].is_string() ||
+                !entry.has_member("serial") || !entry["serial"].is_string() ||
+                !entry.has_member("scale_curve") || !entry["scale_curve"].is_string())
+            {
+                LOGE("scottland: ignoring screen_zones entry ", i, " with an invalid identity or curve");
+                continue;
+            }
+            bool valid = true;
+            for (const auto *key : {"center_width", "rail_width", "blend_width", "min_scale", "max_scale"})
+                valid &= entry.has_member(key) && json_number(entry[key]);
+            if (!valid)
+            {
+                LOGE("scottland: ignoring screen_zones entry ", i, " with a missing or non-numeric zone size");
+                continue;
+            }
+
+            screen_identity_t identity{entry["make"].as_string(), entry["model"].as_string(), entry["serial"].as_string()};
+            if (std::get<0>(identity).empty() && std::get<1>(identity).empty() && std::get<2>(identity).empty())
+            {
+                LOGE("scottland: ignoring screen_zones entry ", i, " without a screen identity");
+                continue;
+            }
+            screen_zone_t zone;
+            zone.center = std::clamp(json_number_value(entry["center_width"]), 0.0, 100.0);
+            zone.rail = std::clamp(json_number_value(entry["rail_width"]), 0.0, 25.0);
+            zone.blend = std::clamp(json_number_value(entry["blend_width"]), 0.0, 400.0);
+            zone.minimum = std::clamp(json_number_value(entry["min_scale"]), 0.05, 1.0);
+            zone.maximum = std::clamp(json_number_value(entry["max_scale"]), 0.05, 1.0);
+            zone.curve_text = entry["scale_curve"].as_string();
+            if (!zone.curve.parse(zone.curve_text))
+            {
+                LOGE("scottland: ignoring invalid scale_curve for screen ", display_identity(identity));
+                zone.curve = {};
+            }
+            if (screen_zones.count(identity))
+                LOGE("scottland: duplicate screen_zones identity ", display_identity(identity), "; keeping the last entry");
+            screen_zones[std::move(identity)] = std::move(zone);
+        }
+    }
+
+    resolved_zone_t zone_for(wf::output_t *output) const
+    {
+        if (output)
+        {
+            auto found = screen_zones.find(screen_identity(output));
+            if (found != screen_zones.end())
+            {
+                const auto& zone = found->second;
+                return {zone.center, zone.rail, zone.blend, zone.minimum, zone.maximum, &zone.curve, &zone.curve_text};
+            }
+        }
+        return {double(center_width), double(rail_width), double(blend_width),
+            std::clamp((double)min_scale, 0.05, 1.0), std::clamp((double)max_scale, 0.05, 1.0),
+            &scale_curve, &global_scale_curve_text};
+    }
+
+    bool output_has_own_zones(wf::output_t *output) const
+    {
+        auto identity = screen_identity(output);
+        return !(std::get<0>(identity).empty() && std::get<1>(identity).empty() && std::get<2>(identity).empty()) &&
+            screen_zones.count(identity);
+    }
+
+    placement_t place_at(wf::output_t *output, double x, double width)
+    {
+        auto zone = zone_for(output);
+        return place(x, width, zone.center, zone.rail, zone.minimum, zone.maximum,
+            *zone.curve, std::max(0.0, zone.blend));
     }
 
     /** Is Shift held (alone or with others) on the keyboard? */
@@ -1023,7 +1183,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
         auto geometry = view->get_geometry();
         double x = geometry.x + geometry.width / 2.0;
-        return place_at(x, output->get_relative_geometry().width);
+        return place_at(output, x, output->get_relative_geometry().width);
     }
 
     void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_x = {})
@@ -1042,7 +1202,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         else
         {
             auto output = view->get_output();
-            auto zone = center_x && output ? place_at(*center_x, output->get_relative_geometry().width).zone : placement_of(view).zone;
+            auto zone = center_x && output ? place_at(output, *center_x, output->get_relative_geometry().width).zone : placement_of(view).zone;
             bool center = zone == zone_t::center;
             target = center ? (focused ? double(center_opacity_focused) : double(center_opacity_unfocused)) :
                 (focused ? double(side_opacity_focused) : double(side_opacity_unfocused));
@@ -2923,7 +3083,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
             auto g = view->get_geometry();
             double width = view->get_output()->get_relative_geometry().width;
-            if (place_at(std::clamp(g.x + g.width / 2.0, 0.0, width - 1), width).zone == zone_t::widget)
+            if (place_at(view->get_output(), std::clamp(g.x + g.width / 2.0, 0.0, width - 1), width).zone == zone_t::widget)
             {
                 LOGI("scottland: window ", view->get_id(), " (", view->get_title(), ") is on a rail: a widget again");
                 widgetize(view, false, {}, "load-rail-recovery");
@@ -3884,9 +4044,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
      * it leaves when the pointer goes past it. So a widget grabbed anywhere stays one until moved
      * off the rail, and the form changes as the pointer crosses, not when the window's center does.
      */
-    bool on_rail(double at, double width, wayfire_toplevel_view widget)
+    bool on_rail(wf::output_t *output, double at, double width, wayfire_toplevel_view widget)
     {
-        if (place_at(std::clamp(at, 0.0, width - 1), width).zone == zone_t::widget)
+        if (place_at(output, std::clamp(at, 0.0, width - 1), width).zone == zone_t::widget)
         {
             return true;
         }
@@ -3912,9 +4072,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto output   = view->get_output();
         double width  = output->get_relative_geometry().width;
         wf::pointf_t center{geometry.x + geometry.width / 2.0, geometry.y + geometry.height / 2.0};
-        auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
+        auto in_rail = [&] (double x) { return place_at(output, std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
         double at = pointer.x - output->get_layout_geometry().x;
-        bool on_rail = widget_shaped.value_or(this->on_rail(at, width, is_widget(view) ? view : nullptr));
+        bool on_rail = widget_shaped.value_or(this->on_rail(output, at, width, is_widget(view) ? view : nullptr));
         if (auto link = link_of_widget(view))
         {
             if (!on_rail)
@@ -5433,6 +5593,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         else if (event == "swipe_update") test_touchpad->swipe_update(fingers,
             data.has_member("dx") ? data["dx"].as_double() : 0.0, data.has_member("dy") ? data["dy"].as_double() : 0.0);
         else if (event == "swipe_end") test_touchpad->swipe_end(cancelled);
+        else if (event == "scroll") test_touchpad->scroll(  // two-finger scroll (finger source)
+            data.has_member("dx") ? data["dx"].as_double() : 0.0, data.has_member("dy") ? data["dy"].as_double() : 0.0);
         else if (event == "button") test_touchpad->press(
             data.has_member("button") && data["button"].as_string() == "left" ? BTN_LEFT : BTN_MIDDLE,
             data.has_member("pressed") && data["pressed"].as_bool());
@@ -5464,7 +5626,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             // touchpad follows the shipped compositor multiplier before Qt sees it.
             double delta = data["scroll_y"].as_double();
             if (data.has_member("touchpad") && data["touchpad"].as_bool())
-                delta *= double(touchpad_scroll_speed);
+                delta *= touchpad_scroll_factor().first;
             touch_pointer->scroll(0, delta,
                 data.has_member("wheel") && data["wheel"].as_bool());
         }
@@ -5804,13 +5966,13 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         double x1 = pointer.x - origin - model.drag.relative_x * box + margin;
         double x2 = x1 + r.width();
         model.drag.morph->center_x = (x1 + x2) / 2.0;
-        auto in_rail = [&] (double x) { return place_at(std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
+        auto in_rail = [&] (double x) { return place_at(output, std::clamp(x, 0.0, width - 1), width).zone == zone_t::widget; };
 
         // The pointer (or finger) decides, not the window's geometry (WG1): entering the rail
         // makes it a widget, leaving the rail's widgets makes it a window. The drop follows the
         // shape shown.
         double at = pointer.x - origin;
-        bool want_widget = on_rail(at, width, morph_widget_shaped() ?
+        bool want_widget = on_rail(output, at, width, morph_widget_shaped() ?
             (model.drag.morph->from_widget ? view : morph_other()) : nullptr);
         bool toward = model.drag.morph->from_widget ? !want_widget : want_widget;
         if (toward != model.drag.morph->toward)
@@ -5913,7 +6075,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (model.drag.morph->from_widget && other)
         {
             auto output = output_alive(drag->current_output) ? drag->current_output : dragged->get_output();
-            scale = output ? place_at(model.drag.morph->center_x, output->get_relative_geometry().width).scale : 1.0;
+            scale = output ? place_at(output, model.drag.morph->center_x, output->get_relative_geometry().width).scale : 1.0;
             auto g = other->get_geometry();
             w = g.width * scale;
             h = g.height * scale;
@@ -6706,7 +6868,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             // Shown as its widget: the window keeps the scale of where it is, for if it's dragged
             // back out.
-            set_scale(view, place_at(model.drag.morph->center_x, output->get_relative_geometry().width).scale);
+            set_scale(view, place_at(output, model.drag.morph->center_x, output->get_relative_geometry().width).scale);
             return;
         }
 
@@ -6756,7 +6918,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             }
         }
 
-        auto zone_scale = [&] (double s) { return place_at(center_at(s), screen).scale; };
+        auto zone_scale = [&] (double s) { return place_at(output, center_at(s), screen).scale; };
         model.drag.last_center = center_at(model.drag.target);
         apply_opacity(view, model.drag.last_center);
 
@@ -6880,14 +7042,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (shift_held())
             {
                 pin_scale(main, model.drag.target);  // dropped with Shift held (L31)
-            } else if (std::abs(place_at(center, screen).scale - model.drag.target) > JUMP)
+            } else if (std::abs(place_at(main->get_output(), center, screen).scale - model.drag.target) > JUMP)
             {
                 for (int d = 1; d <= 400; d++)
                 {
                     int found = 0;
                     for (int sign : {-1, 1})
                     {
-                        if (std::abs(place_at(center + sign * d, screen).scale - model.drag.target) <= 0.003)
+                        if (std::abs(place_at(main->get_output(), center + sign * d, screen).scale - model.drag.target) <= 0.003)
                         {
                             found = sign;
                             break;
@@ -7070,8 +7232,29 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         wf::json_t reply = wf::ipc::json_ok();
         wf::json_t views = wf::json_t::array();
+        wf::json_t outputs = wf::json_t::array();
         reply["widget_transition_count"] = (int64_t)widget_transitions.size();
         reply["widget_transition_steps"] = (int64_t)widget_transition_steps;
+        for (auto output : wf::get_core().output_layout->get_outputs())
+        {
+            auto identity = screen_identity(output);
+            auto zone = zone_for(output);
+            wf::json_t entry;
+            entry["output"] = output_name(output);
+            entry["make"] = std::get<0>(identity);
+            entry["model"] = std::get<1>(identity);
+            entry["serial"] = std::get<2>(identity);
+            entry["identity"] = display_identity(identity);
+            entry["own"] = output_has_own_zones(output);
+            entry["center_width"] = zone.center;
+            entry["rail_width"] = zone.rail;
+            entry["blend_width"] = zone.blend;
+            entry["min_scale"] = zone.minimum;
+            entry["max_scale"] = zone.maximum;
+            entry["scale_curve"] = *zone.curve_text;
+            outputs.append(entry);
+        }
+        reply["outputs"] = outputs;
         if (getenv("SCOTTLAND_TEST_MODEL"))
         {
             reply["captured_frames"] = (int64_t)captured_frames;
@@ -7187,9 +7370,42 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return reply;
     };
 
+    wf::ipc::method_callback test_screen_identities = [=] (wf::json_t data) -> wf::json_t
+    {
+        if (!getenv("SCOTTLAND_TEST_MODEL") || std::string(getenv("SCOTTLAND_TEST_MODEL")) != "1")
+            return wf::ipc::json_error("test sessions only");
+        if (!data.has_member("outputs") || !data["outputs"].is_array())
+            return wf::ipc::json_error("outputs must be an array");
+        std::map<std::string, screen_identity_t> identities;
+        for (size_t i = 0; i < data["outputs"].size(); ++i)
+        {
+            auto entry = data["outputs"][i];
+            if (!entry.is_object() || !entry.has_member("output") || !entry["output"].is_string() ||
+                !entry.has_member("make") || !entry["make"].is_string() ||
+                !entry.has_member("model") || !entry["model"].is_string() ||
+                !entry.has_member("serial") || !entry["serial"].is_string())
+                return wf::ipc::json_error("each output needs string output, make, model and serial fields");
+            screen_identity_t identity{entry["make"].as_string(), entry["model"].as_string(), entry["serial"].as_string()};
+            if (std::get<0>(identity).empty() && std::get<1>(identity).empty() && std::get<2>(identity).empty())
+                return wf::ipc::json_error("test identity must contain at least one non-empty part");
+            std::string name = entry["output"].as_string();
+            auto outputs = wf::get_core().output_layout->get_outputs();
+            auto found = std::find_if(outputs.begin(), outputs.end(), [=] (wf::output_t *output)
+                { return output_name(output) == name; });
+            if (found == outputs.end())
+                return wf::ipc::json_error("test output is not connected");
+            auto reported = reported_screen_identity(*found);
+            if (!std::get<0>(reported).empty() || !std::get<1>(reported).empty() || !std::get<2>(reported).empty())
+                return wf::ipc::json_error("test identities may only be set on outputs without a reported identity");
+            identities[name] = std::move(identity);
+        }
+        test_identity_by_output = std::move(identities);
+        apply_all();
+        publish_model();
+        return wf::ipc::json_ok();
+    };
+
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
-    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string>> release_bindings{
-        "scottland/release_bindings"};
 
     wf::ipc::method_callback send_key = [] (wf::json_t data) -> wf::json_t
     {
@@ -7237,19 +7453,96 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     // here, before Wayfire handles the event. Remove this
     // once the upstream fix ships (the ABI check below turns it off for newer Wayfire builds).
     wf::option_wrapper_t<double> touchpad_scroll_speed{"input/touchpad_scroll_speed"};
+    // Per-app speeds: [scottland] touchpad_scroll_apps_<name> = <regex matching the whole app-id>,
+    // touchpad_scroll_initial_apps_<name> = <regex matching the whole app-id the window had when it
+    // mapped> (default .*: any), touchpad_scroll_factor_<name> = <speed>. The window under the
+    // pointer takes the first entry (by name) whose regexes both match; that speed replaces
+    // touchpad_scroll_speed for it. Anything else (no match, a panel or other layer surface)
+    // scrolls at touchpad_scroll_speed.
+    wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string, double>> touchpad_scroll_apps{
+        "scottland/touchpad_scroll_speeds"};
+    std::map<std::string, std::optional<std::regex>> touchpad_scroll_regexes;  // pattern -> compiled
+    // The app-id each window had when it mapped; apps may change theirs later. A window already
+    // mapped when the plugin loaded counts the app-id it had then.
+    std::map<uint32_t, std::string> initial_app_ids;
+
+    wf::signal::connection_t<wf::view_mapped_signal> on_initial_app_id = [=] (wf::view_mapped_signal *ev)
+    {
+        initial_app_ids[ev->view->get_id()] = ev->view->get_app_id();
+    };
+    wf::signal::connection_t<wf::view_unmapped_signal> on_forget_app_id = [=] (wf::view_unmapped_signal *ev)
+    {
+        initial_app_ids.erase(ev->view->get_id());
+    };
+
+    bool touchpad_scroll_matches(const std::string& name, const std::string& pattern, const std::string& app_id)
+    {
+        auto cached = touchpad_scroll_regexes.find(pattern);
+        if (cached == touchpad_scroll_regexes.end())
+        {
+            std::optional<std::regex> compiled;  // stays empty for a bad pattern, logged once
+            try
+            {
+                compiled = std::regex(pattern);
+            } catch (const std::regex_error&)
+            {
+                LOGE("scottland: bad touchpad_scroll regex for ", name, ": ", pattern);
+            }
+
+            cached = touchpad_scroll_regexes.emplace(pattern, std::move(compiled)).first;
+        }
+
+        return cached->second && std::regex_match(app_id, *cached->second);
+    }
+
+    /** The touchpad scroll speed for the window under the pointer, and whether an app entry set it. */
+    std::pair<double, bool> touchpad_scroll_factor()
+    {
+        double global = std::max(0.0, (double)touchpad_scroll_speed);
+        auto view = wf::toplevel_cast(wf::get_core().get_cursor_focus_view());
+        if (!view)
+        {
+            return {global, false};
+        }
+
+        std::string app_id = view->get_app_id();
+        auto initial = initial_app_ids.find(view->get_id());
+        const std::string& initial_app_id = (initial != initial_app_ids.end()) ? initial->second : app_id;
+        for (const auto& [name, pattern, initial_pattern, factor] : touchpad_scroll_apps.value())
+        {
+            if (touchpad_scroll_matches(name, pattern, app_id) &&
+                touchpad_scroll_matches(name, initial_pattern, initial_app_id))
+            {
+                return {std::max(0.0, factor), true};
+            }
+        }
+
+        return {global, false};
+    }
+
     wf::signal::connection_t<wf::input_event_signal<wlr_pointer_axis_event>> on_axis =
         [=] (wf::input_event_signal<wlr_pointer_axis_event> *ev)
     {
-#if WAYFIRE_API_ABI_VERSION_MACRO <= 2026'07'26
-        if ((ev->event->source == WL_POINTER_AXIS_SOURCE_FINGER) && ev->device &&
-            (ev->device->type == WLR_INPUT_DEVICE_POINTER) &&
-            !(touch_pointer && (ev->device == &touch_pointer->pointer.base)))
+        if ((ev->event->source != WL_POINTER_AXIS_SOURCE_FINGER) || !ev->device ||
+            (ev->device->type != WLR_INPUT_DEVICE_POINTER) ||
+            (touch_pointer && (ev->device == &touch_pointer->pointer.base)))
         {
-            double speed = std::max(0.0, (double)touchpad_scroll_speed);
-            ev->event->delta *= speed;
-            ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
+            return;
         }
+
+        auto [speed, per_app] = touchpad_scroll_factor();
+#if WAYFIRE_API_ABI_VERSION_MACRO > 2026'07'26
+        // Newer Wayfire applies touchpad_scroll_speed itself: only an app's own speed is ours.
+        double global = std::max(0.0, (double)touchpad_scroll_speed);
+        if (!per_app || (global <= 0))
+        {
+            return;
+        }
+
+        speed /= global;
 #endif
+        ev->event->delta *= speed;
+        ev->event->delta_discrete = std::lround(ev->event->delta_discrete * speed);
     };
 
     // Per-app key remaps: [scottland] remap_apps_<name> (app-id regex, case-insensitive),
@@ -7339,27 +7632,6 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
     };
 
-    wf::signal::connection_t<wf::input_event_signal<wlr_keyboard_key_event>> on_key =
-        [=] (wf::input_event_signal<wlr_keyboard_key_event> *ev)
-    {
-        if (ev->mode == wf::input_event_processing_mode_t::IGNORE) return;
-        if (key_layers.handles(ev) || (ev->event->state != WL_KEYBOARD_KEY_STATE_RELEASED))
-        {
-            return;
-        }
-
-        auto keyboard = wlr_seat_get_keyboard(wf::get_core().get_current_seat());
-        xkb_keymap *keymap = keyboard ? keyboard->keymap : nullptr;
-        for (const auto& [name, key, command] : release_bindings.value())
-        {
-            auto code = evdev_keycode(keymap, key);
-            if (code && (*code == ev->event->keycode))
-            {
-                wf::get_core().run(command);
-            }
-        }
-    };
-
   public:
     void init() override
     {
@@ -7372,6 +7644,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         // Compile the shared blend shader during plugin startup, before any input-driven morph.
         wf::gles::run_in_context_if_gles([] { scottland::widget_morph_renderer().prepare(); });
         key_layers.init();  // before raw-key consumers: claims override release bindings/remaps
+        session_state.init();
         if (getenv("SCOTTLAND_TEST_MODEL"))
             wf::get_core().connect(&on_test_render_end);
         init_output_tracking();
@@ -7390,6 +7663,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/send-key", send_key);
         ipc_repo->register_method("scottland/layout-state", layout_state);
         wf::get_core().connect(&on_axis);
+        wf::get_core().connect(&on_initial_app_id);
+        wf::get_core().connect(&on_forget_app_id);
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            if (view->is_mapped())
+            {
+                initial_app_ids[view->get_id()] = view->get_app_id();
+            }
+        }
+
         wf::get_core().connect(&on_mapped);
         wf::get_core().scene()->connect(&on_scene_structure);
         wf::get_core().connect(&on_geometry);
@@ -7418,6 +7701,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (getenv("SCOTTLAND_TEST_MODEL") && std::string(getenv("SCOTTLAND_TEST_MODEL")) == "1")
         {
             ipc_repo->register_method("scottland/audit-model", audit_model);
+            ipc_repo->register_method("scottland/test-screen-identities", test_screen_identities);
         }
         wf::get_core().connect(&on_title);
         wf::get_core().connect(&on_app_id);
@@ -7438,7 +7722,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().connect(&on_minimize_edge);
         wf::get_core().connect(&on_minimize_device_removed);
         wf::get_core().connect(&on_cancel_key);
-        wf::get_core().connect(&on_key);
+        shortcuts.init([this] (auto *ev) { return key_layers.handles(ev); });
         wf::get_core().connect(&on_remap_key);
         // Wayfire's promotion manager disables each output's TOP node while fullscreen is
         // promoted. Read that compositor fact for every screen, regardless of keyboard focus.
@@ -7446,6 +7730,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             set_focus_mode(output, !output->node_for_layer(wf::scene::layer::TOP)->is_enabled());
         }
+        load_curve();
+        load_screen_zones();
         widgetize_windows_on_rails();
         wf::get_core().bindings->add_key(minimize_key, &on_minimize_key);
         wf::get_core().bindings->add_key(navigate_left, &on_navigate_left);
@@ -7467,9 +7753,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail_width.set_callback([=] { apply_all(); });
         min_scale.set_callback([=] { apply_all(); });
         max_scale.set_callback([=] { apply_all(); });
-        load_curve();
         scale_curve_text.set_callback([=] { load_curve(); apply_all(); });
         blend_width.set_callback([=] { apply_all(); });
+        screen_zones_text.set_callback([=] { load_screen_zones(); apply_all(); });
         center_opacity_focused.set_callback([=] { apply_all_opacity(); });
         center_opacity_unfocused.set_callback([=] { apply_all_opacity(); });
         side_opacity_focused.set_callback([=] { apply_all_opacity(); });
@@ -7510,7 +7796,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (on) model.goo_outputs.insert(output);
                 else model.goo_outputs.erase(output);
                 publish_model();
-            });
+            },
+            [this](wf::output_t *) { apply_all(); });
         refresh_layout_avoidance();
         LOGI("scottland: plugin loaded");
     }
@@ -7527,14 +7814,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         goo.stop();
         fini_window_keys();
         key_layers.fini();
+        session_state.fini();
 
         fini_output_tracking();
         ipc_repo->unregister_method("scottland/send-key");
         ipc_repo->unregister_method("scottland/layout-state");
         on_minimize_edge.disconnect();
         on_minimize_device_removed.disconnect();
-        on_key.disconnect();
+        shortcuts.fini();
         on_axis.disconnect();
+        on_initial_app_id.disconnect();
+        on_forget_app_id.disconnect();
         on_remap_key.disconnect();
         on_mapped.disconnect();
         on_geometry.disconnect();

@@ -11,35 +11,19 @@ ShellRoot {
 
   readonly property string target: Quickshell.env("OTHER") || "scottland"
   readonly property string current: Quickshell.env("CURRENT") || "hyprland"
-  readonly property string settingsPath: Quickshell.env("SETTINGS")
   readonly property string targetName: target === "scottland" ? "Scottland" : "Hyprland"
   readonly property string currentName: current === "scottland" ? "Scottland" : "Hyprland"
-  property bool closeCurrent: true
   property bool busy: false
-
-  FileView {
-    id: settingsFile
-    path: root.settingsPath
-    printErrors: false
-    onLoaded: {
-      try { root.closeCurrent = JSON.parse(text()).closeCurrent !== false } catch (e) {}
-    }
-  }
 
   Process {
     id: switchProc
     onExited: Qt.quit()
   }
 
-  function toggle() {
-    closeCurrent = !closeCurrent
-  }
-
   function confirm() {
     if (busy) return
     busy = true
-    settingsFile.setText(JSON.stringify({ closeCurrent: closeCurrent }, null, 2) + "\n")
-    switchProc.command = ["scottland-switch", "--to", target, closeCurrent ? "--close" : "--keep"]
+    switchProc.command = ["scottland-switch", "--to", target]
     switchProc.running = true
   }
 
@@ -70,7 +54,6 @@ ShellRoot {
       Keys.onEscapePressed: Qt.quit()
       Keys.onReturnPressed: root.confirm()
       Keys.onEnterPressed: root.confirm()
-      Keys.onSpacePressed: root.toggle()
 
       MouseArea { anchors.fill: parent }  // clicks inside the card don't dismiss
 
@@ -87,56 +70,14 @@ ShellRoot {
           font.bold: true
         }
 
-        Item {
-          width: parent.width
-          height: checkRow.implicitHeight
-
-          Row {
-            id: checkRow
-            spacing: 10 * Style.fontScale
-
-            Rectangle {
-              width: Style.font.body * 1.3
-              height: width
-              anchors.verticalCenter: label.verticalCenter
-              color: "transparent"
-              border.color: Color.menu.text
-              border.width: 1
-              radius: Style.cornerRadius / 2
-
-              Text {
-                anchors.centerIn: parent
-                visible: root.closeCurrent
-                text: "✓"
-                color: Color.menu.selectedText
-                font.pixelSize: Style.font.body
-              }
-            }
-
-            Text {
-              id: label
-              text: "Close " + root.currentName + " when switching"
-              color: Color.menu.text
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-            }
-          }
-
-          MouseArea {
-            anchors.fill: checkRow
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.toggle()
-          }
-        }
-
         Text {
           width: parent.width
           wrapMode: Text.WordWrap
-          leftPadding: Style.font.body * 1.3 + 10 * Style.fontScale
-          text: "Unchecked keeps both sessions running. Some apps may not work correctly when both run at once."
-          color: Qt.rgba(Color.menu.text.r, Color.menu.text.g, Color.menu.text.b, 0.65)
+          text: "Switching will close all windows in " + root.currentName + "."
+          color: Color.urgent
           font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
+          font.pixelSize: Style.font.body
+          font.bold: true
         }
 
         Row {

@@ -24,6 +24,28 @@ plugged in by configuration, never by code that names a particular app. Rows say
   widgetized Ghostty window's halo with no Agentd involved. Agents running over mosh only ring it
   if they ring the terminal's bell (Claude Code: `preferredNotifChannel` set to `terminal_bell`).
 
+## Local attention daemon (N2)
+
+`attentiond` is Scottland core's sender-neutral local service. It accepts newline-delimited JSON on
+`$XDG_RUNTIME_DIR/attention/attention.sock`, stores messages under `$XDG_STATE_HOME/attention/`,
+and reflects local deliveries without a network or sender registry. Its bound wire contract is
+attention-local-v0 revision 4; the Scottland window client and Agentd bridge are separate work.
+
+| ID | Invariant | Status |
+|---|---|---|
+| AD-1 | The private per-user runtime directory contains the sole v0 intake: `attention.sock`. | implemented |
+| AD-2 | One daemon owns the socket; a live instance is left untouched and a stale socket is replaced. | implemented |
+| AD-3 | The package enables a user service from `default.target`, independent of the Scottland session. | implemented |
+| AD-4 | The daemon opens no network connections; local delivery uses one seam. | implemented |
+| AD-5 | Sender ids are opaque values; the daemon reads no sender registry or product-specific state. | implemented |
+| AD-6 | Global ids deduplicate open and closed messages; the first payload and lifecycle win. | implemented |
+| AD-7 | Each new message reaches every subscribed client as `message`, and every other client as `knock`. | implemented |
+| AD-8 | Replacing a subscription returns an acceptance-ordered snapshot of all open messages before later pushes. | implemented |
+| AD-9 | A valid lifecycle closes an open message once and is pushed to all clients. | implemented |
+| AD-10 | Answers close and persist the message, reach open connections that posted for its sender, and never invoke callbacks. | implemented |
+| AD-11 | Open and closed records survive daemon restart in the XDG state directory. | implemented |
+| AD-12 | Open-message and closed-record counts are bounded; closed records age from last touch and `by_when` does not expire them. | implemented |
+
 ## Invariants (direction)
 
 | ID | Invariant | Status |

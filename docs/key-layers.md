@@ -90,8 +90,8 @@ bindings. Existing blanket inhibition remains intact. Ordinary core input proces
 manages held keys, modifier-only binding state, input methods, and press/release delivery. Unclaimed events never change the repository.
 
 Raw-key consumers inside Scottland must connect **after** `key_layers.init()` and check
-`key_layers.handles(ev)` before acting on claimed keys. The release-binding and remap handlers
-do so, as does the collapse-key tracker. The integrated window mode’s `on_window_key` updates physical
+`key_layers.handles(ev)` before acting on claimed keys. Core shortcuts (E13, release and any-modifier
+matching) and the remap handler do so, as does the collapse-key tracker. The integrated window mode’s `on_window_key` updates physical
 held-key tracking but skips claimed events; a claimed press cancels the pending Alt timer (`alt_bypassed = true;
 alt_hold.disconnect()`). This keeps a layer's Alt chord from navigating windows while allowing
 unclaimed window mode navigation to work. While hints are active, exact claims reach the focused surface and

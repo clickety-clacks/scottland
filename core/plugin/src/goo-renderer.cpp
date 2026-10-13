@@ -641,6 +641,31 @@ bool renderer_t::supported()
     gpu_timing = p->timing;
     return ok;
 }
+bool renderer_t::prepare(int width, int height)
+{
+    bool ok = false;
+    if (width <= 0 || height <= 0)
+        return false;
+    wf::gles::run_in_context_if_gles([&]
+    {
+        state_t guard;
+        if (p->support())
+        {
+            ok = (p->ready && p->width == width && p->height == height) || p->resize(width, height);
+            // A layout change can change the target mapping even without changing its size.
+            p->cache_valid = false;
+            p->cache_dirty = true;
+            p->under_pending.clear();
+        }
+    });
+    packed = p->packed;
+    gpu_timing = p->timing;
+    return ok;
+}
+bool renderer_t::prepared_for(int width, int height) const
+{
+    return p->ready && p->width == width && p->height == height;
+}
 bool renderer_t::update(const std::vector<source_t> &sources, const settings_t &s, int w, int h, float time,
                         const std::vector<glm::vec4> &impulses, const std::vector<wf::geometry_t> &area, float flow)
 {

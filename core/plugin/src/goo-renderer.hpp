@@ -13,6 +13,9 @@ class renderer_t
     renderer_t();
     ~renderer_t();
     bool supported();
+    // Set up the output-sized simulation before a source appears on this output.
+    bool prepare(int width, int height);
+    bool prepared_for(int width, int height) const;
     void poll_timing();
     // `area` (output-logical rects) limits the expensive field pass; empty means everywhere.
     bool update(const std::vector<source_t> &sources, const settings_t &settings, int width, int height,
