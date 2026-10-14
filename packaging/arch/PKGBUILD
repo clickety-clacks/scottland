@@ -68,6 +68,7 @@ package_scottland() {
   install -Dm644 "$_root/core/systemd/scottland-session.target" "$pkgdir/usr/lib/systemd/user/scottland-session.target"
   install -Dm644 "$_root/core/systemd/scottland-session-watch@.service" "$pkgdir/usr/lib/systemd/user/scottland-session-watch@.service"
   install -Dm644 "$_root/core/systemd/attentiond.service" "$pkgdir/usr/lib/systemd/user/attentiond.service"
+  install -Dm755 "$srcdir/cargo/release/attentiond" "$pkgdir/usr/bin/attentiond"
   install -dm755 "$pkgdir/usr/lib/systemd/user/default.target.wants"
   ln -s ../attentiond.service "$pkgdir/usr/lib/systemd/user/default.target.wants/attentiond.service"
   install -Dm644 "$_root/core/session/scottland.desktop" "$pkgdir/usr/share/wayland-sessions/scottland.desktop"
