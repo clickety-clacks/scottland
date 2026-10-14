@@ -282,14 +282,19 @@ def set_tint_and_capture(value, name, sample_point=None, previous=None):
     set_options(window_mode_tint=float(value))
     wait_option('window_mode_tint', value)
     wait(stable_window_mode, 'settled hints after tint change')
-    if sample_point is None or previous is None:
+    if sample_point is None:
         image = capture()
     else:
-        before = previous.pixel(*sample_point)
-        def changed_pixels():
+        previous_pixel, repeated = None, 0
+        def stable_pixels():
+            nonlocal previous_pixel, repeated
             shot = capture()
-            return shot if max_delta(shot.pixel(*sample_point), before) > 2 else False
-        image = wait(changed_pixels, f'new pixels after Window tint {value}%')
+            current_pixel = shot.pixel(*sample_point)
+            repeated = repeated + 1 if previous_pixel is not None and \
+                max_delta(current_pixel, previous_pixel) <= 1 else 0
+            previous_pixel = current_pixel
+            return shot if repeated >= 3 else False
+        image = wait(stable_pixels, f'stable rendered pixels after Window tint {value}%')
     image.save(name)
     return image
 
@@ -312,6 +317,12 @@ def run_renderer(goo):
         'all three fixtures must have visible Window-mode hints'
     rects = {identifier: extent(identifier, hints_now[identifier], state, link_by_window)
              for identifier in (rear_id, front_id, card_id)}
+    print('fixture tint slots/colors:', json.dumps({str(identifier): {
+        'slot': hints_now[identifier].get('slot'),
+        'color': hints_now[identifier].get('color'),
+        'badge': hints_now[identifier].get('badge'),
+        'frame': rects[identifier]}
+        for identifier in (rear_id, front_id, card_id)}, sort_keys=True), flush=True)
     rear, front, card = (rects[i] for i in (rear_id, front_id, card_id))
     x1, y1 = max(rear['x'], front['x']), max(rear['y'], front['y'])
     x2, y2 = min(rear['x'] + rear['width'], front['x'] + front['width']), \
