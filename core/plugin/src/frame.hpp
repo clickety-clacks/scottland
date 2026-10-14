@@ -632,8 +632,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
     /** Fallback-frame pixels which can cover a peek strip beyond the window body. */
     double fallback_peek_occlusion_margin(double output_scale) const
     {
-        double t = std::max(thickness(), hint_dye ? windowing::hint_border_width : 0.0);
-        // draw_halo() raises dyed frames to hint_border_width. own_liquid() adds a bounded
+        double t = thickness();
+        // draw_halo() uses this thickness for dyed and neutral frames. own_liquid() adds a bounded
         // noise wave (1.2 times the shader ripple); reserve one target raster pixel in logical
         // coordinates for its antialiased edge.
         double halo = t + 1.2 * halo_ripple() + 1.0 / std::max(0.01, output_scale);
