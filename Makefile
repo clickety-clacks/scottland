@@ -87,6 +87,7 @@ link-dev:
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
 	ln -sf $(CURDIR)/core/libexec/scottland-list-picker $(HOME)/.local/bin/scottland-list-picker
 	ln -sf $(CURDIR)/core/libexec/scottland-clipboard $(HOME)/.local/bin/scottland-clipboard
+	ln -sf $(CURDIR)/core/libexec/scottland-keybindings $(HOME)/.local/bin/scottland-keybindings
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(DEV)/window-names.d
@@ -152,7 +153,7 @@ test-hooks: plugin tools
 dev-uninstall:
 	rm -rf $(DEV)
 	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup \
-	  $(HOME)/.local/bin/scottland-list-picker $(HOME)/.local/bin/scottland-clipboard $(PORTALS)/scottland-portals.conf
+	  $(HOME)/.local/bin/scottland-list-picker $(HOME)/.local/bin/scottland-clipboard $(HOME)/.local/bin/scottland-keybindings $(PORTALS)/scottland-portals.conf
 
 package:
 	cd packaging/arch && makepkg -sif

@@ -44,6 +44,12 @@ back into its window, a window at the side flies to the middle at 100%, and eith
 and focused. A window already in the center zone stays put. Use it when the user picks a window
 (from a launcher, a list of agents); a plain focus request moves nothing.
 
+## Session shortcut sheet
+
+`scottland-keybindings` opens the searchable list of shortcuts configured for the current session.
+Use `scottland-keybindings --print` to write the same chord-and-label lines to standard output.
+Core binds no default key; flavorings or the user may choose one.
+
 ## Temporary shortcut layers for a surface
 
 An app can claim its own shortcuts while its surface has keyboard focus. Everything it doesn't
