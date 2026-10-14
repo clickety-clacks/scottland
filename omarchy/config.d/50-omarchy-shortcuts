@@ -833,6 +833,30 @@ def read_report_fragment(fragment):
                      "order": len(REPORT_GROUP_ORDER) + 1}]
 
 
+def report_fragment_paths():
+    hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
+    config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    directories = (hooks / "override-report.d", config / "scottland" / "override-report.d")
+    return sorted(fragment for directory in directories if directory.is_dir()
+                  for fragment in directory.glob("*.txt"))
+
+
+def read_report_fragment_entries(fragments=None):
+    if fragments is None:
+        fragments = report_fragment_paths()
+    return [item for fragment in fragments for item in read_report_fragment(fragment)]
+
+
+def flavoring_owned_combos(entries):
+    """Shortcut keys in flavorings' O20 drop-ins are owned while those entries are active."""
+    owned = set()
+    for entry in entries:
+        identity = report_identity(str(entry.get("keys", "")))
+        if identity and re.fullmatch(r"(?:KEY|BTN)_\w+", identity[1]):
+            owned.add(identity)
+    return owned
+
+
 OWN_SHORTCUTS_HEADING = "Your own shortcuts that don't work in Scottland"
 
 
@@ -870,22 +894,18 @@ def render_override_prompt(report, report_content=None):
             .replace("@OWN_CUSTOM_SHORTCUTS@", own_shortcuts_for_prompt(content)))
 
 
-def make_report(overrides):
+def make_report(overrides, flavoring_entries=None):
     """Render a stable, diffable report with no timestamps or session-specific data."""
-    hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
-    directories = (hooks / "override-report.d",
-                   Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) /
-                   "scottland" / "override-report.d")
-    fragments = sorted(fragment for directory in directories if directory.is_dir()
-                       for fragment in directory.glob("*.txt"))
+    if flavoring_entries is None:
+        flavoring_entries = read_report_fragment_entries()
     entries = [dict(item) for item in overrides]
-    for fragment in fragments:
-        for item in read_report_fragment(fragment):
-            if not item.get("origin"):
-                item["origin"] = source_for_label(item["keys"])
-                if item["origin"] == "No Omarchy shortcut on this key":
-                    item["origin"] = "Gooarchy flavoring"
-            entries.append(item)
+    for item in flavoring_entries:
+        item = dict(item)
+        if not item.get("origin"):
+            item["origin"] = source_for_label(item["keys"])
+            if item["origin"] == "No Omarchy shortcut on this key":
+                item["origin"] = "Gooarchy flavoring"
+        entries.append(item)
     unique = {(o["heading"], o["why"], o["keys"], o["was"], o["now"], o.get("origin")): o
               for o in entries}
     grouped = {}
@@ -1088,6 +1108,8 @@ def main():
     if defaults_scan and defaults_scan.returncode != 0:
         scan_stderr += "\nOmarchy default shortcut scan unavailable: " + defaults_scan.stderr
     used, remaps, _command_reasons = parse_base(base)
+    flavoring_entries = read_report_fragment_entries()
+    flavoring_owners = flavoring_owned_combos(flavoring_entries)
     descriptions, _remap_reason, _alt_hold_reason = metadata_reasons()
 
     command_overrides, disabled, sections, skipped, kept = [], {}, {}, [], 0
@@ -1146,6 +1168,12 @@ def main():
         mods, key, description, kind, arg, repeat, release, locked = (line.split("\t") + [""] * 8)[:8]
         ignore_mods = (line.split("\t") + [""] * 13)[12] == "1"
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
+        ownership_key = combo("" if release == "1" and ignore_mods else mods, key)
+        if ownership_key and normalized_combo(ownership_key) in flavoring_owners:
+            # The active flavoring report entry is also the O20 record; avoid an imported action
+            # and a second, contradictory Omarchy-generated entry for the same key.
+            skipped.append(f"{label}  {description}  (displaced: Gooarchy flavoring owns this key)")
+            continue
         if mods == "ALT" and not key:
             omitted(label, description, "Scottland Window mode Alt hold", "window_mode",
                     now="Holding Alt now enters Scottland's Window mode and shows window hints.")
@@ -1354,7 +1382,7 @@ def main():
 
     if not os.path.exists(HYPR_CONFIG):
         skipped.append("no ~/.config/hypr/hyprland.lua  (nothing to import)")
-    report = make_report(report_overrides)
+    report = make_report(report_overrides, flavoring_entries)
     write_report(report)
     if report_only:
         if show_after or os.environ.get("WAYFIRE_SOCKET"):
