@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 OPS = {
     "ping": 1, "list": 2, "clear": 3, "copy-text": 4, "copy-file": 5,
-    "select": 6, "temp-file": 10,
+    "select": 6, "snapshot": 7, "release": 8, "type-text": 9, "temp-file": 10,
 }
 
 
@@ -335,6 +335,36 @@ def command_copy_file(args):
     return 0
 
 
+def command_snapshot(_args):
+    value, offset = read_u64(call("snapshot"), 0)
+    if offset != 8:
+        raise ValueError("the clipboard service returned malformed snapshot data")
+    print(value)
+    return 0
+
+
+def command_release(args):
+    call("release", u64(args.snapshot))
+    return 0
+
+
+def command_type_text(args):
+    target = args.target
+    require_target(target)
+    data = sys.stdin.buffer.read()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("stdin is not valid UTF-8 text") from error
+    call("type-text", u64(target) + u64(args.snapshot) + field(data))
+    return 0
+
+
+def command_focused_target(_args):
+    print(focus_target())
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(prog="scottland-clipboard")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -357,6 +387,20 @@ def main():
 
     clear = sub.add_parser("clear", help="empty the session clipboard history")
     clear.set_defaults(run=lambda _args: (call("clear"), 0)[1])
+
+    # Private session-only operations used by scottland-emoji to preserve the
+    # pre-picker clipboard while typing through the same clipboard service.
+    snapshot = sub.add_parser("snapshot", help=argparse.SUPPRESS)
+    snapshot.set_defaults(run=command_snapshot)
+    release = sub.add_parser("release", help=argparse.SUPPRESS)
+    release.add_argument("snapshot", type=int)
+    release.set_defaults(run=command_release)
+    type_text = sub.add_parser("type-text", help=argparse.SUPPRESS)
+    type_text.add_argument("--snapshot", type=int, required=True)
+    type_text.add_argument("--target", type=int, required=True)
+    type_text.set_defaults(run=command_type_text)
+    target = sub.add_parser("focused-target", help=argparse.SUPPRESS)
+    target.set_defaults(run=command_focused_target)
 
     args = parser.parse_args()
     try:

@@ -20,6 +20,11 @@ the wlr virtual-keyboard protocol to paste with Shift+Insert. It adds no package
 The session build must confirm both protocols are available before this feature can be considered
 usable.
 
+The same service exposes private, session-memory snapshot/release/type-text operations for the
+emoji feature. They preserve every readable clipboard format, temporarily set selected UTF-8 text,
+use the same Shift+Insert path, restore the saved clipboard, and do not add the temporary text to
+history. If any offered format cannot be read completely, snapshot refuses before the picker opens.
+
 ## Commands
 
 - scottland-clipboard history opens the newest-first picker. Choosing an entry puts it on the
@@ -50,6 +55,6 @@ interaction question; this feature does not add a selectable sentinel or a secon
 | CH1–CH4 | Add copies newest-first, deduplicate, cap history at 50, and honor the secret marker. | source candidate; build and session evidence pending |
 | CH5 | Keep history only in the session service's memory and restrict its socket to the user. | source candidate; build and session evidence pending |
 | CH6–CH9 | Search with the generic picker; select exact entries; copy, paste or open them. | source candidate; build and session evidence pending |
-| CH10, CH12–CH13 | Copy text/files and preserve the specified failure behavior. | source candidate; build and session evidence pending |
+| CH10, CH12–CH13 | Copy text/files and preserve the specified failure behavior. | source candidate; focused helper checks pass; build and session evidence pending |
 | CH11 | Clear history immediately and show the empty history list. | open interaction: clear empties history; empty-list presentation conflicts with LP empty-input cancellation |
 | CH14 | Use compositor protocols without adding a package dependency or borrowing a clipboard tool. | source candidate; build and session evidence pending |

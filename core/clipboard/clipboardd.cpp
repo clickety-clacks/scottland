@@ -111,6 +111,9 @@ class Service {
     std::unordered_map<zwlr_data_control_offer_v1 *, Offer> offers_;
     std::unordered_map<zwlr_data_control_source_v1 *, std::unique_ptr<Source>> sources_;
     std::deque<Entry> history_;
+    Bundle current_clipboard_;
+    bool current_clipboard_complete_ = true;
+    std::unordered_map<uint64_t, Bundle> snapshots_;
     std::vector<fs::path> temp_files_;
     fs::path runtime_dir_;
     fs::path socket_path_;
@@ -124,6 +127,7 @@ class Service {
     uint32_t latched_mods_ = 0;
     uint32_t shift_mask_ = 0;
     uint64_t next_entry_id_ = 1;
+    uint64_t next_snapshot_id_ = 1;
     uint64_t next_temp_file_id_ = 1;
     bool transfer_seen_ = false;
     std::string wayland_display_;
@@ -457,9 +461,17 @@ class Service {
         }
         previous = proxy;
         if (primary) return; // the contract treats Ctrl+C's regular selection only
-        if (!proxy) return;
+        if (!proxy) {
+            current_clipboard_.formats.clear();
+            current_clipboard_complete_ = true;
+            return;
+        }
         auto found = offers_.find(proxy);
-        if (found == offers_.end()) return;
+        if (found == offers_.end()) {
+            current_clipboard_.formats.clear();
+            current_clipboard_complete_ = false;
+            return;
+        }
         auto &mimes = found->second.mimes;
         if (std::find(mimes.begin(), mimes.end(), std::string(kOwnerMime)) != mimes.end()) return;
 
@@ -481,12 +493,16 @@ class Service {
             }
         }
         Bundle bundle;
+        bool complete = sensitive_marker_read;
         for (const auto &mime : mimes) {
             if (mime == kOwnerMime) continue;
             auto data = mime == kSecretMime && sensitive_value ?
                 std::move(sensitive_value) : receive(proxy, mime);
             if (data) bundle.formats.push_back({mime, std::move(*data)});
+            else complete = false;
         }
+        current_clipboard_ = bundle;
+        current_clipboard_complete_ = complete;
         if (!is_secret && sensitive_marker_read) {
             auto entry = primary_entry(bundle);
             if (entry) remember(entry->mime, entry->data);
@@ -554,6 +570,8 @@ class Service {
         if (bundle.formats.empty()) {
             zwlr_data_control_device_v1_set_selection(data_device_, nullptr);
             if (wl_display_flush(display_) < 0 && errno != EAGAIN) throw std::runtime_error("could not clear the clipboard");
+            current_clipboard_.formats.clear();
+            current_clipboard_complete_ = true;
             return;
         }
         Bundle owned = bundle;
@@ -573,6 +591,8 @@ class Service {
             sources_.erase(source);
             throw std::runtime_error("could not set the clipboard");
         }
+        current_clipboard_ = bundle;
+        current_clipboard_complete_ = true;
         if (record_history) {
             auto entry = primary_entry(bundle);
             if (entry) remember(entry->mime, entry->data);
@@ -747,6 +767,55 @@ class Service {
             if (mode == 1 && !paste_and_wait()) {
                 throw std::runtime_error("paste failed: the selected entry is on the clipboard, but the focused window did not accept it");
             }
+            return reply;
+        }
+        if (op == 7) { // snapshot every format in the regular clipboard in session memory
+            if (offset != request.size()) throw std::runtime_error("malformed clipboard request");
+            if (!current_clipboard_complete_)
+                throw std::runtime_error("could not preserve every format on the current clipboard");
+            const uint64_t id = next_snapshot_id_++;
+            snapshots_[id] = current_clipboard_;
+            append_u64(reply, id);
+            return reply;
+        }
+        if (op == 8) { // release a temporary snapshot; repeated release is harmless
+            const uint64_t id = read_u64(request, offset);
+            if (offset != request.size()) throw std::runtime_error("malformed clipboard request");
+            snapshots_.erase(id);
+            return reply;
+        }
+        if (op == 9) { // paste temporary text, then restore the exact pre-picker clipboard
+            const uint64_t target = read_u64(request, offset);
+            const uint64_t snapshot_id = read_u64(request, offset);
+            Bytes data = read_bytes(request, offset);
+            if (offset != request.size()) throw std::runtime_error("malformed clipboard request");
+            auto snapshot = snapshots_.find(snapshot_id);
+            if (snapshot == snapshots_.end()) throw std::runtime_error("the saved clipboard is no longer available");
+            require_target(target);
+            Bundle previous = snapshot->second;
+            Bundle temporary{{Format{"text/plain;charset=utf-8", std::move(data)}}};
+            set_selection(temporary, false);
+            try {
+                require_target(target);
+            } catch (...) {
+                try {
+                    set_selection(previous, false);
+                } catch (...) {
+                    snapshots_.erase(snapshot_id);
+                    throw std::runtime_error("emoji insertion failed and the original clipboard could not be restored");
+                }
+                snapshots_.erase(snapshot_id);
+                throw std::runtime_error("emoji insertion failed; the original clipboard was restored");
+            }
+            const bool pasted = paste_and_wait();
+            try {
+                set_selection(previous, false);
+            } catch (...) {
+                snapshots_.erase(snapshot_id);
+                throw std::runtime_error("emoji insertion failed and the original clipboard could not be restored");
+            }
+            snapshots_.erase(snapshot_id);
+            if (!pasted) throw std::runtime_error("emoji insertion failed; the original clipboard was restored");
             return reply;
         }
         if (op == 10) { // create a private session-only file for xdg-open

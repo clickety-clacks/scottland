@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import struct
 import unittest
 from pathlib import Path
@@ -47,6 +49,45 @@ class ClipboardListTests(unittest.TestCase):
              patch.object(clipboard.subprocess, "run", return_value=reply):
             with self.assertRaisesRegex(RuntimeError, "selection cancelled"):
                 clipboard.choose([], [], "Search history")
+
+    def test_private_snapshot_returns_a_session_token(self):
+        output = io.StringIO()
+        with patch.object(clipboard, "call", return_value=clipboard.u64(23)) as call, \
+             contextlib.redirect_stdout(output):
+            result = clipboard.command_snapshot(None)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.getvalue(), "23\n")
+        call.assert_called_once_with("snapshot")
+
+    def test_temporary_text_requires_the_captured_target_and_sends_utf8(self):
+        text = "🌱".encode("utf-8")
+
+        class Input:
+            buffer = io.BytesIO(text)
+
+        args = SimpleNamespace(target=42, snapshot=23)
+        with patch.object(clipboard, "require_target") as require_target, \
+             patch.object(clipboard, "call") as call, \
+             patch.object(clipboard.sys, "stdin", Input()):
+            result = clipboard.command_type_text(args)
+
+        self.assertEqual(result, 0)
+        require_target.assert_called_once_with(42)
+        call.assert_called_once_with("type-text", clipboard.u64(42) + clipboard.u64(23) +
+                                     clipboard.field(text))
+
+    def test_temporary_text_rejects_non_utf8_before_service_mutation(self):
+        class Input:
+            buffer = io.BytesIO(b"\xff")
+
+        args = SimpleNamespace(target=42, snapshot=23)
+        with patch.object(clipboard, "require_target"), \
+             patch.object(clipboard, "call") as call, \
+             patch.object(clipboard.sys, "stdin", Input()):
+            with self.assertRaisesRegex(ValueError, "not valid UTF-8"):
+                clipboard.command_type_text(args)
+        call.assert_not_called()
 
 
 if __name__ == "__main__":
