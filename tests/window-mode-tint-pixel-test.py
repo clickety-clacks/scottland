@@ -475,6 +475,53 @@ def run_renderer(goo):
                   max_delta(rim0, color) <= 22 and max_delta(rim100, color) <= 22,
                   {'window': identifier, 'zero': rim0, 'full': rim100,
                    'hint_color': color})
+
+    # The hint backing's own opacity changes the hint pixels, not the underlying Window tint.
+    # Conversely, changing tint strength under a fully opaque backing must not change its fill.
+    original_tint = float(option('window_mode_tint'))
+    original_hint_opacity = float(option('hint_background_opacity'))
+    badge = hints_now[front_id].get('badge')
+    if badge:
+        radius = float(badge['size']) / 2
+        badge_fill = (float(badge['x']) + radius * .72,
+                      float(badge['y']) + radius)
+        try:
+            set_options(window_mode_tint=30, hint_background_opacity=0)
+            wait_option('window_mode_tint', 30)
+            wait_option('hint_background_opacity', 0)
+            wait(stable_window_mode, 'stable hints at zero backing opacity')
+            opacity_zero = capture()
+            opacity_zero.save(f'{mode}-opacity-separation-zero')
+            set_options(hint_background_opacity=100)
+            wait_option('hint_background_opacity', 100)
+            wait(stable_window_mode, 'stable hints at full backing opacity')
+            opacity_full = capture()
+            opacity_full.save(f'{mode}-opacity-separation-full')
+            check(f'{mode}: hint opacity does not change underlying tint',
+                  max_delta(opacity_zero.pixel(*rear_only), opacity_full.pixel(*rear_only)) <= 3,
+                  {'point': rear_only, 'opacity0': opacity_zero.pixel(*rear_only),
+                   'opacity100': opacity_full.pixel(*rear_only)})
+            check(f'{mode}: hint backing responds to its own opacity',
+                  max_delta(opacity_zero.pixel(*badge_fill), opacity_full.pixel(*badge_fill)) > 10,
+                  {'point': badge_fill, 'opacity0': opacity_zero.pixel(*badge_fill),
+                   'opacity100': opacity_full.pixel(*badge_fill)})
+            set_options(window_mode_tint=0)
+            wait_option('window_mode_tint', 0)
+            tint_zero = capture()
+            set_options(window_mode_tint=100)
+            wait_option('window_mode_tint', 100)
+            tint_full = capture()
+            check(f'{mode}: tint strength does not change an opaque hint backing',
+                  max_delta(tint_zero.pixel(*badge_fill), tint_full.pixel(*badge_fill)) <= 3,
+                  {'point': badge_fill, 'tint0': tint_zero.pixel(*badge_fill),
+                   'tint100': tint_full.pixel(*badge_fill)})
+        finally:
+            set_options(window_mode_tint=original_tint,
+                        hint_background_opacity=original_hint_opacity)
+            wait_option('window_mode_tint', original_tint)
+            wait_option('hint_background_opacity', original_hint_opacity)
+    else:
+        check(f'{mode}: opacity separation has a visible hint backing', False)
     return images[0]
 
 

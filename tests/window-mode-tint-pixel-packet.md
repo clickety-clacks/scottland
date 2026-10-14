@@ -1,31 +1,32 @@
 # Window-mode tint layer pixel-test packet (r4)
 
-This packet covers WK14/WK38's tint layer. Run it only from the shared runner's exact source and
-host grant. Keep this tint branch separate; the runner composes it with the landed item2 and
-transparency candidates and records the resulting full-tree hash. This packet has not been run.
-The source/host grant, owned-session marker and scratch cleanup protect execution; they are not
-product acceptance checks. No hostname, machine-ID, output-count or minimum-output-size assertion
-is part of the tint result.
+This packet covers WK14/WK38's tint layer. Run it against an exact composed source tree on a
+task-owned isolated host capable of the required compositor and pixel-capture behavior. A shared
+runner may also run it, but runner admission is not a prerequisite for product evidence. Record the
+source tree and host in the result. The owned-session marker and scratch cleanup protect execution;
+they are not product acceptance checks. No hostname, machine-ID, output-count or
+minimum-output-size assertion is part of the tint result.
 
 ## Executable focused check
 
 `tests/window-mode-tint-pixel-test.sh` owns an isolated headless session and records PPM captures
 plus `observations.json` under `build/window-mode-tint-pixel-results/`. Run it from the exact
-shared-runner tree with a fresh `SCOTTLAND_HEADLESS_DIR` under that checkout's `build/` directory.
+candidate tree with a fresh `SCOTTLAND_HEADLESS_DIR` under that checkout's `build/` directory.
 The invocation is `SCOTTLAND_HEADLESS_DIR="$PWD/build/headless-window-mode-tint-$$" tests/window-mode-tint-pixel-test.sh`.
 It drives Alt and Super-drag through stipc, covers Goo on/off, the 0/7/30/100% mix on exclusive
 window regions, overlapping windows and a widget card, checks that hints stay unchanged, verifies
 hint dye or the fallback halo at both ends, checks for edge strokes, and confirms the tint layer
-clears after Alt release. The eight manual scenarios below remain required for Settings/list
-picker isolation, fullscreen edges, separation from hint-background opacity, motion tracking, and
-the complete clear/escape matrix; the focused executable does not replace them.
+clears after Alt release. `tests/hint-outline-test.py` adds the eight scenario assertions for
+covered/single extents, card/fullscreen mixing and all four fullscreen edges, Settings/list-picker
+isolation, hint-opacity separation, motion-step edge tracking, and Alt/Esc clearing. The focused
+executable and scenario assertions complement each other.
 
 ## Gate-to-behavior map
 
 - `make plugin` is a compile prerequisite only; it proves that this source builds, not user behavior.
-- After compilation, run the focused tint pixel behavior check first; then run required broader
-  unit and hint/pairing suites. The separate shared-runner eight-scenario pixel packet remains
-  required and must be reported scenario by scenario.
+- After compilation, run the focused tint pixel behavior check first; then run the executable
+  scenario assertions and required broader unit and hint/pairing suites. Report the eight scenario
+  results separately.
 - `tests/windowing-unit.sh` checks placement and decluttering constraints plus Window-mode hint
   cycling (selection, movement, key timing and clearing) through the pure unit seams.
 - `I=tint tests/driver.sh` runs WK14/WK37/WK38 hint and tint rendering behavior plus item2's
@@ -38,9 +39,9 @@ the complete clear/escape matrix; the focused executable does not replace them.
   Goo-on/off edge treatment, and Alt/Esc clearing. Each remains a product-behavior acceptance
   check.
 
-The caller-owned-session marker, unique scratch, cleanup, and exact runner source/command admission
-are execution safeguards. They protect the session and make evidence attributable; they do not
-prove product behavior and cannot substitute for a behavior result.
+The caller-owned-session marker, unique scratch, cleanup, and exact source/command record are
+execution safeguards. They protect the session and make evidence attributable; they do not prove
+product behavior and cannot substitute for a behavior result.
 
 ## Fixture and measurement
 
@@ -90,8 +91,9 @@ views and diagnose a failed frame but cannot establish a pass.
    hints are visible and capture its next rendered frame. Repeat with hint-background opacity at
    0% and 100%: tint samples must not change, and hint backing samples must not change when tint
    strength changes. The row must reach 100% and remain usable at that value.
-7. **Motion tracking.** Capture each frame during a peek ease, keyboard coast and pointer drag.
-   Measure the tint edge against the drawn frame/card; maximum separation is one device pixel.
+7. **Motion tracking.** The hint-outline test captures tint after each sampled peek-ease, keyboard
+   movement and pointer-drag input step. It probes one device pixel inside and outside the current
+   drawn edge; the colored pixel must follow the frame while the outside pixel stays untinted.
 8. **Clear.** Capture the same settled layout before Window mode and after Alt release, then repeat
    with Esc. After avoidance offsets settle home, all pixels outside persistent Goo/halo effects
    match their corresponding pre-entry capture within 4/255.
@@ -107,5 +109,5 @@ the Esc clear path are proved by the separately reported eight scenarios above; 
 not a pass criterion. Renderer and selected-output geometry/scale may be recorded as diagnostic
 context, but host identity is not an acceptance check. Preserve the screenshots and test log under
 the test checkout's `build/` directory, stop the owned session on every exit path, and remove only
-test-created paths. The separate source-tree changes in this candidate remain untested until that
-runner report exists.
+test-created paths. Record behavior against the exact source tree; do not hold product evidence on
+a runner receipt when a capable isolated host executes the checks.

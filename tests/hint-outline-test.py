@@ -167,6 +167,7 @@ if peer_pid != compositor_pid or peer_uid != os.getuid():
     raise RuntimeError("isolated headless session required: IPC peer is not this run's owned Wayfire")
 clients = []
 passed = failed = 0
+widget_hint_id = None
 hint_colors = {}
 BACKGROUND = "#1f232c"
 
@@ -544,27 +545,76 @@ def restack_during_hold():
     hold()
     point = find_point(back, require_ids=(front,))
     tint_stack_check("restack before raise", point, (back, front))
+    set_tint(100)
     press_hint(back)  # selects, focuses and raises the rear window
-    time.sleep(.4)
+    for frame in range(3):
+        time.sleep(.04)
+        motion_tint_sample(f"peek-ease frame {frame + 1}", front, "right")
+    time.sleep(.2)
     tint_stack_check("restack after rear raise", point, (front, back))
     press_hint(front)
     time.sleep(.4)
     tint_stack_check("restack after front raise", point, (back, front))
+    set_tint(7)
     release()
+
+
+def motion_tint_sample(name, identifier, edge):
+    state = hints()
+    rect = drawn(identifier, state)
+    color = state[identifier].get("color", hint_colors.get(identifier))
+    if color is None:
+        raise RuntimeError(f"no retained tint color while sampling motion for {identifier}")
+    image = Shot(name)
+    if edge == "right":
+        y = rect[1] + rect[3] * .5
+        inside, outside = (rect[0] + rect[2] - 1.2, y), (rect[0] + rect[2] + 1.2, y)
+    else:
+        y = rect[1] + rect[3] * .5
+        inside, outside = (rect[0] + 1.2, y), (rect[0] - 1.2, y)
+    inside_pixel, outside_pixel = image.pixel(*inside), image.pixel(*outside)
+    check(f"{name}: tint edge follows the drawn frame within one pixel",
+          near(inside_pixel, color_bytes(color), 8) and
+          not near(outside_pixel, color_bytes(color), 4),
+          {"frame": rect, "edge": edge, "inside_point": inside,
+           "inside_pixel": inside_pixel, "outside_point": outside,
+           "outside_pixel": outside_pixel, "tint_color": color_bytes(color)})
 
 
 def cover_moves_away():
     reset_layout()
     hold()
     before = drawn(front)
-    for _ in range(4):
+    set_tint(100)
+    for step in range(4):
         tap("DOWN")
-        time.sleep(.15)
+        time.sleep(.05)
+        motion_tint_sample(f"keyboard motion frame {step + 1}", front, "right")
+        time.sleep(.10)
     after = drawn(front)
     check("arrow pushes keep the cover an ordinary window", not any(v.get("widget") for v in views().values()))
     check("arrow pushes changed the covered layout", abs(before[0] - after[0]) + abs(before[1] - after[1]) > 1)
     point = find_point(back)
     tint_stack_check("arrow-pushed tint", point, (back, front))
+
+    # Super+drag moves a normal window while Window mode remains visible. Capture the moving
+    # surface after every input step and sample its current interior/boundary position.
+    side_frame = drawn(side)
+    start_x, start_y = side_frame[0] + side_frame[2] / 2, side_frame[1] + side_frame[3] / 2
+    key("LEFTMETA", True)
+    ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="press"))
+    try:
+        for step in range(1, 8):
+            pointer(start_x + 7 * step, start_y)
+            time.sleep(.025)
+            motion_tint_sample(f"pointer-drag motion frame {step}", side, "left")
+    finally:
+        ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="release"))
+        key("LEFTMETA", False)
+    side_after = drawn(side)
+    check("pointer drag moved the sampled window", side_after[0] > side_frame[0] + 25,
+          {"before": side_frame, "after": side_after})
+    set_tint(7)
     release()
 
 
@@ -609,11 +659,32 @@ def fullscreen_in_front():
     point = (fs[0] + fs[2] * .20, fs[1] + fs[3] * .75)
     tint_stack_check("fullscreen extent", point, (front,), no_stroke=False,
                      frames_override={front: fs})
-    # The fullscreen bounds have a square edge and receive the same tint as their interior,
-    # without an extra inset rim.
-    edge_point = (fs[0] + fs[2] * .5, fs[1] + 1)
-    tint_stack_check("fullscreen edge has tint only", edge_point, (front,),
-                     no_stroke=False, frames_override={front: fs})
+    # A widget card remains above fullscreen; test its rear-first mix separately from the edge
+    # samples so the card cannot hide a fullscreen boundary point.
+    if widget_hint_id is not None and widget_hint_id in hints():
+        card_point = find_overlap_point(front, widget_hint_id)
+        tint_stack_check("widget card above fullscreen mixes after fullscreen",
+                         card_point, (front, widget_hint_id), no_stroke=False,
+                         frames_override={front: fs})
+    # Fullscreen bounds are square. Sample each edge away from badges and any widget card so an
+    # inset rim or missed tint along one side cannot be hidden by the interior sample.
+    state = hints()
+    card_frame = drawn(widget_hint_id, state) if widget_hint_id in state else None
+    edge_specs = (
+        ("top", lambda ratio: (fs[0] + fs[2] * ratio, fs[1] + 1)),
+        ("bottom", lambda ratio: (fs[0] + fs[2] * ratio, fs[1] + fs[3] - 2)),
+        ("left", lambda ratio: (fs[0] + 1, fs[1] + fs[3] * ratio)),
+        ("right", lambda ratio: (fs[0] + fs[2] - 2, fs[1] + fs[3] * ratio)),
+    )
+    for edge, make_point in edge_specs:
+        edge_point = next((make_point(ratio) for ratio in (.2, .35, .65, .8)
+                           if off_badges(state, *make_point(ratio)) and
+                           (card_frame is None or not contains(card_frame, make_point(ratio)))), None)
+        if edge_point is None:
+            check(f"fullscreen {edge} edge has an unobstructed tint sample", False)
+            continue
+        tint_stack_check(f"fullscreen {edge} edge has tint only", edge_point, (front,),
+                         no_stroke=False, frames_override={front: fs})
     release()
     ipc("wm-actions/set-fullscreen", dict(view_id=front, state=False))
     time.sleep(1.2)
@@ -633,6 +704,7 @@ def always_avoidance():
 
 
 def widget_cover():
+    global widget_hint_id
     reset_layout()
     card = open_window("Card", (800, 300, 320, 180))
     f = views()[card]["frame"]
@@ -664,12 +736,14 @@ def widget_cover():
     time.sleep(.6)
 
     def measure(phase):
+        global widget_hint_id
         hold()
         state = hints()
         links = {int(w["id"]): int(w["widget_view"]) for w in ipc("scottland/widgets")["widgets"]
                  if int(w.get("widget_view", -1)) > 0}
         widget_id = next(identifier for identifier in state
                          if links.get(identifier, -1) == widget["id"])
+        widget_hint_id = widget_id
         card_rect = drawn(widget_id)
         under_rect = drawn(small)
         print("widget tint overlap geometry", {"card": card_rect, "window": under_rect,
@@ -701,6 +775,75 @@ def widget_cover():
     time.sleep(.7)
     measure("mostly")
     set_tint(7)
+
+
+def list_picker_overlay_isolation():
+    reset_layout()
+    hold()
+    set_tint(0)
+    outputs = ipc("window-rules/list-outputs")
+    output = max(outputs, key=lambda row:
+        float(row["geometry"]["width"]) * float(row["geometry"]["height"]))
+    geometry = output["geometry"]
+    width, height = float(geometry["width"]), float(geometry["height"])
+    panel_width = min(640, width - 48)
+    # Two 44px rows, the 44px search box, prompt and 20px outer padding.
+    panel_height = 40 + 44 + 12 + 88 + 12 + 19
+    panel_left = float(geometry["x"]) + (width - panel_width) / 2
+    panel_top = float(geometry["y"]) + (height - panel_height) / 2
+    overlay_point = (float(geometry["x"]) + width / 2, panel_top + 10)
+    background = tuple(int(BACKGROUND[i:i + 2], 16) for i in (1, 3, 5))
+    if not off_badges(hints(), *overlay_point, margin=20):
+        raise RuntimeError("list-picker overlay sample intersects a hint badge")
+    picker = subprocess.Popen(
+        [str(repo / "core/libexec/scottland-list-picker"), "--prompt", "Choose a fixture"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        picker.stdin.write(b"TintRear\nTintFront\n")
+        picker.stdin.close()
+
+        def panel_visible():
+            shot = Shot("12-list-picker-map-probe")
+            return near(shot.pixel(*overlay_point), background, 4)
+
+        wait(panel_visible, 10)
+        set_tint(0)
+        untinted = Shot("12-list-picker-untinted")
+        set_tint(100)
+        tinted = Shot("12-list-picker-tint-100")
+        panel_zero = untinted.pixel(*overlay_point)
+        panel_full = tinted.pixel(*overlay_point)
+        check("list picker panel remains untinted above a 100% window tint",
+              near(panel_zero, panel_full, 3) and near(panel_full, background, 4),
+              {"point": overlay_point, "untinted": panel_zero, "full": panel_full,
+               "expected_panel": background})
+
+        side_point = find_point(side, avoid_ids=(back, front))
+        if side_point[0] >= panel_left - 8:
+            raise RuntimeError(f"adjacent window sample falls under list-picker panel: {side_point}")
+        adjacent_zero, adjacent_full = untinted.pixel(*side_point), tinted.pixel(*side_point)
+        side_color = hints()[side].get("color", hint_colors.get(side))
+        check("window beside list picker keeps its expected tint",
+              side_color is not None and near(adjacent_full, color_bytes(side_color), 5) and
+              not near(adjacent_zero, adjacent_full, 3),
+              {"point": side_point, "zero": adjacent_zero, "full": adjacent_full,
+               "hint_color": color_bytes(side_color) if side_color else None})
+        tap("ESC")
+        picker.wait(timeout=8)
+        stdout, stderr = picker.stdout.read(), picker.stderr.read()
+        check("list picker Esc cancels without returning a choice",
+              picker.returncode != 0 and stdout == b"",
+              {"returncode": picker.returncode, "stdout": stdout.decode(errors="replace"),
+               "stderr": stderr.decode(errors="replace")[-800:]})
+    finally:
+        if picker.poll() is None:
+            picker.terminate()
+            try:
+                picker.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                picker.kill(); picker.wait(timeout=3)
+        set_tint(7)
+        release()
 
 
 def second_output():
@@ -772,7 +915,7 @@ try:
     release()
     no_tint_when_inactive("after Alt release", overlap)
     for function in (restack_during_hold, cover_moves_away, escape_clears, scaled_window,
-                     fullscreen_in_front, always_avoidance, widget_cover):
+                     always_avoidance, widget_cover, fullscreen_in_front):
         section(function)
 
     # --- WK38: overlay strength slider, live ------------------------------------------------
@@ -889,6 +1032,7 @@ try:
           sum(abs(a - b) for a, b in zip(second, bg)) > sum(abs(a - b) for a, b in zip(first, bg)) + 10)
     release()
     panel.terminate(); panel.wait(timeout=5)
+    section(list_picker_overlay_isolation)
     # scottland-ctl takes both separate settings across 0-100%; Wayfire bounds a stored value by
     # the option's metadata range, so a tint above the old 30% maximum must read back unclamped.
     ctl = [str(repo / "core/libexec/scottland-ctl"), "set"]
