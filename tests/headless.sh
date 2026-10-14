@@ -504,11 +504,8 @@ PY
 case ${1:-} in
   start)
     if [[ $isolation == 1 ]]; then
-      for option in "${@:2}"; do
-        [[ $option != --omarchy ]] || {
-          echo 'isolated runner mode does not start the Omarchy/Hyprland shim' >&2; exit 2;
-        }
-      done
+      # --omarchy still runs inside this run's private runtime and bus; shim teardown below
+      # requires the recorded environment, signature, lock and process identity.
       [[ ! -e $dir/pid && ! -L $dir/pid && ! -e $dir/display && ! -L $dir/display && \
          ! -e $session_dir && ! -L $session_dir ]] || {
         echo 'isolated headless directory is not fresh; refusing to reuse or remove it' >&2; exit 2;
@@ -735,10 +732,7 @@ PY
         expected_display=$(sed -n '2p' "$session_mode_record")
         expected_signature=$(sed -n '3p' "$session_mode_record")
         case $session_mode in
-          plain-pending) ;;
-          shim-pending)
-            echo 'headless shim identity is incomplete; preserving runtime and scratch' >&2; exit 2
-            ;;
+          plain-pending|shim-pending) ;;
           plain)
             [[ $expected_display =~ ^wayland-[0-9]+$ ]] || {
               echo 'headless partial session display is invalid; preserving runtime and scratch' >&2; exit 2;
@@ -807,14 +801,7 @@ PY
       expected_display=$(sed -n '2p' "$session_mode_record")
       expected_signature=$(sed -n '3p' "$session_mode_record")
       case $session_mode in
-        plain-pending)
-          echo 'headless session mode was not fully recorded; preserving runtime and scratch' >&2
-          exit 2
-          ;;
-        shim-pending)
-          echo 'headless shim identity was not fully recorded; preserving runtime and scratch' >&2
-          exit 2
-          ;;
+        plain-pending|shim-pending) ;;
         plain)
           [[ $expected_display =~ ^wayland-[0-9]+$ ]] || {
             echo 'headless partial session display is invalid; preserving runtime and scratch' >&2
