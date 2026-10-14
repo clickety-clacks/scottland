@@ -25,6 +25,8 @@ BIN = ROOT / "bin"
 CALLS = ROOT / "calls.log"
 LOCK_PIDS = ROOT / "lock-pids"
 LOCK_QML = REPO / "tests/session-lock-fixture.qml"
+HOOKS = REPO / "build/hooks"
+FIXTURE_HOOKS = ROOT / "hooks"
 CTL = REPO / "build/hooks/libexec/scottland-ctl"
 PASSED = []
 FAILED = []
@@ -62,11 +64,22 @@ class Session:
         HOME.mkdir(parents=True)
         BIN.mkdir(parents=True)
         SCRATCH.mkdir(mode=0o700)
+        FIXTURE_HOOKS.mkdir(mode=0o700)
+        # This suite exercises core ctl behavior in a plain headless session. Keep
+        # adapter-only session environment hooks out of it; those belong to --omarchy
+        # fixtures and can activate unrelated host tooling such as mise.
+        for source in HOOKS.iterdir():
+            destination = FIXTURE_HOOKS / source.name
+            if source.name == "session-env.d":
+                destination.symlink_to(REPO / "core" / "session-env.d", target_is_directory=True)
+            else:
+                destination.symlink_to(source, target_is_directory=source.is_dir())
         tmp = ROOT / "tmp"
         tmp.mkdir(mode=0o700)
         self.env = {
             **os.environ,
             "HOME": str(HOME),
+            "SCOTTLAND_TEST_HOOKS": str(FIXTURE_HOOKS),
             "SCOTTLAND_HEADLESS_DIR": str(HEADLESS),
             "SCOTTLAND_HEADLESS_ISOLATION": "1",
             "SCOTTLAND_HEADLESS_OWNER": f"ctl-core-{RUN_ID}",
