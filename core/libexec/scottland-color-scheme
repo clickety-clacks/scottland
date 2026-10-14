@@ -16,7 +16,8 @@ active cursor theme, and keeps the session's palette file current
 scheme, background, foreground, muted, accent, alert, attention), for widgets and other Scottland
 surfaces, and sets the halo's attention color from it:
 neutral light or dark colors, overlaid by a provider's full palette (accent.d providers that
-print a JSON object of those colors when run with --palette).
+print a JSON object of those colors when run with --palette). It also follows Gooarchy's two
+current-theme links and asks open Ghostty clients in this session to reload their config.
 """
 import configparser
 import hashlib
@@ -24,6 +25,7 @@ import json
 import math
 import os
 import re
+import signal
 import socket
 import struct
 import subprocess
@@ -408,6 +410,89 @@ def apply(scheme, accent=None):
 PID_FILE = os.path.join(RUNTIME, "scottland", os.environ.get("WAYLAND_DISPLAY", "wayland") + ".color-scheme.pid")
 
 
+def current_theme_location():
+    """The one theme source used by Gooarchy's following Ghostty config."""
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.abspath(os.path.join(config_home, "gooarchy", "current-theme"))
+
+
+def _ghostty_pids(display, proc_root="/proc", runtime_dir=None):
+    """PIDs for Ghostty clients owned by this Scottland display."""
+    try:
+        entries = os.scandir(proc_root)
+    except OSError:
+        return
+    wanted_display = b"WAYLAND_DISPLAY=" + os.fsencode(display)
+    wanted_runtime = (b"XDG_RUNTIME_DIR=" + os.fsencode(runtime_dir)) if runtime_dir else None
+    with entries:
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            process = os.path.join(proc_root, entry.name)
+            try:
+                with open(os.path.join(process, "comm"), encoding="utf-8") as source:
+                    if source.read().strip() != "ghostty":
+                        continue
+                with open(os.path.join(process, "environ"), "rb") as source:
+                    environment = source.read().split(b"\0")
+                    if wanted_display not in environment or (wanted_runtime and wanted_runtime not in environment):
+                        continue
+            except OSError:
+                # A process can exit or hide its environment between the directory scan and read.
+                continue
+            yield int(entry.name)
+
+
+def push_terminal_theme(location=None, display=None, proc_root="/proc", runtime_dir=None):
+    """Reload this session's open Ghostty clients without reading or writing config files."""
+    location = current_theme_location() if location is None else location
+    if not os.path.isdir(location):
+        return 0
+    if not any(os.path.lexists(os.path.join(location, name)) for name in ("light", "dark")):
+        return 0
+    display = os.environ.get("WAYLAND_DISPLAY") if display is None else display
+    if not display:
+        return 0
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") if runtime_dir is None else runtime_dir
+
+    pushed = 0
+    for pid in _ghostty_pids(display, proc_root, runtime_dir):
+        try:
+            os.kill(pid, signal.SIGUSR2)
+            pushed += 1
+        except ProcessLookupError:
+            # The terminal closed after the process table was read.
+            continue
+        except OSError as error:
+            print(f"scottland-color-scheme: could not reload Ghostty process {pid}: {error}", file=sys.stderr)
+    return pushed
+
+
+def _terminal_theme_watch_target(location):
+    """Use the current-theme directory, or its Gooarchy parent while it is absent."""
+    if os.path.isdir(location):
+        return location, None
+    path = location
+    parent = os.path.dirname(path)
+    if os.path.isdir(parent):
+        return parent, os.path.basename(path)
+    return None, os.path.basename(parent)
+
+
+def _terminal_theme_watch_event(name, location, display=None, proc_root="/proc", runtime_dir=None):
+    """Handle one inotify filename; return the number of terminals reloaded."""
+    if name in ("light", "dark"):
+        return push_terminal_theme(location, display, proc_root, runtime_dir)
+    return 0
+
+
+def _terminal_theme_location_transition(location, was_present, display=None, proc_root="/proc", runtime_dir=None):
+    """Push once when a previously absent current-theme location appears."""
+    present = os.path.isdir(location)
+    pushed = push_terminal_theme(location, display, proc_root, runtime_dir) if present and not was_present else 0
+    return present, pushed
+
+
 def fingerprint():
     with open(os.path.realpath(__file__), "rb") as source:
         return hashlib.sha256(source.read()).hexdigest()
@@ -490,22 +575,71 @@ def watch_text():
 
 
 def watch_accent():
-    """Follow the integrations' accent sources (e.g. a theme switch rewriting a theme file)."""
-    if not providers():
-        return
+    """Follow accent sources and Gooarchy's theme links in the existing watcher."""
     applied = current_accent()
+    location = current_theme_location()
+    had_location = os.path.isdir(location)
     while True:
-        paths = accent_watch_paths()
+        accent_paths = [os.path.abspath(path) for path in accent_watch_paths()]
+        directory, _ = _terminal_theme_watch_target(location)
+        watch_theme_path = directory
+        paths = list(dict.fromkeys(accent_paths + ([watch_theme_path] if watch_theme_path else [])))
         if not paths:
-            return
-        subprocess.run(["inotifywait", "-qq", "-r", "-e", "close_write", "-e", "moved_to", "-e", "create",
-                        "-e", "delete", *paths])
-        time.sleep(0.5)  # let the theme switch finish writing
-        accent = current_accent()
-        if accent and accent != applied:
-            set_option("accent_color", accent + "ff")
-            applied = accent
-        write_palette(current(), accent)  # a theme switch changes more than the accent
+            time.sleep(1)
+            continue
+
+        command = ["inotifywait", "-m", "-q", "-r", "-e", "close_write", "-e", "moved_to", "-e", "create",
+                   "-e", "delete", "--format", "%w%f"]
+        if watch_theme_path is None:
+            # Poll only until the Gooarchy config directory exists; never recurse across .config or HOME.
+            command += ["-t", "1"]
+        command += paths
+        try:
+            monitor = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       text=True, bufsize=1)
+        except OSError:
+            time.sleep(1)
+            continue
+        try:
+            for line in monitor.stdout:
+                changed = line.rstrip("\n")
+                if not changed:
+                    continue
+                changed = os.path.abspath(changed)
+
+                # The location may have appeared with both links already in place.
+                was_present = had_location
+                had_location, _ = _terminal_theme_location_transition(location, had_location)
+                if had_location != was_present:
+                    break  # rebuild the watch on the newly present/absent location
+
+                if os.path.dirname(changed) == location:
+                    _terminal_theme_watch_event(os.path.basename(changed), location)
+
+                if any(changed == path or changed.startswith(path.rstrip(os.sep) + os.sep)
+                       for path in accent_paths):
+                    time.sleep(0.5)  # let an accent provider finish its theme update
+                    accent = current_accent()
+                    if accent and accent != applied:
+                        set_option("accent_color", accent + "ff")
+                        applied = accent
+                    write_palette(current(), accent)  # a theme switch changes more than the accent
+        finally:
+            if monitor.poll() is None:
+                monitor.terminate()
+            try:
+                monitor.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                monitor.kill()
+                monitor.wait()
+
+        # A timeout is used only while the config home itself is not available to watch.
+        was_present = had_location
+        had_location, _ = _terminal_theme_location_transition(location, had_location)
+        if had_location != was_present:
+            continue
+        if monitor.returncode not in (0, 2):
+            time.sleep(1)
 
 
 if __name__ == "__main__":

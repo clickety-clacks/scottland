@@ -133,6 +133,12 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 | A18 | Attention color is selectable in the Goo settings: Theme follows the active palette; Warm and Cool use the documented light/dark colors in [GO22](../docs/goo.md#go22). The choice applies live to breathing and bulging attention on windows and widgets in Goo and fallback halos; the theme family and colors follow light/dark changes. Save, Cancel and Defaults include the choice. | implemented; Plumbus headless Settings input and Goo/fallback screenshots (2026-10-03) |
 | A19 | The Goo Dye strength setting scales the focus accent, attention and Window mode hint colors in Goo and fallback halos from faint to stronger than today's look. Default 1 preserves the original Goo shader path; above 1, the final dye weight is capped at full opacity. A16's unfocused neutral edge and wallpaper soak remain independent. The setting applies live and is saved with Settings. | implemented; Plumbus live Settings input and Goo/fallback light/dark screenshots across 0.25, 1 and 1.5 (2026-10-03) |
 
+## Terminal theme push
+
+| ID | Invariant | Status |
+|---|---|---|
+| TP1 | The existing per-session appearance watcher follows Gooarchy's `current-theme/light` and `current-theme/dark` link changes by requesting a config reload from Ghostty clients in that same Wayland session. If the location is absent, it stays quiet and performs no push; the watcher reads no other theme source and writes no config or theme file. | source slice and targeted behavior test authored; execution on an approved capable test machine and shipped-Ghostty reload proof remain pending; `scottland-display terminal-theme push` needs follow-up integration with the display tool |
+
 ## Layout configurator (`scottland-settings`)
 
 The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight tabs, zone overlay and hints): see [docs/settings.md](../docs/settings.md) (S1–S22).
