@@ -114,6 +114,9 @@ def main():
                 else:
                     unsupported.append(name)
         values["unsupported"] = unsupported
+        speed = call(sock, "wayfire/get-config-option", {"option": "input/touchpad_scroll_speed"})
+        if "value" in speed:
+            values["touchpad_scroll_speed"] = float(speed["value"])
         values["outputs"] = call(sock, "scottland/layout-state", {}).get("outputs", [])
         print(json.dumps(values))
     elif command == "set" and len(sys.argv) == 4 and sys.argv[2] in ACCEPTED_NAMES:

@@ -10,6 +10,10 @@ Session start keeps the last three logs as `wayfire.log.previous`,
 `wayfire.log.previous.2`, and `wayfire.log.previous.3`, each capped at its last
 1 MiB. Copy the relevant logs before a fourth new session. The launcher raises the core
 soft limit to unlimited, warning if the login manager's hard limit prevents it.
+If a bounded copy fails, the launcher warns and tries a plain rename so the
+session can still start. That fallback may retain an oversized log. If the
+old current log cannot be moved, the launcher keeps it intact and uses its
+inherited output for the new session instead of overwriting the old log.
 The core plugin restores default dispositions for SIGABRT and SIGQUIT.
 
 [Wayfire's main.cpp](https://github.com/WayfireWM/wayfire/blob/master/src/main.cpp)

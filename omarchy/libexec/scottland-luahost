@@ -220,6 +220,16 @@ local function stand_in()
       return noop
     end,
     dispatch = function(action) run(action, true) end,
+    -- The config's monitor rules become Wayfire output settings at config build (the shortcut
+    -- importer); one a shortcut sets later applies now, as `hyprctl eval` does.
+    monitor = function(rule)
+      if loading then return noop end
+      local handle = io.popen("hyprctl eval " .. shell_quote("hl.monitor(" .. literal(rule) .. ")") .. " 2>&1")
+      local reply = handle and handle:read("a") or ""
+      local ok = handle and handle:close()
+      if not ok or reply:match("^error") then error("hl.monitor failed: " .. reply:gsub("%s+$", ""), 2) end
+      return noop
+    end,
     timer = function(callback, opts)
       -- Timers here are short (key up/down spacing), so run them in line after the delay.
       local timeout = (opts and opts.timeout or 0) / 1000

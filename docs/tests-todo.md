@@ -17,6 +17,30 @@ verdict), **Low** (cost, duplication, diagnostics).
 
 Every suite runs through these; an excellent assertion is worthless against the wrong session.
 
+New headless launches use `tests/headless-owner.py` to persist the task runtime/owner
+and guardian/child birth identities before releasing the compositor. The guardian
+reaps only its own descendants through pidfds, including a failed Omarchy start
+that never publishes its environment record. Missing or changed identities still
+refuse cleanup and retain scratch; the failed start remains a failure even when
+its owned subtree was stopped. `tests/headless-owner-test.py` exercises the real
+mount/entry/recording path with fake compositor and shim children, plus identity,
+interruption, timeout and persistence failures. This adds a guardian process and
+does not establish a native compositor task budget or a real-session pass.
+Legacy scratch without the new record retains the conservative existing stop path.
+Stop requires a fresh nonce-bound reply from the authenticated guardian after its
+terminal receipt is persisted and custody descriptors are closed; it rereads the
+receipt after guardian exit. A saved zero receipt alone never permits cleanup,
+including a second stop after a scratch-preserving stop. Failed finalization
+retains scratch even when receipt invalidation fails. Controls delivered or pending
+at the final commit boundary veto success; handled controls are then blocked
+through exit so no late handler can silently change an unchecked status. The
+fixtures include concurrent directory-fsync failure, failed invalidation and a
+termination signal during final descriptor closure.
+Wrapper checks exercise a successful scratch-preserving stop followed by refusal,
+retained owner evidence, no bare-PID signalling and preservation of a failed test's
+exit status. Their stable fixture subtree census includes the guardian; fake
+compositor counts do not measure native unit peak or establish PID headroom.
+
 | Problem | What to do | Finding |
 |---|---|---|
 | `tests/wfipc.py` picks the newest `wayfire-*.socket` when `WAYFIRE_SOCKET` is unset, so a test can drive someone else's session | Require the session's recorded environment (or an explicit socket); fail without it | Top 1; harness table |
