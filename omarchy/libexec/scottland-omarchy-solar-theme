@@ -16,6 +16,8 @@ import time
 state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/"scottland"
 transition_file = Path(os.environ.get("SCOTTLAND_SOLAR_TRANSITION_FILE", str(state/"solar-transition.json")))
 consumer_lock_file = state/"solar-transition-consumer.lock"
+memory_file = state/"omarchy-theme-memory.json"
+current_theme_file = state.parent/"omarchy/current/theme.name"
 config_file = Path(os.environ.get("SCOTTLAND_OMARCHY_SOLAR_FILE",
                                   str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/omarchy-solar.ini")))
 solar_file = Path(os.environ.get("SCOTTLAND_SOLAR_FILE",
@@ -65,9 +67,11 @@ def read_transition():
     return record
 
 
-def _atomic_write(record):
-    transition_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = transition_file.with_name(transition_file.name+"."+str(os.getpid())+".tmp")
+def _atomic_write(record, path=None):
+    if path is None:
+        path = transition_file
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(path.name+"."+str(os.getpid())+".tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(descriptor, 0o600)
@@ -75,14 +79,64 @@ def _atomic_write(record):
             target.write(json.dumps(record, sort_keys=True)+"\n")
             target.flush()
             os.fsync(target.fileno())
-        os.replace(temporary, transition_file)
-        directory_fd = os.open(transition_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def current_theme():
+    """Read Omarchy's published selection, not a partially staged theme tree."""
+    try:
+        with current_theme_file.open() as source:
+            before = os.fstat(source.fileno())
+            name = source.read().strip()
+            after = os.fstat(source.fileno())
+        published = current_theme_file.stat()
+    except FileNotFoundError:
+        return None
+    def identity(info):
+        return [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size]
+    if identity(before) != identity(after) or identity(after) != identity(published):
+        return None
+    if not name or "\n" in name or "/" in name or name.startswith("."):
+        return None
+    return {"name": name, "identity": identity(after)}
+
+
+def read_memory():
+    try:
+        memory = json.loads(memory_file.read_text())
+    except FileNotFoundError:
+        return {"schema": 1, "choices": {}, "mode": None, "observed": None,
+                "automatic": None}
+    if (not isinstance(memory, dict) or memory.get("schema") != 1
+            or not isinstance(memory.get("choices"), dict)
+            or memory.get("mode") not in (None, "light", "dark")
+            or any(mode not in ("light", "dark") or not isinstance(name, str) or not name
+                   for mode, name in memory["choices"].items())):
+        raise ValueError(f"unsupported theme memory at {memory_file}")
+    return memory
+
+
+def observe_theme(memory):
+    """Remember only a new publication, in the outgoing solar period."""
+    current = current_theme()
+    if current is None or current == memory.get("observed"):
+        return
+    automatic = memory.get("automatic")
+    if automatic and current["name"] == automatic:
+        # An interrupted automatic apply can publish before its acknowledgement.
+        # Consume its publication without teaching it as a manual selection.
+        memory["automatic"] = None
+    elif memory.get("mode") in ("light", "dark"):
+        memory["choices"][memory["mode"]] = current["name"]
+        memory["automatic"] = None
+    memory["observed"] = current
 
 
 def acknowledge(transition_id, acknowledgement_id):
@@ -119,15 +173,35 @@ def run_once():
             return "off"
         if not isinstance(acknowledgement_id, str) or not acknowledgement_id:
             return "off"
+        memory = read_memory()
+        original = json.dumps(memory, sort_keys=True)
+        observe_theme(memory)
+        if memory["mode"] is None:
+            # Establish a baseline on first use, without guessing whether the
+            # already active theme was selected by a user or the old adapter.
+            memory["mode"] = desired
         if record.get("consumer_ack") == acknowledgement_id:
+            if json.dumps(memory, sort_keys=True) != original:
+                _atomic_write(memory, memory_file)
             return "unchanged"
 
         # At a real transition the selected day/night theme is the new choice,
         # even when the current theme reports the same light/dark mode. Keep a
         # separate consumer lock across command and ack so parallel sessions
         # cannot apply the same event twice.
-        target = themes()[desired]
+        configured = themes()
+        target = memory["choices"].get(desired, configured[desired])
+        # Record intent before the command so a restart cannot learn our write.
+        # Theme names are published by Omarchy as lowercase, hyphenated slugs.
+        memory["automatic"] = target.lower().replace(" ", "-")
+        _atomic_write(memory, memory_file)
+        # A failure retains intent: the command may have partially published.
         subprocess.run(["omarchy", "theme", "set", target], check=True)
+        memory["mode"] = desired
+        observe_theme(memory)
+        if memory.get("observed") is not None:
+            memory["automatic"] = None
+        _atomic_write(memory, memory_file)
         if not acknowledge(transition_id, acknowledgement_id):
             return "superseded"
         return target
@@ -154,8 +228,8 @@ IN_WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_ATTRIB
 
 
 def wait_for_transition_change(observed_digest=None):
-    """Block until transition state or the theme mapping changes."""
-    watched_paths = (transition_file, config_file, solar_file)
+    """Observe selection changes without inventing a Sunlight transition."""
+    watched_paths = (transition_file, config_file, solar_file, current_theme_file)
     fd = _libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
     if fd < 0:
         error = ctypes.get_errno()
@@ -208,18 +282,21 @@ def _transition_digest():
 
 def _watch_digest():
     digest = hashlib.sha256()
-    for path in (transition_file, config_file, solar_file):
+    for path in (transition_file, config_file, solar_file, current_theme_file):
         digest.update(os.fsencode(path))
         try:
             digest.update(path.read_bytes())
         except FileNotFoundError:
             digest.update(b"<missing>")
+    # Reselecting the same name is still a manual publication. Include its
+    # identity to close the watch-registration race even when bytes match.
+    digest.update(json.dumps(current_theme(), sort_keys=True).encode())
     return digest.hexdigest()
 
 
 def watch():
-    # Recover an unacknowledged boundary on start, then sleep on inotify. A manual
-    # theme pick cannot trigger this path; only a new core event or its ack can.
+    # Theme publications wake observation only. Applying still requires an
+    # unacknowledged core event, including after a consumer restart.
     while True:
         observed_digest = _watch_digest()
         try:
