@@ -44,12 +44,13 @@ previous=$(cat "$runtime/plugins/current" 2>/dev/null || true)
 echo "$fresh" >"$runtime/plugins/current"
 
 # Rewrite the config (new settings take their saved values; the plugin list names the fresh
-# copy), register any new settings, then swap the plugin. The plugin list is also set over IPC:
-# values set over IPC (e.g. by the settings app) take precedence over the file.
-# A failing generator (e.g. a generator whose source no longer parses) keeps the previous config and
-# says so; the code reload goes ahead either way.
-"$hooks/libexec/scottland-build-config" >/dev/null ||
+# copy), register any new settings, then swap the plugin. A failing generator keeps last-good
+# config and warns; the plugin reload continues either way. Release overrides only if rebuild passed.
+config_rebuilt=1
+if ! "$hooks/libexec/scottland-build-config" >/dev/null; then
   echo "scottland-reload: config rebuild failed (above); the session keeps its previous config" >&2
+  config_rebuilt=0
+fi
 # Widgets stay through a reload: the outgoing plugin sees this mark and hands them over.
 reloading="$runtime/${WAYLAND_DISPLAY:-wayland}.reloading"
 touch "$reloading"
@@ -75,6 +76,11 @@ if reply.get("error"): sys.exit(f"scottland-reload: {reply['error']}")
 time.sleep(1)
 PY
 rm -f "$reloading"
+# Settings values left set over IPC (a settings panel that didn't close cleanly, or a plugin that
+# predates releasing them) would keep outranking the files: the files win (docs/rulings.md).
+if [ "$config_rebuilt" -eq 1 ]; then
+  "$hooks/libexec/scottland-ctl" release >/dev/null || true
+fi
 
 # Old copies are no longer loaded.
 for old in "$runtime"/plugins/libscottland-*.so; do
