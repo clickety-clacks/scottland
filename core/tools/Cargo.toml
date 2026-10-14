@@ -17,7 +17,6 @@ publish = false
 [workspace.dependencies]
 scottland = { path = "lib", package = "scottland-lib" }
 regex = "1"
-serde_json = "1"
 zbus = "=5.13.2"
 serde_json = "1"
 
