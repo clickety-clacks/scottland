@@ -51,6 +51,7 @@ package_scottland() {
   install -Dm755 "$_root/core/libexec/scottland-attention-sources" "$pkgdir/usr/lib/scottland/libexec/scottland-attention-sources"
   install -Dm755 "$_root/core/libexec/scottland-focus-mode" "$pkgdir/usr/lib/scottland/libexec/scottland-focus-mode"
   install -Dm755 "$_root/core/autostart.d/09-attention-sources" "$pkgdir/usr/lib/scottland/autostart.d/09-attention-sources"
+  install -Dm755 "$_root/core/autostart.d/10-power-profiles" "$pkgdir/usr/lib/scottland/autostart.d/10-power-profiles"
   install -Dm755 "$_root/core/reload.d/09-attention-sources" "$pkgdir/usr/lib/scottland/reload.d/09-attention-sources"
   install -Dm755 "$_root/core/reload.d/08-widget-bus" "$pkgdir/usr/lib/scottland/reload.d/08-widget-bus"
   install -Dm644 "$_root/core/widgets/card/widget.toml" "$pkgdir/usr/lib/scottland/widgets/card/widget.toml"

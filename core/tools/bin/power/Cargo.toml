@@ -1,0 +1,13 @@
+[package]
+name = "scottland-power"
+description = "Battery, power profile, and session power commands for Scottland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+scottland.workspace = true
+scottland-notify = { path = "../notify" }
+zbus.workspace = true
