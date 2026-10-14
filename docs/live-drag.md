@@ -45,7 +45,7 @@ transformed geometry, including across output boundaries.
 
 ## Validation (2026-10-02)
 
-Only isolated headless compositors are used, on Xe and plumbus RX 580. The runtime is
+Only isolated headless compositors are used, on Xe and AMD test host RX 580. The runtime is
 the normal `XDG_RUNTIME_DIR`; each harness directory and every test artifact is under
 this checkout's `build/l33-results/`. Test configs come from shipped defaults. The
 baseline is an archived `66560b4` with its own build and hooks. No install, live reload,
@@ -75,8 +75,8 @@ are retained rather than hidden by weakening assertions.
 The unchanged GO10 fixture uses six windows, two real rail widgets, a moving held
 Super drag, 2560×1600 and ten seconds per case. No GPU clocks, update rates or live
 sessions were changed. Xe logs are `xe-before.log` and `xe-after.log`; the comparable
-RX 580 low-background samples are `plumbus/amd-before.log` and
-`plumbus/amd-after-final.log` (baseline/new respectively).
+RX 580 low-background samples are `test-host/amd-before.log` and
+`test-host/amd-after-final.log` (baseline/new respectively).
 
 | Drag measurement | Xe baseline → new | RX 580 baseline → new |
 |---|---|---|
