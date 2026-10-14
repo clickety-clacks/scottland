@@ -299,11 +299,16 @@ def judge(label, video, final, baseline):
             colors[name] = color
     discs = {name: (h['badge']['x'] + h['badge']['size'] / 2, h['badge']['y'] + h['badge']['size'] / 2,
                     h['badge']['size'] / 2) for name, h in hints.items()}
+    # The fallback hint texture reserves 8 logical pixels around the nominal circle for its
+    # soft/crisp halo (`hint_node::update`). Keep the letter-position oracle above on the
+    # nominal badge, but do not mistake that same badge's halo for a second letter.
+    rendered_radii = {name: disc[2] + 8 for name, disc in discs.items()}
     # Calibrate absence before pressing Alt, against the same measured final letter colors.
     absent = letter_pixels(baseline, colors)
     noise = {name: sum((i % W - discs[name][0]) ** 2 + (i // W - discs[name][1]) ** 2 <= discs[name][2] ** 2
                       for i in pixels) for name, pixels in absent.items()}
-    outside_noise = {name: len(pixels) - noise[name] for name, pixels in absent.items()}
+    outside_noise = {name: sum((i % W - discs[name][0]) ** 2 + (i // W - discs[name][1]) ** 2 > rendered_radii[name] ** 2
+                               for i in pixels) for name, pixels in absent.items()}
     inside_series = {name: [] for name in colors}
     outside_series = {name: [] for name in colors}
     for frame in frames(video):
@@ -311,7 +316,9 @@ def judge(label, video, final, baseline):
             cx, cy, r = discs[name]
             inside = sum((i % W - cx) ** 2 + (i // W - cy) ** 2 <= r * r for i in pixels)
             inside_series[name].append(inside)
-            outside_series[name].append(len(pixels) - inside)
+            visual_r = rendered_radii[name]
+            outside = sum((i % W - cx) ** 2 + (i // W - cy) ** 2 > visual_r * visual_r for i in pixels)
+            outside_series[name].append(outside)
     report = {'times': times, 'colors': {k: list(v) for k, v in colors.items()},
               'inside': inside_series, 'outside': outside_series, 'absence': noise}
     (art / (label + '-pixels.json')).write_text(json.dumps(report))
