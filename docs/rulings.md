@@ -11,8 +11,8 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 
 | Date | Ruling | Where |
 |---|---|---|
-| 10-07 | `dr_1766075a-c825-4706-a35d-3537f684d4ed`, selected words `reload-restarts-shim-and-shell`: `scottland-reload` restarts the Hyprland shim and Omarchy shell together so the bar and menus visibly reload. | O34 |
-| 10-07 | `dr_8aea53b8-e5ad-4f96-a678-bf9734808f17`, selected words `keep-click-to-pick`: screen sharing keeps xdg-desktop-portal-wlr's slurp chooser; choose the screen by clicking it. | AG02 |
+| 10-07 | `dr_1766075a-c825-4706-a35d-3537f684d4ed`, selected words `reload-restarts-shim-and-shell`: after an installed update, `scottland-reload` restarts the session shim and unchanged Omarchy shell together, refreshing the bar and menus. | O34 |
+| 10-07 | `dr_8aea53b8-e5ad-4f96-a678-bf9734808f17`, selected words `keep-click-to-pick`: screen sharing uses xdg-desktop-portal-wlr's slurp chooser to select the screen by clicking it. | AG02 |
 
 ## Omarchy solar compatibility
 

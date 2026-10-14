@@ -285,12 +285,13 @@ Reload: the older `bb821e3` rehearsal predates Mike's 10-07 ruling. The current 
 sequence restarts the session-owned Hyprland shim, the Lua host, and then the unchanged Omarchy
 shell restart command, with adapter `libexec` first on the shell's `PATH`. The focused
 `tests/omarchy-joint-reload-test.py` checks lock-safe session-scoped shim replacement and
-shell-helper ordering and passed eight isolated fake-process and temporary-file checks. The broader
+shell-helper ordering and passed eight isolated fake-process and temporary-file checks on prior
+candidate `4e4f08fe`; they have not yet run on current candidate `0cd0809`. The broader
 `tests/omarchy-reload-rehearsal-test.py` also checks the existing plugin, window, and F9 reload
-behavior; it was not run on this source candidate. The stock helper's live shell refresh and the
-exact-build Plumbus rehearsal remain unproved. The screen-sharing config
-continues to select xdg-desktop-portal-wlr, and its slurp chooser still selects an output by click;
-`tests/portal-test.py` was not run on this candidate.
+behavior; it was not run on the current candidate. The stock helper's live shell refresh and
+same-build desktop rehearsal remain unproved. The screen-sharing config continues to select
+xdg-desktop-portal-wlr, and its slurp chooser still selects an output by click;
+`tests/portal-test.py` was not run on the current candidate.
 
 Questions for Mike (unresolved: 3):
 
