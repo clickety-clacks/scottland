@@ -34,7 +34,8 @@ Item {
         if (!current || !panelInstance) return
         const panel = panelInstance
         const expectedProgress = current.data.progress === undefined ? -1 : current.data.progress
-        if (panel.visible && panel.message === current.data.message
+        if (panel.visible && panel.backingWindowVisible
+                && panel.message === current.data.message
                 && panel.progress === expectedProgress && panel.screen === focusedScreen) {
             readyTimer.stop()
             reply(current.client, {result: "shown"})
@@ -51,6 +52,7 @@ Item {
             failCurrent("the OSD panel does not implement present")
             return
         }
+        readyTimer.restart()
         try {
             panel.screen = focusedScreen
             panel.present(
@@ -62,7 +64,7 @@ Item {
             failCurrent("the OSD panel could not present the request")
             return
         }
-        readyTimer.restart()
+        finishShown()
     }
 
     function focusedOutputDone(exitCode, exitStatus, outputName) {
@@ -196,7 +198,8 @@ Item {
 
     Connections {
         target: root.panelInstance
-        function onFrameSwapped() { root.finishShown() }
+        function onVisibleChanged() { root.finishShown() }
+        function onBackingWindowVisibleChanged() { root.finishShown() }
     }
 
     Timer {
