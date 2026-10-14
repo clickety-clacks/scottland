@@ -223,7 +223,7 @@ headless sessions, 2026-10-04),** on the merge with main `7076f78`:
 | `tests/pairing-test.sh`, two outputs | 17 passed |
 | `tests/window-double-tap-test.sh`, run to completion | 57 passed (main: 57) |
 | windowing end-to-end / key layers / widget hints / cycle overshoot / live drag (L23) | 102 / 59 / 228 / 79 / 11 passed |
-| widget morph | 267 passed, 3 goo frame-following failures (main on nacelle: 4 of the same) |
+| Retired widget-morph suite (historical) | 267 passed, 3 goo frame-following failures (main on nacelle: 4 of the same) |
 | window-avoidance calm | 13 passed, 3 drag-geometry failures (main on nacelle: the same 3) |
 
 The three-finger checks drive the test-only virtual touchpad with libinput's sequences: still
@@ -643,7 +643,7 @@ Config concurrency counts five rounds, each containing 20 simultaneous config bu
 | `tests/windowing-test.sh` | 74 |
 | `tests/key-layers-test.sh` | 59 |
 | `tests/widgets-test.sh` | 146 |
-| `tests/widget-morph-test.sh` | 76 |
+| Retired widget-morph suite (historical) | 76 |
 | `tests/state-model-test.sh 271828 50` | 95 |
 | `tests/state-model-test.sh 104729 50`, legacy D-Bus | 100 |
 | `tests/state-regressions-test.sh` | 7 |
@@ -715,7 +715,7 @@ to that total. Each suite below exited zero in its successful run.
 | Key layers | 59 |
 | Widgets, goo off | 146 |
 | Widgets, goo on | 146 |
-| Widget morph | 76 |
+| Retired widget-morph suite (historical) | 76 |
 | Model seed 271828, 50 operations | 95 (two successful runs) |
 | Focused model regressions | 7 |
 | Attention / launcher / widget-bus units | 5 / 17 / 16 |
@@ -804,7 +804,7 @@ The requested broad suites were run. The final-source serial matrix is **not cle
 | Windowing | 83 passed, 1 failed: the app was not yet hidden at the slow-cycle widget-arrival check; subsequent cycles and memories passed |
 | Hint appearance | 53 passed, 0 failed |
 | Inertia | 61 passed on one output; 7 passed, 1 failed on two outputs (sampled monotonicity at the seam; travel, transfer, return and Esc passed) |
-| Widget morph | 182 passed, 4 failed: Esc-return intermediate-frame/field sampling and goo collapse/reversal field sampling; cycle and double-tap paths passed |
+| Retired widget-morph suite (historical) | 182 passed, 4 failed: Esc-return intermediate-frame/field sampling and goo collapse/reversal field sampling; cycle and double-tap paths passed |
 
 Earlier runs include 84/84 windowing and 61+8 inertia passes, but also an IPC resource exception,
 an Esc-resize failure and varying morph sampling failures. Their logs are retained, not replaced
@@ -1305,7 +1305,7 @@ zone-edge choice remains pending.
 The eight requested suites ran on `de2af42` in separate headless directories.
 `windowing-test.sh` passed **102/102**, hang stress **10/10**, always-on stress
 **42/42** (settled Wayfire CPU **6.3% of one core**), `widgets-test.sh` passed,
-and `widget-morph-test.sh` passed **270/270**. `hint-visible-test.sh` reported
+and the retired widget-morph suite passed **270/270**. `hint-visible-test.sh` reported
 **83 passed, 2 failed**: a raised-stack circle did not remain inside the
 reported exposed region, and no rear window received the fixture's expected
 greater-than-100 px shift in the exact-overlap stack. The latter is a
@@ -1357,7 +1357,7 @@ wider center zone returning at 100%. `tests/windowing-unit.sh` covers the pure m
 | Present (L30) | 0 failed | origin/main 0 failed |
 | Drag coast | 25 passed, 2 failed | origin/main: the same 2 hint-avoidance failures |
 | State regressions | stops at the late-widget fixture | origin/main: stops at the same point |
-| Widget morph | 262–269 of 270, timing checks vary by run | origin/main 266–270 of 270, run side by side under the same load |
+| Retired widget-morph suite (historical) | 262–269 of 270, timing checks vary by run | origin/main 266–270 of 270, run side by side under the same load |
 
 Plumbus carried a load average of 11–16 from other agents' sessions during the widget-morph runs;
 its failures are timing samples that differ from run to run on both builds, and no pins occur in

@@ -12,6 +12,10 @@ default is **true**. Switching it off, or a GPU unable to run it, retains separa
 halo bands. A3, A4, A6, A9, A10 and A11's goo behavior is restated below; the original halo
 remains available.
 
+The dedicated widget animation/morph test suite was retired on 2026-10-08 at Mike's direction.
+Widget-morph test results recorded in this document are historical runs of that retired suite;
+the product animation behavior and independent `tests/widgets-test.sh` suite remain unchanged.
+
 ## Model
 
 - **One field per screen.** Every window adds a goo density that peaks at its edge and falls off

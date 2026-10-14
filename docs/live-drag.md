@@ -116,8 +116,8 @@ performance guarantee or frozen-client performance saving is claimed.
 | Windowing, including L31 scale pinning | 84 |
 | Keyboard inertia | 61 single-output + 8 multi-output |
 | Widgets, including WG14 and L29 click/raise | 186 on RX 580 |
-| Widget morph with goo on | 186 on RX 580 |
-| Widget morph with goo off | 162 on Xe |
+| Retired widget-morph suite (historical), goo on | 186 on RX 580 |
+| Retired widget-morph suite (historical), goo off | 162 on Xe |
 | Existing drag/resize scripts | scale 1.000 → 0.808 → 1.000 across both sides; resize 696×495 → 816×555 with center fixed at (640,360) |
 
 The table identifies passing runs, not an assertion that every repeat passed. Xe

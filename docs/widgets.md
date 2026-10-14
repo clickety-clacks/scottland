@@ -1,5 +1,10 @@
 # Widgets
 
+The dedicated widget animation/morph test suite was retired on 2026-10-08 at Mike's direction.
+The suite results and descriptions below are historical; its dedicated test and wrapper are no
+longer shipped. Product animation behavior and the independent `tests/widgets-test.sh` suite are
+unchanged.
+
 When a window is moved onto a screen-edge widget rail, Scottland shows a **widget** in its
 place: a compact, live stand-in for the app. Widgets don't depend on apps adding support.
 Scottland decides what to show for each app, ships defaults, lets apps ship their own widget,
@@ -113,8 +118,8 @@ before rerunning. Those failures were not evidence of a valid lifecycle regressi
 
 | Suite | Result |
 |---|---|
-| `tests/widget-morph-test.sh` (goo on) | **185 passed, 0 failed** |
-| `SCOTTLAND_TEST_GOO=0 tests/widget-morph-test.sh` | **162 passed, 0 failed** |
+| Retired widget-morph suite (historical, goo on) | **185 passed, 0 failed** |
+| Retired widget-morph suite (historical, goo off) | **162 passed, 0 failed** |
 | `tests/widgets-test.sh` | **146 passed, 0 failed**, including 43 widget-input checks |
 | `tests/windowing-test.sh` | **84 passed, 0 failed** |
 | `tests/hint-style-test.sh` | **51 passed, 0 failed** |
@@ -216,8 +221,8 @@ Final build in `scottland-peek` (branch `widget-peek`, based on `3f9f906`):
 | Suite | Result |
 |---|---|
 | `tests/widgets-test.sh` | **186 passed**, including 40 new WG19 checks and model/service/card-render audits |
-| `tests/widget-morph-test.sh`, goo off | **162 passed** |
-| `tests/widget-morph-test.sh`, goo on | **186 passed** |
+| Retired widget-morph suite (historical, goo off) | **162 passed** |
+| Retired widget-morph suite (historical, goo on) | **186 passed** |
 | `tests/windowing-test.sh` | **84 passed** |
 | `tests/widget-input-test.py peek`, goo off | **40 passed**, including both rails, actual handles, stationary grabs and five-second attention timing |
 
@@ -279,19 +284,12 @@ presentation changes, as it already does for the custom frame effects. Scottland
 no reduced-motion setting to honor. WG19 drives this same mechanism from pointer and attention
 inputs; `test-peek` remains an isolated `SCOTTLAND_TEST_MODEL` rendering probe.
 
-`tests/widget-morph-test.sh` samples real Super+M input on both rails and multiple adjacent
-widgets, deliberate reversal, held dragging and gliding, fullscreen, close and marked reload.
-A GTK fixture supplies delayed, unchanged-size and absent responses. PPM screenshots test
-opacity, natural content scale and reversal pixels; the test records geometry samples and
-checks that the transition count and step counter stop after settlement. All test sessions use
-a private runtime on plumbus, with this checkout's helpers; no physical display is used.
-
 Validation of the compositor morph on plumbus, 2026-10-01 (fresh headless sessions,
 GLES software rendering; no physical screen or live session reload):
 
 | Suite | Final result |
 |---|---|
-| `tests/widget-morph-test.sh` | **76 passed**: three simultaneous widgets, both rails, duration/geometry/reversal, neighboring halos, input clipping, peek intent, drag/glide, fullscreen, close/reload, applied buffers/fallback, pixel opacity/scale/orientation, rounded-card background and height-changing placement |
+| Retired widget-morph suite (historical) | **76 passed**: three simultaneous widgets, both rails, duration/geometry/reversal, neighboring halos, input clipping, peek intent, drag/glide, fullscreen, close/reload, applied buffers/fallback, pixel opacity/scale/orientation, rounded-card background and height-changing placement |
 | `tests/widgets-test.sh` | **146 passed**, including all 43 existing input regressions |
 | `tests/state-model-test.sh 271828 50` | **95 passed** |
 | `tests/state-regressions-test.sh` | **6 passed** |
@@ -441,7 +439,7 @@ way there:
 | Suite (nacelle) | This branch | main |
 |---|---|---|
 | `tests/widgets-test.sh` | 197 + all modes checks; stops in the WG25 Return case's re-drag (no preview starts) | same Return-case stop: 2 of 3 runs of that case alone on both |
-| `tests/widget-morph-test.sh`, goo / goo off | 266/4, 241/1 | 266/4, 241/1 (same checks: reversal pixels, timing samples) |
+| Retired widget-morph suite (historical), goo / goo off | 266/4, 241/1 | 266/4, 241/1 (same checks: reversal pixels, timing samples) |
 | `tests/widget-hints-test.sh` | **193/0** | not run |
 | `tests/windowing-test.sh` | **103/0** | not run |
 | `tests/state-model-test.sh 104729 50` | **100/0** | not run |
@@ -461,8 +459,8 @@ so failures were compared against origin/main run the same way.
 |---|---|---|
 | `widget-input-test.py modes` (new: tap/hold timing, Alt in each mode, attention while hidden, full screen, arrival, reload) | **29/29**, three runs | (new) |
 | `tests/widgets-test.sh` (includes all widget-input cases) | **232/0** | 203/0 |
-| `tests/widget-morph-test.sh`, goo | **270/0** (a first run under load: 264/6, timing samples) | 268/2 (goo intermediate frame) |
-| `SCOTTLAND_TEST_GOO=0 tests/widget-morph-test.sh` | **242/0** | not run |
+| Retired widget-morph suite (historical), goo | **270/0** (a first run under load: 264/6, timing samples) | 268/2 (goo intermediate frame) |
+| Retired widget-morph suite (historical), goo off | **242/0** | not run |
 | `tests/widget-hints-test.sh` | **193/0** | not run |
 | `tests/windowing-test.sh` | **103/0** | not run |
 | `tests/state-model-test.sh 104729 50` | **100/0** | not run |
@@ -585,7 +583,7 @@ Its combined badge/resize suite passes **94/94**, including GO8/GO12/A6 with goo
 Screenshots and JSON geometry are in `build/badges-fixedsize-evidence/`. No live session was
 used; this is headless validation, not physical-screen verification.
 
-Final regression runs also passed `widgets-test` (all checks), `widget-morph-test` (185/185),
+Final regression runs also passed `widgets-test` (all checks) and the retired widget-morph suite (185/185),
 `goo-test` (46/46), and `goo-overlap-hover-test` (27/27). The morph run initialized its private
 session palette through `scottland-color-scheme ensure` before reading window-mode hints.
 
@@ -629,7 +627,7 @@ keeps peek animation independent of focus and collapse intent.
 
 ### WG23 validation (2026-10-02, isolated headless)
 
-`tests/widget-morph-test.sh` passed **246 checks with goo** and **222 with goo off**. This
+The retired widget-morph suite historically passed **246 checks with goo** and **222 with goo off**. This
 includes real-input Super+M collapse/expand, IPC/menu actions, hover and attention peeks,
 attention expiry, interrupted reversals, one overshoot without wobble, exact settlement,
 and a live zero setting that preserves monotonic size changes. `tests/widgets-test.sh`
@@ -642,7 +640,7 @@ size. The six-frame-per-direction strip and sampled geometry are in
 `build/elastic-final/frames-final/`. All sessions and artifacts stayed under `build/`;
 no physical display or live session was used.
 
-The small-jobs batch reran `tests/widget-morph-test.sh` with goo: **270 passed, 0 failed** in
+The small-jobs batch historically reran the widget-morph suite with goo: **270 passed, 0 failed** in
 `build/widget-morph-batch1-r3.log`. An earlier run passed 269 checks and missed the 12 pt
 intermediate goo/frame sampling bound once (14.6 pt); the unchanged-code rerun passed.
 `tests/widgets-test.sh` also passed all checks, including reload and widget-service behavior.
