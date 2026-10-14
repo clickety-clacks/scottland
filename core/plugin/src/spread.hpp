@@ -1,8 +1,7 @@
 #pragma once
-// Spread (docs/spread.md, "Spread and solo"): the pure solver for a solo. One window takes a
-// fixed spot in the center zone; every other center-zone window (an arrival) moves into the
-// periphery, at the real zone scale of wherever it lands; periphery windows (residents) move
-// only when they must, on their own side, never to a larger scale. Standard library only: no
+// Spread (docs/spread.md): the pure solver for solo and gather. Solo places one window in the
+// center zone and sends arrivals into the periphery; gather moves periphery residents inward on
+// their own side. Standard library only: no
 // Wayfire, wlroots or plugin state, so it runs in unit tests, in main-loop slices and later on
 // the plugin's worker.
 //
@@ -47,6 +46,8 @@ enum class role_t : uint8_t
     fixed,     // never moved by spread (a window on a rail, outside the request)
 };
 
+enum class mode_t : uint8_t { solo, gather };
+
 struct window_t
 {
     uint64_t id = 0;
@@ -61,6 +62,8 @@ struct window_t
 
 struct snapshot_t
 {
+    mode_t mode = mode_t::solo;
+    std::string unavailable_reason; // a per-output cap or snapshot fact, checked by the solver
     double screen_width = 0, screen_height = 0;
     box workarea;                  // output-local; panels are outside it
     double padding = 0;            // WP7 screen-edge padding, kept whenever the window fits with it
