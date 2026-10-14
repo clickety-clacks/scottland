@@ -127,6 +127,19 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn documented_help_dispatch_succeeds_without_reading_settings() {
+    let scratch = Scratch::new();
+
+    for flag in ["--help", "-h", "help"] {
+        let output = scratch.run(&[flag]);
+        assert!(output.status.success(), "{flag}: {}", stderr(&output));
+        assert!(stdout(&output).contains("usage: scottland-display text-size"));
+        assert!(stderr(&output).is_empty());
+    }
+    assert!(scratch.calls().is_empty());
+}
+
+#[test]
 fn show_reads_the_key_and_reports_the_unset_default() {
     let scratch = Scratch::new();
     let output = scratch.run(&["text-size"]);

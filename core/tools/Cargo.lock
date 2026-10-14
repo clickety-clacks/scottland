@@ -561,6 +561,9 @@ dependencies = [
 [[package]]
 name = "scottland-display"
 version = "0.2.0"
+dependencies = [
+ "scottland-lib",
+]
 
 [[package]]
 name = "scottland-launch"

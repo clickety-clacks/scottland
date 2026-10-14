@@ -14,6 +14,10 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         .ok_or_else(|| USAGE.to_string())?;
 
     match args.as_slice() {
+        ["-h" | "--help" | "help"] => {
+            println!("{USAGE}");
+            Ok(())
+        }
         ["text-size"] => show(),
         ["text-size", "set", factor] => set(factor),
         ["text-size", "reset"] => reset(),
