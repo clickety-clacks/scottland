@@ -157,8 +157,7 @@ def settled_hints(count):
         state = at_rest()
         if not (state and state['active'] and len(state['hints']) == count and
                 not state['hint_step_animation'] and not state['hint_step_offset'] and
-                not state['occlusion_pending'] and all(
-                    h.get('visible') and abs(h.get('pop', 0) - 1) < 1e-3 and 'badge' in h
+                all(h.get('visible') and abs(h.get('pop', 0) - 1) < 1e-3 and 'badge' in h
                     for h in state['hints'])):
             previous = None
             stable_since = None
