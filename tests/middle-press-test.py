@@ -234,6 +234,44 @@ try:
           "pointer: a quick click reaches A once, in order")
     check(geometry("A") == a, "pointer: a quick click leaves A's geometry unchanged")
 
+    # B1: the frame halo belongs to A but has no focused client surface. Its press is
+    # consumed without replay, while movement beyond L24's slop still moves the window.
+    setup()
+    clear_events()
+    before = geometry("A")
+    x, y = before["x"] + before["width"] / 2, before["y"] - 6
+    pointer(x, y)
+    check(not pointer_events("A"), "halo: the press point is outside A's client surface")
+    button("BTN_MIDDLE", True)
+    wait(lambda: state()["middle_pending"], what="halo middle pending")
+    button("BTN_MIDDLE", False)
+    time.sleep(.1)
+    check(not events("A"), "halo: a null client recipient is not replayed")
+    check(geometry("A") == before, "halo: a quick middle click does not move A")
+
+    clear_events()
+    before = geometry("A")
+    x, y = before["x"] + before["width"] / 2, before["y"] - 6
+    pointer(x, y)
+    button("BTN_MIDDLE", True)
+    wait(lambda: state()["middle_pending"], what="halo drag pending")
+    for step in range(1, 11):
+        pointer(x + 20 * step, y)
+        if step == 1:
+            wait(lambda: state()["middle_dragging"], what="halo live drag")
+        time.sleep(.02)
+    check(not all_events(), "halo: dragging does not deliver middle input to A")
+    time.sleep(.25)
+    button("BTN_MIDDLE", False)
+    wait(lambda: not state()["dragging"], what="halo drag end")
+    settle("A", "B")
+    after = geometry("A")
+    check(after["x"] >= before["x"] + 150 and
+          (after["width"], after["height"]) == (before["width"], before["height"]),
+          "halo: middle press and move drags A without resizing",
+          f"{before} -> {after}")
+    check(not all_events(), "halo: middle drag release is not replayed to A")
+
     # R3(b): the release is over B, but the click belongs only to the original surface A.
     setup(a_x=300, b_x=600)
     a = geometry("A")

@@ -5115,9 +5115,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto view = gesture_target();
             auto seat = wf::get_core().get_current_seat();
             auto recipient = seat ? seat->pointer_state.focused_surface : nullptr;
-            if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE) || !recipient)
+            if (!view || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
             {
-                return;  // no movable window with a client surface under the press point
+                return;  // only a movable framed window can claim the middle press
             }
 
             // Withhold a real middle press until it resolves to a click or a live move.
@@ -5125,6 +5125,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             middle_origin  = wf::get_core().get_cursor_position();
             middle_view    = view->weak_from_this();
             middle_device  = ev->device;
+            // A press on the frame halo has no focused client surface, but can still start a
+            // move. replay_middle_click() deliberately ignores a null recipient on release.
             middle_surface = recipient;
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
         } else if ((ev->event->state == WL_POINTER_BUTTON_STATE_RELEASED) && (ev->device == middle_device))
