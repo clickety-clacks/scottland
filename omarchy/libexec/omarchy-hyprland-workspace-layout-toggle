@@ -1,0 +1,10 @@
+#!/bin/sh
+# Omarchy's workspace-layout UI calls this entry point directly. Workspace and tiling layouts
+# do not exist in Scottland; do not let the stock script turn the shim's rejected request into a
+# misleading "Workspace layout needs a Hyprland reload" notification.
+printf '%s\n' 'omarchy-hyprland-workspace-layout-toggle: workspace layout cycling is unsupported in Scottland' >&2
+if command -v omarchy-notification-send >/dev/null 2>&1; then
+  omarchy-notification-send -g '󱂬' 'Workspace layout cycling is unavailable in Scottland' \
+    >/dev/null 2>&1 || :
+fi
+exit 7
