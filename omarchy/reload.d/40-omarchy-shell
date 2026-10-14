@@ -1,0 +1,6 @@
+#!/bin/sh
+# Reconnect Omarchy's shell to the shim started earlier in this reload sequence.
+set -eu
+PATH="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec${PATH:+:$PATH}"
+export PATH
+exec omarchy-restart-shell
