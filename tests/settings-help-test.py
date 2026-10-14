@@ -120,6 +120,11 @@ def ipc(method, data=None):
     return result
 
 
+def set_test_identities(rows):
+    # Cleanup uses this even when an earlier scenario fails before S24 begins.
+    return ipc("scottland/test-screen-identities", {"outputs": rows})
+
+
 def check(name, condition):
     global passed, failed
     print(("PASS " if condition else "FAIL ") + name, flush=True)
@@ -318,11 +323,19 @@ def motion_trial(resize=False):
     name="SettingsMotion"+str(time.monotonic_ns())
     fixture=subprocess.Popen(["python3",str(repo/"tests/windowing-key-recorder.py"),name,str(art/(name+".keys"))],stdout=log,stderr=log)
     clients.append(fixture)
+    view = None
     for _ in range(80):
+        if fixture.poll() is not None:
+            break
         view=next((v for v in ipc("window-rules/list-views") if v.get("title")==name),None)
         if view:break
         time.sleep(.05)
-    assert view
+    if not view:
+        log.flush()
+        details = "\n".join((art / "panel.log").read_text(errors="replace").splitlines()[-12:])
+        raise AssertionError(
+            f"motion recorder did not map (process_exit={fixture.poll()!r}); "
+            f"recorder log tail:\n{details}")
     ipc("window-rules/configure-view",dict(id=view["id"],geometry=dict(x=480,y=250,width=250,height=150)))
     ipc("window-rules/focus-view",dict(id=view["id"]))
     time.sleep(.3)
@@ -371,7 +384,12 @@ def bands(name):
 
 
 try:
-    assert os.environ["WAYLAND_DISPLAY"] != "wayland-1", "isolated headless session required"
+    # Private runtimes can reuse wayland-1. Check the owned runtime and display record.
+    headless_dir = Path(os.environ["SCOTTLAND_HEADLESS_DIR"])
+    assert os.path.samefile(os.environ["XDG_RUNTIME_DIR"], headless_dir / "runtime"), \
+        "run through tests/headless.sh in an owned session"
+    assert (headless_dir / "display").read_text().strip() == os.environ["WAYLAND_DISPLAY"], \
+        "run through tests/headless.sh in an owned session"
     outputs = sorted(ipc("window-rules/list-outputs"), key=lambda o:o["geometry"]["x"])
     assert len(outputs) == 2 and all(o["geometry"]["height"] == 720 for o in outputs)
     # Quickshell's first screen is where the panel is anchored (leftmost on this backend).
@@ -505,7 +523,13 @@ try:
     before_pad=snapshot()["scroll"]
     for _ in range(4):
         ipc("scottland/test-input",dict(scroll_y=20,wheel=False,touchpad=True));time.sleep(.02)
-    check("touchpad content tracks 80 pt gesture",abs(snapshot()["scroll"]-before_pad-80)<16)
+    touchpad_after=snapshot()["scroll"]
+    touchpad_delta=touchpad_after-before_pad
+    touchpad_direct={"before":before_pad,"after":touchpad_after,"delta":touchpad_delta,
+                     "expected_delta":80,"tolerance":16}
+    (art/"touchpad-direct.json").write_text(json.dumps(touchpad_direct,sort_keys=True)+"\n")
+    print("touchpad direct scroll: "+json.dumps(touchpad_direct,sort_keys=True),flush=True)
+    check("touchpad content tracks 80 pt gesture",abs(touchpad_delta-80)<16)
     ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
     pad_samples=[]
     for _ in range(30):
@@ -513,6 +537,34 @@ try:
     (art/"touchpad-samples.json").write_text(json.dumps(pad_samples))
     check("touchpad coasts after axis stop",len(set(round(y,1) for y,v in pad_samples))>=3)
     a=snapshot()["scroll"];time.sleep(.25);check("touchpad coast settles",abs(snapshot()["scroll"]-a)<.1)
+    # Exercise two distinct configured speeds in this same Settings window.
+    original_speed=float(ipc("wayfire/get-config-option", {"option":"input/touchpad_scroll_speed"})["value"])
+    def wait_speed(target):
+        for _ in range(40):
+            if abs(snapshot().get("touchpadSpeed",-1)-target)<.001:return True
+            time.sleep(.05)
+        return False
+    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.4})
+    check("Settings observes live touchpad speed 0.4",wait_speed(0.4))
+    tab(0);tab(1)
+    pointer(*control_point("viewport",300,200))
+    before_fast=snapshot()["scroll"]
+    for _ in range(4):
+        ipc("scottland/test-input",dict(scroll_y=20,wheel=False,touchpad=True));time.sleep(.02)
+    check("touchpad tracks 80 pt gesture at live speed 0.4",abs(snapshot()["scroll"]-before_fast-80)<16)
+    ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
+    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.2})
+    check("Settings observes live touchpad speed 0.2",wait_speed(0.2))
+    tab(0);tab(1)
+    pointer(*control_point("viewport",300,200))
+    before_live=snapshot()["scroll"]
+    for _ in range(4):
+        ipc("scottland/test-input",dict(scroll_y=20,wheel=False,touchpad=True));time.sleep(.02)
+    delta_live=snapshot()["scroll"]-before_live
+    print("touchpad changed-speed scroll: "+str(delta_live),flush=True)
+    check("touchpad follows live 0.4 to 0.2 speed change",abs(delta_live-80)<16)
+    ipc("scottland/test-input",dict(scroll_y=0,wheel=False,touchpad=True))
+    ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": original_speed})
     tab(0);tab(1)
     # After mouse editing that same row, touch must still be able to take over for scrolling.
     click(*reveal("goo",250,4*69+34));key("KEY_BACKSPACE")
@@ -878,9 +930,6 @@ try:
         "min_scale": 0.3, "max_scale": 0.95, "scale_curve": "0:0.95 1:0.3"}
     target_key = " ".join(target_identity.values())
 
-    def set_test_identities(rows):
-        return ipc("scottland/test-screen-identities", {"outputs": rows})
-
     def zone_outputs():
         return {row["output"]: row for row in ipc("scottland/layout-state")["outputs"]}
 
@@ -1099,20 +1148,31 @@ try:
         width = output["geometry"]["width"]
         ipc("window-rules/configure-view", {"id": placement_views[title]["id"], "output_id": output["id"],
             "geometry": {"x": round(width * placement_fraction - 150), "y": 180, "width": 300, "height": 180}})
-    def placement_state(title):
-        return next(view for view in ipc("scottland/layout-state")["views"] if view["title"] == title)
+    def placement_state(title, views):
+        return next((view for view in views if view.get("title") == title), None)
+    def placement_matches(view, expected_zone):
+        if view is None:
+            return False
+        scale=view.get("applied_scale")
+        if not isinstance(scale,(int,float)) or view.get("zone") != expected_zone:
+            return False
+        return scale < .999 if expected_zone == "continuous" else abs(scale-1.0) < .001
+    layout_views=[]
+    own_view=global_view=None
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        own_view, global_view = placement_state("zones-own-placement"), placement_state("zones-global-placement")
-        if own_view["zone"] == own_expected and global_view["zone"] == global_expected: break
+        layout_views=ipc("scottland/layout-state").get("views",[])
+        own_view=placement_state("zones-own-placement",layout_views)
+        global_view=placement_state("zones-global-placement",layout_views)
+        if placement_matches(own_view,own_expected) and placement_matches(global_view,global_expected): break
         time.sleep(.05)
-    placement_ok = own_view["zone"] == own_expected and global_view["zone"] == global_expected \
-        and (own_view["applied_scale"] < .999 if own_expected == "continuous"
-             else abs(own_view["applied_scale"] - 1.0) < .001) \
-        and (global_view["applied_scale"] < .999 if global_expected == "continuous"
-             else abs(global_view["applied_scale"] - 1.0) < .001)
+    placement_ok = placement_matches(own_view,own_expected) and placement_matches(global_view,global_expected)
     if not placement_ok:
-        print("S24 placement state: " + json.dumps({"own": own_view, "global": global_view}, sort_keys=True), flush=True)
+        print("S24 placement state: " + json.dumps({
+            "own":own_view,"global":global_view,
+            "visible_titles":[view.get("title") for view in layout_views],
+            "expected":{"own":own_expected,"global":global_expected}
+        },sort_keys=True),flush=True)
     check("S24 actual placement resolves the target profile and leaves unnamed output global", placement_ok)
     ipc("wayfire/set-config-options", {"scottland/center_width": zone_baseline["center_width"],
                                         "scottland/blend_width": zone_baseline["blend_width"]})

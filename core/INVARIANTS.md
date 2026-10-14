@@ -151,11 +151,16 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 |---|---|---|
 | K1 | A focused surface can add a temporary shortcut layer: claimed keys reach that surface as ordinary press/release events with modifiers intact, while every unclaimed key uses the user's current shortcuts (including live changes, imported functions, release bindings and remaps). Native toplevels and layer-shell surfaces work independently even within one client. Unmap, close or client disconnect removes the layer; set replaces it. Full rules and IPC: [../docs/key-layers.md](../docs/key-layers.md), KL1–KL8. | implemented (plumbus headless, including combined Alt hints); physical verification pending |
 
+## List picker
+
+The generic list picker command and its command/IO contract are in
+[../docs/list-picker.md](../docs/list-picker.md) (LP1–LP5). Source implemented; behavior verification pending.
+
 ## Session
 
 | ID | Invariant | Status |
 |---|---|---|
-| E1 | When Scottland owns the shared systemd user manager, it imports the live session environment before starting its graphical-session services and again on reload, so services and later activations use the current session values even if a previous Scottland login session is still listed. A different desktop that owns the manager keeps its environment while running alongside Scottland. | implemented (shared-runner verification pending) |
+| E1 | When Scottland owns the shared systemd user manager, startup imports each configured, set session variable once before launching other autostart hooks or graphical-session services, and reload imports them again. Import or portal failures are logged without a retry; login startup still attempts the session watcher and continues the ordinary autostart hooks, and an in-place reload continues its plugin/config work. At login, only active or transitioning portal units that predate a successful import restart to pick up the live environment; failed units are not restarted. An in-place reload imports the live values without restarting already-running services. Services and later activations use the current session values even if a previous Scottland login session is still listed. A different desktop that owns the manager keeps its environment while running alongside Scottland. | implemented (shared-runner verification pending) |
 | E2 | Quit keys inside Scottland: Ctrl+Alt+Backspace, Super+Shift+Escape. | implemented |
 | E4 | `scottland-reload` (Super+Ctrl+Alt+R) loads the current plugin build and config into the running session in place: windows stay open, new settings are registered and take their saved values. | verified |
 | E5 | Each session records its environment at startup; `scottland-exec` runs commands in a chosen session with that environment and `scottland-reload` goes through it, so reloading from any shell (another desktop, ssh, an agent) behaves exactly like Super+Ctrl+Alt+R and never leaks the caller's variables into the session's helpers. | verified |

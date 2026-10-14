@@ -28,6 +28,7 @@ class alt_mode
     std::function<uint64_t()> focused;
     std::function<void(uint64_t held, uint64_t partner)> pair; // WK36: held an unfocused window's hint
     std::function<void(uint64_t)> solo; // WK35: held the focused window's hint
+    std::function<void()> gather; // GA1: plain Space in Window mode
     void begin(std::vector<hint_entry> windows, uint64_t focused);
     void end();
     void refresh(std::vector<hint_entry> windows);

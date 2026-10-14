@@ -8,3 +8,5 @@ export TMPDIR=$build_dir
 c++ -std=c++17 -Wall -Wextra -Werror -O2 -Icore/plugin/src tests/windowing-unit.cpp \
   core/plugin/src/placement.cpp core/plugin/src/declutter.cpp core/plugin/src/alt-mode.cpp -o "$build_dir/test"
 "$build_dir/test"
+c++ -std=c++17 -Wall -Wextra -Werror -O2 tests/window-filter-unit.cpp -o "$build_dir/filter-test"
+"$build_dir/filter-test"

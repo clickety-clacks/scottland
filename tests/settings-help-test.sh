@@ -12,4 +12,13 @@ cleanup() {
   tests/headless.sh stop
 }
 trap cleanup EXIT
-tests/headless.sh run python3 tests/settings-help-test.py | tee build/settings-help-evidence/results.log
+# Do not keep a tee process resident beside the headless compositor and its clients. The
+# task-owned headless service has a finite PID/thread cap, and GTK may need a gmain thread
+# while the recorder is starting. Save output first, then relay it after the test exits.
+if tests/headless.sh run python3 tests/settings-help-test.py >build/settings-help-evidence/results.log 2>&1; then
+  test_status=0
+else
+  test_status=$?
+fi
+cat build/settings-help-evidence/results.log
+exit "$test_status"
