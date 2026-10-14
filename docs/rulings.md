@@ -140,6 +140,7 @@ Specified in windowing-keys.md WK36 and WP1.
 | Date | Ruling | Where |
 |---|---|---|
 | 10-03 | Overrides of Omarchy are reported with reasons, grouped by reason, explained by the user's default coding agent in plain words, leading with the user's own custom shortcuts. | O20 |
+| 10-13 | Omarchy's Logout in Scottland must close apps and end Scottland's own session so a user can log in again, as Logout does in Omarchy; `uwsm stop` alone leaves Scottland running with an empty screen. | S9; docs/adapter-gaps.md AG39 |
 | 10-03 | Gooarchy flavorings (curated widgets and defaults) install with the distro and with the Omarchy adapter; they may override Omarchy only where that's better for Gooarchy, always reported. | O21, P9 |
 | 10-03 | The distro is Gooarchy, pronounced "goo-ah-shee". | distro-notes |
 | 10-03 | Chromium ships with the system title bar and borders. | distro-notes |
@@ -151,6 +152,8 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-05 | The adapter brings over Omarchy's touchpad scroll speeds: the global touchpad scroll_factor and the per-app scroll_touchpad rules from the user's effective config, updating live; core gets a generic per-app touchpad scroll speed (config-driven app-id matching, no named apps) and alone keeps its current default. Nothing else from the audit's third group. | L17, O28; docs/adapter-gaps.md AG22/AG07 |
 | 10-06 | Screen sharing for Omarchy-adapter users: the adapter's setup builds and installs Gooarchy's patched xdg-desktop-portal-wlr package, replacing Arch's, and reports the replacement. Note for later: once Gooarchy has a package repository, this must migrate to installing from it. | O29; docs/adapter-gaps.md AG02; Gooarchy docs/xdg-desktop-portal-wlr.md |
 | 10-06 | Don't send the xdg-desktop-portal-wlr fixes upstream: we maintain our own public fork (clickety-clacks/xdg-desktop-portal-wlr), the fixes as commits on a branch from the 0.8.4 tag, tagged releases. At the very top of its README, and in CONTRIBUTING.md: AI-written submissions are welcome, but too many AI-written submissions that fail our adversarial review may result in a ban on having submissions accepted. Gooarchy's package builds from the fork's release. Supersedes "get the fixes accepted upstream" and "only until upstream releases them" in the 10-05 screen-sharing ruling. | AG02; Gooarchy docs/xdg-desktop-portal-wlr.md |
+| 10-09 | Translate Omarchy’s existing screensaver window rule so only org.omarchy.screensaver opens fullscreen in Scottland; preserve ordinary windows, keep Omarchy unmodified, and document untranslated focus/cursor rules. Physical-screen acceptance follows merge. | Mike’s make-full-screen choice (dr_74ff9be5), AG19, adapter L2 |
+| 10-13 | Confirm AG19 question 4 after observing the Omarchy screensaver open windowed in Scottland 0.3: the mapped `org.omarchy.screensaver` must open fullscreen, while ordinary windows remain windowed. Keep Omarchy unmodified; leave focus and cursor rules untranslated. | Mike’s direct ruling, AG19 question 4, `tests/omarchy-shim-test.py`, adapter L2 |
 
 ## System tools (core/tools)
 
@@ -165,6 +168,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | Date | Ruling | Where |
 |---|---|---|
 | 10-14 | After `scottland-clipboard clear` acknowledges clearing session history, it opens the existing generic picker with `--show-empty` and prompt `Clipboard history`. Zero rows show a nonselectable `No entries` view; ordinary empty picker input still cancels; nonempty picker behavior is unchanged. Normal dismissal means clear succeeded. Clear failure does not open the view; if presentation fails after clear, report that history is cleared and the view failed, without restoring it. No sentinel, second picker, or new dependency. | docs/clipboard.md CH11; docs/list-picker.md LP6 |
+
+## Session environment
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying; login still starts the session watcher and ordinary hooks, and reload continues its plugin/config work. At login, restart only active or transitioning portal units that predate the successful import; do not restart failed portal units. On reload, import the live values without restarting already-running services. | E1, `core/autostart.d/05-import-environment` |
 
 ## Knocks (concept in discussion; docs/knocks.md)
 

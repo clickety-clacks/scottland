@@ -1,6 +1,6 @@
 #!/bin/bash
 # Spread solver unit suite: fixtures, fuzzed invariants, determinism, slices, timing (no compositor).
-#   tests/spread-unit.sh [--bench]
+#   tests/spread-unit.sh [--gather-only|--bench]
 set -euo pipefail
 cd "$(dirname -- "$0")/.."
 mkdir -p build

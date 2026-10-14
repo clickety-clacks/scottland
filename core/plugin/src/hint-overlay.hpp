@@ -80,6 +80,8 @@ class center_switcher_node : public wf::scene::node_t
     center_switcher_node() : node_t(false) {}
     void update(double output_width, const std::string& title, unsigned position, unsigned count,
         const hint_palette& palette, double scale);
+    void update_filter(double output_width, double output_height, const std::string& query,
+        const hint_palette& palette, double scale);
     wf::geometry_t get_bounding_box() override { return box; }
     void gen_render_instances(std::vector<wf::scene::render_instance_uptr>& instances,
         wf::scene::damage_callback damage, wf::output_t *output) override;
@@ -87,6 +89,9 @@ class center_switcher_node : public wf::scene::node_t
     std::shared_ptr<wf::texture_t> texture;
     std::vector<unsigned char> pixels;
     int pixel_width = 0, pixel_height = 0;
+  private:
+    void update_plate(double output_width, double output_height, std::string caption,
+        const hint_palette& palette, double scale, bool bottom);
 };
 
 // A short visual acknowledgement of a completed hint press, on windows and cards alike.
