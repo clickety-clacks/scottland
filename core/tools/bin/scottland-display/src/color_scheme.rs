@@ -1,14 +1,17 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::gamma::GammaController;
@@ -18,12 +21,19 @@ const HELPER_RELATIVE: &str = "libexec/scottland-color-scheme";
 const THEME_LINKS: [&str; 2] = ["light", "dark"];
 const SIGNAL_TERM: i32 = 15;
 const SIGNAL_KILL: i32 = 9;
+const SIGNAL_INT: i32 = 2;
+const SIGNAL_HUP: i32 = 1;
+const LOCK_EX: i32 = 2;
+const LOCK_UN: i32 = 8;
+const SESSION_LIFECYCLE_TICK: Duration = Duration::from_secs(1);
+static WATCHER_SIGNALLED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
-    fn setpgid(pid: i32, pgid: i32) -> i32;
     fn kill(pid: i32, signal: i32) -> i32;
     fn getuid() -> u32;
     fn poll(fds: *mut PollFd, nfds: usize, timeout: i32) -> i32;
+    fn flock(fd: i32, operation: i32) -> i32;
+    fn signal(signal: i32, handler: usize) -> usize;
 }
 
 #[repr(C)]
@@ -102,34 +112,46 @@ fn invoke_helper_at(path: &Path, action: &str) -> Result<Output, String> {
 
 pub(super) fn ensure() -> Result<(), String> {
     let path = pid_file_path()?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| "color-scheme watcher record has no parent directory".to_string())?;
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("could not create color-scheme watcher directory: {error}"))?;
     let fingerprint = executable_fingerprint()?;
-    if let Some((pid, recorded)) = read_pid_file(&path) {
-        if watcher_matches_session(pid) {
-            if recorded == fingerprint {
-                return invoke_helper("once").map(|_| ());
-            }
-            terminate_watcher(pid)?;
-        }
-        remove_pid_file(&path);
-    }
-
     let executable = env::current_exe()
         .map_err(|error| format!("could not locate scottland-display: {error}"))?;
-    let mut command = Command::new(executable);
-    command
-        .args(["color-scheme", "watch"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0);
-    command
-        .spawn()
-        .map_err(|error| format!("could not start the color-scheme watcher: {error}"))?;
-    Ok(())
+    match coordinate_ensure(
+        &path,
+        &fingerprint,
+        watcher_matches_session,
+        terminate_watcher,
+        || {
+            let mut command = Command::new(executable);
+            command
+                // Keep the legacy process marker so existing session cleanup also finds this watcher.
+                .arg0("scottland-color-scheme")
+                .args(["color-scheme", "watch"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            command
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| format!("could not start the color-scheme watcher: {error}"))
+        },
+    )? {
+        EnsureOutcome::Existing => invoke_helper("once").map(|_| ()),
+        EnsureOutcome::Started => Ok(()),
+    }
 }
 
 pub(super) fn watch() -> Result<(), String> {
-    become_process_group_leader()?;
+    let session_socket = wayland_socket_path();
+    if !session_socket_active(&session_socket) {
+        return Ok(());
+    }
+    WATCHER_SIGNALLED.store(false, Ordering::Relaxed);
+    install_watcher_signal_handlers()?;
     let path = pid_file_path()?;
     let directory = path
         .parent()
@@ -144,24 +166,28 @@ pub(super) fn watch() -> Result<(), String> {
     invoke_helper("once")?;
     let mut night_light = start_night_light_receiver();
     let (sender, receiver) = mpsc::channel();
-    spawn_settings_monitor(sender.clone());
-    spawn_text_monitor(sender.clone());
-    spawn_accent_monitor(sender.clone());
-    spawn_theme_monitor(sender);
+    let stop = Arc::new(AtomicBool::new(false));
+    let monitors = [
+        spawn_settings_monitor(sender.clone(), Arc::clone(&stop)),
+        spawn_text_monitor(sender.clone(), Arc::clone(&stop)),
+        spawn_accent_monitor(sender.clone(), Arc::clone(&stop)),
+        spawn_theme_monitor(sender, Arc::clone(&stop)),
+    ];
 
     loop {
+        if watcher_should_exit(&session_socket, WATCHER_SIGNALLED.load(Ordering::Relaxed)) {
+            break;
+        }
         refresh_night_light_session(&mut night_light);
-        if night_light.is_some() {
-            match receiver.recv_timeout(NIGHT_LIGHT_IDLE_TICK) {
-                Ok(event) => handle_watch_event(event),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
+        let timeout = if night_light.is_some() {
+            NIGHT_LIGHT_IDLE_TICK
         } else {
-            match receiver.recv() {
-                Ok(event) => handle_watch_event(event),
-                Err(_) => break,
-            }
+            SESSION_LIFECYCLE_TICK
+        };
+        match receiver.recv_timeout(timeout) {
+            Ok(event) => handle_watch_event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
         for _ in 1..MAX_WATCH_EVENTS_PER_TICK {
@@ -179,6 +205,10 @@ pub(super) fn watch() -> Result<(), String> {
             eprintln!("scottland-display: disabling Night Light receiver: {error}");
             night_light = None;
         }
+    }
+    stop.store(true, Ordering::Relaxed);
+    for monitor in monitors {
+        let _ = monitor.join();
     }
     Ok(())
 }
@@ -326,9 +356,47 @@ impl Drop for PidGuard {
 }
 
 fn claim_pid_file(path: &Path, fingerprint: &str) -> Result<Option<PidGuard>, String> {
+    claim_pid_file_using(path, fingerprint, watcher_matches_session)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnsureOutcome {
+    Existing,
+    Started,
+}
+
+fn coordinate_ensure(
+    path: &Path,
+    fingerprint: &str,
+    is_watcher: impl Fn(i32) -> bool,
+    stop_old: impl Fn(i32) -> Result<(), String>,
+    start: impl FnOnce() -> Result<(), String>,
+) -> Result<EnsureOutcome, String> {
+    let lock = watcher_lock(path)?;
+    if let Some((pid, recorded)) = read_pid_file(path) {
+        if is_watcher(pid) {
+            if recorded == fingerprint {
+                drop(lock);
+                return Ok(EnsureOutcome::Existing);
+            }
+            stop_old(pid)?;
+        }
+        remove_pid_file(path);
+    }
+    start()?;
+    drop(lock);
+    Ok(EnsureOutcome::Started)
+}
+
+fn claim_pid_file_using(
+    path: &Path,
+    fingerprint: &str,
+    is_watcher: impl Fn(i32) -> bool,
+) -> Result<Option<PidGuard>, String> {
+    let _lock = watcher_lock(path)?;
     for _ in 0..3 {
         if let Some((pid, recorded)) = read_pid_file(path) {
-            if watcher_matches_session(pid) {
+            if is_watcher(pid) {
                 if recorded == fingerprint {
                     return Ok(None);
                 }
@@ -363,6 +431,38 @@ fn claim_pid_file(path: &Path, fingerprint: &str) -> Result<Option<PidGuard>, St
     Err("another color-scheme watcher is starting for this session".to_string())
 }
 
+struct WatcherLock(std::fs::File);
+
+impl Drop for WatcherLock {
+    fn drop(&mut self) {
+        let _ = unsafe { flock(self.0.as_raw_fd(), LOCK_UN) };
+    }
+}
+
+fn watcher_lock(pid_path: &Path) -> Result<WatcherLock, String> {
+    let path = pid_path.with_extension("lock");
+    if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("color-scheme watcher lock path is a symlink".to_string());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|error| format!("could not open color-scheme watcher lock: {error}"))?;
+    loop {
+        if unsafe { flock(file.as_raw_fd(), LOCK_EX) } == 0 {
+            return Ok(WatcherLock(file));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(format!("could not lock color-scheme watcher: {error}"));
+        }
+    }
+}
+
 fn read_pid_file(path: &Path) -> Option<(i32, String)> {
     let content = fs::read_to_string(path).ok()?;
     let mut lines = content.lines();
@@ -383,6 +483,44 @@ fn pid_file_path() -> Result<PathBuf, String> {
     };
     let display = nonempty_env("WAYLAND_DISPLAY").unwrap_or_else(|| OsString::from("wayland"));
     Ok(pid_file_path_for(&session_dir, display.as_os_str()))
+}
+
+fn wayland_socket_path() -> PathBuf {
+    let display = nonempty_env("WAYLAND_DISPLAY").unwrap_or_else(|| OsString::from("wayland"));
+    let display = PathBuf::from(display);
+    if display.is_absolute() {
+        return display;
+    }
+    let runtime = nonempty_env("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { getuid() })));
+    runtime.join(display)
+}
+
+fn session_socket_active(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+}
+
+fn watcher_should_exit(path: &Path, stop_requested: bool) -> bool {
+    stop_requested || !session_socket_active(path)
+}
+
+extern "C" fn request_watcher_stop(_: i32) {
+    WATCHER_SIGNALLED.store(true, Ordering::Relaxed);
+}
+
+fn install_watcher_signal_handlers() -> Result<(), String> {
+    for signal_number in [SIGNAL_TERM, SIGNAL_INT, SIGNAL_HUP] {
+        if unsafe { signal(signal_number, request_watcher_stop as *const () as usize) }
+            == usize::MAX
+        {
+            return Err(format!(
+                "could not install color-scheme watcher signal handler: {}",
+                io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn pid_file_path_for(session_dir: &Path, display: &OsStr) -> PathBuf {
@@ -420,20 +558,6 @@ fn executable_fingerprint() -> Result<String, String> {
         (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
     });
     Ok(format!("{hash:016x}"))
-}
-
-fn become_process_group_leader() -> Result<(), String> {
-    if unsafe { setpgid(0, 0) } == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if process_group(std::process::id() as i32) == Some(std::process::id() as i32) {
-        Ok(())
-    } else {
-        Err(format!(
-            "could not isolate color-scheme watcher process group: {error}"
-        ))
-    }
 }
 
 fn read_process_args(pid: i32) -> Option<Vec<Vec<u8>>> {
@@ -525,46 +649,96 @@ fn terminate_watcher(pid: i32) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_settings_monitor(sender: Sender<WatchEvent>) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsMonitorSource {
+    Portal,
+    GSettings,
+}
+
+fn settings_monitor_source(portal_response: &str) -> SettingsMonitorSource {
+    if portal_response_has_scheme(portal_response) {
+        SettingsMonitorSource::Portal
+    } else {
+        SettingsMonitorSource::GSettings
+    }
+}
+
+fn settings_monitor_event(source: SettingsMonitorSource, line: &str) -> Option<WatchEvent> {
+    let relevant = match source {
+        SettingsMonitorSource::Portal => {
+            line.contains("org.freedesktop.appearance")
+                && (line.contains("'color-scheme'") || line.contains("'accent-color'"))
+        }
+        SettingsMonitorSource::GSettings => ["color-scheme", "accent-color"]
+            .iter()
+            .any(|key| line.contains(key)),
+    };
+    relevant.then_some(WatchEvent::Appearance)
+}
+
+fn watcher_stopped(stop: &AtomicBool) -> bool {
+    stop.load(Ordering::Relaxed)
+}
+
+fn sleep_while_running(stop: &AtomicBool, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while !watcher_stopped(stop) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(remaining.min(Duration::from_millis(100)));
+    }
+}
+
+fn spawn_settings_monitor(sender: Sender<WatchEvent>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
-        loop {
-            let portal = portal_has_scheme();
-            let mut command = if portal {
-                let mut command = Command::new("gdbus");
-                command.args([
-                    "monitor",
-                    "--session",
-                    "--dest",
-                    "org.freedesktop.portal.Desktop",
-                    "--object-path",
-                    "/org/freedesktop/portal/desktop",
-                ]);
-                command
+        while !watcher_stopped(&stop) {
+            let mut portal_response = None;
+            let mut command = if let Some(response) = portal_response_text() {
+                if portal_response_has_scheme(&response) {
+                    portal_response = Some(response);
+                    let mut command = Command::new("gdbus");
+                    command.args([
+                        "monitor",
+                        "--session",
+                        "--dest",
+                        "org.freedesktop.portal.Desktop",
+                        "--object-path",
+                        "/org/freedesktop/portal/desktop",
+                    ]);
+                    command
+                } else {
+                    let mut command = Command::new("gsettings");
+                    command.args(["monitor", "org.gnome.desktop.interface", "color-scheme"]);
+                    command
+                }
             } else {
                 let mut command = Command::new("gsettings");
                 command.args(["monitor", "org.gnome.desktop.interface", "color-scheme"]);
                 command
             };
-            let _ = monitor_lines(&mut command, |line| {
-                if ["color-scheme", "accent-color"]
-                    .iter()
-                    .any(|key| line.contains(key))
-                {
-                    let _ = sender.send(WatchEvent::Appearance);
+            let source = portal_response
+                .as_deref()
+                .map(settings_monitor_source)
+                .unwrap_or(SettingsMonitorSource::GSettings);
+            let _ = monitor_lines(&mut command, &stop, |line| {
+                if let Some(event) = settings_monitor_event(source, line) {
+                    let _ = sender.send(event);
                 }
                 true
             });
-            thread::sleep(Duration::from_secs(2));
+            sleep_while_running(&stop, Duration::from_secs(2));
         }
-    });
+    })
 }
 
-fn spawn_text_monitor(sender: Sender<WatchEvent>) {
+fn spawn_text_monitor(sender: Sender<WatchEvent>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
-        loop {
+        while !watcher_stopped(&stop) {
             let mut command = Command::new("gsettings");
             command.args(["monitor", "org.gnome.desktop.interface"]);
-            let _ = monitor_lines(&mut command, |line| {
+            let _ = monitor_lines(&mut command, &stop, |line| {
                 if [
                     "text-scaling-factor",
                     "cursor-theme",
@@ -578,38 +752,84 @@ fn spawn_text_monitor(sender: Sender<WatchEvent>) {
                 }
                 true
             });
-            thread::sleep(Duration::from_secs(2));
+            sleep_while_running(&stop, Duration::from_secs(2));
         }
-    });
+    })
 }
 
-fn monitor_lines(command: &mut Command, mut on_line: impl FnMut(&str) -> bool) -> io::Result<()> {
+fn monitor_lines(
+    command: &mut Command,
+    stop: &AtomicBool,
+    mut on_line: impl FnMut(&str) -> bool,
+) -> io::Result<()> {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines() {
-            match line {
-                Ok(line) => {
-                    if !on_line(&line) {
-                        let _ = child.kill();
-                        break;
-                    }
+    let result = match child.stdout.take() {
+        Some(mut stdout) => read_monitor_lines(&mut stdout, stop, &mut on_line),
+        None => Ok(()),
+    };
+    let _ = child.kill();
+    let wait_result = child.wait().map(|_| ());
+    result.and(wait_result)
+}
+
+fn read_monitor_lines(
+    stdout: &mut std::process::ChildStdout,
+    stop: &AtomicBool,
+    on_line: &mut impl FnMut(&str) -> bool,
+) -> io::Result<()> {
+    let mut pending = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while !watcher_stopped(stop) {
+        let mut fds = [PollFd {
+            fd: stdout.as_raw_fd(),
+            events: POLLIN,
+            revents: 0,
+        }];
+        let ready = unsafe { poll(fds.as_mut_ptr(), fds.len(), 250) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if ready == 0 {
+            continue;
+        }
+        if fds[0].revents & POLLIN != 0 {
+            let count = stdout.read(&mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            pending.extend_from_slice(&chunk[..count]);
+            while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                let mut line = pending.drain(..=newline).collect::<Vec<_>>();
+                line.pop();
+                if line.last() == Some(&b'\r') {
+                    line.pop();
                 }
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(error);
+                if !on_line(&String::from_utf8_lossy(&line)) {
+                    return Ok(());
                 }
             }
         }
+        if fds[0].revents & POLL_ERROR_EVENTS != 0 {
+            break;
+        }
     }
-    let _ = child.wait();
+    if !pending.is_empty() {
+        if let Some(b'\r') = pending.last() {
+            pending.pop();
+        }
+        let _ = on_line(&String::from_utf8_lossy(&pending));
+    }
     Ok(())
 }
 
-fn portal_has_scheme() -> bool {
+fn portal_response_text() -> Option<String> {
     let output = Command::new("busctl")
         .args([
             "--user",
@@ -622,11 +842,12 @@ fn portal_has_scheme() -> bool {
             "org.freedesktop.appearance",
             "color-scheme",
         ])
-        .output();
-    output.is_ok_and(|output| {
-        output.status.success()
-            && portal_response_has_scheme(&String::from_utf8_lossy(&output.stdout))
-    })
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn portal_response_has_scheme(response: &str) -> bool {
@@ -645,30 +866,30 @@ fn portal_response_has_scheme(response: &str) -> bool {
             return false;
         };
         value += index + 1;
-        matches!(bytes[value], b'1' | b'2')
+        matches!(bytes[value], b'0' | b'1' | b'2')
             && bytes
                 .get(value + 1)
                 .is_none_or(|byte| !byte.is_ascii_digit())
     })
 }
 
-fn spawn_accent_monitor(sender: Sender<WatchEvent>) {
+fn spawn_accent_monitor(sender: Sender<WatchEvent>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
-        loop {
+        while !watcher_stopped(&stop) {
             let paths = accent_watch_paths();
             if paths.is_empty() {
-                thread::sleep(Duration::from_secs(1));
+                sleep_while_running(&stop, Duration::from_secs(1));
                 continue;
             }
             let mut command = inotify_command(true, &paths);
-            let _ = monitor_lines(&mut command, |_| {
+            let _ = monitor_lines(&mut command, &stop, |_| {
                 thread::sleep(Duration::from_millis(500));
                 let _ = sender.send(WatchEvent::Accent);
                 true
             });
-            thread::sleep(Duration::from_secs(1));
+            sleep_while_running(&stop, Duration::from_secs(1));
         }
-    });
+    })
 }
 
 fn accent_watch_paths() -> Vec<PathBuf> {
@@ -707,22 +928,22 @@ fn accent_watch_paths() -> Vec<PathBuf> {
     providers
 }
 
-fn spawn_theme_monitor(sender: Sender<WatchEvent>) {
+fn spawn_theme_monitor(sender: Sender<WatchEvent>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
         let location = current_theme_location();
         let mut was_present = location.is_dir();
-        loop {
+        while !watcher_stopped(&stop) {
             let now_present = location.is_dir();
             if theme_location_appearance_should_push(&location, was_present, now_present) {
                 let _ = sender.send(WatchEvent::Theme);
             }
             was_present = now_present;
             let Some(paths) = theme_watch_paths(&location) else {
-                thread::sleep(Duration::from_secs(1));
+                sleep_while_running(&stop, Duration::from_secs(1));
                 continue;
             };
             let mut command = inotify_command(false, &paths);
-            let _ = monitor_lines(&mut command, |line| {
+            let _ = monitor_lines(&mut command, &stop, |line| {
                 let changed = PathBuf::from(line);
                 let now_present = location.is_dir();
                 if changed == location {
@@ -753,9 +974,9 @@ fn spawn_theme_monitor(sender: Sender<WatchEvent>) {
             if !location.is_dir() {
                 was_present = false;
             }
-            thread::sleep(Duration::from_secs(1));
+            sleep_while_running(&stop, Duration::from_secs(1));
         }
-    });
+    })
 }
 
 fn inotify_command(recursive: bool, paths: &[PathBuf]) -> Command {
@@ -880,9 +1101,145 @@ mod tests {
     fn portal_monitor_is_selected_only_for_a_supported_appearance_value() {
         assert!(portal_response_has_scheme("u 1"));
         assert!(portal_response_has_scheme("(u 2)"));
-        assert!(!portal_response_has_scheme("u 0"));
+        assert!(portal_response_has_scheme("u 0"));
+        assert!(portal_response_has_scheme("(u 0)"));
         assert!(!portal_response_has_scheme("u 10"));
         assert!(!portal_response_has_scheme("error: no portal"));
+
+        let source = settings_monitor_source("u 0");
+        assert_eq!(source, SettingsMonitorSource::Portal);
+        assert_eq!(
+            settings_monitor_event(
+                source,
+                "/org/freedesktop/portal/desktop: SettingChanged ('org.freedesktop.appearance', 'color-scheme', <uint32 2>)"
+            ),
+            Some(WatchEvent::Appearance)
+        );
+        assert_eq!(
+            settings_monitor_event(
+                source,
+                "/org/freedesktop/portal/desktop: SettingChanged ('org.freedesktop.something-else', 'color-scheme', <uint32 2>)"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn concurrent_ensure_calls_leave_one_watcher_owner() {
+        use std::sync::{Barrier, Mutex};
+
+        let scratch = Scratch::new();
+        let path = scratch.path("wayland-1.color-scheme.pid");
+        let fingerprint = "candidate-fingerprint";
+        let barrier = Arc::new(Barrier::new(2));
+        let child_handles = Arc::new(Mutex::new(Vec::new()));
+        let pid = std::process::id() as i32;
+        let workers = (0..2)
+            .map(|_| {
+                let ensure_path = path.clone();
+                let start_path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                let child_handles = Arc::clone(&child_handles);
+                thread::spawn(move || {
+                    barrier.wait();
+                    coordinate_ensure(
+                        &ensure_path,
+                        fingerprint,
+                        |recorded_pid| recorded_pid == pid,
+                        |_| Ok(()),
+                        move || {
+                            let child_path = start_path.clone();
+                            let child = thread::spawn(move || {
+                                claim_pid_file_using(&child_path, fingerprint, |recorded_pid| {
+                                    recorded_pid == pid
+                                })
+                            });
+                            child_handles.lock().unwrap().push(child);
+                            Ok(())
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+        assert!(outcomes.contains(&EnsureOutcome::Started));
+
+        let workers = std::mem::take(&mut *child_handles.lock().unwrap());
+        let guards = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(guards.iter().filter(|guard| guard.is_some()).count(), 1);
+        assert_eq!(read_pid_file(&path), Some((pid, fingerprint.to_string())));
+        let mut started_again = false;
+        assert_eq!(
+            coordinate_ensure(
+                &path,
+                fingerprint,
+                |recorded_pid| recorded_pid == pid,
+                |_| Ok(()),
+                || {
+                    started_again = true;
+                    Ok(())
+                }
+            )
+            .unwrap(),
+            EnsureOutcome::Existing
+        );
+        assert!(!started_again);
+        drop(guards);
+        assert_eq!(read_pid_file(&path), None);
+    }
+
+    #[test]
+    fn watcher_exits_when_its_wayland_socket_disappears_or_stop_is_requested() {
+        use std::os::unix::net::UnixListener;
+
+        let scratch = Scratch::new();
+        let socket = scratch.path("wayland-1");
+        let listener = UnixListener::bind(&socket).unwrap();
+        assert!(!watcher_should_exit(&socket, false));
+        assert!(watcher_should_exit(&socket, true));
+        drop(listener);
+        fs::remove_file(&socket).unwrap();
+        assert!(watcher_should_exit(&socket, false));
+    }
+
+    #[test]
+    fn monitor_shutdown_kills_and_reaps_its_child() {
+        let scratch = Scratch::new();
+        let pid_path = scratch.path("monitor.pid");
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread_pid_path = pid_path.clone();
+        let monitor = thread::spawn(move || {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg("printf '%s' \"$$\" > \"$MONITOR_PID_FILE\"; exec sleep 30")
+                .env("MONITOR_PID_FILE", thread_pid_path);
+            monitor_lines(&mut command, &thread_stop, |_| true)
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !pid_path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(pid_path.exists(), "monitor child did not publish its pid");
+        let child_pid = fs::read_to_string(&pid_path)
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        stop.store(true, Ordering::Relaxed);
+        monitor.join().unwrap().unwrap();
+        assert!(
+            !Path::new(&format!("/proc/{child_pid}")).exists(),
+            "monitor child {child_pid} was not reaped"
+        );
     }
 
     #[test]

@@ -328,6 +328,20 @@ fn cursor_size_command_returns_the_helper_value_without_settings_side_effects() 
 }
 
 #[test]
+fn color_scheme_default_and_nested_cursor_size_forms_match_the_contract() {
+    let scratch = Scratch::new();
+    let output = scratch.run(&["color-scheme"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(scratch.helper_calls(), ["once"]);
+
+    let scratch = Scratch::new();
+    let output = scratch.run(&["color-scheme", "cursor-size"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "24\n");
+    assert_eq!(scratch.helper_calls(), ["cursor-size"]);
+}
+
+#[test]
 fn sourced_session_environment_exports_the_cursor_size_command_result() {
     let scratch = Scratch::new();
     let script =
