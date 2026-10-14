@@ -59,6 +59,18 @@ def number_value(value):
         return None
 
 
+def listed_posix_login_shell():
+    try:
+        shells = Path("/etc/shells").read_text().splitlines()
+    except OSError:
+        return None
+    for entry in shells:
+        candidate = Path(entry.strip())
+        if candidate.name in {"sh", "bash"} and candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 class Session:
     def __init__(self):
         ROOT.mkdir(mode=0o700, parents=True)
@@ -321,16 +333,19 @@ def run_checks(session):
           cwd.returncode == 0 and cwd.stdout.strip() == str(HOME), cwd.stdout.strip())
     terminal_workdir = ROOT / "terminal-workdir"
     terminal_workdir.mkdir()
+    shell = listed_posix_login_shell()
+    if shell is None:
+        raise FixtureUnavailable("no executable POSIX login shell is listed in /etc/shells")
     terminal_parent = ROOT / "terminal-parent.py"
     terminal_parent.write_text(
         "#!/usr/bin/python3\n"
         "import subprocess, sys, time\n"
-        "subprocess.Popen(['/bin/sh', '-c', 'cd \"$1\"; sleep 60', '_', sys.argv[1]])\n"
+        "subprocess.Popen([sys.argv[2], '-c', 'cd \"$1\"; while :; do sleep 60; done', '_', sys.argv[1]])\n"
         "time.sleep(60)\n"
     )
     terminal_parent.chmod(0o755)
     terminal_pid = session.spawn(
-        f"{shlex.quote(str(terminal_parent))} {shlex.quote(str(terminal_workdir))}"
+        f"{shlex.quote(str(terminal_parent))} {shlex.quote(str(terminal_workdir))} {shlex.quote(shell)}"
     )
     cwd = session.run(CTL, "terminal-cwd", str(terminal_pid))
     check("terminal-cwd reads a listed login shell's live working directory",
