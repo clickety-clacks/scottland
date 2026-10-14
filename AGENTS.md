@@ -232,7 +232,7 @@ Before reporting anything as done:
 Useful tools: `tests/headless.sh`, `tests/deploy.sh`, `tests/shell-probe.sh` (stock shell
 against the shim, headless and sandboxed), `tests/nested.sh` (Scottland in a window on
 Hyprland), `scottland-ctl`, `scottland-exec`, and the logs in `~/.local/state/scottland/`
-(`wayfire.log`, `hyprshim.log`, `handover.log`, `luahost.log`, `watch-config.log`).
+(`wayfire.log`, `hyprshim.log`, `luahost.log`, `watch-config.log`).
 
 ## Testing standard (Mike, 2026-10-04)
 

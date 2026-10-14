@@ -1,0 +1,8 @@
+#!/bin/sh
+# Scale auto at session start: the config is built before the compositor runs, when no output can
+# say its physical size, so each auto output starts at 1 (scottland_output_scale.py marks it). Now
+# that the compositor is up, one rebuild gives those outputs their natural scale. Once only; later
+# rebuilds work auto out themselves.
+config=${SCOTTLAND_CONFIG_OUTPUT:-${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}/wayfire.ini}
+grep -q "scale auto: waiting for the compositor's outputs" "$config" 2>/dev/null || exit 0
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-build-config" >/dev/null

@@ -822,16 +822,17 @@ try:
     check("Widgets Cancel restores saved rail pause",
           option_reaches("widget_make_room_dwell",saved_widgets["widget_make_room_dwell"]))
 
-    # S21: Sunlight and network location are on unless solar.ini turns them off. Saving another
+    # S21: an integration can require opt-in for Sunlight and network location. Saving another
     # tab rewrites solar.ini, so the panel must read a missing file or key as the shipped default.
     # Judged by what scottland-solar-theme itself reads back from the file the panel wrote.
     solar_reader = SourceFileLoader("scottland_solar", str(repo/"core/libexec/scottland-solar-theme")).load_module()
     solar_reader.CONFIG = solar
+    solar_default = os.environ.get("SCOTTLAND_SOLAR_OPT_IN") != "1"
     for name, fixture, saved_tab, expected in (
-            ("missing solar.ini", None, 4, (True, True, None)),
+            ("missing solar.ini", None, 4, (solar_default, solar_default, None)),
             ("solar.ini without enabled or allow_ip",
              "[solar]\nlocation_set = true\nlatitude = 37.77\nlongitude = -122.42\n", 3,
-             (True, True, (37.77, -122.42))),
+             (solar_default, solar_default, (37.77, -122.42))),
             ("solar.ini that turns both off", "[solar]\nenabled = false\nallow_ip = false\n", 4,
              (False, False, None))):
         if fixture is None: solar.unlink(missing_ok=True)
@@ -859,7 +860,8 @@ try:
     panel=open_panel();tab(5)
     click(panel_x+80,panel_y+snapshot()["panel"]["height"]-56)
     check("Sunlight Defaults restore shipped following and network location",
-          snapshot()["solar"]["enabled"] and snapshot()["solar"]["allow_ip"])
+          snapshot()["solar"]["enabled"] == solar_default and
+          snapshot()["solar"]["allow_ip"] == solar_default)
     close_panel(panel)
     check("Sunlight Cancel retains saved location policy",all(line in solar.read_text() for line in
           ("enabled = true","allow_ip = true","location_set = true")))

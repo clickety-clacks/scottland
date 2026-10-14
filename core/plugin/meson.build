@@ -48,6 +48,19 @@ executable('scottland-output-power', ['tools/scottland-output-power.c', power_he
   install: true,
   install_dir: get_option('prefix') / get_option('libdir') / 'scottland/libexec')
 
+# Every output the compositor knows, with its real metadata, through wlr-output-management.
+heads_xml = 'protocols/wlr-output-management-unstable-v1.xml'
+heads_header = custom_target('output-heads-client-header', input: heads_xml,
+  output: 'wlr-output-management-unstable-v1-client-protocol.h',
+  command: [scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
+heads_code = custom_target('output-heads-code', input: heads_xml,
+  output: 'wlr-output-management-unstable-v1-protocol.c',
+  command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
+executable('scottland-output-heads', ['tools/scottland-output-heads.c', heads_header, heads_code],
+  dependencies: [wayland_client],
+  install: true,
+  install_dir: get_option('prefix') / get_option('libdir') / 'scottland/libexec')
+
 # Clipboard history uses the compositor's data-control and virtual-keyboard protocols. Keep their
 # XML descriptions in the repository so the feature adds no protocol package dependency.
 clipboard_data_header = custom_target('clipboard-data-control-client-header',
