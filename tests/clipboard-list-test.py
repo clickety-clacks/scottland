@@ -50,6 +50,65 @@ class ClipboardListTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "selection cancelled"):
                 clipboard.choose([], [], "Search history")
 
+    def test_clear_acks_before_showing_empty_picker_and_treats_dismissal_as_success(self):
+        events = []
+
+        def run(argv, **kwargs):
+            events.append(("picker", argv))
+            self.assertEqual(argv, ["/fake-picker", "--show-empty", "--prompt", "Clipboard history"])
+            self.assertEqual(kwargs["input"], b"")
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+
+        def call(operation, payload=b""):
+            events.append(("service", operation))
+            self.assertEqual(operation, "clear")
+            self.assertEqual(payload, b"")
+            return b""
+
+        with patch.object(clipboard, "call", side_effect=call), \
+             patch.object(clipboard, "picker_path", return_value="/fake-picker"), \
+             patch.object(clipboard.subprocess, "run", side_effect=run):
+            result = clipboard.command_clear(None)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(events[0], ("service", "clear"))
+        self.assertEqual(events[1][0], "picker")
+
+    def test_clear_failure_does_not_open_picker(self):
+        with patch.object(clipboard, "call", side_effect=RuntimeError("clear rejected")), \
+             patch.object(clipboard, "picker_path") as picker_path, \
+             patch.object(clipboard.subprocess, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "clear rejected"):
+                clipboard.command_clear(None)
+
+        picker_path.assert_not_called()
+        run.assert_not_called()
+
+    def test_clear_presentation_failure_reports_history_was_cleared(self):
+        failed = SimpleNamespace(returncode=2, stdout=b"", stderr=b"picker surface failed\n")
+        with patch.object(clipboard, "call") as call, \
+             patch.object(clipboard, "picker_path", return_value="/fake-picker"), \
+             patch.object(clipboard.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError,
+                                        "history was cleared but the empty history view could not be presented: "
+                                        "picker surface failed"):
+                clipboard.command_clear(None)
+
+        call.assert_called_once_with("clear")
+
+    def test_clear_rejects_picker_success_or_selection_output(self):
+        for result in (
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(returncode=1, stdout=b"unexpected selection\n", stderr=b""),
+            SimpleNamespace(returncode=1, stdout=b"", stderr=b"runtime warning\n"),
+        ):
+            with self.subTest(result=result), \
+                 patch.object(clipboard, "call"), \
+                 patch.object(clipboard, "picker_path", return_value="/fake-picker"), \
+                 patch.object(clipboard.subprocess, "run", return_value=result):
+                with self.assertRaisesRegex(RuntimeError, "history was cleared"):
+                    clipboard.command_clear(None)
+
     def test_private_snapshot_returns_a_session_token(self):
         output = io.StringIO()
         with patch.object(clipboard, "call", return_value=clipboard.u64(23)) as call, \

@@ -141,6 +141,11 @@ Every suite runs through these; an excellent assertion is worthless against the 
   check.
 - Reload acceptance against the actually deployed old build, with confirmed in-flight state,
   visible surviving clients and working input afterwards.
+- Clipboard CH11: on the exact candidate, verify clear acknowledgement, history count `3` to `0`,
+  unchanged private clipboard bytes, visible nonselectable `No entries`, no output after Enter or
+  clicking the label, successful Escape dismissal, default empty-input cancellation, and the clear/
+  presentation failure results. Use a task-owned private Wayfire/clipboard service/picker session;
+  no live clipboard or sentinel row. The exact candidate run and fresh private UI route are still pending.
 - An integrated smoke on merged builds where widget modes, pairing/spread, peeking and reload
   share state: branches passing separately don't establish the combination.
 - Omarchy adapter fixes (adapter-fixes branch, 2026-10-05): the lid uses core's virtual switch
