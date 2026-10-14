@@ -413,6 +413,20 @@ def run_renderer(goo):
         check('Goo-off: tint strength adds no outside-frame stroke',
               max_delta(images[0].pixel(*edge_outside), images[100].pixel(*edge_outside)) <= 3,
               {'base': images[0].pixel(*edge_outside), 'tinted': images[100].pixel(*edge_outside)})
+        # The former solid hint border was independent of tint strength, so a 0%-vs-100%
+        # comparison could not catch it. Compare the one-logical-pixel edge band to a nearby
+        # sample beyond the removed two-pixel band, where only the fallback halo is visible.
+        # Check both windows while the layer is at 0% and 100%.
+        for identifier in (rear_id, front_id):
+            frame = rects[identifier]
+            x = frame['x'] + frame['width'] / 2
+            for value in (0, 100):
+                edge_band = images[value].pixel(x, frame['y'] - 1)
+                halo_only = images[value].pixel(x, frame['y'] - 3)
+                check(f'Goo-off {value}%: no full-color hint rim against halo-only reference',
+                      max_delta(edge_band, halo_only) <= 40,
+                      {'window': identifier, 'edge_band': edge_band,
+                       'halo_only_reference': halo_only, 'delta': max_delta(edge_band, halo_only)})
 
     # Hint nodes stay above the tint. The backing has its own 21% color mix and 21% opacity,
     # so an in-window backing sample must show the underlying 100% tint through that opacity;
@@ -470,11 +484,15 @@ def run_renderer(goo):
                       max_delta(rim0, rim100) <= 3,
                       {'window': identifier, 'sample': outside_card, 'zero': rim0, 'full': rim100})
                 continue
-            rim0, rim100 = images[0].pixel(x, y), images[100].pixel(x, y)
-            check(f'{mode}: fallback halo remains visible at tint 0 and 100',
-                  max_delta(rim0, color) <= 22 and max_delta(rim100, color) <= 22,
-                  {'window': identifier, 'zero': rim0, 'full': rim100,
-                   'hint_color': color})
+            # Stay outside the removed two-logical-pixel border so this proves halo dye, not
+            # the old solid rim. dyed() checks the sample and its nearby pixels on the same band.
+            halo_sample = (x, frame['y'] - 5)
+            check(f'{mode}: fallback halo dye remains visible beyond the old rim at tint 0 and 100',
+                  dyed(images[0], *halo_sample, hint['color']) and
+                  dyed(images[100], *halo_sample, hint['color']),
+                  {'window': identifier, 'sample': halo_sample,
+                   'zero': images[0].pixel(*halo_sample), 'full': images[100].pixel(*halo_sample),
+                   'hint_color': hint['color']})
 
     # The hint backing's own opacity changes the hint pixels, not the underlying Window tint.
     # Conversely, changing tint strength under a fully opaque backing must not change its fill.

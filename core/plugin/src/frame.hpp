@@ -208,8 +208,6 @@ uniform highp float thickness;   // halo thickness on screen (with the swell)
 uniform highp float ripple;      // goo ripple amplitude (px)
 uniform highp float phase;       // animation clock
 uniform highp float aa;          // px per fragment
-uniform highp vec4 hint_dye;     // transient Alt dye for the fallback halo
-uniform highp float hint_border; // logical px, independent of window/output scale
 uniform highp vec3 tone;         // base color
 uniform highp float density;     // base opacity
 uniform highp vec4 cloud;        // cloudiness per corner: tl, tr, bl, br
@@ -307,9 +305,9 @@ void main()
 
     highp float alpha = clamp(body + glint * 0.6, 0.0, 1.0) * a;
     highp vec3 rgb = tone * body * a + vec3(1.0) * glint * a;
-    highp float edge = cover(body_distance(pos) - hint_border) * step(0.001, hint_dye.a);
-    gl_FragColor = mix(vec4(min(rgb, vec3(alpha)), alpha),
-        vec4(hint_dye.rgb * a, a) * hint_dye.a, edge);
+    // Window mode dyes the fallback halo through `tone`; it does not add a solid hint-colored
+    // edge band. The old `hint_border` mix recreated the removed WK14 outline when Goo was off.
+    gl_FragColor = vec4(min(rgb, vec3(alpha)), alpha);
 })";
 
 // The close dot, with an x.
@@ -1578,8 +1576,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
     void draw_halo(OpenGL::program_t& program, const glm::mat4& mvp, float aa, float alpha)
     {
         auto r = self->screen_rect();
-        // The transient hint rim stays 2 logical px even at the supported 5% scale.
-        double t = std::max(self->thickness(), self->hint_dye ? windowing::hint_border_width : 0.0);
+        double t = self->thickness();
         double radius = self->screen_radius();
         float focus   = self->focus_mix;
         glm::vec3 neutral = palette.unfocused_edge_tone();
@@ -1605,8 +1602,6 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         if (self->hint_dye)
             tone = palette.dye_strength == 1.f ? *self->hint_dye :
                 state_dye::tone(neutral, *self->hint_dye, palette.dye_strength);
-        program.uniform4f("hint_dye", self->hint_dye ? glm::vec4{tone, alpha} : glm::vec4{0});
-        program.uniform1f("hint_border", windowing::hint_border_width);
         program.uniform3f("tone", tone.r, tone.g, tone.b);
         program.uniform1f("density", density);
         program.uniform4f("cloud", self->can_resize() ?

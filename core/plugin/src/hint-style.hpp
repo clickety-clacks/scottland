@@ -22,7 +22,6 @@ constexpr double hint_badge_opacity = 0.21;
 // Hint colors keep this 7% window/card tint as their contrast basis; the live Window-mode slider
 // changes the separate scene-layer wash and never recalculates the colors themselves.
 constexpr double hint_window_opacity = 0.07;
-constexpr double hint_border_width = 2.0;
 inline double hint_badge_size(double width, double height, double text_scale = 1.0)
 {
     // Vimarchy's sizing, scaled with the desktop's text size as everything else that's text.
