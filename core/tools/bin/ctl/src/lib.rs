@@ -1,7 +1,6 @@
 use regex::RegexBuilder;
 use scottland::session::Session;
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -564,7 +563,8 @@ fn request_session_lock(session: &Session, timeout: Duration) -> Result<()> {
         .ok_or_else(|| "the selected Scottland session has no XDG_SESSION_ID".to_string())?;
     let mut command = session_command(session, "loginctl");
     command.args(["lock-session", id]);
-    let output = bounded_command(command, timeout)?;
+    let output = bounded_command(command, timeout)
+        .map_err(|error| format!("failed to run the session locker: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
