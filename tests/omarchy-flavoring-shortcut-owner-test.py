@@ -62,11 +62,45 @@ command_flavoring_emoji = flavoring-emoji-action
             "- Keys: Super+Ctrl+E\n"
             "  Was: Open the Omarchy emoji menu\n"
             "  Now: Open the Scottland emoji picker\n"
-            "  Origin: Gooarchy flavoring\n")
+            "  Origin: Gooarchy flavoring\n\n"
+            "## Gooarchy desktop defaults\n"
+            "Reason: Gooarchy keeps desktop behavior consistent.\n\n"
+            "- Keys: Touchpad tap-to-click\n"
+            "  Was: Tap-to-click is disabled\n"
+            "  Now: Tap-to-click is enabled\n"
+            "  Origin: Gooarchy flavoring\n\n"
+            "- Keys: Terminal bell\n"
+            "  Was: Bell is enabled\n"
+            "  Now: Bell is muted\n"
+            "  Origin: Gooarchy flavoring\n\n"
+            "- Keys: Terminal title\n"
+            "  Was: Title follows the shell\n"
+            "  Now: Title follows the active directory\n"
+            "  Origin: Gooarchy flavoring\n\n"
+            "- Keys: Default app\n"
+            "  Was: Use the Omarchy default\n"
+            "  Now: Use the Gooarchy default\n"
+            "  Origin: Gooarchy flavoring\n\n"
+            "## Gooarchy widget controls\n"
+            "Reason: Gooarchy supplies its own widget controls for the desktop.\n\n"
+            "- Keys: Super+G\n"
+            "  Was: Open Gooarchy widget list\n"
+            "  Now: Opens Gooarchy's widget controls.\n")
+        if not active:
+            user_fragment = config / "scottland/override-report.d/user-shortcuts.txt"
+            user_fragment.parent.mkdir(parents=True, exist_ok=True)
+            user_fragment.write_text(
+                "## User shortcut notes\n"
+                "Reason: This shortcut belongs to the user's configuration.\n\n"
+                "- Keys: Super+K\n"
+                "  Was: User's previous action\n"
+                "  Now: User's configured action\n"
+                "  Origin: Your custom/changed shortcut\n")
 
     rows = "\n".join((
         scan_row("SUPER", "K", "Open Omarchy keybinding menu", "omarchy-menu-keybindings"),
         scan_row("CTRL SUPER", "E", "Open Omarchy emoji menu", "omarchy-shell shell toggle omarchy.emojis"),
+        scan_row("SUPER", "G", "Toggle window group", "window-group-toggle"),
     )) + "\n"
     fake_lua = fake_bin / "lua"
     fake_lua.write_text(
@@ -134,7 +168,15 @@ def main():
               stale_config.count("command_omarchy_1 = omarchy-shell shell toggle omarchy.emojis") == 1,
               stale_config)
         check("O20 text without an effective binding is not reported as an override",
-              "Super+K —" not in stale_report and "Super+Ctrl+E —" not in stale_report,
+              "Now: Open the Scottland keybinding sheet" not in stale_report and
+              "Now: Open the Scottland emoji picker" not in stale_report,
+              stale_report)
+        check("unrelated and user O20 fragment rows survive stale shortcut filtering",
+              all(label in stale_report for label in (
+                  "Touchpad tap-to-click —", "Terminal bell —", "Terminal title —",
+                  "Default app —", "Super+G — Was: Open Gooarchy widget list.",
+                  "Super+K — Was: User's previous action.")) and
+              "Now: User's configured action." in stale_report,
               stale_report)
 
         active_without_report, fallback_report = run_case(root, active=True, report=False)
@@ -149,7 +191,7 @@ def main():
               fallback_report.count("Super+Ctrl+E —") == 1 and
               "Runs the active Gooarchy flavoring action" in fallback_report,
               fallback_report)
-    print("8 focused ownership checks passed")
+    print("9 focused ownership checks passed")
 
 
 if __name__ == "__main__":

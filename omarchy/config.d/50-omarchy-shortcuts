@@ -443,7 +443,7 @@ def parse_scan_rows(output):
             continue
         fields = (line.split("\t") + [""] * 12)[:12]
         mods, key, description, kind, arg, repeat, release, locked, mouse, function, options, _plugin = fields
-        rows.append({"identity": scan_identity(mods, key),
+        rows.append({"identity": scan_identity(mods, key), "description": description,
                      "signature": (kind, arg, repeat, release, locked, mouse, function, options),
                      "user_plugin": fields[11] == "1"})
     return rows
@@ -896,15 +896,32 @@ def flavoring_bindings(base):
     return parse_flavoring_bindings(result.stdout)
 
 
-def effective_flavoring_report_entries(entries, active_bindings):
-    """Keep each O20 explanation only while its corresponding generated binding is active."""
-    active, seen = [], set()
+def is_flavoring_report_entry(entry):
+    """Treat omitted Origin as flavoring-owned, as allowed by the O20 fragment format."""
+    origin = str(entry.get("origin") or "").strip().casefold()
+    return not origin or origin == "gooarchy flavoring"
+
+
+def effective_flavoring_report_entries(entries, active_bindings, imported_report_actions):
+    """Drop stale flavoring claims that describe the action on an imported Omarchy key."""
+    kept, seen = [], set()
     for entry in entries:
         identity = report_identity(str(entry.get("keys", "")))
-        if identity in active_bindings and identity not in seen:
-            active.append(entry)
+        if not is_flavoring_report_entry(entry):
+            kept.append(entry)
+            continue
+        origin = str(entry.get("origin") or "").strip().casefold()
+        was = " ".join(str(entry.get("was", "")).split()).casefold()
+        if identity in imported_report_actions and identity not in active_bindings:
+            describes_import = was in imported_report_actions[identity]
+            if origin == "gooarchy flavoring" or (not origin and describes_import):
+                continue
+        if identity in active_bindings:
+            if identity in seen:
+                continue
             seen.add(identity)
-    return active
+        kept.append(entry)
+    return kept
 
 
 OWN_SHORTCUTS_HEADING = "Your own shortcuts that don't work in Scottland"
@@ -1159,11 +1176,16 @@ def main():
         scan_stderr += "\nOmarchy default shortcut scan unavailable: " + defaults_scan.stderr
     used, remaps, _command_reasons = parse_base(base)
     active_flavoring_bindings = flavoring_bindings(base)
+    imported_report_actions = {}
+    for row in parse_scan_rows(scan_stdout):
+        action = " ".join(str(row["description"]).split()).casefold()
+        imported_report_actions.setdefault(row["identity"], set()).add(action)
     flavoring_entries = effective_flavoring_report_entries(
-        read_report_fragment_entries(), active_flavoring_bindings)
+        read_report_fragment_entries(), active_flavoring_bindings, imported_report_actions)
     flavoring_owners = set(active_flavoring_bindings)
     reported_flavoring_owners = {
         report_identity(str(entry.get("keys", ""))) for entry in flavoring_entries
+        if is_flavoring_report_entry(entry)
     }
     descriptions, _remap_reason, _alt_hold_reason = metadata_reasons()
 
