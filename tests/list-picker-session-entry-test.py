@@ -56,6 +56,8 @@ class ListPickerSessionEntryTest(unittest.TestCase):
         build.mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="lp-", dir=build)
         self.root = Path(self.temp.name)
+        # Keep the Unix socket short even when this test runs from a nested worktree.
+        self.socket_temp = tempfile.TemporaryDirectory(prefix="lp-sock-")
         self.runtime = self.root / "runtime"
         self.runtime.mkdir()
         self.bin = self.root / "bin"
@@ -72,7 +74,7 @@ class ListPickerSessionEntryTest(unittest.TestCase):
         self.hooks = hooks
         self.launch_log = self.root / "launcher.log"
         self.qs_log = self.root / "qs.json"
-        self.socket_path = self.root / "w"
+        self.socket_path = Path(self.socket_temp.name) / "w"
 
         launcher = self.libexec / "scottland-exec"
         launcher.write_text(
@@ -110,6 +112,7 @@ class ListPickerSessionEntryTest(unittest.TestCase):
         self.env["PICKER_TEST_QS_LOG"] = str(self.qs_log)
 
     def tearDown(self):
+        self.socket_temp.cleanup()
         self.temp.cleanup()
 
     def run_picker(self, input_bytes, *args, env=None):
