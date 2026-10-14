@@ -31,7 +31,8 @@ pub(crate) fn execute(args: &[&str]) -> Result<CliOutcome, String> {
     };
 
     let display = std::env::var("WAYLAND_DISPLAY").ok();
-    let session = scottland::session::current(display.as_deref())?;
+    let session = scottland::session::current(display.as_deref())
+        .map_err(|error| error.to_string())?;
     let decision = color_scheme::request_night_light(&session, command)?;
 
     Ok(CliOutcome {
