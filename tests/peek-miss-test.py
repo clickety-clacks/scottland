@@ -173,10 +173,15 @@ def drag_is_idle(drag):
     return not drag.get('started', False) and drag.get('window', 0) in (0, None)
 
 
-def pointer_drag(id, to, coast=False, require_drag=False):
+def pointer_drag(id, to, coast=False, require_drag=False, diagnostic=None):
     """Super+press on the window's drawn center and move to `to`; the button stays down."""
     x1, y1, x2, y2 = scene(id); x, y = (x1 + x2) / 2, (y1 + y2) / 2
     start = (x, y)
+    if diagnostic is not None:
+        diagnostic.update({'window': id, 'drawn_frame_at_start': [round(v, 1) for v in (x1, y1, x2, y2)],
+                           'pointer_start_commanded': [round(x, 1), round(y, 1)],
+                           'pointer_target_commanded': [round(v, 1) for v in to],
+                           'focused_before_pointer': focused_id()})
     pointer(x, y)
     if require_drag:
         until(lambda: (focused_id() == id, {'expected': id, 'focused': focused_id()}),
@@ -223,9 +228,14 @@ def pointer_drag(id, to, coast=False, require_drag=False):
                           'scene_frame': [round(v, 1) for v in scene(id)],
                           'capture': capture_status}
             raise Unready(f'{error}; gesture={json.dumps(diagnostic)}') from error
+        if diagnostic is not None:
+            diagnostic['drag_after_slop'] = drag_snapshot()
     steps = 6 if coast else 24
     for i in range(1, steps + 1):  # pacing a gesture
         pointer(x + (to[0] - x) * i / steps, y + (to[1] - y) * i / steps); time.sleep(.008 if coast else .02)
+    if diagnostic is not None:
+        diagnostic['drag_before_release'] = drag_snapshot()
+        diagnostic['pointer_target_commanded'] = [round(v, 1) for v in to]
     return (to[0] - start[0], to[1] - start[1])
 
 
@@ -346,8 +356,26 @@ try:
                      'geometry_size': [g['width'], g['height']]})
         until(full_cover_window_ready, 3, 'Big is drawn at full window size before covering Small')
 
+        cover_before_frame = scene(B)
+        small_before_frame = scene(S)
+        cover_before_layout = layout(B)
+        cover_before_geometry = geometry(B)
+        cover_before_image = capture('grabbed-while-peeking-cover-before-drag', keep_ppm=True)
+        cover_before_found, cover_before_pixels = strip_of(
+            labels_of(cover_before_image), COLORS['Small'],
+            (small_before_frame[2] - small_before_frame[0], small_before_frame[3] - small_before_frame[1]))
+        before_drag = {'cover_scene_frame': [round(v, 1) for v in cover_before_frame],
+                       'cover_geometry': cover_before_geometry, 'cover_layout': cover_before_layout,
+                       'small_scene_frame': [round(v, 1) for v in small_before_frame],
+                       'small_red_pixels': cover_before_pixels,
+                       'small_strip_in_pixels': cover_before_found,
+                       'focused': focused_id(), 'drag': drag_snapshot()}
+        print(f'      grabbed-while-peeking before-cover-drag: {json.dumps(before_drag)}', flush=True)
+
         x1, y1, x2, y2 = scene(S)
-        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2), require_drag=True)
+        gesture = {}
+        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2), require_drag=True, diagnostic=gesture)
+        print(f'      grabbed-while-peeking cover-drag-before-release: {json.dumps(gesture)}', flush=True)
         release()
         def cover_drag_ended():
             drag = drag_snapshot()
@@ -368,6 +396,7 @@ try:
                 capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
             state = {'cover_layout': layout(B), 'cover_scene_frame': [round(v, 1) for v in scene(B)],
                      'cover_geometry': geometry(B), 'drag': drag_snapshot(), 'focused': focused_id(),
+                     'before_drag': before_drag, 'gesture': gesture,
                      'capture': capture_status}
             raise Unready(f'{error}; post_drop={json.dumps(state)}') from error
         results.append(row)
