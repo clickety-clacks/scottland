@@ -12,10 +12,36 @@ art=$(realpath -m "${1:-$PWD/build/transparency-toggle-evidence}")
   echo 'build this exact checkout before running the headless candidate test' >&2; exit 1; }
 mkdir -p "$art"
 tmp=$(mktemp -d "$PWD/build/transparency-toggle-tmp.XXXXXX")
+retain_receipt() {
+  local name=$1 src="$headless/$1"
+  [[ -e $src || -L $src ]] || return 0
+  if [[ -L $src || ! -f $src ]]; then
+    printf 'refused non-regular headless receipt: %s\n' "$name" >>"$art/receipt-retention.log"
+    return 1
+  fi
+  cp -- "$src" "$art/$name" || {
+    printf 'failed to retain headless receipt: %s\n' "$name" >>"$art/receipt-retention.log"
+    return 1
+  }
+}
 cleanup() {
-  cp "$SCOTTLAND_HEADLESS_DIR/wayfire.log" "$art/wayfire.log" 2>/dev/null || true
-  tests/headless.sh stop >/dev/null 2>&1 || true
+  local run_status=$? stop_status=0 receipt
+  trap - EXIT
+  cp "$headless/wayfire.log" "$art/wayfire.log" 2>/dev/null || true
+  for receipt in launch-owner.json launch-terminal.json .scottland-headless-mode; do
+    retain_receipt "$receipt" || true
+  done
+  if tests/headless.sh stop >"$art/headless-stop.log" 2>&1; then
+    stop_status=0
+  else
+    stop_status=$?
+  fi
+  printf '%s\n' "$stop_status" >"$art/headless-stop.exit" || true
+  for receipt in launch-owner.json launch-terminal.json .scottland-headless-mode; do
+    retain_receipt "$receipt" || true
+  done
   rm -rf -- "$SCOTTLAND_HEADLESS_DIR" "$tmp"
+  exit "$run_status"
 }
 trap cleanup EXIT
 export TMPDIR="$tmp"
