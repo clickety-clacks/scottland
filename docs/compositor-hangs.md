@@ -6,9 +6,9 @@ the identity of the widgetizing path or the cause of the loop.
 
 ## Preserve the next incident
 
-Session start moves `wayfire.log` to `wayfire.log.previous` before opening the
-new log. One previous session is retained (bounded disk use, no runtime tmpfs
-logs). Copy both before starting a third session. The launcher raises the core
+Session start keeps the last three logs as `wayfire.log.previous`,
+`wayfire.log.previous.2`, and `wayfire.log.previous.3`, each capped at its last
+1 MiB. Copy the relevant logs before a fourth new session. The launcher raises the core
 soft limit to unlimited, warning if the login manager's hard limit prevents it.
 The core plugin restores default dispositions for SIGABRT and SIGQUIT.
 
