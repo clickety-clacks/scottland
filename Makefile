@@ -28,6 +28,7 @@ tools:
 
 tools-test:
 	$(CARGO) test --locked --manifest-path core/tools/Cargo.toml --target-dir build/cargo
+	python3 tests/sender-window-snapshot-ctl-test.py
 
 # The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
 # here doesn't touch it until the next dev-install (and reload). Refuses uncommitted work, so what
