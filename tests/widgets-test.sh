@@ -979,26 +979,35 @@ h window-rules/close-view "{\"id\": $(view_field carry-app "v['id']")}"
 sleep 2
 
 # WG5: the app's window closing takes the widget with it.
-(tests/headless.sh run foot -T widget-app2 -W 40x10 sh -c 'sleep 5; exit 0' >/dev/null 2>&1 &)
+app_exit_trigger=$display.widget-app2-exit
+session_remove "$app_exit_trigger"
+(tests/headless.sh run foot -T widget-app2 -W 40x10 sh -c \
+  'while [ ! -e "$SCOTTLAND_SESSION_DIR/$1" ]; do sleep 0.1; done' sh "$app_exit_trigger" >/dev/null 2>&1 &)
 sleep 1.5
 app_exit_id=$(view_field widget-app2 "v['id']")
 read -r ax ay aw ah <<<"$(view_field widget-app2 "round(f['x']), round(f['y']), round(f['width']), round(f['height'])")"
 super_drag $((ax + aw / 2)) $((ay + ah / 2)) $((screen_w - 8)) $((ay + ah / 2))
 app_exit_widget_id=
 if [[ $app_exit_id =~ ^[0-9]+$ ]]; then
-  app_exit_widget_id=$(ipc scottland/widgets | python3 -c 'import json,sys; target=int(sys.argv[1]); w=[w for w in json.load(sys.stdin)["widgets"] if w["window"]==target]; print(w[0]["widget_view"] if len(w)==1 else "")' "$app_exit_id")
+  for i in {1..80}; do
+    app_exit_snapshot=$(ipc scottland/widgets)
+    app_exit_widget_id=$(python3 -c 'import json,sys; target=int(sys.argv[1]); w=[w for w in json.load(sys.stdin)["widgets"] if w["window"]==target and w["lifecycle"]=="docked" and w["widget_view"]>=0]; print(w[0]["widget_view"] if len(w)==1 else "")' "$app_exit_id" <<<"$app_exit_snapshot")
+    [[ $app_exit_widget_id =~ ^[0-9]+$ ]] && break
+    sleep 0.1
+  done
+  printf '%s\n' "$app_exit_snapshot" >"$artifacts/app-exit-widget-before.json"
 fi
-sleep 5
+session_touch "$app_exit_trigger"  # the app exits only after its widget has had a chance to map
 if [[ $app_exit_widget_id =~ ^[0-9]+$ ]]; then
+  app_exit_survivors=
+  for i in {1..80}; do
+    app_exit_survivors=$(views | python3 -c 'import json,sys; linked={int(sys.argv[1]),int(sys.argv[2])}; print(json.dumps([v for v in json.load(sys.stdin)["views"] if v["id"] in linked]))' "$app_exit_id" "$app_exit_widget_id")
+    [[ $app_exit_survivors == '[]' ]] && break
+    sleep 0.1
+  done
+  [[ $app_exit_survivors == '[]' ]] || printf 'linked views survived app exit: %s\n' "$app_exit_survivors" >&2
   check "WG5 the app's window closing closes its widget" \
-    python3 -c '
-import json,sys
-views=json.load(sys.stdin)["views"]
-linked={int(sys.argv[1]),int(sys.argv[2])}
-survivors=[v for v in views if v["id"] in linked]
-if survivors:
-    print(f"linked views survived app exit: {survivors!r}",file=sys.stderr)
-sys.exit(0 if not survivors else 1)' "$app_exit_id" "$app_exit_widget_id" <<<"$(views)"
+    [ "$app_exit_survivors" = '[]' ]
 else
   fail "WG5 the app's window closing closes its widget (not exercised: no linked widget view ID)"
 fi
