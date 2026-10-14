@@ -294,6 +294,121 @@ expected = {
 sys.exit(not all(env.get(key) == value for key, value in expected.items()))
 PY
 }
+session_process_group_state() {
+  python3 - "$1" "$dir" "$runtime" "$tmp_scratch" "$2" <<'PY'
+import pathlib, sys
+group, scratch, runtime, tmpdir, display = sys.argv[1:]
+expected = {
+    b'SCOTTLAND_HEADLESS_DIR': scratch.encode(),
+    b'TMPDIR': tmpdir.encode(),
+    b'XDG_RUNTIME_DIR': runtime.encode(),
+    b'XDG_STATE_HOME': (scratch + '/state').encode(),
+    b'WAYLAND_DISPLAY': display.encode(),
+}
+found = False
+for entry in pathlib.Path('/proc').iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        stat = (entry / 'stat').read_text()
+        fields = stat[stat.rfind(')') + 2:].split()
+        if int(fields[2]) != int(group) or fields[0] in ('Z', 'X'):
+            continue
+        found = True
+        values = dict(item.split(b'=', 1) for item in
+                      (entry / 'environ').read_bytes().split(b'\0') if b'=' in item)
+        if any(values.get(key) != value for key, value in expected.items()):
+            sys.exit(2)
+    except (OSError, ValueError, IndexError, PermissionError):
+        # A process disappearing during the snapshot is harmless; a surviving process
+        # with unreadable identity is not safe to signal or forget.
+        if entry.exists():
+            sys.exit(2)
+sys.exit(0 if found else 1)
+PY
+}
+stop_color_scheme_watcher() {
+  local pid_file helper group result group_alive
+  pid_file="$session_dir/$name.color-scheme.pid"
+  [[ ! -e $pid_file && ! -L $pid_file ]] && return 0
+  [[ -f $pid_file && ! -L $pid_file ]] || {
+    echo 'color-scheme watcher record is not a regular file; preserving scratch' >&2
+    return 2
+  }
+  helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
+  [[ $helper =~ ^[0-9]+$ ]] || {
+    echo 'color-scheme watcher record has an invalid PID; preserving scratch' >&2
+    return 2
+  }
+  if kill -0 "$helper" 2>/dev/null; then
+    if ! session_process_is_ours "$helper" "$name" || \
+       ! grep -qa -e scottland-display -e scottland-color-scheme "/proc/$helper/cmdline" 2>/dev/null; then
+      echo 'color-scheme watcher identity changed; preserving its pid record and scratch' >&2
+      return 2
+    fi
+    group=$(ps -o pgid= -p "$helper" | tr -d ' ')
+    if [[ $group == "$helper" ]]; then
+      if session_process_group_state "$helper" "$name"; then :
+      else
+        result=$?
+        [[ $result == 1 ]] || {
+          echo 'color-scheme watcher group identity is ambiguous; preserving scratch' >&2
+          return 2
+        }
+      fi
+      kill -- "-$helper" 2>/dev/null || true
+      group_alive=1
+      for _ in $(seq 30); do
+        if session_process_group_state "$helper" "$name"; then
+          group_alive=1
+          sleep 0.1
+        else
+          result=$?
+          if [[ $result == 1 ]]; then group_alive=0; break; fi
+          echo 'color-scheme watcher group identity changed; preserving scratch' >&2
+          return 2
+        fi
+      done
+      if ((group_alive)); then
+        if session_process_group_state "$helper" "$name"; then :
+        else
+          result=$?
+          [[ $result == 1 ]] || {
+            echo 'color-scheme watcher group identity is ambiguous; preserving scratch' >&2
+            return 2
+          }
+        fi
+        kill -9 -- "-$helper" 2>/dev/null || true
+        for _ in $(seq 30); do
+          if session_process_group_state "$helper" "$name"; then
+            sleep 0.1
+          else
+            result=$?
+            if [[ $result == 1 ]]; then group_alive=0; break; fi
+            echo 'color-scheme watcher group identity changed after SIGKILL; preserving scratch' >&2
+            return 2
+          fi
+        done
+      fi
+      ((group_alive == 0)) || {
+        echo 'color-scheme watcher process group did not exit; preserving scratch' >&2
+        return 2
+      }
+    else
+      kill "$helper" 2>/dev/null || true
+      for _ in $(seq 30); do
+        session_process_is_ours "$helper" "$name" || break
+        sleep 0.1
+      done
+      if session_process_is_ours "$helper" "$name"; then kill -9 "$helper" 2>/dev/null || true; fi
+      session_process_is_ours "$helper" "$name" && {
+        echo 'color-scheme watcher did not exit; preserving scratch' >&2
+        return 2
+      }
+    fi
+  fi
+  rm -f -- "$pid_file"
+}
 read_session_signature() {
   python3 - "$1" <<'PY'
 import pathlib, re, sys
@@ -755,6 +870,10 @@ PY
             echo 'headless session mode is invalid; preserving runtime and scratch' >&2; exit 2
             ;;
         esac
+        if [[ $session_mode == plain || $session_mode == shim ]]; then
+          name=$expected_display
+          stop_color_scheme_watcher || exit 2
+        fi
         if [[ -e $dir/pid || -L $dir/pid ]]; then
           [[ -f $dir/pid && ! -L $dir/pid && -f $dir/wayfire.ini && ! -L $dir/wayfire.ini ]] || {
             echo 'isolated startup ownership record changed; preserving its scratch directory' >&2; exit 2;
@@ -834,6 +953,10 @@ PY
           exit 2
           ;;
       esac
+      if [[ $session_mode == plain || $session_mode == shim ]]; then
+        name=$expected_display
+        stop_color_scheme_watcher || exit 2
+      fi
       if [[ -f $dir/pid ]]; then
         pid=$(cat "$dir/pid")
         if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
@@ -876,9 +999,9 @@ PY
         exit 2
         ;;
     esac
-    # Stop the session's helpers by their pid files, then Wayfire (its clients follow).
-    # (Pid files hold the pid on their first line; the color-scheme watcher leads its own group,
-    # with its monitors.)
+    # Stop the Display watcher before Wayfire. Its private process group owns every monitor child.
+    stop_color_scheme_watcher || exit 2
+    # Stop the remaining session helpers by their pid files, then Wayfire.
     if [[ $isolation == 1 ]]; then
       pid_file="$session_dir/$name.widget-bus.pid"
       if [[ -f $pid_file && ! -L $pid_file ]]; then
@@ -898,10 +1021,10 @@ PY
         fi
       fi
     else
-    for pid_file in "$session_dir/$name.lua.pid" "$session_dir/$name.color-scheme.pid" "$session_dir/$name.widget-bus.pid"; do
+    for pid_file in "$session_dir/$name.lua.pid" "$session_dir/$name.widget-bus.pid"; do
       helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
       if [[ $helper =~ ^[0-9]+$ ]] && session_process_is_ours "$helper" "$name" && \
-         grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
+         grep -qa -e scottland-color-scheme -e scottland-display -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
         if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
       fi
       rm -f "$pid_file"

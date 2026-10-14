@@ -1,12 +1,29 @@
 use std::ffi::OsString;
+use std::io::{self, Write};
 use std::process::{Command, Output};
+
+pub(crate) mod color_scheme;
+pub(crate) mod gamma;
+pub(crate) mod night_light;
 
 const SCHEMA: &str = "org.gnome.desktop.interface";
 const KEY: &str = "text-scaling-factor";
 const RANGE_ERROR: &str = "text size must be a number in the range 0.5 to 3.0";
-const USAGE: &str = "usage: scottland-display text-size | scottland-display text-size set <factor> | scottland-display text-size reset";
+const USAGE: &str = "usage: scottland-display text-size [set <factor>|reset] | color-scheme [once|watch|ensure|cursor-size] | cursor-size | terminal-theme push | night-light <on|off|toggle|status>";
 
 pub fn run(args: &[OsString]) -> Result<(), String> {
+    match run_with_exit_status(args)? {
+        0 => Ok(()),
+        status => Err(format!("command exited with status {status}")),
+    }
+}
+
+/// Run a Display command while preserving policy-defined process exit statuses.
+///
+/// `run` remains the status-agnostic library API used by existing callers;
+/// the command-line binary uses this function so Night Light can return its
+/// documented parse and operation statuses unchanged.
+pub fn run_with_exit_status(args: &[OsString]) -> Result<u8, String> {
     let args = args
         .iter()
         .map(|arg| arg.to_str())
@@ -16,12 +33,65 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
     match args.as_slice() {
         ["-h" | "--help" | "help"] => {
             println!("{USAGE}");
-            Ok(())
+            Ok(0)
         }
-        ["text-size"] => show(),
-        ["text-size", "set", factor] => set(factor),
-        ["text-size", "reset"] => reset(),
+        ["text-size"] => show().map(|()| 0),
+        ["text-size", "set", factor] => set(factor).map(|()| 0),
+        ["text-size", "reset"] => reset().map(|()| 0),
+        ["color-scheme"] | ["color-scheme", "once"] => color_scheme::once().map(|()| 0),
+        ["color-scheme", "watch"] => color_scheme::watch().map(|()| 0),
+        ["color-scheme", "ensure"] => color_scheme::ensure().map(|()| 0),
+        ["color-scheme", "cursor-size"] => color_scheme::cursor_size().map(|()| 0),
+        ["cursor-size"] => color_scheme::cursor_size().map(|()| 0),
+        ["terminal-theme", "push"] => color_scheme::push_terminal_theme().map(|()| 0),
+        ["night-light", command @ ..] => {
+            let outcome = night_light::execute(command)?;
+            let stdout = io::stdout();
+            let stderr = io::stderr();
+            write_night_light_outcome(outcome, &mut stdout.lock(), &mut stderr.lock())
+        }
         _ => Err(USAGE.to_string()),
+    }
+}
+
+fn write_night_light_outcome(
+    outcome: night_light::CliOutcome,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<u8, String> {
+    stdout
+        .write_all(outcome.stdout.as_bytes())
+        .map_err(|error| format!("could not write Night Light output: {error}"))?;
+    if let Some(message) = outcome.stderr {
+        stderr
+            .write_all(message.as_bytes())
+            .map_err(|error| format!("could not write Night Light error: {error}"))?;
+    }
+    Ok(outcome.exit_status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{night_light::CliOutcome, write_night_light_outcome};
+
+    #[test]
+    fn night_light_dispatch_preserves_stdout_stderr_and_each_policy_status() {
+        for status in [0, 1, 2] {
+            let outcome = CliOutcome {
+                stdout: "policy output\n".to_string(),
+                stderr: Some("policy detail\n".to_string()),
+                exit_status: status,
+            };
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+
+            assert_eq!(
+                write_night_light_outcome(outcome, &mut stdout, &mut stderr).unwrap(),
+                status
+            );
+            assert_eq!(stdout, b"policy output\n");
+            assert_eq!(stderr, b"policy detail\n");
+        }
     }
 }
 
