@@ -90,7 +90,7 @@ runtime = os.fsencode(sys.argv[2])
 owner = sys.argv[3]
 mode = sys.argv[4]
 record_out = Path(sys.argv[5])
-owner_helper = os.fsencode(os.path.realpath(sys.argv[6]))
+owner_helper = os.path.realpath(sys.argv[6])
 uid = os.getuid()
 
 
@@ -129,8 +129,8 @@ def proc_info(pid):
         'pgid': int(fields[2]),
         'sid': int(fields[3]),
         'starttime': int(fields[19]),
-        'comm': (proc / 'comm').read_bytes().strip(),
-        'argv': [part for part in (proc / 'cmdline').read_bytes().split(b'\0') if part],
+        'comm': (proc / 'comm').read_bytes().strip().decode('utf-8', 'surrogateescape'),
+        'argv': [os.fsdecode(part) for part in (proc / 'cmdline').read_bytes().split(b'\0') if part],
     }
 
 
@@ -177,12 +177,12 @@ def validate_recorded_processes(receipt):
             observed_child['state'] in ('Z', 'X')):
         raise RuntimeError('recorded guardian child PID birth identity is no longer live')
     guardian_args = observed_guardian['argv']
-    if (owner_helper not in guardian_args or b'launch' not in guardian_args or
-            os.fsencode(str(scratch)) not in guardian_args):
+    if (owner_helper not in guardian_args or 'launch' not in guardian_args or
+            str(scratch) not in guardian_args):
         raise RuntimeError('recorded guardian command does not identify this headless launch')
     child_args = observed_child['argv']
-    if (os.fsencode(str(scratch / 'wayfire.ini')) not in child_args or
-            not any(arg.rsplit(b'/', 1)[-1] == b'wayfire' for arg in child_args)):
+    if (str(scratch / 'wayfire.ini') not in child_args or
+            not any(arg.rsplit('/', 1)[-1] == 'wayfire' for arg in child_args)):
         raise RuntimeError('recorded launch child command does not identify this Wayfire config')
     if (observed_child['pgid'] != child['pid'] or observed_child['sid'] != child['pid'] or
             child['pid'] == os.getpgrp() or child['pid'] == os.getsid(0)):
@@ -207,8 +207,8 @@ def validate_recorded_processes(receipt):
         if current['pgid'] != child['pid'] or current['sid'] != child['pid']:
             continue
         if current['state'] not in ('Z', 'X'):
-            command_is_wayfire = current['comm'] == b'wayfire'
-            config_is_run_owned = os.fsencode(str(scratch / 'wayfire.ini')) in current['argv']
+            command_is_wayfire = current['comm'] == 'wayfire'
+            config_is_run_owned = str(scratch / 'wayfire.ini') in current['argv']
             if command_is_wayfire:
                 if not config_is_run_owned:
                     raise RuntimeError('Wayfire process in the owner group used another config')
