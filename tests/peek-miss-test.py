@@ -159,10 +159,21 @@ def settled():
     until(ready, 8, 'avoidance settled')
 
 
-def pointer_drag(id, to, coast=False):
+def pointer_drag(id, to, coast=False, require_drag=False):
     """Super+press on the window's drawn center and move to `to`; the button stays down."""
     x1, y1, x2, y2 = scene(id); x, y = (x1 + x2) / 2, (y1 + y2) / 2
-    pointer(x, y); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
+    pointer(x, y)
+    if require_drag:
+        until(lambda: (focused_id() == id, {'expected': id, 'focused': focused_id()}),
+              3, f'{id} focused under the drag pointer')
+    time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
+    if require_drag:
+        def actual_drag():
+            drag = ipc('scottland/desktop-model').get('drag', {})
+            focused = focused_id()
+            state = {'expected': id, 'focused': focused, 'dragged': drag.get('dragged')}
+            return (focused == id and drag.get('dragged') == id, state)
+        until(actual_drag, 3, f'{id} is the focused window actually being dragged')
     steps = 6 if coast else 24
     for i in range(1, steps + 1):  # pacing a gesture
         pointer(x + (to[0] - x) * i / steps, y + (to[1] - y) * i / steps); time.sleep(.008 if coast else .02)
@@ -287,7 +298,7 @@ try:
         until(full_cover_window_ready, 3, 'Big is drawn at full window size before covering Small')
 
         x1, y1, x2, y2 = scene(S)
-        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2)); release(); settled()
+        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2), require_drag=True); release(); settled()
         found, row = observe('grabbed-while-peeking', 'peeking-before-grab', S, 'Small')
         if not found: raise Unready(f'Small does not peek before the grab: {row}')
         drawn_area = (row['scene_frame'][2] - row['scene_frame'][0]) * (row['scene_frame'][3] - row['scene_frame'][1])
@@ -312,7 +323,7 @@ try:
         until(reset_drag_ready, 3, 'cover focused and prior grab cleared for reset drag')
         # Confirm the reset gesture really starts on B, but end at the output center. The nominal
         # base center (420,340) is outside the 1280px output's center zone and docks B to the rail.
-        pointer_drag(B, (W / 2, H / 2))
+        pointer_drag(B, (W / 2, H / 2), require_drag=True)
         def reset_drag_is_b():
             drag = ipc('scottland/desktop-model').get('drag', {})
             focused = focused_id()
