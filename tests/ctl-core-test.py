@@ -333,6 +333,7 @@ def run_checks(session):
           cwd.returncode == 0 and cwd.stdout.strip() == str(HOME), cwd.stdout.strip())
     terminal_workdir = ROOT / "terminal-workdir"
     terminal_workdir.mkdir()
+    terminal_ready = ROOT / "terminal-ready"
     shell = listed_posix_login_shell()
     if shell is None:
         raise FixtureUnavailable("no executable POSIX login shell is listed in /etc/shells")
@@ -340,13 +341,17 @@ def run_checks(session):
     terminal_parent.write_text(
         "#!/usr/bin/python3\n"
         "import subprocess, sys, time\n"
-        "subprocess.Popen([sys.argv[2], '-c', 'cd \"$1\"; while :; do sleep 60; done', '_', sys.argv[1]])\n"
+        "subprocess.Popen([sys.argv[2], '-c', 'cd \"$1\"; : > \"$2\"; while :; do sleep 60; done', '_', sys.argv[1], sys.argv[3]])\n"
         "time.sleep(60)\n"
     )
     terminal_parent.chmod(0o755)
     terminal_pid = session.spawn(
-        f"{shlex.quote(str(terminal_parent))} {shlex.quote(str(terminal_workdir))} {shlex.quote(shell)}"
+        f"{shlex.quote(str(terminal_parent))} {shlex.quote(str(terminal_workdir))} "
+        f"{shlex.quote(str(shell))} {shlex.quote(str(terminal_ready))}"
     )
+    terminal_is_ready, _ = session.wait(lambda: terminal_ready.is_file(), timeout=5)
+    if not terminal_is_ready:
+        raise FixtureUnavailable("the terminal shell did not enter its working directory")
     cwd = session.run(CTL, "terminal-cwd", str(terminal_pid))
     check("terminal-cwd reads a listed login shell's live working directory",
           cwd.returncode == 0 and cwd.stdout.strip() == str(terminal_workdir), cwd.stdout.strip())
@@ -366,6 +371,61 @@ def run_checks(session):
     check("get returns live values and the unsupported list",
           isinstance(values, dict) and "cycle_overshoot" in values
           and isinstance(values.get("unsupported"), list), get.stdout)
+    expected_outputs = session.ipc("scottland/layout-state").get("outputs", [])
+    check("get includes the current layout outputs",
+          isinstance(values, dict) and values.get("outputs") == expected_outputs,
+          values.get("outputs") if isinstance(values, dict) else None)
+
+    original_zones = session.ipc(
+        "wayfire/get-config-option", {"option": "scottland/screen_zones"}
+    ).get("value", "[]")
+    if not isinstance(original_zones, str):
+        original_zones = json.dumps(original_zones)
+    test_zones = [{
+        "make": "Ctl test",
+        "model": "Screen zones",
+        "serial": "ctl-core-fixture",
+        "center_width": 44.0,
+        "rail_width": 3.0,
+        "blend_width": 60.0,
+        "min_scale": 0.25,
+        "max_scale": 1.0,
+        "scale_curve": "0:1 0.5:0.65 1:0.25",
+    }]
+    encoded_zones = json.dumps(test_zones, separators=(",", ":"))
+    set_zones = session.run(CTL, "set", "screen_zones", encoded_zones)
+    zones_get = session.run(CTL, "get")
+    zones_values = json_value(zones_get.stdout) if zones_get.returncode == 0 else None
+    check("get parses screen_zones as a JSON array",
+          set_zones.returncode == 0 and isinstance(zones_values, dict)
+          and zones_values.get("screen_zones") == test_zones,
+          zones_get.stdout)
+    malformed_zones = session.run(CTL, "set", "screen_zones", "not-json")
+    malformed_get = session.run(CTL, "get")
+    malformed_values = json_value(malformed_get.stdout) if malformed_get.returncode == 0 else None
+    check("get falls back to an empty screen_zones array for malformed JSON",
+          malformed_zones.returncode == 0 and isinstance(malformed_values, dict)
+          and malformed_values.get("screen_zones") == [],
+          malformed_get.stdout)
+    session.run(CTL, "set", "screen_zones", str(original_zones))
+
+    original_speed = session.ipc(
+        "wayfire/get-config-option", {"option": "input/touchpad_scroll_speed"}
+    ).get("value")
+    session.ipc("wayfire/set-config-options", {"input/touchpad_scroll_speed": 0.4})
+    speed_get = session.run(CTL, "get")
+    speed_values = json_value(speed_get.stdout) if speed_get.returncode == 0 else None
+    observed_speed = number_value(
+        speed_values.get("touchpad_scroll_speed") if isinstance(speed_values, dict) else None
+    )
+    check("get includes the live touchpad scroll speed",
+          observed_speed is not None and abs(observed_speed - 0.4) < 0.001,
+          (speed_get.returncode,
+           speed_values.get("touchpad_scroll_speed") if isinstance(speed_values, dict) else None))
+    if original_speed is not None:
+        session.ipc(
+            "wayfire/set-config-options", {"input/touchpad_scroll_speed": original_speed}
+        )
     set_value = session.run(CTL, "set", "cycle_overshoot", "4")
     option = session.run(CTL, "option", "scottland/cycle_overshoot")
     observed = json_value(option.stdout) if option.returncode == 0 else None
