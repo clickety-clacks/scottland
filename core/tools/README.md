@@ -72,7 +72,7 @@ hooks expose the app at `apps/weather`; the Arch package installs the app assets
 `bin/system-stats` installs `scottland-system-stats`, the launcher for the core Quickshell app in
 `core/system-stats`. It reads CPU, memory and load every two seconds; each unavailable value and
 the `updated` reading time are `null`. The app publishes widget readings through the existing WG11
-method over the WG9 service when WG12 reports it widgetized. The source includes
+method over the WG9 service when WG12 reports it widgetized. The Arch package installs
 `scottland-system-stats.desktop`; the System Stats widget package remains separate in Flavorings.
 
 ## Build, test, install
