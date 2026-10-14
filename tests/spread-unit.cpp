@@ -591,7 +591,7 @@ static void gather_ga10_larger_band_exception()
         gather_inner_distance(s, gather_input(s, 2), middle) - 1,
         "GA10: only the later window that fits can end inward of the earlier one");
     CHECK(gather_inner_distance(s, gather_input(s, 3), short_one) < 1 &&
-        gather_inner_distance(s, gather_input(s, 2), middle) <= 100.1,
+        gather_inner_distance(s, gather_input(s, 2), middle) <= 100.0 + 1e-6,
         "GA10: short window takes the border while the middle window stays within its old range");
     CHECK(gather_inner_distance(s, gather_input(s, 1), tall) < 1,
         "GA10: first window owns the border column");

@@ -488,7 +488,7 @@ class solver_t
         for (double target : distances)
         {
             work.charge();
-            if (target > old_distance + 1.0) continue;
+            if (target > old_distance + EPS) continue;
             auto xs = gather_x_candidates(i, side, target);
             for (double x : xs)
             {
@@ -502,7 +502,7 @@ class solver_t
                 double inner = side == 0 ? horizontal.x1 : horizontal.x0;
                 if ((side == 0 && inner > border + 1.0) || (side == 1 && inner < border - 1.0)) continue;
                 double actual = std::max(0.0, side == 0 ? border - inner : inner - border);
-                if (actual > old_distance + 1.0) continue;
+                if (actual > old_distance + EPS) continue;
                 horizontal.y0 = yd->first; horizontal.y1 = yd->first + height;
                 auto ys = gather_y_candidates(horizontal, obstacles, yd->first, yd->second);
                 for (double y : ys)
