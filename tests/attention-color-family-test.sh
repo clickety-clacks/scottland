@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-: "${SCOTTLAND_HEADLESS_DIR:?set a fresh directory under the checkout build on Plumbus}"
+: "${SCOTTLAND_HEADLESS_DIR:?set a fresh directory under the checkout build on test-host}"
 [[ ! -e $SCOTTLAND_HEADLESS_DIR ]] || { echo 'headless directory occupied' >&2; exit 1; }
 artifacts=${1:-build/attention-color-go22}
 mkdir -p "$artifacts"

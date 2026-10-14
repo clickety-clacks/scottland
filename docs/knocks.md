@@ -2,7 +2,7 @@
 
 Status: mental model being formalized; nothing designed or built. Supersedes the narrower
 "agentd as an attention source" framing; agentd, Yoohoo's bell menu, notifications, bells and
-Tightbeam decision requests are all expected to become cases of this.
+requests for a user decision are all expected to become cases of this.
 
 ## The bigger picture: attention regimes (Mike, 2026-10-04)
 

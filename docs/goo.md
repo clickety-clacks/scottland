@@ -79,7 +79,7 @@ The initial defaults are the prototype’s Scottland preset.
 
 | ID | Invariant | Status |
 |---|---|---|
-| GO1 | One goo per screen: one field from all windows, outlining the window and widget shapes; GO11 adds stacking-aware film over content behind a window, while foreground content clips it. Widget expand/collapse follows the animated frame and its visible alpha contour (GO16), including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph: plumbus headless geometry and screenshots checked |
+| GO1 | One goo per screen: one field from all windows, outlining the window and widget shapes; GO11 adds stacking-aware film over content behind a window, while foreground content clips it. Widget expand/collapse follows the animated frame and its visible alpha contour (GO16), including reversals and rail anchoring. | implemented; headless union/content, two-output drag and screenshot checks; per-widget presentation morph: AMD test host headless geometry and screenshots checked |
 | GO2 | The goo clings: each window's goo stays within a reach of its edge; between windows close enough, it bridges, drawing from both borders, and a stretched bridge thins and snaps. | implemented; prototype volume approximation, bridge/snap input checks |
 | GO3 | Where windows meet or overlap, the summed field pools and bridges naturally; there is no separate concave-corner infill or corner-specific code (the old halo's infill was removed 2026-10-01). GO14 adds a general surface meniscus. | implemented; overlap pooling screenshot inspected |
 | GO4 | The goo isn't uniform: its amount along each edge wanders slowly, configurable (mess, lump size, drift). | implemented; prototype noise port, inspected; drift freezes to settle |
@@ -94,18 +94,18 @@ The initial defaults are the prototype’s Scottland preset.
 | GO13 | Goo outlines fade over approximately one device pixel using screen-space field derivatives, at every output/window scale. The full-resolution draw reconstructs the coarse field with smooth cubic filtering, restricted to goo bands; GO11 film and GO12 control outlines use the same coverage. Keep the existing window-edge SDF antialiasing and otherwise preserve the look, simulation and input. Added active cost stays well below one millisecond per frame, checked with the paired GO10 benchmark on Xe and RX 580. (Mike, 2026-10-02; core) | implemented; isolated headless validation recorded below |
 | GO14 | The goo stands out of the screen along straight edges as well as corners: a rounded bead across the band, thin at its outer shore, cresting and wetting the window wall. Summed bridges and pools have the same domed surface; waves and noise perturb it. Surface normals drive lighting and ridge highlights; refraction is proportional to slope like a lens. Depth and wall-wetting profile are live settings with sensible defaults and Goo tab hints. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab rows |
 | GO15 | *(Partly superseded by GO28: pickup is from whatever lies beneath, windows included, everywhere in the goo, mixed with the state colors rather than kept from the wall.)* Wallpaper hues are picked up as a weak watercolor dye in each simulation step, then spread and swirl through connected goo. Pickup fades to zero right at each window edge and strengthens across the wet band and where liquid pools or bridges. Focus, attention and hint dye remain dominant at their window borders; wallpaper hues appear as softer washes away from them. Only the background layer supplies that color, including under overlap film; window contents never enter it or keep the simulation awake. Wallpaper changes wake it, static wallpaper settles, and strength zero disables injection. (Mike, 2026-10-02; core) | implemented; isolated headless validation below and Goo tab row |
-| GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Ordinary Wayland surfaces whose root buffer bounds extend beyond their xdg window geometry also use the rendered alpha contour, covering client-side decoration insets generically; surfaces with matching bounds retain the analytic rounded box. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary surfaces without inset alpha masks retain analytic rounded boxes and do not sample the widget atlas. (Mike, 2026-10-02; core; CSD contour extension 2026-10-03) | implemented; Plumbus Chromium CSD, server-decoration and GTK/libadwaita captures below; physical-display verification remains open |
+| GO16 | Widget goo hugs the widget's rendered alpha contour, including any overhanging badge, instead of the whole client surface rectangle. Transparent reservation space has no body/shore. Generic custom shapes get the same treatment. Ordinary Wayland surfaces whose root buffer bounds extend beyond their xdg window geometry also use the rendered alpha contour, covering client-side decoration insets generically; surfaces with matching bounds retain the analytic rounded box. Commit/presentation damage coalesces into at most five alpha checks per second; only a changed quantized mask or resolution rebuilds a GPU distance field. Goo field, rendering, content clipping, fallback halo, move/close hit testing and presentation morphs use that same shape. Transparent insets retain their natural size through elastic expand/collapse; parent transforms carry the whole shape. Ordinary surfaces without inset alpha masks retain analytic rounded boxes and do not sample the widget atlas. (Mike, 2026-10-02; core; CSD contour extension 2026-10-03) | implemented; AMD test host Chromium CSD, server-decoration and GTK/libadwaita captures below; physical-display verification remains open |
 | GO17 | Attention breathes with a five-second Apple-inspired light curve and keyframed source-local swell at draw time (about six logical pixels at shipped goo settings). Breathing never injects waves, advances field/dye simulation, or prevents sleep. Only the attention source’s conservative band and nearby joined goo within its modulation support receive breathing damage, at 25 Hz. Settled goo with no attention has no timer or GPU work. | implemented; isolated headless validation below; no physical-display validation |
-| GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled or unavailable, draw the breathing strips exactly; the number of keys never causes that (GO26). The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; plumbus paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
+| GO18 | Settled attention breathing uses nearby cached surface keyframes by default and cross-fades their current-backdrop composites. Tight strips cover the wet liquid plus reconstruction margin. If the keyframe pair is disabled or unavailable, draw the breathing strips exactly; the number of keys never causes that (GO26). The keyframe option changes live without reload. Goo-off fallback halos still visibly breathe. | implemented; AMD test host paired 5 s RX 580 measurements and pixel checks below; Intel Xe and physical-display review remain open |
 | GO19 | Breathing costs what the breath itself changes. (1) A breath-only frame repaints nothing under the strips: the goo restores its cached backdrop there and draws the breath on it; any other scene damage, or one frame a second, takes the normal path. (2) A quiet outline change (a widget card re-fitting its text; nothing moving far enough to raise a wave) does not restart the drift or the three-second response window, so the simulation sleeps again within about half a second. (3) The fallback halo repaints only its ring, and a breath alone at 25 Hz. (4) Shrinking the breathing strips never blocks the compositor: it runs in slices of about 2 ms per tick. `goo-state` reports why the simulation woke (`wakes`, `last_wake`). (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured**: needs Mike's live counters |
 | GO20 | Only a change wakes the goo, and only liquid is worked on. (1) *(Replaced by GO28's bounded pickup wakes: a change beneath sleeping liquid restarts only the dye's coast; the wallpaper capture is gone.)* Background-layer damage refreshes the quarter-resolution wallpaper capture; the simulation wakes only if more than 16 of its pixels differ by more than 4 levels from the capture that last woke it. (2) While the goo sleeps, drawing, the backdrop copy and the composite use the part of each band that holds liquid, worked out in 2 ms slices after it falls asleep; any wake returns to the conservative bands. (3) Window content no goo can lie on (a window's interior, unless a source in front can lay film there) is left out of the goo's regions always, so a front window redrawing itself costs the goo nothing. `goo-state` reports `wallpaper_damages`, `wallpaper_captures`, `wallpaper_changes`, `wallpaper_last_damage`, `band_pixels`, `settled_pixels`, `dry_pixels`. (Mike, 2026-10-03; core) | implemented; RX 580 headless below. **Intel Xe not measured** |
-| GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on plumbus (below) |
-| GO22 | Attention color choice: the Goo setting chooses Theme (the active palette attention color, today's behavior), Warm (light `#B83F36`, dark `#FF9E57`), or Cool (light `#707C28`, dark `#C9DD61`). The selected color applies live to attention breath and bulge on windows and widgets, in Goo and fallback halos, and follows light/dark scheme changes. Settings previews the choice; Save, Cancel and Defaults include it. | implemented; Plumbus headless Settings input, six Goo and six fallback screenshots across light/dark, window and widget attention (2026-10-03); integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO21 | The sleeping goo's cheap paths are exact at any output scale, rotation and layout. Backdrop reuse is decided and applied in device pixels: the frame's damaged pixels must all lie in the strips' pixels, and exactly those pixels are restored and withheld from the scene beneath. Other damage is heard from this output's own layers (and a restructured scene counts), so a change under a strip, however small, repaints normally, and another output's activity does not disturb reuse here. Reuse needs an 8-bit SDR target with the mapping the backdrop was copied under. Breathing strips are at most 16 rectangles so the output's damage ring keeps them. (Mike, 2026-10-03; core) | implemented; `tests/goo-exact-test.sh`: 27-28 natural-frame comparisons in each of 15 configurations on AMD test host (below) |
+| GO22 | Attention color choice: the Goo setting chooses Theme (the active palette attention color, today's behavior), Warm (light `#B83F36`, dark `#FF9E57`), or Cool (light `#707C28`, dark `#C9DD61`). The selected color applies live to attention breath and bulge on windows and widgets, in Goo and fallback halos, and follows light/dark scheme changes. Settings previews the choice; Save, Cancel and Defaults include it. | implemented; AMD test host headless Settings input, six Goo and six fallback screenshots across light/dark, window and widget attention (2026-10-03); integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO23 | Dye density (`goo_dye_density`; named Dye strength, `goo_dye_strength`, until Mike's ruling of 2026-10-05, and a value saved under that key carries over): a Goo setting from 0 to 1.5 (default 1). **In the goo it scales all dye together**, the windows' colors and picked-up color alike (Mike, 2026-10-05: "dye density scales all dye in the goo, picked-up color included"): how much of the liquid's color is dye rather than clear lens. It does not change the mix of hues (Pickup balance does, GO28). In the fallback halo it still scales focus, attention and Window mode hint colors. Greater values clamp the final dye blend at full opacity; the original-path promise at 1 is superseded. Changes apply live. (Mike, 2026-10-03; scope 2026-10-05) | implemented; current all-dye, legacy migration, Goo/fallback and Settings checks pass on both GPU paths ([below](#review-validation-and-cost-2026-10-05)) |
 | GO24 | Watercolor wallpaper: with wallpaper soak on, the goo visibly picks up colors from the wallpaper under it and swirls, spreads, smears and mixes them through the liquid, like the wallpaper beneath is wet watercolor. Soak sets how strongly; at today's default the effect must be clearly visible, not a faint tint. **In all parts of the goo, graded by thickness**: stronger in the thick, pooled parts, but still clearly present in the thin parts (the thin bands around windows); never zero in thin goo ("in watercolors it spreads everywhere"). **Local pickup and local spread**: each part takes the colors of the wallpaper right beneath and near it and smears them locally, so the goo's colors follow the wallpaper's layout; never a uniform screen-wide wash or a global average. *(GO28 replaces this: state colors fill the goo and mix with the pickup; there is no wall band.)* **State colors** (focus, attention, hints) stay legible in a narrow band at the window walls. **It persists after the motion settles**: the swirling may come to rest and the goo sleep, but the dye that was picked up and smeared remains exactly as it lies; it does not fade back to clear. The pattern changes only when something stirs the goo (motion, a wake) or the wallpaper beneath changes. A settled dye field costs nothing to keep, which is how it respects the GPU budget (GO17-GO21). (Mike, 2026-10-03, with his clarifications of the same evening) | implemented; headless checks on the x86 test machine and screenshots [below](#go24-watercolor-2026-10-03). Not seen on a physical display; Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO25 | The attention bulge and the keyframed breath go together: with the bulge restored (`6ca8c4b`), a settled breath at shipped settings and at Mike's is still drawn from keyframes (GO18), not by re-shading the strips on every tick. (Found on Mike's desktop, 2026-10-03, where the keys had stopped without notice: `breath_keys` 0 over 192,000 ticks; core) | implemented (`5429f3f`: the 16-key cap raised to 24). GO26 replaces the cap with its ceiling-and-scale rule and makes any use of the exact path say why; GO25 stays as the behavior, GO26 as the mechanism ([below](#go25-keyframes-for-the-restored-bulge-2026-10-03)) |
 | GO26 | Breath keyframes follow a ceiling-and-scale rule. A breath uses only as many keys as its swing needs at half a device pixel of shore travel per key (10 if that is all it needs). The count never exceeds a ceiling (48 where both cache textures are written in one pass, 24 where each refresh takes two); a swing that needs more keeps the ceiling and widens the spacing just enough to cover the swing. The key count never sends the breath to the exact path: that path remains only for real failures (the second cache layer cannot be allocated, the surface cache is unavailable), for keyframes switched off, and for the test override, and whenever it is in use `goo-state` says why (`breath_exact_reason`) and the log says so once. (Mike, 2026-10-04; core) | implemented; `tests/goo-breath-keys-test.py` 13 / 13 on both GPU paths, measurements [below](#go26-ceiling-and-scale-keys-2026-10-04). Intel Xe not measured; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
-| GO27 | The goo never paints over dry window content: a window's interior that no goo can lie on shows the window, in every frame. A frame that reuses the cached backdrop (a breath, or a watercolor tick while the dye coasts, GO24) restores it only on its reuse region's pixels inside the goo's own drawn area and outside dry content; whatever else the merged rectangles cover stays in the frame's damage and the scene beneath paints it. (Mike's bug report, 2026-10-04; core) | implemented; `tests/goo-strip-test.sh` (forced and natural merging) passing on both GPU paths on plumbus ([below](#go27-no-backdrop-inside-a-window-2026-10-04)); not yet seen on Mike's panel; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
+| GO27 | The goo never paints over dry window content: a window's interior that no goo can lie on shows the window, in every frame. A frame that reuses the cached backdrop (a breath, or a watercolor tick while the dye coasts, GO24) restores it only on its reuse region's pixels inside the goo's own drawn area and outside dry content; whatever else the merged rectangles cover stays in the frame's damage and the scene beneath paints it. (Mike's bug report, 2026-10-04; core) | implemented; `tests/goo-strip-test.sh` (forced and natural merging) passing on both GPU paths on AMD test host ([below](#go27-no-backdrop-inside-a-window-2026-10-04)); not yet seen on Mike's panel; integrated and re-verified on both GPU paths in [the goo release](#goo-release-integration-2026-10-04) |
 | GO28 | **One dye, mixed like watercolor.** The goo carries one dye field and never segregates kinds of dye. (1) Each window releases its state color (neutral, focus, attention, GO22's family) into **all of its own goo**, in proportion to how much of the liquid at each point is its own, a little more at the wall than at the shore (2 : 1) so a new state still blooms from the edge; bridges take both windows' colors in proportion. (2) Wherever there is goo it **picks up the color beneath it on screen**: the wallpaper, or window content under overlap film; never the goo itself or anything drawn above it (hints, overlays, the cursor). (3) Picked-up color **mixes into the dye already there**, subtractively, like pigment (blue and yellow make green; colors deepen as they mix); nothing replaces anything. (4) Picked-up color is dye like any other: it spreads, swirls and runs along the band, smearing the material beneath. (5) Live Goo panel rows (Save/Cancel/Defaults) drive it: Dye spread (`goo_spread`) and Dye swirl (`goo_swirl`) move all dye alike; Dye release (`goo_release`) is how fast windows and pickup renew it; Wallpaper pickup (`goo_soak`, labeled Wallpaper soak until 2026-10-05) is the pickup strength; **Pickup balance** (`goo_pickup_balance`, 0-1, default 0.45, the one new setting, Mike 2026-10-05: "just give me a slider") is the share of picked-up color at full pickup (0 the window's color only, 1 picked-up color only; 0.45 is the ~55 / 45 first shown to him); GO23 Dye density (formerly Dye strength) scales all of the goo's dye, picked-up color included, and A16 unfocused strength sets how much pigment a neutral window releases (0 is clear water). Window mode hint colors stay an immediate draw-time tint (WK14). Mike's "dye density" is that GO23 setting, renamed (his ruling, 2026-10-05). (6) Costs hold to GO10, GO19 and GO20: a change beneath sleeping liquid never wakes the waves or field, only the dye's coast, at most once per cool-down that starts at 20 s and doubles each time a change has waited one out (to 5 min); once nothing has repainted under the liquid for 20 s the backoff is over and a change is taken at once. Supersedes GO15's wall fade, wall dominance and wallpaper-only source, GO24's narrow wall band, GO20 (1)'s wallpaper capture, and GO23's exact-original-path promise. (Mike, 2026-10-05; core) | review repairs validated; GO28 49 / 49 and regressions pass on both GPU paths; Radeon Pro 580X costs [below](#review-validation-and-cost-2026-10-05). Physical-display appearance/motion and Intel Xe remain unverified |
 
 ## Halo jobs with goo enabled
@@ -235,8 +235,8 @@ exponential. Invalid curves keep the last valid LUT.
 ## Original branch verification (2026-10-01)
 
 Testing uses the isolated `Projects/scottland-goo` checkout and
-`scottland-headless-goo` session on plumbus, with real stipc pointer, key, touch and drag input.
-No live osanwe session or plumbus real screen was installed, reloaded or used. Accordingly these
+`scottland-headless-goo` session on AMD test host, with real stipc pointer, key, touch and drag input.
+No live daily Intel desktop session or AMD test host real screen was installed, reloaded or used. Accordingly these
 rows say **implemented/headless checked**, not verified on a real login/display (AGENTS.md D2).
 `tests/goo-test.py` writes inspected screenshots and timings to `build/goo-evidence`.
 `tests/goo-model-test.cpp` checks finite input, curves, union exclusion, bridge/snap and thinning.
@@ -268,7 +268,7 @@ window. Artifacts and logs are under `build/goo-evidence`, `build/goo-flow-evide
 `build/goo-packed-evidence`. The compatibility tests constrain the RX 580's Mesa context;
 they do not substitute for testing older physical GPUs.
 
-Reproduce in the private plumbus checkout (never its real screen):
+Reproduce in the private AMD test host checkout (never its real screen):
 
 ```sh
 export TMPDIR=$PWD/build/test-tmp
@@ -286,7 +286,7 @@ SCOTTLAND_TEST_GOO=0 tests/widgets-test.sh  # explicit fallback halo
 
 Remaining coverage: physical screen/login, mixed DPI and rotated outputs, very large window counts,
 and theme-file producer changes. The live palette consumer is checked, but no adapter code changes
-were made. Hardware other than plumbus's RX 580 family remains untested.
+were made. Hardware other than AMD test host's RX 580 family remains untested.
 
 
 ## Main merge validation (2026-10-01)
@@ -313,13 +313,13 @@ selected setting visible). The falloff curve still uses the shared curve editor.
 checks cover live row movement, Left/Right, Shift steps, Backspace opening-value reset,
 typed values, navigation to Relief, curve editing, Save, Cancel/Escape and Defaults.
 
-Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh plumbus
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh HOST
 --tests-only`. All checks ran in that isolated checkout, with scratch files beneath
 `~/.cache/scottland-test-tmp`. Widget and seeded-model runs use the requested
 `$XDG_RUNTIME_DIR/scottland-headless-goo-merge`; goo/panel and focused state regressions
 also used private headless runtimes. Each compositor started on the current build; reload
-checks were confined to those test sessions. No live session on osanwe, other checkout,
-or physical screen on plumbus was installed, reloaded or used. Status remains
+checks were confined to those test sessions. No live session on daily Intel desktop, other checkout,
+or physical screen on AMD test host was installed, reloaded or used. Status remains
 **implemented/headless checked**, not physical-display verification under D2.
 
 | Check | Result |
@@ -346,9 +346,9 @@ worked around by weakening assertions.
 Inspected screenshots include the goo bridge and dye, the rebuilt Layout/Goo panel, keyboard
 navigation to the last row, the falloff editor, fullscreen exclusion, cross-output held/drop,
 Alt-declutter outlines, and halo restoration. Both GPU paths load the panel without QML errors. Local evidence is in `build/merge-goo-evidence`,
-`build/merge-goo-flow-evidence`, `build/merge-evidence` and `build/current-main-evidence`; the plumbus checkout retains the
+`build/merge-goo-flow-evidence`, `build/merge-evidence` and `build/current-main-evidence`; the AMD test host checkout retains the
 same logs and source screenshots. Coverage still excludes physical login/display, mixed DPI,
-rotation, large window counts and hardware beyond plumbus, as required by this task's isolation.
+rotation, large window counts and hardware beyond AMD test host, as required by this task's isolation.
 
 
 ## Widget presentation merge validation (2026-10-01)
@@ -360,8 +360,8 @@ animated rectangle supplies the goo island and its dye source, including interru
 the disabled goo path retains main's halo renderer. At this validation the shipped switch was false and changed
 live; the goo-default change below supersedes that default. GO1, GO5, GO6 and WG16 were checked together.
 
-All tests ran on plumbus in `Projects/scottland-goo-merge`, deployed with
-`SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh plumbus --tests-only`.
+All tests ran on AMD test host in `Projects/scottland-goo-merge`, deployed with
+`SCOTTLAND_DEPLOY_DIR=Projects/scottland-goo-merge tests/deploy.sh test-host --tests-only`.
 Scratch files used `TMPDIR=$HOME/.cache/scottland-test-tmp` and sessions used
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-goo-merge`. Every session started
 after its plugin build. No live session, other checkout or physical screen was changed or used;
@@ -399,10 +399,10 @@ The normal rendering values and disabled-goo path are unchanged by the packing f
 
 Mid-collapse, expansion and reversal screenshots with goo enabled were inspected, including
 attention dye around the shortened card and natural-size icons. Logs, geometry samples and
-screenshots are retained on plumbus and locally under `build/widget-goo-merge-evidence`;
+screenshots are retained on AMD test host and locally under `build/widget-goo-merge-evidence`;
 initial fixture, timing and packed-propagation failures are retained alongside final results.
-Plugin/test source hashes matched across 71 files. Both osanwe and plumbus builds passed;
-all tests were on plumbus. The isolated sessions were stopped afterward.
+Plugin/test source hashes matched across 71 files. Both daily Intel desktop and AMD test host builds passed;
+all tests were on AMD test host. The isolated sessions were stopped afterward.
 
 
 ## Goo-default validation (2026-10-01)
@@ -428,8 +428,8 @@ The first present invocation omitted its required caller-owned session; both mod
 inside fresh private sessions and passed. These sampling/harness corrections do not change product
 input behavior.
 
-All runs used `Projects/scottland-goodefault` on plumbus, with
-`SCOTTLAND_DEPLOY_DIR=Projects/scottland-goodefault tests/deploy.sh plumbus --tests-only`,
+All runs used `Projects/scottland-goodefault` on AMD test host, with
+`SCOTTLAND_DEPLOY_DIR=Projects/scottland-goodefault tests/deploy.sh test-host --tests-only`,
 `TMPDIR=$HOME/.cache/scottland-test-tmp` and
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-goodefault`.
 Sessions started after their relevant builds. Halo removal was checked in both modes;
@@ -541,7 +541,7 @@ Use separate sequential runs; other sessions on the same GPU affect timer latenc
 return-to-position screenshots with stochastic appearance disabled for comparison.
 
 
-### Intel Xe, osanwe: paired shipped-config measurements
+### Intel Xe, daily Intel desktop: paired shipped-config measurements
 
 Two sequential before/after pairs at 2560×1600, ten seconds per case. The baseline
 is `6919af6`; the optimized renderer is `2c1eed9`. Both start fresh headless
@@ -571,7 +571,7 @@ stale goo. These checks establish the sampled scenes, not bitwise equivalence fo
 all animation phases or arbitrary custom settings. The full exponential falloff
 is preserved; no compact-cutoff appearance change is being proposed for shipping.
 
-### RX 580, plumbus: uncontended paired measurements
+### RX 580, AMD test host: uncontended paired measurements
 
 Two further before/after pairs use the same 2560×1600 fixture and shipped configs.
 All other task test sessions were stopped first; whole-GPU busy matches the measured
@@ -593,14 +593,14 @@ background services in Mike's live desktop.
 
 ### Final checks and isolation
 
-Final validation uses only private headless sessions on osanwe and plumbus, with
-`SCOTTLAND_HEADLESS_DIR` per run. Plumbus deployment is `--tests-only` into
+Final validation uses only private headless sessions on daily Intel desktop and AMD test host, with
+`SCOTTLAND_HEADLESS_DIR` per run. AMD test host deployment is `--tests-only` into
 `Projects/scottland-goo-perf-final-tests`; scratch files are under
 `~/.cache/scottland-test-tmp`. Every tested compositor starts after its build;
 reload/unload exercises are confined to those tests. No live checkout, `wayland-1`,
 installed options, physical screen or user session is changed. These remain
 **implemented/headless checked**, not physical-display verification under D2.
-The ten renderer/frame source hashes match between osanwe and plumbus.
+The ten renderer/frame source hashes match between daily Intel desktop and AMD test host.
 
 | Final check | Result |
 |---|---|
@@ -619,7 +619,7 @@ retained. The additional Xe flow run first exposed the output-order assumption;
 the named-output rerun passed all assertions. Other initial installed-config runs
 are also retained. Final source/render artifacts are in `build/perf-results`,
 `build/visual-shipped-{before,after}`, `build/visual-shipped-comparison.json`,
-`build/bench-shipped-*.log`, and `build/xe-packed-flow-fixed.log`. Plumbus retains
+`build/bench-shipped-*.log`, and `build/xe-packed-flow-fixed.log`. AMD test host retains
 its test screenshots beside the isolated runtime result folders and in the private
 checkout's build directory. Coverage excludes physical login/display, mixed DPI,
 rotation and GPU families beyond Xe and RX 580.
@@ -648,13 +648,13 @@ overlap/hover branches when neither is present; moving into an overlap or a hove
 path on the next update, preserving the same wave and dye textures.
 
 All sessions are isolated
-headless sessions with a private `SCOTTLAND_HEADLESS_DIR`, started after their build, on osanwe
-or plumbus. The live checkout, installed settings and live session were not used or changed.
+headless sessions with a private `SCOTTLAND_HEADLESS_DIR`, started after their build, on daily Intel desktop
+or AMD test host. The live checkout, installed settings and live session were not used or changed.
 This is **implemented/headless checked**, not physical-display verification under D2.
 
 
-The final regression matrix uses `Projects/scottland-goo-oh-tests` on plumbus, deployed with
-`--tests-only`, and this checkout on osanwe. The thirteen changed plugin/settings/control files
+The final regression matrix uses `Projects/scottland-goo-oh-tests` on AMD test host, deployed with
+`--tests-only`, and this checkout on daily Intel desktop. The thirteen changed plugin/settings/control files
 have matching SHA-256 hashes on both hosts. Every compositor starts after its build; reloads in
 the existing widget/windowing tests operate only on their private sessions. No widget-presentation
 implementation was edited.
@@ -748,7 +748,7 @@ Evidence is under `build/go11-swell-results/xe-normal/`: `01a-film-swell-rest.pn
 `01h-film-lift-settled.png`. These images were inspected. The RX 580 normal and
 packed screenshots in `build/go11-swell-results/amd-{normal,packed}/` were also inspected.
 
-The isolated plumbus matrix passed: GO11/GO12 overlap and hover 27/27 on both GPU paths,
+The isolated AMD test host matrix passed: GO11/GO12 overlap and hover 27/27 on both GPU paths,
 goo 46/46 on both paths, widgets 146, widget morph 86, settings help 128, and hint style
 51/51 with goo on and off. Logs and screenshot copies are in
 `build/go11-swell-results/amd-matrix/`. The Xe GO11/GO12 run also passed 27/27; the CPU
@@ -795,7 +795,7 @@ soft internal cloud transition does not acquire a separate outline. The existing
 smooth the liquid without changing the readable window-content boundary or film's
 translucency.
 
-Validation is confined to fresh headless sessions on osanwe and plumbus, with a
+Validation is confined to fresh headless sessions on daily Intel desktop and AMD test host, with a
 unique `SCOTTLAND_HEADLESS_DIR` per run under this checkout's `build/`. Baseline is
 an archived `459d758`, built with its own hooks under `build/aa-baseline`; it does
 not use the live checkout. Every session starts after its plugin build. Test
@@ -1020,8 +1020,8 @@ every Goo and inertial metadata option against Settings controls:
 
 ### Isolation and evidence
 
-All checks use fresh isolated headless sessions with their own hooks on osanwe (Xe)
-and `Projects/scottland-goodepth-tests` on plumbus (RX 580). The baseline is archived
+All checks use fresh isolated headless sessions with their own hooks on daily Intel desktop (Xe)
+and `Projects/scottland-goodepth-tests` on AMD test host (RX 580). The baseline is archived
 under each checkout's `build/depth-baseline`. Session state, temporary files, screenshots
 and logs stay under `build/`; `XDG_RUNTIME_DIR` is inherited without redirection. Every
 owned session is stopped and its exact state directory removed. No live checkout,
@@ -1055,7 +1055,7 @@ The Xe final goo/morph logs are `build/depth-results/final-*.log`; the corrected
 depth/soak runs and pooled-bridge screenshots are `final-pool-{normal,packed}-goo-depth-soak`.
 The normal wallpaper lifecycle log is `final-normal-soak-lifecycle.log`. RX 580
 logs and its new screenshots are copied into `build/depth-results/amd/`; the complete morph
-and hint artifacts remain under the isolated plumbus checkout's `build/`.
+and hint artifacts remain under the isolated AMD test host checkout's `build/`.
 Renderer/settings source SHA-256 records match between hosts. The Xe 1.5× output
 screenshots are in `visual-after-1.5`; they were also inspected. At 1× all six paired
 screenshots have identical window geometry.
@@ -1185,7 +1185,7 @@ The widget lifecycle/input suite also passes all checks on Xe and RX 580. Its Xe
 
 Wayfire's `list-views.geometry` is the xdg toplevel geometry; `base-geometry` is the root
 wl_surface buffer bounds, and `bbox` is the complete scene bound after transforms. Scottland's
-frame `screen_rect`, fallback halo and Goo source all hug the xdg geometry. On Plumbus, Chromium
+frame `screen_rect`, fallback halo and Goo source all hug the xdg geometry. On AMD test host, Chromium
 with “Use system title bar and borders” off requested client-side decoration (xdg-decoration
 mode 1) and reported geometry
 `{106,56,1068,608}` inside surface bounds `{90,46,1100,650}`. The mismatch is 16 px left/right,
@@ -1202,19 +1202,19 @@ fallback halo and input; equal-bound surfaces keep the analytic rounded box and 
 readback. This recognizes actual transparent corners and inset margins even when the client
 uses CSD. It does not force server decorations or change the app's window geometry.
 
-The Plumbus fixture records Wayfire rectangles and decoration protocol modes, asserts that inset
+The AMD test host fixture records Wayfire rectangles and decoration protocol modes, asserts that inset
 CSD clients build the alpha contour and that Chromium's server-decoration case does not, then
 captures goo and fallback screenshots. `tests/chromium-gap-test.py` passed for normal and packed
 GLES. Screenshots show the goo and fallback shore touching the rendered rounded frame in both
-Chromium modes and Nautilus; normal captures and logs are under `build/chromium-gap-plumbus/`,
-with packed captures under `build/chromium-gap-plumbus/packed/`.
+Chromium modes and Nautilus; normal captures and logs are under `build/chromium-gap-test-host/`,
+with packed captures under `build/chromium-gap-test-host/packed/`.
 
 The final alpha-mask/SDF rebuild telemetry was 15.39 ms for Chromium and 10.40 ms for Nautilus
 on normal GLES, and 13.68 ms for Chromium and 15.00 ms for Nautilus on packed GLES. The last
 unchanged-mask checks took 2.51–3.91 ms. Both runs captured only after `goo-state` reported a
 sleeping surface with cached breath keyframes active, so the GO10 settled cache was exercised.
 These are per-shape capture timings, not full frame-time measurements, and a rebuilt shape is
-captured synchronously. Firefox is not installed on Plumbus and the attempted Mozilla download
+captured synchronously. Firefox is not installed on AMD test host and the attempted Mozilla download
 timed out, so its contour remains unchecked. The physical display also remains unverified.
 
 The morph suite now compares the liquid shore against measured alpha body bounds
@@ -1233,7 +1233,7 @@ the pre-cache baseline archived at `82f2b28`; it predates the settled surface
 cache described in GO10 below. The current combined GO10+GO16 result is
 recorded beside the RX 580 GO10 rows below. Raw Xe logs are
 `build/go16-evidence/bench-{before,after}.log`; RX 580 logs and shape screenshots
-are copied into `build/go16-evidence/rx580/` from the isolated plumbus checkout.
+are copied into `build/go16-evidence/rx580/` from the isolated AMD test host checkout.
 Query times include the goo update; mask timings below separately include
 content capture, jump flooding and synchronous readbacks.
 
@@ -1272,8 +1272,8 @@ throttled alpha check but skip jump flooding and atlas replacement.
 
 The earlier sessions used inherited `XDG_RUNTIME_DIR`, shipped config only and
 artifacts under the checkout's `build/`; they did not reload or dev-install the
-live session. After osanwe froze during later headless activity, all subsequent
-test sessions moved to plumbus (see integration validation below). This is
+live session. After daily Intel desktop froze during later headless activity, all subsequent
+test sessions moved to AMD test host (see integration validation below). This is
 headless verification; physical scanout, mixed DPI/rotation and GPUs beyond
 Xe/RX 580 remain unverified.
 
@@ -1358,8 +1358,8 @@ stale on a completely still desktop. Neither stale number means ongoing work.
 
 ### Live-like cost and regression evidence
 
-Validation uses fresh isolated headless sessions only, on Xe (osanwe) and RX 580
-(plumbus), never physical scanout or a live-session reload. Ten foot windows are
+Validation uses fresh isolated headless sessions only, on Xe (daily Intel desktop) and RX 580
+(AMD test host), never physical scanout or a live-session reload. Ten foot windows are
 arranged at 2560×1600; real Super drags turn two into rail widgets, and one requests
 attention. Several remaining windows overlap. Shipped film, depth, soak and noise
 remain enabled, with an actual static colorful background-layer client. Baseline
@@ -1517,7 +1517,7 @@ RX 580 increment range.
 The GO18 row uses the same 18-window redraw fixture, with five-second samples.
 All three GO18 samples had zero simulation steps; the goo-on draw-query medians
 were **0.367 ms** and **0.321 ms**. Whole-GPU busy was 9.4–9.5% in those samples,
-and a concurrent plumbus Chromium renderer plus the shared attention and agent
+and a concurrent AMD test host Chromium renderer plus the shared attention and agent
 services were active. As with the other RX 580 rows, these are short shared-GPU
 observations, not isolated speedup measurements.
 
@@ -1526,7 +1526,7 @@ steps** despite streaming terminals and roughly 25 breathing ticks per second.
 On Xe the measured incremental GPU cost fell by about three quarters to within
 two points of goo off. This cached Xe sample preceded the final framebuffer
 state-restoration and active-simulation direct-draw adjustments; Mike's new
-no-testing-on-osanwe rule prevents an exact-final-build Xe rerun. The RX 580
+no-testing-on-daily Intel desktop rule prevents an exact-final-build Xe rerun. The RX 580
 fixture already had a small increment, and the final cached path remained
 within three points rather than showing a material busy reduction.
 RX 580 median draw queries span 0.399–0.471 ms before and 0.397–0.453 ms in
@@ -1534,7 +1534,7 @@ the final build.
 Xe draw-query elapsed times vary with other sessions' GPU contention, so the
 process busy counters are the useful paired result there. Evidence from the
 pre-reset Xe run is under `build/go10-redraw-baseline/` and
-`build/go10-readfix/`; the plumbus runs, including the final screenshot and
+`build/go10-readfix/`; the AMD test host runs, including the final screenshot and
 Wayfire log, are copied to `build/go10-rx/`. Other agents had isolated
 headless sessions open during the final RX 580 run, so shared-GPU contention
 remains a measurement limitation. The headless Xe baseline also showed a much
@@ -1544,7 +1544,7 @@ measured on his physical session; the live session was not changed here.
 
 The earlier broad goo test had stale coordinates for Scottland Settings' newer
 six-tab, half-height panel. Its test now derives input from the panel snapshot
-and uses a visible curve knot. This changes only the test fixture. On plumbus,
+and uses a visible curve knot. This changes only the test fixture. On AMD test host,
 the final build passed goo-test on normal and packed GLES paths (46/46 each)
 and overlap/hover (28/28); widgets (192/192) and widget morph (270/270) passed
 before the final GL-state adjustment. All headless sessions were stopped.
@@ -1571,10 +1571,10 @@ checks, including **91/91** embedded real-input regressions; widget morph passed
 **270/270**; windowing passed **102/102**. The base goo regression passed
 **46/46** on both normal and packed paths.
 
-Plumbus headless screenshots and logs are under
-`build/part2-plumbus/{shape-normal,shape-packed,shape-inset-breath,breathing,overlap-hover,widgets,widget-morph,windowing,goo-normal,goo-packed,goo-draw-bench}/`.
+AMD test host headless screenshots and logs are under
+`build/part2-test-host/{shape-normal,shape-packed,shape-inset-breath,breathing,overlap-hover,widgets,widget-morph,windowing,goo-normal,goo-packed,goo-draw-bench}/`.
 The GO10 draw-benchmark result for this merged build is recorded in the RX 580
-comparison table above. Validation used isolated plumbus headless sessions;
+comparison table above. Validation used isolated AMD test host headless sessions;
 physical-display scanout remains unverified.
 
 ## GO18: keyframed settled breathing (2026-10-03)
@@ -1608,7 +1608,7 @@ existing threshold.
 
 `tests/goo-idle-bench.py` now folds both investigations' fixture options into
 one isolated run. It sampled the wide 2560×1600, 120 Hz scene for five seconds
-per case on plumbus's RX 580, with keyframes enabled and disabled live, then
+per case on AMD test host's RX 580, with keyframes enabled and disabled live, then
 compared keyframes at intermediate breaths against the exact path. The idle
 desktop, a large overlapping attention window, and an attention widget each
 recorded zero simulation steps in both GPU formats. At rest with no attention,
@@ -1648,13 +1648,13 @@ also visible. During the separate GO10 redraw fixture, the whole GPU stayed at
 8.4–9.5% and another Chromium renderer was active. These loads make the busy
 percentages noisy; the results do not claim an isolated GPU speedup.
 
-The plumbus regression run passed goo-test **50/50** on both normal and packed
+The AMD test host regression run passed goo-test **50/50** on both normal and packed
 paths, GO16 shapes/contours **133/133** on both, GO17 breathing **12/12** on both,
 overlap/hover **28/28**, depth/soak **26/26**, widgets **91/91** embedded input
 checks, widget morph **270/270**, and windowing **102/102** on each path. The
 combined idle fixture passed its sleep, exact-path, interpolation, tightening,
 damage-bound and goo-off screenshot checks on both paths. Artifacts and
-screenshots are under `build/part4-plumbus/`; the GO18 design and limitations
+screenshots are under `build/part4-test-host/`; the GO18 design and limitations
 are in [goo-gpu-research.md](goo-gpu-research.md).
 
 This is isolated headless validation on one RX 580. Xe, forced keyframe-target
@@ -1684,7 +1684,7 @@ breathing; each wake runs the full simulation and redraws every band for three s
 more. Mike was using the desktop during the samples, so they do not say what woke it during
 his measurement; the new `wakes` counter will.
 
-Three causes were found and reproduced on plumbus:
+Three causes were found and reproduced on AMD test host:
 
 1. **Small changes fully wake the simulation.** A widgetized terminal whose title changes
    every five seconds (an agent session does this) re-fits its card by a pixel, which
@@ -1732,7 +1732,7 @@ produce), blocking the compositor each time the goo fell asleep with something b
 over the reused backdrop equal frames whose scene was repainted. With `--stream-hz 2` it is
 the slowly redrawing terminal under a breathing window.
 
-### Measurements (RX 580, plumbus)
+### Measurements (RX 580, AMD test host)
 
 Private headless sessions, 2560×1600 at 120 Hz, Mike's goo settings preset, 5 s per case
 (10 s with `--title-hz`), before is `5623284`. At most one other agent's compositor was
@@ -1774,7 +1774,7 @@ wallpaper, frame, settings), that share remains and is the next thing to cut.
 
 ### Regression
 
-plumbus, private headless sessions, normal and packed GLES 2 paths unless noted; the same
+AMD test host, private headless sessions, normal and packed GLES 2 paths unless noted; the same
 suites were run on unmodified main in a scratch copy where a failure appeared.
 
 | Suite | Result |
@@ -1804,7 +1804,7 @@ scale the frame damage may never fit the strips, which only means the normal pat
 used; on two outputs each breathing screen sees the other's ticks as foreign damage, the
 same). No physical display.
 
-## Optimized ship-merged5 recheck (2026-10-03, plumbus)
+## Optimized ship-merged5 recheck (2026-10-03, AMD test host)
 
 The merged optimized build re-ran the CSD contour fixture against Chromium with
 client decorations both off and on, plus Nautilus. The normal path reported
@@ -1816,7 +1816,7 @@ This work remains synchronous main-loop work; a separate design effort is moving
 it off the main loop, and this merge does not change that path. These optimized
 measurements are below the earlier debugoptimized 10.40–15.39 ms samples, but
 they still represent a potentially visible main-loop stall. Firefox remains
-unverified because it is unavailable on Plumbus.
+unverified because it is unavailable on AMD test host.
 
 The requested merged-build suite results are recorded alongside their individual
 fixtures: goo regression **50/50** on normal and packed paths; GO16 shape/contour
@@ -1842,7 +1842,7 @@ own, shows a static image, and deliberately keeps its render loop enabled
 background surface commits again, with damage, when other parts of the same shell
 process update, without its picture changing. That last step is inferred from the
 timing and the source: the commit itself was not traced (no debugger or protocol dump
-on osanwe), and the sandboxed shell on plumbus did not map its background, so it was
+on daily Intel desktop), and the sandboxed shell on AMD test host did not map its background, so it was
 not reproduced with the real shell. `wallpaper_damages` against `wallpaper_changes`
 on the next live build will confirm it, and `wallpaper_last_damage` shows the damaged
 box.
@@ -1867,7 +1867,7 @@ backdrop. The cost is every other frame. Terminals with agent output redraw at u
 the panel's 120 Hz, their damage is their whole surface, and for each such frame the
 goo copied the backdrop and composited over every band inside that box: half a
 megapixel each, mostly dry reach and window interior where no goo is. That frame
-count times about 2.4 ms is the 23-28%. plumbus did not show it before because its
+count times about 2.4 ms is the 23-28%. AMD test host did not show it before because its
 fixture's redrawing terminal ran at 2 Hz.
 
 ### What changed
@@ -1883,7 +1883,7 @@ fixture's redrawing terminal ran at 2 Hz.
   2 pt, minus the outer band box of every source in front of it. It is removed from
   the drawn region, from the backdrop copy and from breathing damage.
 
-### Measurements (RX 580, plumbus)
+### Measurements (RX 580, AMD test host)
 
 Private headless sessions under the checkout's `build/`, 2560×1600 at 120 Hz, Mike's goo
 settings preset, before is `11628c1` (main). One other agent's compositor was running in
@@ -1921,7 +1921,7 @@ repainted ones (identical); GO17's checks and the fallback halo check pass. The
 suite's wallpaper checks (a replaced wallpaper wakes the simulation, its color enters
 the dye, removal returns it) cover real changes.
 
-Regression on plumbus, normal and packed GLES 2 paths at the GO20 development point:
+Regression on AMD test host, normal and packed GLES 2 paths at the GO20 development point:
 goo-test 50/50, overlap/hover 28/28, breathing 12/12, depth/soak 26/26 on both;
 flow on two outputs 12/12; widget morph 270/270; widgets 194/194. The goo-shape
 123/7 result above is historical to that branch's pre-GO16 contour baseline; current
@@ -1944,7 +1944,7 @@ is not merged.
   render instances, not up the tree. So the only guard was "all of this frame's damage
   lies in the strips". A change wholly inside a strip (one terminal cell under a
   breathing window's film) was painted over with the cached backdrop until the
-  once-a-second normal frame. This is in the build installed on osanwe (`30514ff`) and in
+  once-a-second normal frame. This is in the build installed on daily Intel desktop (`30514ff`) and in
   GO20: a stale patch for up to a second, only for changes that small.
 - **The comparison was in logical pixels with a one-pixel allowance**, and the claimed
   region was the logical strips, not the device pixels the output had damaged.
@@ -1997,7 +1997,7 @@ to other damage: the cell checks then fail (37-44 pixels differ), which is what 
 | Two outputs: scale 1; 1.5; rotation 270 at 1.25 | 28 / 28 each |
 | Negative control | the four cell checks fail, as intended |
 
-That is 408 comparisons and checks across 15 configurations, on plumbus's RX 580,
+That is 408 comparisons and checks across 15 configurations, on AMD test host's RX 580,
 headless outputs.
 
 Cost is unchanged from GO20 on the same fixtures: window breathing 0.7% in keyframe and
@@ -2005,7 +2005,7 @@ exact modes with 127 of 132 frames reusing the backdrop; a front window redrawin
 120 Hz copies 99,000 px and composites 89,000 px per frame; identical wallpaper
 recommits wake nothing.
 
-Regression on plumbus, normal and packed GLES 2 paths at the GO21 development point:
+Regression on AMD test host, normal and packed GLES 2 paths at the GO21 development point:
 goo-test 50/50, overlap/hover 28/28, breathing 12/12, depth/soak 26/26 on both;
 flow on two outputs 12/12; widget morph 270/270; widgets 194/194; the idle fixture's
 `--verify --visual` run passes. The goo-shape 123/7 result was on the original
@@ -2040,7 +2040,7 @@ rail cards, both cached keys and exact strips, and the fallback's rendered
 shore and thickness. Its main baseline fails with 2–3 pixels of motion; the
 correction passes with 5–6 pixels in goo, 4–5 in the fallback, and zero
 simulation steps during all goo measurements. All runs use fresh isolated
-sessions on **plumbus**, with input through stipc and screenshots under build/.
+sessions on **AMD test host**, with input through stipc and screenshots under build/.
 
 The GO17/18/19 idle fixture also passes curve/cadence, sleep, outside-band pixel
 identity, fallback pixels, tightened/loose strip identity and reused/repainted
@@ -2063,9 +2063,9 @@ expensive simulation stays asleep and backdrop reuse remains active.
 The rendered-shore test also passes on an isolated combination of **ship-merged5**
 and **goo-wallpaper-wake (GO20)**, including cached/exact window and widget
 shores, zero simulation steps while breathing, backdrop reuse, and fallback
-geometry. No live reload, installation or osanwe test session was used.
+geometry. No live reload, installation or daily Intel desktop test session was used.
 
-## ship-merged6 merged validation (2026-10-03, plumbus)
+## ship-merged6 merged validation (2026-10-03, AMD test host)
 
 The merged build keeps GO20's wallpaper recommit behavior, GO21's exact backdrop
 reuse, and the GO17/18 attention bulge together. The idle fixture ran with
@@ -2086,7 +2086,7 @@ passed **133/133** on both; overlap/hover passed **28/28** on both; breathing an
 the rendered attention-bulge checks passed on both. The matrix artifacts and
 representative screenshots are under `build/ship-merged6-evidence/`.
 
-These five-second GPU samples ran on shared Plumbus while unrelated Chromium and
+These five-second GPU samples ran on shared AMD test host while unrelated Chromium and
 agent activity continued; a Chromium renderer briefly reached about 71% CPU and
 the one-minute load average reached 1.34. Treat the readings as observed costs under
 that load, not isolated hardware baselines. The result logs preserve load snapshots.
@@ -2121,7 +2121,7 @@ liquid itself. The first version of the fix left out only dry content; the whole
 comparison then found 969 stale pixels of open wallpaper in a merged strip's corner, which
 is the same fault outside a window.
 
-**Reproduction and test** (`tests/goo-strip-test.sh`, plumbus, headless 2560x1600, Mike's
+**Reproduction and test** (`tests/goo-strip-test.sh`, AMD test host, headless 2560x1600, Mike's
 window positions and goo settings): the attention window is shown alone first so the cache
 holds wallpaper beside it, then the stack arrives with a terminal over its left edge. A test
 hook lowers the strip limit to 3 so the strips merge right across the front terminal. Frames
@@ -2216,7 +2216,7 @@ and the sliced band-shrinking pass (GO20) ran to a minute of compositor time. It
 keeps its budget within a row as well, and after a quarter of a second in all keeps the
 remaining bands whole.
 
-### Measured (plumbus, RX 580, 2026-10-04 12:40 to 1:20 AM PT)
+### Measured (AMD test host, RX 580, 2026-10-04 12:40 to 1:20 AM PT)
 
 Headless, 2560×1600 at 120 Hz, the idle bench's wide preset (Mike's settings), one
 attention window breathing, five-second samples. Other load on the shared GPU was low
@@ -2342,7 +2342,7 @@ reuse the backdrop and that the dye moves while the goo sleeps:
 scale 1; 28 / 28 on two outputs at scale 1.5 (the wallpaper client is on the other
 output there, so the two watercolor checks do not apply).
 
-Regression on plumbus, normal and packed paths:
+Regression on AMD test host, normal and packed paths:
 goo-test 50 / 50, overlap/hover 28 / 28, breathing 12 / 12, depth/soak 26 / 26
 on both; flow on two outputs 12 / 12; widget morph 270 / 270; widgets 196 / 196; the idle
 fixture's `--verify --visual` run passes. goo-shape is 123 pass, 7 fail on both paths, the
@@ -2355,7 +2355,7 @@ depth suite's "focus dye stays dominant at the red-paper window border" read the
 at the wall, which now may carry pigment; it reads the screen instead (the wall pixel is
 more focus-colored than the band beside it).
 
-### Cost (RX 580, plumbus, 2560×1600 at 120 Hz, Mike's goo settings preset, soak 0.9)
+### Cost (RX 580, AMD test host, 2560×1600 at 120 Hz, Mike's goo settings preset, soak 0.9)
 
 | Case | main `3eea2c5` | This branch, coasting (first 14 s asleep) | This branch, at rest |
 |---|---:|---:|---:|
@@ -2422,7 +2422,7 @@ and several follow-ups; all are in this branch, one commit each.
   removed 2026-10-04 as spelling pins, see [tests-todo.md](tests-todo.md)). Strict GLSL ES 1.00 found `max(uCount,1)` on
   ints (Mesa accepts it); it is `max(float(uCount),1.)`.
 
-**Checks** (plumbus, headless, main `2bf738e` and this branch run alternately suite by suite,
+**Checks** (AMD test host, headless, main `2bf738e` and this branch run alternately suite by suite,
 load average 3 to 9 from other sessions; `~/goo-sbs/summary*.txt` there):
 
 | Suite | main | goo-release |
@@ -2441,7 +2441,7 @@ against 151) between the tight and loose settled pictures; three more runs on ea
 clean. Two of this branch's new checks needed fixing during the run (the Dye strength row read
 too soon on a loaded machine; the breath-keys log check now counts the surface-cache reason).
 
-**Cost** (RX 580, plumbus, the idle bench's wide preset: Mike's settings, soak 0.9, keyframes
+**Cost** (RX 580, AMD test host, the idle bench's wide preset: Mike's settings, soak 0.9, keyframes
 on; compositor GPU over 5 s, two runs each):
 
 | Case | main | goo-release coasting (first 14 s asleep) | goo-release at rest |
@@ -2455,7 +2455,7 @@ less than the watercolor branch measured on its own (1.6% for a breathing window
 with the backdrop no longer copied under windows. Intel Xe is not measured.
 
 **Second review** (2026-10-04, of `0b79494`; full notes in the job file
-`goo-release-review-2.md`). First runs on nacelle (aarch64, Asahi, Mesa 26.1.7) beside plumbus.
+`goo-release-review-2.md`). First runs on ARM test host (aarch64, Asahi, Mesa 26.1.7) beside AMD test host.
 
 - GO27 over the coasting area: the pixels a reused frame claims and the pixels it restores are
   the same expression (reuse region, drawn area, minus dry content) for breathing strips and
@@ -2471,17 +2471,17 @@ with the backdrop no longer copied under windows. Intel Xe is not measured.
 - Cost, re-measured (RX 580, whole GPU 11 to 19% busy from other sessions): coasting 0.5-0.7%,
   0.9-1.2% and 0.7-1.0% (nothing, window, widget breathing; four runs); at rest 0.0%, 0.5-0.6%
   and 0.3% (two runs). The table above holds.
-- **New on nacelle, and the same on main there:** goo-exact's six `dry` comparisons fail (about
+- **New on ARM test host, and the same on main there:** goo-exact's six `dry` comparisons fail (about
   54,000 pixels at scale 1). The surface caches were allocated with undefined contents, zero on
   radeonsi and not on Asahi, and the test's `dry_content` switch composites cache pixels that
   were never shaded. Desktop use never does (a change of area comes with a refill), but nothing
   enforced it. New cache storage is now cleared to "no goo" (branch `goo-release-review2`);
-  with it nacelle passes goo-exact 29 / 29 on both paths.
+  with it ARM test host passes goo-exact 29 / 29 on both paths.
 - Everything else passes on both machines: goo-test 51 / 51, watercolor 14 / 14, breath keys
   15 / 15, depth 26, overlap 28, breath 12 (each on both paths), dye strength 16, attention
-  family 8, shader variants 76. On nacelle the idle bench stops at its tight-against-loose
+  family 8, shader variants 76. On ARM test host the idle bench stops at its tight-against-loose
   strip check (apparently before the bands had been shrunk; shrinking takes about three times
-  plumbus's CPU time there), and at scale 1.5 goo-exact's "the dye moves" check saw exactly one
+  AMD test host's CPU time there), and at scale 1.5 goo-exact's "the dye moves" check saw exactly one
   8-bit level against a threshold just above one. Both are test timing or thresholds, not
   rendering faults, and neither is new in the release.
 
