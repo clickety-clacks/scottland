@@ -70,10 +70,12 @@ def scene(id):
     return (f['x'], f['y'], f['x'] + f['width'], f['y'] + f['height'])
 
 
-def capture(name):
+def capture(name, keep_ppm=False):
     png = art / (name + '.png')
     subprocess.run(['grim', str(png)], check=True)
     data = subprocess.check_output(['grim', '-t', 'ppm', '-'])
+    if keep_ppm:
+        (art / (name + '.ppm')).write_bytes(data)
     parts, pos = [], 0
     while len(parts) < 4:
         while data[pos:pos + 1].isspace(): pos += 1
@@ -176,15 +178,37 @@ def pointer_drag(id, to, coast=False, require_drag=False):
         if distance <= 0:
             raise Unready(f'{id} drag target has no movement from its drawn center')
         nudge = min(12.0, distance)
-        x += dx * nudge / distance
-        y += dy * nudge / distance
-        pointer(x, y)
+        # Pace the threshold-crossing movement over several actual input events. A single
+        # absolute jump can leave the headless compositor with focus but no owned move grab.
+        nudge_steps = max(1, math.ceil(nudge / 3.0))
+        for step in range(1, nudge_steps + 1):
+            amount = nudge * step / nudge_steps
+            x = start[0] + dx * amount / distance
+            y = start[1] + dy * amount / distance
+            pointer(x, y)
+            time.sleep(.02)
         def actual_drag():
             drag = ipc('scottland/desktop-model').get('drag', {})
             focused = focused_id()
             state = {'expected': id, 'focused': focused, 'dragged': drag.get('dragged')}
             return (focused == id and drag.get('dragged') == id, state)
-        until(actual_drag, 3, f'{id} is the focused window actually being dragged')
+        try:
+            until(actual_drag, 3, f'{id} is the focused window actually being dragged')
+        except Unready as error:
+            frame_name = f'drag-unready-{id}'
+            capture_status = 'saved'
+            try:
+                capture(frame_name, keep_ppm=True)
+            except Exception as capture_error:
+                capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
+            drag = ipc('scottland/desktop-model').get('drag', {})
+            diagnostic = {'expected': id, 'focused': focused_id(), 'dragged': drag.get('dragged'),
+                          'start': [round(v, 1) for v in start],
+                          'target': [round(v, 1) for v in to],
+                          'nudge_px': round(nudge, 1), 'nudge_events': nudge_steps,
+                          'scene_frame': [round(v, 1) for v in scene(id)],
+                          'capture': capture_status}
+            raise Unready(f'{error}; gesture={json.dumps(diagnostic)}') from error
     steps = 6 if coast else 24
     for i in range(1, steps + 1):  # pacing a gesture
         pointer(x + (to[0] - x) * i / steps, y + (to[1] - y) * i / steps); time.sleep(.008 if coast else .02)
