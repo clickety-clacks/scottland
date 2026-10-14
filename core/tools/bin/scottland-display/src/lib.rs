@@ -1,10 +1,12 @@
 use std::ffi::OsString;
 use std::process::{Command, Output};
 
+mod color_scheme;
+
 const SCHEMA: &str = "org.gnome.desktop.interface";
 const KEY: &str = "text-scaling-factor";
 const RANGE_ERROR: &str = "text size must be a number in the range 0.5 to 3.0";
-const USAGE: &str = "usage: scottland-display text-size | scottland-display text-size set <factor> | scottland-display text-size reset";
+const USAGE: &str = "usage: scottland-display text-size [set <factor>|reset] | color-scheme <once|watch|ensure> | cursor-size | terminal-theme push";
 
 pub fn run(args: &[OsString]) -> Result<(), String> {
     let args = args
@@ -21,6 +23,11 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         ["text-size"] => show(),
         ["text-size", "set", factor] => set(factor),
         ["text-size", "reset"] => reset(),
+        ["color-scheme", "once"] => color_scheme::once(),
+        ["color-scheme", "watch"] => color_scheme::watch(),
+        ["color-scheme", "ensure"] => color_scheme::ensure(),
+        ["cursor-size"] => color_scheme::cursor_size(),
+        ["terminal-theme", "push"] => color_scheme::push_terminal_theme(),
         _ => Err(USAGE.to_string()),
     }
 }
