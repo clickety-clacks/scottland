@@ -30,7 +30,7 @@ def emoji_data():
 def load_entries(path):
     entries = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line or line.startswith("#"):
+        if not line or line.startswith("# "):
             continue
         emoji, separator, name = line.partition("\t")
         if not separator or not emoji or not name:

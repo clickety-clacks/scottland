@@ -34,6 +34,14 @@ class EmojiCommandTests(unittest.TestCase):
     def setUpClass(cls):
         cls.rows = emoji.load_entries(DATA)
 
+    def test_loaded_entries_match_all_fully_qualified_unicode_rows(self):
+        generator = load_module("emoji_generator", GENERATOR)
+        _, source_rows = generator.entries(SOURCE)
+        expected = [(symbol, name, f"{symbol} {name}") for symbol, name in source_rows]
+        self.assertEqual(len(self.rows), len(expected), "loaded emoji row count differs from Unicode source")
+        for number, (loaded, source) in enumerate(zip(self.rows, expected), 1):
+            self.assertEqual(loaded, source, f"loaded emoji row {number} differs from Unicode source")
+
     def invoke(self, *, copy=False, picker_result=None, target_result=None, snapshot_result=None):
         selected = self.rows[0]
         results = {
