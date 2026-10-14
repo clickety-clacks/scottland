@@ -408,4 +408,145 @@ class solver_t
         return true;
     }
 };
+
+// A focused rail card is an immovable divider. Solve only the side containing the dropped
+// item; actors on the other side are neither needed for this landing nor allowed to cross
+// the divider to make the bounded solve fit. If the item itself overlaps the divider, keep
+// its exact landing and leave every actor in place: there is no landing gap to open.
+class focused_solver_t
+{
+  public:
+    template<class Range>
+    bool begin(const Range& source, const interval_t *fixed = nullptr)
+    {
+        clear();
+        if (!fixed)
+        {
+            if (!all.begin(source)) return false;
+            shift_values.assign(source.size(), 0.0);
+            ready = true;
+            return true;
+        }
+
+        if (source.size() > MAX_ACTORS || !std::isfinite(fixed->lo) ||
+            !std::isfinite(fixed->hi) || fixed->hi < fixed->lo)
+        {
+            all.begin(source);  // Keep the solver's count-only over-cap behavior.
+            return false;
+        }
+
+        fixed_card = *fixed;
+        has_fixed = true;
+        std::vector<interval_t> above, below;
+        above.reserve(source.size());
+        below.reserve(source.size());
+        above_indices.reserve(source.size());
+        below_indices.reserve(source.size());
+        const double fixed_center = (fixed_card.lo + fixed_card.hi) * 0.5;
+        size_t index = 0;
+        for (const auto& item : source)
+        {
+            // The focused actor is fixed even if a caller accidentally includes it.
+            if (item.id != fixed_card.id)
+            {
+                if ((item.lo + item.hi) * 0.5 < fixed_center)
+                {
+                    above.push_back(item);
+                    above_indices.push_back(index);
+                } else
+                {
+                    below.push_back(item);
+                    below_indices.push_back(index);
+                }
+            }
+            ++index;
+        }
+
+        if (!above_solver.begin(above) || !below_solver.begin(below)) return false;
+        shift_values.assign(source.size(), 0.0);
+        ready = true;
+        return true;
+    }
+
+    status_t solve(double item_lo, double item_hi, double top, double bottom,
+        double direction_margin = DIRECTION_MARGIN)
+    {
+        if (!ready)
+        {
+            result = status_t::skipped;
+            return result;
+        }
+
+        std::fill(shift_values.begin(), shift_values.end(), 0.0);
+        if (!has_fixed)
+        {
+            result = all.solve(item_lo, item_hi, top, bottom, direction_margin);
+            shift_values = all.shifts();
+            return result;
+        }
+
+        if (!std::isfinite(item_lo) || !std::isfinite(item_hi) || !std::isfinite(top) ||
+            !std::isfinite(bottom) || item_hi < item_lo || bottom < top)
+        {
+            result = status_t::overlap;
+            return result;
+        }
+
+        const double overlap = std::min(item_hi, fixed_card.hi) - std::max(item_lo, fixed_card.lo);
+        if (overlap > EPSILON)
+        {
+            result = status_t::overlap;
+            return result;
+        }
+
+        const double item_center = (item_lo + item_hi) * 0.5;
+        const double fixed_center = (fixed_card.lo + fixed_card.hi) * 0.5;
+        if (item_center < fixed_center)
+        {
+            result = above_solver.solve(item_lo, item_hi, top,
+                std::min(bottom, fixed_card.lo - CONTACT), direction_margin);
+            copy_shifts(above_solver.shifts(), above_indices);
+        } else
+        {
+            result = below_solver.solve(item_lo, item_hi,
+                std::max(top, fixed_card.hi + CONTACT), bottom, direction_margin);
+            copy_shifts(below_solver.shifts(), below_indices);
+        }
+        return result;
+    }
+
+    const std::vector<double>& shifts() const { return shift_values; }
+    status_t status() const { return result; }
+    bool is_ready() const { return ready; }
+    bool has_fixed_card() const { return has_fixed; }
+
+  private:
+    solver_t all, above_solver, below_solver;
+    std::vector<size_t> above_indices, below_indices;
+    std::vector<double> shift_values;
+    interval_t fixed_card{};
+    bool has_fixed = false, ready = false;
+    status_t result = status_t::skipped;
+
+    void clear()
+    {
+        all = {};
+        above_solver = {};
+        below_solver = {};
+        above_indices.clear();
+        below_indices.clear();
+        shift_values.clear();
+        fixed_card = {};
+        has_fixed = ready = false;
+        result = status_t::skipped;
+    }
+
+    void copy_shifts(const std::vector<double>& source, const std::vector<size_t>& indices)
+    {
+        for (size_t i = 0; i < source.size() && i < indices.size(); ++i)
+        {
+            shift_values[indices[i]] = source[i];
+        }
+    }
+};
 }

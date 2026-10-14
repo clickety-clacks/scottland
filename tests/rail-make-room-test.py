@@ -227,12 +227,10 @@ try:
     check("the focused card's committed geometry is exactly unchanged after the drop",
           after_focus_a == before_focus_a, (before_focus_a, after_focus_a))
     arrive_geometry = card_geometry("rail-focus-arrive")
-    print("WG26 stay-still fallback observation: "
-          f"rail-a {before_focus_a} -> {after_focus_a}; "
-          f"rail-b {before_focus_b} -> {after_focus_b}; "
-          f"arrival {arrive_geometry}; focused id at solve {focus_at_solve}", flush=True)
     arrival_center_y = arrive_geometry["y"] + arrive_geometry["height"] / 2
-    check("the arrival stays at the explicit drop position in the focused-card fallback",
+    check("overlap with the focused card leaves the far-side card at home (no phantom landing)",
+          after_focus_b == before_focus_b, (before_focus_b, after_focus_b))
+    check("overlap with the focused card preserves the exact drop position",
           abs(arrival_center_y - drop_y) < 0.5, (drop_y, arrive_geometry))
 finally:
     t.cleanup()
