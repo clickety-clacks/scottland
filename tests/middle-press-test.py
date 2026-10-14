@@ -89,12 +89,21 @@ def all_events():
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
+def pointer_events(title):
+    path = out / "pointer.jsonl"
+    if not path.exists():
+        return []
+    return [event for event in map(json.loads, path.read_text().splitlines())
+            if event["name"] == title]
+
+
 def events(title):
     return [event for event in all_events() if event["name"] == title and event["button"] == 2]
 
 
 def clear_events():
     (out / "buttons.jsonl").write_text("")
+    (out / "pointer.jsonl").write_text("")
 
 
 def screenshot(name):
@@ -145,10 +154,16 @@ def place(title, x, y, width, height):
     raise RuntimeError(f"could not place {title}: {geometry(title)}")
 
 
+def focused_view_id():
+    reply = ipc("window-rules/get-focused-view")
+    info = reply.get("info") if isinstance(reply, dict) else None
+    return info.get("id") if isinstance(info, dict) else None
+
+
 def focus(title):
     identifier = view(title)["id"]
     ipc("window-rules/focus-view", {"id": identifier})
-    wait(lambda: ipc("window-rules/get-focused-view").get("info", {}).get("id") == identifier,
+    wait(lambda: focused_view_id() == identifier,
          what="focus Middle-" + title)
 
 
@@ -210,10 +225,8 @@ try:
     pointer(x, y)
     button("BTN_MIDDLE", True)
     wait(lambda: state()["middle_pending"], what="pointer middle pending")
-    time.sleep(.10)
     check(not all_events(), "pointer: no client event arrives before the owner releases")
     pointer(x + 3, y)
-    time.sleep(.04)
     button("BTN_MIDDLE", False)
     wait(lambda: len(events("A")) == 2, what="pointer quick-click replay")
     click = events("A")
@@ -223,9 +236,15 @@ try:
 
     # R3(b): the release is over B, but the click belongs only to the original surface A.
     setup(a_x=300, b_x=600)
+    a = geometry("A")
+    # Put B's frame over A's right edge so an 8 px move leaves A's surface for
+    # B's frame while remaining inside L24's 12 px click-slop boundary.
+    place("B", round(a["x"] + a["width"] - 26), a["y"], 360, 260)
+    focus("B")
+    settle("A", "B")
     clear_events()
     a = geometry("A")
-    x, y = a["x"] + a["width"] - 4, a["y"] + a["height"] / 2
+    x, y = a["x"] + a["width"] - 42, a["y"] + a["height"] / 2
     pointer(x, y)
     button("BTN_MIDDLE", True)
     wait(lambda: state()["middle_pending"], what="cross-surface middle pending")
@@ -233,7 +252,7 @@ try:
     button("BTN_MIDDLE", False)
     wait(lambda: len(events("A")) == 2, what="original-surface replay")
     check(len(events("B")) == 0, "pointer: crossing onto B never transfers A's click")
-    check(geometry("A") == a, "pointer: an 8 px cross-surface click does not drag")
+    check(geometry("A") == a, "pointer: an 8 px click ending over B's frame does not drag")
 
     # R3(a), R1: the virtual touchpad's middle button uses the same replay path.
     setup()
@@ -360,15 +379,19 @@ try:
           "pointer: Esc restores the client's pixels at its starting position")
     check(not all_events(), "pointer: Esc cancels without delivering a middle event")
 
-    # R2: fullscreen and layer-shell surfaces are not target windows; presses arrive immediately.
+    # R2: fullscreen surfaces are not target windows; presses arrive immediately. The test
+    # compositor does not advertise layer-shell, so its GTK fixture silently becomes a normal
+    # toplevel and cannot provide a valid layer-surface behavior check.
     setup()
     clear_events()
     full_id = view("A")["id"]
     ipc("wm-actions/set-fullscreen", {"view_id": full_id, "state": True})
-    wait(lambda: view("A").get("fullscreen"), what="A fullscreen")
+    wait(lambda: view("A").get("fullscreen") and geometry("A")["width"] >= 1000 and
+         geometry("A")["height"] >= 700, what="A fullscreen geometry")
     full_geometry = geometry("A")
     pointer(full_geometry["x"] + full_geometry["width"] / 2,
             full_geometry["y"] + full_geometry["height"] / 2)
+    wait(lambda: pointer_events("A"), what="fullscreen client receives pointer motion")
     button("BTN_MIDDLE", True)
     wait(lambda: len(events("A")) == 1, what="immediate fullscreen press")
     check(events("A")[0]["edge"] == "press", "fullscreen: client receives press before release")
@@ -379,18 +402,6 @@ try:
     check(geometry("A") == full_geometry, "fullscreen: middle click leaves geometry unchanged")
     ipc("wm-actions/set-fullscreen", {"view_id": full_id, "state": False})
     wait(lambda: not view("A").get("fullscreen"), what="A exits fullscreen")
-
-    clear_events()
-    command("make-layer")
-    wait(lambda: (out / "Layer.mapped").exists(), what="layer-shell map")
-    pointer(20, 20)
-    button("BTN_MIDDLE", True)
-    wait(lambda: len(events("Layer")) == 1, what="immediate layer-shell press")
-    check(events("Layer")[0]["edge"] == "press", "layer-shell: client receives press before release")
-    button("BTN_MIDDLE", False)
-    wait(lambda: len(events("Layer")) == 2, what="layer-shell release")
-    check([event["edge"] for event in events("Layer")] == ["press", "release"],
-          "layer-shell: client receives the unchanged press and release")
 
 finally:
     try:

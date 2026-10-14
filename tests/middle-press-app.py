@@ -6,11 +6,11 @@ import sys
 
 import gi
 gi.require_version("Gtk", "4.0")
-gi.require_version("Gtk4LayerShell", "1.0")
-from gi.repository import Gio, GLib, Gtk, Gtk4LayerShell as Layer
+from gi.repository import Gio, GLib, Gtk
 
 root = Path(sys.argv[1])
 events = root / "buttons.jsonl"
+pointer_events = root / "pointer.jsonl"
 command = root / "command.json"
 windows = {}
 app = Gtk.Application(application_id="org.scottland.MiddlePressTest",
@@ -23,7 +23,12 @@ def record(name, edge, gesture):
                                  "button": gesture.get_current_button()}) + "\n")
 
 
-def make(name, layer=False):
+def record_pointer(name, edge, x, y):
+    with pointer_events.open("a") as stream:
+        stream.write(json.dumps({"name": name, "edge": edge, "x": x, "y": y}) + "\n")
+
+
+def make(name):
     window = Gtk.ApplicationWindow(application=app, title="Middle-" + name)
     window.set_default_size(360, 260)
     window.set_decorated(False)
@@ -33,20 +38,16 @@ def make(name, layer=False):
         context.paint()
     area.set_draw_func(draw)
     window.set_child(area)
-    if layer:
-        Layer.init_for_window(window)
-        Layer.set_namespace(window, "scottland-middle-press-test")
-        Layer.set_layer(window, Layer.Layer.OVERLAY)
-        Layer.set_keyboard_mode(window, Layer.KeyboardMode.ON_DEMAND)
-        Layer.set_anchor(window, Layer.Edge.TOP, True)
-        Layer.set_anchor(window, Layer.Edge.LEFT, True)
     click = Gtk.GestureClick.new()
     click.set_button(0)
     click.connect("pressed", lambda gesture, _count, _x, _y: record(name, "press", gesture))
     click.connect("released", lambda gesture, _count, _x, _y: record(name, "release", gesture))
     area.add_controller(click)
+    motion = Gtk.EventControllerMotion.new()
+    motion.connect("enter", lambda _controller, x, y: record_pointer(name, "enter", x, y))
+    motion.connect("motion", lambda _controller, x, y: record_pointer(name, "motion", x, y))
+    area.add_controller(motion)
     windows[name] = window
-    window.connect("map", lambda *_args: (root / (name + ".mapped")).touch())
     window.present()
 
 
@@ -55,9 +56,7 @@ def commands():
         request = json.loads(command.read_text())
         command.unlink()
         action, name = request["action"], request.get("name", "A")
-        if action == "make-layer":
-            make("Layer", layer=True)
-        elif action == "hide":
+        if action == "hide":
             windows[name].set_visible(False)
         elif action == "show":
             windows[name].present()

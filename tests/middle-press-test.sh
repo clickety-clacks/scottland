@@ -25,7 +25,10 @@ cleanup() {
       cp "$headless_dir/wayfire.log" "$artifacts/wayfire.log" 2>/dev/null || true
       tests/headless.sh stop
     elif [[ -e $headless_dir ]]; then
-      rm -rf "$headless_dir"
+      cp "$headless_dir/wayfire.log" "$artifacts/wayfire.log" 2>/dev/null || true
+      tests/headless.sh stop --preserve-scratch || {
+        echo 'partial headless startup could not be verified; preserving its scratch for the outer runner' >&2
+      }
     fi
   fi
   rm -rf "$tmp_dir"
