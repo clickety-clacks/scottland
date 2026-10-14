@@ -300,6 +300,24 @@ fn terminal_theme_push_propagates_helper_failure_and_stderr() {
 }
 
 #[test]
+fn terminal_theme_push_rejects_malformed_arguments_before_calling_helper() {
+    let scratch = Scratch::new();
+
+    for args in [
+        &["terminal-theme"][..],
+        &["terminal-theme", "apply"][..],
+        &["terminal-theme", "push", "extra"][..],
+    ] {
+        let output = scratch.run(args);
+        assert!(!output.status.success(), "accepted {args:?}");
+        assert!(stderr(&output).contains("usage: scottland-display"));
+    }
+
+    assert!(scratch.helper_calls().is_empty());
+    assert!(scratch.calls().is_empty());
+}
+
+#[test]
 fn cursor_size_command_returns_the_helper_value_without_settings_side_effects() {
     let scratch = Scratch::new();
     let output = scratch.run(&["cursor-size"]);
