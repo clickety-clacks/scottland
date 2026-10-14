@@ -1,0 +1,3 @@
+#!/bin/sh
+# Apply the user's remembered AC or battery profile for this session.
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-power" profile init
