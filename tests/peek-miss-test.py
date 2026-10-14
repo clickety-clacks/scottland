@@ -169,14 +169,13 @@ def pointer_drag(id, to, coast=False, require_drag=False):
               3, f'{id} focused under the drag pointer')
     time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
     if require_drag:
-        # Wayfire reports an active move only after pointer motion. Move a short distance while
-        # the button is still held before asserting ownership; checking immediately after press
-        # observes the focus but precedes the drag-start event.
+        # Move beyond the 6 px click slop while the button is still held before asserting drag
+        # ownership; checking immediately after press observes focus before move activation.
         dx, dy = to[0] - x, to[1] - y
         distance = math.hypot(dx, dy)
         if distance <= 0:
             raise Unready(f'{id} drag target has no movement from its drawn center')
-        nudge = min(3.0, distance)
+        nudge = min(12.0, distance)
         x += dx * nudge / distance
         y += dy * nudge / distance
         pointer(x, y)
