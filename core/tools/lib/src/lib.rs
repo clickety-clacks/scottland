@@ -12,5 +12,6 @@
 //! Scottland core runs on any distro: nothing here may assume one.
 
 pub mod dirs;
+pub mod night_light;
 pub mod session;
 pub mod terminal_cwd;
