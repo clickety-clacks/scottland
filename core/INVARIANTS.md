@@ -159,6 +159,13 @@ The shared `scottland-launch` CLI and its nine supported launch actions are spec
 The generic list picker command and its command/IO contract are in
 [../docs/list-picker.md](../docs/list-picker.md) (LP1–LP5). Source implemented; behavior verification pending.
 
+## Clipboard history
+
+Clipboard history uses the generic list picker and keeps data in the current session only. The full
+command and behavior contract is in [../docs/clipboard.md](../docs/clipboard.md) (CH1–CH14).
+Source candidate present; build and session evidence pending. CH11's empty-list presentation after
+clear remains an open interaction because the generic picker cancels on empty input.
+
 ## Session
 
 | ID | Invariant | Status |

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Clipboard history is session-only and owned by the user's Scottland session.
+exec "${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-clipboardd"
