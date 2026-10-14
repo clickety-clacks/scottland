@@ -160,6 +160,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-06 | Remove keep mode: "wrt to keep mode i vote we just remove it. switching between the two just closes all the windows, keeps it clean". Switching between Scottland and Hyprland always closes the current desktop; no checkbox, no remembered choice, no service handover between running desktops. Adapter-gaps question 1 and the 1Password keep-mode crash are moot. | W2, W11 (W7–W9 removed); docs/adapter-gaps.md AG20/AG36 |
 | 10-06 | "please keep a warning in the switcher that it WILL close all windows": the switch dialog warns, in place of the checkbox, that switching will close all windows in the current desktop. | W2 |
 
+## Picker and clipboard empty-history presentation
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-14 | After `scottland-clipboard clear` acknowledges clearing session history, it opens the existing generic picker with `--show-empty` and prompt `Clipboard history`. Zero rows show a nonselectable `No entries` view; ordinary empty picker input still cancels; nonempty picker behavior is unchanged. Normal dismissal means clear succeeded. Clear failure does not open the view; if presentation fails after clear, report that history is cleared and the view failed, without restoring it. No sentinel, second picker, or new dependency. | docs/clipboard.md CH11; docs/list-picker.md LP6 |
+
 ## Knocks (concept in discussion; docs/knocks.md)
 
 | Date | Ruling |

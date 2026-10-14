@@ -95,8 +95,11 @@ class ListPickerSessionEntryTest(unittest.TestCase):
             "from pathlib import Path\n"
             "entries = json.loads(Path(os.environ['SCOTTLAND_LIST_PICKER_INPUT']).read_text())\n"
             "Path(os.environ['PICKER_TEST_QS_LOG']).write_text(json.dumps({"
-            "'entries': entries, 'prompt': os.environ['SCOTTLAND_LIST_PICKER_PROMPT']}))\n"
-            "Path(os.environ['SCOTTLAND_LIST_PICKER_RESULT']).write_text('1')\n",
+            "'entries': entries, 'prompt': os.environ['SCOTTLAND_LIST_PICKER_PROMPT'], "
+            "'show_empty': os.environ['SCOTTLAND_LIST_PICKER_SHOW_EMPTY']}))\n"
+            "if entries: Path(os.environ['SCOTTLAND_LIST_PICKER_RESULT']).write_text('1')\n"
+            "if not os.environ.get('PICKER_TEST_SUPPRESS_READY'):\n"
+            "    Path(os.environ['SCOTTLAND_LIST_PICKER_READY']).write_text('ready')\n",
             encoding="utf-8",
         )
         qs.chmod(0o755)
@@ -139,7 +142,7 @@ class ListPickerSessionEntryTest(unittest.TestCase):
         self.assertEqual(self.launch_log.read_text(encoding="utf-8"), "entered\n")
         self.assertEqual(
             json.loads(self.qs_log.read_text(encoding="utf-8")),
-            {"entries": ["alpha", "beta"], "prompt": "Choose one"},
+            {"entries": ["alpha", "beta"], "prompt": "Choose one", "show_empty": "0"},
         )
 
     def test_empty_input_cancels_without_entering_a_session(self):
@@ -148,6 +151,50 @@ class ListPickerSessionEntryTest(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (1, b"", b""))
         self.assertFalse(self.launch_log.exists(), "empty input must not start the session launcher")
         self.assertFalse(self.qs_log.exists(), "empty input must not start the picker UI")
+
+    def test_show_empty_opens_an_empty_picker_and_returns_cancel_after_dismissal(self):
+        failures = []
+        server = threading.Thread(target=fake_wayfire, args=(self.socket_path, failures), daemon=True)
+        server.start()
+        result = self.run_picker(b"", "--show-empty", "--prompt", "Clipboard history")
+        server.join(timeout=6)
+
+        self.assertFalse(server.is_alive(), "fake Wayfire did not receive the output queries")
+        self.assertEqual(failures, [])
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (1, b"", b""))
+        self.assertEqual(self.launch_log.read_text(encoding="utf-8"), "entered\n")
+        self.assertEqual(
+            json.loads(self.qs_log.read_text(encoding="utf-8")),
+            {"entries": [], "prompt": "Clipboard history", "show_empty": "1"},
+        )
+
+    def test_show_empty_does_not_change_nonempty_selection(self):
+        failures = []
+        server = threading.Thread(target=fake_wayfire, args=(self.socket_path, failures), daemon=True)
+        server.start()
+        result = self.run_picker(b"alpha\nbeta\n", "--show-empty")
+        server.join(timeout=6)
+
+        self.assertFalse(server.is_alive(), "fake Wayfire did not receive the output queries")
+        self.assertEqual(failures, [])
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"beta\n", b""))
+        self.assertEqual(json.loads(self.qs_log.read_text(encoding="utf-8"))["entries"],
+                         ["alpha", "beta"])
+
+    def test_empty_picker_without_ready_surface_is_a_presentation_error(self):
+        failures = []
+        server = threading.Thread(target=fake_wayfire, args=(self.socket_path, failures), daemon=True)
+        server.start()
+        env = self.env.copy()
+        env["PICKER_TEST_SUPPRESS_READY"] = "1"
+        result = self.run_picker(b"", "--show-empty", env=env)
+        server.join(timeout=6)
+
+        self.assertFalse(server.is_alive(), "fake Wayfire did not receive the output queries")
+        self.assertEqual(failures, [])
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"picker surface was not presented", result.stderr)
 
 
 if __name__ == "__main__":

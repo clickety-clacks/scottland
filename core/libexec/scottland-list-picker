@@ -103,6 +103,8 @@ def enter_scottland_session(input_bytes):
 
 def main():
     parser = argparse.ArgumentParser(prog="scottland-list-picker")
+    parser.add_argument("--show-empty", action="store_true",
+                        help="open the picker with a nonselectable empty state when stdin has no entries")
     parser.add_argument("--prompt", help="instruction text shown above the list")
     args = parser.parse_args()
 
@@ -113,7 +115,7 @@ def main():
         print(f"scottland-list-picker: stdin is not valid UTF-8: {error}", file=sys.stderr)
         return 2
 
-    if not entries:
+    if not entries and not args.show_empty:
         return 1
 
     if not enter_scottland_session(input_bytes):
@@ -142,14 +144,18 @@ def main():
         with tempfile.TemporaryDirectory(prefix="scottland-list-picker-", dir=runtime) as scratch:
             input_path = os.path.join(scratch, "entries.json")
             result_path = os.path.join(scratch, "selection")
+            ready_path = os.path.join(scratch, "ready")
             write_private(input_path, json.dumps(entries, ensure_ascii=False))
             write_private(result_path, "")
+            write_private(ready_path, "")
 
             environment = os.environ.copy()
             environment["SCOTTLAND_LIST_PICKER_INPUT"] = input_path
             environment["SCOTTLAND_LIST_PICKER_RESULT"] = result_path
+            environment["SCOTTLAND_LIST_PICKER_READY"] = ready_path
             environment["SCOTTLAND_LIST_PICKER_PROMPT"] = args.prompt or ""
             environment["SCOTTLAND_LIST_PICKER_OUTPUT"] = output_name
+            environment["SCOTTLAND_LIST_PICKER_SHOW_EMPTY"] = "1" if args.show_empty else "0"
             result = subprocess.run(
                 ["qs", "-n", "-p", str(app)],
                 stdin=subprocess.DEVNULL,
@@ -159,10 +165,21 @@ def main():
                 check=False,
             )
 
+            was_presented = Path(ready_path).read_text(encoding="utf-8") == "ready"
             if result.returncode != 0:
                 if result.stderr:
                     sys.stderr.buffer.write(result.stderr)
-                return result.returncode
+                elif not was_presented:
+                    print("scottland-list-picker: the picker surface was not presented", file=sys.stderr)
+                else:
+                    print(f"scottland-list-picker: Quickshell exited with status {result.returncode}",
+                          file=sys.stderr)
+                return 2
+            if not was_presented:
+                if result.stderr:
+                    sys.stderr.buffer.write(result.stderr)
+                print("scottland-list-picker: the picker surface was not presented", file=sys.stderr)
+                return 2
 
             selected = Path(result_path).read_text(encoding="utf-8")
             if not selected:

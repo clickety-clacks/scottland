@@ -7,13 +7,20 @@ the core installation and runs in Scottland's existing Quickshell layer.
 ## Command and input/output
 
 ```text
-scottland-list-picker [--prompt TEXT]
+scottland-list-picker [--show-empty] [--prompt TEXT]
 ```
 
 The command reads standard input through EOF. Each LF-delimited line is one entry;
 CRLF is accepted, and entry text is otherwise preserved, including spaces and
 blank lines. A final line ending closes the last entry and does not add another
-entry. An empty input contains no entries and cancels without opening the picker.
+entry. Empty input contains no entries and cancels without opening the picker,
+unless `--show-empty` is supplied.
+
+`--show-empty` is an opt-in presentation for zero input rows. It opens the same
+picker with no selectable entries and the text `No entries`. Escape or clicking
+outside dismisses it with empty stdout and a nonzero status; Enter, arrows and
+clicking the empty-state text cannot produce a selection. The flag does not
+change behavior for nonempty input.
 
 When the user chooses an entry, the command writes that entry alone to standard
 output, followed by one LF, and exits with status 0. It writes no labels,
@@ -32,6 +39,8 @@ appears in the selected output.
 - Clicking an entry chooses it. Clicking outside the picker cancels.
 - If filtering leaves no matches, there is no selectable entry; the user can
   continue typing or cancel.
+- For zero input rows with `--show-empty`, the empty-state label is not an entry
+  and cannot be selected.
 - The picker opens on the focused output and uses Scottland's core palette.
 
 ## Invariants
@@ -43,7 +52,8 @@ appears in the selected output.
 | LP3 | The optional prompt argument affects presentation only; it never appears in the selected output. | source implemented; behavior verification pending |
 | LP4 | The picker uses Scottland's core palette, opens on the focused output, and runs in the existing Quickshell layer. | source implemented; behavior verification pending |
 | LP5 | The command is part of the core installation and can be called by any distro and any Scottland tool without a distro-specific adapter. | source implemented; behavior verification pending |
+| LP6 | `--show-empty` opts zero input rows into the existing picker with nonselectable `No entries`; without the flag, empty input still cancels before launch. Nonempty selection is unchanged. | source implemented; focused and behavior verification pending |
 
-This contract defines one single-choice list picker. It does not include icons,
-previews, multi-select, history, ranking, other picker modes, a new dependency,
-a daemon or native code.
+This contract defines one single-choice list picker with an opt-in empty-state
+presentation. It does not include icons, previews, multi-select, history,
+ranking, other picker modes, a new dependency, a daemon or native code.

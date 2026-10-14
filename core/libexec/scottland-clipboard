@@ -348,6 +348,30 @@ def command_release(args):
     return 0
 
 
+def command_clear(_args):
+    call("clear")
+    picker = picker_path()
+    if not picker:
+        raise RuntimeError("history was cleared but the empty history view could not be presented: "
+                           "scottland-list-picker is not installed")
+    try:
+        result = subprocess.run(
+            [picker, "--show-empty", "--prompt", "Clipboard history"],
+            input=b"", capture_output=True, check=False
+        )
+    except OSError as error:
+        raise RuntimeError("history was cleared but the empty history view could not be presented: "
+                           f"{error}") from error
+    if result.returncode == 1 and not result.stdout:
+        return 0
+    detail = result.stderr.decode("utf-8", "replace").splitlines()
+    if not detail:
+        detail = [f"picker exited with status {result.returncode} and "
+                  f"{len(result.stdout)} stdout bytes"]
+    raise RuntimeError("history was cleared but the empty history view could not be presented: "
+                       + detail[0])
+
+
 def command_type_text(args):
     target = args.target
     require_target(target)
@@ -386,7 +410,7 @@ def main():
     copy_file.set_defaults(run=command_copy_file)
 
     clear = sub.add_parser("clear", help="empty the session clipboard history")
-    clear.set_defaults(run=lambda _args: (call("clear"), 0)[1])
+    clear.set_defaults(run=command_clear)
 
     # Private session-only operations used by scottland-emoji to preserve the
     # pre-picker clipboard while typing through the same clipboard service.

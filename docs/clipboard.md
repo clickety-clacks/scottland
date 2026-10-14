@@ -37,7 +37,9 @@ history. If any offered format cannot be read completely, snapshot refuses befor
   and pastes it. Add --copy-only to skip pasting.
 - scottland-clipboard copy-file PATH MIME copies the file using its MIME type and pastes it.
   Add --copy-only to skip pasting.
-- scottland-clipboard clear empties session history without changing the clipboard.
+- scottland-clipboard clear empties session history immediately, then opens the shared picker
+  with no entries and the prompt `Clipboard history`. Dismissing the empty view completes clear
+  successfully; no entry is selected or sent to the clipboard.
 
 Before a paste-mode picker opens, Scottland requires a focused app window. If that target is
 already gone when the selection is made, the command leaves the clipboard and history unchanged.
@@ -46,9 +48,11 @@ the chosen entry on the clipboard.
 
 The history list shows text on one line and shortens long lines. Images include their pixel size
 when it can be read from the image header. Identical display lines get an ordinal so the picker
-still returns the exact entry the user chose. With no entries, the approved generic picker contract
-cancels before opening. CH11's requirement to display an empty list after clearing remains an open
-interaction question; this feature does not add a selectable sentinel or a second picker.
+still returns the exact entry the user chose. Opening `history` with no entries still follows the
+generic picker default and cancels before opening. `clear` opts into the generic picker's
+nonselectable empty view; it does not add a selectable sentinel or a second picker. If clearing
+fails, the view is not opened. If clearing succeeds but the view cannot be presented, the command
+reports that history is already cleared and exits unsuccessfully without restoring it.
 
 | ID | Invariant | Status |
 |---|---|---|
@@ -56,5 +60,5 @@ interaction question; this feature does not add a selectable sentinel or a secon
 | CH5 | Keep history only in the session service's memory and restrict its socket to the user. | source candidate; build and session evidence pending |
 | CH6–CH9 | Search with the generic picker; select exact entries; copy, paste or open them. | source candidate; build and session evidence pending |
 | CH10, CH12–CH13 | Copy text/files and preserve the specified failure behavior. | source candidate; focused helper checks pass; build and session evidence pending |
-| CH11 | Clear history immediately and show the empty history list. | open interaction: clear empties history; empty-list presentation conflicts with LP empty-input cancellation |
+| CH11 | Clear history immediately and show the empty history list in the shared picker; preserve the current clipboard selection and provide no selectable empty row. | source implements the approved opt-in picker seam; private UI behavior verification pending |
 | CH14 | Use compositor protocols without adding a package dependency or borrowing a clipboard tool. | source candidate; build and session evidence pending |

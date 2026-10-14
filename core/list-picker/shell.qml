@@ -11,6 +11,7 @@ ShellRoot {
   property int selectedIndex: 0
   property var palette: ({})
   property bool ready: false
+  property bool showEmpty: Quickshell.env("SCOTTLAND_LIST_PICKER_SHOW_EMPTY") === "1"
 
   readonly property string promptText: Quickshell.env("SCOTTLAND_LIST_PICKER_PROMPT") || ""
   readonly property string focusedOutputName: Quickshell.env("SCOTTLAND_LIST_PICKER_OUTPUT") || ""
@@ -75,6 +76,12 @@ ShellRoot {
   }
 
   FileView {
+    id: readyFile
+    path: Quickshell.env("SCOTTLAND_LIST_PICKER_READY") || ""
+    printErrors: false
+  }
+
+  FileView {
     path: root.palettePath
     watchChanges: true
     printErrors: false
@@ -107,6 +114,10 @@ ShellRoot {
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
     WlrLayershell.namespace: "scottland-list-picker"
+
+    onVisibleChanged: {
+      if (visible) readyFile.setText("ready")
+    }
 
     MouseArea {
       anchors.fill: parent
@@ -249,7 +260,7 @@ ShellRoot {
             Text {
               anchors.centerIn: parent
               visible: root.filteredEntries.length === 0
-              text: "No matches"
+              text: root.entries.length === 0 && root.showEmpty ? "No entries" : "No matches"
               color: root.muted
               font.family: root.fontFamily
               font.pixelSize: 14 * root.textScale
