@@ -341,7 +341,7 @@ def run_checks(session):
     terminal_parent.write_text(
         "#!/usr/bin/python3\n"
         "import subprocess, sys, time\n"
-        "subprocess.Popen([sys.argv[2], '-c', 'cd \"$1\"; : > \"$2\"; while :; do sleep 60; done', '_', sys.argv[1], sys.argv[3]])\n"
+        "subprocess.Popen([sys.argv[2], '-c', 'cd \"$1\" || exit; printf \"%s\\n\" \"$PWD\" > \"$2\"; while :; do sleep 60; done', '_', sys.argv[1], sys.argv[3]])\n"
         "time.sleep(60)\n"
     )
     terminal_parent.chmod(0o755)
@@ -349,9 +349,21 @@ def run_checks(session):
         f"{shlex.quote(str(terminal_parent))} {shlex.quote(str(terminal_workdir))} "
         f"{shlex.quote(str(shell))} {shlex.quote(str(terminal_ready))}"
     )
-    terminal_is_ready, _ = session.wait(lambda: terminal_ready.is_file(), timeout=5)
-    if not terminal_is_ready:
-        raise FixtureUnavailable("the terminal shell did not enter its working directory")
+    def terminal_shell_cwd():
+        try:
+            return terminal_ready.read_text().strip()
+        except OSError:
+            return None
+
+    def terminal_ready_cwd():
+        cwd = terminal_shell_cwd()
+        return cwd if cwd == str(terminal_workdir) else None
+
+    terminal_is_ready, ready_cwd = session.wait(
+        terminal_ready_cwd, timeout=5
+    )
+    if not terminal_is_ready or ready_cwd != str(terminal_workdir):
+        raise FixtureUnavailable(f"the terminal shell did not enter its working directory: {ready_cwd}")
     cwd = session.run(CTL, "terminal-cwd", str(terminal_pid))
     check("terminal-cwd reads a listed login shell's live working directory",
           cwd.returncode == 0 and cwd.stdout.strip() == str(terminal_workdir), cwd.stdout.strip())
