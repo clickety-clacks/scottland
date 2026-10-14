@@ -224,7 +224,7 @@ pub fn execute(args: &[OsString], backend: &mut impl Backend) -> Output {
 
 pub fn run_shutdown_worker(backend: &mut impl Backend) -> u8 {
     if let Err(error) = backend.acquire_shutdown_inhibitor() {
-        backend.notify(&shutdown_failure_notice());
+        let _ = backend.notify(&shutdown_failure_notice());
         eprintln!("shutdown inhibitor failed: {error}");
         return 1;
     }
@@ -239,7 +239,7 @@ pub fn run_shutdown_worker(backend: &mut impl Backend) -> u8 {
     match result {
         Ok(()) => 0,
         Err(failure) => {
-            backend.notify(&shutdown_failure_notice());
+            let _ = backend.notify(&shutdown_failure_notice());
             eprintln!("power-off failed: {}", failure.message);
             if failure.status == 0 {
                 1
