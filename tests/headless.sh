@@ -629,10 +629,21 @@ WRAPPER
       # The test's own edits to the built config, as a sed script that every rebuild inside this
       # session applies too (a shim `hyprctl reload`), so a rebuild never writes the machine's
       # live config and never drops the test plugin or hook list.
-      hook_list=${started[*]}
+      # Record this compositor's environment before starting other autostart hooks. Widget
+      # services and clients use the record to address this exact session.
+      headless_autostart=$dir/headless-autostart
+      {
+        printf '%s\n' '#!/bin/sh' 'set -eu' 'hooks=${SCOTTLAND_HOOKS:?}'
+        printf '%s\n' '"$hooks/autostart.d/01-record-environment"'
+        for hook in "${started[@]:1}"; do
+          printf '"$hooks/autostart.d/%s" &\n' "$hook"
+        done
+        printf '%s\n' 'wait'
+      } >"$headless_autostart"
+      chmod 700 -- "$headless_autostart"
       {
         printf '%s\n' 's/^plugins = \\$/plugins = stipc \\/'
-        printf '%s\n' "s#^scottland_hooks = .*#scottland_hooks = sh -c 'for h in $hook_list; do \"\$SCOTTLAND_HOOKS/autostart.d/\$h\" \\& done; wait'#"
+        printf '%s\n' "s#^scottland_hooks = .*#scottland_hooks = sh -c 'exec \"\$SCOTTLAND_HEADLESS_DIR/headless-autostart\"'#"
         # A protocol control: same clients/config/stock Wayfire, without Scottland's
         # scene transforms or input handlers. Autostart still records its environment.
         if ((stock)); then printf '%s\n' '/^  scottland \\$/d'; fi
