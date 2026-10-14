@@ -44,6 +44,11 @@ def view(id): return next(v for v in views() if v['id']==id)
 def hints(): return ipc('scottland/hints')
 def label(id): return next(h['hint'] for h in hints()['hints'] if h['window']==id)
 def geometry(id): return next(v['geometry'] for v in ipc('window-rules/list-views') if v['id']==id)
+def widget_view_id(identifier):
+    link=next((w for w in ipc('scottland/widgets')['widgets'] if int(w['id'])==identifier),None)
+    if not link or int(link['widget_view'])<=0: return None
+    widget=int(link['widget_view'])
+    return widget if any(int(v['id'])==widget for v in ipc('window-rules/list-views')) else None
 def key(code, down): return ipc('stipc/feed_key',{'key':'KEY_'+code,'state':down})
 def sleep_until(at): time.sleep(max(0,at-time.monotonic()))
 
@@ -156,8 +161,7 @@ try:
             text=reset()
             sequence(text,.08); time.sleep(.12); sequence(text,.08)
             wait(lambda: view(primary)['widgetized'])
-            widget=wait(lambda: next((w['widget_view'] for w in ipc('scottland/widgets')['widgets']
-                if int(w['id'])==primary and w['widget_view']>0),None))
+            widget=wait(lambda: widget_view_id(primary))
             key('LEFTALT',False)
             ipc('window-rules/focus-view',{'id':widget})
             key('LEFTALT',True); wait(lambda: hints()['active'])
@@ -168,6 +172,7 @@ try:
             print('PASS '+text+' focused-widget human double-tap returns to rail',flush=True)
             key('LEFTALT',False)
             time.sleep(.1)
+            widget=wait(lambda: widget_view_id(primary))
             ipc('window-rules/focus-view',{'id':widget})
             key('LEFTALT',True); wait(lambda: hints()['active'])
             assert hints()['selected']==primary, 'widget-start cycle fixture'

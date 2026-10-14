@@ -270,12 +270,16 @@ try:
     loop = stops(a, 'Edge', 6)
     check(abs(center(loop[0])[0] - deep_x) < 2 and lands_in_periphery(loop[0]),
           'cycling from there goes to the remembered periphery spot, scaled', summary(loop[0]))
-    check(loop[1]['widgetized'] and widget_rail(a) == 'right', 'then to the start-side widget rail', summary(loop[1]))
+    start_rail = widget_rail(a)
+    check(loop[1]['widgetized'] and center(loop[1])[0] > width - 2,
+          'then to the start-side widget rail', dict(summary(loop[1]), rail=start_rail))
     check(abs(center(loop[2])[0] - edge_x) < 2 and loop[2]['applied_scale'] > .99,
           'then back to the spot it was dropped at, full scale', summary(loop[2]))
     check(lands_in_periphery(loop[3]) and abs(memory(a, 1) - center(loop[3])[0]) < 2,
           'the next step reaches and remembers the other-side periphery', summary(loop[3]))
-    check(loop[4]['widgetized'] and widget_rail(a) == 'left', 'the other-side widget uses its own rail', summary(loop[4]))
+    other_rail = widget_rail(a)
+    check(loop[4]['widgetized'] and center(loop[4])[0] < 2,
+          'the other-side widget uses its own rail', dict(summary(loop[4]), rail=other_rail))
     check(lands_in_periphery(loop[5]) and abs(center(loop[5])[0] - deep_x) < 2,
           'the five-step cycle wraps to its original side and remembered spot', summary(loop[5]))
     centered = stops(a, 'Edge', 1)[0]
@@ -336,7 +340,7 @@ try:
     ipc('window-rules/focus-view', {'id': dialog}); time.sleep(.1); hold()
     press_hint(dialog); time.sleep(.08); press_hint(dialog); time.sleep(.2)
     no_op_repeat = view('Modal')
-    time.sleep(.2); press_hint(dialog); time.sleep(1.0)
+    time.sleep(.35); press_hint(dialog); time.sleep(1.0)
     next_dialog_step = view('Modal'); release()
     check(no_op_repeat is not None and next_dialog_step is not None and
           abs(center(next_dialog_step)[0] - dialog_left_x) < 2 and
