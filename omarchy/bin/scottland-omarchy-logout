@@ -1,0 +1,42 @@
+#!/bin/bash
+# Omarchy's Logout menu also runs in Scottland, where uwsm does not own the compositor.
+set -euo pipefail
+
+if [[ ${1:-} != --inside-scottland ]]; then
+  if [[ ${XDG_CURRENT_DESKTOP:-} == Scottland* ]]; then
+    # The shell can outlive the launcher environment it inherited. Recover the exact session
+    # recorded by Scottland, matching the caller's Wayfire socket when more than one is running.
+    exec scottland-exec -- "$0" --inside-scottland
+  fi
+  if command -v omarchy-system-logout >/dev/null 2>&1; then
+    exec omarchy-system-logout "$@"
+  fi
+  exec omarchy-system logout "$@"
+fi
+
+[[ ${XDG_CURRENT_DESKTOP:-} == Scottland* && -n ${WAYFIRE_SOCKET:-} ]] || {
+  echo 'scottland-omarchy-logout: no Scottland session' >&2
+  exit 1
+}
+launcher=${SCOTTLAND_SESSION_PID:-}
+[[ $launcher =~ ^[1-9][0-9]*$ ]] || {
+  echo 'scottland-omarchy-logout: no recorded launcher PID' >&2
+  exit 1
+}
+mapfile -t compositors < <(pgrep -P "$launcher" -x wayfire || true)
+[[ ${#compositors[@]} -eq 1 ]] || {
+  echo 'scottland-omarchy-logout: expected one Wayfire child of this session' >&2
+  exit 1
+}
+compositor=${compositors[0]}
+
+omarchy-osd -i logout -m 'Logging out' -d 5000 || true
+omarchy-hyprland-window-close-all || true
+sleep 1 # Match Omarchy's app shutdown interval before ending the compositor.
+
+# The window-close command can outlive or replace the process; never signal a stale PID.
+[[ $(ps -o ppid= -p "$compositor" | tr -d ' ') == "$launcher" ]] || {
+  echo 'scottland-omarchy-logout: Wayfire session changed during logout' >&2
+  exit 1
+}
+kill -TERM -- "$compositor"

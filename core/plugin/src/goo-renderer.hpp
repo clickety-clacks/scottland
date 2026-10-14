@@ -24,6 +24,8 @@ class renderer_t
     // GO24: move only the dye (wet texels), for the watercolor's slow motion while the
     // simulation sleeps. `step` is how many ordinary steps each pass stands for.
     void flow_dye(float flow, float step, int passes = 1);
+    // Isolated-test setup only; clears retained dye to the renderer's neutral absorbance.
+    void clear_dye_for_test();
     uint64_t dye_flows = 0;
     // GO28: open desktop has a background-layer client to pick color up from (film over a
     // window always has that window).

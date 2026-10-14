@@ -10,6 +10,7 @@ Flickable {
   flickDeceleration: 1600
   maximumFlickVelocity: 2400
   property var design
+  property real touchpadScrollSpeed: 0.2
   property real wheelVelocity: 0
   property double lastWheelAt: 0
   property double pendingVelocity: 0
@@ -24,14 +25,15 @@ Flickable {
     else if (bottom > contentY + height) contentY = bottom - height
   }
   onDraggingChanged: if (dragging) halt()
-  // Wayfire applies its shipped touchpad_scroll_speed (0.2) before Qt receives pixel
-  // deltas. Restore finger travel here. Move with each delta; coast only after release.
+  // Wayfire applies the session's touchpad_scroll_speed before Qt receives pixel
+  // deltas. Restore finger travel at that effective speed, including Omarchy's 0.4.
   WheelHandler {
     target: null
     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
     onWheel: event => {
       const pixel = event.pixelDelta.y !== 0
-      const delta = pixel ? event.pixelDelta.y * 5 : event.angleDelta.y / 120 * 96
+      const delta = pixel ? (view.touchpadScrollSpeed > 0
+        ? event.pixelDelta.y / view.touchpadScrollSpeed : 0) : event.angleDelta.y / 120 * 96
       if (delta === 0) {
         coastDelay.stop()
         view.wheelVelocity = view.pendingVelocity

@@ -769,6 +769,26 @@ void renderer_t::flow_dye(float flow, float step, int passes)
     flow_wall_ms += elapsed;
     flow_wall_max_ms = std::max(flow_wall_max_ms, elapsed);
 }
+void renderer_t::clear_dye_for_test()
+{
+    if (!p->ready)
+        return;
+    wf::gles::run_in_context_if_gles([&]
+    {
+        state_t guard;
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        for (auto target : {&p->dye[0], &p->dye[1]})
+        {
+            glBindFramebuffer(GL_FRAMEBUFFER, target->fb);
+            glViewport(0, 0, target->width, target->height);
+            // Match resize(): the GO28 neutral dye stored as absorbance.
+            glClearColor(.2918, .2439, .1928, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+    });
+    p->sampled_step = UINT64_MAX;
+}
 void renderer_t::draw(const wf::scene::render_instruction_t &data, const wf::regionf_t &area,
                       const wf::regionf_t &breath_area, float breath, bool settled, bool breath_keys,
               bool reuse_backdrop, const wf::regionf_t *dry, const wf::regionf_t *dry_content,
