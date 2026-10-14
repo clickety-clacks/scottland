@@ -1024,7 +1024,7 @@ PY
     for pid_file in "$session_dir/$name.lua.pid" "$session_dir/$name.widget-bus.pid"; do
       helper=$(sed -n 1p "$pid_file" 2>/dev/null || true)
       if [[ $helper =~ ^[0-9]+$ ]] && session_process_is_ours "$helper" "$name" && \
-         grep -qa -e scottland-color-scheme -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
+         grep -qa -e scottland-color-scheme -e scottland-display -e lua -e scottland-widget-bus "/proc/$helper/cmdline" 2>/dev/null; then
         if [[ $(ps -o pgid= -p "$helper" | tr -d ' ') == "$helper" ]]; then kill -- "-$helper" 2>/dev/null; else kill "$helper" 2>/dev/null; fi
       fi
       rm -f "$pid_file"
