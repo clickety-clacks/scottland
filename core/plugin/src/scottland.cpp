@@ -41,6 +41,9 @@ extern "C" {
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_buffer.h>
+#define namespace namespace_t
+#include <wlr/types/wlr_layer_shell_v1.h>
+#undef namespace
 #if WF_HAS_XWAYLAND
 #include <pthread.h>  // as Wayfire does: xwayland.h uses C++ keywords as names
 #define class class_t
@@ -4958,6 +4961,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return view;
     }
 
+    bool pointer_focus_is_layer_shell()
+    {
+        auto seat = wf::get_core().get_current_seat();
+        auto surface = seat ? seat->pointer_state.focused_surface : nullptr;
+        auto root_surface = surface ? wlr_surface_get_root_surface(surface) : nullptr;
+        return root_surface && wlr_layer_surface_v1_try_from_wlr_surface(root_surface);
+    }
+
     void swipe_begin(uint32_t fingers)
     {
         cancel_touchpad_hold(); // the fingers moved first: a drag (L23)
@@ -5109,6 +5120,11 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 !ev->device || drag->view)
             {
                 return;
+            }
+
+            if (pointer_focus_is_layer_shell())
+            {
+                return;  // layer-shell clients are not framed Scottland windows
             }
 
             auto view = gesture_target();

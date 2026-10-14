@@ -53,6 +53,12 @@ def view(title):
     return next((row for row in views() if row.get("title") == "Middle-" + title), None)
 
 
+def layer_surface():
+    rows = ipc("scottland/key-layer", {"action": "list"})["surfaces"]
+    return next((row for row in rows if row.get("pid") == client.pid and
+                 row.get("namespace") == "scottland-middle-press-test"), None)
+
+
 def geometry(title):
     return view(title)["geometry"]
 
@@ -208,7 +214,12 @@ def check(ok, label, detail=""):
     failed += not bool(ok)
 
 
+layer_shell_preload = os.environ.get("LD_PRELOAD", "")
+if layer_shell_preload:
+    layer_shell_preload += ":"
+layer_shell_preload += "libgtk4-layer-shell.so"
 client = subprocess.Popen([sys.executable, str(Path(__file__).with_name("middle-press-app.py")), str(out)],
+                          env={**os.environ, "LD_PRELOAD": layer_shell_preload},
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
     wait(lambda: view("A"), what="Middle-A map")
@@ -417,9 +428,7 @@ try:
           "pointer: Esc restores the client's pixels at its starting position")
     check(not all_events(), "pointer: Esc cancels without delivering a middle event")
 
-    # R2: fullscreen surfaces are not target windows; presses arrive immediately. The test
-    # compositor does not advertise layer-shell, so its GTK fixture silently becomes a normal
-    # toplevel and cannot provide a valid layer-surface behavior check.
+    # R2: fullscreen surfaces are not target windows; presses arrive immediately.
     setup()
     clear_events()
     full_id = view("A")["id"]
@@ -440,6 +449,29 @@ try:
     check(geometry("A") == full_geometry, "fullscreen: middle click leaves geometry unchanged")
     ipc("wm-actions/set-fullscreen", {"view_id": full_id, "state": False})
     wait(lambda: not view("A").get("fullscreen"), what="A exits fullscreen")
+
+    # Layer-shell surfaces are not framed Scottland windows. Verify both the Wayfire-side
+    # layer namespace and client-observed input so an ordinary GTK toplevel cannot pass here.
+    setup()
+    place("A", 20, 20, 360, 260)
+    before = geometry("A")
+    clear_events()
+    command("make-layer")
+    wait(layer_surface, what="server-recognized layer-shell surface")
+    pointer(120, 100)
+    wait(lambda: pointer_events("Layer"), what="layer-shell client receives pointer motion")
+    check(layer_surface() is not None,
+          "layer-shell: Wayfire recognizes the fixture's real layer surface")
+    button("BTN_MIDDLE", True)
+    wait(lambda: len(events("Layer")) == 1, what="immediate layer-shell middle press")
+    check([event["edge"] for event in events("Layer")] == ["press"],
+          "layer-shell: middle press reaches the client before release")
+    button("BTN_MIDDLE", False)
+    wait(lambda: len(events("Layer")) == 2, what="layer-shell middle release")
+    check([event["edge"] for event in events("Layer")] == ["press", "release"],
+          "layer-shell: middle click reaches the client in order")
+    check(geometry("A") == before,
+          "layer-shell: middle click does not move the overlapping framed window")
 
 finally:
     try:

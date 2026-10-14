@@ -6,7 +6,8 @@ import sys
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gio, GLib, Gtk
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gio, GLib, Gtk, Gtk4LayerShell as Layer
 
 root = Path(sys.argv[1])
 events = root / "buttons.jsonl"
@@ -28,8 +29,15 @@ def record_pointer(name, edge, x, y):
         stream.write(json.dumps({"name": name, "edge": edge, "x": x, "y": y}) + "\n")
 
 
-def make(name):
+def make(name, layer=False):
     window = Gtk.ApplicationWindow(application=app, title="Middle-" + name)
+    if layer:
+        Layer.init_for_window(window)
+        Layer.set_namespace(window, "scottland-middle-press-test")
+        Layer.set_layer(window, Layer.Layer.OVERLAY)
+        Layer.set_keyboard_mode(window, Layer.KeyboardMode.ON_DEMAND)
+        Layer.set_anchor(window, Layer.Edge.TOP, True)
+        Layer.set_anchor(window, Layer.Edge.LEFT, True)
     window.set_default_size(360, 260)
     window.set_decorated(False)
     area = Gtk.DrawingArea()
@@ -60,6 +68,8 @@ def commands():
             windows[name].set_visible(False)
         elif action == "show":
             windows[name].present()
+        elif action == "make-layer":
+            make("Layer", layer=True)
         elif action == "quit":
             app.quit()
     return GLib.SOURCE_CONTINUE
