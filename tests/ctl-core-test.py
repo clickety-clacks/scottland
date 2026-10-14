@@ -414,8 +414,9 @@ def run_checks(session):
     def wait_for_zones(expected):
         def observe():
             value = current_zones()
-            return value if value == expected else None
-        return session.wait(observe, timeout=5)
+            return (value,) if value == expected else None
+        ready, observation = session.wait(observe, timeout=5)
+        return ready, observation[0] if ready else observation
 
     direct_zones = zones_for("ctl-core-direct", 44.0)
     encoded_direct_zones = json.dumps(direct_zones, separators=(",", ":"))
