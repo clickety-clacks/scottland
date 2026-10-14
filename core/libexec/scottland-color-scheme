@@ -580,6 +580,15 @@ def watch_accent():
     location = current_theme_location()
     had_location = os.path.isdir(location)
     while True:
+        # The Gooarchy directory may not exist yet, so there is no safe path to watch.
+        # Recheck the exact current-theme location once per loop before sleeping or
+        # rebuilding inotify; this catches its later appearance without watching .config
+        # or HOME recursively.
+        was_present = had_location
+        had_location, _ = _terminal_theme_location_transition(location, had_location)
+        if had_location != was_present:
+            continue
+
         accent_paths = [os.path.abspath(path) for path in accent_watch_paths()]
         directory, _ = _terminal_theme_watch_target(location)
         watch_theme_path = directory
@@ -590,8 +599,8 @@ def watch_accent():
 
         command = ["inotifywait", "-m", "-q", "-r", "-e", "close_write", "-e", "moved_to", "-e", "create",
                    "-e", "delete", "--format", "%w%f"]
-        if watch_theme_path is None:
-            # Poll only until the Gooarchy config directory exists; never recurse across .config or HOME.
+        if not had_location:
+            # Poll only until current-theme appears; never recurse across .config or HOME.
             command += ["-t", "1"]
         command += paths
         try:

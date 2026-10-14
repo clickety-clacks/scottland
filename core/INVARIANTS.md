@@ -137,7 +137,7 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 
 | ID | Invariant | Status |
 |---|---|---|
-| TP1 | The existing per-session appearance watcher follows Gooarchy's `current-theme/light` and `current-theme/dark` link changes by requesting a config reload from Ghostty clients in that same Wayland session. If the location is absent, it stays quiet and performs no push; the watcher reads no other theme source and writes no config or theme file. | source slice and targeted behavior test authored; execution on an approved capable test machine and shipped-Ghostty reload proof remain pending; `scottland-display terminal-theme push` needs follow-up integration with the display tool |
+| TP1 | The existing per-session appearance watcher follows Gooarchy's `current-theme/light` and `current-theme/dark` link changes by requesting a config reload from Ghostty clients in that same Wayland session. If the location is absent, it stays quiet and performs no push; the watcher reads no other theme source and writes no config or theme file. | source slice and helper plus actual-inotify watcher tests authored; authorized non-Gibson execution and shipped-Ghostty reload proof remain pending; `scottland-display terminal-theme push` awaits the display tool's command interface |
 
 ## Layout configurator (`scottland-settings`)
 
