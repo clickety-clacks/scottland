@@ -154,6 +154,11 @@ The single desktop model and its reactive subscription/launch/audit contracts ar
 The shared `scottland-launch` CLI and its nine supported launch actions are specified in
 [../docs/launch-commands.md](../docs/launch-commands.md).
 
+## List picker
+
+The generic list picker command and its command/IO contract are in
+[../docs/list-picker.md](../docs/list-picker.md) (LP1–LP5). Source implemented; behavior verification pending.
+
 ## Session
 
 | ID | Invariant | Status |
