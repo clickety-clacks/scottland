@@ -206,8 +206,19 @@ Candidate source; eight focused helper behavior scenarios pass; compositor build
 
 ## Terminal theme push
 
+At c9ec726e the existing helper install and watcher lifecycle are present, but the watcher does
+not follow Gooarchy's current-theme links and the helper has no session-filtered Ghostty reload
+action. F1 owns the installed one-shot helper and its theme/session filtering. Display owns the
+single final watcher lifecycle, handles link and late-location transitions, and calls that
+helper action. Integrated current-0.4 verification remains pending.
+
 | ID | Invariant | Status |
 |---|---|---|
+| TP1 | Open Ghostty terminals whose configs follow Gooarchy's current-theme location show its newly selected theme after either link changes, without a new window or login. | Pending integrated current-0.4 source and behavior checks; link-event handling belongs to Display's watcher. |
+| TP2 | After a push, an open following terminal continues to switch between the selected theme's light and dark variants when desktop Mode changes. | Pending integrated current-0.4 behavior checks. |
+| TP3 | Core reads the theme only through Gooarchy's current-theme location and writes no theme link or user config. | The F1 helper reads that location and writes no theme link/config; integrated current-0.4 checks remain pending. |
+| TP4 | A terminal with a fixed theme config keeps the same colors after a push. | Pending installed-session evidence; the helper signals Ghostty and does not write config. |
+| TP5 | An absent current-theme location causes no push or report; if it appears later, the watcher follows it. | Pending integrated current-0.4 behavior checks; late-location detection belongs to Display's watcher. |
 | TP6 | The internal `scottland-color-scheme terminal-theme-push` action signals Ghostty processes matching the current Wayland display and, when present, runtime directory if Gooarchy's `current-theme` directory contains a light or dark link. Missing theme location/links, display, or eligible Ghostty is a successful no-op; a failed attempted signal reports an error and returns nonzero. The action does not write theme links or terminal config and does not start another watcher. | F1 helper source candidate; focused verification through the permitted Racter/Eezo route is pending. The public `scottland-display` action remains Display-owned. |
 
 ## Display controls

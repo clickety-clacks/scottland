@@ -18,6 +18,10 @@ accent, alert, attention. Widgets and other Scottland surfaces use this palette,
 attention color comes from it:
 neutral light or dark colors, overlaid by a provider's full palette (accent.d providers that
 print a JSON object of those colors when run with --palette).
+
+The terminal-theme-push action reads Gooarchy's current-theme location and asks only Ghostty
+processes in this Wayland session to reload. Display owns the one watcher lifecycle and calls
+this action when its current-theme links change.
 """
 import configparser
 import hashlib
