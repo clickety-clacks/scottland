@@ -209,7 +209,7 @@ pub fn plan(input: Input) -> Plan {
 
         for output in input.outputs {
             let status = match input.command {
-                Command::Status => status_from_ownership(&output),
+                Command::Status => status_for_request(&output, request),
                 Command::On => plan_on(&output, &mut actions),
                 Command::Off => plan_off(&output, &mut actions),
                 Command::Toggle if request == RequestState::On => plan_on(&output, &mut actions),
@@ -345,9 +345,9 @@ fn plan_off(output: &OutputInput, actions: &mut Vec<Action>) -> OutputStatus {
             actions.push(Action::ReleaseUnwarmed {
                 output: output.identity.clone(),
             });
-            not_warm(output.reason.as_deref().unwrap_or("not warmed by Night Light"))
+            OutputStatus::Normal
         }
-        OutputOwnership::Unowned => status_from_ownership(output),
+        OutputOwnership::Unowned => OutputStatus::Normal,
         OutputOwnership::Unknown => status_from_ownership(output),
     }
 }
@@ -380,6 +380,17 @@ fn status_from_ownership(output: &OutputInput) -> OutputStatus {
                 .as_deref()
                 .unwrap_or("watcher has not confirmed the output state"),
         ),
+    }
+}
+
+fn status_for_request(output: &OutputInput, request: RequestState) -> OutputStatus {
+    if request == RequestState::Off {
+        match output.ownership {
+            OutputOwnership::Unowned | OutputOwnership::OwnedUnwarmed => OutputStatus::Normal,
+            OutputOwnership::WarmOwned | OutputOwnership::Unknown => status_from_ownership(output),
+        }
+    } else {
+        status_from_ownership(output)
     }
 }
 
@@ -712,13 +723,45 @@ mod tests {
         );
         assert_eq!(result.outputs[0].status, OutputStatus::Normal);
         assert_eq!(result.outputs[1].status, OutputStatus::Normal);
+        assert_eq!(result.outputs[2].status, OutputStatus::Normal);
         assert_eq!(
-            result.outputs[2].status,
-            OutputStatus::NotWarm {
-                reason: "not warmed by Night Light".to_owned()
-            }
+            result.stdout,
+            "off\nDP-1: normal\nDP-2: normal\nDP-3: normal\n"
         );
         assert_eq!(result.exit_status, 0);
+    }
+
+    #[test]
+    fn off_status_reports_known_unwarmed_outputs_as_normal_and_unknown_as_unknown() {
+        let mut unowned = output("DP-1", OutputOwnership::Unowned);
+        unowned.reason = Some("controlled by another program".to_owned());
+        let mut owned_unwarmed = output("DP-2", OutputOwnership::OwnedUnwarmed);
+        owned_unwarmed.reason = Some("not warmed by Night Light".to_owned());
+        let mut unknown_output = output("DP-3", OutputOwnership::Unknown);
+        unknown_output.reason = Some("watcher has no tint fact".to_owned());
+
+        let result = run(
+            input(
+                Command::Status,
+                RequestState::Off,
+                vec![unowned, owned_unwarmed, unknown_output],
+            ),
+            &[],
+        );
+
+        assert_eq!(result.request, RequestState::Off);
+        assert_eq!(result.outputs[0].status, OutputStatus::Normal);
+        assert_eq!(result.outputs[1].status, OutputStatus::Normal);
+        assert_eq!(
+            result.outputs[2].status,
+            unknown("watcher has no tint fact")
+        );
+        assert_eq!(
+            result.stdout,
+            "off\nDP-1: normal\nDP-2: normal\nDP-3: unknown: watcher has no tint fact\n"
+        );
+        assert_eq!(result.exit_status, 0);
+        assert!(result.stderr.is_none());
     }
 
     #[test]

@@ -29,6 +29,11 @@ injected failure reason on standard error. Status prints `on` or `off` on its
 first line, then one line per output using `warm`, `normal`, `not warm: <reason>`
 or `unknown: <reason>`. Unknown facts remain unknown.
 
+When the session request is off, outputs known not to be held warm by Night
+Light report `normal`, even when the watcher has a reason they are not warm.
+An output still confirmed warm remains `warm`; unknown facts and failed
+restorations remain `unknown`.
+
 The module does not provide the shared `scottland-display` dispatcher, the
 session runtime transport, the per-session color-scheme watcher, gamma
 acquisition or output lifecycle. Those remain with the serialized Display
