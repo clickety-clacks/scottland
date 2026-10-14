@@ -8,9 +8,10 @@ time. Like the rest of core, the tools run on any distro and never know about Om
 ## Layout
 
     Cargo.toml        the workspace: shared version, edition and release profile
-    lib/              scottland-lib (`use scottland::...`): code every tool shares
-    bin/scottland/    the front command
-    bin/<tool>/       one crate per tool, building the binary scottland-<tool>
+    lib/                    scottland-lib (`use scottland::...`): shared Scottland paths and session code
+    bin/scottland/          the front command
+    bin/scottland-source/   source mechanism library and thin Scottland command
+    bin/<tool>/             one crate per subsystem tool, building scottland-<tool>
 
 The library holds what the scripts already agree on, so a Rust tool finds the same files a script
 does:
@@ -20,10 +21,18 @@ does:
 - `scottland::session`: the running sessions and the environments they recorded at startup, chosen
   the way `scottland-exec` chooses: a named display, else the caller's own session, else the only one.
 
-The front command only finds and runs tools, the way `git` runs `git-*`: `scottland` lists the tools
+The front command finds and runs tools, the way `git` runs `git-*`: `scottland` lists the tools
 installed, `scottland display ...` runs `scottland-display ...`, and `scottland help display` runs
-`scottland-display --help`. It looks beside itself first, then on `PATH`. Each tool works the same
-when run directly.
+`scottland-display --help`. It also forwards `edit`, `rollback`, `update` and `status` to
+`scottland-source`. It looks beside itself first, then on `PATH`. Each tool works the same when run
+directly.
+
+`scottland-source` provides the product-neutral source mechanism library and the thin command that
+supplies the product name. It keeps the source history in a root-owned bare repository, builds the
+whole workspace in the user's clone, and asks for root only to prepare and activate a completed
+build. Product packages carry a base build and a full-history Git bundle; the mechanism adopts that
+release after installation and owns the active switch and command links. A future product can use
+the library as a pinned Cargo dependency and supply its own thin command.
 
 ## Adding a tool
 
@@ -42,18 +51,16 @@ fields from the workspace and depends on the library:
     [dependencies]
     scottland.workspace = true
 
-Nothing else needs editing: the Makefile and the Arch package build, install and link every crate
-under `bin/`. When a tool replaces a script, remove the script and its install lines in the same
-change; until then the tool, installed after the scripts, takes the script's place in `libexec`.
+The Makefile builds every crate under `bin/` for development. Product packages build the same
+workspace at one commit and place its binaries in the mechanism's base-build directory; runtime
+links follow the active build. When a tool replaces a script, remove the script and its install
+lines in the same change.
 
 ## Build, test, install
 
     make tools          # build every tool into build/tools/bin
     make tools-test     # the workspace's tests
     make dev-install    # also snapshots the tools and links them into the dev session and ~/.local/bin
-    make package        # the Arch package installs them in /usr/lib/scottland/libexec and /usr/bin
+    make package        # the Arch package includes the base build and full-history source bundle
 
 All of these need `cargo`. Builds go to `build/cargo`, so `make clean` removes them with the rest.
-
-How the tools' sources ship on a machine, and how they are edited and rebuilt there, is a separate
-design; nothing here assumes it.
