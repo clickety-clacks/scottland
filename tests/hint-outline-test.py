@@ -188,9 +188,10 @@ def ipc(method, data=None):
     return result
 
 
-def check(name, ok):
+def check(name, ok, detail=None):
     global passed, failed
-    print(("PASS " if ok else "FAIL ") + name, flush=True)
+    print(("PASS " if ok else "FAIL ") + name +
+          (f": {detail}" if detail is not None else ""), flush=True)
     passed += bool(ok)
     failed += not ok
 
@@ -365,6 +366,24 @@ def find_point(target_id, require_ids=(), avoid_ids=()):
     raise RuntimeError(f"no usable tint sample for window {target_id}; required={require_ids}")
 
 
+def find_overlap_point(left_id, right_id):
+    state = hints()
+    frames = frame_map(state)
+    left, right = frames[left_id], frames[right_id]
+    x1, y1 = max(left[0], right[0]), max(left[1], right[1])
+    x2, y2 = min(left[0] + left[2], right[0] + right[2]), \
+        min(left[1] + left[3], right[1] + right[3])
+    if x2 <= x1 or y2 <= y1:
+        raise RuntimeError(f"tint extents do not overlap: {left_id}={left} {right_id}={right}")
+    for fy in (.5, .25, .75):
+        for fx in (.5, .25, .75):
+            point = (x1 + (x2 - x1) * fx, y1 + (y2 - y1) * fy)
+            if off_badges(state, *point, margin=8):
+                return point
+    raise RuntimeError(f"no badge-clear tint sample in overlap: {left_id}={left} {right_id}={right}; "
+                       f"badges={badges(state)}")
+
+
 def outside_point():
     state = hints()
     frames = frame_map(state)
@@ -377,7 +396,8 @@ def outside_point():
     return None
 
 
-def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_stroke=True):
+def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_stroke=True,
+                     frames_override=None):
     state = hints()
     # The hint IPC omits color after a hint has been selected, but the tint remains
     # attached to the window's assigned slot for the rest of the active session.
@@ -385,6 +405,8 @@ def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_
         if "color" in item:
             hint_colors[identifier] = item["color"]
     frames = frame_map(state)
+    if frames_override:
+        frames.update(frames_override)
     old = option("window_mode_tint")
     try:
         set_tint(0)
@@ -484,6 +506,7 @@ def section(function):
             ipc("wayfire/set-config-options", {"scottland/window_avoidance_always": False})
             if "front" in globals():
                 ipc("wm-actions/set-fullscreen", dict(view_id=front, state=False))
+            set_tint(7)
         except Exception:
             import traceback
             traceback.print_exc()
@@ -560,15 +583,19 @@ def fullscreen_in_front():
     ipc("window-rules/focus-view", dict(id=front))
     time.sleep(.5)
     hold()
-    # Fullscreen occludes the rear window's pixels. Check the visible fullscreen extent
-    # directly; a rear-window sample under the fullscreen surface cannot prove its tint.
-    point = find_point(front)
-    tint_stack_check("fullscreen extent", point, (front,))
+    # Fullscreen has no ordinary layout frame. Its visible tint extent is the owning output.
+    output = max(ipc("window-rules/list-outputs"), key=lambda o:
+        float(o["geometry"]["width"]) * float(o["geometry"]["height"]))
+    geometry = output["geometry"]
+    fs = (geometry["x"], geometry["y"], geometry["width"], geometry["height"])
+    point = (fs[0] + fs[2] * .20, fs[1] + fs[3] * .75)
+    tint_stack_check("fullscreen extent", point, (front,), no_stroke=False,
+                     frames_override={front: fs})
     # The fullscreen bounds have a square edge and receive the same tint as their interior,
     # without an extra inset rim.
-    fs = views()[front]["frame"]
-    edge_point = (fs["x"] + fs["width"] * .5, fs["y"] + 1)
-    tint_stack_check("fullscreen edge has tint only", edge_point, (front,))
+    edge_point = (fs[0] + fs[2] * .5, fs[1] + 1)
+    tint_stack_check("fullscreen edge has tint only", edge_point, (front,),
+                     no_stroke=False, frames_override={front: fs})
     release()
     ipc("wm-actions/set-fullscreen", dict(view_id=front, state=False))
     time.sleep(1.2)
@@ -646,7 +673,7 @@ def widget_cover():
               covered_hits / len(covered_points) < .05)
         check("widget as cover " + phase + ": fixture moved across the card extent",
               (pixel_fraction < .5) == (phase == "mostly"))
-        point = find_point(small, require_ids=(widget_id,))
+        point = find_overlap_point(small, widget_id)
         tint_stack_check("widget card tint " + phase, point, (small, widget_id))
         release()
 
@@ -698,6 +725,10 @@ try:
     ipc("wayfire/set-config-options", {"scottland/color_scheme": "dark", "scottland/accent_color": "#81a1c1ff",
                                        "scottland/sounds": False})
     pointer(640, 10)
+
+    initial_window_tint = option("window_mode_tint")
+    print("initial Window-mode tint default", initial_window_tint, flush=True)
+    check("Window-mode tint default is 7%", abs(initial_window_tint - 7) < .01)
     if "--second-output" in sys.argv:
         section(second_output)
         raise SystemExit
@@ -752,10 +783,9 @@ try:
     panel_y = 720 - max(24, round(720 * .04)) - q["panel"]["height"]
     default_motion_strength = q["motion"]["window_mode_tint"]
     default_plugin_strength = option("window_mode_tint")
-    print("default Window-mode tint values", {"settings": default_motion_strength,
-          "Wayfire": default_plugin_strength}, flush=True)
-    check("default strength is 7%", abs(default_motion_strength - 7) < .01 and
-          abs(default_plugin_strength - 7) < .01)
+    check("Settings strength matches the live option", abs(default_motion_strength -
+          default_plugin_strength) < .01,
+          {"settings": default_motion_strength, "Wayfire": default_plugin_strength})
     for _ in range(3):
         click(panel_x + 36 + 2.5 * (q["panel"]["width"] - 72) / 6, panel_y + 100)
         if snapshot()["tab"] == 2:
