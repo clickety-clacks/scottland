@@ -257,7 +257,7 @@ def widgetize_by_double_tap(window_id):
     wait(lambda: not hints()['active'], 'Window mode exits after widget double tap')
     try:
         return wait(lambda: next((w['widget_view'] for w in ipc('scottland/widgets')['widgets']
-                                  if w['id'] == window_id and w['widget_view'] > 0), None),
+                                  if w['window'] == window_id and w['widget_view'] > 0), None),
                     'widget toplevel maps')
     except RuntimeError as error:
         capture_widget_map_failure(window_id, error)
