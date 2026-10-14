@@ -776,12 +776,15 @@ def list_picker_overlay_isolation():
     panel_height = 40 + 44 + 12 + 88 + 12 + 19
     panel_left = float(geometry["x"]) + (width - panel_width) / 2
     panel_top = float(geometry["y"]) + (height - panel_height) / 2
+    # Sample the panel's opaque top margin, away from prompt, search placeholder, rows and
+    # rounded corners. First compare with a pre-map capture so an identical Settings pixel cannot
+    # falsely satisfy the map wait.
     overlay_candidates = [
-        (panel_left + panel_width * fx, panel_top + panel_height * fy)
-        for fy in (.12, .2, .28, .72, .8, .88)
-        for fx in (.08, .16, .24, .76, .84, .92)
+        (panel_left + panel_width * fx, panel_top + 10)
+        for fx in (.1, .2, .3, .7, .8, .9)
     ]
     background = tuple(int(BACKGROUND[i:i + 2], 16) for i in (1, 3, 5))
+    pre_picker = Shot("12-list-picker-before-map")
     overlay_sample = []
     picker = subprocess.Popen(
         [str(repo / "core/libexec/scottland-list-picker"), "--prompt", "Choose a fixture"],
@@ -795,7 +798,8 @@ def list_picker_overlay_isolation():
             state = hints()
             overlay_sample[:] = [point for point in overlay_candidates
                                  if off_badges(state, *point, margin=20) and
-                                 near(shot.pixel(*point), background, 4)]
+                                 near(shot.pixel(*point), background, 3) and
+                                 not near(shot.pixel(*point), pre_picker.pixel(*point), 3)]
             return bool(overlay_sample)
 
         wait(panel_visible, 10)
@@ -821,6 +825,9 @@ def list_picker_overlay_isolation():
               not near(adjacent_zero, adjacent_full, 3),
               {"point": side_point, "zero": adjacent_zero, "full": adjacent_full,
                "hint_color": color_bytes(side_color) if side_color else None})
+        # The search TextInput owns Esc; focus it explicitly after mapping the layer surface.
+        search_focus = (panel_left + panel_width / 2, panel_top + 20 + 19 + 12 + 22)
+        click(*search_focus)
         tap("ESC")
         picker.wait(timeout=8)
         stdout, stderr = picker.stdout.read(), picker.stderr.read()
