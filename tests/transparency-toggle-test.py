@@ -88,7 +88,8 @@ def raw_view(window_id):
 
 
 def focused_id():
-    return ipc('window-rules/get-focused-view').get('info', {}).get('id')
+    info = ipc('window-rules/get-focused-view').get('info')
+    return info.get('id') if isinstance(info, dict) else None
 
 
 def hints():
