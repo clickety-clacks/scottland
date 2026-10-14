@@ -80,13 +80,21 @@ def focused_output_name():
         return name
 
 
-def enter_scottland_session():
+def enter_scottland_session(input_bytes):
     if os.environ.get("WAYFIRE_SOCKET") or os.environ.get("SCOTTLAND_EXEC"):
         return True
 
     script = Path(__file__).resolve()
     launcher = script.with_name("scottland-exec")
     try:
+        # The first invocation has already read stdin so it can cancel empty input
+        # without starting a session. Rewind those bytes onto fd 0 before exec so
+        # scottland-exec and the replacement invocation see the original entries.
+        with tempfile.TemporaryFile(mode="w+b") as replay:
+            replay.write(input_bytes)
+            replay.flush()
+            replay.seek(0)
+            os.dup2(replay.fileno(), sys.stdin.fileno())
         os.execv(str(launcher), ["scottland-exec", "--", str(script), *sys.argv[1:]])
     except OSError as error:
         print(f"scottland-list-picker: could not enter a Scottland session: {error}", file=sys.stderr)
@@ -99,7 +107,8 @@ def main():
     args = parser.parse_args()
 
     try:
-        entries = read_entries(sys.stdin.buffer.read())
+        input_bytes = sys.stdin.buffer.read()
+        entries = read_entries(input_bytes)
     except UnicodeDecodeError as error:
         print(f"scottland-list-picker: stdin is not valid UTF-8: {error}", file=sys.stderr)
         return 2
@@ -107,7 +116,7 @@ def main():
     if not entries:
         return 1
 
-    if not enter_scottland_session():
+    if not enter_scottland_session(input_bytes):
         return 2
 
     runtime = os.environ.get("XDG_RUNTIME_DIR")
