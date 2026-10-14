@@ -511,16 +511,86 @@ pub fn json_value(output: &Output, explain: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        Context, associated_mpris_fields, desktop_entry_matches_app_id, name, normalize_name,
-        title_content,
+        Context, associated_mpris_fields, desktop_entry_matches_app_id, name, name_one,
+        normalize_name, title_content,
     };
+    use crate::command::Cache as CommandCache;
     use crate::desktop::Index;
     use crate::ipc::Window;
     use crate::mpris::Player;
     use crate::process::{Snapshot, Tree};
-    use crate::recipe::Set;
+    use crate::recipe::{Set, Source, load};
     use scottland::session::Environment;
+    use serde_json::{Value, json};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn shipped_terminal_recipes_name_remote_and_local_sessions_then_fall_back() {
+        let shipped = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../window-names.d");
+        let mut recipes = load(&[shipped]);
+        recipes.recipes.retain(|recipe| {
+            matches!(recipe.id.as_str(), "terminal-tmux" | "terminal-tmux-local")
+        });
+        for recipe in &mut recipes.recipes {
+            if let Some(Source::Command { argv, .. }) = &mut recipe.source {
+                *argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf '%s' \"$SCOTTLAND_TEST_RESPONSE\"".into(),
+                ];
+            }
+        }
+        let context = Context {
+            window: Window {
+                id: 17,
+                pid: 41,
+                app_id: "org.example.terminal".into(),
+                title: "Shell title".into(),
+            },
+            app_name: "Terminal".into(),
+            categories: vec!["TerminalEmulator".into()],
+            title_content: "Shell title".into(),
+            sole_owner: true,
+            tree: Tree::default(),
+        };
+        let run_response = |response: Value| {
+            let environment = Environment::from([(
+                OsString::from("SCOTTLAND_TEST_RESPONSE"),
+                OsString::from(response.to_string()),
+            )]);
+            name_one(
+                &context,
+                1,
+                &recipes,
+                None,
+                &environment,
+                &mut CommandCache::default(),
+                &mut None,
+                false,
+            )
+        };
+
+        let remote = run_response(json!({"session": {
+            "name": "deploy", "host": "server", "basis": "current"
+        }}));
+        assert_eq!(remote.name.as_deref(), Some("deploy (server)"));
+        assert_eq!(remote.recipe.as_deref(), Some("terminal-tmux"));
+        assert_eq!(remote.basis, "current");
+
+        let local = run_response(json!({"session": {
+            "name": "deploy", "basis": "current"
+        }}));
+        assert_eq!(local.name.as_deref(), Some("deploy"));
+        assert_eq!(local.recipe.as_deref(), Some("terminal-tmux-local"));
+        assert_eq!(local.basis, "current");
+
+        let unattributed = run_response(json!({"session": null}));
+        assert_eq!(unattributed.name.as_deref(), Some("Shell title"));
+        assert_eq!(unattributed.recipe, None);
+        assert_eq!(unattributed.basis, "title");
+    }
 
     #[test]
     fn title_content_removes_only_a_matching_final_segment() {

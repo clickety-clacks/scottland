@@ -1,7 +1,7 @@
 {
   "name": "agent-window-resolver",
   "upstream": "https://github.com/clickety-clacks/agent-window-resolver",
-  "commit": "d3817793b4476b72bb9b951a70503fd76bd289ee",
+  "commit": "10646bfd3ae6449f5cafa0fed8fe2ab8ba748422",
   "contract": "v1 and window-session v1",
   "package": "agent_window_resolver",
   "copied_verbatim": true,
