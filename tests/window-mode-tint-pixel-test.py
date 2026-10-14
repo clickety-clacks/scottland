@@ -136,9 +136,23 @@ def launch(title, color, geometry):
     view = wait(lambda: mapped(title), title + ' maps')
     identifier = int(view['id'])
     rect = dict(zip(('x', 'y', 'width', 'height'), geometry))
-    ipc('window-rules/configure-view', {'id': identifier, 'geometry': rect})
-    wait(lambda: next((v for v in list_views() if int(v['id']) == identifier and
-                       v.get('geometry') == rect), None), title + ' fixture geometry')
+    configure_result = ipc('window-rules/configure-view', {'id': identifier, 'geometry': rect})
+    last_geometry = None
+
+    def configured():
+        nonlocal last_geometry
+        current = next((v for v in list_views() if int(v['id']) == identifier), None)
+        last_geometry = current.get('geometry') if current else None
+        if not isinstance(last_geometry, dict):
+            return False
+        return all(abs(float(last_geometry.get(key, float('inf'))) - float(value)) <= 1
+                   for key, value in rect.items())
+
+    try:
+        wait(configured, title + ' fixture geometry')
+    except RuntimeError as error:
+        raise RuntimeError(f'{title} geometry request={rect}; configure={configure_result}; '
+                           f'last_geometry={last_geometry}') from error
     return identifier
 
 
