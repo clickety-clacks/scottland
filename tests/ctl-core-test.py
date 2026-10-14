@@ -142,7 +142,11 @@ class Session:
     def start(self):
         result = self.harness("start", timeout=120)
         if result.returncode:
-            raise RuntimeError(f"headless start failed: {result.stdout}\n{result.stderr}")
+            detail = f"{result.stdout}\n{result.stderr}"
+            log = HEADLESS / "wayfire.log"
+            if log.is_file():
+                detail += f"\n--- headless compositor startup log ---\n{log.read_text(errors='replace')}"
+            raise RuntimeError(f"headless start failed: {detail}")
         self.display = (HEADLESS / "display").read_text().strip()
 
     def run(self, *args, input=None, timeout=30):
