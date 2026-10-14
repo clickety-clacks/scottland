@@ -517,6 +517,18 @@ fn terminal_theme_push_rejects_malformed_arguments_before_calling_helper() {
 }
 
 #[test]
+fn night_light_parse_errors_preserve_the_policy_status_without_session_io() {
+    let scratch = Scratch::new();
+    let output = scratch.run(&["night-light", "unsupported"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stdout(&output).is_empty());
+    assert!(stderr(&output).contains("usage: scottland-display night-light"));
+    assert!(scratch.helper_calls().is_empty());
+    assert!(scratch.calls().is_empty());
+}
+
+#[test]
 fn cursor_size_command_returns_the_helper_value_without_settings_side_effects() {
     let scratch = Scratch::new();
     let output = scratch.run(&["cursor-size"]);
