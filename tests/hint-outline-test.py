@@ -384,7 +384,7 @@ def find_overlap_point(left_id, right_id):
                        f"badges={badges(state)}")
 
 
-def outside_point():
+def outside_point(capture_size, origin=(0, 0)):
     state = hints()
     frames = frame_map(state)
     for identifier, frame in frames.items():
@@ -398,7 +398,10 @@ def outside_point():
                     (frame[0] + frame[2] + distance, frame[1] + frame[3] * t),
                 ))
         for point in candidates:
-            if off_badges(state, *point, margin=20) and not any(contains(other, point) for other in frames.values()):
+            sx, sy = point[0] + origin[0], point[1] + origin[1]
+            in_capture = 0 <= sx < capture_size[0] and 0 <= sy < capture_size[1]
+            if (in_capture and off_badges(state, *point, margin=20) and
+                    not any(contains(other, point) for other in frames.values())):
                 return point
     return None
 
@@ -432,7 +435,8 @@ def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_
         check(name + f": {strength}% tint follows rear-first extent order",
               near(actual, expected, 5))
         if no_stroke:
-            point_out = outside_point()
+            point_out = outside_point((before.img.get_width() / scale,
+                                      before.img.get_height() / scale), origin)
             if point_out is not None:
                 set_tint(0)
                 outside_base = Shot(name + "-outside-base", scale)
@@ -670,16 +674,14 @@ def widget_cover():
         image = Shot("09-widget-cover-" + phase)
         ux, uy, uw, uh = under_rect
         under_card = lambda x, y: contains(card_rect, (x, y))
-        samples = [(ux + uw * fx, uy + uh * fy)
-                   for fy in (.25, .5, .65, .75, .9)
-                   for fx in (.35, .5, .65)
-                   if off_badges(state, ux + uw * fx, uy + uh * fy, 20)]
-        exposed = next((p for p in samples if not under_card(*p)), None)
-        covered = next((p for p in samples if under_card(*p)), None)
-        exposed_pixel = image.pixel(*exposed) if exposed else None
-        covered_pixel = image.pixel(*covered) if covered else None
+        exposed = (ux + uw * .8, uy + uh * .5)
+        covered = (ux + uw * .65, uy + uh * .9)
+        exposed_is_sampleable = (not under_card(*exposed) and off_badges(state, *exposed, 20))
+        covered_is_sampleable = (under_card(*covered) and off_badges(state, *covered, 20))
+        exposed_pixel = image.pixel(*exposed) if exposed_is_sampleable else None
+        covered_pixel = image.pixel(*covered) if covered_is_sampleable else None
         check("widget as cover " + phase + ": card hides client pixels while exposed pixels remain",
-              exposed is not None and covered is not None and
+              exposed_is_sampleable and covered_is_sampleable and
               near(exposed_pixel, client_color, 8) and not near(covered_pixel, client_color, 8),
               {"exposed_point": exposed, "exposed_pixel": exposed_pixel,
                "covered_point": covered, "covered_pixel": covered_pixel})
