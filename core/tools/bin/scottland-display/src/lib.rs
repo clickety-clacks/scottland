@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::process::{Command, Output};
 
-mod color_scheme;
+pub(crate) mod color_scheme;
+pub(crate) mod gamma;
 
 const SCHEMA: &str = "org.gnome.desktop.interface";
 const KEY: &str = "text-scaling-factor";
