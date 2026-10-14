@@ -57,6 +57,23 @@ def opacity(title):
     return row["opacity"] if row else None
 
 
+def bottom_center_frame():
+    """Capture the search box area on the private 1280x720 headless output."""
+    image = subprocess.check_output(["grim", "-t", "ppm", "-g", "400,640 480x70", "-"])
+    header, dimensions, maximum, pixels = image.split(b"\n", 3)
+    assert header == b"P6" and dimensions == b"480 70" and maximum == b"255"
+    return pixels
+
+
+def pixel_difference(left, right):
+    assert len(left) == len(right)
+    return sum(abs(a - b) for a, b in zip(left, right))
+
+
+def hint_ids():
+    return {row["window"] for row in ipc("scottland/hints")["hints"]}
+
+
 children = []
 try:
     for title in ("Filter Match", "Filter Other"):
@@ -68,25 +85,63 @@ try:
     match = "Filter Match"
     other = "Filter Other"
 
+    # Holding Alt already enters Window mode. Opening the box keeps it active
+    # after Alt is released; Escape here cancels only the transient query.
+    key("LEFTALT", True)
+    until(lambda: ipc("scottland/hints")["active"], "held Alt did not enter Window mode")
+    background_frame = bottom_center_frame()
+    tap("ENTER")
+    box_frame = until(lambda: (p if pixel_difference(background_frame, (p := bottom_center_frame())) > 10000 else None),
+                      "held Alt+Enter did not render the bottom-center search box")
+    key("LEFTALT", False)
+    assert ipc("scottland/hints")["active"]
+    print("PASS held Alt+Enter opens bottom-center box and survives Alt release", flush=True)
+
+    for letter in "MATCH":
+        tap(letter)
+    until(lambda: opacity(other) == 0.0, "transient query did not fade nonmatch")
+    assert view(match)["id"] in hint_ids() and view(other)["id"] not in hint_ids()
+    tap("ESC")
+    until(lambda: opacity(other) != 0.0, "active-box Escape did not clear query")
+    assert ipc("scottland/hints")["active"]
+    until(lambda: pixel_difference(box_frame, bottom_center_frame()) > 10000,
+          "active-box Escape did not close the search box")
+    print("PASS active-box Escape clears transient filter but stays in Window mode", flush=True)
+    tap("ESC")
+    assert not ipc("scottland/hints")["active"]
+    print("PASS inactive-box Escape exits Window mode", flush=True)
+
     tap("LEFTALT")
     until(lambda: ipc("scottland/hints")["active"], "Alt tap did not latch Window mode")
     print("PASS Alt tap latches Window mode after release", flush=True)
 
+    pre_box_frame = bottom_center_frame()
     tap("ENTER")
+    committed_box_frame = until(
+        lambda: (p if pixel_difference(pre_box_frame, (p := bottom_center_frame())) > 10000 else None),
+        "latched Return did not render the search box")
     for letter in "MATCH":
         tap(letter)
     until(lambda: opacity(other) == 0.0, "nonmatching window did not fade to zero")
     assert opacity(match) != 0.0
+    assert view(match)["id"] in hint_ids() and view(other)["id"] not in hint_ids()
     print("PASS active filter keeps matching window and fades other window", flush=True)
 
     tap("ENTER")
     assert ipc("scottland/hints")["active"] and opacity(other) == 0.0
-    print("PASS Return commits filter and retains latched hints", flush=True)
+    assert view(match)["id"] in hint_ids() and view(other)["id"] not in hint_ids()
+    until(lambda: pixel_difference(committed_box_frame, bottom_center_frame()) > 10000,
+          "Return did not close the search box")
+    print("PASS Return commits filter, closes box, and keeps only matching hints", flush=True)
 
     tap("ESC")
     until(lambda: opacity(other) != 0.0, "Window mode exit did not restore opacity")
     assert not ipc("scottland/hints")["active"]
-    print("PASS Escape exits latched mode and restores opacity", flush=True)
+    tap("LEFTALT")
+    until(lambda: ipc("scottland/hints")["active"], "new mode did not latch")
+    assert view(match)["id"] in hint_ids() and view(other)["id"] in hint_ids()
+    tap("ESC")
+    print("PASS exiting latched mode clears committed filter and restores opacity", flush=True)
 
     solves = ipc("scottland/spread-state")["solves"]
     tap("LEFTALT")
