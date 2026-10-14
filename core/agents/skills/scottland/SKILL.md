@@ -91,6 +91,10 @@ in its default application. Pipe text to `scottland-clipboard copy-text`, or pas
 type to `scottland-clipboard copy-file`; both paste by default, and `--copy-only` skips pasting.
 Use `scottland-clipboard clear` to empty the session history. Core does not bind a default key.
 
+`scottland-emoji` opens the shipped, offline emoji list and inserts a selection into the app that
+was focused when the picker opened, restoring the previous clipboard. Use `--copy` to copy the
+selection without inserting it. Core does not bind a default key.
+
 ## Touchscreen scrolling for apps that ignore touch
 
 Many apps scroll with a finger on their own (browsers, most GTK and Qt apps). Some don't, notably

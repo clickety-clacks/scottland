@@ -169,6 +169,14 @@ Source candidate present; focused helper checks pass; compositor build and sessi
 Private session-memory clipboard snapshots support the emoji consumer. CH11's empty-list presentation
 after clear remains an open interaction because the generic picker cancels on empty input.
 
+## Emoji picker
+
+`scottland-emoji` searches the bundled fully-qualified Unicode list through the generic list picker.
+Insert mode restores the prior clipboard and targets the app focused when the picker opened; `--copy`
+copies without pasting. Data generation is offline and introduces no package dependency. The command
+contract and EM1–EM8 are in [../docs/emoji.md](../docs/emoji.md). Source and targeted command checks
+are present; real session behavior remains pending.
+
 ## Shortcut sheet
 
 The searchable session shortcut sheet and its behavior contract are in

@@ -5,7 +5,7 @@ RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 # Portal selection for Scottland sessions (xdg-desktop-portal also reads $XDG_DATA_HOME).
 PORTALS := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/xdg-desktop-portal
 
-.PHONY: plugin tools tools-test clipboard-test dev-install link-dev test-hooks hooks dev-uninstall package clean
+.PHONY: plugin tools tools-test clipboard-test emoji-test dev-install link-dev test-hooks hooks dev-uninstall package clean
 
 # Optimized with debug info, asserts and frame pointers: unoptimized builds ran the plugin's CPU
 # paths 7-9x slower and froze the pointer (docs/compositor-hangs.md); cores and stacks stay readable.
@@ -29,6 +29,9 @@ tools-test:
 
 clipboard-test:
 	python3 tests/clipboard-list-test.py
+
+emoji-test:
+	python3 tests/emoji-test.py
 
 # The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
 # here doesn't touch it until the next dev-install (and reload). Refuses uncommitted work, so what
@@ -87,11 +90,13 @@ link-dev:
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
 	ln -sf $(CURDIR)/core/libexec/scottland-list-picker $(HOME)/.local/bin/scottland-list-picker
 	ln -sf $(CURDIR)/core/libexec/scottland-clipboard $(HOME)/.local/bin/scottland-clipboard
+	ln -sf $(CURDIR)/core/libexec/scottland-emoji $(HOME)/.local/bin/scottland-emoji
 	ln -sf $(CURDIR)/core/libexec/scottland-keybindings $(HOME)/.local/bin/scottland-keybindings
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(DEV)/window-names.d
 	ln -sfn $(CURDIR)/core/list-picker $(DEV)/list-picker
+	ln -sfn $(CURDIR)/core/emoji $(DEV)/emoji
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 # The system tools, after the scripts: a tool that replaces a script takes its place.
 	for f in build/tools/bin/*; do \
@@ -132,6 +137,7 @@ hooks:
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(HOOKS_DIR)/window-names.d
 	ln -sfn $(CURDIR)/core/list-picker $(HOOKS_DIR)/list-picker
+	ln -sfn $(CURDIR)/core/emoji $(HOOKS_DIR)/emoji
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	for f in build/tools/bin/*; do [ -e "$$f" ] || continue; ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
@@ -153,7 +159,8 @@ test-hooks: plugin tools
 dev-uninstall:
 	rm -rf $(DEV)
 	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup \
-	  $(HOME)/.local/bin/scottland-list-picker $(HOME)/.local/bin/scottland-clipboard $(HOME)/.local/bin/scottland-keybindings $(PORTALS)/scottland-portals.conf
+	  $(HOME)/.local/bin/scottland-list-picker $(HOME)/.local/bin/scottland-clipboard \
+	  $(HOME)/.local/bin/scottland-emoji $(HOME)/.local/bin/scottland-keybindings $(PORTALS)/scottland-portals.conf
 
 package:
 	cd packaging/arch && makepkg -sif

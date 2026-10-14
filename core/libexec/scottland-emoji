@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Choose a Unicode emoji through Scottland's generic list picker."""
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+def command(name):
+    found = shutil.which(name)
+    if found:
+        return found
+    hooks = os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")
+    candidate = Path(hooks) / "libexec" / name
+    return str(candidate) if candidate.is_file() else None
+
+
+def emoji_data():
+    hooks = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"))
+    candidates = [hooks / "emoji" / "emoji.tsv", Path("/usr/share/scottland/emoji/emoji.tsv")]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise OSError("the Unicode emoji data is not installed")
+
+
+def load_entries(path):
+    entries = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line or line.startswith("#"):
+            continue
+        emoji, separator, name = line.partition("\t")
+        if not separator or not emoji or not name:
+            raise ValueError(f"invalid emoji data row {number}")
+        entries.append((emoji, name, f"{emoji} {name}"))
+    if not entries:
+        raise ValueError("the Unicode emoji data is empty")
+    return entries
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="scottland-emoji")
+    parser.add_argument("--copy", action="store_true", help="copy the chosen emoji instead of inserting it")
+    args = parser.parse_args()
+
+    snapshot = None
+    clipboard = None
+    try:
+        rows = load_entries(emoji_data())
+        picker = command("scottland-list-picker")
+        if not picker:
+            raise OSError("scottland-list-picker is not installed")
+        clipboard = command("scottland-clipboard")
+        if not clipboard:
+            raise OSError("scottland-clipboard is not installed")
+        target = None
+        if not args.copy:
+            target_result = subprocess.run([clipboard, "focused-target"], capture_output=True, check=False)
+            if target_result.returncode != 0:
+                message = target_result.stderr.decode("utf-8", "replace").splitlines()
+                raise RuntimeError(message[0] if message else "there is no focused app window")
+            target = target_result.stdout.decode("ascii").strip()
+            saved = subprocess.run([clipboard, "snapshot"], capture_output=True, check=False)
+            if saved.returncode != 0:
+                message = saved.stderr.decode("utf-8", "replace").splitlines()
+                raise RuntimeError(message[0] if message else "could not preserve the current clipboard")
+            snapshot = saved.stdout.decode("ascii").strip()
+        payload = "".join(f"{row[2]}\n" for row in rows).encode("utf-8")
+        result = subprocess.run(
+            [picker, "--prompt", "Choose an emoji"], input=payload, capture_output=True, check=False
+        )
+        if result.returncode != 0:
+            if result.stderr:
+                sys.stderr.buffer.write(result.stderr)
+            if snapshot is not None:
+                subprocess.run([clipboard, "release", snapshot], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=False)
+                snapshot = None
+            return result.returncode
+        selected = result.stdout.decode("utf-8").rstrip("\n")
+        emoji = next((row[0] for row in rows if row[2] == selected), None)
+        if emoji is None:
+            raise ValueError("the picker returned an unknown emoji")
+        if args.copy:
+            action = [clipboard, "copy-text", "--copy-only"]
+        else:
+            action = [clipboard, "type-text", "--snapshot", snapshot, "--target", target]
+        copied = subprocess.run(action, input=emoji.encode("utf-8"), capture_output=True, check=False)
+        if copied.returncode != 0:
+            if copied.stderr:
+                sys.stderr.buffer.write(copied.stderr)
+            else:
+                print("scottland-emoji: could not deliver the selected emoji", file=sys.stderr)
+            return copied.returncode
+        if not args.copy:
+            snapshot = None
+        return 0
+    except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+        print(f"scottland-emoji: {error}", file=sys.stderr)
+        return 2
+    finally:
+        if snapshot is not None and clipboard:
+            subprocess.run([clipboard, "release", snapshot], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=False)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
