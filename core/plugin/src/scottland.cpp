@@ -67,6 +67,7 @@ extern "C" {
 #include "declutter.hpp"
 #include "peek.hpp"
 #include "alt-mode.hpp"
+#include "window-filter.hpp"
 #include "pairing.hpp"
 #include "navigation.hpp"
 #include "inertia.hpp"
@@ -1193,7 +1194,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
-        if (untouched_since_pairing(view))
+        if (window_keys.active && !window_filter.matches(view->get_title(), view->get_app_id(),
+            link_of_widget(view) ? link_of_widget(view)->name : ""))
+            target = 0.0;
+        else if (untouched_since_pairing(view))
             target = 1.0;  // pairing shows both fully opaque, once (WK36)
         else if (window_keys.active)
             target = focused ? double(window_mode_opacity_focused) : double(window_mode_opacity_unfocused);
@@ -4581,6 +4585,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };
 
     wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id =
@@ -4588,6 +4593,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         observe_view(wf::toplevel_cast(ev->view));
         publish_model();
+        if (window_keys.active && !window_filter.query.empty()) update_window_filter();
     };
 
     // What the widget's manifest says that Scottland acts on, told by the launcher once it has
