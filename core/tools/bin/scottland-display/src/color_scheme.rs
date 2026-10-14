@@ -1370,9 +1370,11 @@ mod night_light_receiver {
     //! `try_serve` on readiness. This keeps gamma handles in that watcher and
     //! serializes requests with output events.
 
+    use std::ffi::OsStr;
     use std::fs::{self, File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
@@ -1398,45 +1400,54 @@ mod night_light_receiver {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct SessionToken {
-        device: u64,
-        inode: u64,
-        modified_seconds: i64,
-        modified_nanoseconds: i64,
+        /// Length-prefixed logind login ID, padded to keep the existing frame width.
+        login_id: [u8; 32],
     }
 
     impl SessionToken {
         fn read(env_path: &Path) -> io::Result<Self> {
-            let metadata = fs::metadata(env_path)?;
-            Ok(Self {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-                modified_seconds: metadata.mtime(),
-                modified_nanoseconds: metadata.mtime_nsec(),
-            })
+            let environment = scottland::session::read_env(env_path)?;
+            let login_id = environment
+                .get(OsStr::new("XDG_SESSION_ID"))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "XDG_SESSION_ID is missing")
+                })?;
+            Self::from_login_id(login_id)
+        }
+
+        fn from_login_id(login_id: &OsStr) -> io::Result<Self> {
+            let bytes = login_id.as_bytes();
+            if bytes.is_empty() || bytes.len() > 31 || bytes.contains(&0) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "XDG_SESSION_ID is empty or too long",
+                ));
+            }
+            let mut identity = [0; 32];
+            identity[0] = bytes.len() as u8;
+            identity[1..1 + bytes.len()].copy_from_slice(bytes);
+            Ok(Self { login_id: identity })
         }
 
         fn encode(self, target: &mut Vec<u8>) {
-            target.extend_from_slice(&self.device.to_le_bytes());
-            target.extend_from_slice(&self.inode.to_le_bytes());
-            target.extend_from_slice(&self.modified_seconds.to_le_bytes());
-            target.extend_from_slice(&self.modified_nanoseconds.to_le_bytes());
+            target.extend_from_slice(&self.login_id);
         }
 
         fn decode(bytes: &[u8]) -> Option<Self> {
             if bytes.len() < 32 {
                 return None;
             }
-            Some(Self {
-                device: u64::from_le_bytes(bytes[0..8].try_into().ok()?),
-                inode: u64::from_le_bytes(bytes[8..16].try_into().ok()?),
-                modified_seconds: i64::from_le_bytes(bytes[16..24].try_into().ok()?),
-                modified_nanoseconds: i64::from_le_bytes(bytes[24..32].try_into().ok()?),
-            })
+            let login_id: [u8; 32] = bytes[..32].try_into().ok()?;
+            let length = usize::from(login_id[0]);
+            if length == 0 || length > 31 || login_id[1 + length..].iter().any(|byte| *byte != 0) {
+                return None;
+            }
+            Some(Self { login_id })
         }
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct RequestRecord {
+    pub(super) struct RequestRecord {
         token: SessionToken,
         revision: u64,
         request: RequestState,
@@ -1542,11 +1553,10 @@ mod night_light_receiver {
         /// Bind the private endpoint and load only this recorded session's retained
         /// request. A replacement watcher therefore retains On, while a newly
         /// recorded session starts Off.
-        pub fn bind(session: &Session) -> Result<(Self, RequestState), String> {
+        pub(super) fn bind(session: &Session) -> Result<(Self, RequestRecord), String> {
             let files = SessionFiles::for_session(session)?;
             ensure_private_directory(&files.directory)?;
-            let token = files.token()?;
-            let request = state_store(&files).initialize(token)?;
+            let (token, request) = initialize_session_state(&files)?;
             remove_stale_socket(&files.socket)?;
             let listener = UnixListener::bind(&files.socket)
                 .map_err(|error| format!("could not bind Night Light receiver: {error}"))?;
@@ -1624,22 +1634,12 @@ mod night_light_receiver {
         /// Reapply a retained request immediately after this replacement watcher
         /// acquires its protocol connection. The caller must do this before polling
         /// for ordinary input so NL9's two-second bound is met.
-        pub fn reapply_after_restart<B: GammaBackend>(
+        pub(super) fn reapply_after_restart<B: GammaBackend>(
             &self,
-            request: RequestState,
+            startup_record: RequestRecord,
             backend: &mut B,
         ) -> Result<Option<Decision>, String> {
-            if request != RequestState::On {
-                return Ok(None);
-            }
-            if !self.session_is_current() {
-                return Err("Night Light receiver belongs to a stale session".to_owned());
-            }
-            let decision = execute_night_light(Command::On, request, backend);
-            let store = state_store(&self.files);
-            let record = store.read(self.token)?;
-            store.write_if_revision(record, decision.request)?;
-            Ok(Some(decision))
+            reapply_startup_request(&self.files, self.token, startup_record, backend)
         }
 
         /// Reconcile a clear-off written by a client whose request could not reach
@@ -1650,36 +1650,86 @@ mod night_light_receiver {
             &self,
             backend: &mut B,
         ) -> Result<Option<Decision>, String> {
-            if !self.session_is_current() {
-                return Err("Night Light receiver belongs to a stale session".to_owned());
-            }
-            let store = state_store(&self.files);
-            let record = store.read(self.token)?;
-            if record.request != RequestState::Off {
-                return Ok(None);
-            }
-            let outputs = backend.outputs();
-            let has_owned_gamma = outputs.iter().any(|output| {
-                matches!(
-                    output.ownership,
-                    scottland::night_light::OutputOwnership::WarmOwned
-                        | scottland::night_light::OutputOwnership::OwnedUnwarmed
-                )
-            });
-            if !has_owned_gamma {
-                return Ok(None);
-            }
-            let plan = night_light::plan(Input {
-                command: Command::Off,
-                request: RequestState::Off,
-                watcher_available: true,
-                outputs,
-            });
-            let outcomes = backend.apply(&plan.actions);
-            let decision = night_light::finish(plan, &outcomes);
-            store.write_if_revision(record, decision.request)?;
-            Ok(Some(decision))
+            reconcile_persisted_off(&self.files, self.token, backend)
         }
+    }
+
+    fn initialize_session_state(
+        files: &SessionFiles,
+    ) -> Result<(SessionToken, RequestRecord), String> {
+        let token = files.token()?;
+        let record = state_store(files).initialize(token)?;
+        Ok((token, record))
+    }
+
+    fn reapply_startup_request<B: GammaBackend>(
+        files: &SessionFiles,
+        token: SessionToken,
+        startup_record: RequestRecord,
+        backend: &mut B,
+    ) -> Result<Option<Decision>, String> {
+        if files.token()? != token || startup_record.token != token {
+            return Err("Night Light receiver belongs to a stale session".to_owned());
+        }
+        let store = state_store(files);
+        // Re-read and compare the startup snapshot before gamma side effects. An
+        // Off committed before replacement reapply therefore prevents stale On.
+        let current = store.read(token)?;
+        if current.request != RequestState::On {
+            return reconcile_persisted_off(files, token, backend);
+        }
+        let expected = if current == startup_record {
+            startup_record
+        } else {
+            current
+        };
+
+        let decision = execute_night_light(Command::On, RequestState::On, backend);
+        // This CAS cannot overwrite Off if it landed during backend application.
+        store.write_if_revision(expected, decision.request)?;
+        let current = store.read(token)?;
+        if current.request == RequestState::Off {
+            // Reapply may have completed after Off was persisted. Restore any
+            // handle it just warmed before returning to the event loop.
+            return reconcile_persisted_off(files, token, backend);
+        }
+        Ok(Some(decision))
+    }
+
+    fn reconcile_persisted_off<B: GammaBackend>(
+        files: &SessionFiles,
+        token: SessionToken,
+        backend: &mut B,
+    ) -> Result<Option<Decision>, String> {
+        if files.token()? != token {
+            return Err("Night Light receiver belongs to a stale session".to_owned());
+        }
+        let store = state_store(files);
+        let record = store.read(token)?;
+        if record.request != RequestState::Off {
+            return Ok(None);
+        }
+        let outputs = backend.outputs();
+        let has_owned_gamma = outputs.iter().any(|output| {
+            matches!(
+                output.ownership,
+                scottland::night_light::OutputOwnership::WarmOwned
+                    | scottland::night_light::OutputOwnership::OwnedUnwarmed
+            )
+        });
+        if !has_owned_gamma {
+            return Ok(None);
+        }
+        let plan = night_light::plan(Input {
+            command: Command::Off,
+            request: RequestState::Off,
+            watcher_available: true,
+            outputs,
+        });
+        let outcomes = backend.apply(&plan.actions);
+        let decision = night_light::finish(plan, &outcomes);
+        store.write_if_revision(record, decision.request)?;
+        Ok(Some(decision))
     }
 
     impl Drop for NightLightReceiver {
@@ -1749,19 +1799,20 @@ mod night_light_receiver {
     }
 
     impl StateStore<'_> {
-        fn initialize(&self, token: SessionToken) -> Result<RequestState, String> {
+        fn initialize(&self, token: SessionToken) -> Result<RequestRecord, String> {
             let _lock = self.lock()?;
             let existing = self.read_unlocked()?;
             if let Some(record) = existing.filter(|record| record.token == token) {
-                return Ok(record.request);
+                return Ok(record);
             }
             let revision = existing.map_or(0, |record| record.revision.saturating_add(1));
-            self.write_unlocked(RequestRecord {
+            let record = RequestRecord {
                 token,
                 revision,
                 request: RequestState::Off,
-            })?;
-            Ok(RequestState::Off)
+            };
+            self.write_unlocked(record)?;
+            Ok(record)
         }
 
         fn read(&self, token: SessionToken) -> Result<RequestRecord, String> {
@@ -2288,12 +2339,7 @@ mod night_light_receiver {
         static NEXT: AtomicU64 = AtomicU64::new(0);
 
         fn token() -> SessionToken {
-            SessionToken {
-                device: 2,
-                inode: 9,
-                modified_seconds: 10,
-                modified_nanoseconds: 11,
-            }
+            SessionToken::from_login_id(OsStr::new("42")).unwrap()
         }
 
         struct FakeGamma {
@@ -2328,8 +2374,21 @@ mod night_light_receiver {
                 state: root.join("wayland-1.night-light.state"),
                 lock: root.join(".wayland-1.night-light.lock"),
             };
-            fs::write(&files.env, b"WAYLAND_DISPLAY=wayland-1\0").unwrap();
+            fs::write(
+                &files.env,
+                b"WAYLAND_DISPLAY=wayland-1\0XDG_SESSION_ID=42\0",
+            )
+            .unwrap();
             (root, files)
+        }
+
+        fn atomic_replace_env(files: &SessionFiles, login_id: &str) {
+            let temporary = files.env.with_extension("env.refresh");
+            let contents =
+                format!("WAYLAND_DISPLAY=wayland-1\0XDG_SESSION_ID={login_id}\0XCURSOR_SIZE=24\0");
+            fs::write(&temporary, contents.as_bytes()).unwrap();
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::rename(temporary, &files.env).unwrap();
         }
 
         #[test]
@@ -2374,8 +2433,7 @@ mod night_light_receiver {
         fn response_from_another_session_is_rejected() {
             let decision = unavailable_decision(Command::Status, RequestState::Off);
             let frame = encode_response(token(), &decision).unwrap();
-            let mut other = token();
-            other.inode += 1;
+            let other = SessionToken::from_login_id(OsStr::new("43")).unwrap();
             assert_eq!(decode_response(&frame, other), None);
         }
 
@@ -2408,29 +2466,175 @@ mod night_light_receiver {
         }
 
         #[test]
-        fn watcher_replacement_keeps_on_but_a_new_session_starts_off_and_off_wins_races() {
+        fn atomic_environment_refresh_keeps_same_login_on_and_new_login_starts_off() {
             let (root, files) = runtime_files();
             let store = state_store(&files);
-            let first_token = files.token().unwrap();
-            assert_eq!(store.initialize(first_token).unwrap(), RequestState::Off);
-            let initial = store.read(first_token).unwrap();
+            let (first_token, initial) = initialize_session_state(&files).unwrap();
+            assert_eq!(initial.request, RequestState::Off);
             store.write_if_revision(initial, RequestState::On).unwrap();
-            assert_eq!(store.initialize(first_token).unwrap(), RequestState::On);
 
-            let stale_on = store.read(first_token).unwrap();
-            store.force_off(first_token).unwrap();
-            store.write_if_revision(stale_on, RequestState::On).unwrap();
-            assert_eq!(store.read(first_token).unwrap().request, RequestState::Off);
+            // F1's ensure/reload path writes a temporary .env and atomically
+            // replaces it while retaining the logind login identity.
+            atomic_replace_env(&files, "42");
+            assert_eq!(files.token().unwrap(), first_token);
+            let (same_login, retained) = initialize_session_state(&files).unwrap();
+            assert_eq!(same_login, first_token);
+            assert_eq!(retained.request, RequestState::On);
 
-            let before = store.read(first_token).unwrap();
-            store.write_if_revision(before, RequestState::On).unwrap();
-            let replacement = root.join("next.env");
-            fs::write(&replacement, b"WAYLAND_DISPLAY=wayland-1\0").unwrap();
-            fs::rename(&replacement, &files.env).unwrap();
-            let next_token = files.token().unwrap();
-            assert_ne!(first_token, next_token);
-            assert_eq!(store.initialize(next_token).unwrap(), RequestState::Off);
-            assert_eq!(store.read(next_token).unwrap().request, RequestState::Off);
+            // Reusing the display name in a later login changes the generation
+            // even when the environment file path is the same.
+            atomic_replace_env(&files, "43");
+            let (new_login, reset) = initialize_session_state(&files).unwrap();
+            assert_ne!(new_login, first_token);
+            assert_eq!(reset.request, RequestState::Off);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        fn replacement_with_on_request() -> (PathBuf, SessionFiles, SessionToken, RequestRecord) {
+            let (root, files) = runtime_files();
+            let (token, initial) = initialize_session_state(&files).unwrap();
+            let store = state_store(&files);
+            store.write_if_revision(initial, RequestState::On).unwrap();
+            let (_, startup) = initialize_session_state(&files).unwrap();
+            assert_eq!(startup.request, RequestState::On);
+            (root, files, token, startup)
+        }
+
+        fn unowned_gamma() -> RacingGamma {
+            RacingGamma {
+                outputs: vec![OutputInput {
+                    identity: "DP-1".to_owned(),
+                    ownership: night_light::OutputOwnership::Unowned,
+                    reason: None,
+                }],
+                applied: Vec::new(),
+                during_apply: None,
+            }
+        }
+
+        struct RacingGamma {
+            outputs: Vec<OutputInput>,
+            applied: Vec<Action>,
+            during_apply: Option<Box<dyn FnOnce()>>,
+        }
+
+        impl GammaBackend for RacingGamma {
+            fn outputs(&mut self) -> Vec<OutputInput> {
+                self.outputs.clone()
+            }
+
+            fn apply(&mut self, actions: &[Action]) -> Vec<OutputOutcome> {
+                self.applied.extend_from_slice(actions);
+                let mut outcomes = Vec::with_capacity(actions.len());
+                for action in actions {
+                    let (identity, acquisition, application, restoration) = match action {
+                        Action::AcquireAndApply4000K { output } => (
+                            output,
+                            Outcome::Succeeded,
+                            Outcome::Succeeded,
+                            Outcome::NotAttempted,
+                        ),
+                        Action::Apply4000K { output } => (
+                            output,
+                            Outcome::NotAttempted,
+                            Outcome::Succeeded,
+                            Outcome::NotAttempted,
+                        ),
+                        Action::RestoreOwned { output } => (
+                            output,
+                            Outcome::NotAttempted,
+                            Outcome::NotAttempted,
+                            Outcome::Succeeded,
+                        ),
+                        Action::ReleaseUnwarmed { output } => (
+                            output,
+                            Outcome::NotAttempted,
+                            Outcome::NotAttempted,
+                            Outcome::Succeeded,
+                        ),
+                    };
+                    if let Some(output) = self
+                        .outputs
+                        .iter_mut()
+                        .find(|item| item.identity == *identity)
+                    {
+                        output.ownership = match action {
+                            Action::AcquireAndApply4000K { .. } | Action::Apply4000K { .. } => {
+                                night_light::OutputOwnership::WarmOwned
+                            }
+                            Action::RestoreOwned { .. } | Action::ReleaseUnwarmed { .. } => {
+                                night_light::OutputOwnership::Unowned
+                            }
+                        };
+                    }
+                    outcomes.push(OutputOutcome {
+                        identity: identity.clone(),
+                        acquisition,
+                        application,
+                        restoration,
+                    });
+                }
+                if let Some(during_apply) = self.during_apply.take() {
+                    during_apply();
+                }
+                outcomes
+            }
+        }
+
+        #[test]
+        fn newer_off_before_reapply_skips_cached_on_side_effects() {
+            let (root, files, token, startup) = replacement_with_on_request();
+            let store = state_store(&files);
+            store.force_off(startup.token).unwrap();
+            let mut backend = unowned_gamma();
+
+            assert!(
+                reapply_startup_request(&files, token, startup, &mut backend)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(backend.applied.is_empty());
+            let current = store.read(startup.token).unwrap();
+            assert_eq!(current.request, RequestState::Off);
+            assert!(current.revision > startup.revision);
+
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn newer_off_during_reapply_restores_after_backend_application() {
+            let (root, files, token, startup) = replacement_with_on_request();
+            let files_for_off = files.clone();
+            let mut backend = unowned_gamma();
+            backend.during_apply = Some(Box::new(move || {
+                state_store(&files_for_off)
+                    .force_off(startup.token)
+                    .unwrap();
+            }));
+
+            let decision = reapply_startup_request(&files, token, startup, &mut backend)
+                .unwrap()
+                .unwrap();
+            assert_eq!(decision.request, RequestState::Off);
+            assert_eq!(
+                backend.applied,
+                [
+                    Action::AcquireAndApply4000K {
+                        output: "DP-1".to_owned(),
+                    },
+                    Action::RestoreOwned {
+                        output: "DP-1".to_owned(),
+                    },
+                ]
+            );
+            assert_eq!(
+                backend.outputs[0].ownership,
+                night_light::OutputOwnership::Unowned
+            );
+            let current = state_store(&files).read(startup.token).unwrap();
+            assert_eq!(current.request, RequestState::Off);
+            assert!(current.revision > startup.revision);
+
             fs::remove_dir_all(root).unwrap();
         }
 
