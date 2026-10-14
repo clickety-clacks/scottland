@@ -1,16 +1,22 @@
 #pragma once
 #include "window-memory.hpp"
-#include <array>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 namespace scottland::windowing
 {
-struct hint_entry { uint64_t id; unsigned slot; zone location; bool widget; };
+struct hint_entry { uint64_t id; unsigned slot; zone location; bool widget; bool widgetizable = true; };
 enum class destination { center, periphery, widget };
-// The other two zones, toward the center first, then the original zone.
-std::array<destination, 3> cycle_order(destination start);
+struct cycle_step
+{
+    destination to;
+    bool left = false;
+    bool operator==(const cycle_step& other) const
+    { return to == other.to && (to == destination::center || left == other.left); }
+};
+// Return the start-relative cycle with the start side fixed. Dialogs skip both widget steps.
+std::vector<cycle_step> cycle_order(destination start, bool start_left, bool widgetizable = true);
 class alt_mode
 {
   public:
@@ -18,7 +24,9 @@ class alt_mode
     uint64_t selected = 0;
     std::vector<hint_entry> entries;
     std::function<void(uint64_t, bool)> select; // bool: restore a widget as a card click
-    std::function<void(uint64_t, destination)> move;
+    std::function<void(uint64_t, cycle_step)> move;
+    // Resolve WP3's side when a center-start cycle begins, before selection changes focus.
+    std::function<bool(uint64_t)> cycle_side;
     std::function<void(uint64_t)> close;
     std::function<void(uint64_t)> hint_select; // an unselected widget was selected by its hint
     std::function<bool(uint64_t)> hint_peek_active;
@@ -54,18 +62,23 @@ class alt_mode
   private:
     std::string prefix;
     uint64_t cycling = 0;
-    std::array<destination, 3> order;
-    unsigned step = 0;
     uint64_t last_hint = 0;
     uint32_t last_release = 0;
     char last_key = 0;
     bool awaiting_release = false;
     bool repeat_candidate = false;
+    destination cycle_start = destination::center;
+    bool cycle_start_left = false, cycle_widgetizable = true;
+    std::vector<cycle_step> order;
+    unsigned step = 0;
     struct pending_hold { uint64_t id; char key; uint32_t pressed; uint64_t partner; };
     std::optional<pending_hold> hold;
     // WK35: a press on the focused window's hint acts on release, so a hold can solo it unmoved.
     struct pending_tap { uint64_t id; char key; };
     std::optional<pending_tap> waiting_tap;
+    void clear_cycle();
+    void start_cycle(const hint_entry& entry);
+    void ensure_cycle_order();
     void act_waiting_tap();
     void activate(uint64_t id, bool double_tap);
 };
