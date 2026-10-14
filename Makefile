@@ -81,9 +81,11 @@ link-dev:
 	ln -sf $(CURDIR)/core/session/scottland-reload $(HOME)/.local/bin/scottland-reload
 	ln -sf $(CURDIR)/core/libexec/scottland-exec $(HOME)/.local/bin/scottland-exec
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
+	ln -sf $(CURDIR)/core/libexec/scottland-list-picker $(HOME)/.local/bin/scottland-list-picker
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(DEV)/window-names.d
+	ln -sfn $(CURDIR)/core/list-picker $(DEV)/list-picker
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(DEV)/libexec/$$(basename $$f); done
 # The system tools, after the scripts: a tool that replaces a script takes its place.
 	for f in build/tools/bin/*; do \
@@ -122,6 +124,7 @@ hooks:
 	ln -sfn $(CURDIR)/core/agents $(HOOKS_DIR)/agents
 	ln -sfn $(CURDIR)/core/widgets $(HOOKS_DIR)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(HOOKS_DIR)/window-names.d
+	ln -sfn $(CURDIR)/core/list-picker $(HOOKS_DIR)/list-picker
 	for f in omarchy/libexec/* core/libexec/*; do ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	for f in build/tools/bin/*; do [ -e "$$f" ] || continue; ln -sf $(CURDIR)/$$f $(HOOKS_DIR)/libexec/$$(basename $$f); done
 	ln -sfn $(CURDIR)/core/settings $(HOOKS_DIR)/settings
@@ -143,7 +146,7 @@ test-hooks: plugin tools
 dev-uninstall:
 	rm -rf $(DEV)
 	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup \
-	  $(PORTALS)/scottland-portals.conf
+	  $(HOME)/.local/bin/scottland-list-picker $(PORTALS)/scottland-portals.conf
 
 package:
 	cd packaging/arch && makepkg -sif
