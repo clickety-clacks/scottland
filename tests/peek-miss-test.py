@@ -162,12 +162,24 @@ def settled():
 def pointer_drag(id, to, coast=False, require_drag=False):
     """Super+press on the window's drawn center and move to `to`; the button stays down."""
     x1, y1, x2, y2 = scene(id); x, y = (x1 + x2) / 2, (y1 + y2) / 2
+    start = (x, y)
     pointer(x, y)
     if require_drag:
         until(lambda: (focused_id() == id, {'expected': id, 'focused': focused_id()}),
               3, f'{id} focused under the drag pointer')
     time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.1)
     if require_drag:
+        # Wayfire reports an active move only after pointer motion. Move a short distance while
+        # the button is still held before asserting ownership; checking immediately after press
+        # observes the focus but precedes the drag-start event.
+        dx, dy = to[0] - x, to[1] - y
+        distance = math.hypot(dx, dy)
+        if distance <= 0:
+            raise Unready(f'{id} drag target has no movement from its drawn center')
+        nudge = min(3.0, distance)
+        x += dx * nudge / distance
+        y += dy * nudge / distance
+        pointer(x, y)
         def actual_drag():
             drag = ipc('scottland/desktop-model').get('drag', {})
             focused = focused_id()
@@ -177,7 +189,7 @@ def pointer_drag(id, to, coast=False, require_drag=False):
     steps = 6 if coast else 24
     for i in range(1, steps + 1):  # pacing a gesture
         pointer(x + (to[0] - x) * i / steps, y + (to[1] - y) * i / steps); time.sleep(.008 if coast else .02)
-    return (to[0] - x, to[1] - y)
+    return (to[0] - start[0], to[1] - start[1])
 
 
 def release():
