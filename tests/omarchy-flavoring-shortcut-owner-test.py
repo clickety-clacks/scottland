@@ -25,8 +25,8 @@ def scan_row(mods, key, description, action):
     return "\t".join(fields)
 
 
-def run_case(root, active):
-    case = root / ("active" if active else "inactive")
+def run_case(root, active, report):
+    case = root / f"{'active' if active else 'inactive'}-{'report' if report else 'no-report'}"
     home = case / "home"
     config = home / ".config"
     hooks = case / "hooks"
@@ -50,9 +50,8 @@ command_flavoring_emoji = flavoring-emoji-action
     flavoring.chmod(0o755)
     (hooks / "config.d/50-omarchy-shortcuts").symlink_to(importer)
 
-    # The installed drop-in represents an effective flavoring override; absence means Omarchy
-    # retains its action on that key.
-    if active:
+    # O20 is explanatory text only; the generated config.d/40 output above determines ownership.
+    if report:
         (hooks / "override-report.d/gooarchy-shortcuts.txt").write_text(
             "## Gooarchy flavoring shortcuts\n"
             "Reason: Gooarchy actions work better in Scottland.\n\n"
@@ -99,7 +98,7 @@ command_flavoring_emoji = flavoring-emoji-action
 def main():
     with tempfile.TemporaryDirectory(prefix="scottland-flavoring-owner-") as temp_name:
         root = Path(temp_name)
-        active_config, active_report = run_case(root, active=True)
+        active_config, active_report = run_case(root, active=True, report=True)
         check("active flavoring actions remain and Omarchy actions step aside",
               active_config.count("binding_flavoring_cheatsheet = <super> KEY_K") == 1 and
               active_config.count("command_flavoring_cheatsheet = flavoring-cheatsheet-action") == 1 and
@@ -115,7 +114,7 @@ def main():
               "Now: Open the Scottland emoji picker" in active_report,
               active_report)
 
-        inactive_config, inactive_report = run_case(root, active=False)
+        inactive_config, inactive_report = run_case(root, active=False, report=False)
         check("without the flavoring binding, both Omarchy actions are imported",
               inactive_config.count("binding_omarchy_0 = <super> KEY_K") == 1 and
               inactive_config.count("command_omarchy_0 = omarchy-menu-keybindings") == 1 and
@@ -128,7 +127,29 @@ def main():
               "Super+K —" not in inactive_report and
               "Super+Ctrl+E —" not in inactive_report,
               inactive_report)
-    print("4 focused ownership checks passed")
+
+        stale_config, stale_report = run_case(root, active=False, report=True)
+        check("O20 text without an effective flavoring binding does not suppress Omarchy",
+              stale_config.count("command_omarchy_0 = omarchy-menu-keybindings") == 1 and
+              stale_config.count("command_omarchy_1 = omarchy-shell shell toggle omarchy.emojis") == 1,
+              stale_config)
+        check("O20 text without an effective binding is not reported as an override",
+              "Super+K —" not in stale_report and "Super+Ctrl+E —" not in stale_report,
+              stale_report)
+
+        active_without_report, fallback_report = run_case(root, active=True, report=False)
+        check("effective flavoring bindings suppress Omarchy without O20 text",
+              "omarchy-menu-keybindings" not in active_without_report and
+              "omarchy-shell shell toggle omarchy.emojis" not in active_without_report and
+              "flavoring-cheatsheet-action" in active_without_report and
+              "flavoring-emoji-action" in active_without_report,
+              active_without_report)
+        check("effective bindings without O20 text still report each override once",
+              fallback_report.count("Super+K —") == 1 and
+              fallback_report.count("Super+Ctrl+E —") == 1 and
+              "Runs the active Gooarchy flavoring action" in fallback_report,
+              fallback_report)
+    print("8 focused ownership checks passed")
 
 
 if __name__ == "__main__":

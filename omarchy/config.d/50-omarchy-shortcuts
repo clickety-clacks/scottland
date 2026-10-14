@@ -847,14 +847,64 @@ def read_report_fragment_entries(fragments=None):
     return [item for fragment in fragments for item in read_report_fragment(fragment)]
 
 
-def flavoring_owned_combos(entries):
-    """Shortcut keys in flavorings' O20 drop-ins are owned while those entries are active."""
-    owned = set()
+def parse_flavoring_bindings(output):
+    """Read active key ownership from the generated flavorings [command] fragment."""
+    section = ""
+    bindings, commands = {}, {}
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip().casefold()
+            continue
+        if section != "command" or "=" not in stripped:
+            continue
+        name, value = (part.strip() for part in stripped.split("=", 1))
+        if name.startswith(("binding_", "repeatable_binding_")):
+            bindings[name.split("binding_", 1)[1]] = value
+        elif name.startswith("command_"):
+            commands[name[len("command_"):]] = value
+
+    active = {}
+    for name, value in bindings.items():
+        for shortcut in value.split("|"):
+            identity = normalized_combo(shortcut.strip())
+            if identity and re.fullmatch(r"(?:KEY|BTN)_\w+", identity[1]):
+                active[identity] = commands.get(name, "")
+    return active
+
+
+def flavoring_bindings(base):
+    """Use the effective config.d/40 output, never its separate O20 prose, for ownership."""
+    generator = Path(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland")) / \
+        "config.d/40-gooarchy-flavorings"
+    if not generator.is_file() or not os.access(generator, os.X_OK):
+        return {}
+    try:
+        result = subprocess.run([str(generator), str(base)], capture_output=True, text=True,
+                                timeout=20, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"50-omarchy-shortcuts: could not read active Gooarchy flavoring bindings: {error}",
+              file=sys.stderr)
+        return {}
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()[-1:] or [f"exit status {result.returncode}"]
+        print(f"50-omarchy-shortcuts: could not read active Gooarchy flavoring bindings: {detail[0][:300]}",
+              file=sys.stderr)
+        return {}
+    return parse_flavoring_bindings(result.stdout)
+
+
+def effective_flavoring_report_entries(entries, active_bindings):
+    """Keep each O20 explanation only while its corresponding generated binding is active."""
+    active, seen = [], set()
     for entry in entries:
         identity = report_identity(str(entry.get("keys", "")))
-        if identity and re.fullmatch(r"(?:KEY|BTN)_\w+", identity[1]):
-            owned.add(identity)
-    return owned
+        if identity in active_bindings and identity not in seen:
+            active.append(entry)
+            seen.add(identity)
+    return active
 
 
 OWN_SHORTCUTS_HEADING = "Your own shortcuts that don't work in Scottland"
@@ -1108,8 +1158,13 @@ def main():
     if defaults_scan and defaults_scan.returncode != 0:
         scan_stderr += "\nOmarchy default shortcut scan unavailable: " + defaults_scan.stderr
     used, remaps, _command_reasons = parse_base(base)
-    flavoring_entries = read_report_fragment_entries()
-    flavoring_owners = flavoring_owned_combos(flavoring_entries)
+    active_flavoring_bindings = flavoring_bindings(base)
+    flavoring_entries = effective_flavoring_report_entries(
+        read_report_fragment_entries(), active_flavoring_bindings)
+    flavoring_owners = set(active_flavoring_bindings)
+    reported_flavoring_owners = {
+        report_identity(str(entry.get("keys", ""))) for entry in flavoring_entries
+    }
     descriptions, _remap_reason, _alt_hold_reason = metadata_reasons()
 
     command_overrides, disabled, sections, skipped, kept = [], {}, {}, [], 0
@@ -1169,9 +1224,22 @@ def main():
         ignore_mods = (line.split("\t") + [""] * 13)[12] == "1"
         label = f"{mods.replace(' ', '+')}+{key}".lstrip("+")
         ownership_key = combo("" if release == "1" and ignore_mods else mods, key)
-        if ownership_key and normalized_combo(ownership_key) in flavoring_owners:
-            # The active flavoring report entry is also the O20 record; avoid an imported action
-            # and a second, contradictory Omarchy-generated entry for the same key.
+        identity = normalized_combo(ownership_key) if ownership_key else None
+        if identity in flavoring_owners:
+            # O20 explains the override when present, but only generated config.d/40 output
+            # establishes ownership. Keep the fallback visible if an active binding lacks O20.
+            if identity not in reported_flavoring_owners:
+                flavoring_entries.append({
+                    "heading": "Gooarchy flavoring shortcuts",
+                    "why": "This shortcut is overridden while its generated Gooarchy flavoring binding is active.",
+                    "keys": pretty_keys(label),
+                    "was": omarchy_action_description(description, kind, arg, "other_feature"),
+                    "now": "Runs the active Gooarchy flavoring action",
+                    "origin": "Gooarchy flavoring",
+                    "order": len(REPORT_GROUP_ORDER) + 1,
+                })
+                reported_flavoring_owners.add(identity)
+            # Avoid an imported action and a second, contradictory Omarchy entry for this key.
             skipped.append(f"{label}  {description}  (displaced: Gooarchy flavoring owns this key)")
             continue
         if mods == "ALT" and not key:
