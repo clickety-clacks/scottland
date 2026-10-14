@@ -13,6 +13,7 @@ See [widgets.md](widgets.md#presentation-rendering-wg16-mechanism-for-wg19).
 | Field | Owner | Input or rendering |
 |---|---|---|
 | Windows, identity, title, size, position, zone, focus, layer | Plugin's desktop model | Wayfire signals supply facts; plugin position/layer commands supply targets. |
+| Per-window opacity override | Plugin's desktop model (`window_state_t`) | The transparency IPC mutates the focused toplevel's override; desktop snapshots report it and opacity policy applies it through the existing frame animation. It takes precedence over pairing's opaque-once behavior and a toggle ends that one-time state as a later user manipulation. It survives mode, zone and fullscreen changes, while fullscreen remains opaque; unmapping erases it with the window state. |
 | Zone memories, most recent side, stable hint slot, pending rail placement, label width | Plugin's desktop model (`window_state_t`, width on desktop) | Real placements/drop establish normalized centers. Desktop snapshots publish them; marked reload uses the same atomic handover. Declutter transforms never update them. |
 | Target scale | Plugin's desktop model | Zone/drag rules set it; the scale transformer animates toward it. |
 | Widget lifecycle, rail, drop point, collapsed intent, temporary peek and its hover/attention deadlines, touch traits | Plugin's desktop model | One lifecycle transition applies visibility; the renderer positions the widget and holds balanced disables. |
