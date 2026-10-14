@@ -10,8 +10,9 @@ minimum-output-size assertion is part of the tint result.
 ## Executable focused check
 
 `tests/window-mode-tint-pixel-test.sh` owns an isolated headless session and records PPM captures
-plus `observations.json` under `build/window-mode-tint-pixel-results/`. Run it from the exact
-candidate tree with a fresh `SCOTTLAND_HEADLESS_DIR` under that checkout's `build/` directory.
+plus `observations.json` under `build/window-mode-tint-pixel-results/`, or under
+`SCOTTLAND_TEST_EVIDENCE_DIR` when supplied. Run it from the exact candidate tree with a fresh
+`SCOTTLAND_HEADLESS_DIR` under that checkout's `build/` directory.
 The invocation is `SCOTTLAND_HEADLESS_DIR="$PWD/build/headless-window-mode-tint-$$" tests/window-mode-tint-pixel-test.sh`.
 It drives Alt and Super-drag through stipc, covers Goo on/off, the 0/7/30/100% mix on exclusive
 window regions, overlapping windows and a widget card, checks that hints stay unchanged, verifies

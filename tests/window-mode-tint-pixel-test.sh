@@ -10,7 +10,12 @@ build_dir=$(realpath -m -- "$PWD/build")
   echo 'SCOTTLAND_HEADLESS_DIR must be under this checkout build/' >&2
   exit 1
 }
-art=$PWD/build/window-mode-tint-pixel-results
+art=${SCOTTLAND_TEST_EVIDENCE_DIR:-$PWD/build/window-mode-tint-pixel-results}
+art=$(realpath -m -- "$art")
+[[ $art == "$build_dir/"* ]] || {
+  echo 'SCOTTLAND_TEST_EVIDENCE_DIR must be under this checkout build/' >&2
+  exit 1
+}
 mkdir -p "$art"
 export SCOTTLAND_TEST_GOO=1
 cleanup() {
