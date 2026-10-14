@@ -73,7 +73,6 @@ struct palette_t
     float unfocused_edge_tone_light = .08f;
     float unfocused_edge_tone_dark = .92f;
     float unfocused_edge_strength = 1.f;
-    float hint_tint = .07f;             // WK38 Window mode overlay strength (0 = off)
     float dye_strength = 1.f;
 
     glm::vec3 unfocused_edge_tone() const
@@ -186,15 +185,10 @@ uniform highp vec4 color;
 uniform highp vec4 rect;
 uniform highp float radius;
 uniform highp float aa;
-uniform highp vec4 hint_tint;
-uniform highp float preserve_alpha;
 
 void main()
 {
     highp vec4 c = get_pixel(uvpos);
-    c = mix(vec4(hint_tint.rgb * hint_tint.a + c.rgb * (1.0 - hint_tint.a),
-        hint_tint.a + c.a * (1.0 - hint_tint.a)),
-        vec4(mix(c.rgb, hint_tint.rgb * c.a, hint_tint.a), c.a), preserve_alpha);
     c.rgb = c.rgb * color.a;
     c = c * color;
     highp vec2 hs = rect.zw * 0.5;
@@ -662,8 +656,8 @@ class frame_t : public wf::scene::view_2d_transformer_t, public wf::pointer_inte
 
     // --- state from the plugin ---
 
-    // One transient dye input for the window tint and halo. The screen-wide goo renderer can
-    // consume this same optional color; it is appearance, never attention/model state.
+    // Transient Window-mode dye for Goo and the fallback halo; the separate scene layer draws
+    // the window wash. This is appearance, never attention/model state.
     std::optional<glm::vec3> hint_dye;
     void set_hint_dye(std::optional<glm::vec3> color)
     {
@@ -1501,7 +1495,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                     self->shape_retry.disconnect();
                     bool changed = self->alpha_shape->update({r.x1, r.y1, r.width(), r.height()},
                         [&](const wf::render_target_t& target) {
-                            draw_content(programs.window, tex, bbox, geometry, flat, target, 2, 1, true);
+                            draw_content(programs.window, tex, bbox, geometry, flat, target, 2, 1);
                         });
                     if (changed) { self->damage(); goo_wake(*self); }
                 } else if (!self->shape_retry.is_connected())
@@ -1545,7 +1539,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
     void draw_content(OpenGL::program_t& program, const wf::gles_texture_t& tex,
         const wf::geometry_t& bbox, const wf::geometry_t& geometry, const glm::mat4& flat,
-        const wf::render_target_t& target, float pixel, float alpha, bool shape_only = false)
+        const wf::render_target_t& target, float pixel, float alpha)
     {
         auto ortho = wf::gles::render_target_orthographic_projection(target);
         std::optional<wf::gles_texture_t> other;
@@ -1558,7 +1552,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                 r.x1, r.y1, r.width(), r.height(), self->screen_radius(), alpha);
         } else if (!self->morphing())
         {
-            draw_window(program, tex, bbox, ortho * flat, geometry, pixel / std::max(.01f, self->get_scale_x()), alpha, shape_only);
+            draw_window(program, tex, bbox, ortho * flat, geometry, pixel / std::max(.01f, self->get_scale_x()), alpha);
         } else
         {
             // Morphing: both forms' contents fill the frame (scaled evenly to cover it,
@@ -1571,11 +1565,11 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
                     r.x1, r.y1, r.width(), r.height(), radius, alpha * (1.0 - fade));
             else
                 draw_covering(program, tex, bbox, geometry, r, radius, ortho, pixel,
-                    alpha * (1.0 - fade), false, shape_only);
+                    alpha * (1.0 - fade), false);
             if (other && (fade > 0.001))
             {
                 draw_covering(program, *other, self->morph.snapshot_box,
-                    self->morph.other_geometry, r, radius, ortho, pixel, alpha * fade, false, shape_only);
+                    self->morph.other_geometry, r, radius, ortho, pixel, alpha * fade, false);
             }
         }
 
@@ -1651,7 +1645,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
 
     void draw_window(OpenGL::program_t& program, const wf::gles_texture_t& tex,
         const wf::geometry_t& bbox, const glm::mat4& mvp, const wf::geometry_t& geometry, float aa,
-        float alpha, bool shape_only = false)
+        float alpha)
     {
         program.use(tex.type);
         float x1 = bbox.x, y1 = bbox.y, x2 = bbox.x + bbox.width, y2 = bbox.y + bbox.height;
@@ -1664,9 +1658,6 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.attrib_pointer("uvPosition", 2, 0, uvs);
         program.uniformMatrix4f("MVP", mvp);
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
-        program.uniform1f("preserve_alpha", self->uses_alpha_shape() ? 1 : 0);
-        program.uniform4f("hint_tint", !shape_only && self->hint_dye ?
-            glm::vec4{*self->hint_dye, palette.hint_tint} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{geometry.x, geometry.y, geometry.width, geometry.height});
         program.uniform1f("radius", std::min<float>(CORNER_RADIUS,
             std::min(geometry.width, geometry.height) / 2.0f));
@@ -1682,7 +1673,7 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
      *  to it with rounded corners. Snapshots are stored upside down (`flip`). */
     void draw_covering(OpenGL::program_t& program, const wf::gles_texture_t& tex,
         const wf::geometry_t& box, const wf::geometry_t& geometry, const rectf_t& r, double radius,
-        const glm::mat4& ortho, float aa, float alpha, bool flip, bool shape_only = false)
+        const glm::mat4& ortho, float aa, float alpha, bool flip)
     {
         if ((geometry.width <= 0) || (geometry.height <= 0) || (alpha <= 0.001))
         {
@@ -1705,9 +1696,6 @@ class frame_render_instance_t : public wf::scene::transformer_render_instance_t<
         program.attrib_pointer("uvPosition", 2, 0, flip ? flipped : uvs);
         program.uniformMatrix4f("MVP", ortho);
         program.uniform4f("color", glm::vec4{1.0, 1.0, 1.0, alpha});
-        program.uniform1f("preserve_alpha", self->uses_alpha_shape() ? 1 : 0);
-        program.uniform4f("hint_tint", !shape_only && self->hint_dye ?
-            glm::vec4{*self->hint_dye, palette.hint_tint} : glm::vec4{0});
         program.uniform4f("rect", glm::vec4{r.x1, r.y1, r.width(), r.height()});
         program.uniform1f("radius", std::min<float>(radius, std::min(r.width(), r.height()) / 2.0f));
         program.uniform1f("aa", aa);
