@@ -60,6 +60,9 @@ cleanup() {
 trap cleanup EXIT
 export TMPDIR="$tmp"
 export SCOTTLAND_WIDGET_PATH="$PWD/tests/widgets"
+# The private headless runtime masks the user's systemd bus; use the launcher's supported
+# session-process fallback instead of attempting a --user scope without its bus socket.
+export SCOTTLAND_WIDGET_SCOPE=0
 tests/headless.sh start --widgets
 tests/headless.sh run timeout --signal=TERM --kill-after=30s 6m \
   python3 -u "$PWD/tests/transparency-toggle-test.py" "$art" | tee "$art/results.log"
