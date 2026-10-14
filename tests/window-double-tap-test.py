@@ -183,7 +183,8 @@ try:
             wait(lambda: view(primary)['widgetized'])
             time.sleep(.35)
             sequence(text,.08)
-            wait(lambda: not view(primary)['widgetized'])
+            wait(lambda: not view(primary)['widgetized'] and view(primary)['zone']=='center' and
+                view(primary)['applied_scale']>.99)
             resumed=view(primary)
             assert resumed['zone']=='center' and resumed['applied_scale']>.99, \
                 f'widget-start double-tap did not resume at center: {resumed}'
