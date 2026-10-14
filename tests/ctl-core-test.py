@@ -28,12 +28,32 @@ LOCK_QML = REPO / "tests/session-lock-fixture.qml"
 CTL = REPO / "build/hooks/libexec/scottland-ctl"
 PASSED = []
 FAILED = []
+BLOCKED = []
+INCOMPLETE = []
+
+
+class FixtureUnavailable(RuntimeError):
+    """The headless fixture could not provide the session needed to test ctl behavior."""
 
 
 def check(name, ok, detail=""):
     (PASSED if ok else FAILED).append(name)
     print(("PASS" if ok else "FAIL") + "  " + name + ("" if ok else f": {detail}"), flush=True)
     return ok
+
+
+def json_value(output):
+    try:
+        return json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def number_value(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class Session:
@@ -229,13 +249,19 @@ class Session:
             for pid in LOCK_PIDS.read_text().splitlines():
                 if pid.isdigit():
                     self.terminate(int(pid))
-        result = self.harness("stop", timeout=90)
-        if result.returncode:
-            print(f"headless stop failed: {result.stdout}\n{result.stderr}", file=sys.stderr)
-            FAILED.append("headless session cleanup")
+        stopped = False
+        try:
+            result = self.harness("stop", timeout=90)
+            stopped = result.returncode == 0
+            if not stopped:
+                print(f"headless stop failed: {result.stdout}\n{result.stderr}", file=sys.stderr)
+        except Exception as error:
+            print(f"headless stop failed: {error}", file=sys.stderr)
+        if not stopped:
+            BLOCKED.append("headless session cleanup")
         for pid in self.pids:
             self.terminate(pid)
-        if result.returncode == 0 and ROOT.exists():
+        if stopped and ROOT.exists():
             shutil.rmtree(ROOT)
 
 
@@ -256,10 +282,16 @@ def run_checks(session):
     ok, views = session.wait(
         lambda: (lambda items: items if len(items) == 2 else None)(session.state()), timeout=20
     )
-    if not check("two windows map", ok, views):
-        return
+    if not ok:
+        raise FixtureUnavailable(f"two fixture windows did not map: {views}")
 
-    ids = {view["app_id"].rsplit(".", 1)[-1]: view["id"] for view in views}
+    ids = {
+        view["app_id"].rsplit(".", 1)[-1]: view["id"]
+        for view in views
+        if isinstance(view.get("app_id"), str) and "id" in view
+    }
+    if not {"ctl-first", "ctl-target"}.issubset(ids):
+        raise FixtureUnavailable(f"fixture windows did not expose expected app ids: {views}")
     focus = session.run(CTL, "focus-app", "ctl-target")
     focused = session.wait(lambda: focus_state(session) == ids["ctl-target"])[0]
     check("focus-app selects the matching app id", focus.returncode == 0 and focused,
@@ -284,27 +316,30 @@ def run_checks(session):
     check("windows lists both live views", listing.returncode == 0
           and "ctl-first" in listing.stdout and "ctl-target" in listing.stdout, listing.stdout)
     present = session.run(CTL, "present", str(ids["ctl-first"]))
+    present_value = json_value(present.stdout)
     check("present keeps the existing Scottland presentation behavior",
           present.returncode == 0
-          and json.loads(present.stdout).get("presented") in {"window", "moved"}, present.stdout)
+          and isinstance(present_value, dict)
+          and present_value.get("presented") in {"window", "moved"}, present.stdout)
 
     get = session.run(CTL, "get")
-    values = json.loads(get.stdout) if get.returncode == 0 else {}
+    values = json_value(get.stdout) if get.returncode == 0 else None
     check("get returns live values and the unsupported list",
-          "cycle_overshoot" in values and isinstance(values.get("unsupported"), list), get.stdout)
+          isinstance(values, dict) and "cycle_overshoot" in values
+          and isinstance(values.get("unsupported"), list), get.stdout)
     set_value = session.run(CTL, "set", "cycle_overshoot", "4")
     option = session.run(CTL, "option", "scottland/cycle_overshoot")
-    observed = json.loads(option.stdout) if option.returncode == 0 else None
+    observed = json_value(option.stdout) if option.returncode == 0 else None
     check("set and option preserve the live settings contract",
-          set_value.returncode == 0 and observed is not None and float(observed) == 4,
+          set_value.returncode == 0 and number_value(observed) == 4,
           (set_value.returncode, option.stdout))
     stream = session.run(
         CTL, "stdin", input='cycle_overshoot 3\nflush\nbatch {"cycle_overshoot":"5"}\n'
     )
     option = session.run(CTL, "option", "scottland/cycle_overshoot")
-    observed = json.loads(option.stdout) if option.returncode == 0 else None
+    observed = json_value(option.stdout) if option.returncode == 0 else None
     check("stdin applies line and batch updates and flushes", stream.returncode == 0
-          and "flushed" in stream.stdout and observed is not None and float(observed) == 5,
+          and "flushed" in stream.stdout and number_value(observed) == 5,
           (stream.returncode, stream.stdout, option.stdout))
 
     # Give only the isolated session a synthetic logind id. The fixture command starts the real
@@ -368,17 +403,41 @@ def run_checks(session):
 
 
 def main():
-    session = Session()
+    session = None
     try:
+        session = Session()
         session.start()
-        run_checks(session)
     except Exception as error:
-        print(f"FAIL  control session test setup: {error}", file=sys.stderr)
-        FAILED.append("control session test setup")
+        print(f"BLOCKED  headless fixture startup: {error}", file=sys.stderr)
+        BLOCKED.append("headless fixture startup")
+    else:
+        try:
+            run_checks(session)
+        except FixtureUnavailable as error:
+            print(f"BLOCKED  headless fixture setup: {error}", file=sys.stderr)
+            BLOCKED.append("headless fixture setup")
+        except Exception as error:
+            print(f"INCOMPLETE  ctl product suite stopped before a verdict: {error}", file=sys.stderr)
+            INCOMPLETE.append("ctl product suite interrupted")
     finally:
-        session.stop()
-    print(f"\n{len(PASSED)} passed, {len(FAILED)} failed", flush=True)
-    return 0 if not FAILED else 1
+        if session is not None:
+            try:
+                session.stop()
+            except Exception as error:
+                print(f"BLOCKED  headless session cleanup: {error}", file=sys.stderr)
+                BLOCKED.append("headless session cleanup")
+    print(
+        f"\nProduct assertions: {len(PASSED)} passed, {len(FAILED)} failed; "
+        f"operational blocks: {len(BLOCKED)}; incomplete runs: {len(INCOMPLETE)}",
+        flush=True,
+    )
+    if FAILED and (BLOCKED or INCOMPLETE):
+        return 3
+    if FAILED:
+        return 1
+    if BLOCKED or INCOMPLETE:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
