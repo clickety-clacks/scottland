@@ -333,7 +333,8 @@ def run_renderer(goo):
     x2, y2 = min(rear['x'] + rear['width'], front['x'] + front['width']), \
         min(rear['y'] + rear['height'], front['y'] + front['height'])
     overlap = ((x1 + x2) / 2, (y1 + y2) / 2)
-    rear_only = (rear['x'] + rear['width'] * .18, rear['y'] + rear['height'] * .55)
+    # Avoid the rear badge after live hint placement/avoidance shifts it off center.
+    rear_only = (rear['x'] + rear['width'] * .10, rear['y'] + rear['height'] * .55)
     front_only = (front['x'] + front['width'] * .82, front['y'] + front['height'] * .55)
     card_only = center(card)
     # Keep the base client colors far from the hint palette so a 7% blend is observable.
