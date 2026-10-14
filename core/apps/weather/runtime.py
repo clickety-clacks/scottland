@@ -80,6 +80,9 @@ def location():
     coordinates = geoclue_location(solar) or config["location"]
     if coordinates is None and config["allow_ip"]:
         coordinates = solar.ip_location()
+        if coordinates is None:
+            print('{"status":"unavailable"}')
+            return 0
 
     if coordinates is None:
         print('{"status":"no-location"}')
