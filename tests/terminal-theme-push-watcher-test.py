@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -100,9 +101,10 @@ def stop_process_group(process):
 
 
 print(f"Python: {sys.version.split()[0]}")
-inotify = subprocess.run(["inotifywait", "--version"], capture_output=True, text=True, check=True)
-inotify_version = (inotify.stdout + inotify.stderr).strip().splitlines()
-print("inotifywait:", inotify_version[0] if inotify_version else "version output unavailable")
+inotify_path = shutil.which("inotifywait")
+if inotify_path is None:
+    raise SystemExit("inotifywait executable not found on PATH")
+print("inotifywait executable:", inotify_path)
 
 root = Path(__file__).resolve().parents[1]
 watcher_source = root / "core/libexec/scottland-color-scheme"
