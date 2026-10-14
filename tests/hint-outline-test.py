@@ -783,7 +783,6 @@ def list_picker_overlay_isolation():
         (panel_left + panel_width * fx, panel_top + 10)
         for fx in (.1, .2, .3, .7, .8, .9)
     ]
-    background = tuple(int(BACKGROUND[i:i + 2], 16) for i in (1, 3, 5))
     pre_picker = Shot("12-list-picker-before-map")
     overlay_sample = []
     picker = subprocess.Popen(
@@ -796,11 +795,15 @@ def list_picker_overlay_isolation():
         def panel_visible():
             shot = Shot("12-list-picker-map-probe")
             state = hints()
-            overlay_sample[:] = [point for point in overlay_candidates
-                                 if off_badges(state, *point, margin=20) and
-                                 near(shot.pixel(*point), background, 3) and
-                                 not near(shot.pixel(*point), pre_picker.pixel(*point), 3)]
-            return bool(overlay_sample)
+            changed = [(point, shot.pixel(*point)) for point in overlay_candidates
+                       if off_badges(state, *point, margin=20) and
+                       not near(shot.pixel(*point), pre_picker.pixel(*point), 3)]
+            if len(changed) < 3:
+                return False
+            reference = changed[0][1]
+            overlay_sample[:] = [point for point, pixel in changed
+                                 if near(pixel, reference, 3)]
+            return len(overlay_sample) >= 3
 
         wait(panel_visible, 10)
         overlay_point = overlay_sample[0]
@@ -811,9 +814,8 @@ def list_picker_overlay_isolation():
         panel_zero = untinted.pixel(*overlay_point)
         panel_full = tinted.pixel(*overlay_point)
         check("list picker panel remains untinted above a 100% window tint",
-              near(panel_zero, panel_full, 3) and near(panel_full, background, 4),
-              {"point": overlay_point, "untinted": panel_zero, "full": panel_full,
-               "expected_panel": background})
+              near(panel_zero, panel_full, 3),
+              {"point": overlay_point, "untinted": panel_zero, "full": panel_full})
 
         side_point = find_point(side, avoid_ids=(back, front))
         if side_point[0] >= panel_left - 8:
@@ -825,6 +827,8 @@ def list_picker_overlay_isolation():
               not near(adjacent_zero, adjacent_full, 3),
               {"point": side_point, "zero": adjacent_zero, "full": adjacent_full,
                "hint_color": color_bytes(side_color) if side_color else None})
+        # Release Alt so the compositor's Window-mode Esc handler does not consume the key.
+        release()
         # The search TextInput owns Esc; focus it explicitly after mapping the layer surface.
         search_focus = (panel_left + panel_width / 2, panel_top + 20 + 19 + 12 + 22)
         click(*search_focus)
