@@ -169,6 +169,12 @@ Source candidate present; focused helper checks pass; compositor build and sessi
 Private session-memory clipboard snapshots support the emoji consumer. CH11's empty-list presentation
 after clear remains an open interaction because the generic picker cancels on empty input.
 
+## Shortcut sheet
+
+The searchable session shortcut sheet and its behavior contract are in
+[../docs/keybinding-cheat-sheet.md](../docs/keybinding-cheat-sheet.md) (KB1–KB8).
+Candidate source; eight focused helper behavior scenarios pass; compositor build/session behavior unverified.
+
 ## Session
 
 | ID | Invariant | Status |
