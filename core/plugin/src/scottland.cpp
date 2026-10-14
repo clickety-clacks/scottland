@@ -1758,7 +1758,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t dragged = 0;
         bool left = false;
         double top = 0, bottom = 0;
-        // The focused card on this rail, if it isn't the one being dragged: fixed (dr_795d17c3),
+        // The focused card on this rail, if it isn't the one being dragged, stays fixed,
         // so it divides the rail into independent make-room spans.
         bool has_focused = false;
         uint64_t focused_id = 0;
@@ -3629,7 +3629,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 rect.y1 -= frame->drag_layout_y;
                 rect.y2 -= frame->drag_layout_y;
             }
-            // The focused card is fixed (dr_795d17c3): held out of the movable set so the
+            // The focused card stays fixed and is held out of the movable set so the
             // solver never offers it a shift, same as the dragged card itself.
             if (active && active.get() == widget.get())
             {
@@ -7062,11 +7062,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             {
                 pin_scale(main, model.drag.target);  // dropped with Shift held (L31)
             }
-            // Position wins (P14, Mike's stay-still ruling dr_795d17c3): the window stays exactly
-            // where the user let go. If the drop position's natural scale differs from the scale
-            // shown while dragging, the size follows the drop position instead of the window
-            // being nudged to a position matching the shown size; `set_scale` below animates that
-            // size change (L10).
+            // Stay-still behavior keeps the window exactly where the user let go. If the drop
+            // position's natural scale differs from the scale shown while dragging, the size
+            // follows the drop position instead of nudging the window to match its shown size;
+            // `set_scale` below animates that change (L10).
         }
 
         for (auto& dragged : ev->all_views)

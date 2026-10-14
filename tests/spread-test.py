@@ -210,7 +210,7 @@ try:
     check_spread('three-finger solo', result, S, (A1, A2), r_before)
     shot('touchpad-solo.png')
 
-    # 2b. Focus race: a stay-still guard (dr_795d17c3) must exclude whichever window is actually
+    # 2b. Focus race: stay-still behavior excludes whichever window is actually
     # focused at solve time, even when that differs from the window the hold is soloing. The
     # three-finger hold captures its partner at hold_begin and only re-checks "is this still the
     # held window" at the delayed solo, so re-focusing another window in between (before the

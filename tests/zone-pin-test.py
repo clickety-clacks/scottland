@@ -408,7 +408,7 @@ try:
           'unpinned window: back at its spot at the zone scale, no jump',
           {'spot': plain_spot, 'now': center(v), 'applied': v['applied_scale'], 'zone': plain_scale})
 
-    # --- P14 (dr_795d17c3): the drop position wins even when the shown drag scale and the drop
+    # --- Stay-still: the drop position wins even when the shown drag scale and the drop
     # zone's natural scale disagree. The old fa4b60a nudge re-centered the window sideways once
     # the scale settled; now its center stays at the pointer's drop point through the whole scale
     # settle afterward, no matter which way the scale moves.

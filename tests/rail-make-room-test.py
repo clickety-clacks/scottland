@@ -201,7 +201,7 @@ try:
     check("stipc pointer updates remain bounded while the rail is full",
           bool(durations) and max(durations) < 0.25, max(durations) if durations else None)
 
-    # Stay-still (dr_795d17c3): make-room must treat the focused card as fixed. Focus rail-a, then
+    # Stay-still behavior: make-room treats the focused card as fixed. Focus rail-a, then
     # drag an arrival onto rail-a's own spot: rail-a stays fixed, and P14 keeps the arrival at the
     # explicit drop point even when that means the two cards overlap. Preserve the geometry as the
     # WG26 fallback observation; the drop itself must not be silently moved to simplify the solve.

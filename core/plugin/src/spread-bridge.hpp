@@ -131,7 +131,7 @@
             auto placement = place_at(output, w.cx, W).zone;
             w.role = placement == zone_t::center ? sp::role_t::arrival :
                 (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed);
-            // The focused window is fixed too (dr_795d17c3): a solo of another window must
+            // The focused window is fixed too: a solo of another window must
             // never move whatever the user is currently in, same as it never moves the solo
             // target itself.
             if (active && active.get() == window.get()) w.role = sp::role_t::fixed;
