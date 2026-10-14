@@ -40,6 +40,7 @@ const CONFIG_NAMES: &[&str] = &[
     "max_scale",
     "scale_curve",
     "blend_width",
+    "screen_zones",
     "goo",
     "goo_breath_keys",
     "goo_falloff",
@@ -100,7 +101,12 @@ const CONFIG_NAMES: &[&str] = &[
     "solo_audition_hotspot",
 ];
 const BOOL_NAMES: &[&str] = &["goo", "goo_breath_keys", "window_avoidance_always"];
-const TEXT_NAMES: &[&str] = &["scale_curve", "goo_falloff", "attention_color_family"];
+const TEXT_NAMES: &[&str] = &[
+    "scale_curve",
+    "screen_zones",
+    "goo_falloff",
+    "attention_color_family",
+];
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const BUDGET_CAP_MS: u64 = 12_000;
 
@@ -202,7 +208,14 @@ impl Ctl {
                 json!({"option": format!("scottland/{name}")}),
             )?;
             if let Some(value) = reply.get("value") {
-                if BOOL_NAMES.contains(&name) {
+                if name == "screen_zones" {
+                    let zones = value
+                        .as_str()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                        .filter(|parsed| parsed.is_array())
+                        .unwrap_or_else(|| json!([]));
+                    values.insert(name.to_string(), zones);
+                } else if BOOL_NAMES.contains(&name) {
                     values.insert(name.to_string(), Value::Bool(bool_value(value)));
                 } else if TEXT_NAMES.contains(&name) {
                     values.insert(name.to_string(), value.clone());
@@ -253,6 +266,23 @@ impl Ctl {
                 unsupported.push(json!(name));
             }
         }
+        let touchpad_speed = self.call(
+            "wayfire/get-config-option",
+            json!({"option": "input/touchpad_scroll_speed"}),
+        )?;
+        if let Some(value) = touchpad_speed.get("value") {
+            let number = number_value(value)
+                .ok_or_else(|| "Wayfire returned a non-numeric touchpad scroll speed".to_string())?;
+            values.insert("touchpad_scroll_speed".to_string(), json!(number));
+        }
+        let layout = self.call("scottland/layout-state", json!({}))?;
+        values.insert(
+            "outputs".to_string(),
+            layout
+                .get("outputs")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
         values.insert("unsupported".to_string(), Value::Array(unsupported));
         Ok(Value::Object(values))
     }
