@@ -1187,15 +1187,53 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         return place_at(output, x, output->get_relative_geometry().width);
     }
 
+    // Fullscreen views have no Scottland frame. Give only excluded fullscreen views a separate
+    // opacity transformer, so leaving the filter restores Wayfire's normal fullscreen rendering.
+    struct fullscreen_filter_visual_t
+    {
+        std::weak_ptr<wf::view_interface_t> view;
+        std::shared_ptr<scottland::view_2d_t> opacity;
+    };
+    std::map<uint64_t, fullscreen_filter_visual_t> fullscreen_filter_visuals;
+
+    void set_fullscreen_filter_hidden(wayfire_toplevel_view view, bool hidden)
+    {
+        auto found = fullscreen_filter_visuals.find(view->get_id());
+        if (found != fullscreen_filter_visuals.end())
+        {
+            if (auto old = found->second.view.lock())
+            {
+                if (old.get() == view.get() && hidden) return;
+                old->damage();
+                old->get_transformed_node()->rem_transformer("scottland-filter-fullscreen");
+                old->damage();
+            }
+            fullscreen_filter_visuals.erase(found);
+        }
+        if (!hidden) return;
+
+        auto opacity = std::make_shared<scottland::view_2d_t>(view);
+        opacity->alpha = 0.0;
+        view->damage();
+        view->get_transformed_node()->add_transformer(opacity, wf::TRANSFORMER_HIGHLEVEL,
+            "scottland-filter-fullscreen");
+        view->damage();
+        fullscreen_filter_visuals.emplace(view->get_id(), fullscreen_filter_visual_t{view->weak_from_this(), opacity});
+    }
+
     void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_x = {})
     {
-        if (!view || !view->is_mapped() || view->pending_fullscreen()) return;
+        if (!view) return;
+        bool excluded = view->is_mapped() && window_keys.active &&
+            !window_filter.matches(view->get_title(), view->get_app_id(),
+                link_of_widget(view) ? link_of_widget(view)->name : "");
+        set_fullscreen_filter_hidden(view, view->pending_fullscreen() && excluded);
+        if (!view->is_mapped() || view->pending_fullscreen()) return;
         auto frame = frame_of(view, false);
         if (!frame) return;
         bool focused = wf::get_core().seat->get_active_view() == view;
         double target;
-        if (window_keys.active && !window_filter.matches(view->get_title(), view->get_app_id(),
-            link_of_widget(view) ? link_of_widget(view)->name : ""))
+        if (excluded)
             target = 0.0;
         else if (untouched_since_pairing(view))
             target = 1.0;  // pairing shows both fully opaque, once (WK36)
@@ -1586,6 +1624,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 if (pending_drag_layout->empty()) pending_drag_layout.reset();
             }
             stop_widget_transition(toplevel);
+            set_fullscreen_filter_hidden(toplevel, false);
             model.windows.erase(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
@@ -7974,6 +8013,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         {
             view->get_transformed_node()->rem_transformer(TRANSFORMER);
         }
+        for (auto& [id, visual] : fullscreen_filter_visuals)
+            if (auto view = visual.view.lock())
+                view->get_transformed_node()->rem_transformer("scottland-filter-fullscreen");
+        fullscreen_filter_visuals.clear();
 
         scottland::gl_programs().release();
         scottland::windowing::release_hint_gl();
