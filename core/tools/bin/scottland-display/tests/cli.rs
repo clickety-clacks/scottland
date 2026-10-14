@@ -16,7 +16,9 @@ struct Scratch {
     root: PathBuf,
     bin: PathBuf,
     home: PathBuf,
+    hooks: PathBuf,
     calls: PathBuf,
+    helper_calls: PathBuf,
     state: PathBuf,
 }
 
@@ -31,9 +33,12 @@ impl Scratch {
 
         let bin = root.join("bin");
         let home = root.join("home");
+        let hooks = root.join("hooks");
         fs::create_dir(&bin).unwrap();
         fs::create_dir(&home).unwrap();
+        fs::create_dir_all(hooks.join("libexec")).unwrap();
         let calls = root.join("calls");
+        let helper_calls = root.join("helper-calls");
         let state = root.join("state");
         let fake = bin.join("gsettings");
         fs::write(
@@ -69,11 +74,37 @@ esac
         permissions.set_mode(0o755);
         fs::set_permissions(&fake, permissions).unwrap();
 
+        let fake_helper = hooks.join("libexec/scottland-color-scheme");
+        fs::write(
+            &fake_helper,
+            r##"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$HELPER_CALLS"
+if [ "${FAIL_HELPER:-0}" = 1 ]; then
+  echo 'fixture helper failure' >&2
+  exit 9
+fi
+case "$1" in
+  cursor-size) printf '24\n' ;;
+  once|terminal-theme-push) ;;
+  *) echo "unexpected action: $1" >&2; exit 64 ;;
+esac
+"##,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_helper, permissions).unwrap();
+        std::os::unix::fs::symlink(BINARY, bin.join("scottland-display"))
+            .expect("link the command into the session hook PATH");
+
         Self {
             root,
             bin,
             home,
+            hooks,
             calls,
+            helper_calls,
             state,
         }
     }
@@ -92,9 +123,30 @@ esac
             .args(args)
             .env("PATH", path)
             .env("HOME", &self.home)
+            .env("SCOTTLAND_HOOKS", &self.hooks)
             .env("CALLS", &self.calls)
+            .env("HELPER_CALLS", &self.helper_calls)
             .env("STATE_FILE", &self.state)
             .env("FAIL_GSETTINGS", if fail { "1" } else { "0" })
+            .output()
+            .unwrap()
+    }
+
+    fn run_with_helper_failure(&self, args: &[&str], fail: bool) -> Output {
+        let mut paths = vec![self.bin.clone()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let path = std::env::join_paths(paths).unwrap();
+        Command::new(BINARY)
+            .args(args)
+            .env("PATH", path)
+            .env("HOME", &self.home)
+            .env("SCOTTLAND_HOOKS", &self.hooks)
+            .env("CALLS", &self.calls)
+            .env("HELPER_CALLS", &self.helper_calls)
+            .env("STATE_FILE", &self.state)
+            .env("FAIL_HELPER", if fail { "1" } else { "0" })
             .output()
             .unwrap()
     }
@@ -109,6 +161,14 @@ esac
 
     fn ghostty_config(&self) -> PathBuf {
         self.home.join(".config/ghostty/config")
+    }
+
+    fn helper_calls(&self) -> Vec<String> {
+        fs::read_to_string(&self.helper_calls)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -217,4 +277,80 @@ fn unsupported_arguments_are_rejected_before_calling_gsettings() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("usage: scottland-display text-size"));
     assert!(scratch.calls().is_empty());
+}
+
+#[test]
+fn terminal_theme_push_calls_only_the_private_helper_action_once() {
+    let scratch = Scratch::new();
+    let output = scratch.run(&["terminal-theme", "push"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(scratch.calls().is_empty());
+    assert_eq!(scratch.helper_calls(), ["terminal-theme-push"]);
+}
+
+#[test]
+fn terminal_theme_push_propagates_helper_failure_and_stderr() {
+    let scratch = Scratch::new();
+    let output = scratch.run_with_helper_failure(&["terminal-theme", "push"], true);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("terminal-theme-push failed"));
+    assert!(stderr(&output).contains("fixture helper failure"));
+    assert_eq!(scratch.helper_calls(), ["terminal-theme-push"]);
+    assert!(scratch.calls().is_empty());
+}
+
+#[test]
+fn terminal_theme_push_rejects_malformed_arguments_before_calling_helper() {
+    let scratch = Scratch::new();
+
+    for args in [
+        &["terminal-theme"][..],
+        &["terminal-theme", "apply"][..],
+        &["terminal-theme", "push", "extra"][..],
+    ] {
+        let output = scratch.run(args);
+        assert!(!output.status.success(), "accepted {args:?}");
+        assert!(stderr(&output).contains("usage: scottland-display"));
+    }
+
+    assert!(scratch.helper_calls().is_empty());
+    assert!(scratch.calls().is_empty());
+}
+
+#[test]
+fn cursor_size_command_returns_the_helper_value_without_settings_side_effects() {
+    let scratch = Scratch::new();
+    let output = scratch.run(&["cursor-size"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "24\n");
+    assert_eq!(scratch.helper_calls(), ["cursor-size"]);
+    assert!(scratch.calls().is_empty());
+}
+
+#[test]
+fn sourced_session_environment_exports_the_cursor_size_command_result() {
+    let scratch = Scratch::new();
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../session-env.d/10-cursor-size.sh");
+    assert!(script.is_file());
+    let mut paths = vec![scratch.bin.clone()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths).unwrap();
+
+    let output = Command::new("sh")
+        .args([
+            "-c",
+            ". \"$CURSOR_SCRIPT\"; printf '%s\\n' \"${XCURSOR_SIZE-}\"",
+        ])
+        .env("CURSOR_SCRIPT", &script)
+        .env("PATH", path)
+        .env("SCOTTLAND_HOOKS", &scratch.hooks)
+        .env("HELPER_CALLS", &scratch.helper_calls)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "24\n");
+    assert_eq!(scratch.helper_calls(), ["cursor-size"]);
 }
