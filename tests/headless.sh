@@ -207,6 +207,22 @@ if ((inside == 0)); then
   fi
   bwrap_args+=(--bind "$runtime_scratch" "$runtime" --bind "$tmp_scratch" /tmp
     --setenv XDG_RUNTIME_DIR "$runtime" --setenv TMPDIR "$tmp_scratch")
+  finish_start() {
+    status=$?
+    trap - EXIT INT TERM HUP
+    if ((status != 0)) && [[ -d $dir && ! -L $dir ]] && verify_owner; then
+      if ! "$repo/tests/headless.sh" stop --preserve-scratch; then
+        echo 'failed to stop partial headless session; preserving owned scratch for inspection' >&2
+      fi
+    fi
+    exit "$status"
+  }
+  if [[ $action == start ]]; then
+    trap finish_start EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+  fi
   # Explicitly bind /dev in the root-bind namespace so Bash can open /dev/null and the
   # compositor can see its render node. Reuse a live session's user namespace for later
   # invocations so run processes retain access to that session's /proc entries; runtime and
@@ -216,13 +232,6 @@ if ((inside == 0)); then
     status=0
   else
     status=$?
-  fi
-  if [[ $action == start && $status -ne 0 && -d $dir && ! -L $dir ]] && verify_owner; then
-    # The failed start has left its private namespace. Stop any partial session from the outer
-    # namespace and retain logs/owner state for the caller's EXIT trap to capture first.
-    if ! "$repo/tests/headless.sh" stop --preserve-scratch; then
-      echo 'failed to stop partial headless session; preserving owned scratch for inspection' >&2
-    fi
   fi
   if [[ $action == stop && $status -eq 0 && $preserve_scratch -eq 0 ]]; then
     remove_owned_scratch || exit 2
@@ -649,6 +658,7 @@ WRAPPER
       fi
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$test_outputs \
         WAYFIRE_PLUGIN_PATH="$repo/build" WAYFIRE_PLUGIN_XML_PATH="$repo/core/plugin/metadata:/usr/share/wayfire/metadata" \
+        python3 "$repo/tests/headless-owner.py" launch "$dir" -- \
         setsid ${private_bus:+dbus-run-session --} "${debugger[@]}" "${preload[@]}" wayfire -c "$dir/wayfire.ini" >"$dir/wayfire.log" 2>&1 </dev/null &
       echo $! >"$dir/pid"
     )
@@ -704,6 +714,14 @@ PY
     exec "$exec_tool" --display "$(display)" -- python3 "$repo/tests/wfipc.py" "$@"
     ;;
   stop)
+    # A new launch records custody before the compositor can exec. Its guardian
+    # can reap the owned subtree even if neither env nor shim markers appeared.
+    # Never fall back to bare-PID cleanup after a guardian receipt/refusal.
+    if [[ -e $dir/launch-owner.json || -L $dir/launch-owner.json || -S $dir/owner.sock ]]; then
+      python3 "$repo/tests/headless-owner.py" stop "$dir" || exit 2
+      echo 'stopped recorded headless launch subtree; retaining scratch for outer cleanup'
+      exit 0
+    fi
     if [[ $isolation == 1 ]]; then
       if [[ ! -f $dir/display ]]; then
         [[ -e $dir || -L $dir ]] || exit 0

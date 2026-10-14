@@ -23,9 +23,12 @@ tools:
 	@for crate in core/tools/bin/*/; do \
 	  $(CARGO) install --quiet --locked --path $$crate --root build/tools --target-dir build/cargo --force --no-track || exit 1; \
 	done
+	mkdir -p build/tools/lib
+	cp -a core/tools/vendor/agent_window_resolver build/tools/lib/
 
 tools-test:
 	$(CARGO) test --locked --manifest-path core/tools/Cargo.toml --target-dir build/cargo
+	python3 tests/sender-window-snapshot-ctl-test.py
 
 clipboard-test:
 	python3 tests/clipboard-list-test.py
