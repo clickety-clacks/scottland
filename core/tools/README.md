@@ -21,6 +21,13 @@ does:
 - `scottland::session`: the running sessions and the environments they recorded at startup, chosen
   the way `scottland-exec` chooses: a named display, else the caller's own session, else the only one.
 
+`scottland-sender-window` reports every Scottland window that the sender's identity proves is
+showing or linked to it. It uses the resolver-v1 Python package copied verbatim from
+`core/tools/vendor/agent_window_resolver/` at the commit in `VENDORED.json`; the dev `tools`
+build installs it beside the binaries, while the package installs it beside the base binaries.
+Source-managed builds use the resolver from their matching source worktree. The sender's window proof uses the shared
+session library's blocking liveness probe.
+
 The front command finds and runs tools, the way `git` runs `git-*`: `scottland` lists the tools
 installed, `scottland display ...` runs `scottland-display ...`, and `scottland help display` runs
 `scottland-display --help`. It also forwards `edit`, `rollback`, `update` and `status` to
@@ -83,3 +90,4 @@ method over the WG9 service when WG12 reports it widgetized. The Arch package in
     make package        # the Arch package includes the base build and full-history source bundle
 
 All of these need `cargo`. Builds go to `build/cargo`, so `make clean` removes them with the rest.
+The sender-window tool also needs the distro's Python 3 runtime, already required by Scottland.

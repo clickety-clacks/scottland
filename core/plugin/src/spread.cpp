@@ -183,6 +183,7 @@ class solver_t
 
     result_t run()
     {
+        if (S.mode == mode_t::gather) return run_gather();
         result_t result;
         try
         {
@@ -220,6 +221,361 @@ class solver_t
     std::vector<double> xs, starts, ends;
     std::vector<box> hard_scratch;
     std::vector<soft_t> soft_scratch;
+
+    result_t run_gather()
+    {
+        result_t result;
+        try
+        {
+            if (!prepare_gather(result))
+            {
+                result.complete = true;
+                result.work = work.used;
+                return result;
+            }
+            work.charge(S.windows.size() * 4);
+            layout_t gathered = original;
+            work.charge(base_hard.size());
+            std::vector<box> fixed = base_hard;
+            for (int side : {0, 1})
+            {
+                std::vector<size_t> order;
+                for (size_t i : residents)
+                {
+                    work.charge();
+                    if (side_of(win(i).cx) == side) order.push_back(i);
+                }
+                std::stable_sort(order.begin(), order.end(), [&] (size_t a, size_t b) {
+                    work.charge();
+                    double da = gather_distance(a, original.pos[a]);
+                    double db = gather_distance(b, original.pos[b]);
+                    if (std::abs(da - db) > 1e-7) return da < db;
+                    double ya = std::abs(win(a).cy - S.screen_height / 2);
+                    double yb = std::abs(win(b).cy - S.screen_height / 2);
+                    if (std::abs(ya - yb) > 1e-7) return ya < yb;
+                    return win(a).id < win(b).id;
+                });
+
+                for (size_t i : order)
+                {
+                    work.charge();
+                    box before = rect(i, original.pos[i]);
+                    const auto& w = win(i);
+                    double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+                    double band = side == 0 ? border - (S.rail_width + EDGE_MARGIN) :
+                        (W - S.rail_width - EDGE_MARGIN) - border;
+                    // No placement can fit when the full current-scale footprint exceeds the band.
+                    if (w.width * w.scale > band + EPS)
+                    {
+                        fixed.push_back(before);
+                        continue;
+                    }
+
+                    double old_distance = gather_distance(i, original.pos[i]);
+                    auto distances = gather_distances(side, order, fixed);
+                    auto placed = gather_place(i, side, old_distance, distances, fixed);
+                    if (placed) gathered.pos[i] = *placed;
+                    fixed.push_back(rect(i, gathered.pos[i]));
+                }
+            }
+
+            build_gather_result(result, gathered);
+            result.complete = true;
+            result.work = work.used;
+            result.arrangements = 1;
+            result.status = result.overlaps.empty() ? status_t::clear : status_t::overlap_exhausted;
+            if (publish) publish(result);
+            return result;
+        } catch (const stopped&)
+        {
+            result = {};
+            result.status = status_t::unchanged_budget;
+            result.reason = "work cap before complete gather layout";
+            result.complete = false;
+            result.work = work.used;
+            return result;
+        }
+    }
+
+    bool prepare_gather(result_t& result)
+    {
+        W = S.screen_width; mid = W / 2;
+        auto fail = [&] (const std::string& reason) {
+            result.status = status_t::unavailable; result.reason = reason; return false;
+        };
+        if (!S.unavailable_reason.empty()) return fail(S.unavailable_reason);
+        if (!(W > 0) || !(S.screen_height > 0) || !S.scale) return fail("no screen");
+        if (S.windows.size() + S.fixed.size() > MAX_OBSTACLES)
+            return fail("more windows than spread considers");
+        residents.clear();
+        size_t movable = 0;
+        for (const auto& w : S.windows) { work.charge(); movable += w.role == role_t::resident; }
+        if (movable > MAX_MOVABLE) return fail("more windows than spread considers");
+        if (!movable) return fail("no periphery");
+        double inner = S.center_half + EDGE_MARGIN, outer = W / 2 - S.rail_width - EDGE_MARGIN;
+        if (outer <= inner) return fail("no periphery");
+        dom_lo[0] = mid - outer; dom_hi[0] = mid - inner;
+        dom_lo[1] = mid + inner; dom_hi[1] = mid + outer;
+
+        original.pos.resize(S.windows.size());
+        base_hard.clear();
+        for (const auto& b : S.fixed) { work.charge(); base_hard.push_back(b); }
+        for (size_t i = 0; i < S.windows.size(); ++i)
+        {
+            work.charge();
+            const auto& w = S.windows[i];
+            original.pos[i] = {w.cx, w.cy, w.scale, w.pinned};
+            if (w.role == role_t::resident) residents.push_back(i);
+            else base_hard.push_back(rect(i, original.pos[i]));
+        }
+        original.placed.assign(S.windows.size(), 0);
+        original.pushed.assign(S.windows.size(), 0);
+        original.forced.assign(S.windows.size(), 0);
+        return true;
+    }
+
+    double gather_distance(size_t i, const pos_t& p) const
+    {
+        double half = win(i).width * p.s / 2;
+        double border = side_of(p.cx) == 0 ? mid - S.center_half : mid + S.center_half;
+        double inner_edge = side_of(p.cx) == 0 ? p.cx + half : p.cx - half;
+        return std::max(0.0, side_of(p.cx) == 0 ? border - inner_edge : inner_edge - border);
+    }
+
+    std::vector<double> gather_distances(int side, const std::vector<size_t>& order,
+        const std::vector<box>& obstacles)
+    {
+        double maximum = 0;
+        for (size_t i : order) { work.charge(); maximum = std::max(maximum, gather_distance(i, original.pos[i])); }
+        std::vector<double> distances{0.0, maximum};
+        auto add_edge = [&] (const box& b) {
+            double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+            for (double edge : {b.x0, b.x1})
+            {
+                work.charge();
+                double d = side == 0 ? border - edge : edge - border;
+                if (d >= -EPS && d <= maximum + EPS) distances.push_back(std::clamp(d, 0.0, maximum));
+            }
+        };
+        for (const auto& b : obstacles) { work.charge(); add_edge(b); }
+        for (size_t i : residents)
+        {
+            work.charge();
+            add_edge(rect(i, original.pos[i]));
+            distances.push_back(gather_distance(i, original.pos[i]));
+        }
+        // Every window on the side shares this bounded inner-distance ladder.
+        unsigned steps = unsigned(std::clamp(std::ceil(maximum / 24.0), 8.0, 64.0));
+        for (unsigned k = 1; k < steps; ++k)
+        {
+            work.charge();
+            distances.push_back(maximum * k / steps);
+        }
+        work.charge(distances.size());
+        std::sort(distances.begin(), distances.end());
+        work.charge(distances.size());
+        distances.erase(std::unique(distances.begin(), distances.end(), [] (double a, double b) {
+            return std::abs(a - b) < 0.25;
+        }), distances.end());
+        return distances;
+    }
+
+    std::vector<double> gather_x_candidates(size_t i, int side, double distance)
+    {
+        const auto& w = win(i);
+        double lo = dom_lo[side], hi = dom_hi[side];
+        double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+        auto residual = [&] (double x) {
+            double inner = x + (side == 0 ? 1 : -1) * w.width * scale_at(i, x) / 2;
+            return side == 0 ? (border - distance) - inner : inner - (border + distance);
+        };
+        constexpr int samples = 32;
+        double sx[samples + 1], sf[samples + 1];
+        for (int k = 0; k <= samples; ++k)
+        {
+            work.charge();
+            sx[k] = lo + (hi - lo) * k / samples;
+            sf[k] = residual(sx[k]);
+        }
+        std::vector<double> xs;
+        auto add = [&] (double x) {
+            double snapped = representable(x, w.width);
+            work.charge(xs.size());
+            for (double candidate : {snapped - 1, snapped, snapped + 1})
+            {
+                if (candidate < lo - EPS || candidate > hi + EPS) continue;
+                bool duplicate = std::any_of(xs.begin(), xs.end(), [&] (double old) {
+                    return std::abs(old - candidate) < 0.25;
+                });
+                if (!duplicate) xs.push_back(candidate);
+            }
+        };
+        for (int k = 0; k < samples; ++k)
+        {
+            work.charge();
+            if (std::abs(sf[k]) < 0.25) add(sx[k]);
+            if ((sf[k] <= 0) == (sf[k + 1] <= 0)) continue;
+            double a = sx[k], b = sx[k + 1], fa = sf[k];
+            for (int it = 0; it < 20; ++it)
+            {
+                work.charge();
+                double m = (a + b) / 2, fm = residual(m);
+                if ((fm <= 0) == (fa <= 0)) { a = m; fa = fm; } else b = m;
+            }
+            add((a + b) / 2);
+        }
+        if (std::abs(sf[samples]) < 0.25) add(sx[samples]);
+        work.charge(xs.size());
+        std::stable_sort(xs.begin(), xs.end(), [&] (double a, double b) {
+            return std::abs(a - w.cx) < std::abs(b - w.cx);
+        });
+        return xs;
+    }
+
+    double gather_overlap_sum(const box& candidate, const std::vector<box>& obstacles)
+    {
+        double sum = 0;
+        for (const auto& b : obstacles) { work.charge(); sum += normalized_overlap(candidate, b); }
+        return sum;
+    }
+
+    std::vector<double> gather_y_candidates(const box& candidate, const std::vector<box>& obstacles,
+        double lo, double hi)
+    {
+        double hh = candidate.height() / 2, cy = candidate.cy();
+        std::vector<double> values{std::clamp(S.screen_height / 2, lo, hi), lo, hi};
+        for (const auto& b : obstacles)
+        {
+            work.charge();
+            double bh = b.height() / 2, overlap_x = std::min(candidate.x1, b.x1) - std::max(candidate.x0, b.x0);
+            if (overlap_x <= TOLERANCE) continue;
+            double allowed = 0.10 * std::min(candidate.width() * candidate.height(), b.width() * b.height()) / overlap_x;
+            double reach = hh + bh;
+            double transition = std::abs(hh - bh);
+            for (double edge : {reach, std::max(0.0, reach - std::min(allowed, std::min(candidate.height(), b.height()))),
+                std::max(0.0, reach - 1.0), transition})
+            {
+                values.push_back(std::clamp(b.cy() - edge, lo, hi));
+                values.push_back(std::clamp(b.cy() + edge, lo, hi));
+            }
+        }
+        work.charge(values.size());
+        std::sort(values.begin(), values.end());
+        work.charge(values.size());
+        values.erase(std::unique(values.begin(), values.end(), [] (double a, double b) {
+            return std::abs(a - b) < 0.25;
+        }), values.end());
+        std::vector<double> snapped;
+        auto add = [&] (double y) {
+            double base = std::floor(y - candidate.height() / 2) + candidate.height() / 2;
+            work.charge(snapped.size());
+            for (double v : {base - 1, base, base + 1})
+                if (v >= lo - EPS && v <= hi + EPS && std::none_of(snapped.begin(), snapped.end(),
+                    [&] (double old) { return std::abs(old - v) < 0.25; })) snapped.push_back(v);
+        };
+        for (double y : values) add(y);
+        (void)cy;
+        work.charge(snapped.size());
+        std::sort(snapped.begin(), snapped.end());
+        return snapped;
+    }
+
+    std::optional<pos_t> gather_place(size_t i, int side, double old_distance,
+        const std::vector<double>& distances, const std::vector<box>& obstacles)
+    {
+        const auto& w = win(i);
+        struct choice_t { bool ok = false; pos_t pos; double distance = INF, overlap = INF; } clear, least;
+        for (double target : distances)
+        {
+            work.charge();
+            if (target > old_distance + EPS) continue;
+            auto xs = gather_x_candidates(i, side, target);
+            for (double x : xs)
+            {
+                work.charge();
+                double scale = scale_at(i, x), width = w.width * scale, height = w.height * scale;
+                if (!x_legal(width, x)) continue;
+                auto yd = y_domain(height);
+                if (!yd) continue;
+                double border = side == 0 ? mid - S.center_half : mid + S.center_half;
+                box horizontal = rect_of(w.width, w.height, x, 0, scale);
+                double inner = side == 0 ? horizontal.x1 : horizontal.x0;
+                if ((side == 0 && inner > border + 1.0) || (side == 1 && inner < border - 1.0)) continue;
+                double actual = std::max(0.0, side == 0 ? border - inner : inner - border);
+                if (actual > old_distance + EPS) continue;
+                horizontal.y0 = yd->first; horizontal.y1 = yd->first + height;
+                auto ys = gather_y_candidates(horizontal, obstacles, yd->first, yd->second);
+                for (double y : ys)
+                {
+                    work.charge();
+                    box candidate = rect_of(w.width, w.height, x, y, scale);
+                    double sum = gather_overlap_sum(candidate, obstacles);
+                    bool within = true;
+                    for (const auto& b : obstacles)
+                    {
+                        work.charge();
+                        if (normalized_overlap(candidate, b) > 0.10 + 1e-9) { within = false; break; }
+                    }
+                    pos_t p{x, y, scale, w.pinned && std::abs(x - w.cx) < 1e-6};
+                    auto nearer_midline = [&] (const choice_t& old) {
+                        double nd = std::abs(y - S.screen_height / 2), od = std::abs(old.pos.cy - S.screen_height / 2);
+                        if (std::abs(nd - od) > 0.5) return nd < od;
+                        double no = std::abs(y - w.cy), oo = std::abs(old.pos.cy - w.cy);
+                        if (std::abs(no - oo) > 0.5) return no < oo;
+                        if (std::abs(y - old.pos.cy) > 0.5) return y < old.pos.cy;
+                        return std::abs(x - w.cx) < std::abs(old.pos.cx - w.cx) - 1e-7;
+                    };
+                    if (within && (!clear.ok || actual < clear.distance - 0.5 ||
+                        (std::abs(actual - clear.distance) <= 0.5 && nearer_midline(clear))))
+                        clear = {true, p, actual, sum};
+                    if (!least.ok || sum < least.overlap - 1e-9 ||
+                        (std::abs(sum - least.overlap) <= 1e-9 &&
+                         (actual < least.distance - 0.5 || (std::abs(actual - least.distance) <= 0.5 &&
+                          std::abs(y - S.screen_height / 2) < std::abs(least.pos.cy - S.screen_height / 2) - 1e-7))))
+                        least = {true, p, actual, sum};
+                }
+            }
+        }
+        return clear.ok ? std::optional<pos_t>(clear.pos) :
+            (least.ok ? std::optional<pos_t>(least.pos) : std::nullopt);
+    }
+
+    void build_gather_result(result_t& result, const layout_t& L)
+    {
+        result.moves.clear(); result.overlaps.clear();
+        result.checkpoint = "gather";
+        for (size_t i = 0; i < S.windows.size(); ++i)
+        {
+            work.charge();
+            if (win(i).role != role_t::resident || same_pos(L.pos[i], original.pos[i])) continue;
+            move_t m;
+            m.id = win(i).id; m.cx = L.pos[i].cx; m.cy = L.pos[i].cy; m.scale = L.pos[i].s;
+            if (L.pos[i].pin) m.pin = L.pos[i].s;
+            result.moves.push_back(m);
+        }
+        for (size_t i = 0; i < S.windows.size(); ++i)
+        {
+            if (win(i).role != role_t::resident) continue;
+            box r = rect(i, L.pos[i]);
+            for (const auto& b : base_hard)
+            {
+                work.charge();
+                double overlap = normalized_overlap(r, b);
+                result.score.overlap += overlap;
+                if (overlap > 0.10 + 1e-9)
+                    result.overlaps.emplace_back(win(i).id, UINT64_MAX);
+            }
+            for (size_t j = i + 1; j < S.windows.size(); ++j)
+            {
+                work.charge();
+                if (win(j).role != role_t::resident || side_of(win(i).cx) != side_of(win(j).cx)) continue;
+                double overlap = normalized_overlap(r, rect(j, L.pos[j]));
+                result.score.overlap += overlap;
+                if (overlap > 0.10 + 1e-9)
+                    result.overlaps.emplace_back(win(i).id, win(j).id);
+            }
+        }
+    }
 
     const window_t& win(size_t i) const { return S.windows[i]; }
     int side_of(double x) const { return x < mid ? 0 : 1; }

@@ -8,9 +8,11 @@
 //!   directory (dev snapshot or package) a session uses.
 //! - [`session`]: the environments running sessions record at startup, so a tool acts on a
 //!   session with that session's own environment, never the caller's.
+//! - [`capture`]: pure window-rectangle selection for capture clients.
 //!
 //! Scottland core runs on any distro: nothing here may assume one.
 
+pub mod capture;
 pub mod dirs;
 pub mod night_light;
 pub mod session;
