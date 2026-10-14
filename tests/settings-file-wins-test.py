@@ -201,8 +201,24 @@ def close_panel(save=False):
 def zone_row(index):
     # Zone rows: 0 Center edge softness, 1 Center zone width, 2 Widget rail width. A row click
     # sets its value from the pointer position, so click at the currently displayed value when
-    # the test means to select the row for a keyboard adjustment.
-    z = snapshot()["zones"]
+    # the test means to select the row for a keyboard adjustment. Scroll clipped rows into view
+    # first; a click outside the viewport cannot give the stack keyboard focus.
+    q = snapshot()
+    z, v = q["zones"], q["viewport"]
+    row_top = z["y"] + 69 * index
+    row_bottom = row_top + 68
+    if row_top < v["y"] + 4:
+        scroll_to(q["scroll"] + row_top - (v["y"] + 4))
+    elif row_bottom > v["y"] + v["height"] - 4:
+        scroll_to(q["scroll"] + row_bottom - (v["y"] + v["height"] - 4))
+    q = snapshot()
+    z, v = q["zones"], q["viewport"]
+    row_top = z["y"] + 69 * index
+    row_bottom = row_top + 68
+    if not (row_top >= v["y"] and row_bottom <= v["y"] + v["height"]):
+        raise RuntimeError(f"zone row {index} remains clipped after scrolling")
+    if os.environ.get("SCOTTLAND_FILE_WINS_PREVIEW_ONLY") == "1":
+        print(f"TRACE zone row={index} top={row_top:.1f} viewport={v['y']:.1f}:{v['y'] + v['height']:.1f}", flush=True)
     names = ("blend_width", "center_width", "rail_width")
     ranges = ((0, 300), (10, 90), (0.5, 10))
     name, (low, high) = names[index], ranges[index]
