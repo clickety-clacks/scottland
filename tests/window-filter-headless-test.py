@@ -2,6 +2,8 @@
 """Filter/latch behavior in an already-started private Scottland headless session."""
 import json
 import os
+from pathlib import Path
+import shutil
 import socket
 import struct
 import subprocess
@@ -70,6 +72,12 @@ def pixel_difference(left, right):
     return sum(abs(a - b) for a, b in zip(left, right))
 
 
+def box_text_pixels(frame):
+    # The overlay renders light search text in the bottom-center region. Its
+    # absence is an observable property independent of the typed query width.
+    return sum(max(frame[i:i + 3]) > 90 for i in range(0, len(frame), 3))
+
+
 def hint_ids():
     return {row["window"] for row in ipc("scottland/hints")["hints"]}
 
@@ -91,8 +99,8 @@ try:
     until(lambda: ipc("scottland/hints")["active"], "held Alt did not enter Window mode")
     background_frame = bottom_center_frame()
     tap("ENTER")
-    box_frame = until(lambda: (p if pixel_difference(background_frame, (p := bottom_center_frame())) > 10000 else None),
-                      "held Alt+Enter did not render the bottom-center search box")
+    until(lambda: pixel_difference(background_frame, bottom_center_frame()) > 10000,
+          "held Alt+Enter did not render the bottom-center search box")
     key("LEFTALT", False)
     assert ipc("scottland/hints")["active"]
     print("PASS held Alt+Enter opens bottom-center box and survives Alt release", flush=True)
@@ -104,7 +112,7 @@ try:
     tap("ESC")
     until(lambda: opacity(other) != 0.0, "active-box Escape did not clear query")
     assert ipc("scottland/hints")["active"]
-    until(lambda: pixel_difference(box_frame, bottom_center_frame()) > 10000,
+    until(lambda: box_text_pixels(bottom_center_frame()) < 20,
           "active-box Escape did not close the search box")
     print("PASS active-box Escape clears transient filter but stays in Window mode", flush=True)
     tap("ESC")
@@ -117,8 +125,8 @@ try:
 
     pre_box_frame = bottom_center_frame()
     tap("ENTER")
-    committed_box_frame = until(
-        lambda: (p if pixel_difference(pre_box_frame, (p := bottom_center_frame())) > 10000 else None),
+    until(
+        lambda: pixel_difference(pre_box_frame, bottom_center_frame()) > 10000,
         "latched Return did not render the search box")
     for letter in "MATCH":
         tap(letter)
@@ -130,9 +138,19 @@ try:
     tap("ENTER")
     assert ipc("scottland/hints")["active"] and opacity(other) == 0.0
     assert view(match)["id"] in hint_ids() and view(other)["id"] not in hint_ids()
-    until(lambda: pixel_difference(committed_box_frame, bottom_center_frame()) > 10000,
+    until(lambda: box_text_pixels(bottom_center_frame()) < 20,
           "Return did not close the search box")
     print("PASS Return commits filter, closes box, and keeps only matching hints", flush=True)
+
+    # Hint filtering must not remove the excluded resident from Gather's solve.
+    filtered_solves = ipc("scottland/spread-state")["solves"]
+    tap("SPACE")
+    filtered_spread = until(
+        lambda: (row if (row := ipc("scottland/spread-state"))["solves"] > filtered_solves else None),
+        "filtered Gather did not solve")
+    assert filtered_spread["last"]["windows"] >= 2, filtered_spread["last"]
+    assert view(other)["id"] not in hint_ids()
+    print("PASS filtered Gather keeps excluded windows in its layout snapshot", flush=True)
 
     tap("ESC")
     until(lambda: opacity(other) != 0.0, "Window mode exit did not restore opacity")
@@ -159,6 +177,7 @@ try:
                                      stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL))
     until(lambda: view(widget_title), "widget candidate did not map")
+    widget_owner_id = view(widget_title)["id"]
     frame = view(widget_title)["frame"]
     x = round(frame["x"] + frame["width"] / 2)
     y = round(frame["y"] + frame["height"] / 2)
@@ -173,6 +192,21 @@ try:
     card = until(lambda: next((row for row in ipc("scottland/layout-state")["views"]
                                if row["widget"] and row["title"].endswith(": " + widget_title)), None),
                  "widget card did not map")
+
+    # The rendered card's title can match when its hidden owner's title does not.
+    assert "Scottland widget" in card["title"]
+    tap("LEFTALT")
+    until(lambda: ipc("scottland/hints")["active"], "widget identity Alt tap did not latch")
+    tap("ENTER")
+    for letter in "SCOTTLAND WIDGET":
+        tap("SPACE" if letter == " " else letter)
+    until(lambda: next((row["opacity"] for row in ipc("scottland/layout-state")["views"]
+                       if row["id"] == card["id"]), None) != 0.0,
+          "matching widget became transparent")
+    assert widget_owner_id in hint_ids(), "visible matching widget lost its hint"
+    tap("ESC")
+    tap("ESC")
+    print("PASS widget title match preserves both card visibility and its hint", flush=True)
 
     tap("LEFTALT")
     until(lambda: ipc("scottland/hints")["active"], "widget filter Alt tap did not latch")
@@ -206,6 +240,32 @@ try:
     tap("ESC")
     assert not ipc("scottland/hints")["active"] and opacity(other) == 1.0
     print("PASS filter cancel and mode exit restore fullscreen opacity", flush=True)
+
+    ipc("wm-actions/set-fullscreen", {"view_id": view(other)["id"], "state": False})
+    until(lambda: view(other) and "frame" in view(other), "other did not leave fullscreen")
+    tap("LEFTALT")
+    until(lambda: ipc("scottland/hints")["active"], "reload Alt tap did not latch")
+    tap("ENTER")
+    until(lambda: box_text_pixels(bottom_center_frame()) > 20,
+          "reload setup did not render the search box")
+    scratch = Path(os.environ["SCOTTLAND_TEST_SCRATCH"])
+    fresh = scratch / f"libscottland-filter-reload-{time.monotonic_ns()}.so"
+    shutil.copyfile("build/libscottland.so", fresh)
+    plugins = ipc("wayfire/get-config-option", {"option": "core/plugins"})["value"]
+    changed = " ".join(str(fresh) if p == "scottland" or "/libscottland" in p else p
+                       for p in plugins.split())
+    mark = Path(os.environ["XDG_RUNTIME_DIR"]) / "scottland" / (os.environ["WAYLAND_DISPLAY"] + ".reloading")
+    mark.parent.mkdir(parents=True, exist_ok=True)
+    mark.touch()
+    try:
+        ipc("wayfire/set-config-options", {"core/plugins": changed})
+        time.sleep(.8)
+    finally:
+        mark.unlink(missing_ok=True)
+    until(lambda: box_text_pixels(bottom_center_frame()) < 20,
+          "plugin reload left the filter box attached")
+    assert view(match) and view(other), "plugin reload lost the test windows"
+    print("PASS plugin reload detaches an open filter box", flush=True)
 finally:
     for child in children:
         child.terminate()

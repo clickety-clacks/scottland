@@ -483,7 +483,7 @@
             model.windows[id].pinned_scale);
         publish_model();
     }
-    std::vector<scottland::windowing::hint_entry> window_entries()
+    std::vector<scottland::windowing::hint_entry> window_entries(bool filter_hints = false)
     {
         std::vector<scottland::windowing::hint_entry> entries;
         for (auto& [id, state] : model.windows)
@@ -495,13 +495,14 @@
                 state.placement.reset();
                 continue;
             }
-            if (!window_filter.matches(view->get_title(), view->get_app_id())) continue;
+            if (filter_hints && !matches_window_filter(view)) continue;
             if (!state.placement) { ensure_window_memory(id); remember_window(view); }
             auto link = link_of_window(view);
             entries.push_back({id, state.placement->hint_slot, memory_zone(view), link && link->docked()});
         }
         window_keys.hint_width = model.hint_width;
-        window_keys.refresh(entries);
+        if (filter_hints || !window_keys.active || window_filter.query.empty())
+            window_keys.refresh(entries);
         model.hint_width = window_keys.hint_width;
         publish_model();
         return entries;
@@ -1108,7 +1109,7 @@
     {
         ++hint_step_count;
         refresh_hint_palette();
-        auto entries = window_entries();
+        auto entries = window_entries(true);
         if (window_keys.active) window_keys.refresh(entries);
         std::set<uint64_t> represented;
         std::map<wf::output_t*, std::vector<uint64_t>> by_output;
@@ -1796,7 +1797,7 @@
     void update_window_filter()
     {
         apply_all_opacity();
-        window_keys.refresh(window_entries());
+        window_keys.refresh(window_entries(true));
         step_hints(true);
         refresh_layout_avoidance(true);
         if (window_filter.editing) show_window_filter();
@@ -1834,7 +1835,7 @@
         if (latch) window_filter.latched = true;
         auto active = wf::get_core().seat->get_active_view();
         auto link = link_of_widget(active);
-        window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
+        window_keys.begin(window_entries(true), link ? link->window_id : active ? active->get_id() : 0);
         apply_all_opacity();
         apply_widget_mode();  // every widget comes back expanded while asking (WG16, WK12)
         palette_read = {}; // always read the current theme on entry
@@ -2011,7 +2012,7 @@
             if (auto letter = window_hint_letter(keyboard, code))
             {
                 window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
-                window_keys.refresh(window_entries());
+                window_keys.refresh(window_entries(true));
                 window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
                 window_keys.letter(*letter, key_event_time(ev->event));
                 if (window_keys.hold_waiting()) arm_hint_hold();
@@ -2066,7 +2067,7 @@
         reply["hint_step_animation"] = hint_step_animation;
         reply["hint_step_offset"] = hint_step_offset;
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
-        window_keys.refresh(window_entries());
+        window_keys.refresh(window_entries(true));
         for (auto e : window_keys.entries)
         {
             wf::json_t item; item["window"] = int64_t(e.id); item["hint"] = window_keys.label(e.slot);
@@ -2220,6 +2221,9 @@
         for (auto& [id, flash] : hint_flashes) if (flash.node) wf::scene::remove_child(flash.node);
         hint_flashes.clear();
         window_keys.end();
+        window_filter.exit();
+        if (filter_preview) wf::scene::remove_child(filter_preview);
+        filter_preview.reset(); filter_output = nullptr;
         ipc_repo->unregister_method("scottland/hints");
         ipc_repo->unregister_method("scottland/center-switcher");
         for (auto& [id, visual] : hint_visuals)

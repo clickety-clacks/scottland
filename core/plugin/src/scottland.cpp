@@ -1221,12 +1221,23 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         fullscreen_filter_visuals.emplace(view->get_id(), fullscreen_filter_visual_t{view->weak_from_this(), opacity});
     }
 
+    bool matches_window_filter(wayfire_toplevel_view view)
+    {
+        if (!view) return false;
+        auto link = link_of_widget(view);
+        if (!link) link = link_of_window(view);
+        if (!link) return window_filter.matches(view->get_title(), view->get_app_id());
+        if (window_filter.matches(view->get_title(), view->get_app_id(), link->name)) return true;
+        auto partner = link_of_widget(view) ?
+            wf::toplevel_cast(view_by_id(link->window_id)) :
+            wf::toplevel_cast(link->widget.lock());
+        return partner && window_filter.matches(partner->get_title(), partner->get_app_id());
+    }
+
     void apply_opacity(wayfire_toplevel_view view, std::optional<double> center_x = {})
     {
         if (!view) return;
-        bool excluded = view->is_mapped() && window_keys.active &&
-            !window_filter.matches(view->get_title(), view->get_app_id(),
-                link_of_widget(view) ? link_of_widget(view)->name : "");
+        bool excluded = view->is_mapped() && window_keys.active && !matches_window_filter(view);
         set_fullscreen_filter_hidden(view, view->pending_fullscreen() && excluded);
         if (!view->is_mapped() || view->pending_fullscreen()) return;
         auto frame = frame_of(view, false);
