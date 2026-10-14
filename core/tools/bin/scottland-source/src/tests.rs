@@ -3,7 +3,7 @@ use crate::system::System;
 use crate::workspace::Workspace;
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -325,6 +325,98 @@ fn adopt_downgrade_preparation_failure_preserves_base() {
     assert!(error.to_string().contains("cannot run"), "{error}");
     assert_eq!(system.base().unwrap(), Some(installed.clone()));
     assert_eq!(system.installed().unwrap(), Some(installed));
+}
+
+#[test]
+fn adopt_prepares_received_release_when_local_commits_prevent_activation() {
+    let scratch = Scratch::new();
+    let source = scratch.0.join("source");
+    let (base, installed) = create_workspace_repository(&source);
+    git_ok(&source, &["checkout", "-b", "package-release", &base]);
+    fs::write(source.join("release-only.txt"), "package release\n").unwrap();
+    git_ok(&source, &["add", "--all"]);
+    git_ok(&source, &["commit", "-m", "package release"]);
+    let release = git_ok(&source, &["rev-parse", "HEAD"]);
+    git_ok(&source, &["checkout", "main"]);
+
+    let root = scratch.0.join("system-root");
+    let paths = Paths::under_root("example", &root, scratch.0.join("state"));
+    fs::create_dir_all(paths.source_repo.parent().unwrap()).unwrap();
+    let cloned = Command::new("git")
+        .arg("clone")
+        .arg("--bare")
+        .arg(&source)
+        .arg(&paths.source_repo)
+        .output()
+        .unwrap();
+    assert!(
+        cloned.status.success(),
+        "git clone --bare failed: {}",
+        String::from_utf8_lossy(&cloned.stderr)
+    );
+    git_ok(
+        &paths.source_repo,
+        &["update-ref", "refs/heads/base", &base],
+    );
+
+    let active_build = paths.build_dir(&installed);
+    fs::create_dir_all(&active_build).unwrap();
+    fs::write(
+        paths.switch_commit_for(&installed),
+        format!("{installed}\n"),
+    )
+    .unwrap();
+    fs::create_dir_all(paths.switch.parent().unwrap()).unwrap();
+    symlink(&active_build, &paths.switch).unwrap();
+
+    let binaries = scratch.0.join("release-binaries");
+    fs::create_dir_all(&binaries).unwrap();
+    for name in ["example-source", "example-tool"] {
+        let tool = binaries.join(name);
+        fs::write(
+            &tool,
+            format!("#!/bin/sh\nprintf '{name} version {release}\\n'\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let system = System {
+        paths: paths.clone(),
+    };
+    assert_eq!(system.base().unwrap(), Some(base.clone()));
+    assert_eq!(system.installed().unwrap(), Some(installed.clone()));
+
+    let activated = system.adopt_release(&release, &binaries).unwrap();
+    assert!(
+        activated.is_none(),
+        "local commits should prevent activation"
+    );
+    assert_eq!(system.base().unwrap(), Some(base));
+    assert_eq!(system.installed().unwrap(), Some(installed));
+
+    let release_build = paths.build_dir(&release);
+    assert_eq!(
+        fs::read_to_string(paths.switch_commit_for(&release)).unwrap(),
+        format!("{release}\n")
+    );
+    assert_eq!(
+        git_ok(&paths.build_source(&release), &["rev-parse", "HEAD"]),
+        release
+    );
+    assert!(release_build.is_dir());
+    for name in ["example-source", "example-tool"] {
+        let installed_tool = paths.build_bin(&release).join(name);
+        assert!(
+            installed_tool.is_file(),
+            "prepared release is missing {name}"
+        );
+        assert_ne!(
+            fs::metadata(installed_tool).unwrap().permissions().mode() & 0o111,
+            0,
+            "prepared release tool {name} is not executable"
+        );
+    }
 }
 
 #[test]

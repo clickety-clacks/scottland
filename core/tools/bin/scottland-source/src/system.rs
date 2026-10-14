@@ -329,6 +329,7 @@ impl System {
         release: &str,
         binary_directory: &Path,
     ) -> Result<Option<Vec<String>>> {
+        let workspace = self.prepare_store_from_binaries(release, None, binary_directory, true)?;
         let current = self.installed()?;
         let base = self.base()?;
         let mut update_base = false;
@@ -371,7 +372,6 @@ impl System {
             return Ok(None);
         }
 
-        let workspace = self.prepare_store_from_binaries(release, None, binary_directory, true)?;
         if update_base {
             self.set_ref("base", release)?;
         }
