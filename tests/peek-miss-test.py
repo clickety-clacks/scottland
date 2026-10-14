@@ -299,8 +299,8 @@ try:
         pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.2)
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
         until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
-        # Clear the cover off it again, back where it started, so the case's own cover starts clear.
-        # Pointer focus is active for this fixture; move off Small before asking to focus B.
+        # Clear the cover off it again so the case's own cover starts clear. Pointer focus is active
+        # for this fixture; move off Small before asking to focus B.
         bx1, by1, bx2, by2 = scene(B)
         pointer((bx1 + bx2) / 2, (by1 + by2) / 2)
         ipc('window-rules/focus-view', {'id': B})
@@ -310,7 +310,9 @@ try:
             return (focused == B and drag.get('dragged', 0) in (0, None),
                     {'expected_cover': B, 'focused': focused, 'dragged': drag.get('dragged')})
         until(reset_drag_ready, 3, 'cover focused and prior grab cleared for reset drag')
-        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2))
+        # Confirm the reset gesture really starts on B, but end at the output center. The nominal
+        # base center (420,340) is outside the 1280px output's center zone and docks B to the rail.
+        pointer_drag(B, (W / 2, H / 2))
         def reset_drag_is_b():
             drag = ipc('scottland/desktop-model').get('drag', {})
             focused = focused_id()
@@ -320,6 +322,10 @@ try:
         check(reset_drag['focused'] == B and reset_drag['dragged'] == B,
               'cover B is the actual focused and dragged window during the reset')
         release(); settled()
+        until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None),
+                       'reset drag remains active'), 3, 'reset cover drag ended')
+        # Fixture geometry and focus are IPC setup, not another product gesture.
+        setup(base, C)
 
     def solo_big():
         ipc('window-rules/focus-view', {'id': B})
