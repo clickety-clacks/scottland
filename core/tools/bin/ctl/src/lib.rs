@@ -5,8 +5,12 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
+use std::mem;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
@@ -23,6 +27,7 @@ Settings and window commands:
   present WINDOW_ID                        bring a window or its widget to the center
   option WAYFIRE/OPTION                    print a live Wayfire option
   terminal-cwd [PID]                       print the focused terminal's working directory
+  sender-window-snapshot                    print an unfiltered sender-window snapshot as JSON
   focus-app REGEX                           focus the first window matching app id or title
   session-locked                            exit 0 locked, 1 unlocked, 2 unknown
   window-close-all                          close every open window
@@ -109,6 +114,7 @@ const TEXT_NAMES: &[&str] = &[
 ];
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const BUDGET_CAP_MS: u64 = 12_000;
+const SENDER_WINDOW_SNAPSHOT_SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -140,29 +146,7 @@ impl Ctl {
     }
 
     fn call(&mut self, method: &str, data: Value) -> Result<Value> {
-        let body = serde_json::to_vec(&json!({"method": method, "data": data}))
-            .map_err(|error| error.to_string())?;
-        if body.len() > MAX_FRAME {
-            return Err("Wayfire request exceeds the frame size limit".to_string());
-        }
-        self.socket
-            .write_all(&(body.len() as u32).to_le_bytes())
-            .and_then(|_| self.socket.write_all(&body))
-            .map_err(|error| format!("cannot send Wayfire request: {error}"))?;
-        let mut header = [0; 4];
-        self.socket
-            .read_exact(&mut header)
-            .map_err(|error| format!("cannot read Wayfire reply header: {error}"))?;
-        let size = u32::from_le_bytes(header) as usize;
-        if size > MAX_FRAME {
-            return Err(format!("Wayfire reply is too large ({size} bytes)"));
-        }
-        let mut reply = vec![0; size];
-        self.socket
-            .read_exact(&mut reply)
-            .map_err(|error| format!("cannot read Wayfire reply: {error}"))?;
-        serde_json::from_slice(&reply)
-            .map_err(|error| format!("invalid Wayfire JSON reply: {error}"))
+        call_socket(&mut self.socket, method, data)
     }
 
     fn setting_updates(&mut self, name: &str, value: Value) -> Result<Map<String, Value>> {
@@ -271,17 +255,15 @@ impl Ctl {
             json!({"option": "input/touchpad_scroll_speed"}),
         )?;
         if let Some(value) = touchpad_speed.get("value") {
-            let number = number_value(value)
-                .ok_or_else(|| "Wayfire returned a non-numeric touchpad scroll speed".to_string())?;
+            let number = number_value(value).ok_or_else(|| {
+                "Wayfire returned a non-numeric touchpad scroll speed".to_string()
+            })?;
             values.insert("touchpad_scroll_speed".to_string(), json!(number));
         }
         let layout = self.call("scottland/layout-state", json!({}))?;
         values.insert(
             "outputs".to_string(),
-            layout
-                .get("outputs")
-                .cloned()
-                .unwrap_or_else(|| json!([])),
+            layout.get("outputs").cloned().unwrap_or_else(|| json!([])),
         );
         values.insert("unsupported".to_string(), Value::Array(unsupported));
         Ok(Value::Object(values))
@@ -340,6 +322,7 @@ pub fn run(args: &[String]) -> Result<u8> {
             Ctl::connect()?.windows()?;
             Ok(0)
         }
+        "sender-window-snapshot" if args.is_empty() => sender_window_snapshot(),
         "stdin" if args.is_empty() => stdin_updates(),
         "terminal-cwd" if args.len() <= 1 => terminal_cwd(args.first().map(String::as_str)),
         "focus-app" if args.len() == 1 => focus_app(&args[0]),
@@ -353,6 +336,186 @@ pub fn run(args: &[String]) -> Result<u8> {
             sleep_monitor(Some("inhibited"))
         }
         _ => Err(format!("invalid command or arguments\n{HELP}")),
+    }
+}
+
+fn sender_window_snapshot() -> Result<u8> {
+    let path = if let Some(path) = env::var_os("WAYFIRE_SOCKET").filter(|path| !path.is_empty()) {
+        PathBuf::from(path)
+    } else if env::var_os("SCOTTLAND_EXEC").is_some_and(|value| !value.is_empty()) {
+        return Err("the selected session has no Wayfire socket".to_string());
+    } else {
+        return Err(Command::new("scottland-exec")
+            .args(["--", "scottland-ctl", "sender-window-snapshot"])
+            .exec()
+            .to_string());
+    };
+    let mut socket = connect_socket(&path, SENDER_WINDOW_SNAPSHOT_SOCKET_TIMEOUT)
+        .map_err(|error| format!("cannot connect to the selected session: {error}"))?;
+    let reply = call_socket(&mut socket, "window-rules/list-views", json!({}))?;
+    if let Some(error) = reply.get("error") {
+        eprintln!(
+            "{}",
+            error
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string())
+        );
+        return Ok(1);
+    }
+    print_json(reply)
+}
+
+fn call_socket(socket: &mut UnixStream, method: &str, data: Value) -> Result<Value> {
+    let body = serde_json::to_vec(&json!({"method": method, "data": data}))
+        .map_err(|error| error.to_string())?;
+    if body.len() > MAX_FRAME {
+        return Err("Wayfire request exceeds the frame size limit".to_string());
+    }
+    socket
+        .write_all(&(body.len() as u32).to_le_bytes())
+        .and_then(|_| socket.write_all(&body))
+        .map_err(|error| format!("cannot send Wayfire request: {error}"))?;
+    let mut header = [0; 4];
+    socket
+        .read_exact(&mut header)
+        .map_err(|error| format!("cannot read Wayfire reply header: {error}"))?;
+    let size = u32::from_le_bytes(header) as usize;
+    if size > MAX_FRAME {
+        return Err(format!("Wayfire reply is too large ({size} bytes)"));
+    }
+    let mut reply = vec![0; size];
+    socket
+        .read_exact(&mut reply)
+        .map_err(|error| format!("cannot read Wayfire reply: {error}"))?;
+    serde_json::from_slice(&reply).map_err(|error| format!("invalid Wayfire JSON reply: {error}"))
+}
+
+fn connect_socket(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
+    if timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket timeout must be positive",
+        ));
+    }
+    let path_bytes = path.as_os_str().as_bytes();
+    if path_bytes.is_empty() || path_bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Wayfire socket path",
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    let stream = {
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                0,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        let mut address: libc::sockaddr_un = unsafe { mem::zeroed() };
+        if path_bytes.len() >= address.sun_path.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Wayfire socket path is too long",
+            ));
+        }
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (slot, byte) in address.sun_path.iter_mut().zip(path_bytes) {
+            *slot = *byte as libc::c_char;
+        }
+        let address_len = (mem::offset_of!(libc::sockaddr_un, sun_path) + path_bytes.len() + 1)
+            as libc::socklen_t;
+        let result = unsafe {
+            libc::connect(
+                fd,
+                (&address as *const libc::sockaddr_un).cast::<libc::sockaddr>(),
+                address_len,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EINPROGRESS) | Some(libc::EALREADY) | Some(libc::EAGAIN) => {
+                    wait_for_socket_connect(&stream, timeout)?;
+                }
+                Some(libc::EISCONN) => {}
+                _ => return Err(error),
+            }
+        }
+        stream.set_nonblocking(false)?;
+        stream
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let stream = UnixStream::connect(path)?;
+
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    Ok(stream)
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_socket_connect(stream: &UnixStream, timeout: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Wayfire socket connection timed out",
+            ));
+        }
+        let millis = remaining.as_millis()
+            + if remaining.subsec_nanos() % 1_000_000 != 0 {
+                1
+            } else {
+                0
+            };
+        let timeout_ms = millis.min(libc::c_int::MAX as u128) as libc::c_int;
+        let mut descriptor = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if ready == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Wayfire socket connection timed out",
+            ));
+        }
+        let mut socket_error: libc::c_int = 0;
+        let mut len = mem::size_of_val(&socket_error) as libc::socklen_t;
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&mut socket_error as *mut libc::c_int).cast::<libc::c_void>(),
+                &mut len,
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if socket_error != 0 {
+            return Err(io::Error::from_raw_os_error(socket_error));
+        }
+        return Ok(());
     }
 }
 
@@ -428,14 +591,15 @@ fn stdin_updates() -> Result<u8> {
 
 fn terminal_cwd(pid_arg: Option<&str>) -> Result<u8> {
     let ctl = Ctl::connect()?;
-    let cwd = scottland::terminal_cwd::resolve(&ctl.session, pid_arg.map(OsStr::new))
-        .map_err(|error| {
+    let cwd = scottland::terminal_cwd::resolve(&ctl.session, pid_arg.map(OsStr::new)).map_err(
+        |error| {
             if error.kind() == io::ErrorKind::InvalidInput {
                 "PID must be a positive integer".to_string()
             } else {
                 error.to_string()
             }
-        })?;
+        },
+    )?;
     println!("{}", cwd.display());
     Ok(0)
 }
@@ -852,4 +1016,83 @@ fn lock_budget_ms(delay_us: u64) -> u64 {
 
 fn is_prepare_for_sleep(line: &str) -> bool {
     line.contains("boolean true")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod sender_window_snapshot_timeout_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    struct TimeoutFixture {
+        root: PathBuf,
+        socket_root: PathBuf,
+    }
+
+    impl TimeoutFixture {
+        fn new() -> Self {
+            let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(4)
+                .expect("ctl crate lives below repository root")
+                .to_path_buf();
+            let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+            let root = repo
+                .join("build")
+                .join(format!("ctl-snapshot-timeout-{}-{id}", std::process::id()));
+            fs::create_dir_all(&root).expect("create timeout fixture directory");
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+                .expect("restrict timeout fixture permissions");
+            let socket_root =
+                Path::new("/tmp").join(format!("sct-timeout-{}-{id}", std::process::id()));
+            fs::create_dir(&socket_root).expect("create short-lived timeout socket directory");
+            fs::set_permissions(&socket_root, fs::Permissions::from_mode(0o700))
+                .expect("restrict timeout socket directory permissions");
+            Self { root, socket_root }
+        }
+    }
+
+    impl Drop for TimeoutFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.socket_root);
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn snapshot_connection_sets_two_second_read_and_write_timeouts() {
+        let fixture = TimeoutFixture::new();
+        let socket_path = fixture.socket_root.join("wayfire.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind timeout fixture socket");
+        let acceptor = thread::spawn(move || listener.accept().expect("accept timeout fixture"));
+        let stream = connect_socket(&socket_path, SENDER_WINDOW_SNAPSHOT_SOCKET_TIMEOUT)
+            .expect("connect with snapshot timeout");
+        let (server, _) = acceptor.join().expect("timeout fixture acceptor panicked");
+        assert_eq!(
+            SENDER_WINDOW_SNAPSHOT_SOCKET_TIMEOUT,
+            Duration::from_secs(2)
+        );
+
+        for option in [libc::SO_RCVTIMEO, libc::SO_SNDTIMEO] {
+            let mut value: libc::timeval = unsafe { mem::zeroed() };
+            let mut len = mem::size_of_val(&value) as libc::socklen_t;
+            let result = unsafe {
+                libc::getsockopt(
+                    stream.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    option,
+                    (&mut value as *mut libc::timeval).cast::<libc::c_void>(),
+                    &mut len,
+                )
+            };
+            assert_eq!(result, 0, "read back socket timeout option {option}");
+            assert_eq!(value.tv_sec, 2, "socket timeout option {option}");
+            assert_eq!(value.tv_usec, 0, "socket timeout option {option}");
+        }
+
+        drop(stream);
+        drop(server);
+    }
 }

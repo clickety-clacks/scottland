@@ -554,6 +554,7 @@ dependencies = [
 name = "scottland-ctl"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "regex",
  "scottland-lib",
  "serde_json",
