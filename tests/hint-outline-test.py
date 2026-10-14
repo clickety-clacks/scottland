@@ -560,8 +560,10 @@ def fullscreen_in_front():
     ipc("window-rules/focus-view", dict(id=front))
     time.sleep(.5)
     hold()
-    point = find_point(back, require_ids=(front,))
-    tint_stack_check("fullscreen covered window", point, (back, front))
+    # Fullscreen occludes the rear window's pixels. Check the visible fullscreen extent
+    # directly; a rear-window sample under the fullscreen surface cannot prove its tint.
+    point = find_point(front)
+    tint_stack_check("fullscreen extent", point, (front,))
     # The fullscreen bounds have a square edge and receive the same tint as their interior,
     # without an extra inset rim.
     fs = views()[front]["frame"]
@@ -625,6 +627,9 @@ def widget_cover():
                          if links.get(identifier, -1) == widget["id"])
         card_rect = drawn(widget_id)
         under_rect = drawn(small)
+        print("widget tint overlap geometry", {"card": card_rect, "window": under_rect,
+              "window_badge": state.get(small, {}).get("badge"),
+              "widget_badge": state.get(widget_id, {}).get("badge")}, flush=True)
         image = Shot("09-widget-cover-" + phase)
         ux, uy, uw, uh = under_rect
         points = [(x, y) for y in range(int(uy + 12), int(uy + uh - 12), 3)
@@ -745,7 +750,12 @@ try:
     q = snapshot()
     panel_x = (1280 - q["panel"]["width"]) / 2
     panel_y = 720 - max(24, round(720 * .04)) - q["panel"]["height"]
-    check("default strength is 7%", abs(q["motion"]["window_mode_tint"] - 7) < .01 and option("window_mode_tint") == 7)
+    default_motion_strength = q["motion"]["window_mode_tint"]
+    default_plugin_strength = option("window_mode_tint")
+    print("default Window-mode tint values", {"settings": default_motion_strength,
+          "Wayfire": default_plugin_strength}, flush=True)
+    check("default strength is 7%", abs(default_motion_strength - 7) < .01 and
+          abs(default_plugin_strength - 7) < .01)
     for _ in range(3):
         click(panel_x + 36 + 2.5 * (q["panel"]["width"] - 72) / 6, panel_y + 100)
         if snapshot()["tab"] == 2:
