@@ -428,8 +428,9 @@ try:
             log('cross release', release, json.dumps(rows))
         options(**MIKE); rest('back to Mike')
     if 'wake' in only:
-        # Each row set with real input while the goo sleeps; Shine at its existing value is the
-        # no-change control. Check that selecting any row preserves its starting value.
+        # Each row is selected and changed with real Settings input while the goo is idle.
+        # Shine at its existing value is the no-change control. Pixel sampling brackets only
+        # the key action, with the same Settings panel and row already visible in both captures.
         record['wake'] = {}
         LOW_HIGH = {'goo_spread': (0., .9), 'goo_swirl': (0., 3.), 'goo_release': (.005, .3),
                     'goo_shine': (0., 1.5)}
@@ -439,7 +440,6 @@ try:
                               ('goo_spread', -4), ('goo_swirl', -3), ('goo_release', -2)):
             options(**MIKE); rest('wake reset'); reset_dye(); rest('wake fresh dye')
             pts = rings([view('win-a')['frame'], view('win-b')['frame']])
-            f0, meta0 = capture_sample(pts); px0 = shot('wake-%s-%d-before' % (name, presses))
             panel = open_panel(); rest('panel open')
             lo, hi = LOW_HIGH[name]
             target = MIKE[name]
@@ -459,22 +459,40 @@ try:
             selection_wakes = (after_select['wakes'].get('settings', 0)
                                - before_select['wakes'].get('settings', 0))
             before = rest('row selected')
-            if presses == 0:
-                time.sleep(3); idle = state()
-                record['idle_with_panel'] = {'sleeping': idle['sleeping'], 'wakes': idle['wakes'],
-                                             'water_ticks': idle['water_ticks'], 'steps': idle['steps']}
-                # Sleep/step counters remain diagnostics; the product check is the visible state.
+            f0, meta0 = capture_sample(pts)
+            px0 = shot('wake-%s-%d-before' % (name, presses))
             t0 = time.monotonic(); woke = None; seen = None
-            for _ in range(abs(presses)):
-                key('KEY_LEFTSHIFT', True); tap('KEY_RIGHT' if presses > 0 else 'KEY_LEFT'); key('KEY_LEFTSHIFT', False)
-                time.sleep(.03)
-            while presses and time.monotonic() - t0 < 2:
-                s1 = state()
-                if not s1['sleeping']:
-                    woke = round(time.monotonic() - t0, 3); seen = s1; break
-                time.sleep(.01)
+            if presses == 0:
+                time.sleep(3)  # intentional idle hold for the no-change control
+                mid = state()
+                record['idle_with_panel'] = {'sleeping': mid['sleeping'], 'wakes': mid['wakes'],
+                                             'water_ticks': mid['water_ticks'], 'steps': mid['steps']}
+            else:
+                direction = 1 if presses > 0 else -1
+                for index in range(abs(presses)):
+                    previous = option(name)
+                    step_value = min(hi, max(lo, previous + direction * STEPS[name] * 10))
+                    step_value = math.floor(step_value / STEPS[name] + .5) * STEPS[name]
+                    key('KEY_LEFTSHIFT', True)
+                    tap('KEY_RIGHT' if presses > 0 else 'KEY_LEFT')
+                    key('KEY_LEFTSHIFT', False)
+                    deadline = time.monotonic() + 1.5
+                    value_after_step = previous
+                    while time.monotonic() < deadline:
+                        value_after_step = option(name)
+                        if abs(value_after_step - step_value) <= 1e-5:
+                            break
+                        time.sleep(.01)
+                    if abs(value_after_step - step_value) > 1e-5:
+                        raise AssertionError('%s key %d produced %g, expected %g' %
+                                             (name, index + 1, value_after_step, step_value))
+                while time.monotonic() - t0 < 2:
+                    s1 = state()
+                    if not s1['sleeping']:
+                        woke = round(time.monotonic() - t0, 3); seen = s1; break
+                    time.sleep(.01)
+                mid = rest('after ' + name)
             value = option(name)
-            mid = rest('after ' + name)
             expected = min(hi, max(lo, selected + presses * STEPS[name] * 10))
             expected = math.floor(expected / STEPS[name] + .5) * STEPS[name]
             if abs(value - expected) > 1e-5:
@@ -482,13 +500,19 @@ try:
             after_keys = snapshot(panel)['goo']
             if after_keys.get('selected') != expected_index:
                 raise AssertionError('Settings focus moved away from %s during key input' % name)
-            # Wake/step counters are retained below as diagnostics, not product pass criteria.
+            f1, meta1 = capture_sample(pts)
+            px1 = shot('wake-%s-%d-after' % (name, presses))
             tap('KEY_ENTER')   # Save closes the panel; the value stays
             for _ in range(100):
                 if panel.poll() is not None: break
                 time.sleep(.05)
-            after = rest('panel closed'); f1, meta1 = capture_sample(pts); px1 = shot('wake-%s-%d-after' % (name, presses))
-            row = {'value': [selected, value], 'woke_after_s': woke, 'wake_reason': seen and seen['last_wake'],
+            after = rest('panel closed')
+            value_after_save = option(name)
+            if abs(value_after_save - value) > 1e-5:
+                raise AssertionError('%s value did not persist after Save: %g to %g' %
+                                     (name, value, value_after_save))
+            row = {'value': [selected, value], 'value_after_save': value_after_save,
+                   'woke_after_s': woke, 'wake_reason': seen and seen['last_wake'],
                    'expected_value': expected, 'selection_wakes': selection_wakes,
                    'capture_meta': {'before': meta0, 'after': meta1},
                    'settings_wakes': [before['wakes'].get('settings', 0), mid['wakes'].get('settings', 0)],
