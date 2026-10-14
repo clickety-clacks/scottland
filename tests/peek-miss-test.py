@@ -347,12 +347,44 @@ try:
         until(full_cover_window_ready, 3, 'Big is drawn at full window size before covering Small')
 
         x1, y1, x2, y2 = scene(S)
-        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2), require_drag=True); release(); settled()
-        found, row = observe('grabbed-while-peeking', 'peeking-before-grab', S, 'Small')
-        if not found: raise Unready(f'Small does not peek before the grab: {row}')
+        pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2), require_drag=True)
+        release()
+        def cover_drag_ended():
+            drag = drag_snapshot()
+            return drag_is_idle(drag), {'started': drag.get('started'), 'window': drag.get('window')}
+        until(cover_drag_ended, 3, 'cover drag ended before checking the peek fixture')
+        settled()
+        def cover_ready():
+            found, row = observe('grabbed-while-peeking', 'peeking-before-grab', S, 'Small', quiet=True)
+            drawn_area = (row['scene_frame'][2] - row['scene_frame'][0]) * (row['scene_frame'][3] - row['scene_frame'][1])
+            return (found and row['pixels'] <= drawn_area * .5, row)
+        try:
+            row = until(cover_ready, 4, 'Small is mostly covered while its peek strip is visible')
+        except Unready as error:
+            capture_status = 'saved'
+            try:
+                capture('grabbed-while-peeking-cover-unready', keep_ppm=True)
+            except Exception as capture_error:
+                capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
+            state = {'cover_layout': layout(B), 'cover_scene_frame': [round(v, 1) for v in scene(B)],
+                     'cover_geometry': geometry(B), 'drag': drag_snapshot(), 'focused': focused_id(),
+                     'capture': capture_status}
+            raise Unready(f'{error}; post_drop={json.dumps(state)}') from error
+        results.append(row)
+        print(f"      grabbed-while-peeking [peeking-before-grab]: {json.dumps(row)}", flush=True)
+        if not row['strip_in_pixels']: raise Unready(f'Small does not peek before the grab: {row}')
         drawn_area = (row['scene_frame'][2] - row['scene_frame'][0]) * (row['scene_frame'][3] - row['scene_frame'][1])
         if row['pixels'] > drawn_area * .5:
-            raise Unready(f'Small is mostly exposed, so the cover fixture was not established: {row}')
+            capture_status = 'saved'
+            try:
+                capture('grabbed-while-peeking-cover-unready', keep_ppm=True)
+            except Exception as capture_error:
+                capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
+            state = {'cover_layout': layout(B), 'cover_scene_frame': [round(v, 1) for v in scene(B)],
+                     'cover_geometry': geometry(B), 'drag': drag_snapshot(), 'focused': focused_id(),
+                     'capture': capture_status}
+            raise Unready(f'Small is mostly exposed, so the cover fixture was not established: {row}; '
+                          f'post_drop={json.dumps(state)}')
         sx1, sy1, sx2, sy2 = scene(S); fx = scene(B)
         gx, gy = (sx1 + 8, (sy1 + sy2) / 2) if sx1 < fx[0] - 10 else (sx2 - 8, (sy1 + sy2) / 2) if sx2 > fx[2] + 10 else \
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
