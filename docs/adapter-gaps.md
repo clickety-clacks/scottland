@@ -281,14 +281,18 @@ real screen or real hardware; statuses are **implemented**.
 | AG04 | Lid close runs `omarchy-system-lid-close`, also on the lock screen (Omarchy marks it locked); a switch binding without `locked` doesn't run while locked. | `tests/omarchy-lid-test.py`, virtual switch through Wayfire's switch path | Docked clamshell (laptop panel off) needs monitor config (AG03, not approved); lid open's clamshell reconcile is reported, not run (question 3). Real lid untested. |
 | AG22, AG07 (scroll) | Omarchy's touchpad scroll factor (0.4) and per-app `scroll_touchpad` rules (1.5 terminals, 0.2 Ghostty), including the user's own, apply per window under the pointer; class matches the current app-id and initial_class the one the window mapped with; edits apply live. | `tests/omarchy-scroll-speed-test.py`: delivered axis values per client, before and after a live edit and an app-id change; without the import every surface got 0.2 | Per-device factors and rules on other window properties are reported, not applied. The rest of AG07 (device disable, other input settings) is not part of this. No physical touchpad tested. |
 
-Reload: `tests/omarchy-reload-rehearsal-test.py` and `tests/reload-rehearsal-test.sh` reload a
-session started on the installed build (bb821e3) into this one; it survives and renders, and the
-plugin, config and Lua host fixes take effect. The Hyprland shim keeps running its old code
-through a reload, and a Quickshell Hyprland client (the Omarchy shell) does not reconnect if the
-shim is restarted, so the shim fixes (AG17, AG18, AG19, visible failure, reload) reach a running
-session at its next start.
+Reload: the older `bb821e3` rehearsal predates Mike's 10-07 ruling. The current adapter reload
+sequence restarts the session-owned Hyprland shim, the Lua host, and then the unchanged Omarchy
+shell restart command, with adapter `libexec` first on the shell's `PATH`. The focused
+`tests/omarchy-joint-reload-test.py` checks lock-safe session-scoped shim replacement and
+shell-helper ordering and passed eight isolated fake-process and temporary-file checks. The broader
+`tests/omarchy-reload-rehearsal-test.py` also checks the existing plugin, window, and F9 reload
+behavior; it was not run on this source candidate. The stock helper's live shell refresh and the
+exact-build Plumbus rehearsal remain unproved. The screen-sharing config
+continues to select xdg-desktop-portal-wlr, and its slurp chooser still selects an output by click;
+`tests/portal-test.py` was not run on this candidate.
 
-Questions for Mike (unresolved: 3, 5 and 6):
+Questions for Mike (unresolved: 3):
 
 1. ~~Keep mode and startup apps (AG20)~~: moot, ruled 10-06: keep mode is removed; switching
    always closes the current desktop.
@@ -297,10 +301,12 @@ Questions for Mike (unresolved: 3, 5 and 6):
    (`omarchy-hyprland-monitor-clamshell`, panel back on) both need monitor config translation
    (AG03): approve that work, or keep lid open reported and not run?
 4. ~~Screensaver (AG19)~~: ruled 10-13 after observing that Omarchy's screensaver opened windowed in Scottland 0.3: in Scottland, the mapped `org.omarchy.screensaver` opens fullscreen and ordinary windows remain windowed. Translate only the existing Omarchy screensaver window rule; keep Omarchy unmodified. Other screensaver rules, including cursor hiding, stay untranslated and are reported. Focused headless behavior proof is pending; physical-screen acceptance follows merge.
-5. Shim updates: should `scottland-reload` restart the shim and the Omarchy shell together (the
-   shell's bar and menus reload), or keep shim changes for the next session start?
-6. Screen sharing picks an output by clicking it (xdg-desktop-portal-wlr's slurp chooser). Keep,
-   or configure another chooser behavior?
+5. ~~Shim updates~~: ruled 10-07 (`dr_1766075a-c825-4706-a35d-3537f684d4ed`,
+   `reload-restarts-shim-and-shell`): restart the shim and Omarchy shell together so the bar and
+   menus reload (O34).
+6. ~~Screen sharing picker~~: ruled 10-07 (`dr_8aea53b8-e5ad-4f96-a678-bf9734808f17`,
+   `keep-click-to-pick`): keep choosing the screen by clicking it in xdg-desktop-portal-wlr's
+   slurp chooser (AG02).
 7. ~~xdg-desktop-portal-wlr's stream failures~~: ruled 10-05, fix it, upstream, patched copy meanwhile
    (upstream part superseded by 9).
 8. ~~Omarchy-adapter users and the patched xdg-desktop-portal-wlr~~: ruled 10-06, the adapter's setup
