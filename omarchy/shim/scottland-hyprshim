@@ -788,6 +788,15 @@ class Translator:
                     lines.append(f"workspacev2>>{index + 1},{index + 1}")
 
         if kind == "view-mapped" and is_window:
+            if view.get("app-id") == "org.omarchy.screensaver" and not view.get("fullscreen"):
+                try:
+                    reply = self.wf.call("window-rules/configure-view", {
+                        "id": view["id"], "fullscreen": True,
+                    })
+                    if not isinstance(reply, dict) or reply.get("result") != "ok":
+                        log(f"screensaver fullscreen failed for view {view['id']}: {reply!r}")
+                except Exception as error:  # noqa: BLE001
+                    log(f"screensaver fullscreen failed for view {view['id']}: {error!r}")
             ws = self.workspace_ref(self.outputs(), view.get("output-id"))["name"]
             lines.append(f"openwindow>>{address(view['id'], '')},{ws},{view.get('app-id', '')},{view.get('title', '')}")
         elif kind == "view-unmapped" and is_window:
