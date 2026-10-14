@@ -186,7 +186,7 @@ try:
             wait(lambda: not view(primary)['widgetized'])
             resumed=view(primary)
             assert resumed['zone']=='center' and resumed['applied_scale']>.99, \
-                'widget-start double-tap did not resume at center'
+                f'widget-start double-tap did not resume at center: {resumed}'
             print('PASS '+text+' widget-start double-tap returns to rail and resumes at center',flush=True)
             key('LEFTALT',False)
         subprocess.run(['grim',str(art/('width-'+str(width)+'.png'))],check=True)

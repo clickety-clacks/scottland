@@ -221,6 +221,16 @@ def close_all():
     for v in views():
         if not v['widget']:
             ipc('window-rules/close-view', {'id': v['id']})
+    for client in clients:
+        if client.poll() is None:
+            client.terminate()
+    for client in clients:
+        try:
+            client.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            client.kill()
+            client.wait(timeout=5)
+    clients.clear()
     wait_for(lambda: not [v for v in views() if not v['widget']])
     time.sleep(.3)
 
