@@ -357,9 +357,8 @@ fn safe_text(text: &str) -> bool {
 fn valid_machine(machine: &str) -> bool {
     let mut bytes = machine.bytes();
     matches!(bytes.next(), Some(byte) if byte.is_ascii_alphanumeric())
-        && bytes.all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
-        })
+        && bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-'))
 }
 
 fn canonical_ticks(value: &str) -> bool {
@@ -520,10 +519,17 @@ fn local_machine() -> Result<String, String> {
 fn resolver_dir() -> Result<PathBuf, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not locate this executable: {error}"))?;
+    resolver_dir_for(&executable)
+}
+
+fn resolver_dir_for(executable: &Path) -> Result<PathBuf, String> {
     let bin_dir = executable
         .parent()
         .ok_or_else(|| "sender-window executable has no parent directory".to_string())?;
     let candidates = [
+        // scottland-source stores a built binary beside its commit's source
+        // worktree; use the resolver version built from that same commit.
+        bin_dir.join("../source/core/tools/vendor/agent_window_resolver"),
         bin_dir.join("../lib/agent_window_resolver"),
         bin_dir.join("agent_window_resolver"),
     ];
@@ -833,6 +839,37 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    #[test]
+    fn packaged_base_and_source_store_find_their_matching_resolvers() {
+        let scratch = std::env::temp_dir().join(format!(
+            "scottland-sender-window-layout-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base_resolver = scratch.join("tools/lib/agent_window_resolver");
+        let store_resolver =
+            scratch.join("builds/rev/source/core/tools/vendor/agent_window_resolver");
+        fs::create_dir_all(scratch.join("tools/base")).unwrap();
+        fs::create_dir_all(scratch.join("builds/rev/bin")).unwrap();
+        fs::create_dir_all(&base_resolver).unwrap();
+        fs::create_dir_all(&store_resolver).unwrap();
+        fs::write(base_resolver.join("cli.py"), "# base fixture\n").unwrap();
+        fs::write(store_resolver.join("cli.py"), "# store fixture\n").unwrap();
+
+        assert_eq!(
+            resolver_dir_for(&scratch.join("tools/base/scottland-sender-window")),
+            Ok(base_resolver.canonicalize().unwrap())
+        );
+        assert_eq!(
+            resolver_dir_for(&scratch.join("builds/rev/bin/scottland-sender-window")),
+            Ok(store_resolver.canonicalize().unwrap())
+        );
+        fs::remove_dir_all(scratch).unwrap();
+    }
+
     fn resolver_v1_accepts_target(target: &Value) -> bool {
         let script = r#"
 import json, sys
@@ -856,7 +893,9 @@ print("valid")
         let mut stdin = child.stdin.take().expect("parity stdin is piped");
         serde_json::to_writer(&mut stdin, target).expect("target JSON should serialize");
         drop(stdin);
-        let output = child.wait_with_output().expect("parity process should exit");
+        let output = child
+            .wait_with_output()
+            .expect("parity process should exit");
         match output.status.code() {
             Some(0) => true,
             Some(3) => false,

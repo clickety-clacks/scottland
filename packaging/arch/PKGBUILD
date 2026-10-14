@@ -119,8 +119,10 @@ package_scottland() {
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
   ln -s /usr/bin/scottland-settings "$pkgdir/usr/lib/scottland/libexec/scottland-settings"
-  install -dm755 "$pkgdir/usr/lib/scottland/lib"
-  cp -a "$srcdir/tools/lib/agent_window_resolver" "$pkgdir/usr/lib/scottland/lib/"
+  # scottland-source runs the base binaries from tools/base; keep their
+  # vendored resolver at the matching sibling lib path.
+  install -dm755 "$pkgdir/usr/lib/scottland/tools/lib"
+  cp -a "$srcdir/tools/lib/agent_window_resolver" "$pkgdir/usr/lib/scottland/tools/lib/"
   install -Dm755 "$_root/core/session/scottland-reload" "$pkgdir/usr/lib/scottland/libexec/scottland-reload"
   ln -s /usr/lib/scottland/libexec/scottland-reload "$pkgdir/usr/bin/scottland-reload"
   install -dm755 "$pkgdir/usr/share/scottland/settings"
