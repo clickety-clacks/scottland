@@ -161,16 +161,28 @@ def _crossing(lower, upper, latitude, longitude):
     return target_mode, event.strftime("%Y-%m-%dT%H:%M:%SZ"), event
 
 
+def solar_day_transitions(day, latitude, longitude):
+    """Return that solar day's crossings using fixed brackets for stable IDs."""
+    noon = solar_noon(day, longitude)
+    events = []
+    for lower, upper in ((noon-timedelta(hours=12), noon),
+                         (noon, noon+timedelta(hours=12))):
+        event = _crossing(lower, upper, latitude, longitude)
+        if event is not None:
+            events.append(event)
+    return events
+
+
 def solar_transition(now, latitude, longitude):
     """Return the current mode and latest actual sunrise/sunset identity."""
     now = now.astimezone(timezone.utc)
     mode = solar_mode(now, latitude, longitude)
     for days_back in range(371):
-        noon = solar_noon(now.date()-timedelta(days=days_back), longitude)
-        lower = noon if mode == "dark" else noon-timedelta(hours=12)
-        if lower >= now or solar_mode(lower, latitude, longitude) == mode:
-            continue
-        return _crossing(lower, now, latitude, longitude)
+        events = [event for event in solar_day_transitions(
+            now.date()-timedelta(days=days_back), latitude, longitude)
+                  if event[2] <= now]
+        if events:
+            return max(events, key=lambda event: event[2])
     # Polar day/night can persist past the search window. It is one stable period.
     return mode, "no-recent-transition:"+mode, None
 
@@ -179,15 +191,31 @@ def next_solar_transition(now, latitude, longitude):
     """Return the first future sunrise/sunset, including seasonal polar boundaries."""
     now = now.astimezone(timezone.utc)
     for day_offset in range(371):
-        noon = solar_noon(now.date()+timedelta(days=day_offset), longitude)
-        for lower, upper in ((noon-timedelta(hours=12), noon),
-                             (noon, noon+timedelta(hours=12))):
-            if upper <= now:
-                continue
-            candidate = _crossing(lower, upper, latitude, longitude)
-            if candidate is not None and candidate[2] > now:
+        for candidate in solar_day_transitions(
+                now.date()+timedelta(days=day_offset), latitude, longitude):
+            if candidate[2] > now:
                 return candidate
     return None
+
+
+def same_solar_transition(previous_id, current_id):
+    """Match a boundary across the former one-second rounding drift."""
+    if previous_id == current_id:
+        return True
+
+    def timestamp(value):
+        if not isinstance(value, str):
+            return None
+        stamp = value.split("#", 1)[0]
+        try:
+            return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    previous_time = timestamp(previous_id)
+    current_time = timestamp(current_id)
+    return (previous_time is not None and current_time is not None
+            and abs((previous_time-current_time).total_seconds()) <= 1)
 
 
 def current_mode():
@@ -316,7 +344,8 @@ def reconcile(config, location, now, event=None):
         previous_schedule_id = (previous.get("schedule_transition_id", previous.get("transition_id"))
                                 if previous is not None else None)
         new_transition = (not first_run and previous is not None
-                          and previous_schedule_id != schedule_transition_id)
+                          and not same_solar_transition(previous_schedule_id,
+                                                        schedule_transition_id))
         apply_now = first_run or reenabled or new_transition
         if apply_now:
             set_mode(mode)

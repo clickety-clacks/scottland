@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Focused transition scheduler/state tests; no desktop, bus, or host required."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib.machinery import SourceFileLoader
 import atexit
 import configparser
@@ -83,6 +83,60 @@ check("DST and host timezone changes do not move the UTC transition", la_event =
 polar_now = datetime(2026, 6, 21, 12, tzinfo=timezone.utc)
 polar_next = core.next_solar_transition(polar_now, 80, 0)
 check("polar day still schedules the next real seasonal boundary", polar_next[2] > polar_now)
+
+# The same sunrise must have one identity even when a save, refresh, or relog
+# asks for the current period at a different time. These instants reproduce a
+# one-second identity drift from a9a40e9's moving upper bisection bound.
+same_period_times = [
+    datetime(2026, 10, 4, 14, 7, 36, tzinfo=timezone.utc),
+    datetime(2026, 10, 4, 14, 13, 55, tzinfo=timezone.utc),
+    datetime(2026, 10, 4, 18, 8, 7, tzinfo=timezone.utc),
+    datetime(2026, 10, 4, 19, 6, 57, tzinfo=timezone.utc),
+    datetime(2026, 10, 5, 0, 7, 5, tzinfo=timezone.utc),
+]
+same_period_events = [core.solar_transition(when, 37.77, -122.42)
+                      for when in same_period_times]
+same_period_id = same_period_events[0][1]
+check("one sunrise has a stable identity across same-period checks",
+      all(event[0] == "light" and event[1] == same_period_id
+          for event in same_period_events))
+scheduled_sunrise = core.next_solar_transition(
+    datetime(2026, 10, 4, 12, tzinfo=timezone.utc), 37.77, -122.42)
+timer_wake_event = core.solar_transition(
+    scheduled_sunrise[2]+timedelta(seconds=1), 37.77, -122.42)
+check("timer wake uses the same identity as the scheduled sunrise",
+      timer_wake_event[:2] == scheduled_sunrise[:2]
+      and scheduled_sunrise[1] == same_period_id)
+
+# State written by the previous implementation can hold the adjacent rounded
+# second for this same crossing. Treat it as the same event during upgrade so
+# the repaired identity does not undo a manual theme choice once.
+solar_config()
+sunrise_stamp = datetime.strptime(same_period_id, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+prior_rounded_id = (sunrise_stamp-timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+location = (37.77, -122.42)
+core.write_transition({
+    "schema": 1, "enabled": True, "location": core.location_key(location),
+    "mode": "light", "transition_id": prior_rounded_id+"#prior",
+    "schedule_transition_id": prior_rounded_id,
+    "last_applied": {"mode": "light", "transition_id": prior_rounded_id+"#prior",
+                     "schedule_transition_id": prior_rounded_id},
+    "consumer_ack": prior_rounded_id+"#prior",
+})
+core.CONFIG.write_text(core.CONFIG.read_text()+"# Settings Save\n")
+saved_solar_config = core.read_config()
+manual_theme = {"mode": "dark"}
+solar_reapplications = []
+
+def apply_solar_mode(mode):
+    solar_reapplications.append(mode)
+    manual_theme["mode"] = mode
+
+for check_time in same_period_times:
+    with patch.object(core, "set_mode", side_effect=apply_solar_mode):
+        core.reconcile(saved_solar_config, location, check_time)
+check("Settings Save and same-period refresh preserve a manual pick across identity migration",
+      manual_theme["mode"] == "dark" and solar_reapplications == [])
 
 # First enable applies once. A manual choice survives same-period config saves.
 config = solar_config()
