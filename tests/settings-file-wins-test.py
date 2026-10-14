@@ -199,9 +199,16 @@ def close_panel(save=False):
 
 
 def zone_row(index):
-    # Zone rows: 0 Center edge softness, 1 Center zone width, 2 Widget rail width.
+    # Zone rows: 0 Center edge softness, 1 Center zone width, 2 Widget rail width. A row click
+    # sets its value from the pointer position, so click at the currently displayed value when
+    # the test means to select the row for a keyboard adjustment.
     z = snapshot()["zones"]
-    click(panel_x + z["x"] + 200 - panel_x_origin(), panel_y + z["y"] + 34 + 69 * index)
+    names = ("blend_width", "center_width", "rail_width")
+    ranges = ((0, 300), (10, 90), (0.5, 10))
+    name, (low, high) = names[index], ranges[index]
+    value = snapshot()["layout"][name]
+    x = z["width"] * max(0, min(1, (value - low) / (high - low)))
+    click(panel_x + z["x"] + x - panel_x_origin(), panel_y + z["y"] + 34 + 69 * index)
 
 
 def panel_x_origin():
@@ -235,6 +242,78 @@ def goo_row(name):
 
 def lines(path, key_name):
     return [l for l in path.read_text().split("\n") if l.split("=")[0].strip() == key_name]
+
+
+def run_preview_only():
+    """Run just the four preview/file-edit interactions implicated by the prior focused result."""
+    global passed, failed, panel
+    try:
+        hand_edit(layout, "[scottland]\ncenter_width = 41\nrail_width = 2.0\n")
+        check("preview fixture loads its center baseline", option_reaches("center_width", 41))
+        open_panel()
+        before = option("center_width")
+        zone_row(1)
+        after_click = option("center_width")
+        print(f"TRACE center click before={before:.3f} after={after_click:.3f}", flush=True)
+        check("center row selection preserves the current value", abs(after_click - before) < .01)
+        key("KEY_RIGHT")
+        after_key = option("center_width")
+        print(f"TRACE center key panel={snapshot()['layout']['center_width']:.3f} option={after_key:.3f}", flush=True)
+        check("S3 previewed zone change before Cancel", option_reaches("center_width", 41.5))
+        close_panel()
+        check("S5 Cancel restores the edited zone baseline", option_reaches("center_width", 41))
+
+        hand_edit(layout, layout.read_text().replace("center_width = 41", "center_width = 43"))
+        check("preview fixture reloads a new center baseline", option_reaches("center_width", 43))
+        open_panel()
+        before = option("center_width")
+        zone_row(1)
+        after_click = option("center_width")
+        print(f"TRACE same-key click before={before:.3f} after={after_click:.3f}", flush=True)
+        check("same-key row selection preserves the current value", abs(after_click - before) < .01)
+        key("KEY_RIGHT")
+        after_key = option("center_width")
+        print(f"TRACE same-key key panel={snapshot()['layout']['center_width']:.3f} option={after_key:.3f}", flush=True)
+        check("same-key zone preview is live before the file edit", option_reaches("center_width", 43.5))
+        hand_edit(layout, layout.read_text().replace("center_width = 43", "center_width = 47"))
+        check("file edit wins over the same-key preview", option_reaches("center_width", 47))
+        close_panel()
+        check("Cancel preserves the same-key file value", option_reaches("center_width", 47))
+
+        open_panel()
+        rail = option("rail_width")
+        zone_row(2)
+        after_click = option("rail_width")
+        print(f"TRACE rail click before={rail:.3f} after={after_click:.3f}", flush=True)
+        check("rail row selection preserves the current value", abs(after_click - rail) < .01)
+        key("KEY_RIGHT")
+        after_key = option("rail_width")
+        print(f"TRACE rail key panel={snapshot()['layout']['rail_width']:.3f} option={after_key:.3f}", flush=True)
+        check("unsaved rail change previews", option_reaches("rail_width", rail + .1))
+        hand_edit(layout, layout.read_text().replace("center_width = 47", "center_width = 45"))
+        check("file edit leaves the other setting's live preview in effect",
+              option_reaches("rail_width", rail + .1))
+        check("unrelated file edit leaves the rail preview in the panel",
+              abs(snapshot()["layout"]["rail_width"] - (rail + .1)) < .01)
+        check("an unsaved change to another setting stays",
+              abs(snapshot()["layout"]["rail_width"] - (rail + .1)) < .01)
+        close_panel()
+        check("Cancel restores only the unsaved rail setting", option_reaches("rail_width", rail))
+        check("Cancel keeps the edited center baseline", option_reaches("center_width", 45))
+    finally:
+        for proc in clients:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+        assembled.write_text(base)
+        log.close()
+        sock.close()
+    print(f"{passed} passed; {failed} failed", flush=True)
+    return failed == 0
+
+
+if os.environ.get("SCOTTLAND_FILE_WINS_PREVIEW_ONLY") == "1":
+    raise SystemExit(0 if run_preview_only() else 1)
 
 
 try:
