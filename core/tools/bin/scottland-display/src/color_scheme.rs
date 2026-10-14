@@ -175,7 +175,10 @@ pub(super) fn watch() -> Result<(), String> {
     ];
 
     loop {
-        if watcher_should_exit(&session_socket, WATCHER_SIGNALLED.load(Ordering::Relaxed)) {
+        if watcher_should_exit(
+            session_socket_active(&session_socket),
+            WATCHER_SIGNALLED.load(Ordering::Relaxed),
+        ) {
             break;
         }
         refresh_night_light_session(&mut night_light);
@@ -501,8 +504,8 @@ fn session_socket_active(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
 }
 
-fn watcher_should_exit(path: &Path, stop_requested: bool) -> bool {
-    stop_requested || !session_socket_active(path)
+fn watcher_should_exit(session_active: bool, stop_requested: bool) -> bool {
+    stop_requested || !session_active
 }
 
 extern "C" fn request_watcher_stop(_: i32) {
@@ -1196,17 +1199,19 @@ mod tests {
     }
 
     #[test]
-    fn watcher_exits_when_its_wayland_socket_disappears_or_stop_is_requested() {
-        use std::os::unix::net::UnixListener;
+    fn watcher_exits_when_session_is_gone_or_stop_is_requested() {
+        assert!(!watcher_should_exit(true, false));
+        assert!(watcher_should_exit(false, false));
+        assert!(watcher_should_exit(true, true));
+    }
 
+    #[test]
+    fn session_socket_activity_requires_a_socket_path() {
         let scratch = Scratch::new();
         let socket = scratch.path("wayland-1");
-        let listener = UnixListener::bind(&socket).unwrap();
-        assert!(!watcher_should_exit(&socket, false));
-        assert!(watcher_should_exit(&socket, true));
-        drop(listener);
-        fs::remove_file(&socket).unwrap();
-        assert!(watcher_should_exit(&socket, false));
+        assert!(!session_socket_active(&socket));
+        fs::write(&socket, b"not a socket").unwrap();
+        assert!(!session_socket_active(&socket));
     }
 
     #[test]
