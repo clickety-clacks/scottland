@@ -203,12 +203,17 @@ fn watch() -> ExitCode {
 
 fn read_cpu_counters() -> Option<CpuCounters> {
     let contents = fs::read_to_string("/proc/stat").ok()?;
+    parse_cpu_counters(&contents)
+}
+
+fn parse_cpu_counters(contents: &str) -> Option<CpuCounters> {
     let line = contents.lines().find(|line| line.starts_with("cpu "))?;
     let values: Vec<u64> = line
         .split_whitespace()
         .skip(1)
         .map(str::parse)
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<_, _>>()
+        .ok()?;
     if values.len() < 4 {
         return None;
     }
@@ -234,15 +239,19 @@ fn cpu_percent(before: Option<CpuCounters>, after: Option<CpuCounters>) -> Optio
 }
 
 fn memory_values() -> (Option<u8>, Option<f64>, Option<f64>) {
-    const KIB_PER_GB: f64 = 1024.0 * 1024.0;
     let contents = fs::read_to_string("/proc/meminfo").ok();
+    parse_memory_values(contents.as_deref())
+}
+
+fn parse_memory_values(contents: Option<&str>) -> (Option<u8>, Option<f64>, Option<f64>) {
+    const KIB_PER_GB: f64 = 1024.0 * 1024.0;
     let read_mem_kib = |key: &str| {
-        contents.as_deref()?.lines().find_map(|line| {
+        contents?.lines().find_map(|line| {
             let (name, value) = line.split_once(':')?;
             if name != key {
                 return None;
             }
-            value.split_whitespace().next()?.parse().ok()
+            value.split_whitespace().next()?.parse::<u64>().ok()
         })
     };
     let total_kib = read_mem_kib("MemTotal");
@@ -466,4 +475,68 @@ unsafe extern "C" {
     fn getppid() -> c_int;
     fn time(timer: *mut c_long) -> c_long;
     fn localtime_r(timer: *const c_long, result: *mut LocalTime) -> *mut LocalTime;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_cpu_counters_and_computes_busy_percentage() {
+        let before = parse_cpu_counters("cpu 100 0 50 200 0 0 0 0 0 0\n");
+        let after = parse_cpu_counters("cpu 200 0 100 250 50 0 0 0 500 0\n");
+
+        assert_eq!(cpu_percent(before, after), Some(60));
+    }
+
+    #[test]
+    fn malformed_or_missing_cpu_counters_are_unavailable() {
+        assert!(parse_cpu_counters("cpu0 1 2 3 4\n").is_none());
+        assert!(parse_cpu_counters("cpu 1 2 invalid 4\n").is_none());
+        assert!(parse_cpu_counters("cpu 1 2 3\n").is_none());
+    }
+
+    #[test]
+    fn parses_memory_values_and_usage_percentage() {
+        let (percent, used_gb, total_gb) = parse_memory_values(Some(
+            "MemTotal:       1048576 kB\nMemAvailable:    524288 kB\n",
+        ));
+
+        assert_eq!(percent, Some(50));
+        assert_eq!(used_gb, Some(0.5));
+        assert_eq!(total_gb, Some(1.0));
+    }
+
+    #[test]
+    fn missing_or_invalid_memory_fields_remain_individually_unavailable() {
+        let (percent, used_gb, total_gb) = parse_memory_values(Some(
+            "MemTotal:       1048576 kB\nMemAvailable:    invalid kB\n",
+        ));
+        assert_eq!(percent, None);
+        assert_eq!(used_gb, None);
+        assert_eq!(total_gb, Some(1.0));
+
+        assert_eq!(parse_memory_values(None), (None, None, None));
+    }
+
+    #[test]
+    fn ui_and_widget_json_emit_null_for_unavailable_values_and_timestamp() {
+        let reading = Reading {
+            cpu: None,
+            memory_percent: None,
+            memory_used_gb: None,
+            memory_total_gb: None,
+            load: None,
+            updated: None,
+        };
+
+        assert_eq!(
+            reading.ui_json(),
+            "{\"cpu\":null,\"memory\":null,\"memory_used_gb\":null,\"memory_total_gb\":null,\"load\":null,\"updated\":null}"
+        );
+        assert_eq!(
+            reading.widget_json(),
+            "{\"cpu\":null,\"memory\":null,\"load\":null,\"updated\":null}"
+        );
+    }
 }
