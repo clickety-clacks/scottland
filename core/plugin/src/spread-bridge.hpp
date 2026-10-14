@@ -274,9 +274,9 @@
             {
                 auto drawn = frame->screen_rect();
                 from = {(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
-                from_scale = frame->scale_x;
+                from_scale = frame->scale_x * frame->drag_layout_scale;  // from a hold offer's preview
             }
-            set_drag_layout_offset(view, 0, 0);
+            set_drag_layout_offset(view, 0, 0, 1);
             keyboard_motions.erase(m.id);
             stop_glide(view);
             pin_scale(view, m.pin);
@@ -319,7 +319,11 @@
     {
         auto window = wf::toplevel_cast(view_by_id(id));
         auto shown = represented_view(id);
-        if (!window || !shown || !shown->get_output() || drag->view) return;
+        if (!window || !shown || !shown->get_output() || drag->view)
+        {
+            LOGI("scottland: solo ", id, " declined: ", drag->view ? "a drag is in progress" : "the window is not shown");
+            return;
+        }
         if (window->pending_fullscreen())
         {
             LOGI("scottland: solo ", id, ": full screen, nothing to spread");
@@ -331,7 +335,11 @@
         scottland::spread::box solo{at.x - g.width / 2.0, at.y - g.height / 2.0, at.x + g.width / 2.0, at.y + g.height / 2.0};
         auto captured = std::chrono::steady_clock::now();
         auto snapshot = spread_snapshot(output, id, solo);
-        if (!snapshot) return;
+        if (!snapshot)
+        {
+            LOGI("scottland: solo ", id, " declined: no spread for its screen");
+            return;
+        }
         auto signature = spread_signature(output, id);
         double snapshot_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - captured).count();
         bool widget_before = bool(link_of_window(window));
@@ -369,7 +377,7 @@
         commit_spread_moves(result.moves);
         if (auto link = link_of_window(window))
         {
-            restore_window(*link, at, true);
+            restore_window(*link, at, !restore_without_grow);  // an offer already showed it there
         } else
         {
             auto g = window->get_geometry();
@@ -380,7 +388,7 @@
             {
                 auto drawn = frame->screen_rect();
                 from = {(drawn.x1 + drawn.x2) / 2, (drawn.y1 + drawn.y2) / 2};
-                from_scale = frame->scale_x;
+                from_scale = frame->scale_x * frame->drag_layout_scale;  // from a hold offer's preview
             }
             keyboard_motions.erase(id);
             stop_glide(window);
@@ -408,6 +416,20 @@
         reply["running_slices"] = spread_run ? (int64_t)spread_run->job->slices : (int64_t)0;
         reply["solves"] = (int64_t)spread_solves;
         reply["cancel_ms"] = spread_cancel_ms;
+        // Diagnostics of a hold's offer (WK39); tests judge the windows' geometry and pixels.
+        reply["hold_offer"] = wf::json_t();
+        reply["hold_offer"]["active"] = hold_offer && hold_offer->active;
+        reply["hold_offer"]["returning"] = hold_offer && !hold_offer->active;
+        if (hold_offer)
+        {
+            reply["hold_offer"]["window"] = (int64_t)hold_offer->window;
+            reply["hold_offer"]["solo"] = hold_offer->solo;
+            reply["hold_offer"]["progress"] = hold_offer->progress;
+            reply["hold_offer"]["radius"] = hold_offer->radius;
+            reply["hold_offer"]["anchor"] = wf::json_t::array();
+            reply["hold_offer"]["anchor"].append(hold_offer->anchor.x); reply["hold_offer"]["anchor"].append(hold_offer->anchor.y);
+            reply["hold_offer"]["actors"] = (int64_t)hold_offer->actors.size();
+        }
         return reply;
     };
 

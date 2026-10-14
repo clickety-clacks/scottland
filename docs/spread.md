@@ -20,13 +20,15 @@ hint inside its window.
 ## Spread and solo
 
 **Triggers (P4).** Only explicit requests solo: holding the focused window's hint in Window mode
-or a three-finger hold on the focused window (WK35, committed outright, no undo, P5). Present, card
+(WK35, committed outright, no undo, P5), or a hold form on the focused window (Super + press, the
+halo, three fingers; WK39), which is an audition taken by letting go (ruling 10-05). Present, card
 clicks, zone cycling and ordinary drops never spread, and neither does pausing during a drag: the
 drag audition that offered a solo there is removed, with its pause setting (ruling 10-05: the
 three-finger hold does the job). Its hotspot setting, `solo_audition_hotspot` (50 pt), stays: moving
-the pointer beyond it is what counts as starting to drag, which cancels a pointer hold's audition
-(ruling 10-05; WK39). Pointer-hold auditions are not built on this branch, so nothing reads the
-setting yet; its metadata and Settings help say so until they land.
+the pointer beyond it from where a hold fired is what counts as starting to drag, which cancels the
+hold's audition (ruling 10-05; WK39). A hold's audition is shown as a presentation layer only (a
+translation and scale per window on the shared drag layer); no true geometry, zone, memory, pin or
+widget state changes until it is taken.
 
 **The solo window.** Already in the center zone: it stays where it is (P2, P14). Otherwise it goes
 to its remembered center spot (WP2), else the middle of the screen, padded on screen (WP7), at full
@@ -89,7 +91,7 @@ measure under 40 µs of CPU; longer wall-clock slices seen on the x86 test machi
 
 | ID | Invariant | Status |
 |---|---|---|
-| SP1 | Only the focused window's hint hold and its three-finger hold; nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04; re-run on the ARM test machine after the audition's removal, 2026-10-05) |
+| SP1 | Only the focused window's hint hold and a taken offer of a hold form on it (Super + press, the halo, three fingers, WK39); nothing else spreads (P4). | verified (headless on both test machines, real stipc input, 2026-10-04; re-run on the ARM test machine after the audition's removal, 2026-10-05) |
 | SP2 | Arrivals land in the periphery (center outside the center zone and the rails, footprint inside the padded workarea), preferring the nearer side, hanging at most 16 pt into the center zone when they fit (ruling 10-04). | verified (unit fuzz, 600 scenes; headless) |
 | SP3 | A resident moves only if the solo target covers it or an arrival would otherwise land below its band (P6); it stays on its side (P1), never grows, never moves inward, ends clear when pushed, and returns when its spot is free again (P2). | verified (unit fuzz and fixtures; headless) |
 | SP4 | The spacing pass moves only windows spread moved, each at most one halo, residents vertically only, arrivals within band, and never adds overlap (P7). | verified (unit fuzz) |
