@@ -9,6 +9,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 import gi
@@ -20,6 +21,7 @@ repo = Path(__file__).resolve().parents[1]
 art = Path(sys.argv[1]).resolve()
 art.mkdir(parents=True, exist_ok=True)
 clients = []
+temporary_dirs = []
 checks = 0
 failures = 0
 
@@ -115,6 +117,14 @@ def ctl(*args, input_text=None):
         input=input_text, text=True, capture_output=True, timeout=12)
 
 
+def ctl_start(*args, stdout_path, stderr_path):
+    with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+        process = subprocess.Popen([str(repo / "build/tools/bin/scottland-ctl"), *map(str, args)],
+            stdout=stdout, stderr=stderr)
+    clients.append(process)
+    return process
+
+
 def rust_notes_cli_checks(anchor_id, focused_window_id):
     writer = "cli-notes-agent"
     add = ctl("notes", "add", "--window", anchor_id, "--writer", writer, "-",
@@ -192,6 +202,65 @@ def rust_notes_cli_checks(anchor_id, focused_window_id):
             entry["id"] == focused_id for _, entries in note_rows(notes()) for entry in entries),
         {"status": focused_remove.returncode, "stderr": focused_remove.stderr,
          "notes": notes()})
+
+
+def launch_with_note_behavior():
+    writer = f"notes-login-{os.getpid()}"
+    title = f"Notes login {os.getpid()} {time.monotonic_ns()}"
+    text = "notes agent opened this page; please log in to xyz"
+    marker = art / "rejected-note-command-started"
+    marker.unlink(missing_ok=True)
+
+    rejected = ctl("launch", "--launcher", writer, "--writer", writer,
+        "--note", "x" * 1001, "--", sys.executable, "-c",
+        "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()", str(marker))
+    require("a rejected launch note prevents command execution",
+        rejected.returncode != 0 and "text" in rejected.stderr and not marker.exists(),
+        {"status": rejected.returncode, "stdout": rejected.stdout,
+         "stderr": rejected.stderr, "command_started": marker.exists()})
+    require("rejected pending note is absent from the Notes slice",
+        not any(note.get("writer") == writer for _, entries in note_rows(notes()) for note in entries),
+        notes())
+
+    profile = Path(tempfile.mkdtemp(prefix="chromium-user-data-", dir=art))
+    temporary_dirs.append(profile)
+    page = art / f"{profile.name}.html"
+    page.write_text(f"<!doctype html><title>{title}</title><h1>{title}</h1>", encoding="utf-8")
+    process = ctl_start("launch", "--name", title, "--launcher", writer,
+        "--writer", writer, "--note", text, "--", "chromium", "--ozone-platform=wayland",
+        f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
+        "--new-window", page.as_uri(), stdout_path=art / "nt17-chromium.stdout",
+        stderr_path=art / "nt17-chromium.stderr")
+
+    def bound_note():
+        desktop = ipc("scottland/desktop-model", {"slice": "desktop"})
+        view = next((row for row in desktop.get("windows", []) if row.get("title") == title), None)
+        if not view or view.get("provenance", {}).get("launcher") != writer:
+            return None
+        note_slice = notes()
+        window_notes = row_for(note_slice, view["id"])
+        if not window_notes:
+            return None
+        matches = [note for note in window_notes["notes"]
+            if note.get("writer") == writer and note.get("text") == text]
+        if len(matches) != 1:
+            return None
+        return desktop, note_slice, view, matches[0]
+
+    try:
+        observed = wait_for(bound_note, "Chromium launch note bound to its provenance window", seconds=35)
+    except AssertionError as error:
+        raise AssertionError(f"{error}; ctl={process.poll()}; stderr="
+            f"{(art / 'nt17-chromium.stderr').read_text(encoding='utf-8', errors='replace')!r}")
+    desktop, note_slice, view, note = observed
+    require("real Chromium launch publishes provenance and its note on the same window",
+        view.get("provenance", {}).get("name") == title and
+            row_for(note_slice, view["id"]) is not None,
+        {"window": view, "notes": note_slice})
+    require("the bound window's Notes slice contains the accepted launch note id",
+        note.get("id", 0) > 0 and sum(1 for _, entries in note_rows(note_slice)
+            for entry in entries if entry.get("id") == note["id"]) == 1,
+        {"window_id": view["id"], "note": note, "notes": note_slice})
 
 
 def pointer(x, y):
@@ -621,6 +690,10 @@ try:
         after_close["version"] > before_close["version"] and row_for(after_close, close_id) is None,
         {"before": before_close, "after": after_close})
 
+    # One real ctl/launcher/writer/note/Chromium path covers NT-17–19. The model reads below
+    # observe the same note id under the provenance-bound window; no follow-up ctl command adds it.
+    launch_with_note_behavior()
+
     print(f"window notes: {checks - failures}/{checks} checks passed", flush=True)
     if failures:
         raise SystemExit(1)
@@ -634,3 +707,5 @@ finally:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=3)
+    for path in temporary_dirs:
+        shutil.rmtree(path, ignore_errors=True)

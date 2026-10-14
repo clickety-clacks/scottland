@@ -28,6 +28,10 @@ Settings and window commands:
   option WAYFIRE/OPTION                    print a live Wayfire option
   terminal-cwd [PID]                       print the focused terminal's working directory
   sender-window-snapshot                    print an unfiltered sender-window snapshot as JSON
+  sender-window-provenance-snapshot         print the desktop model for sender-id lookup
+  launch [--name N] [--sender ID] [--launcher L] [--knock K]
+         [--writer W --note TEXT]... -- COMMAND...
+                                           bind provenance and notes before exec
   focus-app REGEX                           focus the first window matching app id or title
   session-locked                            exit 0 locked, 1 unlocked, 2 unknown
   window-close-all                          close every open window
@@ -82,6 +86,7 @@ const CONFIG_NAMES: &[&str] = &[
     "goo_hover_emissivity",
     "goo_hover_distance",
     "attention_color_family",
+    "agentd_hub_url",
     "unfocused_edge_tone_light",
     "unfocused_edge_tone_dark",
     "unfocused_edge_strength",
@@ -119,6 +124,7 @@ const TEXT_NAMES: &[&str] = &[
     "screen_zones",
     "goo_falloff",
     "attention_color_family",
+    "agentd_hub_url",
 ];
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const BUDGET_CAP_MS: u64 = 12_000;
@@ -133,7 +139,10 @@ struct Ctl {
 
 impl Ctl {
     fn connect() -> Result<Self> {
-        let session = current_session()?;
+        Self::connect_to(&current_session()?)
+    }
+
+    fn connect_to(session: &Session) -> Result<Self> {
         let path = session
             .wayfire_socket()
             .ok_or_else(|| "the selected session has no Wayfire socket".to_string())?;
@@ -329,7 +338,11 @@ pub fn run(args: &[String]) -> Result<u8> {
             Ok(0)
         }
         "notes" => notes_command(args),
+        "launch" => launch_command(args),
         "sender-window-snapshot" if args.is_empty() => sender_window_snapshot(),
+        "sender-window-provenance-snapshot" if args.is_empty() => {
+            sender_window_provenance_snapshot()
+        }
         "stdin" if args.is_empty() => stdin_updates(),
         "terminal-cwd" if args.len() <= 1 => terminal_cwd(args.first().map(String::as_str)),
         "focus-app" if args.len() == 1 => focus_app(&args[0]),
@@ -344,6 +357,111 @@ pub fn run(args: &[String]) -> Result<u8> {
         }
         _ => Err(format!("invalid command or arguments\n{HELP}")),
     }
+}
+
+fn launch_command(args: &[String]) -> Result<u8> {
+    let (declaration, staged_notes, command_args) = parse_launch_args(args)?;
+    let session = current_session()?;
+    let mut ctl = Ctl::connect_to(&session)?;
+    let reply = ctl.call("scottland/provenance-declare", declaration)?;
+    if let Some(error) = reply.get("error") {
+        return Err(error
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| error.to_string())
+            .lines()
+            .collect::<Vec<_>>()
+            .join(" "));
+    }
+    let token = reply
+        .get("token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| "Scottland returned no provenance token".to_string())?;
+
+    for (writer, text) in staged_notes {
+        let reply = call_notes(
+            &mut ctl,
+            json!({"action": "stage", "token": token, "writer": writer, "text": text}),
+        )?;
+        if reply
+            .get("id")
+            .and_then(Value::as_i64)
+            .filter(|id| *id > 0)
+            .is_none()
+        {
+            return Err("Scottland returned no note id for the staged note".to_string());
+        }
+    }
+
+    let mut command = session_command(&session, &command_args[0]);
+    command.args(&command_args[1..]);
+    command.env("XDG_ACTIVATION_TOKEN", token);
+    let error = command.exec();
+    Err(format!("cannot execute launch command: {error}"))
+}
+
+fn parse_launch_args(args: &[String]) -> Result<(Value, Vec<(String, String)>, Vec<String>)> {
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .ok_or_else(|| "launch requires -- COMMAND...".to_string())?;
+    let command_args = args[separator + 1..].to_vec();
+    if command_args.is_empty() || command_args[0].is_empty() {
+        return Err("launch requires a command after --".to_string());
+    }
+
+    let mut declaration = Map::new();
+    declaration.insert("pid".to_string(), json!(std::process::id()));
+    let mut staged_notes = Vec::new();
+    let mut pending_writer: Option<String> = None;
+    let options = &args[..separator];
+    let mut index = 0;
+    while index < options.len() {
+        let option = options[index].as_str();
+        index += 1;
+        match option {
+            "--name" | "--sender" | "--launcher" | "--knock" => {
+                let value = options
+                    .get(index)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("launch {option} requires a value"))?;
+                let field = &option[2..];
+                if declaration.contains_key(field) {
+                    return Err(format!("launch accepts {option} once"));
+                }
+                declaration.insert(field.to_string(), json!(value));
+                index += 1;
+            }
+            "--writer" => {
+                if pending_writer.is_some() {
+                    return Err("launch requires --note after each --writer".to_string());
+                }
+                let writer = options
+                    .get(index)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "launch --writer requires a value".to_string())?;
+                pending_writer = Some(writer.clone());
+                index += 1;
+            }
+            "--note" => {
+                let writer = pending_writer
+                    .take()
+                    .ok_or_else(|| "launch --note requires a preceding --writer".to_string())?;
+                let text = options
+                    .get(index)
+                    .ok_or_else(|| "launch --note requires text".to_string())?;
+                staged_notes.push((writer, text.clone()));
+                index += 1;
+            }
+            _ => return Err(format!("unknown launch option {option}")),
+        }
+    }
+    if pending_writer.is_some() {
+        return Err("launch --writer requires --note".to_string());
+    }
+
+    Ok((Value::Object(declaration), staged_notes, command_args))
 }
 
 fn notes_command(args: &[String]) -> Result<u8> {
@@ -611,6 +729,55 @@ fn sender_window_snapshot() -> Result<u8> {
         return Ok(1);
     }
     print_json(reply)
+}
+
+fn sender_window_provenance_snapshot() -> Result<u8> {
+    let path = if let Some(path) = env::var_os("WAYFIRE_SOCKET").filter(|path| !path.is_empty()) {
+        PathBuf::from(path)
+    } else if env::var_os("SCOTTLAND_EXEC").is_some_and(|value| !value.is_empty()) {
+        return Err("the selected session has no Wayfire socket".to_string());
+    } else {
+        return Err(Command::new("scottland-exec")
+            .args(["--", "scottland-ctl", "sender-window-provenance-snapshot"])
+            .exec()
+            .to_string());
+    };
+    let mut socket = connect_socket(&path, SENDER_WINDOW_SNAPSHOT_SOCKET_TIMEOUT)
+        .map_err(|error| format!("cannot connect to the selected session: {error}"))?;
+    let model = call_socket(
+        &mut socket,
+        "scottland/desktop-model",
+        json!({"slice": "desktop"}),
+    )?;
+    if let Some(error) = model.get("error") {
+        eprintln!(
+            "{}",
+            error
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string())
+        );
+        return Ok(1);
+    }
+    let windows = model
+        .get("windows")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Scottland desktop model has no windows array".to_string())?;
+    let option = call_socket(
+        &mut socket,
+        "wayfire/get-config-option",
+        json!({"option": "scottland/agentd_hub_url"}),
+    )?;
+    let hub_url = option
+        .get("value")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let hub_url_configured = option.get("error").is_none() && option.get("value").is_some();
+    print_json(json!({
+        "windows": windows,
+        "agentd_hub_url": hub_url,
+        "agentd_hub_url_configured": hub_url_configured
+    }))
 }
 
 fn call_socket(socket: &mut UnixStream, method: &str, data: Value) -> Result<Value> {

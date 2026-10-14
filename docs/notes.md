@@ -5,6 +5,12 @@ the window is for without asking for attention. Any local process can add, updat
 them through Scottland's existing Rust control tool. Notes belong to the window and disappear
 when it closes; they survive a marked plugin reload, but not a compositor restart.
 
+The same `scottland-ctl` can launch a command with a note. It stages each note against the pending
+provenance token before exec. Pending notes stay out of the notes slice; when the token binds, one
+model publication adds the provenance record to the desktop slice and moves those note ids into the
+bound window's notes slice. A rejected note cancels that pending launch, and a declaration that
+expires without binding discards its staged notes.
+
 The plugin owns each note's id, writer and text in the desktop model. The `notes` subscription is
 a versioned, complete replacement of notes on every window that has them. Its changes do not
 change the desktop, widget or attention slices. Notes do not create attention, focus or raise a

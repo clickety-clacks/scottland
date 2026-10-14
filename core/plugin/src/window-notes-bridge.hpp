@@ -493,6 +493,40 @@
             return reply;
         }
 
+        if (action == "stage")
+        {
+            if (!data.has_member("token") || !data["token"].is_string() || data["token"].as_string().empty())
+                return wf::ipc::json_error("notes stage needs a pending provenance token, writer and text");
+            const std::string token = data["token"].as_string();
+            auto pending = pending_provenance.find(token);
+            if (pending == pending_provenance.end())
+                return wf::ipc::json_error("provenance token is not pending");
+            auto reject_stage = [=] (const std::string& error)
+            {
+                discard_pending_provenance(token);
+                return wf::ipc::json_error(error);
+            };
+            if (data.size() != 4)
+                return reject_stage("notes stage accepts only token, writer and text");
+            if (!data.has_member("writer") || !data["writer"].is_string() ||
+                !scottland::window_notes::valid_writer(data["writer"].as_string()))
+                return reject_stage("writer must contain 1 to 64 Unicode scalar values without controls");
+            if (!data.has_member("text") || !data["text"].is_string() ||
+                !scottland::window_notes::valid_text(data["text"].as_string()))
+                return reject_stage("text must contain 1 to 1000 Unicode scalar values; only line feed and tab controls are allowed");
+            if (model.next_note_id <= 0 || model.next_note_id == std::numeric_limits<int64_t>::max())
+                return reject_stage("note id space is exhausted");
+
+            scottland::window_notes::note_t note;
+            note.id = model.next_note_id++;
+            note.writer = data["writer"].as_string();
+            note.text = data["text"].as_string();
+            pending->second.staged_notes.push_back(std::move(note));
+            auto reply = wf::ipc::json_ok();
+            reply["id"] = pending->second.staged_notes.back().id;
+            return reply;
+        }
+
         if (action == "add")
         {
             if (!data.has_member("writer") || !data["writer"].is_string() ||
