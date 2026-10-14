@@ -4,6 +4,13 @@
 command -v inotifywait >/dev/null || exit 0
 build="${SCOTTLAND_HOOKS:-/usr/lib/scottland}/libexec/scottland-build-config"
 log="${XDG_STATE_HOME:-$HOME/.local/state}/scottland/watch-config.log"
+session="${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}"
+signature=${HYPRLAND_INSTANCE_SIGNATURE:-}
+case "$signature" in
+  *[!A-Za-z0-9_-]*|'') signature= ;;
+esac
+pause_file=
+[ -n "$signature" ] && pause_file="$session/config-watch/$signature/autoreload-paused"
 mkdir -p "$(dirname "$log")"
 echo "$(date '+%F %T') watching (pid $$)" >>"$log"
 trap 'echo "$(date "+%F %T") watcher stopped by signal" >>"$log"; exit 0' TERM INT HUP
@@ -17,6 +24,10 @@ while :; do
     sleep 2
   fi
   sleep 0.3  # let editors finish writing
+  if [ -n "$pause_file" ] && [ -e "$pause_file" ]; then
+    echo "$(date '+%F %T') config change consumed while automatic reload is paused" >>"$log"
+    continue
+  fi
   "$build" >/dev/null 2>>"$log" ||
     echo "$(date '+%F %T') rebuild failed (above); the session keeps its previous config" >>"$log"
 done
