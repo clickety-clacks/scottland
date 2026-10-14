@@ -50,14 +50,14 @@ class ClipboardListTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "selection cancelled"):
                 clipboard.choose([], [], "Search history")
 
-    def test_clear_acks_before_showing_empty_picker_and_treats_dismissal_as_success(self):
+    def test_clear_acks_before_showing_empty_picker_and_ignores_dismissal_diagnostics(self):
         events = []
 
         def run(argv, **kwargs):
             events.append(("picker", argv))
             self.assertEqual(argv, ["/fake-picker", "--show-empty", "--prompt", "Clipboard history"])
             self.assertEqual(kwargs["input"], b"")
-            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"runtime warning\n")
 
         def call(operation, payload=b""):
             events.append(("service", operation))
@@ -100,7 +100,6 @@ class ClipboardListTests(unittest.TestCase):
         for result in (
             SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
             SimpleNamespace(returncode=1, stdout=b"unexpected selection\n", stderr=b""),
-            SimpleNamespace(returncode=1, stdout=b"", stderr=b"runtime warning\n"),
         ):
             with self.subTest(result=result), \
                  patch.object(clipboard, "call"), \

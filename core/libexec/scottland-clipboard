@@ -362,7 +362,7 @@ def command_clear(_args):
     except OSError as error:
         raise RuntimeError("history was cleared but the empty history view could not be presented: "
                            f"{error}") from error
-    if result.returncode == 1 and not result.stdout and not result.stderr:
+    if result.returncode == 1 and not result.stdout:
         return 0
     detail = result.stderr.decode("utf-8", "replace").splitlines()
     if not detail:
