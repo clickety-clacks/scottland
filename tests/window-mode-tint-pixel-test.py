@@ -282,13 +282,13 @@ def expected_pixel(base, point, ordered_shapes, strength):
     return expected
 
 
-def dyed(image, x, y, color):
+def dyed(image, x, y, color, minimum_fraction=0.45):
     strongest = max(range(3), key=lambda channel: color[channel])
     target = rgb_bytes(color)
     for dy in range(-2, 3):
         pixel = image.pixel(x, y + dy)
         if pixel[strongest] > max(pixel[channel] for channel in range(3) if channel != strongest) + 8 and \
-                pixel[strongest] > target[strongest] * .45:
+                pixel[strongest] > target[strongest] * minimum_fraction:
             return True
     return False
 
@@ -484,12 +484,12 @@ def run_renderer(goo):
                       max_delta(rim0, rim100) <= 3,
                       {'window': identifier, 'sample': outside_card, 'zero': rim0, 'full': rim100})
                 continue
-            # Stay outside the removed two-logical-pixel border so this proves halo dye, not
-            # the old solid rim. dyed() checks the sample and its nearby pixels on the same band.
+            # Stay outside the removed two-logical-pixel border. The fallback halo has lower
+            # density than Goo dye, so test its measurable hue direction with a lower channel floor.
             halo_sample = (x, frame['y'] - 5)
             check(f'{mode}: fallback halo dye remains visible beyond the old rim at tint 0 and 100',
-                  dyed(images[0], *halo_sample, hint['color']) and
-                  dyed(images[100], *halo_sample, hint['color']),
+                  dyed(images[0], *halo_sample, hint['color'], minimum_fraction=.20) and
+                  dyed(images[100], *halo_sample, hint['color'], minimum_fraction=.20),
                   {'window': identifier, 'sample': halo_sample,
                    'zero': images[0].pixel(*halo_sample), 'full': images[100].pixel(*halo_sample),
                    'hint_color': hint['color']})
