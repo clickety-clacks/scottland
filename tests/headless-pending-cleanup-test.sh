@@ -242,7 +242,7 @@ while time.monotonic() < deadline:
         env_file = scratch / 'session' / (socket_name + '.env')
         if env_file.exists() or env_file.is_symlink():
             raise RuntimeError('session environment record was published before the pending assertion')
-        record_out.write_text(json.dumps({
+        record = json.dumps({
             'guardian': guardian,
             'child': child,
             'wayfire': wayfire,
@@ -251,7 +251,10 @@ while time.monotonic() < deadline:
             'socket': socket_name,
             'session_env': str(env_file),
             'owner': owner_receipt,
-        }, sort_keys=True) + '\n')
+        }, sort_keys=True) + '\n'
+        fd = os.open(record_out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(record)
         sys.exit(0)
     except FileNotFoundError as error:
         last_reason = f'owned process/receipt disappeared during observation: {error}'
