@@ -64,6 +64,17 @@ check("next event is a future sunrise in the expected UTC period",
 before_sunset = datetime(2026, 6, 21, 18, tzinfo=timezone.utc)
 sunset = core.next_solar_transition(before_sunset, 37.77, -122.42)
 check("next event after sunrise is sunset", sunset[0] == "dark" and sunset[2] > before_sunset)
+west_after_utc_midnight = datetime(2026, 10, 1, 0, 30, tzinfo=timezone.utc)
+west_previous_solar_day = [
+    event for event in core.solar_day_transitions(
+        west_after_utc_midnight.date()-timedelta(days=1), 37.77, -122.42)
+    if event[2] > west_after_utc_midnight
+]
+west_expected_sunset = min(west_previous_solar_day, key=lambda event: event[2])
+west_next = core.next_solar_transition(west_after_utc_midnight, 37.77, -122.42)
+check("western UTC-midnight scan keeps the previous solar day's future sunset",
+      west_expected_sunset[0] == "dark" and west_next == west_expected_sunset
+      and west_next[2] < west_after_utc_midnight+timedelta(hours=4))
 old_tz = os.environ.get("TZ")
 try:
     os.environ["TZ"] = "America/Los_Angeles"
