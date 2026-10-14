@@ -555,6 +555,13 @@ name = "scottland-lib"
 version = "0.2.0"
 
 [[package]]
+name = "scottland-sender-window"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "scottland-window-name"
 version = "0.2.0"
 dependencies = [
