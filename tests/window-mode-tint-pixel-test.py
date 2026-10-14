@@ -234,6 +234,11 @@ def blend(base, color, strength):
                  for old, new in zip(base, rgb_bytes(color)))
 
 
+def mix_bytes(base, foreground, strength):
+    return tuple(round((1 - strength) * old + strength * new)
+                 for old, new in zip(base, foreground))
+
+
 def extent(identifier, hint, state, widget_links):
     represented_id = widget_links.get(identifier, identifier)
     view = state['views'].get(represented_id)
@@ -394,8 +399,10 @@ def run_renderer(goo):
               max_delta(images[0].pixel(*edge_outside), images[100].pixel(*edge_outside)) <= 3,
               {'base': images[0].pixel(*edge_outside), 'tinted': images[100].pixel(*edge_outside)})
 
-    # Hint overlays stay above the tint: opaque glyph pixels and the badge fill are identical
-    # at the two ends of the setting. Dye/halo is checked independently at the drawn frame edge.
+    # Hint nodes stay above the tint. The backing has its own 21% color mix and 21% opacity,
+    # so an in-window backing sample must show the underlying 100% tint through that opacity;
+    # a badge outside a card extent must remain unchanged. Antialiased glyph edges also blend
+    # with the underlay, so compare only fully opaque letter pixels.
     for identifier, hint in hints_now.items():
         badge = hint.get('badge')
         if not badge:
@@ -406,14 +413,25 @@ def run_renderer(goo):
         fill_point = (cx + radius * .38, cy)
         glyph = [(x, y) for x in range(round(cx - radius * .55), round(cx + radius * .55) + 1)
                  for y in range(round(cy - radius * .60), round(cy + radius * .60) + 1)
-                 if max_delta(images[0].pixel(x, y), color) <= 3]
-        check(f'{mode}: hint badge fill unchanged by tint',
-              max_delta(images[0].pixel(*fill_point), images[100].pixel(*fill_point)) <= 3,
-              {'window': identifier, 'zero': images[0].pixel(*fill_point),
-               'full': images[100].pixel(*fill_point)})
+                 if max_delta(images[0].pixel(x, y), color) <= 1]
+        frame = rects.get(identifier)
+        fill_zero, fill_full = images[0].pixel(*fill_point), images[100].pixel(*fill_point)
+        if frame and contains(frame, fill_point, inset=2):
+            palette_background = (31, 35, 44)
+            badge_color = mix_bytes(palette_background, color, .21)
+            background_opacity = float(option('hint_background_opacity')) / 100
+            expected_fill = mix_bytes(color, badge_color, background_opacity)
+            detail = {'window': identifier, 'zero': fill_zero, 'full': fill_full,
+                      'expected_full': expected_fill, 'background_opacity': background_opacity}
+            check(f'{mode}: translucent hint backing remains above the tinted content',
+                  max_delta(fill_full, expected_fill) <= 3, detail)
+        else:
+            check(f'{mode}: hint backing outside tinted extents stays unchanged',
+                  max_delta(fill_zero, fill_full) <= 3,
+                  {'window': identifier, 'zero': fill_zero, 'full': fill_full})
         check(f'{mode}: hint glyph unchanged by tint', len(glyph) >= 5 and
               all(max_delta(images[0].pixel(x, y), images[100].pixel(x, y)) <= 3 for x, y in glyph),
-              {'window': identifier, 'opaque_glyph_pixels': len(glyph)})
+              {'window': identifier, 'opaque_glyph_core_pixels': len(glyph)})
         if identifier in rects:
             frame = rects[identifier]
         elif identifier in link_by_window:
@@ -430,6 +448,13 @@ def run_renderer(goo):
                   dyed(images[0], x, y, hint['color']) and dyed(images[100], x, y, hint['color']),
                   {'window': identifier, 'sample': (x, y)})
         else:
+            if identifier == card_id:
+                outside_card = (frame['x'] + frame['width'] / 2, frame['y'] - 1)
+                rim0, rim100 = images[0].pixel(*outside_card), images[100].pixel(*outside_card)
+                check(f'{mode}: widget card adds no fallback-halo stroke outside its extent',
+                      max_delta(rim0, rim100) <= 3,
+                      {'window': identifier, 'sample': outside_card, 'zero': rim0, 'full': rim100})
+                continue
             rim0, rim100 = images[0].pixel(x, y), images[100].pixel(x, y)
             check(f'{mode}: fallback halo remains visible at tint 0 and 100',
                   max_delta(rim0, color) <= 22 and max_delta(rim100, color) <= 22,
@@ -458,7 +483,7 @@ try:
     screen_origin = (float(geometry['x']), float(geometry['y']))
     set_options(sounds=False, color_scheme='dark', accent_color='#81a1c1ff',
                 window_avoidance_always=False, hint_avoidance_always=False,
-                window_mode_tint=0)
+                window_mode_tint=0, hint_background_opacity=21)
 
     rear_width, rear_height = min(520, width * .42), min(360, height * .52)
     front_width, front_height = rear_width, rear_height
