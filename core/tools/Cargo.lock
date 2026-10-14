@@ -628,6 +628,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "scottland-widget"
+version = "0.2.0"
+dependencies = [
+ "async-io",
+ "futures-lite",
+ "scottland-lib",
+ "serde_json",
+ "zbus",
+]
+
+[[package]]
 name = "scottland-window-name"
 version = "0.2.0"
 dependencies = [

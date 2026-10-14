@@ -1,0 +1,15 @@
+[package]
+name = "scottland-widget"
+description = "Session widget commands for Scottland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-io = "2.6"
+futures-lite = "2.6"
+scottland.workspace = true
+serde_json = "1"
+zbus.workspace = true
