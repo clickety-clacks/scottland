@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WK15/16: physical hint presses with human dwell and repeat timing."""
+"""WK9/WK15/16: physical hint presses, including widget-start resume, with human timing."""
 import json
 from itertools import product
 import os
@@ -166,6 +166,23 @@ try:
             sequence(text,.12); time.sleep(.25); sequence(text,.12)
             wait(lambda: view(primary)['widgetized'])
             print('PASS '+text+' focused-widget human double-tap returns to rail',flush=True)
+            key('LEFTALT',False)
+            time.sleep(.1)
+            ipc('window-rules/focus-view',{'id':widget})
+            key('LEFTALT',True); wait(lambda: hints()['active'])
+            assert hints()['selected']==primary, 'widget-start cycle fixture'
+            text=label(primary)
+            sequence(text,.08)
+            wait(lambda: not view(primary)['widgetized'])
+            sequence(text,.08)
+            wait(lambda: view(primary)['widgetized'])
+            time.sleep(.35)
+            sequence(text,.08)
+            wait(lambda: not view(primary)['widgetized'])
+            resumed=view(primary)
+            assert resumed['zone']=='center' and resumed['applied_scale']>.99, \
+                'widget-start double-tap did not resume at center'
+            print('PASS '+text+' widget-start double-tap returns to rail and resumes at center',flush=True)
             key('LEFTALT',False)
         subprocess.run(['grim',str(art/('width-'+str(width)+'.png'))],check=True)
     (art/'results.json').write_text(json.dumps(results,indent=2))
