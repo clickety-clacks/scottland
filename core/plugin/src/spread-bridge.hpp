@@ -37,6 +37,9 @@
     };
     std::optional<spread_run_t> spread_run;
     wf::wl_timer<true> spread_tick;
+    // Continuations must run after spread_tick's repeating callback has retired. Re-arming that
+    // timer from its own callback is undone by Wayfire when the callback returns false.
+    wf::wl_idle_call spread_ready;
     std::vector<std::function<void()>> spread_requests;
     bool spread_request_active = false;
     wf::json_t spread_last;  // the last delivered solve (scottland/spread-state)
@@ -198,6 +201,7 @@
     void spread_cancel()
     {
         spread_tick.disconnect();
+        spread_ready.disconnect();
         spread_requests.clear();
         spread_request_active = false;
         auto started = std::chrono::steady_clock::now();
@@ -237,7 +241,8 @@
         if (!spread_run) return;
         auto entered = std::chrono::steady_clock::now();
         double entered_cpu = thread_cpu_ms();
-        spread_tick.disconnect();
+        // If this came from spread_tick, spread_step() returns false and Wayfire retires the
+        // repeating source after the callback. The immediate first slice has no source yet.
         auto run = std::move(*spread_run);
         spread_run.reset();
         auto result = run.job->current();
@@ -395,7 +400,7 @@
                     now_window->get_geometry().width != g.width || now_window->get_geometry().height != g.height)
                 {
                     LOGI("scottland: solo ", id, ": the desktop changed while solving; not applied");
-                    spread_tick.set_timeout(1, [=] () { finish_spread_request(); return false; });
+                    spread_ready.run_once([=] () { finish_spread_request(); });
                     return;
                 }
                 auto started = std::chrono::steady_clock::now();
@@ -406,7 +411,7 @@
                 spread_last["commit_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
                 // Let spread_deliver finish writing this solve's timing fields before the next
                 // request can replace spread_last.
-                spread_tick.set_timeout(1, [=] () { finish_spread_request(); return false; });
+                spread_ready.run_once([=] () { finish_spread_request(); });
             });
     }
 
@@ -416,14 +421,14 @@
         wf::output_t *output = outputs[index];
         if (!output_alive(output))
         {
-            spread_tick.set_timeout(1, [=] () { gather_screen(outputs, index + 1); return false; });
+            spread_ready.run_once([=] () { gather_screen(outputs, index + 1); });
             return;
         }
         auto captured = std::chrono::steady_clock::now();
         auto snapshot = spread_snapshot(output, 0, {}, true);
         if (!snapshot)
         {
-            spread_tick.set_timeout(1, [=] () { gather_screen(outputs, index + 1); return false; });
+            spread_ready.run_once([=] () { gather_screen(outputs, index + 1); });
             return;
         }
         auto signature = snapshot->unavailable_reason.empty() ? spread_signature(output, 0) : std::string{};
@@ -444,7 +449,7 @@
                     spread_last["commit_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
                 } else
                     LOGI("scottland: gather: screen changed while solving; not applied");
-                spread_tick.set_timeout(1, [=] () { gather_screen(outputs, index + 1); return false; });
+                spread_ready.run_once([=] () { gather_screen(outputs, index + 1); });
             });
     }
 
