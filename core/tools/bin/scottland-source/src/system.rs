@@ -295,20 +295,55 @@ impl System {
         let release = self.resolve_commit(&release)?;
         self.set_ref("release", &release)?;
 
+        let before = self.installed()?;
+        let Some(changed) = self.adopt_release(&release, &self.paths.base_tools)? else {
+            return Ok(());
+        };
+        let after = self.installed()?.unwrap_or_else(|| release.clone());
+        if before.as_deref() != Some(after.as_str()) {
+            let changed = if changed.is_empty() {
+                "none".to_owned()
+            } else {
+                changed.join(", ")
+            };
+            if let Some(before) = before.as_deref() {
+                println!(
+                    "installed {before} → {after}; changed: {changed}; go back: {} rollback --to {before}",
+                    self.paths.product
+                );
+            } else {
+                println!(
+                    "installed none → {after}; changed: {changed}; no previous installed build exists"
+                );
+            }
+        } else {
+            println!("release {release} is already installed; no binary changed");
+        }
+        Ok(())
+    }
+
+    /// Prepare a received package build before changing the base ref. A failed
+    /// downgrade preparation must leave the currently installed base intact.
+    pub(crate) fn adopt_release(
+        &self,
+        release: &str,
+        binary_directory: &Path,
+    ) -> Result<Option<Vec<String>>> {
         let current = self.installed()?;
         let base = self.base()?;
+        let mut update_base = false;
         let activate = match (current.as_deref(), base.as_deref()) {
             (None, _) => {
-                self.set_ref("base", &release)?;
+                update_base = true;
                 true
             }
             (Some(installed), Some(base)) if installed == base => {
                 if release == installed {
                     false
-                } else if self.is_ancestor(&release, installed)? {
-                    self.set_ref("base", &release)?;
+                } else if self.is_ancestor(release, installed)? {
+                    update_base = true;
                     true
-                } else if self.is_ancestor(installed, &release)? {
+                } else if self.is_ancestor(installed, release)? {
                     true
                 } else {
                     eprintln!(
@@ -333,31 +368,14 @@ impl System {
         };
 
         if !activate {
-            return Ok(());
+            return Ok(None);
         }
-        let before = current;
-        let changed = self.activate_from_binaries(&release, &self.paths.base_tools)?;
-        let after = self.installed()?.unwrap_or_else(|| release.clone());
-        if before.as_deref() != Some(after.as_str()) {
-            let changed = if changed.is_empty() {
-                "none".to_owned()
-            } else {
-                changed.join(", ")
-            };
-            if let Some(before) = before.as_deref() {
-                println!(
-                    "installed {before} → {after}; changed: {changed}; go back: {} rollback --to {before}",
-                    self.paths.product
-                );
-            } else {
-                println!(
-                    "installed none → {after}; changed: {changed}; no previous installed build exists"
-                );
-            }
-        } else {
-            println!("release {release} is already installed; no binary changed");
+
+        let workspace = self.prepare_store_from_binaries(release, None, binary_directory, true)?;
+        if update_base {
+            self.set_ref("base", release)?;
         }
-        Ok(())
+        Ok(Some(self.activate_prepared(release, &workspace)?))
     }
 
     pub fn install_user_build(
@@ -508,13 +526,6 @@ impl System {
             old_installed,
             removed,
         })
-    }
-
-    fn activate_from_binaries(&self, commit: &str, binary_directory: &Path) -> Result<Vec<String>> {
-        // Package binaries are trusted package inputs. User-built binaries are checked while
-        // still running as that user, before the privileged install helper copies them.
-        let workspace = self.prepare_store_from_binaries(commit, None, binary_directory, true)?;
-        self.activate_prepared(commit, &workspace)
     }
 
     fn activate_prepared(&self, commit: &str, workspace: &Workspace) -> Result<Vec<String>> {

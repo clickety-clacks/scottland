@@ -323,13 +323,7 @@ fn rollback(system: &System, args: &[OsString]) -> Result<()> {
         scope = Some(workspace.relative_root.clone());
     }
     let scope = scope.unwrap();
-    let mut command = vec![
-        OsString::from("checkout"),
-        OsString::from(target.as_str()),
-        OsString::from("--"),
-    ];
-    command.push(scope.as_os_str().to_os_string());
-    git_command(&system.paths.working_clone, command)?;
+    checkout_scope_from_target(&system.paths.working_clone, &target, &scope)?;
     let subject = parsed.tool.as_deref().unwrap_or("workspace");
     let reason = parsed
         .reason
@@ -337,6 +331,22 @@ fn rollback(system: &System, args: &[OsString]) -> Result<()> {
         .unwrap_or_default();
     let message = format!("Roll back {subject} to {target}{reason}");
     commit_workspace(system, &workspace, &message, subject)
+}
+
+pub(crate) fn checkout_scope_from_target(
+    repository: &Path,
+    target: &str,
+    scope: &Path,
+) -> Result<()> {
+    let mut command = vec![
+        OsString::from("checkout"),
+        OsString::from("--no-overlay"),
+        OsString::from(target),
+        OsString::from("--"),
+    ];
+    command.push(scope.as_os_str().to_os_string());
+    git_command(repository, command)?;
+    Ok(())
 }
 
 fn update(system: &System, args: &[OsString]) -> Result<()> {

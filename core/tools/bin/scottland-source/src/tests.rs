@@ -75,6 +75,58 @@ fn git_ok(directory: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+fn create_workspace_repository(directory: &Path) -> (String, String) {
+    fs::create_dir_all(directory).unwrap();
+    let initialized = git(directory, &["init", "--initial-branch=main"]);
+    assert!(
+        initialized.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    git_ok(directory, &["config", "user.name", "Source Mechanism Test"]);
+    git_ok(
+        directory,
+        &["config", "user.email", "source-mechanism@example.invalid"],
+    );
+
+    let workspace = directory.join("core/tools");
+    let source_crate = workspace.join("bin/example-source");
+    fs::create_dir_all(source_crate.join("src")).unwrap();
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"bin/example-source\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::write(
+        source_crate.join("Cargo.toml"),
+        "[package]\nname = \"example-source\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"example-tool\"\npath = \"src/main.rs\"\n",
+    )
+    .unwrap();
+    fs::write(source_crate.join("src/main.rs"), "fn main() {}\n").unwrap();
+    git_ok(directory, &["add", "--all"]);
+    git_ok(directory, &["commit", "-m", "base workspace"]);
+    let base = git_ok(directory, &["rev-parse", "HEAD"]);
+
+    let added_crate = workspace.join("bin/example-added-tool");
+    fs::create_dir_all(added_crate.join("src")).unwrap();
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"bin/example-source\", \"bin/example-added-tool\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::write(
+        added_crate.join("Cargo.toml"),
+        "[package]\nname = \"example-added-tool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(added_crate.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(workspace.join("later-added-file.txt"), "new after base\n").unwrap();
+    git_ok(directory, &["add", "--all"]);
+    git_ok(directory, &["commit", "-m", "add another workspace tool"]);
+    let installed = git_ok(directory, &["rev-parse", "HEAD"]);
+    (base, installed)
+}
+
 #[test]
 fn installed_loose_ref_symlink_survives_supported_git_operations() {
     let version = Command::new("git").arg("--version").output().unwrap();
@@ -223,6 +275,77 @@ fn package_removal_drops_switch_before_mechanism_links() {
     assert_eq!(report.removed, ["switch", "link example-tool"]);
     assert!(fs::symlink_metadata(&paths.switch).is_err());
     assert!(fs::symlink_metadata(paths.tool_link("example-tool")).is_err());
+}
+
+#[test]
+fn adopt_downgrade_preparation_failure_preserves_base() {
+    let scratch = Scratch::new();
+    let source = scratch.0.join("source");
+    let (release, installed) = create_workspace_repository(&source);
+    let root = scratch.0.join("system-root");
+    let paths = Paths::under_root("example", &root, scratch.0.join("state"));
+    fs::create_dir_all(paths.source_repo.parent().unwrap()).unwrap();
+    let cloned = Command::new("git")
+        .arg("clone")
+        .arg("--bare")
+        .arg(&source)
+        .arg(&paths.source_repo)
+        .output()
+        .unwrap();
+    assert!(
+        cloned.status.success(),
+        "git clone --bare failed: {}",
+        String::from_utf8_lossy(&cloned.stderr)
+    );
+    git_ok(
+        &paths.source_repo,
+        &["update-ref", "refs/heads/base", &installed],
+    );
+    fs::create_dir_all(paths.build_dir(&installed)).unwrap();
+    fs::create_dir_all(paths.switch.parent().unwrap()).unwrap();
+    symlink(paths.build_dir(&installed), &paths.switch).unwrap();
+
+    let system = System { paths };
+    assert_eq!(system.installed().unwrap(), Some(installed.clone()));
+    assert_eq!(system.base().unwrap(), Some(installed.clone()));
+    let ancestry = git(
+        &source,
+        &["merge-base", "--is-ancestor", &release, &installed],
+    );
+    assert!(
+        ancestry.status.success(),
+        "test release is not a downgrade from installed commit"
+    );
+
+    let empty_binaries = scratch.0.join("empty-binaries");
+    fs::create_dir_all(&empty_binaries).unwrap();
+    let error = system
+        .adopt_release(&release, &empty_binaries)
+        .expect_err("missing package binary must fail target-store preparation");
+    assert!(error.to_string().contains("cannot run"), "{error}");
+    assert_eq!(system.base().unwrap(), Some(installed.clone()));
+    assert_eq!(system.installed().unwrap(), Some(installed));
+}
+
+#[test]
+fn rollback_to_base_removes_later_workspace_files_and_tools() {
+    let scratch = Scratch::new();
+    let repository = scratch.0.join("rollback-repository");
+    let (base, later) = create_workspace_repository(&repository);
+    assert_eq!(git_ok(&repository, &["rev-parse", "HEAD"]), later);
+    let added_tool = repository.join("core/tools/bin/example-added-tool");
+    let added_file = repository.join("core/tools/later-added-file.txt");
+    assert!(added_tool.exists());
+    assert!(added_file.exists());
+
+    crate::user::checkout_scope_from_target(&repository, &base, Path::new("core/tools")).unwrap();
+
+    assert!(!added_tool.exists(), "later-added tool survived rollback");
+    assert!(!added_file.exists(), "later-added file survived rollback");
+    let base_tree_expr = format!("{base}^{{tree}}");
+    let base_tree = git_ok(&repository, &["rev-parse", &base_tree_expr]);
+    assert_eq!(git_ok(&repository, &["write-tree"]), base_tree);
+    git_ok(&repository, &["diff", "--quiet", &base, "--", "core/tools"]);
 }
 
 fn assert_symlink_target(link: &Path, expected: &Path) {
