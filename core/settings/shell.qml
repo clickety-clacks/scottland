@@ -594,10 +594,21 @@ ShellRoot {
     }
     if (Object.keys(globalUpdate).length) {
       globalZoneValues = Object.assign({}, globalZoneValues, globalUpdate)
-      original = Object.assign({}, original, { globalZones: Object.assign({}, globalZoneValues),
-        center_width: globalZoneValues.center_width, rail_width: globalZoneValues.rail_width,
-        blend_width: globalZoneValues.blend_width, curve: globalZoneValues.curve })
+      // Advance only the file-edited fields in Cancel's baseline. Other fields may still hold
+      // unsaved previews and must return to their prior values if the user cancels.
+      const originalZones = Object.assign({}, original.globalZones, globalUpdate)
+      original = Object.assign({}, original, { globalZones: originalZones,
+        center_width: originalZones.center_width, rail_width: originalZones.rail_width,
+        blend_width: originalZones.blend_width, curve: originalZones.curve })
     }
+    // FileView may observe an edit while this panel has preview-locked the same Wayfire option.
+    // Reapply only values that changed in the file so they immediately win live without erasing
+    // previews of unrelated settings. Keep the established lock behavior for subsequent edits.
+    const fileZoneValues = {}
+    for (const key of ["center_width", "rail_width", "blend_width", "scale_curve", "min_scale", "max_scale"])
+      if (key in globalUpdate) fileZoneValues[key] = globalUpdate[key]
+    if (screenZonesChanged) fileZoneValues.screen_zones = JSON.stringify(screenZones)
+    if (Object.keys(fileZoneValues).length) sendBatch(fileZoneValues)
     if (screenZonesChanged || Object.keys(globalUpdate).length) {
       const entry = editScope === "this" ? overrideForIdentity(targetOutput) : null
       if (editScope === "all" || screenZonesChanged || !entry)

@@ -237,13 +237,27 @@ try:
     hand_edit(layout, layout.read_text().replace("center_width = 41", "center_width = 43"))
     check("file wins: a hand edit after Cancel takes effect live", option_reaches("center_width", 43))
 
+    # --- A hand edit overtakes a preview lock on the same zone option -----------------------------
+    open_panel()
+    zone_row(1)
+    key("KEY_RIGHT")
+    check("same-key zone preview is live before the file edit", option_reaches("center_width", 43.5))
+    hand_edit(layout, layout.read_text().replace("center_width = 43", "center_width = 47"))
+    check("file wins: a hand edit overtakes the same preview-locked zone option live",
+          option_reaches("center_width", 47))
+    check("same-key hand edit updates the panel and Cancel value",
+          wait_for(lambda: abs(snapshot()["layout"]["center_width"] - 47) < .01 and
+                   abs(snapshot()["original"]["center_width"] - 47) < .01))
+    close_panel()
+    check("Cancel preserves the same-key hand edit", option_reaches("center_width", 47))
+
     # --- Hand edits while the panel is open -------------------------------------------------------
     open_panel()
     zone_row(2)
     rail = snapshot()["layout"]["rail_width"]
     key("KEY_RIGHT")
     check("unsaved rail change previews", wait_for(lambda: abs(option("rail_width") - (rail + .1)) < .01))
-    hand_edit(layout, layout.read_text().replace("center_width = 43", "center_width = 45"))
+    hand_edit(layout, layout.read_text().replace("center_width = 47", "center_width = 45"))
     check("open panel shows a hand-edited zone value", wait_for(lambda: abs(snapshot()["layout"]["center_width"] - 45) < .01))
     check("open panel takes the hand edit as the Cancel value",
           wait_for(lambda: abs(snapshot()["original"]["center_width"] - 45) < .01))
