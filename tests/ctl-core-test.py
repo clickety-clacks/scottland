@@ -321,8 +321,13 @@ def run_checks(session):
           cwd.returncode == 0 and cwd.stdout.strip() == str(HOME), cwd.stdout.strip())
     terminal_workdir = ROOT / "terminal-workdir"
     terminal_workdir.mkdir()
-    terminal_parent = ROOT / "terminal-parent.sh"
-    terminal_parent.write_text("#!/bin/sh\n/bin/sh -c 'cd \"$1\"; sleep 60' _ \"$1\" &\nwait\n")
+    terminal_parent = ROOT / "terminal-parent.py"
+    terminal_parent.write_text(
+        "#!/usr/bin/python3\n"
+        "import subprocess, sys, time\n"
+        "subprocess.Popen(['/bin/sh', '-c', 'cd \"$1\"; sleep 60', '_', sys.argv[1]])\n"
+        "time.sleep(60)\n"
+    )
     terminal_parent.chmod(0o755)
     terminal_pid = session.spawn(
         f"{shlex.quote(str(terminal_parent))} {shlex.quote(str(terminal_workdir))}"
