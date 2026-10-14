@@ -603,6 +603,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "scottland-system-stats"
+version = "0.2.0"
+
+[[package]]
+name = "scottland-weather"
+version = "0.2.0"
+dependencies = [
+ "scottland-lib",
+]
+
+[[package]]
 name = "scottland-window-name"
 version = "0.2.0"
 dependencies = [
