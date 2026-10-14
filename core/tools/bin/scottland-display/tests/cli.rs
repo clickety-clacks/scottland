@@ -2,11 +2,19 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{Child, Command, Output};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+unsafe extern "C" {
+    fn kill(pid: i32, signal: i32) -> i32;
+}
 
 const BINARY: &str = env!("CARGO_BIN_EXE_scottland-display");
 const SCHEMA: &str = "org.gnome.desktop.interface";
@@ -19,6 +27,7 @@ struct Scratch {
     hooks: PathBuf,
     calls: PathBuf,
     helper_calls: PathBuf,
+    monitor_calls: PathBuf,
     state: PathBuf,
 }
 
@@ -39,6 +48,7 @@ impl Scratch {
         fs::create_dir_all(hooks.join("libexec")).unwrap();
         let calls = root.join("calls");
         let helper_calls = root.join("helper-calls");
+        let monitor_calls = root.join("monitor-calls");
         let state = root.join("state");
         let fake = bin.join("gsettings");
         fs::write(
@@ -49,6 +59,11 @@ printf '%s\n' "$*" >>"$CALLS"
 if [ "${FAIL_GSETTINGS:-0}" = 1 ]; then
   echo 'fixture gsettings failure' >&2
   exit 7
+fi
+if [ "$1" = monitor ]; then
+  printf '%s\n' "$$" >>"${MONITOR_PIDS:-/dev/null}"
+  echo 'text-scaling-factor changed'
+  exec sleep 120
 fi
 [ "$2" = "org.gnome.desktop.interface" ] || exit 64
 [ "$3" = "text-scaling-factor" ] || exit 64
@@ -73,6 +88,24 @@ esac
         let mut permissions = fs::metadata(&fake).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&fake, permissions).unwrap();
+
+        for (name, body) in [
+            ("busctl", "#!/bin/sh\nprintf 'u 0\\n'\n"),
+            (
+                "gdbus",
+                "#!/bin/sh\nprintf 'gdbus %s\\n' \"$*\" >>\"$MONITOR_CALLS\"\nprintf '%s\\n' \"$$\" >>\"$MONITOR_PIDS\"\necho 'color-scheme changed'\nexec sleep 120\n",
+            ),
+            (
+                "inotifywait",
+                "#!/bin/sh\nprintf 'inotifywait %s\\n' \"$*\" >>\"$MONITOR_CALLS\"\nprintf '%s\\n' \"$$\" >>\"$MONITOR_PIDS\"\nexec sleep 120\n",
+            ),
+        ] {
+            let path = bin.join(name);
+            fs::write(&path, body).unwrap();
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
 
         let fake_helper = hooks.join("libexec/scottland-color-scheme");
         fs::write(
@@ -105,6 +138,7 @@ esac
             hooks,
             calls,
             helper_calls,
+            monitor_calls,
             state,
         }
     }
@@ -170,6 +204,22 @@ esac
             .map(str::to_string)
             .collect()
     }
+
+    fn monitor_pids(&self) -> Vec<i32> {
+        fs::read_to_string(self.root.join("monitor-pids"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.parse().ok())
+            .collect()
+    }
+
+    fn monitor_calls(&self) -> Vec<String> {
+        fs::read_to_string(&self.monitor_calls)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 impl Drop for Scratch {
@@ -186,6 +236,131 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+struct Watcher(Child);
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        let pid = self.0.id() as i32;
+        if matches!(self.0.try_wait(), Ok(None)) {
+            unsafe { kill(-pid, 15) };
+        }
+        let _ = self.0.wait();
+    }
+}
+
+struct WaylandSocket {
+    path: PathBuf,
+    listening: Arc<AtomicBool>,
+    accept_loop: Option<thread::JoinHandle<()>>,
+}
+
+impl WaylandSocket {
+    fn new(path: PathBuf) -> Self {
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listening = Arc::new(AtomicBool::new(true));
+        let accept_loop = {
+            let listening = listening.clone();
+            thread::spawn(move || {
+                while listening.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => drop(stream),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("fixture Wayland socket failed: {error}"),
+                    }
+                }
+            })
+        };
+        Self {
+            path,
+            listening,
+            accept_loop: Some(accept_loop),
+        }
+    }
+}
+
+impl Drop for WaylandSocket {
+    fn drop(&mut self) {
+        self.listening.store(false, Ordering::Release);
+        if let Some(accept_loop) = self.accept_loop.take() {
+            accept_loop.join().unwrap();
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn launch_watcher(scratch: &Scratch) -> (Watcher, PathBuf, WaylandSocket) {
+    let socket = WaylandSocket::new(scratch.root.join("wayland-0"));
+    let session_dir = scratch.root.join("session");
+    fs::create_dir(&session_dir).unwrap();
+    fs::create_dir_all(scratch.home.join(".config/gooarchy")).unwrap();
+    let monitor_log = scratch.root.join("monitor-pids");
+    let mut paths = vec![scratch.bin.clone()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths).unwrap();
+    let child = Command::new(BINARY)
+        .args(["color-scheme", "watch"])
+        .env("PATH", path)
+        .env("HOME", &scratch.home)
+        .env("XDG_CONFIG_HOME", scratch.home.join(".config"))
+        .env("XDG_RUNTIME_DIR", &scratch.root)
+        .env("WAYLAND_DISPLAY", "wayland-0")
+        .env("SCOTTLAND_SESSION_DIR", &session_dir)
+        .env("SCOTTLAND_HOOKS", &scratch.hooks)
+        .env("CALLS", &scratch.calls)
+        .env("HELPER_CALLS", &scratch.helper_calls)
+        .env("MONITOR_PIDS", &monitor_log)
+        .env("MONITOR_CALLS", &scratch.monitor_calls)
+        .spawn()
+        .unwrap();
+    (
+        Watcher(child),
+        session_dir.join("wayland-0.color-scheme.pid"),
+        socket,
+    )
+}
+
+fn wait_for_monitors(scratch: &Scratch, watcher: &mut Watcher) -> Vec<i32> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let pids = scratch.monitor_pids();
+        if pids.len() >= 3 {
+            return pids;
+        }
+        if let Some(status) = watcher.0.try_wait().unwrap() {
+            panic!("watcher exited before starting all monitors: {status}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "monitor subprocesses did not start"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_for_watcher_cleanup(watcher: &mut Watcher, pid_file: &Path, monitor_pids: &[i32]) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let status = loop {
+        if let Some(status) = watcher.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "watcher did not stop");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "watcher shutdown failed: {status}");
+    assert!(!pid_file.exists(), "watcher left a stale pid record");
+    for pid in monitor_pids {
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "monitor subprocess {pid} survived watcher shutdown"
+        );
+    }
+}
+
 #[test]
 fn documented_help_dispatch_succeeds_without_reading_settings() {
     let scratch = Scratch::new();
@@ -197,6 +372,22 @@ fn documented_help_dispatch_succeeds_without_reading_settings() {
         assert!(stderr(&output).is_empty());
     }
     assert!(scratch.calls().is_empty());
+}
+
+#[test]
+fn color_scheme_defaults_to_once_and_accepts_nested_cursor_size() {
+    let once = Scratch::new();
+    let output = once.run(&["color-scheme"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(once.helper_calls(), ["once"]);
+    assert!(once.calls().is_empty());
+
+    let cursor = Scratch::new();
+    let output = cursor.run(&["color-scheme", "cursor-size"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "24\n");
+    assert_eq!(cursor.helper_calls(), ["cursor-size"]);
+    assert!(cursor.calls().is_empty());
 }
 
 #[test]
@@ -293,8 +484,16 @@ fn terminal_theme_push_propagates_helper_failure_and_stderr() {
     let scratch = Scratch::new();
     let output = scratch.run_with_helper_failure(&["terminal-theme", "push"], true);
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("terminal-theme-push failed"));
-    assert!(stderr(&output).contains("fixture helper failure"));
+    assert!(
+        stderr(&output).contains("terminal-theme-push failed"),
+        "unexpected error: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("fixture helper failure"),
+        "unexpected error: {}",
+        stderr(&output)
+    );
     assert_eq!(scratch.helper_calls(), ["terminal-theme-push"]);
     assert!(scratch.calls().is_empty());
 }
@@ -353,4 +552,37 @@ fn sourced_session_environment_exports_the_cursor_size_command_result() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "24\n");
     assert_eq!(scratch.helper_calls(), ["cursor-size"]);
+}
+
+#[test]
+fn watcher_stops_and_reaps_monitors_when_its_wayland_session_ends() {
+    let scratch = Scratch::new();
+    let (mut watcher, pid_file, socket) = launch_watcher(&scratch);
+    let monitor_pids = wait_for_monitors(&scratch, &mut watcher);
+    assert!(pid_file.is_file());
+    assert!(
+        scratch
+            .monitor_calls()
+            .iter()
+            .any(|call| call.starts_with("gdbus monitor --session"))
+    );
+    assert!(
+        !scratch
+            .calls()
+            .iter()
+            .any(|call| call == "monitor org.gnome.desktop.interface color-scheme")
+    );
+
+    fs::remove_file(&socket.path).unwrap();
+    wait_for_watcher_cleanup(&mut watcher, &pid_file, &monitor_pids);
+}
+
+#[test]
+fn watcher_stops_monitors_on_headless_process_group_termination() {
+    let scratch = Scratch::new();
+    let (mut watcher, pid_file, _socket) = launch_watcher(&scratch);
+    let monitor_pids = wait_for_monitors(&scratch, &mut watcher);
+    assert!(pid_file.is_file());
+    assert_eq!(unsafe { kill(-(watcher.0.id() as i32), 15) }, 0);
+    wait_for_watcher_cleanup(&mut watcher, &pid_file, &monitor_pids);
 }

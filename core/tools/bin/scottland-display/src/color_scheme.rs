@@ -1,14 +1,18 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::gamma::GammaController;
@@ -17,13 +21,21 @@ use scottland::night_light::Decision;
 const HELPER_RELATIVE: &str = "libexec/scottland-color-scheme";
 const THEME_LINKS: [&str; 2] = ["light", "dark"];
 const SIGNAL_TERM: i32 = 15;
+const SIGNAL_INT: i32 = 2;
 const SIGNAL_KILL: i32 = 9;
+const LOCK_EX: i32 = 2;
+const SIGNAL_ERROR: usize = usize::MAX;
+
+static NEXT_PID_TEMP: AtomicU64 = AtomicU64::new(0);
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     fn setpgid(pid: i32, pgid: i32) -> i32;
     fn kill(pid: i32, signal: i32) -> i32;
+    fn signal(signal: i32, handler: usize) -> usize;
     fn getuid() -> u32;
     fn poll(fds: *mut PollFd, nfds: usize, timeout: i32) -> i32;
+    fn flock(fd: i32, operation: i32) -> i32;
 }
 
 #[repr(C)]
@@ -103,29 +115,38 @@ fn invoke_helper_at(path: &Path, action: &str) -> Result<Output, String> {
 pub(super) fn ensure() -> Result<(), String> {
     let path = pid_file_path()?;
     let fingerprint = executable_fingerprint()?;
-    if let Some((pid, recorded)) = read_pid_file(&path) {
-        if watcher_matches_session(pid) {
-            if recorded == fingerprint {
-                return invoke_helper("once").map(|_| ());
-            }
-            terminate_watcher(pid)?;
+    let mut spawned = None;
+    let result = ensure_with(
+        &path,
+        &fingerprint,
+        watcher_matches_session,
+        terminate_watcher,
+        || {
+            let executable = env::current_exe()
+                .map_err(|error| format!("could not locate scottland-display: {error}"))?;
+            let mut command = Command::new(executable);
+            command
+                .args(["color-scheme", "watch"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0);
+            let child = command
+                .spawn()
+                .map_err(|error| format!("could not start the color-scheme watcher: {error}"))?;
+            let pid = child.id() as i32;
+            spawned = Some(child);
+            Ok(pid)
+        },
+        || invoke_helper("once").map(|_| ()),
+    );
+    if result.is_err() {
+        if let Some(mut child) = spawned {
+            let _ = child.kill();
+            let _ = child.wait();
         }
-        remove_pid_file(&path);
     }
-
-    let executable = env::current_exe()
-        .map_err(|error| format!("could not locate scottland-display: {error}"))?;
-    let mut command = Command::new(executable);
-    command
-        .args(["color-scheme", "watch"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0);
-    command
-        .spawn()
-        .map_err(|error| format!("could not start the color-scheme watcher: {error}"))?;
-    Ok(())
+    result
 }
 
 pub(super) fn watch() -> Result<(), String> {
@@ -140,28 +161,38 @@ pub(super) fn watch() -> Result<(), String> {
     let Some(_pid_guard) = claim_pid_file(&path, &fingerprint)? else {
         return Ok(());
     };
+    let wayland_socket = wayland_socket_path()?;
+    if !session_socket_alive(&wayland_socket) {
+        return Err("Wayland session ended before the color-scheme watcher started".to_string());
+    }
 
     invoke_helper("once")?;
     let mut night_light = start_night_light_receiver();
+    STOP_REQUESTED.store(false, Ordering::Release);
+    install_stop_handlers()?;
     let (sender, receiver) = mpsc::channel();
-    spawn_settings_monitor(sender.clone());
-    spawn_text_monitor(sender.clone());
-    spawn_accent_monitor(sender.clone());
-    spawn_theme_monitor(sender);
+    let stopping = Arc::new(AtomicBool::new(false));
+    let monitors = [
+        spawn_settings_monitor(sender.clone(), stopping.clone()),
+        spawn_text_monitor(sender.clone(), stopping.clone()),
+        spawn_accent_monitor(sender.clone(), stopping.clone()),
+        spawn_theme_monitor(sender, stopping.clone()),
+    ];
 
     loop {
+        if STOP_REQUESTED.load(Ordering::Acquire) || !session_socket_alive(&wayland_socket) {
+            break;
+        }
         refresh_night_light_session(&mut night_light);
-        if night_light.is_some() {
-            match receiver.recv_timeout(NIGHT_LIGHT_IDLE_TICK) {
-                Ok(event) => handle_watch_event(event),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
+        let timeout = if night_light.is_some() {
+            NIGHT_LIGHT_IDLE_TICK
         } else {
-            match receiver.recv() {
-                Ok(event) => handle_watch_event(event),
-                Err(_) => break,
-            }
+            Duration::from_millis(250)
+        };
+        match receiver.recv_timeout(timeout) {
+            Ok(event) => handle_watch_event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
         for _ in 1..MAX_WATCH_EVENTS_PER_TICK {
@@ -179,6 +210,15 @@ pub(super) fn watch() -> Result<(), String> {
             eprintln!("scottland-display: disabling Night Light receiver: {error}");
             night_light = None;
         }
+    }
+
+    stopping.store(true, Ordering::Release);
+    let stop_result = stop_process_group_children(std::process::id() as i32);
+    let join_failed = monitors.into_iter().any(|monitor| monitor.join().is_err());
+    drop(_pid_guard);
+    stop_result?;
+    if join_failed {
+        return Err("a color-scheme monitor did not stop cleanly".to_string());
     }
     Ok(())
 }
@@ -315,52 +355,149 @@ fn report_night_light_decision(decision: &Decision) {
 struct PidGuard {
     path: PathBuf,
     pid: i32,
+    fingerprint: String,
 }
 
 impl Drop for PidGuard {
     fn drop(&mut self) {
-        if read_pid_file(&self.path).is_some_and(|(pid, _)| pid == self.pid) {
-            remove_pid_file(&self.path);
+        if let Ok(_lock) = lock_pid_file(&self.path) {
+            remove_pid_file_if(&self.path, self.pid, &self.fingerprint);
         }
     }
 }
 
 fn claim_pid_file(path: &Path, fingerprint: &str) -> Result<Option<PidGuard>, String> {
-    for _ in 0..3 {
+    let current_pid = std::process::id() as i32;
+    loop {
+        let lock = lock_pid_file(path)?;
         if let Some((pid, recorded)) = read_pid_file(path) {
             if watcher_matches_session(pid) {
                 if recorded == fingerprint {
+                    if pid == current_pid {
+                        return Ok(Some(PidGuard {
+                            path: path.to_path_buf(),
+                            pid,
+                            fingerprint: fingerprint.to_string(),
+                        }));
+                    }
                     return Ok(None);
                 }
-                terminate_watcher(pid)?;
+                if pid != current_pid {
+                    drop(lock);
+                    terminate_watcher(pid)?;
+                    continue;
+                }
             }
-            remove_pid_file(path);
+            remove_pid_file_if(path, pid, &recorded);
         }
 
+        let pid = current_pid;
+        write_pid_file(path, pid, fingerprint)?;
+        return Ok(Some(PidGuard {
+            path: path.to_path_buf(),
+            pid,
+            fingerprint: fingerprint.to_string(),
+        }));
+    }
+}
+
+fn ensure_with(
+    path: &Path,
+    fingerprint: &str,
+    mut watcher_matches: impl FnMut(i32) -> bool,
+    mut stop_watcher: impl FnMut(i32) -> Result<(), String>,
+    mut start_watcher: impl FnMut() -> Result<i32, String>,
+    mut apply_once: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    loop {
+        let lock = lock_pid_file(path)?;
+        if let Some((pid, recorded)) = read_pid_file(path) {
+            if watcher_matches(pid) {
+                if recorded == fingerprint {
+                    return apply_once();
+                }
+                drop(lock);
+                stop_watcher(pid)?;
+                continue;
+            }
+            remove_pid_file_if(path, pid, &recorded);
+        }
+
+        let pid = start_watcher()?;
+        if let Err(error) = write_pid_file(path, pid, fingerprint) {
+            remove_pid_file_if(path, pid, fingerprint);
+            return Err(error);
+        }
+        return Ok(());
+    }
+}
+
+struct PidFileLock {
+    _file: File,
+}
+
+fn lock_pid_file(path: &Path) -> Result<PidFileLock, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "color-scheme watcher record has no parent directory".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create color-scheme watcher directory: {error}"))?;
+    let lock_path = path.with_extension("lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .open(&lock_path)
+        .map_err(|error| format!("could not open color-scheme watcher lock: {error}"))?;
+    loop {
+        if unsafe { flock(file.as_raw_fd(), LOCK_EX) } == 0 {
+            return Ok(PidFileLock { _file: file });
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(format!(
+                "could not lock color-scheme watcher record: {error}"
+            ));
+        }
+    }
+}
+
+fn write_pid_file(path: &Path, pid: i32, fingerprint: &str) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "color-scheme watcher record has no file name".to_string())?;
+    for _ in 0..32 {
+        let suffix = NEXT_PID_TEMP.fetch_add(1, Ordering::Relaxed);
+        let mut temporary_name = OsString::from(".");
+        temporary_name.push(file_name);
+        temporary_name.push(format!(".{pid}.{suffix}.tmp"));
+        let temporary = path.with_file_name(temporary_name);
         let mut options = OpenOptions::new();
         options.write(true).create_new(true).mode(0o600);
-        match options.open(path) {
-            Ok(mut file) => {
-                let pid = std::process::id() as i32;
-                writeln!(file, "{pid}\n{fingerprint}")
-                    .map_err(|error| format!("could not record color-scheme watcher: {error}"))?;
-                file.sync_all().map_err(|error| {
-                    format!("could not persist color-scheme watcher record: {error}")
-                })?;
-                return Ok(Some(PidGuard {
-                    path: path.to_path_buf(),
-                    pid,
-                }));
-            }
+        let mut file = match options.open(&temporary) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(format!(
                     "could not create color-scheme watcher record: {error}"
                 ));
             }
+        };
+        let result = (|| {
+            writeln!(file, "{pid}\n{fingerprint}")?;
+            file.sync_all()?;
+            fs::rename(&temporary, path)
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!(
+                "could not persist color-scheme watcher record: {error}"
+            ));
         }
+        return Ok(());
     }
-    Err("another color-scheme watcher is starting for this session".to_string())
+    Err("could not allocate a temporary color-scheme watcher record".to_string())
 }
 
 fn read_pid_file(path: &Path) -> Option<(i32, String)> {
@@ -371,6 +508,12 @@ fn read_pid_file(path: &Path) -> Option<(i32, String)> {
 
 fn remove_pid_file(path: &Path) {
     let _ = fs::remove_file(path);
+}
+
+fn remove_pid_file_if(path: &Path, pid: i32, fingerprint: &str) {
+    if read_pid_file(path).is_some_and(|record| record == (pid, fingerprint.to_string())) {
+        remove_pid_file(path);
+    }
 }
 
 fn pid_file_path() -> Result<PathBuf, String> {
@@ -409,6 +552,40 @@ fn pid_file_path_for(session_dir: &Path, display: &OsStr) -> PathBuf {
 
 fn nonempty_env(name: &str) -> Option<OsString> {
     env::var_os(name).filter(|value| !value.is_empty())
+}
+
+fn wayland_socket_path() -> Result<PathBuf, String> {
+    let display = nonempty_env("WAYLAND_DISPLAY")
+        .ok_or_else(|| "color-scheme watcher requires a Wayland session".to_string())?;
+    let display = PathBuf::from(display);
+    if display.is_absolute() {
+        return Ok(display);
+    }
+    let runtime = nonempty_env("XDG_RUNTIME_DIR")
+        .ok_or_else(|| "color-scheme watcher requires XDG_RUNTIME_DIR".to_string())?;
+    Ok(PathBuf::from(runtime).join(display))
+}
+
+fn session_socket_alive(path: &Path) -> bool {
+    UnixStream::connect(path).is_ok()
+}
+
+unsafe extern "C" fn stop_signal_handler(_: i32) {
+    STOP_REQUESTED.store(true, Ordering::Release);
+}
+
+fn install_stop_handlers() -> Result<(), String> {
+    for signal_number in [SIGNAL_TERM, SIGNAL_INT] {
+        if unsafe { signal(signal_number, stop_signal_handler as *const () as usize) }
+            == SIGNAL_ERROR
+        {
+            return Err(format!(
+                "could not install color-scheme watcher stop handler: {}",
+                io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn executable_fingerprint() -> Result<String, String> {
@@ -493,6 +670,71 @@ fn process_group(pid: i32) -> Option<i32> {
     stat[closing + 1..].split_whitespace().nth(2)?.parse().ok()
 }
 
+fn process_state(pid: i32) -> Option<char> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let closing = stat.rfind(')')?;
+    stat[closing + 1..].trim_start().chars().next()
+}
+
+fn process_group_members(group: i32) -> Result<Vec<i32>, String> {
+    let entries = fs::read_dir("/proc")
+        .map_err(|error| format!("could not inspect watcher process group: {error}"))?;
+    Ok(entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|pid| {
+            process_group(*pid) == Some(group)
+                && process_state(*pid).is_some_and(|state| !matches!(state, 'Z' | 'X'))
+        })
+        .collect())
+}
+
+fn signal_process_group_children(group: i32, signal: i32) -> Result<(), String> {
+    let owner = std::process::id() as i32;
+    for pid in process_group_members(group)? {
+        if pid == owner || process_group(pid) != Some(group) {
+            continue;
+        }
+        if unsafe { kill(pid, signal) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(3) {
+                return Err(format!(
+                    "could not stop color-scheme monitor {pid}: {error}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn wait_for_process_group_children(group: i32, timeout: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if process_group_members(group)?
+            .into_iter()
+            .all(|pid| pid == std::process::id() as i32)
+        {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn stop_process_group_children(group: i32) -> Result<(), String> {
+    signal_process_group_children(group, SIGNAL_TERM)?;
+    if wait_for_process_group_children(group, Duration::from_secs(2))? {
+        return Ok(());
+    }
+    signal_process_group_children(group, SIGNAL_KILL)?;
+    if wait_for_process_group_children(group, Duration::from_secs(2))? {
+        return Ok(());
+    }
+    Err("color-scheme monitor processes did not stop".to_string())
+}
+
 fn terminate_watcher(pid: i32) -> Result<(), String> {
     if !watcher_matches_session(pid) {
         return Ok(());
@@ -506,6 +748,27 @@ fn terminate_watcher(pid: i32) -> Result<(), String> {
                 "could not stop prior color-scheme watcher: {error}"
             ));
         }
+    }
+
+    if group {
+        if wait_for_process_group_children(pid, Duration::from_secs(2))? {
+            return Ok(());
+        }
+        if process_group_members(pid)?.is_empty() {
+            return Ok(());
+        }
+        if unsafe { kill(target, SIGNAL_KILL) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(3) {
+                return Err(format!(
+                    "could not finish stopping prior color-scheme watcher: {error}"
+                ));
+            }
+        }
+        if wait_for_process_group_children(pid, Duration::from_secs(2))? {
+            return Ok(());
+        }
+        return Err("prior color-scheme watcher process group did not stop".to_string());
     }
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -525,9 +788,9 @@ fn terminate_watcher(pid: i32) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_settings_monitor(sender: Sender<WatchEvent>) {
+fn spawn_settings_monitor(sender: Sender<WatchEvent>, stopping: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
-        loop {
+        while !stopping.load(Ordering::Acquire) {
             let portal = portal_has_scheme();
             let mut command = if portal {
                 let mut command = Command::new("gdbus");
@@ -546,25 +809,28 @@ fn spawn_settings_monitor(sender: Sender<WatchEvent>) {
                 command
             };
             let _ = monitor_lines(&mut command, |line| {
-                if ["color-scheme", "accent-color"]
-                    .iter()
-                    .any(|key| line.contains(key))
-                {
-                    let _ = sender.send(WatchEvent::Appearance);
+                if stopping.load(Ordering::Acquire) {
+                    return false;
+                }
+                if let Some(event) = settings_monitor_event(&line) {
+                    let _ = sender.send(event);
                 }
                 true
             });
-            thread::sleep(Duration::from_secs(2));
+            sleep_while_running(&stopping, Duration::from_secs(2));
         }
-    });
+    })
 }
 
-fn spawn_text_monitor(sender: Sender<WatchEvent>) {
+fn spawn_text_monitor(sender: Sender<WatchEvent>, stopping: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
-        loop {
+        while !stopping.load(Ordering::Acquire) {
             let mut command = Command::new("gsettings");
             command.args(["monitor", "org.gnome.desktop.interface"]);
             let _ = monitor_lines(&mut command, |line| {
+                if stopping.load(Ordering::Acquire) {
+                    return false;
+                }
                 if [
                     "text-scaling-factor",
                     "cursor-theme",
@@ -578,9 +844,17 @@ fn spawn_text_monitor(sender: Sender<WatchEvent>) {
                 }
                 true
             });
-            thread::sleep(Duration::from_secs(2));
+            sleep_while_running(&stopping, Duration::from_secs(2));
         }
-    });
+    })
+}
+
+fn sleep_while_running(stopping: &AtomicBool, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while !stopping.load(Ordering::Acquire) && Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(Duration::from_millis(50).min(remaining));
+    }
 }
 
 fn monitor_lines(command: &mut Command, mut on_line: impl FnMut(&str) -> bool) -> io::Result<()> {
@@ -645,30 +919,43 @@ fn portal_response_has_scheme(response: &str) -> bool {
             return false;
         };
         value += index + 1;
-        matches!(bytes[value], b'1' | b'2')
+        matches!(bytes[value], b'0' | b'1' | b'2')
             && bytes
                 .get(value + 1)
                 .is_none_or(|byte| !byte.is_ascii_digit())
     })
 }
 
-fn spawn_accent_monitor(sender: Sender<WatchEvent>) {
+fn settings_monitor_event(line: &str) -> Option<WatchEvent> {
+    ["color-scheme", "accent-color"]
+        .iter()
+        .any(|key| line.contains(key))
+        .then_some(WatchEvent::Appearance)
+}
+
+fn spawn_accent_monitor(sender: Sender<WatchEvent>, stopping: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
-        loop {
+        while !stopping.load(Ordering::Acquire) {
             let paths = accent_watch_paths();
             if paths.is_empty() {
-                thread::sleep(Duration::from_secs(1));
+                sleep_while_running(&stopping, Duration::from_secs(1));
                 continue;
             }
             let mut command = inotify_command(true, &paths);
             let _ = monitor_lines(&mut command, |_| {
-                thread::sleep(Duration::from_millis(500));
+                if stopping.load(Ordering::Acquire) {
+                    return false;
+                }
+                sleep_while_running(&stopping, Duration::from_millis(500));
+                if stopping.load(Ordering::Acquire) {
+                    return false;
+                }
                 let _ = sender.send(WatchEvent::Accent);
                 true
             });
-            thread::sleep(Duration::from_secs(1));
+            sleep_while_running(&stopping, Duration::from_secs(1));
         }
-    });
+    })
 }
 
 fn accent_watch_paths() -> Vec<PathBuf> {
@@ -707,22 +994,25 @@ fn accent_watch_paths() -> Vec<PathBuf> {
     providers
 }
 
-fn spawn_theme_monitor(sender: Sender<WatchEvent>) {
+fn spawn_theme_monitor(sender: Sender<WatchEvent>, stopping: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
         let location = current_theme_location();
         let mut was_present = location.is_dir();
-        loop {
+        while !stopping.load(Ordering::Acquire) {
             let now_present = location.is_dir();
             if theme_location_appearance_should_push(&location, was_present, now_present) {
                 let _ = sender.send(WatchEvent::Theme);
             }
             was_present = now_present;
             let Some(paths) = theme_watch_paths(&location) else {
-                thread::sleep(Duration::from_secs(1));
+                sleep_while_running(&stopping, Duration::from_secs(1));
                 continue;
             };
             let mut command = inotify_command(false, &paths);
             let _ = monitor_lines(&mut command, |line| {
+                if stopping.load(Ordering::Acquire) {
+                    return false;
+                }
                 let changed = PathBuf::from(line);
                 let now_present = location.is_dir();
                 if changed == location {
@@ -753,9 +1043,9 @@ fn spawn_theme_monitor(sender: Sender<WatchEvent>) {
             if !location.is_dir() {
                 was_present = false;
             }
-            thread::sleep(Duration::from_secs(1));
+            sleep_while_running(&stopping, Duration::from_secs(1));
         }
-    });
+    })
 }
 
 fn inotify_command(recursive: bool, paths: &[PathBuf]) -> Command {
@@ -835,8 +1125,10 @@ fn theme_links_exist(location: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::os::unix::fs::symlink;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Barrier, Mutex};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -880,9 +1172,23 @@ mod tests {
     fn portal_monitor_is_selected_only_for_a_supported_appearance_value() {
         assert!(portal_response_has_scheme("u 1"));
         assert!(portal_response_has_scheme("(u 2)"));
-        assert!(!portal_response_has_scheme("u 0"));
+        assert!(portal_response_has_scheme("u 0"));
         assert!(!portal_response_has_scheme("u 10"));
         assert!(!portal_response_has_scheme("error: no portal"));
+    }
+
+    #[test]
+    fn portal_dark_zero_keeps_portal_monitor_for_a_later_light_transition() {
+        assert!(portal_response_has_scheme("u 0"));
+        assert_eq!(
+            settings_monitor_event("Changed (ss) org.freedesktop.appearance color-scheme u 2"),
+            Some(WatchEvent::Appearance)
+        );
+        assert_eq!(
+            settings_monitor_event("Changed (ddd) accent-color"),
+            Some(WatchEvent::Appearance)
+        );
+        assert_eq!(settings_monitor_event("unrelated setting"), None);
     }
 
     #[test]
@@ -934,6 +1240,125 @@ mod tests {
         assert!(!theme_location_appearance_should_push(
             &location, true, true
         ));
+    }
+
+    #[test]
+    fn concurrent_ensure_serializes_stale_record_replacement() {
+        let scratch = Scratch::new();
+        let path = scratch.path("watcher.pid");
+        fs::write(&path, "999\nstale-build\n").unwrap();
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        let starts = Arc::new(AtomicU64::new(0));
+        let applies = Arc::new(AtomicU64::new(0));
+        let workers = 4;
+        let barrier = Arc::new(Barrier::new(workers));
+        let threads = (0..workers)
+            .map(|_| {
+                let path = path.clone();
+                let active = active.clone();
+                let starts = starts.clone();
+                let applies = applies.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    ensure_with(
+                        &path,
+                        "current-build",
+                        |pid| active.lock().unwrap().contains(&pid),
+                        |_| Ok(()),
+                        || {
+                            starts.fetch_add(1, Ordering::SeqCst);
+                            active.lock().unwrap().insert(1001);
+                            Ok(1001)
+                        },
+                        || {
+                            applies.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert_eq!(applies.load(Ordering::SeqCst), workers as u64 - 1);
+        assert_eq!(
+            read_pid_file(&path),
+            Some((1001, "current-build".to_string()))
+        );
+    }
+
+    #[test]
+    fn concurrent_ensure_replaces_an_active_old_build_once() {
+        let scratch = Scratch::new();
+        let path = scratch.path("watcher.pid");
+        fs::write(&path, "1000\nold-build\n").unwrap();
+        let active = Arc::new(Mutex::new(HashSet::from([1000])));
+        let stops = Arc::new(AtomicU64::new(0));
+        let starts = Arc::new(AtomicU64::new(0));
+        let applies = Arc::new(AtomicU64::new(0));
+        let workers = 4;
+        let barrier = Arc::new(Barrier::new(workers));
+        let threads = (0..workers)
+            .map(|_| {
+                let path = path.clone();
+                let active = active.clone();
+                let stops = stops.clone();
+                let starts = starts.clone();
+                let applies = applies.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    ensure_with(
+                        &path,
+                        "new-build",
+                        |pid| active.lock().unwrap().contains(&pid),
+                        |pid| {
+                            stops.fetch_add(1, Ordering::SeqCst);
+                            active.lock().unwrap().remove(&pid);
+                            Ok(())
+                        },
+                        || {
+                            starts.fetch_add(1, Ordering::SeqCst);
+                            active.lock().unwrap().insert(1001);
+                            Ok(1001)
+                        },
+                        || {
+                            applies.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert_eq!(applies.load(Ordering::SeqCst), workers as u64 - 1);
+        assert_eq!(read_pid_file(&path), Some((1001, "new-build".to_string())));
+    }
+
+    #[test]
+    fn old_watcher_drop_preserves_a_newer_pid_record() {
+        let scratch = Scratch::new();
+        let path = scratch.path("watcher.pid");
+        write_pid_file(&path, 1001, "new-build").unwrap();
+
+        drop(PidGuard {
+            path: path.clone(),
+            pid: 1000,
+            fingerprint: "old-build".to_string(),
+        });
+
+        assert_eq!(read_pid_file(&path), Some((1001, "new-build".to_string())));
     }
 }
 
