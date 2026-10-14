@@ -33,6 +33,7 @@ exec(src[:src.index('\ntry:\n')])  # its helpers: ipc, wait, check, setup, press
 results = []
 FOCUSED_PEEKS = False  # WK13: the focused window never moves for avoidance (not yet decided otherwise)
 STRIP_D, STRIP_L, EDGE = 24, 100, 2   # EDGE: the frame's own antialiased outline
+STRIP_SCALE = 1.0  # WK13 scales the required strip by the active desktop text scale.
 COLORS = {'Small': '#e02828', 'Big': '#2850c8', 'Other': '#28b450', 'Cover': '#c8a028', 'Probe': '#c828b4'}
 NEUTRALS = ['#181818', '#2a2a2a', '#505058', '#6e6e78', '#8c8c96', '#b4b4be', '#e6e6ee']
 CENTER_PCT = 33.333
@@ -124,7 +125,7 @@ def strip_of(rows, color, size):
             if current: return True
         return False
     fw, fh = size
-    d, l = STRIP_D - EDGE, STRIP_L - EDGE
+    d, l = STRIP_D * STRIP_SCALE - EDGE, STRIP_L * STRIP_SCALE - EDGE
     return (fits(min(l, fw - EDGE), min(d, fh - EDGE)) or fits(min(d, fw - EDGE), min(l, fh - EDGE))), count
 
 
@@ -139,8 +140,10 @@ def observe(name, phase, covered, title, quiet=False):
     found, count = strip_of(labels_of(image), COLORS[title], (x2 - x1, y2 - y1))
     h = hint(covered)
     row = {'case': name, 'phase': phase, 'strip_in_pixels': found, 'pixels': count,
+           'text_scale': STRIP_SCALE,
            'scene_frame': [round(v, 1) for v in (x1, y1, x2, y2)],
-           'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule')}}
+           'diagnostic': {k: h.get(k) for k in ('outcome', 'rung', 'rule', 'solve_frame', 'drawn',
+               'dx', 'dy', 'target_dx', 'target_dy', 'room', 'hint_size', 'clearance', 'visible_fraction')}}
     if not quiet:
         results.append(row)
         print(f'      {name} [{phase}]: {json.dumps(row)}', flush=True)
@@ -191,6 +194,9 @@ try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/window_avoidance_always': True,
         'place/mode': 'pointer', 'scottland/goo_shine': 0.0, 'scottland/goo_relief': 0.5,
         'scottland/goo_overlap_film': 0.0})
+    STRIP_SCALE = float(hints()['hint_text_scale'])
+    if not math.isfinite(STRIP_SCALE) or STRIP_SCALE <= 0:
+        raise RuntimeError(f'invalid hint text scale: {STRIP_SCALE}')
     out = ipc('window-rules/list-outputs')[0]['geometry']
     W, H = out['width'], out['height']
     S = launch_colored('Small', 400, 300); B = launch_colored('Big', 760, 560); C = launch_colored('Other', 460, 360)
@@ -259,10 +265,34 @@ try:
 
     def grab_small_while_peeking():
         # Cover it first, so it peeks; then grab its strip where it is drawn and drop it (WK27 commit).
+        # The preceding soloed-cover case can leave Big represented by a widget. Present it
+        # explicitly and restore the fixture geometry so this path starts with a real cover view.
+        ipc('scottland/present', {'window': B})
+        until(lambda: (not layout(B).get('widgetized', False) and layout(B).get('applied_scale', 0) >= .99,
+                       layout(B)), 6, 'Big presented as a full window before the grabbed fixture')
+        place(B, 40, 60, 760, 560)
+        ipc('window-rules/focus-view', {'id': B})
+        until(lambda: (focused_id() == B, focused_id()), 3, 'Big focused before the grabbed fixture')
+        settle([B, S, C])
+
+        def full_cover_window_ready():
+            state = layout(B); frame = scene(B); g = geometry(B)
+            return (not state.get('widgetized', False) and abs(state.get('applied_scale', 0) - 1.0) < .02 and
+                    focused_id() == B and
+                    abs((frame[2] - frame[0]) - g['width']) <= 24 and
+                    abs((frame[3] - frame[1]) - g['height']) <= 24,
+                    {'widgetized': state.get('widgetized'), 'applied_scale': state.get('applied_scale'),
+                     'scene_size': [frame[2] - frame[0], frame[3] - frame[1]],
+                     'geometry_size': [g['width'], g['height']]})
+        until(full_cover_window_ready, 3, 'Big is drawn at full window size before covering Small')
+
         x1, y1, x2, y2 = scene(S)
         pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2)); release(); settled()
         found, row = observe('grabbed-while-peeking', 'peeking-before-grab', S, 'Small')
         if not found: raise Unready(f'Small does not peek before the grab: {row}')
+        drawn_area = (row['scene_frame'][2] - row['scene_frame'][0]) * (row['scene_frame'][3] - row['scene_frame'][1])
+        if row['pixels'] > drawn_area * .5:
+            raise Unready(f'Small is mostly exposed, so the cover fixture was not established: {row}')
         sx1, sy1, sx2, sy2 = scene(S); fx = scene(B)
         gx, gy = (sx1 + 8, (sy1 + sy2) / 2) if sx1 < fx[0] - 10 else (sx2 - 8, (sy1 + sy2) / 2) if sx2 > fx[2] + 10 else \
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
@@ -270,7 +300,26 @@ try:
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
         until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
         # Clear the cover off it again, back where it started, so the case's own cover starts clear.
-        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2)); release(); settled()
+        # Pointer focus is active for this fixture; move off Small before asking to focus B.
+        bx1, by1, bx2, by2 = scene(B)
+        pointer((bx1 + bx2) / 2, (by1 + by2) / 2)
+        ipc('window-rules/focus-view', {'id': B})
+        def reset_drag_ready():
+            drag = ipc('scottland/desktop-model').get('drag', {})
+            focused = focused_id()
+            return (focused == B and drag.get('dragged', 0) in (0, None),
+                    {'expected_cover': B, 'focused': focused, 'dragged': drag.get('dragged')})
+        until(reset_drag_ready, 3, 'cover focused and prior grab cleared for reset drag')
+        pointer_drag(B, (40 + 760 / 2, 60 + 560 / 2))
+        def reset_drag_is_b():
+            drag = ipc('scottland/desktop-model').get('drag', {})
+            focused = focused_id()
+            state = {'focused': focused, 'dragged': drag.get('dragged')}
+            return (focused == B and drag.get('dragged') == B, state)
+        reset_drag = until(reset_drag_is_b, 3, 'reset pointer drag belongs to focused cover B')
+        check(reset_drag['focused'] == B and reset_drag['dragged'] == B,
+              'cover B is the actual focused and dragged window during the reset')
+        release(); settled()
 
     def solo_big():
         ipc('window-rules/focus-view', {'id': B})

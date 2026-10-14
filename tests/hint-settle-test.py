@@ -29,9 +29,11 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -45,6 +47,12 @@ for tool in (recorder_tool, 'ffmpeg', 'ffprobe'):
 sock = socket.socket(socket.AF_UNIX)
 sock.settimeout(8)
 sock.connect(os.environ['WAYFIRE_SOCKET'])
+session_palette = (Path(os.environ['SCOTTLAND_SESSION_DIR']) /
+                   (os.environ['WAYLAND_DISPLAY'] + '.palette.json'))
+session_palette_existed = False
+session_palette_before = None
+session_palette_mode = None
+session_palette_changed = False
 clients = []
 recorder = None
 held = set()
@@ -140,18 +148,42 @@ def at_rest():
                 for h in state['hints'])) and state
 
 
-def settled_in_mode(count):
-    """Every hint shown at full size, nothing moving, the solve finished."""
-    state = at_rest()
-    return (state and state['active'] and len(state['hints']) == count and
-            all(h.get('visible') and abs(h.get('pop', 0) - 1) < 1e-3 for h in state['hints'])) and state
+def settled_hints(count):
+    """Wait for the actual badge geometry to remain settled before recording it as final."""
+    previous = None
+    stable_since = None
+
+    def ready():
+        nonlocal previous, stable_since
+        state = at_rest()
+        if not (state and state['active'] and len(state['hints']) == count and
+                not state['hint_step_animation'] and not state['hint_step_offset'] and
+                not state['occlusion_pending'] and all(
+                    h.get('visible') and abs(h.get('pop', 0) - 1) < 1e-3 and 'badge' in h
+                    for h in state['hints'])):
+            previous = None
+            stable_since = None
+            return False
+
+        positions = tuple((h['window'], *(round(h['badge'][key], 3) for key in ('x', 'y', 'size')))
+                          for h in state['hints'])
+        now = time.monotonic()
+        if positions != previous:
+            previous = positions
+            stable_since = now
+            return False
+        if stable_since is None or now - stable_since < .25:
+            return False
+        return state
+
+    return ready
 
 
 # ---------------------------------------------------------------------------- frames
 def frames(video):
     """Decoded frames, as presented and in order (no duplicates or drops added)."""
-    process = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', str(video), '-fps_mode', 'passthrough',
-        '-f', 'rawvideo', '-pix_fmt', 'rgb0', '-'], stdout=subprocess.PIPE)
+    process = subprocess.Popen(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(video), '-fps_mode', 'passthrough',
+        '-f', 'rawvideo', '-pix_fmt', 'rgb0', '-'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
     size = W * H * 4
     try:
         while True:
@@ -173,12 +205,43 @@ def frame_times(video):
         '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', str(video)], text=True).split()]
 
 
-def pixel(frame, x, y):
-    i = (y * W + x) * 4
+def stop_recorder():
+    """Stop the owned recorder with bounded escalation, preserving its evidence."""
+    global recorder
+    if recorder is None:
+        return
+    process = recorder
+    forced = False
+    if process.poll() is None:
+        try:
+            process.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            forced = True
+            try:
+                process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+    recorder = None
+    print(f'recorder_stop_exit={process.returncode}; escalated={str(forced).lower()}', flush=True)
+
+
+def pixel(frame, x, y, channels=4, flip_y=False):
+    if flip_y:
+        y = H - 1 - y
+    i = (y * W + x) * channels
     return frame[i], frame[i + 1], frame[i + 2]
 
 
-def letter_color(frame, hint):
+def letter_color(frame, hint, channels=4, flip_y=False):
     """The opaque letter color of a settled hint, read from its pixels: the commonest color
     inside its circle that lies near its hint color."""
     b = hint['badge']
@@ -190,7 +253,7 @@ def letter_color(frame, hint):
         for x in range(max(0, int(cx - r)), min(W, int(cx + r) + 1)):
             if (x - cx) ** 2 + (y - cy) ** 2 > r * r:
                 continue
-            p = pixel(frame, x, y)
+            p = pixel(frame, x, y, channels, flip_y)
             if max(abs(p[i] - target[i]) for i in range(3)) <= 40:
                 counts[p] = counts.get(p, 0) + 1
     return max(counts, key=counts.get) if counts else None
@@ -239,8 +302,34 @@ def outline_pixels(frame, hint, discs):
                for x, y in points)
 
 
+def decorative_edge_pixel(index, discs, outlines):
+    """Ignore same-dye circle ripple and window-outline strokes in the letter oracle.
+
+    The actual letter glyphs are tested by their colored pixels inside each settled badge and
+    by the absence of those glyph pixels elsewhere. Circle rims/ripple and the separately
+    tested window outlines use the same dye, so their measured edge bands are not letters.
+    """
+    x, y = index % W, index // W
+    edge = 8  # output pixels; includes the observed ripple outside the drawn rim
+    for cx, cy, r in discs.values():
+        if abs(math.hypot(x - cx, y - cy) - r) <= edge:
+            return True
+    for hint in outlines.values():
+        frame = hint['outline_frame']
+        x1, y1 = frame['x'], frame['y']
+        x2, y2 = x1 + frame['width'], y1 + frame['height']
+        near_horizontal = x1 - edge <= x <= x2 + edge and (
+            abs(y - y1) <= edge or abs(y - y2) <= edge)
+        near_vertical = y1 - edge <= y <= y2 + edge and (
+            abs(x - x1) <= edge or abs(x - x2) <= edge)
+        if near_horizontal or near_vertical:
+            return True
+    return False
+
+
 def judge(label, video, final, baseline):
     """Every recorded frame, by its pixels, against where each hint settled."""
+    failures_before = failed
     hints = {h['hint']: h for h in final['hints']}
     times = frame_times(video)
     check(len(times) >= 10, f'{label}: the recording captured the entry',
@@ -256,6 +345,7 @@ def judge(label, video, final, baseline):
             colors[name] = color
     discs = {name: (h['badge']['x'] + h['badge']['size'] / 2, h['badge']['y'] + h['badge']['size'] / 2,
                     h['badge']['size'] / 2) for name, h in hints.items()}
+    outlines = {name: h for name, h in hints.items() if h.get('outline') and h.get('outline_frame')}
     # Calibrate absence before pressing Alt, against the same measured final letter colors.
     absent = letter_pixels(baseline, colors)
     noise = {name: sum((i % W - discs[name][0]) ** 2 + (i // W - discs[name][1]) ** 2 <= discs[name][2] ** 2
@@ -263,7 +353,6 @@ def judge(label, video, final, baseline):
     outside_noise = {name: len(pixels) - noise[name] for name, pixels in absent.items()}
     inside_series = {name: [] for name in colors}
     outside_series = {name: [] for name in colors}
-    outlines = {name: h for name, h in hints.items() if h.get('outline') and h.get('outline_frame')}
     check(bool(outlines), f'{label}: fixture includes an occluded window outline')
     outline_series = {name: [] for name in outlines}
     outline_noise = {name: outline_pixels(baseline, h, discs) for name, h in outlines.items()}
@@ -272,7 +361,9 @@ def judge(label, video, final, baseline):
             cx, cy, r = discs[name]
             inside = sum((i % W - cx) ** 2 + (i // W - cy) ** 2 <= r * r for i in pixels)
             inside_series[name].append(inside)
-            outside_series[name].append(len(pixels) - inside)
+            outside_series[name].append(sum(
+                (i % W - cx) ** 2 + (i // W - cy) ** 2 > r * r and
+                not decorative_edge_pixel(i, discs, outlines) for i in pixels))
         for name, h in outlines.items():
             outline_series[name].append(outline_pixels(frame, h, discs))
     report = {'times': times, 'colors': {k: list(v) for k, v in colors.items()},
@@ -303,7 +394,7 @@ def judge(label, video, final, baseline):
         ok_all &= ok
         check(ok, f'{label}: outline {name.upper()} appears once on its settled edges and stays',
               f'first visible frame {first}, absence threshold {threshold}, disappearances: {dips[:8]}')
-    return ok_all
+    return failed == failures_before
 
 
 def record_entry(label, count):
@@ -322,30 +413,41 @@ def record_entry(label, count):
     wait(lambda: 'Output #0' in log.read_text(), 'the recorder to start')
     key('LEFTALT', True)
     wait(lambda: ipc('scottland/hints')['active'], 'Window mode')
-    final = wait(lambda: settled_in_mode(count), 'every hint to settle')
+    final = wait(settled_hints(count), 'every hint position to remain settled')
     final['views'] = list(views().values())
+    (art / (label + '-final.json')).write_text(json.dumps(final, indent=1))
     # Frames presented after the settled state: a paced pointer gesture along the empty top
     # edge. The judge requires the last recorded frame to show every settled hint.
     for x in range(600, 690, 6):
         ipc('stipc/move_cursor', {'x': x, 'y': 4})
         time.sleep(.02)  # paces the gesture
-    recorder.send_signal(signal.SIGINT)
-    recorder.wait(timeout=60)
-    recorder = None
+    time.sleep(.1)  # let wf-recorder copy the last naturally rendered frame
+    stop_recorder()
     key('LEFTALT', False)
     wait(lambda: not ipc('scottland/hints')['active'], 'Window mode to end')
-    (art / (label + '-final.json')).write_text(json.dumps(final, indent=1))
     return video, final, baseline
 
 
 try:
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'place/mode': 'pointer',
         'scottland/window_mode_tint': 0})  # a flat window under the circles: letters stand out
+    # The first scenario uses always-on avoidance. Enable it before the palette write so the
+    # private palette watcher refreshes the real session palette before the visual fixture starts.
+    ipc('wayfire/set-config-options', {'scottland/window_avoidance_always': True})
     palette = {'scheme': 'dark', 'background': '#1f232c', 'foreground': '#d8deea',
                'accent': '#81a1c1', 'text_scale': .82, 'reduced_motion': False}
     palette_file = art / 'palette.json'
     palette_file.write_text(json.dumps(palette))
-    session_palette = Path(os.environ['XDG_RUNTIME_DIR']) / 'scottland' / (os.environ['WAYLAND_DISPLAY'] + '.palette.json')
+    if session_palette.is_symlink():
+        raise RuntimeError(f'refusing to replace symlinked session palette: {session_palette}')
+    session_palette_existed = session_palette.exists()
+    if session_palette_existed:
+        palette_info = session_palette.stat()
+        if not stat.S_ISREG(palette_info.st_mode):
+            raise RuntimeError(f'session palette is not a regular file: {session_palette}')
+        session_palette_before = session_palette.read_bytes()
+        session_palette_mode = stat.S_IMODE(palette_info.st_mode)
+    session_palette_changed = True
     session_palette.write_text(json.dumps(palette))
     wait(lambda: abs(ipc('scottland/hints')['hint_text_scale'] - .82) < 1e-6, 'the palette')
     layout = [('W0', 300, 200, 10, 555), ('W1', 300, 200, 10, 625), ('W2', 300, 200, 10, 680),
@@ -387,13 +489,37 @@ try:
             wait(lambda: at_rest() and collapsed(), 'the desktop to come to rest')
             video, final, baseline = record_entry(label, len(layout))
             if judge(label, video, final, baseline):
-                video.unlink()  # kept only when a check failed
+                if os.environ.get('SCOTTLAND_KEEP_HINT_VIDEO') != '1':
+                    video.unlink()  # kept only when a check failed, unless evidence retention is requested
             scenarios += 1
     ipc('scottland/hints', {'slice_units': 0})
     print(f'{scenarios} scenarios (always-on avoidance on/off x whole/sliced solve), '
           f'{len(layout)} hints each: {passed} checks passed, {failed} failed', flush=True)
 finally:
     # Each cleanup step continues even when the compositor or recorder has already gone.
+    if session_palette_changed:
+        try:
+            if session_palette_existed:
+                restore_fd, restore_name = tempfile.mkstemp(
+                    prefix=f'.{session_palette.name}.restore-', dir=session_palette.parent)
+                try:
+                    with os.fdopen(restore_fd, 'wb') as restore:
+                        restore.write(session_palette_before)
+                    os.chmod(restore_name, session_palette_mode)
+                    os.replace(restore_name, session_palette)
+                finally:
+                    Path(restore_name).unlink(missing_ok=True)
+                if (session_palette.read_bytes() != session_palette_before or
+                        stat.S_IMODE(session_palette.stat().st_mode) != session_palette_mode):
+                    raise RuntimeError('session palette bytes or mode differ from their pre-test state')
+            else:
+                session_palette.unlink(missing_ok=True)
+                if os.path.lexists(session_palette):
+                    raise RuntimeError('session palette was absent before the test but remains afterward')
+        except Exception as error:
+            # This private-session cleanup protects later test invocations; it is not a product
+            # acceptance result. The owner-scoped headless stop removes the isolated session.
+            print(f'could not restore the private session palette before stop: {error}', file=sys.stderr)
     if recorder and recorder.poll() is None:
         try: recorder.send_signal(signal.SIGINT)
         except ProcessLookupError: pass
