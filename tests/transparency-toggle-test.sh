@@ -24,6 +24,18 @@ retain_receipt() {
     return 1
   }
 }
+retain_widget_log() {
+  local src="$headless/state/scottland/widgets.log"
+  [[ -e $src || -L $src ]] || return 0
+  if [[ -L $src || ! -f $src ]]; then
+    printf 'refused non-regular widget log\n' >>"$art/receipt-retention.log"
+    return 1
+  fi
+  cp -- "$src" "$art/widgets.log" || {
+    printf 'failed to retain widget log\n' >>"$art/receipt-retention.log"
+    return 1
+  }
+}
 cleanup() {
   local run_status=$? stop_status=0 receipt
   trap - EXIT
@@ -31,6 +43,7 @@ cleanup() {
   for receipt in launch-owner.json launch-terminal.json .scottland-headless-mode; do
     retain_receipt "$receipt" || true
   done
+  retain_widget_log || true
   if tests/headless.sh stop >"$art/headless-stop.log" 2>&1; then
     stop_status=0
   else
@@ -40,6 +53,7 @@ cleanup() {
   for receipt in launch-owner.json launch-terminal.json .scottland-headless-mode; do
     retain_receipt "$receipt" || true
   done
+  retain_widget_log || true
   rm -rf -- "$SCOTTLAND_HEADLESS_DIR" "$tmp"
   exit "$run_status"
 }
