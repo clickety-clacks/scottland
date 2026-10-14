@@ -296,7 +296,8 @@ try:
     key('LEFTALT', False)
     wait(lambda: not hints()['active'], 'Window mode exits')
     rendered_unfocused = Shot('translucent-unfocused')
-    expected_unfocused = blend(fg_visible_b, desktop_b, .96)
+    # Use the same-run solid frame validated by the opaque-override pixel check.
+    expected_unfocused = blend(opaque_foreground, desktop_b, .96)
     check('0.96 unfocused override matches rendered pixel blend',
           distance(rendered_unfocused.pixel(visible_b_x, visible_b_y), expected_unfocused) <= 5)
 
