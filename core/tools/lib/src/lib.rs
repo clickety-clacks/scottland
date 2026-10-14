@@ -15,3 +15,4 @@
 pub mod capture;
 pub mod dirs;
 pub mod session;
+pub mod terminal_cwd;
