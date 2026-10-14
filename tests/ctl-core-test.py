@@ -381,25 +381,58 @@ def run_checks(session):
     ).get("value", "[]")
     if not isinstance(original_zones, str):
         original_zones = json.dumps(original_zones)
-    test_zones = [{
-        "make": "Ctl test",
-        "model": "Screen zones",
-        "serial": "ctl-core-fixture",
-        "center_width": 44.0,
-        "rail_width": 3.0,
-        "blend_width": 60.0,
-        "min_scale": 0.25,
-        "max_scale": 1.0,
-        "scale_curve": "0:1 0.5:0.65 1:0.25",
-    }]
-    encoded_zones = json.dumps(test_zones, separators=(",", ":"))
-    set_zones = session.run(CTL, "set", "screen_zones", encoded_zones)
-    zones_get = session.run(CTL, "get")
-    zones_values = json_value(zones_get.stdout) if zones_get.returncode == 0 else None
-    check("get parses screen_zones as a JSON array",
-          set_zones.returncode == 0 and isinstance(zones_values, dict)
-          and zones_values.get("screen_zones") == test_zones,
-          zones_get.stdout)
+    def zones_for(serial, center_width):
+        return [{
+            "make": "Ctl test",
+            "model": "Screen zones",
+            "serial": serial,
+            "center_width": center_width,
+            "rail_width": 3.0,
+            "blend_width": 60.0,
+            "min_scale": 0.25,
+            "max_scale": 1.0,
+            "scale_curve": "0:1 0.5:0.65 1:0.25",
+        }]
+
+    def current_zones():
+        result = session.run(CTL, "get")
+        values = json_value(result.stdout) if result.returncode == 0 else None
+        return values.get("screen_zones") if isinstance(values, dict) else None
+
+    def wait_for_zones(expected):
+        def observe():
+            value = current_zones()
+            return value if value == expected else None
+        return session.wait(observe, timeout=5)
+
+    direct_zones = zones_for("ctl-core-direct", 44.0)
+    encoded_direct_zones = json.dumps(direct_zones, separators=(",", ":"))
+    direct_write = session.run(CTL, "set", "screen_zones", encoded_direct_zones)
+    direct_ready, direct_result = wait_for_zones(direct_zones)
+    check("get normalizes screen_zones and direct set writes the JSON array",
+          direct_write.returncode == 0 and direct_ready, direct_result)
+
+    stdin_zones = zones_for("ctl-core-stdin", 45.0)
+    encoded_stdin_zones = json.dumps(stdin_zones, separators=(",", ":"))
+    stdin_write = session.run(
+        CTL, "stdin", input=f"screen_zones {encoded_stdin_zones}\nflush\n"
+    )
+    stdin_ready, stdin_result = wait_for_zones(stdin_zones)
+    check("stdin line writes preserve screen_zones JSON normalization",
+          stdin_write.returncode == 0 and "flushed" in stdin_write.stdout
+          and not stdin_write.stderr and stdin_ready,
+          (stdin_result, stdin_write.stderr))
+
+    batch_zones = zones_for("ctl-core-batch", 46.0)
+    encoded_batch_zones = json.dumps(batch_zones, separators=(",", ":"))
+    batch = json.dumps({"screen_zones": encoded_batch_zones}, separators=(",", ":"))
+    batch_write = session.run(CTL, "stdin", input=f"batch {batch}\nflush\n")
+    batch_ready, batch_result = wait_for_zones(batch_zones)
+    check("stdin batch writes preserve screen_zones JSON normalization",
+          batch_write.returncode == 0 and "flushed" in batch_write.stdout
+          and not batch_write.stderr and batch_ready,
+          (batch_result, batch_write.stderr))
+
     malformed_zones = session.run(CTL, "set", "screen_zones", "not-json")
     malformed_get = session.run(CTL, "get")
     malformed_values = json_value(malformed_get.stdout) if malformed_get.returncode == 0 else None
@@ -407,7 +440,16 @@ def run_checks(session):
           malformed_zones.returncode == 0 and isinstance(malformed_values, dict)
           and malformed_values.get("screen_zones") == [],
           malformed_get.stdout)
-    session.run(CTL, "set", "screen_zones", str(original_zones))
+    try:
+        parsed_original_zones = json.loads(original_zones or "[]")
+    except (TypeError, json.JSONDecodeError):
+        parsed_original_zones = []
+    if not isinstance(parsed_original_zones, list):
+        parsed_original_zones = []
+    restore_zones = session.run(CTL, "set", "screen_zones", str(original_zones))
+    restored, restored_zones = wait_for_zones(parsed_original_zones)
+    check("screen_zones fixture restores its original value",
+          restore_zones.returncode == 0 and restored, restored_zones)
 
     original_speed = session.ipc(
         "wayfire/get-config-option", {"option": "input/touchpad_scroll_speed"}
