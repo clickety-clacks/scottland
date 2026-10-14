@@ -23,6 +23,7 @@ ShellRoot {
   readonly property string ctl: Quickshell.env("SCOTTLAND_CTL") || "scottland-ctl"
   readonly property string layoutFile: Quickshell.env("SCOTTLAND_LAYOUT_FILE")
     || (Quickshell.env("HOME") + "/.config/scottland/layout.ini")
+  property real touchpadScrollSpeed: 0.2
 
   readonly property var defaults: ({ center_width: 33.333, rail_width: 2, blend_width: 40,
     curve: [{ x: 0, y: 1 }, { x: 1, y: 0.2 }] })
@@ -39,7 +40,7 @@ ShellRoot {
     { name: "goo_wave_height", hint: "How much ripples move the goo edge. Higher makes bigger waves; zero hides their motion.", title: "Wave height", initial: 0.55, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_spread", hint: "How quickly nearby dye colors mix. Higher blends faster; lower keeps colors more local.", title: "Dye spread", initial: 0.45, low: 0, high: 0.9, step: 0.01 },
     { name: "goo_swirl", hint: "How strongly dye flows around in goo. Higher stirs more; zero stops the swirling.", title: "Dye swirl", initial: 0.9, low: 0, high: 3, step: 0.05 },
-    { name: "goo_release", hint: "How quickly a window renews its dye. Higher shows state colors sooner; lower lets old colors linger.", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
+    { name: "goo_release", hint: "How quickly windows release state color and goo picks up color from beneath. Higher renews dye sooner; lower lets old colors linger.", title: "Dye release", initial: 0.06, low: 0.005, high: 0.3, step: 0.005 },
     { name: "goo_shine", hint: "Brightness of reflected highlights. Higher looks glossier; zero removes the shine.", title: "Shine", initial: 0.75, low: 0, high: 1.5, step: 0.01 },
     { name: "goo_relief", hint: "Apparent depth and background bending. Higher looks more rounded; lower looks flatter.", title: "Relief", initial: 5, low: 0.5, high: 12, step: 0.1 },
     { name: "goo_depth", hint: "Height of the rounded liquid above the screen, in logical pixels. Higher makes a deeper lens; zero flattens it.", title: "Liquid depth", initial: 6, low: 0, high: 20, step: 0.1 },
@@ -401,6 +402,8 @@ ShellRoot {
         let values = {}
         try { values = JSON.parse(text) } catch (e) {}
         root.unsupported = values.unsupported || []
+        const inputSpeed = Number(values.touchpad_scroll_speed)
+        if (Number.isFinite(inputSpeed) && inputSpeed >= 0) root.touchpadScrollSpeed = inputSpeed
         root.outputs = Array.isArray(values.outputs) ? values.outputs : []
         const file = root.layoutState(saved.text())
         root.layoutSeen = file
@@ -456,6 +459,27 @@ ShellRoot {
   // The files are the source of truth (docs/rulings.md, "File wins"). An edit to one while the
   // panel is open takes over each setting whose line it changed, in the panel, in the running
   // session and as the value Cancel goes back to; unsaved changes to other settings stay.
+  // The compositor can change touchpad speed while Settings stays open. Keep
+  // scroll conversion in sync without reloading the editable Settings state.
+  Process {
+    id: inputSpeedReader
+    command: [root.ctl, "option", "input/touchpad_scroll_speed"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        let value
+        try { value = JSON.parse(text) } catch (e) { return }
+        const speed = Number(value)
+        if (Number.isFinite(speed) && speed >= 0) root.touchpadScrollSpeed = speed
+      }
+    }
+  }
+  Timer {
+    interval: 500
+    repeat: true
+    running: true
+    onTriggered: if (!inputSpeedReader.running) inputSpeedReader.running = true
+  }
+
   FileView {
     id: saved
     path: root.layoutFile
@@ -783,13 +807,15 @@ ShellRoot {
       if(Quickshell.env("SCOTTLAND_SETTINGS_TEST") !== "1" || !root.loaded)return "{}"
       return JSON.stringify({title:Qt.application.name,heading:heading.text,screen:settingsWindow.screen.name,tab:root.tab,
       panel:{x:settingsWindow.x,y:settingsWindow.y,width:settingsWindow.width,height:settingsWindow.height},
-      viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
+      viewport:root.testRect(gooScroll), scroll:gooScroll.contentY,touchpadSpeed:root.touchpadScrollSpeed,wheelVelocity:gooScroll.wheelVelocity,flicking:gooScroll.flicking,touchVelocity:gooScroll.verticalVelocity, contentHeight:gooScroll.contentHeight,
       zoneScope:Object.assign(root.testRect(zoneScope),{all:root.testRect(allScreensChoice),this:root.testRect(thisScreenChoice),reset:root.testRect(resetTargetZones),scope:root.editScope,note:zoneScopeNote.text}),
       target:{output:root.targetOutputName,identity:root.targetIdentity,own:root.targetHasOwnZones,available:root.thisScreenAvailable},
       zoneProfile:root.editorProfile(),screenZones:root.screenZones,outputs:root.outputs,
       zones:Object.assign(root.testRect(zoneSettings),{hinted:zoneSettings.hinted,hint:zoneSettings.visibleHint}),
       goo:Object.assign(root.testRect(gooSettings),{hinted:gooSettings.hinted,hint:gooSettings.visibleHint,
-        edgeControls:root.edgeControls,rowHeight:gooSettings.rowHeight,rows:gooSettings.rows.map(row=>row.id)}),
+        hintText:gooSettings.visibleHint && gooSettings.hinted>=0 ? gooSettings.rows[gooSettings.hinted].hint || "" : "",
+        selected:gooSettings.selected,edgeControls:root.edgeControls,rowHeight:gooSettings.rowHeight,
+        rows:gooSettings.rows.map(row=>row.id)}),
       attentionColor:{theme:root.testRect(attentionTheme),warm:root.testRect(attentionWarm),cool:root.testRect(attentionCool)},
       editor:root.curveProbe(editor), movement:root.coastProbe(movementEditor),resize:root.coastProbe(resizeEditor),
       playground:Object.assign(root.testRect(playground),{distance:playground.distance,velocity:playground.vx,
@@ -1072,6 +1098,7 @@ ShellRoot {
         CoastView {
           id: gooScroll
           design:theme
+          touchpadScrollSpeed: root.touchpadScrollSpeed
           Layout.fillWidth: true
           Layout.fillHeight: true
           Layout.minimumHeight: 200

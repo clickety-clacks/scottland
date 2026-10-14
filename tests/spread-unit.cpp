@@ -442,6 +442,286 @@ static void fixtures()
     }
 }
 
+// ---------------------------------------------------------------- Gather fixtures (GA7-GA12, GA15, GA18)
+// Keep these named and small so the runner can execute the Gather contract without the much
+// broader solo fuzz, crowding, and timing suite.
+static snapshot_t gather_screen()
+{
+    auto s = screen(1920, 1080);
+    s.mode = scottland::spread::mode_t::gather;
+    s.screen_width = 1920; s.screen_height = 1080;
+    s.workarea = {0, 0, 1920, 1080};
+    s.padding = 16; s.center_half = 320; s.rail_width = 40;
+    s.scale = [] (double) { return 1.0; };
+    s.windows.clear(); s.fixed.clear();
+    return s;
+}
+
+static void add_gather_resident(snapshot_t& s, uint64_t id, double w, double h, double inner_distance,
+    double cy, bool left = true)
+{
+    double border = left ? s.screen_width / 2 - s.center_half : s.screen_width / 2 + s.center_half;
+    double cx = left ? border - inner_distance - w / 2 : border + inner_distance + w / 2;
+    s.windows.push_back(window(id, role_t::resident, w, h, cx, cy));
+}
+
+static final_t gather_final(const snapshot_t& s, const result_t& r, uint64_t id)
+{
+    return final_layout(s, r).at(id);
+}
+
+static const window_t& gather_input(const snapshot_t& s, uint64_t id)
+{
+    auto i = std::find_if(s.windows.begin(), s.windows.end(), [=] (const window_t& w) { return w.id == id; });
+    if (i == s.windows.end()) std::abort();
+    return *i;
+}
+
+static double gather_inner_distance(const snapshot_t& s, const window_t& w, const final_t& f)
+{
+    bool left = w.cx < s.screen_width / 2;
+    double border = left ? s.screen_width / 2 - s.center_half : s.screen_width / 2 + s.center_half;
+    double inner = left ? f.cx + w.width * f.s / 2 : f.cx - w.width * f.s / 2;
+    return std::max(0.0, left ? border - inner : inner - border);
+}
+
+static bool same_gather_result(const result_t& a, const result_t& b)
+{
+    if (a.status != b.status || a.complete != b.complete || a.checkpoint != b.checkpoint || a.reason != b.reason ||
+        a.work != b.work || a.arrangements != b.arrangements || a.overlaps != b.overlaps ||
+        a.score.overlap != b.score.overlap || a.moves.size() != b.moves.size()) return false;
+    for (size_t i = 0; i < a.moves.size(); ++i)
+    {
+        const auto& x = a.moves[i], &y = b.moves[i];
+        if (x.id != y.id || x.cx != y.cx || x.cy != y.cy || x.scale != y.scale || x.pin != y.pin) return false;
+    }
+    return true;
+}
+
+static snapshot_t gather_column()
+{
+    auto s = gather_screen();
+    // All start on the border, so the tie order is midline distance then id.
+    add_gather_resident(s, 20, 300, 300, 0, 540);
+    add_gather_resident(s, 30, 300, 300, 0, 800);
+    add_gather_resident(s, 10, 300, 300, 0, 200);
+    return s;
+}
+
+static void gather_ga7_ordering()
+{
+    // The smaller original inner distance wins even when the other window has the lower id and
+    // is nearer the midline. Once distances tie, midline distance wins over id; an exact tie uses id.
+    {
+        auto s = gather_screen();
+        add_gather_resident(s, 1, 300, 200, 100, 540);
+        add_gather_resident(s, 2, 300, 200, 0, 540);
+        auto r = solve(s);
+        CHECK(r.complete && r.status == status_t::clear, "GA7 distance order: complete clear gather");
+        CHECK(std::abs(gather_final(s, r, 2).cy - 540) < 1, "GA7 distance order: nearer border window placed first");
+        CHECK(gather_final(s, r, 1).cy < 540 &&
+            std::abs(gather_inner_distance(s, gather_input(s, 1), gather_final(s, r, 1))) < 1,
+            "GA7 distance order: farther window fits at the border after it");
+    }
+    {
+        auto s = gather_screen();
+        add_gather_resident(s, 1, 300, 200, 0, 400);
+        add_gather_resident(s, 2, 300, 200, 0, 540);
+        auto r = solve(s);
+        CHECK(std::abs(gather_final(s, r, 2).cy - 540) < 1 && gather_final(s, r, 1).cy < 540,
+            "GA7 tie order: nearer-midline window precedes lower id");
+    }
+    {
+        auto s = gather_screen();
+        add_gather_resident(s, 2, 300, 200, 0, 540);
+        add_gather_resident(s, 1, 300, 200, 0, 540);
+        auto r = solve(s);
+        CHECK(std::abs(gather_final(s, r, 1).cy - 540) < 1 && gather_final(s, r, 2).cy < 540,
+            "GA7 tie order: lower id wins the exact tie");
+    }
+    std::printf("Gather GA7: distance, midline, and id order\n");
+}
+
+static void gather_ga8_border_and_overhang()
+{
+    auto s = gather_screen();
+    add_gather_resident(s, 1, 400, 300, 80, 540);
+    auto r = solve(s);
+    auto f = gather_final(s, r, 1);
+    double border = s.screen_width / 2 - s.center_half;
+    CHECK(std::abs(f.cx + 400 * f.s / 2 - border) <= 1.1, "GA8: a resident reaches the border when clear");
+    CHECK(gather_inner_distance(s, gather_input(s, 1), f) < 1.1, "GA8: inner distance reaches zero");
+    CHECK(gather_inner_distance(s, gather_input(s, 1), f) <= 80.1, "GA8: regular placement never moves outward");
+
+    auto overhang = gather_screen();
+    overhang.windows.push_back(window(2, role_t::resident, 400, 300, 550, 540));
+    auto oh = solve(overhang);
+    auto of = gather_final(overhang, oh, 2);
+    CHECK(of.cx < 550 && std::abs(of.cx + 400 * of.s / 2 - border) <= 1.1,
+        "GA8 overhang: move outward only far enough to put the inner edge on the border");
+    std::printf("Gather GA8: innermost border and overhang\n");
+}
+
+static void gather_ga9_midline_and_overlap_limit()
+{
+    auto s = gather_column();
+    auto r = solve(s);
+    auto center = gather_final(s, r, 20), below = gather_final(s, r, 30), above = gather_final(s, r, 10);
+    CHECK(std::abs(center.cy - 540) < 1 && std::abs(below.cy - 810) < 1 && std::abs(above.cy - 270) < 1,
+        "GA9: each equal-height window takes its nearest legal position to the midline");
+    auto a = rect_of(gather_input(s, 20), center), b = rect_of(gather_input(s, 30), below),
+        c = rect_of(gather_input(s, 10), above);
+    CHECK(std::abs(normalized_overlap(a, b) - 0.10) < 1e-9 &&
+        std::abs(normalized_overlap(a, c) - 0.10) < 1e-9 && normalized_overlap(b, c) == 0,
+        "GA9: adjacent column pairs meet the 10%% limit and the outer pair is clear");
+    std::printf("Gather GA9: midline tie and 10%% overlap\n");
+}
+
+static void gather_ga10_larger_band_exception()
+{
+    auto s = gather_screen();
+    add_gather_resident(s, 1, 300, 900, 0, 540);   // tall first window fills the border column
+    add_gather_resident(s, 2, 300, 200, 100, 540); // cannot fit at the later short window's border distance
+    add_gather_resident(s, 3, 300, 50, 200, 540);  // short enough to take the border after it
+    auto r = solve(s);
+    auto tall = gather_final(s, r, 1), middle = gather_final(s, r, 2), short_one = gather_final(s, r, 3);
+    double middle_min_overlap = normalized_overlap(box{340, 16, 640, 216}, box{340, 90, 640, 990});
+    CHECK(middle_min_overlap > 0.10, "GA10 fixture: the middle window cannot fit at the border beside the tall one");
+    CHECK(gather_inner_distance(s, gather_input(s, 3), short_one) <
+        gather_inner_distance(s, gather_input(s, 2), middle) - 1,
+        "GA10: only the later window that fits can end inward of the earlier one");
+    CHECK(gather_inner_distance(s, gather_input(s, 3), short_one) < 1 &&
+        gather_inner_distance(s, gather_input(s, 2), middle) <= 100.0 + 1e-6,
+        "GA10: short window takes the border while the middle window stays within its old range");
+    CHECK(gather_inner_distance(s, gather_input(s, 1), tall) < 1,
+        "GA10: first window owns the border column");
+    std::printf("Gather GA10: larger-band exception\n");
+}
+
+static void gather_ga11_best_effort_and_too_wide()
+{
+    auto crowded = gather_screen();
+    crowded.fixed.push_back({40, 0, 640, 1080});
+    add_gather_resident(crowded, 1, 100, 100, 190, 540);
+    auto r = solve(crowded);
+    auto f = gather_final(crowded, r, 1);
+    CHECK(r.status == status_t::overlap_exhausted && !r.overlaps.empty(),
+        "GA11: no legal spot reports the remaining overlap");
+    CHECK(gather_inner_distance(crowded, gather_input(crowded, 1), f) < 1,
+        "GA11: best effort ties go to the innermost spot without leaving the side");
+    CHECK(f.cy == 540, "GA11: best-effort tie takes the spot nearest the midline");
+
+    auto wide = gather_screen();
+    wide.windows.push_back(window(2, role_t::resident, 1200, 300, 400, 540));
+    auto too_wide = solve(wide);
+    CHECK(too_wide.moves.empty() && too_wide.complete, "GA11: too-wide resident stays exactly put");
+
+    for (bool left : {true, false})
+    {
+        auto side = gather_screen();
+        double border = side.screen_width / 2 + (left ? -side.center_half : side.center_half);
+        double band = left ? border - (side.rail_width + EDGE_MARGIN) :
+            (side.screen_width - side.rail_width - EDGE_MARGIN) - border;
+        double width = band + 12; // wider than the whole band, but no more than twice its width
+        double half = width / 2;
+        double wide_cx = left ? border - 5 - half : border + 5 + half;
+        side.windows.push_back(window(3, role_t::resident, width, 300, wide_cx, 540));
+        add_gather_resident(side, 4, 200, 200, 100, 540, left);
+        auto placed = solve(side);
+        auto wide_final = gather_final(side, placed, 3), small_final = gather_final(side, placed, 4);
+        const auto& wide_input = gather_input(side, 3);
+        const auto& small_input = gather_input(side, 4);
+        box wide_box = rect_of(wide_input, wide_final), small_box = rect_of(small_input, small_final);
+        box small_before_box = rect_of(small_input, {small_input.cx, small_input.cy, small_input.scale, false});
+        CHECK(width > band && width <= 2 * band, "GA11 wide fixture: width is in the disputed interval");
+        CHECK(wide_final.cx == wide_input.cx && wide_final.cy == wide_input.cy && wide_final.s == wide_input.scale,
+            "GA11 wide fixture: too-wide resident stays position- and scale-identical (%s side)", left ? "left" : "right");
+        CHECK(normalized_overlap(wide_box, small_before_box) > 0.10,
+            "GA11 wide fixture: later resident starts beyond the overlap limit (%s side)", left ? "left" : "right");
+        CHECK(normalized_overlap(wide_box, small_box) <= 0.10 + 1e-9,
+            "GA11 wide fixture: later resident treats the fixed wide resident as an obstacle (%s side)",
+            left ? "left" : "right");
+    }
+    std::printf("Gather GA11: best effort and too-wide resident\n");
+}
+
+static void gather_ga12_calm_column()
+{
+    auto first_input = gather_column();
+    auto first = solve(first_input);
+    auto second_input = first_input;
+    for (auto& w : second_input.windows)
+    {
+        auto f = gather_final(first_input, first, w.id);
+        w.cx = f.cx; w.cy = f.cy; w.scale = f.s;
+    }
+    auto second = solve(second_input);
+    CHECK(first.complete && second.complete && second.moves.empty(),
+        "GA12: a tidy equal-height border column is calm on the second gather");
+    std::printf("Gather GA12: repeated tidy column\n");
+}
+
+static void gather_ga15_caps()
+{
+    auto empty = gather_screen();
+    auto no_periphery = solve(empty);
+    CHECK(no_periphery.status == status_t::unavailable && no_periphery.moves.empty() && no_periphery.complete,
+        "GA15: a screen with no periphery remains unchanged");
+
+    auto movable = gather_screen();
+    for (size_t i = 0; i < MAX_MOVABLE + 1; ++i)
+        movable.windows.push_back(window(i + 1, role_t::resident, 10, 10, 300, 100));
+    auto too_many = solve(movable);
+    CHECK(too_many.status == status_t::unavailable && too_many.moves.empty() && too_many.complete,
+        "GA15: more than 128 movable windows is unavailable without changes");
+
+    auto obstacles = gather_screen();
+    obstacles.windows.push_back(window(1, role_t::resident, 100, 100, 300, 540));
+    obstacles.fixed.resize(MAX_OBSTACLES, box{0, 0, 1, 1});
+    auto too_many_obstacles = solve(obstacles);
+    CHECK(too_many_obstacles.status == status_t::unavailable && too_many_obstacles.moves.empty() &&
+        too_many_obstacles.complete, "GA15: more than 256 obstacles is unavailable without changes");
+    std::printf("Gather GA15: per-screen caps\n");
+}
+
+static void gather_ga18_cap_and_determinism()
+{
+    auto s = gather_column();
+    auto synchronous = solve(s);
+    auto repeated = solve(s);
+    CHECK(synchronous.complete && same_gather_result(synchronous, repeated),
+        "GA18: repeated synchronous solves produce the same complete result");
+
+    job_t job(s);
+    int steps = 0;
+    while (!job.step(std::chrono::nanoseconds(0)) && steps++ < 1000000) {}
+    CHECK(job.finished() && same_gather_result(synchronous, job.current()),
+        "GA18: zero-allowance slices produce the same complete result");
+
+    CHECK(synchronous.work > 1, "GA18: fixture spends enough work for a one-unit cap boundary");
+    if (synchronous.work > 1)
+    {
+        auto cut = s; cut.work_cap = synchronous.work - 1;
+        auto clipped = solve(cut), clipped_again = solve(cut);
+        CHECK(clipped.status == status_t::unchanged_budget && !clipped.complete && clipped.moves.empty(),
+            "GA18: a cap just short of completion discards the whole gathered arrangement");
+        CHECK(same_gather_result(clipped, clipped_again), "GA18: the capped outcome is deterministic");
+    }
+    std::printf("Gather GA18: completion cap and deterministic slices\n");
+}
+
+static void gather_fixtures()
+{
+    gather_ga7_ordering();
+    gather_ga8_border_and_overhang();
+    gather_ga9_midline_and_overlap_limit();
+    gather_ga10_larger_band_exception();
+    gather_ga11_best_effort_and_too_wide();
+    gather_ga12_calm_column();
+    gather_ga15_caps();
+    gather_ga18_cap_and_determinism();
+}
+
 // The spacing pass, read through the published checkpoints: the one before "+ spacing" is the
 // contact layout it started from.
 static void check_spacing(const snapshot_t& s, const std::vector<result_t>& published, const result_t& r, const char *name)
@@ -729,8 +1009,15 @@ static void examples(const std::string& dir)
 int main(int argc, char **argv)
 {
     if (argc > 2 && !std::strcmp(argv[1], "--svg")) { examples(argv[2]); std::printf("%d failures\n", failures); return 0; }
+    if (argc == 2 && !std::strcmp(argv[1], "--gather-only"))
+    {
+        gather_fixtures();
+        std::printf("%d Gather checks, %d failures\n", checks, failures);
+        return failures ? 1 : 0;
+    }
     bool bench = argc > 1 && !std::strcmp(argv[1], "--bench");
     fixtures();
+    gather_fixtures();
     fuzz(bench ? 200 : 600);
     starved();
     crowding(bench ? 500 : 4000);

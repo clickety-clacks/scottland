@@ -1,6 +1,7 @@
 // Private integration fragment for scottland_plugin_t. The pure controller, placement, solver,
 // renderer live separately; this bridge reads and updates the plugin-owned desktop model.
     scottland::windowing::alt_mode window_keys;
+    scottland::windowing::window_filter window_filter;
     wf::option_wrapper_t<int> alt_hold_delay{"scottland/alt_hold_delay"};
     wf::option_wrapper_t<int> window_double_tap_delay{"scottland/window_double_tap_delay"};
     wf::option_wrapper_t<int> window_hold_delay{"scottland/window_hold_delay"};
@@ -14,9 +15,20 @@
     wf::option_wrapper_t<wf::keybinding_t> navigate_up{"scottland/navigate_up"};
     wf::option_wrapper_t<wf::keybinding_t> navigate_down{"scottland/navigate_down"};
     std::set<uint32_t> swallowed_keys, alt_keys, held_keys;
+    std::set<uint32_t> filter_keys;
+    uint32_t alt_pressed_time = 0;
+    std::shared_ptr<scottland::windowing::center_switcher_node> filter_preview;
+    wf::output_t *filter_output = nullptr;
     // Return opens a focused widget once per physical press, before the widget or its key layer
     // can receive it. Keep its release from reaching the app window that replaced the widget.
     std::set<std::pair<wlr_input_device*, uint32_t>> widget_return_keys;
+    // Probe the binding repository before temporarily bypassing its inactive Alt+Space
+    // accelerator. The impossible binding follows the same enabled-state convention as
+    // key_layers: set_enabled(false) must never cross an already disabled repository.
+    wf::option_sptr_t<wf::keybinding_t> app_alt_space_probe = wf::create_option(
+        wf::keybinding_t{0x80000000u, 0xffffffffu});
+    wf::key_callback app_alt_space_probe_callback = [] (const wf::keybinding_t&) { return true; };
+    std::map<wlr_keyboard_key_event*, bool> app_alt_space_events;
     wf::wl_timer<false> alt_hold;
     bool capture_chord = false;
     bool alt_bypassed = false;
@@ -478,7 +490,7 @@
             model.windows[id].pinned_scale);
         publish_model();
     }
-    std::vector<scottland::windowing::hint_entry> window_entries()
+    std::vector<scottland::windowing::hint_entry> window_entries(bool filter_hints = false)
     {
         std::vector<scottland::windowing::hint_entry> entries;
         for (auto& [id, state] : model.windows)
@@ -490,12 +502,14 @@
                 state.placement.reset();
                 continue;
             }
+            if (filter_hints && !matches_window_filter(view)) continue;
             if (!state.placement) { ensure_window_memory(id); remember_window(view); }
             auto link = link_of_window(view);
             entries.push_back({id, state.placement->hint_slot, memory_zone(view), link && link->docked()});
         }
         window_keys.hint_width = model.hint_width;
-        window_keys.refresh(entries);
+        if (filter_hints || !window_keys.active || window_filter.query.empty())
+            window_keys.refresh(entries);
         model.hint_width = window_keys.hint_width;
         publish_model();
         return entries;
@@ -1102,7 +1116,7 @@
     {
         ++hint_step_count;
         refresh_hint_palette();
-        auto entries = window_entries();
+        auto entries = window_entries(true);
         if (window_keys.active) window_keys.refresh(entries);
         std::set<uint64_t> represented;
         std::map<wf::output_t*, std::vector<uint64_t>> by_output;
@@ -1766,11 +1780,49 @@
         if (!hints_tick.is_connected())
             hints_tick.set_timeout(8, [=] () { return step_hints(); });
     }
+    void show_window_filter()
+    {
+        auto output = wf::get_core().seat->get_active_output();
+        if (!output) return;
+        if (filter_preview && filter_output != output)
+        {
+            wf::scene::remove_child(filter_preview);
+            filter_preview.reset();
+        }
+        if (!filter_preview)
+        {
+            filter_preview = std::make_shared<scottland::windowing::center_switcher_node>();
+            wf::scene::add_front(output->node_for_layer(wf::scene::layer::OVERLAY), filter_preview);
+        }
+        filter_output = output;
+        palette_read = {};
+        refresh_hint_palette();
+        auto geometry = output->get_relative_geometry();
+        filter_preview->update_filter(geometry.width, geometry.height, window_filter.query,
+            hints_palette, output->get_scale());
+    }
+    void update_window_filter()
+    {
+        apply_all_opacity();
+        window_keys.refresh(window_entries(true));
+        step_hints(true);
+        refresh_layout_avoidance(true);
+        if (window_filter.editing) show_window_filter();
+        else if (filter_preview)
+        {
+            wf::scene::remove_child(filter_preview);
+            filter_preview.reset();
+            filter_output = nullptr;
+        }
+    }
     void end_window_keys()
     {
         window_keys.interrupt(); // Alt release: a focused window's waiting press acts first
         arrow_repeats.clear();
         window_keys.end(); declutter_signature.clear();
+        window_filter.exit();
+        if (filter_preview) wf::scene::remove_child(filter_preview);
+        filter_preview.reset(); filter_output = nullptr;
         apply_all_opacity();
         for (auto& [id, visual] : hint_visuals)
         {
@@ -1783,13 +1835,14 @@
         apply_widget_mode();  // collapsed and hidden widgets go back (WG16), and away in full screen (WK12)
         refresh_layout_avoidance();
     }
-    void begin_window_keys()
+    void begin_window_keys(bool latch = false)
     {
-        if (alt_bypassed || alt_keys.empty() || held_keys.size() != 1 || drag->view) return;
+        if (alt_bypassed || drag->view || (!latch && (alt_keys.empty() || held_keys.size() != 1))) return;
         capture_chord = true; keyboard_selection = false;
+        if (latch) window_filter.latched = true;
         auto active = wf::get_core().seat->get_active_view();
         auto link = link_of_widget(active);
-        window_keys.begin(window_entries(), link ? link->window_id : active ? active->get_id() : 0);
+        window_keys.begin(window_entries(true), link ? link->window_id : active ? active->get_id() : 0);
         apply_all_opacity();
         apply_widget_mode();  // every widget comes back expanded while asking (WG16, WK12)
         palette_read = {}; // always read the current theme on entry
@@ -1823,6 +1876,11 @@
             ev->mode = wf::input_event_processing_mode_t::IGNORE;
             return; // don't deliver the release (or autorepeat) to the newly opened app window
         }
+        if (!down && filter_keys.erase(code))
+        {
+            ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            return;
+        }
         if (!down && swallowed_keys.erase(code))
         {
             if (auto letter = window_hint_letter(keyboard, code))
@@ -1832,7 +1890,7 @@
         }
         // WG25 owns Return on a focused widget outright. This check precedes key-layer handling,
         // so even a widget's Return claim cannot deliver either half of the key to the client.
-        if (down && ev->mode == wf::input_event_processing_mode_t::FULL &&
+        if (down && !window_keys.active && ev->mode == wf::input_event_processing_mode_t::FULL &&
             (code == KEY_ENTER || code == KEY_KPENTER))
         {
             auto active = wf::get_core().seat->get_active_view();
@@ -1847,7 +1905,7 @@
                 return;
             }
         }
-        bool claimed = key_layers.handles(ev);
+        bool claimed = window_filter.editing ? false : key_layers.handles(ev);
         if (claimed && down) { alt_bypassed = true; alt_hold.disconnect(); }
         if (ev->mode == wf::input_event_processing_mode_t::IGNORE)
         {
@@ -1859,9 +1917,10 @@
         {
             if (down && alt_keys.empty())
             {
+                alt_pressed_time = key_event_time(ev->event);
                 uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
                 alt_bypassed = claimed || drag->view || held_keys.size() != 1 || (keyboard->modifiers.depressed & blockers);
-                if (!alt_bypassed)
+                if (!alt_bypassed && !window_keys.active)
                     alt_hold.set_timeout(std::max(1, int(alt_hold_delay)), [=] () { begin_window_keys(); });
             }
             if (down) alt_keys.insert(code); else alt_keys.erase(code);
@@ -1869,15 +1928,37 @@
             if (alt_keys.empty())
             {
                 alt_hold.disconnect();
-                if (capture_chord) end_window_keys();
+                if (!down && !window_keys.active && !alt_bypassed && !drag->view &&
+                    held_keys.empty() && key_event_time(ev->event) - alt_pressed_time < uint32_t(alt_hold_delay))
+                    begin_window_keys(true);
+                if (capture_chord && !window_filter.latched) end_window_keys();
                 if (center_switcher.active) end_center_switcher(true);
-                capture_chord = false;
+                if (!window_filter.latched) capture_chord = false;
             }
             // Alt-down was delivered immediately, so its matching release also belongs to the
             // app. No synthetic replay, delayed accelerator, or stuck modifier for quick chords.
             return;
         }
         if (claimed) return; // exact focused-surface claims also bleed through active hints (KL7)
+        if (window_keys.active && window_filter.editing)
+        {
+            ev->mode = wf::input_event_processing_mode_t::IGNORE;
+            if (!down) return;
+            filter_keys.insert(code);
+            window_keys.interrupt();
+            if (code == KEY_ESC) window_filter.cancel();
+            else if (code == KEY_ENTER || code == KEY_KPENTER) window_filter.commit();
+            else if (code == KEY_BACKSPACE) window_filter.backspace();
+            else
+            {
+                char utf8[64] = {};
+                int size = xkb_state_key_get_utf8(keyboard->xkb_state, code + 8, utf8, sizeof(utf8));
+                if (size > 0 && static_cast<unsigned char>(utf8[0]) >= 0x20)
+                    window_filter.append(std::string_view(utf8, size));
+            }
+            update_window_filter();
+            return;
+        }
         if (!capture_chord && down && !alt_keys.empty())
         {
             if (auto backwards = center_switcher_direction(code, keyboard))
@@ -1904,6 +1985,16 @@
         if (!capture_chord)
         {
             if (down && !alt_keys.empty()) { alt_bypassed = true; alt_hold.disconnect(); }
+            if (code == KEY_SPACE && !alt_keys.empty() && !window_keys.active && !claimed &&
+                ev->mode == wf::input_event_processing_mode_t::FULL &&
+                !(keyboard->modifiers.depressed & modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER")) &&
+                wf::get_core().get_current_seat()->keyboard_state.focused_surface &&
+                !wlr_seat_keyboard_has_grab(wf::get_core().get_current_seat()))
+            {
+                bool enabled = wf::get_core().bindings->handle_key(app_alt_space_probe->get_value(), 0);
+                app_alt_space_events[ev->event] = enabled;
+                if (enabled) wf::get_core().bindings->set_enabled(false);
+            }
             return;
         }
         ev->mode = wf::input_event_processing_mode_t::IGNORE;
@@ -1915,21 +2006,43 @@
         else if (first || arrow_key(code)) window_keys.interrupt();
         if (arrow_key(code)) { press_arrow(code, keyboard, first); return; }
         if (!first) return;
-        if (code == KEY_ESC) { cancel_keyboard_motion(); end_window_keys(); }
+        if (code == KEY_ESC)
+        {
+            cancel_keyboard_motion(); end_window_keys(); capture_chord = false;
+            alt_bypassed = true; // the release of this canceled Alt chord must not latch again
+        }
+        else if (code == KEY_ENTER || code == KEY_KPENTER)
+        {
+            window_filter.open();
+            update_window_filter();
+        }
         else if (code == KEY_TAB)
             window_keys.tab(held_keys.count(KEY_LEFTSHIFT) || held_keys.count(KEY_RIGHTSHIFT));
         else if (code == KEY_F4) window_keys.close_selected();
+        else if (code == KEY_SPACE)
+        {
+            uint32_t blockers = modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER");
+            if (!(keyboard->modifiers.depressed & blockers) && window_keys.gather) window_keys.gather();
+        }
         else
         {
             if (auto letter = window_hint_letter(keyboard, code))
             {
                 window_keys.double_tap_delay = std::clamp(int(window_double_tap_delay), 1, 3000);
-                window_keys.refresh(window_entries());
+                window_keys.refresh(window_entries(true));
                 window_keys.hold_delay = std::clamp(int(window_hold_delay), 1, 3000);
                 window_keys.letter(*letter, key_event_time(ev->event));
                 if (window_keys.hold_waiting()) arm_hint_hold();
             }
         }
+    };
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_keyboard_key_event>> after_app_alt_space =
+        [=] (wf::post_input_event_signal<wlr_keyboard_key_event> *ev)
+    {
+        auto found = app_alt_space_events.find(ev->event);
+        if (found == app_alt_space_events.end()) return;
+        if (found->second) wf::get_core().bindings->set_enabled(true);
+        app_alt_space_events.erase(found);
     };
     wf::ipc::method_callback hints_state = [=] (wf::json_t data) -> wf::json_t
     {
@@ -1979,7 +2092,7 @@
         reply["hint_step_animation"] = hint_step_animation;
         reply["hint_step_offset"] = hint_step_offset;
         reply["selected"] = int64_t(window_keys.selected); reply["hints"] = wf::json_t::array();
-        window_keys.refresh(window_entries());
+        window_keys.refresh(window_entries(true));
         for (auto e : window_keys.entries)
         {
             wf::json_t item; item["window"] = int64_t(e.id); item["hint"] = window_keys.label(e.slot);
@@ -2115,8 +2228,11 @@
         window_keys.pair = [=] (uint64_t held, uint64_t partner) {
             keyboard_selection = true; pair_windows(held, partner); };
         window_keys.solo = [=] (uint64_t id) { solo_window(id); };
+        window_keys.gather = [=] () { gather_all(); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
+        wf::get_core().bindings->add_key(app_alt_space_probe, &app_alt_space_probe_callback);
+        wf::get_core().connect(&after_app_alt_space);
         wf::get_core().connect(&on_window_key);
         ipc_repo->register_method("scottland/hints", hints_state);
         ipc_repo->register_method("scottland/center-switcher", center_switcher_state);
@@ -2124,7 +2240,12 @@
     }
     void fini_window_keys()
     {
-        on_window_key.disconnect(); alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
+        on_window_key.disconnect(); after_app_alt_space.disconnect();
+        for (auto& [event, enabled] : app_alt_space_events)
+            if (enabled) wf::get_core().bindings->set_enabled(true);
+        app_alt_space_events.clear();
+        wf::get_core().bindings->rem_binding(&app_alt_space_probe_callback);
+        alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
         hint_hold.disconnect(); hint_hold_retry.disconnect(); deferred_pair.disconnect(); deferred_pair_ready.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
         stop_keyboard_motion();
@@ -2132,6 +2253,9 @@
         for (auto& [id, flash] : hint_flashes) if (flash.node) wf::scene::remove_child(flash.node);
         hint_flashes.clear();
         window_keys.end();
+        window_filter.exit();
+        if (filter_preview) wf::scene::remove_child(filter_preview);
+        filter_preview.reset(); filter_output = nullptr;
         ipc_repo->unregister_method("scottland/hints");
         ipc_repo->unregister_method("scottland/center-switcher");
         for (auto& [id, visual] : hint_visuals)

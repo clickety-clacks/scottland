@@ -284,6 +284,93 @@ def libexec(name):
     return os.path.join(os.environ.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"), "libexec", name)
 
 
+RELOAD_GUARD_OPTIONS = {
+    "misc.disable_autoreload": "autoreload-paused",
+    "debug.suppress_errors": "errors-suppressed",
+}
+
+
+def reload_guard_state_dir():
+    """The reload guard's state is private to this Scottland session and shim signature."""
+    signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", signature):
+        return None
+    session = os.environ.get("SCOTTLAND_SESSION_DIR")
+    if not session:
+        runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        session = os.path.join(runtime, "scottland")
+    return os.path.join(session, "config-watch", signature)
+
+
+def reload_guard_option_enabled(option):
+    """Read the runtime value Omarchy's package guard asks the shim to preserve."""
+    name = RELOAD_GUARD_OPTIONS.get(option)
+    state_dir = reload_guard_state_dir()
+    return bool(name and state_dir and os.path.isfile(os.path.join(state_dir, name)))
+
+
+def set_reload_guard_option(option, enabled):
+    """Persist one supported guard value so both the shim and config watcher observe it."""
+    name = RELOAD_GUARD_OPTIONS[option]
+    state_dir = reload_guard_state_dir()
+    if not state_dir:
+        raise OSError("Hyprland instance signature is unavailable")
+    if enabled:
+        os.makedirs(state_dir, mode=0o700, exist_ok=True)
+        fd = os.open(os.path.join(state_dir, name), os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(fd)
+    else:
+        try:
+            os.unlink(os.path.join(state_dir, name))
+        except FileNotFoundError:
+            pass
+        try:
+            os.rmdir(state_dir)
+        except OSError:
+            pass
+
+
+def reload_guard_config(code):
+    """Parse only the two nested boolean options used by Omarchy's reload guard.
+
+    This deliberately does not turn `hyprctl eval` into a general Lua evaluator.
+    """
+    outer = re.fullmatch(r"\s*hl\.config\s*\(\s*\{(.*)\}\s*\)\s*;?\s*", code, re.S)
+    if not outer:
+        return None
+    body, index, values = outer.group(1), 0, {}
+    allowed = {"misc": "disable_autoreload", "debug": "suppress_errors"}
+    while index < len(body):
+        while index < len(body) and body[index].isspace():
+            index += 1
+        if index == len(body):
+            break
+        section = re.match(r"(misc|debug)\s*=\s*\{", body[index:])
+        if not section:
+            return None
+        section_name = section.group(1)
+        index += section.end()
+        field = re.match(r"\s*([A-Za-z_]\w*)\s*=\s*(true|false)\s*\}", body[index:])
+        if not field or field.group(1) != allowed[section_name]:
+            return None
+        option = f"{section_name}.{field.group(1)}"
+        if option in values:
+            return None
+        values[option] = field.group(2) == "true"
+        index += field.end()
+        while index < len(body) and body[index].isspace():
+            index += 1
+        if index < len(body):
+            if body[index] != ",":
+                return None
+            index += 1
+            while index < len(body) and body[index].isspace():
+                index += 1
+            if index < len(body) and body[index] == ",":
+                return None
+    return values or None
+
+
 def lua_table(text, pos):
     """Read the flat Lua table constructor at text[pos:] ("{ key = value, ... }") whose values are
     string literals, numbers or booleans, as hyprctl eval sends a monitor rule. Returns
@@ -609,8 +696,20 @@ class Translator:
         # Run a command in this session, like Hyprland's exec dispatcher (Lua or classic form).
         command = self.exec_command(text)
         if command:
+            env = None
+            if command.strip() == b"omarchy-launch-shell":
+                # Omarchy's restart-shell script relaunches its shell through this dispatcher.
+                # Give that shell the same adapter command precedence as the initial autostart;
+                # this applies whether the shim was started by autostart.d or reload.d.
+                env = os.environ.copy()
+                libexec = os.path.join(env.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"), "libexec")
+                path = env.get("PATH", os.defpath).split(os.pathsep)
+                if not path or path[0] != libexec:
+                    path = [libexec, *(entry for entry in path if entry != libexec)]
+                    env["PATH"] = os.pathsep.join(path)
             subprocess.Popen(["sh", "-c", command], start_new_session=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             env=env)
             return "ok"
         dpms = self.DPMS_LUA.match(text.strip()) or self.DPMS_CLASSIC.match(text.strip())
         if dpms:
@@ -674,7 +773,16 @@ class Translator:
     def eval(self, code):
         """`hyprctl eval "hl.monitor({ output = …, mode = …, position = …, scale = … })"`: apply the
         rule to that output now, through core's output control, until the next `hyprctl reload`
-        (as in Hyprland). Other Lua is not run."""
+        (as in Hyprland). Only Omarchy's two-option reload-guard subset of `hl.config` is translated;
+        arbitrary Lua remains unsupported."""
+        guard_options = reload_guard_config(code)
+        if guard_options is not None:
+            try:
+                for option, enabled in guard_options.items():
+                    set_reload_guard_option(option, enabled)
+            except OSError as error:
+                return f"error: reload guard state could not be updated: {error}"
+            return "ok"
         match = self.MONITOR_EVAL.match(code)
         table = lua_table(code, match.end()) if match else None
         if not table or not re.fullmatch(r"\s*\)\s*;?\s*", code[table[1]:]):
@@ -748,6 +856,8 @@ class Translator:
         if command == "getoption":
             if args in OPTIONS:
                 return {"option": args, **OPTIONS[args], "set": True}
+            if args in RELOAD_GUARD_OPTIONS:
+                return {"option": args, "bool": reload_guard_option_enabled(args), "set": True}
             log.unsupported(f"getoption {args}")
             return unsupported(f"getoption {args}")
         if command == "dispatch":
@@ -756,8 +866,8 @@ class Translator:
             return self.reload()
         if command == "eval":
             return self.eval(args)
-        # Everything else (keyword, other eval, switchxkblayout, layers, binds, cursorpos, ...) has no
-        # translation yet. Report that to the caller instead of answering a false "ok".
+        # Everything else (keyword, untranslated eval, switchxkblayout, layers, binds, cursorpos,
+        # ...) has no translation yet. Report that to the caller instead of answering a false "ok".
         log.unsupported(f"{command} {args}")
         return unsupported(f"{command} {args}")
 
@@ -788,6 +898,15 @@ class Translator:
                     lines.append(f"workspacev2>>{index + 1},{index + 1}")
 
         if kind == "view-mapped" and is_window:
+            if view.get("app-id") == "org.omarchy.screensaver" and not view.get("fullscreen"):
+                try:
+                    reply = self.wf.call("window-rules/configure-view", {
+                        "id": view["id"], "fullscreen": True,
+                    })
+                    if not isinstance(reply, dict) or reply.get("result") != "ok":
+                        log(f"screensaver fullscreen failed for view {view['id']}: {reply!r}")
+                except Exception as error:  # noqa: BLE001
+                    log(f"screensaver fullscreen failed for view {view['id']}: {error!r}")
             ws = self.workspace_ref(self.outputs(), view.get("output-id"))["name"]
             lines.append(f"openwindow>>{address(view['id'], '')},{ws},{view.get('app-id', '')},{view.get('title', '')}")
         elif kind == "view-unmapped" and is_window:

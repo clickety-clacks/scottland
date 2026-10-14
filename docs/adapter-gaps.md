@@ -100,6 +100,7 @@ state queries, events or Wayland protocols.
 | AG36 — user services across a switch | Optional tray apps, password managers, dictation, portals | **Works (P):** a switch closes the current desktop, stopping its graphical-session services, and the new desktop starts them. **Keep mode and its service handover were removed by Mike's 10-06 ruling**, so the 1Password crash during keep-mode handover restarts (former W11 note) is moot. A retained custom Hypridle/Hyprlock/Hyprsunset unit is not automatically a Scottland service. | **S + P:** W5, W6, W11. Modern stock Omarchy removal list includes Hypridle/Hyprlock (`B/omarchy-upgrade-to-quattro:822–823`). | **Adapter** service lifecycle. |
 | AG37 — custom launchers/plugins, dynamic tags, layers and IPC consumers | Optional/user extensions; also Mike's Ask/attention tools | **Degraded/silent no-op:** only a subset of Hyprland events/actions exists. `layers` is always empty, tag mutations unsupported, and unknown queries can still have exit status 0. External `eval` is not passed to the Lua shortcut host. Core key layers are available but do not implement arbitrary Hyprland plugin APIs. | **S + H2 + L:** shim `:259,413–435,446–488`; `L:10,15,17,32` Ask shortcuts, `L:33,483` tags, `L:61` dynamic Omasnap rule. Some historical requests may have newer native replacements; do not treat all as current regressions. | **Shim + adapter**, generic **core** state/event APIs; plugin authors/**upstream** for native capabilities. |
 | AG38 — zoom accessibility and custom gestures | Stock zoom shortcuts; optional touchpad gestures | **Silent no-op:** zoom function runs against `get_config=nil` and inert `hl.config`; custom Hyprland gestures are also inert. Scottland's moving/resizing gestures do not replace accessibility magnification. Workspace gestures are intentionally out of scope. | **S:** `H/bindings/utilities.lua:117–124`, `O/config/hypr/input.lua:51–57`; Lua host `:162–163`. No visual magnification test. | **Adapter + generic core/upstream** magnification; preserve intentional gesture ownership. |
+| AG39 — Omarchy Logout in Scottland | Stock System > Logout menu entry | **Fixed in adapter candidate, live verification pending:** the stock action closes apps then runs `uwsm stop`, but uwsm did not start Scottland. On the daily machine this left Wayfire running with an empty desktop and required a reboot. The adapter's menu action now closes apps and ends only the Wayfire child of the recorded Scottland session; Hyprland delegates to Omarchy's stock action. | **Observed:** daily-machine journal, 2026-10-13 10:46 PT, had two `Compositor is not running` results from uwsm while Wayfire remained. **Source:** stock `omarchy-system-logout`; adapter `scottland-omarchy-logout` and `scottland-omarchy-setup`. Focused isolated process test passes; real login-manager logout remains unverified. | **Adapter** menu and session lifecycle. |
 
 ## What the tests actually established
 
@@ -268,7 +269,7 @@ real screen or real hardware; statuses are **implemented**.
 | Row | Now | Evidence | Remaining |
 |---|---|---|---|
 | AG09 | F9 press runs `voxtype record start`, release `record stop`; a Lua-function press/release pair keeps both. | `tests/omarchy-bindings-test.py`; fails on the previous adapter as H1 did | Real dictation untested. |
-| AG19 | `exec_cmd` runs the bytes any Lua string literal makes (byte escapes, `\u{…}`, long strings' line breaks); the stock `omarchy-launch-screensaver` maps its terminal. | `tests/omarchy-shim-test.py` | The screensaver opens as an ordinary window: its fullscreen rule and monitor focus are untranslated (AG28 territory). |
+| AG19 | Lua exec preserves string bytes and long-string line breaks; the shim requests fullscreen only for a mapped `org.omarchy.screensaver` view. The intended result is fullscreen for that screensaver and windowed ordinary apps. | Mike's 2026-10-13 ruling followed an observation that the Omarchy screensaver opened windowed; `tests/omarchy-shim-test.py` checks the stock-launcher view and an ordinary window through Wayfire's view list (focused run pending). | After a passing headless check, physical-screen and multi-monitor acceptance remain post-merge; monitor-focus behavior and cursor rules are not translated. |
 | AG15 | Super+Print starts hyprpicker; a click puts the picked color on the clipboard. | `tests/omarchy-color-picker-test.py` | — |
 | AG10 | `repeating` repeats while held, also on the lock screen when `locked`; `locked` runs on the lock screen; a release shortcut runs on release, on the lock screen too when `locked`, and only for a press it matched with the same modifiers still held (Ctrl+F9 runs neither half of F9); other shortcuts don't run while locked. Combinations Wayfire can't express go through core shortcuts (E13). Scottland's own volume/brightness bindings step aside so Omarchy's flags hold. | `tests/omarchy-bindings-test.py` with a real lock client | — |
 | AG20 | Startup handlers run once per session when Scottland is the only graphical session; never on reload or Lua host restart; the stock environment import and shell launch are left to Scottland's own hooks. | `tests/omarchy-startup-test.py` | Not run beside a desktop that is still running (one started some other way); keep mode, and with it question 1, is gone (ruled 10-06). |
@@ -287,7 +288,7 @@ through a reload, and a Quickshell Hyprland client (the Omarchy shell) does not 
 shim is restarted, so the shim fixes (AG17, AG18, AG19, visible failure, reload) reach a running
 session at its next start.
 
-Questions for Mike (no choice made; 1, 2, 7, 8 and 9 have since been ruled):
+Questions for Mike (unresolved: 3, 5 and 6):
 
 1. ~~Keep mode and startup apps (AG20)~~: moot, ruled 10-06: keep mode is removed; switching
    always closes the current desktop.
@@ -295,8 +296,7 @@ Questions for Mike (no choice made; 1, 2, 7, 8 and 9 have since been ruled):
 3. Lid (AG04): a docked lid close (laptop panel off) and lid open's reconcile
    (`omarchy-hyprland-monitor-clamshell`, panel back on) both need monitor config translation
    (AG03): approve that work, or keep lid open reported and not run?
-4. Screensaver (AG19): should it open full screen (translating its window rule), or stay out of
-   scope for now?
+4. ~~Screensaver (AG19)~~: ruled 10-13 after observing that Omarchy's screensaver opened windowed in Scottland 0.3: in Scottland, the mapped `org.omarchy.screensaver` opens fullscreen and ordinary windows remain windowed. Translate only the existing Omarchy screensaver window rule; keep Omarchy unmodified. Other screensaver rules, including cursor hiding, stay untranslated and are reported. Focused headless behavior proof is pending; physical-screen acceptance follows merge.
 5. Shim updates: should `scottland-reload` restart the shim and the Omarchy shell together (the
    shell's bar and menus reload), or keep shim changes for the next session start?
 6. Screen sharing picks an output by clicking it (xdg-desktop-portal-wlr's slurp chooser). Keep,
