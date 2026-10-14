@@ -29,7 +29,7 @@ artifacts = Path(sys.argv[1])
 passed = failed = 0
 clients = []
 request_path = None
-# Mike's layout.ini on osanwe (2026-10-04).
+# Mike's layout.ini on daily-desktop (2026-10-04).
 MIKE = {'scottland/center_width': 30.0, 'scottland/rail_width': 1.9, 'scottland/blend_width': 40.0,
         'scottland/scale_curve': '0.000:0.997 0.041:0.779 1.000:0.255',
         'scottland/min_scale': 0.255, 'scottland/max_scale': 0.997}

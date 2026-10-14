@@ -447,7 +447,7 @@ try:
     t.move(sx, sy); time.sleep(.06); t.key("LEFTMETA", True)
     ipc.call("stipc/feed_button", {"combo": "BTN_LEFT", "mode": "press"})
     # 160 px in ~60 ms: firm enough that the coast reaches the rail on every test host
-    # (100 px fell short on nacelle, whose scripted motion arrives slower).
+    # (100 px fell short on arm-test-host, whose scripted motion arrives slower).
     for i in range(1, 7):
         t.move(sx + 160 * i / 6, sy)
         time.sleep(.01)

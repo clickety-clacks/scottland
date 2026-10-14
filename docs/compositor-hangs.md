@@ -73,7 +73,7 @@ necessary for both reported incidents; an indirect common cause remains open.
 
 ## Isolated reproduction
 
-All compositor testing runs on plumbus, with this checkout's helpers, shipped
+All compositor testing runs on AMD test host, with this checkout's helpers, shipped
 config, a private D-Bus, and a unique headless directory under its `build/`.
 No test reads personal settings or touches a physical or live session.
 
@@ -96,7 +96,7 @@ The race suite accepts `foot` or `ghostty` as its final argument.
 deliberately terminates only its own isolated compositor twice to verify real
 ABRT/QUIT systemd cores and all-thread stack extraction.
 
-## Results (October 3, plumbus headless)
+## Results (October 3, AMD test host headless)
 
 Baseline plugin: `343419c`, started after its build, under gdb. No compositor
 IPC timeouts or persistent 100% loop reproduced in:
@@ -132,7 +132,7 @@ this failure separately: it is a card-startup stress failure, not a reproduced
 main-thread hang. `build/freeze-final-failed/` and `build/freeze-hot/` contain
 the failed observations and logs. Its latency mechanism has not been proven.
 
-The diagnostic build's source and plugin SHA-256 matched osanwe/plumbus.
+The diagnostic build's source and plugin SHA-256 matched daily Intel desktop/AMD test host.
 Launcher rotation/core-limit fixtures passed for three successive sessions.
 Real ABRT and QUIT tests each produced a stored systemd Wayfire core and **19
 thread stacks**. Those compositors had real foot/stipc input before capture;
@@ -146,7 +146,7 @@ the private widget D-Bus owner. All owned compositors were stopped. The
 eight-window/six-card stress failure remains recorded separately, not erased
 by these passes.
 
-Read-only checks of osanwe's current live compositor found unlimited soft/hard
+Read-only checks of daily Intel desktop's current live compositor found unlimited soft/hard
 core limits, systemd-coredump routing, unblocked signals and no SIGQUIT handler
 or ignore disposition. Its ABRT handler remains installed by the old build.
 No signal was sent to it; use QUIT to capture a future live hang.
@@ -158,6 +158,6 @@ metadata/stacks), and `build/widget-repeat-results/` (final checks).
 The live freeze is still unresolved: no looping stack, proven root cause, or
 before/after hang regression exists. No speculative lifecycle/avoidance fix is
 claimed. The first incident's `c99f116` compositor was not replayed. Long-lived
-hours-old breathing state, the exact live layout/timing, and osanwe's Intel
-graphics path have not been reproduced on plumbus's AMD GPU. Testing did not
+hours-old breathing state, the exact live layout/timing, and daily Intel desktop's Intel
+graphics path have not been reproduced on AMD test host's AMD GPU. Testing did not
 deploy to, reload, or change either physical desktop.
