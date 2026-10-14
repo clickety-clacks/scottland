@@ -1428,17 +1428,24 @@
                         auto view = represented_view(id);
                         auto r = hint_rectangle(view, true);
                         auto& visual = hint_visuals[id];
+                        auto frame = frame_of(view, false);
+                        double occlusion_margin = frame ?
+                            frame->fallback_peek_occlusion_margin(output->get_scale()) : 0;
+                        if (frame && scottland::goo_enabled())
+                            occlusion_margin = goo.occlusion_margin(output, view->get_id()).value_or(occlusion_margin);
                         if (link_of_widget(view))
                         {
                             auto anchor = hint_anchor(view, true); double radius = hint_size(view) / 2;
-                            fixed_above.push_back({r.x1 + visual.target.x, r.y1 + visual.target.y,
-                                r.width(), r.height()});
+                            fixed_above.push_back({r.x1 + visual.target.x - occlusion_margin,
+                                r.y1 + visual.target.y - occlusion_margin,
+                                r.width() + 2 * occlusion_margin, r.height() + 2 * occlusion_margin});
                             fixed_above.push_back({anchor.x + visual.target.x - radius - 6,
                                 anchor.y + visual.target.y - radius - 6, 2 * radius + 12, 2 * radius + 12});
                             continue;
                         }
                         scottland::windowing::peek_window input;
                         input.frame = {r.x1, r.y1, r.width(), r.height()};
+                        input.occlusion_margin = occlusion_margin;
                         using Z = scottland::windowing::zone;
                         auto z = window_zone(view);
                         if (z == Z::center) { input.zone_x1 = width / 2 - center_half; input.zone_x2 = width / 2 + center_half; }
