@@ -137,7 +137,12 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 
 | ID | Invariant | Status |
 |---|---|---|
-| TP1 | The existing per-session appearance watcher follows Gooarchy's `current-theme/light` and `current-theme/dark` link changes by requesting a config reload from Ghostty clients in that same Wayland session. If the location is absent, it stays quiet and performs no push; the watcher reads no other theme source and writes no config or theme file. | source slice and helper plus actual-inotify watcher tests authored; authorized non-Gibson execution and shipped-Ghostty reload proof remain pending; `scottland-display terminal-theme push` awaits the display tool's command interface |
+| TP1 | Open Ghostty terminals whose configs follow Gooarchy's current-theme location show its newly selected theme after either link changes, without a new window or login. | Implemented in the existing per-session watcher; isolated helper and actual-inotify behavior tests pass on Nacelle (artifact `art_a2e3cc22`, commit `bc193fd8`); real shipped-Ghostty color evidence remains pending. |
+| TP2 | After a push, an open following terminal continues to switch between the selected theme's light and dark variants when desktop Mode changes. | Uses the existing paired-theme config and changes neither link; real shipped-Ghostty mode-switch evidence remains pending. |
+| TP3 | Core reads the theme only through Gooarchy's current-theme location and writes no theme link or user config. | Source behavior and isolated fixtures cover the single location and unchanged theme/config files; real installed-session evidence remains pending. |
+| TP4 | A terminal with a fixed theme config keeps the same colors after a push. | The push only requests a same-session Ghostty config reload and writes no config; real fixed-config color evidence remains pending. |
+| TP5 | An absent current-theme location causes no push or report; if it appears later, the watcher follows it. | Implemented and covered by the isolated actual-inotify fixture on Nacelle (artifact `art_a2e3cc22`, commit `bc193fd8`). |
+| TP6 | `scottland-display terminal-theme push` pushes once under the same rules and exits 0, including when there is nothing to push. | The command is PO-approved; shared dispatcher integration waits for the accepted Lane A Display source/API handoff. No parallel command or watcher is permitted. |
 
 ## Layout configurator (`scottland-settings`)
 
