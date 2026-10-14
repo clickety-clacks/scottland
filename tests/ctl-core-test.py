@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 RUN_ID = uuid.uuid4().hex
+OWNER_ID = str(uuid.UUID(RUN_ID))
 ROOT = REPO / "build" / f"ctl-core-fixture-{RUN_ID}"
 SCRATCH = ROOT / "headless-scratch"
 HEADLESS = SCRATCH / "session"
@@ -82,7 +83,8 @@ class Session:
             "SCOTTLAND_TEST_HOOKS": str(FIXTURE_HOOKS),
             "SCOTTLAND_HEADLESS_DIR": str(HEADLESS),
             "SCOTTLAND_HEADLESS_ISOLATION": "1",
-            "SCOTTLAND_HEADLESS_OWNER": f"ctl-core-{RUN_ID}",
+            "SCOTTLAND_HEADLESS_OWNER": OWNER_ID,
+            "SCOTTLAND_HEADLESS_OWNER_DIR": str(HEADLESS),
             "SCOTTLAND_SESSION_DIR": str(HEADLESS / "session"),
             "SCOTTLAND_TEST_SCRATCH": str(SCRATCH),
             "SCOTTLAND_TEST_PATH": str(BIN),
