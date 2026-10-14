@@ -265,10 +265,34 @@ try:
 
     def grab_small_while_peeking():
         # Cover it first, so it peeks; then grab its strip where it is drawn and drop it (WK27 commit).
+        # The preceding soloed-cover case can leave Big represented by a widget. Present it
+        # explicitly and restore the fixture geometry so this path starts with a real cover view.
+        ipc('scottland/present', {'window': B})
+        until(lambda: (not layout(B).get('widgetized', False) and layout(B).get('applied_scale', 0) >= .99,
+                       layout(B)), 6, 'Big presented as a full window before the grabbed fixture')
+        place(B, 40, 60, 760, 560)
+        ipc('window-rules/focus-view', {'id': B})
+        until(lambda: (focused_id() == B, focused_id()), 3, 'Big focused before the grabbed fixture')
+        settle([B, S, C])
+
+        def full_cover_window_ready():
+            state = layout(B); frame = scene(B); g = geometry(B)
+            return (not state.get('widgetized', False) and abs(state.get('applied_scale', 0) - 1.0) < .02 and
+                    focused_id() == B and
+                    abs((frame[2] - frame[0]) - g['width']) <= 24 and
+                    abs((frame[3] - frame[1]) - g['height']) <= 24,
+                    {'widgetized': state.get('widgetized'), 'applied_scale': state.get('applied_scale'),
+                     'scene_size': [frame[2] - frame[0], frame[3] - frame[1]],
+                     'geometry_size': [g['width'], g['height']]})
+        until(full_cover_window_ready, 3, 'Big is drawn at full window size before covering Small')
+
         x1, y1, x2, y2 = scene(S)
         pointer_drag(B, ((x1 + x2) / 2, (y1 + y2) / 2)); release(); settled()
         found, row = observe('grabbed-while-peeking', 'peeking-before-grab', S, 'Small')
         if not found: raise Unready(f'Small does not peek before the grab: {row}')
+        drawn_area = (row['scene_frame'][2] - row['scene_frame'][0]) * (row['scene_frame'][3] - row['scene_frame'][1])
+        if row['pixels'] > drawn_area * .5:
+            raise Unready(f'Small is mostly exposed, so the cover fixture was not established: {row}')
         sx1, sy1, sx2, sy2 = scene(S); fx = scene(B)
         gx, gy = (sx1 + 8, (sy1 + sy2) / 2) if sx1 < fx[0] - 10 else (sx2 - 8, (sy1 + sy2) / 2) if sx2 > fx[2] + 10 else \
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
