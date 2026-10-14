@@ -76,7 +76,7 @@ impl Backend for SystemBackend {
         )
         .map_err(|error| format!("could not address the power profiles service: {error}"))?;
         proxy
-            .call_method("SetProfile", &profile)
+            .set_property("ActiveProfile", &profile)
             .map(|_| ())
             .map_err(|error| format!("could not set power profile {profile}: {error}"))
     }

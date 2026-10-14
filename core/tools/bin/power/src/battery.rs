@@ -307,7 +307,7 @@ fn size_wh(supply: &Supply) -> i64 {
 }
 
 fn time_minutes(supply: &Supply, state: BatteryState, rate_watts: f64) -> Option<i64> {
-    if !matches!(state, BatteryState::Charging | BatteryState::Discharging) || rate_watts <= 0.0 {
+    if !matches!(state, BatteryState::Charging | BatteryState::Discharging) {
         return None;
     }
     let scale = if state == BatteryState::Charging {
@@ -323,7 +323,7 @@ fn time_minutes(supply: &Supply, state: BatteryState, rate_watts: f64) -> Option
         _ => None,
     };
     if let Some(energy) = remaining_energy {
-        if energy < 0 {
+        if energy < 0 || rate_watts <= 0.0 {
             return None;
         }
         let rate_microwatts = rate_watts * 1_000_000.0;
@@ -362,5 +362,246 @@ fn is_holding(
         BatteryState::FullyCharged => percentage < 99,
         BatteryState::Charging => rate_watts <= 0.2 && end < 99 && percentage >= end,
         BatteryState::Discharging | BatteryState::Unknown => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn battery(attributes: &[(&str, &str)]) -> Supply {
+        Supply {
+            name: "BAT0".to_string(),
+            kind: "Battery".to_string(),
+            present: Some(true),
+            scope: Some("System".to_string()),
+            online: None,
+            attributes: attributes
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+        }
+    }
+
+    fn report(attributes: &[(&str, &str)], external_power: bool) -> BatteryReport {
+        BatteryReport::from_supply(&battery(attributes), external_power).unwrap()
+    }
+
+    #[test]
+    fn pw2_battery_fixture_formats_fields_and_line() {
+        let report = report(
+            &[
+                ("capacity", "51"),
+                ("status", "Discharging"),
+                ("energy_now", "27000000"),
+                ("energy_full", "56700000"),
+                ("current_now", "900000"),
+                ("voltage_now", "12000000"),
+                ("cycle_count", "412"),
+                ("charge_control_start_threshold", "40"),
+                ("charge_control_end_threshold", "80"),
+            ],
+            false,
+        );
+
+        assert_eq!(report.rate_text(), "10.8W");
+        assert_eq!(report.size_text(), "56Wh");
+        assert_eq!(report.time_text().as_deref(), Some("2h 30m"));
+        assert_eq!(
+            report.fields_text(),
+            "percentage\t51%\nstate\tdischarging\nrate\t10.8W\nsize\t56Wh\ntime\t2h 30m\ncycles\t412\nthreshold\t40-80%\n"
+        );
+        assert_eq!(
+            report.line_text(),
+            "Battery 51%  ·  2h 30m left  ·  10.8W / 56Wh"
+        );
+    }
+
+    #[test]
+    fn charge_and_current_without_voltage_still_report_time_to_full() {
+        let report = report(
+            &[
+                ("capacity", "75"),
+                ("status", "Charging"),
+                ("charge_full", "1000000"),
+                ("charge_now", "325000"),
+                ("current_now", "900000"),
+            ],
+            true,
+        );
+
+        assert_eq!(report.rate_text(), "0W");
+        assert_eq!(report.size_text(), "0Wh");
+        assert_eq!(report.time_text().as_deref(), Some("45m"));
+        assert_eq!(
+            report.line_text(),
+            "Battery 75%  ·  45m to full  ·  0W / 0Wh"
+        );
+    }
+
+    #[test]
+    fn negative_current_uses_its_magnitude_for_rate_and_time() {
+        let report = report(
+            &[
+                ("capacity", "75"),
+                ("status", "Discharging"),
+                ("energy_now", "10800000"),
+                ("energy_full", "56000000"),
+                ("current_now", "-900000"),
+                ("voltage_now", "12000000"),
+            ],
+            false,
+        );
+
+        assert_eq!(report.rate_text(), "10.8W");
+        assert_eq!(report.time_text().as_deref(), Some("1h"));
+    }
+
+    #[test]
+    fn zero_rate_makes_time_unknown() {
+        let report = report(
+            &[
+                ("capacity", "50"),
+                ("status", "Discharging"),
+                ("energy_now", "27000000"),
+                ("energy_full", "56700000"),
+                ("power_now", "0"),
+            ],
+            false,
+        );
+
+        assert_eq!(report.time_minutes, None);
+        assert_eq!(report.time_text(), None);
+        assert_eq!(report.line_text(), "Battery 50%  ·  0W / 56Wh");
+    }
+
+    #[test]
+    fn pending_charge_holds_only_with_external_power() {
+        let attributes = [
+            ("capacity", "80"),
+            ("status", "Not charging"),
+            ("charge_control_end_threshold", "80"),
+        ];
+        assert!(report(&attributes, true).holding);
+        assert!(!report(&attributes, false).holding);
+    }
+
+    #[test]
+    fn fully_charged_holds_below_99_percent_but_not_at_99() {
+        let below = [
+            ("capacity", "98"),
+            ("status", "Full"),
+            ("charge_control_end_threshold", "80"),
+        ];
+        let at_99 = [
+            ("capacity", "99"),
+            ("status", "Full"),
+            ("charge_control_end_threshold", "80"),
+        ];
+        assert!(report(&below, true).holding);
+        assert!(!report(&at_99, true).holding);
+    }
+
+    #[test]
+    fn slow_charge_holds_at_threshold_and_rejects_each_near_miss() {
+        let at_limit = [
+            ("capacity", "80"),
+            ("status", "Charging"),
+            ("power_now", "200000"),
+            ("charge_control_end_threshold", "80"),
+        ];
+        let above_rate = [
+            ("capacity", "80"),
+            ("status", "Charging"),
+            ("power_now", "200001"),
+            ("charge_control_end_threshold", "80"),
+        ];
+        let end_99 = [
+            ("capacity", "99"),
+            ("status", "Charging"),
+            ("power_now", "200000"),
+            ("charge_control_end_threshold", "99"),
+        ];
+        let below_end = [
+            ("capacity", "79"),
+            ("status", "Charging"),
+            ("power_now", "200000"),
+            ("charge_control_end_threshold", "80"),
+        ];
+        assert!(report(&at_limit, true).holding);
+        assert!(!report(&above_rate, true).holding);
+        assert!(!report(&end_99, true).holding);
+        assert!(!report(&below_end, true).holding);
+    }
+
+    #[test]
+    fn threshold_label_handles_equal_and_different_values() {
+        let equal = report(
+            &[
+                ("capacity", "80"),
+                ("status", "Not charging"),
+                ("charge_control_start_threshold", "80"),
+                ("charge_control_end_threshold", "80"),
+            ],
+            false,
+        );
+        let different = report(
+            &[
+                ("capacity", "80"),
+                ("status", "Not charging"),
+                ("charge_control_start_threshold", "75"),
+                ("charge_control_end_threshold", "80"),
+            ],
+            false,
+        );
+
+        assert_eq!(equal.threshold_label().as_deref(), Some("80%"));
+        assert_eq!(different.threshold_label().as_deref(), Some("75-80%"));
+    }
+
+    #[test]
+    fn mouse_battery_alone_is_not_a_system_battery() {
+        let snapshot = PowerSnapshot {
+            supplies: vec![Supply {
+                name: "hidpp_battery_0".to_string(),
+                kind: "Battery".to_string(),
+                present: Some(true),
+                scope: Some("Device".to_string()),
+                online: None,
+                attributes: BTreeMap::new(),
+            }],
+        };
+
+        assert!(!snapshot.has_battery());
+        assert!(!snapshot.on_battery());
+    }
+
+    #[test]
+    fn external_power_requires_online_mains_or_usb() {
+        let supply = |name: &str, kind: &str, online| Supply {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            present: None,
+            scope: None,
+            online,
+            attributes: BTreeMap::new(),
+        };
+        let cases = [
+            ("online mains", supply("AC", "Mains", Some(true)), true),
+            ("online usb", supply("USB", "USB", Some(true)), true),
+            ("offline mains", supply("AC", "Mains", Some(false)), false),
+            ("battery", supply("BAT0", "Battery", Some(true)), false),
+        ];
+
+        for (scenario, supply, expected) in cases {
+            assert_eq!(
+                PowerSnapshot {
+                    supplies: vec![supply]
+                }
+                .has_external_power(),
+                expected,
+                "{scenario}"
+            );
+        }
     }
 }
