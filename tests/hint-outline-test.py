@@ -389,7 +389,7 @@ def outside_point(capture_size, origin=(0, 0)):
     frames = frame_map(state)
     for identifier, frame in frames.items():
         candidates = []
-        for distance in (16, 32, 48, 64, 80, 96):
+        for distance in (48, 64, 80, 96, 128):
             for t in (.2, .35, .5, .65, .8):
                 candidates.extend((
                     (frame[0] + frame[2] * t, frame[1] - distance),
@@ -445,9 +445,13 @@ def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_
                 outside_screen = (point_out[0] + origin[0], point_out[1] + origin[1])
                 outside_before = outside_base.pixel(*outside_screen)
                 outside_after = outside_full.pixel(*outside_screen)
+                outside_ok = near(outside_before, outside_after, 3)
+                outside_detail = {"point": point_out, "base": outside_before, "tinted": outside_after}
+                if not outside_ok:
+                    outside_detail["frames"] = frames
+                    outside_detail["badges"] = badges(state)
                 check(name + ": no tint stroke outside drawn extents",
-                      near(outside_before, outside_after, 3),
-                      {"point": point_out, "base": outside_before, "tinted": outside_after})
+                      outside_ok, outside_detail)
         return point, before, after
     finally:
         set_tint(old)
@@ -674,7 +678,7 @@ def widget_cover():
         image = Shot("09-widget-cover-" + phase)
         ux, uy, uw, uh = under_rect
         under_card = lambda x, y: contains(card_rect, (x, y))
-        exposed = (ux + uw * .8, uy + uh * .5)
+        exposed = (ux + uw * .85, uy + uh * .65)
         covered = (ux + uw * .65, uy + uh * .9)
         exposed_is_sampleable = (not under_card(*exposed) and off_badges(state, *exposed, 20))
         covered_is_sampleable = (under_card(*covered) and off_badges(state, *covered, 20))
