@@ -73,6 +73,8 @@ extern "C" {
 #include "inertia.hpp"
 #include <chrono>
 #include "hint-overlay.hpp"
+#include "note-overlay.hpp"
+#include "window-notes.hpp"
 #include <wayfire/scene-operations.hpp>
 #include "key-layers.hpp"
 #include "session.hpp"
@@ -85,6 +87,7 @@ extern "C" {
 #include <cmath>
 #include <ctime>
 #include <map>
+#include <limits>
 #include <set>
 #include <regex>
 #include <optional>
@@ -1636,6 +1639,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             stop_widget_transition(toplevel);
             set_fullscreen_filter_hidden(toplevel, false);
             model.windows.erase(toplevel->get_id());
+            model.notes.erase(toplevel->get_id());
+            clear_note_dot(toplevel->get_id());
             render_hidden(toplevel, false);  // return our lease even if Wayfire already unmapped it
             if (auto frame = frame_of(toplevel, false))
             {
@@ -1682,6 +1687,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         }
 
         publish_model();
+        update_note_visuals();
         refresh_layout_avoidance();
     };
     wf::wl_idle_call idle_focus;
@@ -1858,6 +1864,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         uint64_t version = 0;
         std::string session;
         std::map<uint64_t, window_state_t> windows;
+        std::map<uint64_t, std::vector<scottland::window_notes::note_t>> notes;
+        int64_t next_note_id = 1;
         std::map<uint64_t, widget_link_t> widgets;    // keyed by the app window
         widget_mode_t widget_mode = widget_mode_t::expanded;  // the mode taps choose; survives a reload
         std::optional<widget_mode_t> widget_mode_held;        // Super+M held: momentary until released
@@ -1867,6 +1875,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::set<uint64_t> selected;                 // reserved for future multi-select
         std::set<wf::output_t*> focused_outputs;     // a fullscreen window in front: focus (FS1)
     } model;
+    #include "window-notes-bridge.hpp"
     struct rail_layout_motion_t
     {
         std::weak_ptr<wf::view_interface_t> view;
@@ -3212,6 +3221,38 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (!entries.is_array())
         {
             model.version = std::max(model.version, (uint64_t)entries["version"].as_int64());
+            if (entries.has_member("next_note_id") && entries["next_note_id"].is_int())
+                model.next_note_id = std::max<int64_t>(1, entries["next_note_id"].as_int64());
+            if (entries.has_member("notes") && entries["notes"].is_array())
+            {
+                auto saved_notes = entries["notes"];
+                for (size_t i = 0; i < saved_notes.size(); ++i)
+                {
+                    auto saved_window = saved_notes[i];
+                    if (!saved_window.has_member("id") || !saved_window["id"].is_int()) continue;
+                    const auto window_id = saved_window["id"].as_int64();
+                    if (window_id <= 0 || !model.windows.count(uint64_t(window_id)) ||
+                        !saved_window.has_member("notes") || !saved_window["notes"].is_array()) continue;
+                    auto saved_list = saved_window["notes"];
+                    auto& notes = model.notes[uint64_t(window_id)];
+                    for (size_t j = 0; j < saved_list.size(); ++j)
+                    {
+                        auto saved = saved_list[j];
+                        if (!saved.has_member("id") || !saved["id"].is_int() ||
+                            !saved.has_member("writer") || !saved["writer"].is_string() ||
+                            !saved.has_member("text") || !saved["text"].is_string()) continue;
+                        scottland::window_notes::note_t note{saved["id"].as_int64(),
+                            saved["writer"].as_string(), saved["text"].as_string()};
+                        if (note.id <= 0 || !scottland::window_notes::valid_writer(note.writer) ||
+                            !scottland::window_notes::valid_text(note.text)) continue;
+                        notes.push_back(note);
+                        if (note.id < std::numeric_limits<int64_t>::max())
+                            model.next_note_id = std::max(model.next_note_id, note.id + 1);
+                    }
+
+                    if (notes.empty()) model.notes.erase(uint64_t(window_id));
+                }
+            }
             auto mode = entries.has_member("widget_mode") ?
                 parse_widget_mode(entries["widget_mode"].as_string()) : std::nullopt;
             model.widget_mode = mode ? *mode :
@@ -4229,6 +4270,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
 
     wf::json_t model_snapshot(const std::string& slice)
     {
+        if (slice == "notes") return notes_slice_snapshot();
         auto reply = wf::ipc::json_ok();
         reply["collapsed"] = model.widget_mode == widget_mode_t::collapsed;
         reply["widget_mode"] = widget_mode_name(model.widget_mode);
@@ -4356,10 +4398,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     bool installing_model = true;  // no partial init/handover snapshots escape
     std::map<std::string, std::string> published_slices;
     std::map<std::string, uint64_t> published_versions;
+    uint64_t published_version(const std::string& slice) const
+    {
+        auto found = published_versions.find(slice);
+        return found == published_versions.end() ? model.version : found->second;
+    }
     // A transaction that changes many windows at once (a spread commit) publishes the model once
     // at its end instead of once per change: each publish serializes the whole desktop.
     int publish_batch = 0;
     bool publish_pending = false;
+    bool publish_force_notes_pending = false;
     struct publish_batch_t
     {
         scottland_plugin_t *self;
@@ -4369,12 +4417,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             if (--self->publish_batch == 0 && self->publish_pending)
             {
                 self->publish_pending = false;
-                self->publish_model();
+                const bool force_notes = self->publish_force_notes_pending;
+                self->publish_force_notes_pending = false;
+                self->publish_model(force_notes);
             }
         }
     };
 
-    void publish_model()
+    void publish_model(bool force_notes = false)
     {
         if (installing_model)
         {
@@ -4384,44 +4434,41 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (publish_batch)
         {
             publish_pending = true;
+            publish_force_notes_pending = publish_force_notes_pending || force_notes;
             return;
         }
 
-        auto full = model_snapshot("desktop");
-        auto text = full.serialize();
-        if (published_slices["desktop"] == text)
-        {
-            return;
-        }
-
-        model.version++;
-        published_slices["desktop"] = text;
-        full["version"] = (int64_t)model.version;
-        send_ipc_event(full, "scottland-model#");
-        for (auto slice : {"widgets", "attention"})
+        std::map<std::string, wf::json_t> changed;
+        for (auto slice : {"desktop", "widgets", "attention", "notes"})
         {
             auto snapshot = model_snapshot(slice);
             auto value = snapshot.serialize();
-            if (published_slices[slice] != value)
-            {
-                published_slices[slice] = value;
-                published_versions[slice] = model.version;
-                snapshot["version"] = (int64_t)model.version;
-                send_ipc_event(snapshot, std::string("scottland-") + slice + "#");
-            }
+            if ((std::string(slice) == "notes" && force_notes) || published_slices[slice] != value)
+                changed.emplace(slice, std::move(snapshot));
+        }
+
+        if (changed.empty()) return;
+        model.version++;
+        for (auto& [slice, snapshot] : changed)
+        {
+            published_slices[slice] = model_snapshot(slice).serialize();
+            published_versions[slice] = model.version;
+            snapshot["version"] = (int64_t)model.version;
+            const std::string event = slice == "desktop" ? "scottland-model#" : "scottland-" + slice + "#";
+            send_ipc_event(snapshot, event);
         }
     }
 
     wf::ipc::method_callback desktop_state = [=] (wf::json_t data) -> wf::json_t
     {
         std::string slice = data.has_member("slice") && data["slice"].is_string() ? data["slice"].as_string() : "desktop";
-        if ((slice != "desktop") && (slice != "widgets") && (slice != "attention"))
+        if ((slice != "desktop") && (slice != "widgets") && (slice != "attention") && (slice != "notes"))
         {
             return wf::ipc::json_error("unknown desktop-model slice");
         }
 
         auto reply = model_snapshot(slice);
-        reply["version"] = (int64_t)model.version;
+        reply["version"] = (int64_t)published_version(slice);
         return reply;
     };
     wf::ipc::method_callback_full subscribe_model = [=] (wf::json_t data, wf::ipc::client_interface_t *client) -> wf::json_t
@@ -4451,7 +4498,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     {
         auto reply = wf::ipc::json_ok();
         reply["widgets"] = widget_snapshot();
-        reply["version"] = (int64_t)model.version;
+        reply["version"] = (int64_t)published_version("widgets");
         return reply;
     };
 
@@ -7756,6 +7803,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->register_method("scottland/widgets", widgets_state);
         ipc_repo->register_method("scottland/desktop-model", desktop_state);
         ipc_repo->register_method("scottland/subscribe", subscribe_model);
+        ipc_repo->register_method("scottland/notes", notes_method);
         if (getenv("SCOTTLAND_TEST_MODEL") && std::string(getenv("SCOTTLAND_TEST_MODEL")) == "1")
         {
             ipc_repo->register_method("scottland/audit-model", audit_model);
@@ -7857,6 +7905,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             },
             [this](wf::output_t *) { apply_all(); });
         refresh_layout_avoidance();
+        update_note_visuals();
         LOGI("scottland: plugin loaded");
     }
 
@@ -7868,6 +7917,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         wf::get_core().bindings->rem_binding(&on_move_shift);
         bool reloading = access(runtime_file(".reloading").c_str(), F_OK) == 0;
         installing_model = reloading;  // teardown is also part of the atomic handover
+        clear_note_overlays();
         widget_peek_tick.disconnect();
         goo.stop();
         fini_window_keys();
@@ -7931,6 +7981,7 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         ipc_repo->unregister_method("scottland/widgets");
         ipc_repo->unregister_method("scottland/desktop-model");
         ipc_repo->unregister_method("scottland/subscribe");
+        ipc_repo->unregister_method("scottland/notes");
         ipc_repo->unregister_method("scottland/audit-model");
         on_title.disconnect();
         on_app_id.disconnect();
@@ -7990,6 +8041,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto snapshot = model_snapshot("desktop");
             snapshot["version"] = (int64_t)model.version;
             snapshot["links"] = handover;
+            snapshot["notes"] = notes_windows_snapshot();
+            snapshot["next_note_id"] = model.next_note_id;
             auto path = runtime_file(".widget-handover.json");
             std::ofstream out(path + ".tmp");
             out << snapshot.serialize();

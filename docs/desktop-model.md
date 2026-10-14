@@ -19,6 +19,7 @@ See [widgets.md](widgets.md#presentation-rendering-wg16-mechanism-for-wg19).
 | Launcher PID, launch unit | Plugin's desktop model | A pidfd event records launcher exit and publishes it; snapshot serialization never probes process liveness. |
 | Resolved desktop identity, name, icon, built-in card trait | Plugin's desktop model | The launcher submits these once for a specific launch unit; there is no identity side file. |
 | Attention source set, per window | Plugin's desktop model | Each source adds/removes its name; `builtin:` names are reserved for plugin inputs, so a configured source cannot clear a bell/urgency. User focus answers all sources. Halos read this set. |
+| Notes, per window | Plugin's desktop model | Validated add/update/remove IPC changes the ordered notes list. Window close removes it. The notes slice publishes complete replacements independently from desktop, widget and attention slice content. Marked reload hands it over atomically with the next note id. |
 | Desktop widget mode (expanded, collapsed, hidden) and a held, momentary mode | Plugin's desktop model | A Super+M tap (or `scottland/widget-mode`) updates the mode and collapsed intent together, ending peeks; a hold sets the momentary mode until release. Effective presentation is collapsed intent unless a temporary peek (hover, attention, Window mode, a held expand) overrides it; each widget's place at its edge (in, away, peeking) follows the shown mode, full screen and attention (WG16). |
 | Full-screen focus per screen (FS1) | Plugin's desktop model | Wayfire's fullscreen-promotion signal sets it; that screen's docked widgets are marked away (slid off and hidden) without leaving docked, and the focus.d hooks follow whether any screen is in focus. Published as `focus` (screen names). |
 | Goo availability per screen | Plugin's desktop model (`goo_outputs`) | The goo renderer reports surface attachment/removal, including GPU fallback. The desktop slice publishes `goo` (screen names); widget/attention slices exclude it and simulation samples. |
@@ -36,9 +37,9 @@ state or a subscription consumer. GPU nodes, sources, timers and sleep remain re
 
 ## Subscription interface
 
-`scottland/subscribe {"slice":"desktop"|"widgets"|"attention"}` installs the watch and returns
+`scottland/subscribe {"slice":"desktop"|"widgets"|"attention"|"notes"}` installs the watch and returns
 the complete current slice in one compositor turn. Later events are `scottland-model#`,
-`scottland-widgets#` or `scottland-attention#` respectively. The existing Wayfire event repository
+`scottland-widgets#`, `scottland-attention#` or `scottland-notes#` respectively. The existing Wayfire event repository
 owns subscription connections, so a plugin reload preserves them. Disconnect/reconnect means
 subscribe again: the reply is current immediately. `scottland/desktop-model` accepts the same
 slice parameter for a read without a watch.
@@ -49,7 +50,10 @@ are session-local, persist across plugin replacement (including an ordinary unlo
 may have gaps when another slice changes. Events contain complete current state, never deltas.
 The old `scottland/widgets` read remains a compatibility snapshot of committed widgets only.
 
-The desktop slice includes positions, sizes, zones, layers, live morphing form and selection.
+The desktop slice includes positions, sizes, zones, layers, live morphing form and selection. The
+notes slice contains every note on each window that has notes; changes to it do not change any
+other slice's content. Each slice carries its own latest publication version, so a notes-only
+mutation leaves the other slices' versions unchanged.
 External slices omit geometry and animation samples: drag motion that changes only position
 sends them nothing. The widget service receives widget presentation/identity and window target
 scales for `org.scottland.Windows`; a target-scale change is useful app state, never an animation
@@ -83,6 +87,7 @@ identity file, once, before publication. Card traits come from its actual launch
 | DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. Independent regressions additionally assert mailbox payload, input-intended morph direction, Esc layer release, fullscreen visibility against promotion, process exit, migrated identity/badge routing and app-ID-only changes. They run only in an isolated headless session. | implemented (headless) |
 | DM7 | The drag session is a field of the desktop model: current origin, original form, re-grab chain, morph target, drag scale/grab state and temporarily held-above window have one owner. Existing Esc and re-grab behavior stays the same. | implemented (headless) |
 | DM9 | Goo reads logical visibility, attention, drag and fullscreen focus from the desktop model; attached goo screens are model state in the desktop slice. GPU fields and animation samples remain renderer resources. Live disable/fallback removes those screens without changing widget or attention slices. | implemented; plumbus headless input/snapshot/fallback checked |
+| DM10 | Notes are ordered per-window desktop-model state. Their complete `notes` slice is independently versioned; add, update, remove, window close and marked reload preserve the notes contract without changing desktop, widget or attention slice content. The next note id is part of the same marked handover. | implemented; headless verification pending |
 | DM8 | A marked reload transfers the live pidfd, including launches without systemd scopes. Legacy upgrades open a handle only for a verified live launcher; an unverifiable launcher is reported as PID zero. Launcher exit enters through a pidfd event, changes the tracked PID and publishes a newer full snapshot while a forked widget stays mapped. Serializing a snapshot never probes process liveness. | implemented (plumbus headless) |
 
 App-ID-only updates are exercised by a real GTK Wayland client in
