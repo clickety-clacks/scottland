@@ -9,3 +9,6 @@ publish.workspace = true
 
 [lib]
 name = "scottland"
+
+[dependencies]
+serde_json.workspace = true
