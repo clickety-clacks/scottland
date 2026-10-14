@@ -65,8 +65,10 @@ Gooarchy will have its own bar and its own notification system (see docs/knocks.
   generically for users who change it.
 - **Cross-app theming engine and day/night themes**: a Scottland distro chooses and runs a
   cross-app theme engine (Omarchy’s, an equivalent, or Aether) and its default named day/night
-  themes. Scottland core follows the active light/dark preference and palette; its optional solar
-  schedule requests only a mode. The Omarchy adapter applies Omarchy themes when their mode is wrong.
+  themes. Scottland core follows the active light/dark preference and palette; its optional
+  `scottland-sunlight` package schedules actual sunrise/sunset transitions and requests only a mode.
+  The Omarchy adapter consumes each transition once and applies its selected day/night theme only
+  at that boundary.
   Intended direction: a desktop-agnostic palette engine, its own repository that the distro installs,
   driven by per-desktop schemas of semantic colors (attention first); the distro ships the default
   themes and Scottland reads configs made with the Scottland schema. See

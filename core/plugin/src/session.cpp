@@ -92,12 +92,21 @@ struct session_t::impl
     wf::option_wrapper_t<wf::config::compound_list_t<std::string, std::string, bool, std::string>>
     switch_bindings{"scottland/switch_bindings"};
     std::unique_ptr<test_switches_t> test_switches;
+    uint64_t config_reloads = 0;
 
-    wf::ipc::method_callback state = [] (wf::json_t)
+    wf::ipc::method_callback state = [=] (wf::json_t)
     {
         wf::json_t reply = wf::ipc::json_ok();
         reply["locked"] = session_locked();
+        reply["config-reloads"] = config_reloads;
         return reply;
+    };
+
+    // Wayfire applies a reloaded config (outputs included) inside this signal; a reply read after
+    // the count went up sees its effect.
+    wf::signal::connection_t<wf::reload_config_signal> on_config_reload = [=] (wf::reload_config_signal*)
+    {
+        ++config_reloads;
     };
 
     wf::signal::connection_t<wf::switch_signal> on_switch = [=] (wf::switch_signal *ev)
@@ -156,6 +165,7 @@ void session_t::init()
     priv = std::make_unique<impl>();
     priv->ipc->register_method("scottland/session-state", priv->state);
     wf::get_core().connect(&priv->on_switch);
+    wf::get_core().connect(&priv->on_config_reload);
     if (getenv("SCOTTLAND_TEST_MODEL"))
     {
         priv->ipc->register_method("scottland/test-switch", priv->test_switch);
@@ -176,6 +186,7 @@ void session_t::fini()
     }
 
     priv->on_switch.disconnect();
+    priv->on_config_reload.disconnect();
     priv.reset();
 }
 }
