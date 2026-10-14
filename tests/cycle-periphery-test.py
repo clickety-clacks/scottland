@@ -18,6 +18,7 @@ width there: with empty space at the center edge it hangs about that far (and la
 a spot clear of the zone would); with a center window at the edge it stays clear of that window."""
 import json
 import math
+import os
 import socket
 import struct
 import subprocess
@@ -39,9 +40,10 @@ PAD = 32 / 3 + 5   # WP7: halo plus 5 pt
 def ipc(method, data=None):
     global request_path
     if request_path is None:
-        # The headless session's own recorded socket, never the caller's desktop.
-        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
-            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
+        # This driver runs inside the owner-isolated headless session; use its socket directly.
+        request_path = os.environ.get('WAYFIRE_SOCKET')
+        if not request_path:
+            raise RuntimeError('cycle-periphery-test.py must run inside tests/headless.sh run')
     with socket.socket(socket.AF_UNIX) as request:
         request.settimeout(10)
         request.connect(request_path)
@@ -129,7 +131,7 @@ def press_hint(identifier):
 def launch(name, x, y, w, h):
     ipc('wayfire/set-config-options', {'place/mode': 'pointer'})
     ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
-    clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+    clients.append(subprocess.Popen(['python3',
         str(Path('tests/sized-window-app.py').resolve()), name, str(w), str(h)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     v = wait_for(lambda: view(name))
@@ -231,7 +233,7 @@ def widget_rail(identifier):
 def launch_dialog(name, x, y):
     ipc('wayfire/set-config-options', {'place/mode': 'pointer'})
     ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
-    clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+    clients.append(subprocess.Popen(['python3',
         str(Path('tests/dialog-window-app.py').resolve()), name],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     return wait_for(lambda: view(name))['id']
@@ -264,7 +266,7 @@ try:
           {'right periphery memory': memory(a, 2), 'deep': deep_x})
     check(memory(a, 0) is not None and abs(memory(a, 0) - edge_x) < 2,
           'it is remembered as the center instead (WP8)', {'center memory': memory(a, 0), 'edge': edge_x})
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'edge-drop.png')], check=True)
+    subprocess.run(['grim', str(artifacts / 'edge-drop.png')], check=True)
     loop = stops(a, 'Edge', 6)
     check(abs(center(loop[0])[0] - deep_x) < 2 and lands_in_periphery(loop[0]),
           'cycling from there goes to the remembered periphery spot, scaled', summary(loop[0]))
@@ -360,7 +362,7 @@ try:
             # The first fix kept the whole window clear of the zone: 0.52 for this window.
             check(out['scale'] > .6, 'Mike-sized: it lands bigger than a spot clear of the center zone (0.52)',
                   summary(out))
-        subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / f'fresh-{name}.png')], check=True)
+        subprocess.run(['grim', str(artifacts / f'fresh-{name}.png')], check=True)
         side = 1 if center(out)[0] < width / 2 else 2
         check(abs(memory(i, side) - center(out)[0]) < 2, f'{name}: that spot is its periphery memory')
         back = stops(i, name, 1)[0]
@@ -384,7 +386,7 @@ try:
           'with a center window at the edge, it lands clear of that window',
           dict(summary(out), overlap=overlap(out, edge_window), hang=round(hang(out), 3)))
     print(f'      beside the edge window: {summary(out)}, hang {hang(out):.3f}', flush=True)
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'fresh-beside-edge.png')], check=True)
+    subprocess.run(['grim', str(artifacts / 'fresh-beside-edge.png')], check=True)
     close_all()
 
     # With other windows about, like Mike's desktop: two in the left periphery, one in the center
@@ -401,7 +403,7 @@ try:
           'among other windows it takes the open side, clear of the center window and the others',
           dict(summary(out), covered=covered))
     print(f'      crowded: {summary(out)}, hang {hang(out):.3f}', flush=True)
-    subprocess.run(['tests/headless.sh', 'run', 'grim', str(artifacts / 'fresh-crowded.png')], check=True)
+    subprocess.run(['grim', str(artifacts / 'fresh-crowded.png')], check=True)
     close_all()
 
     # --- A periphery memory that zone settings have since put in the center's softness band.

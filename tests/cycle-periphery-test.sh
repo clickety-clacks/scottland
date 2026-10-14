@@ -20,5 +20,5 @@ make test-hooks >"$SCOTTLAND_RUNNER_ARTIFACTS/build.log" 2>&1 || {
   { echo "this checkout's test helpers are missing after make test-hooks" >&2; exit 1; }
 tests/headless.sh start --widgets
 scottland_runner_runtime_unchanged
-python3 tests/cycle-periphery-test.py "$SCOTTLAND_RUNNER_ARTIFACTS"
+tests/headless.sh run python3 tests/cycle-periphery-test.py "$SCOTTLAND_RUNNER_ARTIFACTS"
 scottland_runner_runtime_unchanged

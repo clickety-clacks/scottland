@@ -34,7 +34,7 @@ scottland_runner_owned_dir() {
 
 scottland_runner_prepare() {
   local requested_artifacts=$1 build
-  : "${SCOTTLAND_HEADLESS_DIR:?set a fresh headless directory under this checkout's build/}"
+  : "${SCOTTLAND_HEADLESS_DIR:?set a fresh headless directory under this checkout build/}"
 
   local repo
   repo=$(realpath -e -- "$PWD") || return 1
@@ -76,6 +76,7 @@ scottland_runner_prepare() {
   umask "$old_umask"
 
   export SCOTTLAND_HEADLESS_DIR SCOTTLAND_HEADLESS_OWNER
+  export SCOTTLAND_HEADLESS_OWNER_DIR="$SCOTTLAND_HEADLESS_DIR"
   export SCOTTLAND_RUNNER_ARTIFACTS
   export TMPDIR="$SCOTTLAND_RUNNER_TMPDIR"
 }
