@@ -119,7 +119,6 @@ const SENDER_WINDOW_SNAPSHOT_SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
 type Result<T> = std::result::Result<T, String>;
 
 struct Ctl {
-    session: Session,
     socket: UnixStream,
     dye_option: Option<&'static str>,
 }
@@ -139,7 +138,6 @@ impl Ctl {
             .set_write_timeout(Some(Duration::from_secs(5)))
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            session,
             socket,
             dye_option: None,
         })
@@ -398,6 +396,16 @@ fn connect_socket(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
             "socket timeout must be positive",
         ));
     }
+    let deadline = Instant::now() + timeout;
+    let stream = connect_socket_until(path, deadline)?;
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    Ok(stream)
+}
+
+fn connect_socket_until(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
+    remaining_until(deadline)?;
     let path_bytes = path.as_os_str().as_bytes();
     if path_bytes.is_empty() || path_bytes.contains(&0) {
         return Err(io::Error::new(
@@ -443,45 +451,78 @@ fn connect_socket(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
             let error = io::Error::last_os_error();
             match error.raw_os_error() {
                 Some(libc::EINPROGRESS) | Some(libc::EALREADY) | Some(libc::EAGAIN) => {
-                    wait_for_socket_connect(&stream, timeout)?;
+                    wait_for_socket_connect(&stream, deadline)?;
                 }
                 Some(libc::EISCONN) => {}
                 _ => return Err(error),
             }
         }
-        stream.set_nonblocking(false)?;
         stream
     };
 
     #[cfg(not(target_os = "linux"))]
-    let stream = UnixStream::connect(path)?;
+    let stream = {
+        let stream = UnixStream::connect(path)?;
+        stream.set_nonblocking(true)?;
+        stream
+    };
 
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+    remaining_until(deadline)?;
     Ok(stream)
 }
 
 #[cfg(target_os = "linux")]
-fn wait_for_socket_connect(stream: &UnixStream, timeout: Duration) -> io::Result<()> {
-    let deadline = Instant::now() + timeout;
+fn wait_for_socket_connect(stream: &UnixStream, deadline: Instant) -> io::Result<()> {
+    wait_for_socket_ready(stream, libc::POLLOUT, deadline)?;
+    let mut socket_error: libc::c_int = 0;
+    let mut len = mem::size_of_val(&socket_error) as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            (&mut socket_error as *mut libc::c_int).cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if socket_error != 0 {
+        return Err(io::Error::from_raw_os_error(socket_error));
+    }
+    remaining_until(deadline).map(|_| ())
+}
+
+fn remaining_until(deadline: Instant) -> io::Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Wayfire socket operation exceeded its deadline",
+        ))
+    } else {
+        Ok(remaining)
+    }
+}
+
+fn wait_for_socket_ready(
+    stream: &UnixStream,
+    events: libc::c_short,
+    deadline: Instant,
+) -> io::Result<()> {
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Wayfire socket connection timed out",
-            ));
-        }
+        let remaining = remaining_until(deadline)?;
         let millis = remaining.as_millis()
             + if remaining.subsec_nanos() % 1_000_000 != 0 {
                 1
             } else {
                 0
             };
-        let timeout_ms = millis.min(libc::c_int::MAX as u128) as libc::c_int;
+        let timeout_ms = millis.max(1).min(libc::c_int::MAX as u128) as libc::c_int;
         let mut descriptor = libc::pollfd {
             fd: stream.as_raw_fd(),
-            events: libc::POLLOUT,
+            events,
             revents: 0,
         };
         let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
@@ -495,28 +536,57 @@ fn wait_for_socket_connect(stream: &UnixStream, timeout: Duration) -> io::Result
         if ready == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "Wayfire socket connection timed out",
+                "Wayfire socket operation exceeded its deadline",
             ));
-        }
-        let mut socket_error: libc::c_int = 0;
-        let mut len = mem::size_of_val(&socket_error) as libc::socklen_t;
-        let result = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                (&mut socket_error as *mut libc::c_int).cast::<libc::c_void>(),
-                &mut len,
-            )
-        };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if socket_error != 0 {
-            return Err(io::Error::from_raw_os_error(socket_error));
         }
         return Ok(());
     }
+}
+
+fn write_all_until(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+    while !bytes.is_empty() {
+        remaining_until(deadline)?;
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "Wayfire socket stopped accepting the session-state request",
+                ));
+            }
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_for_socket_ready(stream, libc::POLLOUT, deadline)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    remaining_until(deadline).map(|_| ())
+}
+
+fn read_exact_until(
+    stream: &mut UnixStream,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        remaining_until(deadline)?;
+        match stream.read(bytes) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Wayfire socket closed before the session-state reply was complete",
+                ));
+            }
+            Ok(read) => bytes = &mut bytes[read..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_for_socket_ready(stream, libc::POLLIN, deadline)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    remaining_until(deadline).map(|_| ())
 }
 
 fn print_json(value: Value) -> Result<u8> {
@@ -590,18 +660,20 @@ fn stdin_updates() -> Result<u8> {
 }
 
 fn terminal_cwd(pid_arg: Option<&str>) -> Result<u8> {
-    let ctl = Ctl::connect()?;
-    let cwd = scottland::terminal_cwd::resolve(&ctl.session, pid_arg.map(OsStr::new)).map_err(
-        |error| {
-            if error.kind() == io::ErrorKind::InvalidInput {
-                "PID must be a positive integer".to_string()
-            } else {
-                error.to_string()
-            }
-        },
-    )?;
+    let session = current_session()?;
+    let cwd = terminal_cwd_path(&session, pid_arg.map(OsStr::new)).map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidInput {
+            "PID must be a positive integer".to_string()
+        } else {
+            error.to_string()
+        }
+    })?;
     println!("{}", cwd.display());
     Ok(0)
+}
+
+fn terminal_cwd_path(session: &Session, pid_arg: Option<&OsStr>) -> io::Result<PathBuf> {
+    scottland::terminal_cwd::resolve(session, pid_arg)
 }
 
 fn current_session() -> Result<Session> {
@@ -709,24 +781,62 @@ fn sleep_lock(budget_arg: Option<&str>) -> Result<u8> {
                 .filter(|ms| (1..=BUDGET_CAP_MS).contains(ms))
         })
         .unwrap_or_else(|| derive_budget_ms(&session));
-    let reserve = Instant::now() + Duration::from_millis(budget);
+    wait_for_session_secure(
+        &session,
+        Duration::from_millis(budget),
+        Instant::now,
+        request_session_lock,
+        session_state,
+    )
+}
+
+fn wait_for_session_secure<Now, RequestLock, SessionState>(
+    session: &Session,
+    budget: Duration,
+    mut now: Now,
+    mut request_lock: RequestLock,
+    mut session_state: SessionState,
+) -> Result<u8>
+where
+    Now: FnMut() -> Instant,
+    RequestLock: FnMut(&Session, Duration) -> Result<()>,
+    SessionState: FnMut(&Session, Instant) -> Result<bool>,
+{
+    let deadline = now() + budget;
     let mut requested_at = None;
     loop {
-        let remaining = reserve.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(now());
         if remaining.is_zero() {
-            eprintln!("scottland-ctl: session did not become secure within {budget}ms");
-            return Ok(1);
+            return session_lock_timeout(budget);
         }
-        if requested_at.is_none_or(|last: Instant| last.elapsed() >= Duration::from_millis(500)) {
-            let _ = request_session_lock(&session, remaining.min(Duration::from_secs(1)));
-            requested_at = Some(Instant::now());
+        if requested_at.is_none_or(|last: Instant| {
+            now().saturating_duration_since(last) >= Duration::from_millis(500)
+        }) {
+            let _ = request_lock(session, remaining.min(Duration::from_secs(1)));
+            requested_at = Some(now());
         }
-        match session_state(&session, remaining.min(Duration::from_millis(500))) {
-            Ok(true) => return Ok(0),
+        if deadline.saturating_duration_since(now()).is_zero() {
+            return session_lock_timeout(budget);
+        }
+        match session_state(session, deadline) {
+            Ok(true) if now() < deadline => return Ok(0),
+            Ok(true) => return session_lock_timeout(budget),
             Ok(false) | Err(_) => {}
+        }
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return session_lock_timeout(budget);
         }
         thread::sleep(remaining.min(Duration::from_millis(100)));
     }
+}
+
+fn session_lock_timeout(budget: Duration) -> Result<u8> {
+    eprintln!(
+        "scottland-ctl: session did not become secure within {}ms",
+        budget.as_millis()
+    );
+    Ok(1)
 }
 
 fn derive_budget_ms(session: &Session) -> u64 {
@@ -766,35 +876,25 @@ fn request_session_lock(session: &Session, timeout: Duration) -> Result<()> {
     }
 }
 
-fn session_state(session: &Session, timeout: Duration) -> Result<bool> {
+fn session_state(session: &Session, deadline: Instant) -> Result<bool> {
     let path = session
         .wayfire_socket()
         .ok_or_else(|| "the selected session has no Wayfire socket".to_string())?;
-    let mut socket = UnixStream::connect(path).map_err(|error| error.to_string())?;
-    socket
-        .set_read_timeout(Some(timeout))
-        .map_err(|error| error.to_string())?;
-    socket
-        .set_write_timeout(Some(timeout))
-        .map_err(|error| error.to_string())?;
+    let mut socket = connect_socket_until(path, deadline).map_err(|error| error.to_string())?;
     let body = serde_json::to_vec(&json!({"method":"scottland/session-state", "data":{}}))
         .map_err(|error| error.to_string())?;
-    socket
-        .write_all(&(body.len() as u32).to_le_bytes())
-        .and_then(|_| socket.write_all(&body))
+    write_all_until(&mut socket, &(body.len() as u32).to_le_bytes(), deadline)
+        .and_then(|_| write_all_until(&mut socket, &body, deadline))
         .map_err(|error| error.to_string())?;
     let mut header = [0; 4];
-    socket
-        .read_exact(&mut header)
-        .map_err(|error| error.to_string())?;
+    read_exact_until(&mut socket, &mut header, deadline).map_err(|error| error.to_string())?;
     let size = u32::from_le_bytes(header) as usize;
     if size > MAX_FRAME {
         return Err("Wayfire reply is too large".to_string());
     }
     let mut bytes = vec![0; size];
-    socket
-        .read_exact(&mut bytes)
-        .map_err(|error| error.to_string())?;
+    read_exact_until(&mut socket, &mut bytes, deadline).map_err(|error| error.to_string())?;
+    remaining_until(deadline).map_err(|error| error.to_string())?;
     let reply: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     reply
         .get("locked")
@@ -930,6 +1030,29 @@ fn status_code(status: ExitStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(path: PathBuf) -> Self {
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("create private test directory");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+                .expect("restrict private test directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn setting_aliases_are_accepted_and_canonicalized() {
@@ -967,6 +1090,110 @@ mod tests {
         assert_eq!(lock_budget_ms(5_000_000), 4_000);
         assert_eq!(lock_budget_ms(20_000_000), 12_000);
         assert_eq!(lock_budget_ms(500_000), 1);
+    }
+
+    #[test]
+    fn sleep_lock_does_not_reuse_budget_consumed_by_the_locker_request() {
+        let start = Instant::now();
+        let now = Cell::new(start);
+        let state_calls = Cell::new(0);
+        let session = Session {
+            name: "test-session".to_string(),
+            env: scottland::session::Environment::new(),
+        };
+
+        let result = wait_for_session_secure(
+            &session,
+            Duration::from_millis(10),
+            || now.get(),
+            |_, timeout| {
+                now.set(start + timeout + Duration::from_nanos(1));
+                Ok(())
+            },
+            |_, _| {
+                state_calls.set(state_calls.get() + 1);
+                Ok(true)
+            },
+        );
+
+        assert_eq!(result, Ok(1));
+        assert_eq!(
+            state_calls.get(),
+            0,
+            "expired budget must not accept a late lock state"
+        );
+    }
+
+    #[test]
+    fn session_state_applies_one_deadline_to_the_entire_framed_reply() {
+        let id = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+        let root =
+            TestDir::new(Path::new("/tmp").join(format!("sct-lock-{}-{id}", std::process::id())));
+        let socket_path = root.0.join("wayfire.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind fake Wayfire socket");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept session-state query");
+            let mut request_header = [0; 4];
+            stream
+                .read_exact(&mut request_header)
+                .expect("read session-state request header");
+            let request_size = u32::from_le_bytes(request_header) as usize;
+            let mut request = vec![0; request_size];
+            stream
+                .read_exact(&mut request)
+                .expect("read session-state request");
+
+            let reply = br#"{"locked":true}"#;
+            stream
+                .write_all(&(reply.len() as u32).to_le_bytes())
+                .expect("write session-state reply header");
+            for byte in reply {
+                if stream.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mut env = scottland::session::Environment::new();
+        env.insert("WAYFIRE_SOCKET".into(), socket_path.as_os_str().to_owned());
+        let session = Session {
+            name: "test-session".to_string(),
+            env,
+        };
+
+        let result = session_state(&session, Instant::now() + Duration::from_millis(75));
+
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("deadline")),
+            "a fragmented reply completed after the total deadline: {result:?}"
+        );
+        server.join().expect("fake Wayfire server panicked");
+    }
+
+    #[test]
+    fn terminal_cwd_uses_the_selected_home_without_a_second_wayfire_connection() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(4)
+            .expect("ctl crate lives below the repository root")
+            .to_path_buf();
+        let home = repo
+            .join("build")
+            .join(format!("ctl-terminal-cwd-home-{}", std::process::id()));
+        let home = TestDir::new(home);
+        let mut env = scottland::session::Environment::new();
+        env.insert("HOME".into(), home.0.as_os_str().to_owned());
+        let session = Session {
+            name: "test-session".to_string(),
+            env,
+        };
+
+        assert_eq!(
+            terminal_cwd_path(&session, Some(OsStr::new("4000000000"))).unwrap(),
+            home.0
+        );
     }
 
     #[test]
