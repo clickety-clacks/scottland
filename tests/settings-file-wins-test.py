@@ -122,6 +122,31 @@ def click(x, y):
     time.sleep(.15)
 
 
+def drag(x, y, dx, dy=0):
+    ipc("stipc/move_cursor", dict(x=round(x), y=round(y)))
+    time.sleep(.12)
+    ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="press"))
+    for i in range(1, 13):
+        ipc("stipc/move_cursor", dict(x=round(x + dx * i / 12), y=round(y + dy * i / 12)))
+        time.sleep(.03)
+    ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="release"))
+    time.sleep(.4)
+
+
+def scroll_to(value):
+    # Scroll by dragging the real thumb, so the test uses Wayfire input like a user.
+    q = snapshot()
+    v = q["viewport"]
+    x = panel_x + v["x"] + v["width"] - 5 - panel_x_origin()
+    y = panel_y + v["y"]
+    thumb = v["height"] * v["height"] / q["contentHeight"]
+    maximum = max(0, q["contentHeight"] - v["height"])
+    target = max(0, min(maximum, value))
+    start = y + q["scroll"] / q["contentHeight"] * v["height"] + thumb / 2
+    end = y + target / q["contentHeight"] * v["height"] + thumb / 2
+    drag(x, start, 0, end - start)
+
+
 def settings_quickshell_pid(wrapper_pid):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -191,11 +216,20 @@ def goo_row(name):
         raise RuntimeError(f"Goo tab click left tab {snapshot()['tab']}")
     q = snapshot()
     g = q["goo"]
-    row = q["goo"]["rows"].index(name)
+    row = g["rows"].index(name)
     y = g["y"] + row * g["rowHeight"] + 34
     v = q["viewport"]
-    if y > v["y"] + v["height"] - 24:
-        raise RuntimeError(f"goo row {name} is below the viewport")
+    if y < v["y"] + 24:
+        scroll_to(q["scroll"] + y - (v["y"] + 24))
+    elif y > v["y"] + v["height"] - 24:
+        scroll_to(q["scroll"] + y - (v["y"] + v["height"] - 24))
+    q = snapshot()
+    g = q["goo"]
+    row = g["rows"].index(name)
+    y = g["y"] + row * g["rowHeight"] + 34
+    v = q["viewport"]
+    if y < v["y"] + 24 or y > v["y"] + v["height"] - 24:
+        raise RuntimeError(f"goo row {name} remains outside the viewport after scrolling")
     click(panel_x + g["x"] + 240 - panel_x_origin(), panel_y + y)
 
 
