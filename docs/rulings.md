@@ -19,6 +19,12 @@ Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the 
 |---|---|---|
 | 2026-10-12 | Sunlight schedules actual sunrise and sunset boundaries. A manual choice holds until the next boundary; first enable, re-enable and one current-period catch-up after sleep/reboot are the only immediate applications. Persist one transition record so an acknowledged boundary is not replayed, and keep the existing solar.ini control and stock Omarchy timer/configuration unchanged. | A15, S21, O18; `scottland-sunlight` package |
 
+## Omarchy theme memory
+
+| Date | Ruling | Where |
+|---|---|---|
+| 2026-10-09 | Remember the last user-selected theme independently for the light and dark solar periods. At the next real transition restore that period's choice, with matching Watercolor Dream fallback when unset; polls and restarts must not undo a manual choice. Observing a choice must not itself apply a theme or learn an automatic application as a manual choice. Preserve explicit Sunlight opt-in and existing timer/configuration. | O18; `docs/omarchy-theme-memory.md` |
+
 ## Principles
 
 | Date | Ruling | Where |
