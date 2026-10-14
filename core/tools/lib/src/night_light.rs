@@ -80,6 +80,9 @@ pub enum OutputOwnership {
 pub struct OutputInput {
     pub identity: String,
     pub ownership: OutputOwnership,
+    /// A watcher-known reason an output is not warm, or why its state is unknown.
+    /// An unowned output without a reason is normal from Night Light's perspective.
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,11 +101,11 @@ pub enum Action {
     ReleaseUnwarmed { output: String },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Outcome {
     Succeeded,
-    Failed,
-    Unknown,
+    Failed(String),
+    Unknown(String),
     NotAttempted,
 }
 
@@ -115,21 +118,21 @@ pub struct OutputOutcome {
     pub restoration: Outcome,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutputStatus {
     Warm,
-    NotWarmed,
-    Failed,
-    Unknown,
+    Normal,
+    NotWarm { reason: String },
+    Unknown { reason: String },
 }
 
 impl OutputStatus {
-    const fn as_str(self) -> &'static str {
+    fn render(&self) -> String {
         match self {
-            Self::Warm => "warm",
-            Self::NotWarmed => "not-warmed",
-            Self::Failed => "failed",
-            Self::Unknown => "unknown",
+            Self::Warm => "warm".to_owned(),
+            Self::Normal => "normal".to_owned(),
+            Self::NotWarm { reason } => format!("not warm: {}", single_line(reason)),
+            Self::Unknown { reason } => format!("unknown: {}", single_line(reason)),
         }
     }
 }
@@ -188,7 +191,7 @@ pub fn plan(input: Input) -> Plan {
         }
         outputs.extend(input.outputs.into_iter().map(|output| OutputReport {
             identity: output.identity,
-            status: OutputStatus::Unknown,
+            status: unknown("display watcher unavailable"),
         }));
     } else {
         let target = match input.command {
@@ -206,7 +209,7 @@ pub fn plan(input: Input) -> Plan {
 
         for output in input.outputs {
             let status = match input.command {
-                Command::Status => status_from_ownership(output.ownership),
+                Command::Status => status_from_ownership(&output),
                 Command::On => plan_on(&output, &mut actions),
                 Command::Off => plan_off(&output, &mut actions),
                 Command::Toggle if request == RequestState::On => plan_on(&output, &mut actions),
@@ -232,6 +235,9 @@ pub fn plan(input: Input) -> Plan {
 /// Apply injected watcher results to a plan and produce truthful CLI output.
 pub fn finish(plan: Plan, outcomes: &[OutputOutcome]) -> Decision {
     let mut outputs = plan.outputs;
+    let turning_on = plan.watcher_available
+        && (plan.command == Command::On
+            || (plan.command == Command::Toggle && plan.request == RequestState::On));
 
     for action in &plan.actions {
         let identity = action_output(action);
@@ -242,39 +248,64 @@ pub fn finish(plan: Plan, outcomes: &[OutputOutcome]) -> Decision {
         };
 
         report.status = match action {
-            Action::AcquireAndApply4000K { .. } => match result.acquisition {
-                Outcome::Succeeded => application_status(result.application),
-                Outcome::Failed => OutputStatus::Failed,
-                Outcome::Unknown | Outcome::NotAttempted => OutputStatus::Unknown,
+            Action::AcquireAndApply4000K { .. } => match &result.acquisition {
+                Outcome::Succeeded => application_status(&result.application),
+                Outcome::Failed(reason) => not_warm(reason),
+                Outcome::Unknown(reason) => unknown(reason),
+                Outcome::NotAttempted => unknown("watcher did not attempt acquisition"),
             },
-            Action::Apply4000K { .. } => application_status(result.application),
-            Action::RestoreOwned { .. } => match result.restoration {
-                Outcome::Succeeded => OutputStatus::NotWarmed,
-                Outcome::Failed => OutputStatus::Failed,
-                Outcome::Unknown | Outcome::NotAttempted => OutputStatus::Unknown,
+            Action::Apply4000K { .. } => application_status(&result.application),
+            Action::RestoreOwned { .. } => match &result.restoration {
+                Outcome::Succeeded => OutputStatus::Normal,
+                Outcome::Failed(reason) => unknown(&format!("restoration failed: {reason}")),
+                Outcome::Unknown(reason) => unknown(reason),
+                Outcome::NotAttempted => unknown("watcher did not attempt restoration"),
             },
-            Action::ReleaseUnwarmed { .. } => OutputStatus::NotWarmed,
+            // Releasing an unwarmed handle does not change the output's color.
+            Action::ReleaseUnwarmed { .. } => report.status.clone(),
         };
     }
 
-    let mut stderr = plan.initial_error;
-    if stderr.is_none()
-        && plan.command != Command::Status
-        && outputs
+    // NL7 defines the state as on only when at least one connected output is
+    // confirmed warm; an empty set or unconfirmed results cannot claim on.
+    let request = if turning_on
+        && !outputs
             .iter()
-            .any(|output| matches!(output.status, OutputStatus::Failed | OutputStatus::Unknown))
+            .any(|output| output.status == OutputStatus::Warm)
     {
-        stderr = Some(
-            "scottland-display: night-light: one or more output results failed or are unknown"
-                .to_owned(),
-        );
+        RequestState::Off
+    } else {
+        plan.request
+    };
+
+    let mut stderr = plan.initial_error;
+    if stderr.is_none() && plan.command != Command::Status {
+        let failures: Vec<String> = outputs
+            .iter()
+            .filter_map(|output| match &output.status {
+                OutputStatus::NotWarm { reason } if turning_on => Some(format!(
+                    "scottland-display: night-light: {}: not warm: {}",
+                    single_line(&output.identity),
+                    single_line(reason)
+                )),
+                OutputStatus::Unknown { reason } => Some(format!(
+                    "scottland-display: night-light: {}: unknown: {}",
+                    single_line(&output.identity),
+                    single_line(reason)
+                )),
+                _ => None,
+            })
+            .collect();
+        if !failures.is_empty() {
+            stderr = Some(failures.join("\n"));
+        }
     }
 
-    let stdout = format_status(plan.request, plan.watcher_available, &outputs);
+    let stdout = format_status(request, &outputs);
     let exit_status = if stderr.is_some() { 1 } else { 0 };
 
     Decision {
-        request: plan.request,
+        request,
         actions: plan.actions,
         outputs,
         stdout,
@@ -290,15 +321,15 @@ fn plan_on(output: &OutputInput, actions: &mut Vec<Action>) -> OutputStatus {
             actions.push(Action::AcquireAndApply4000K {
                 output: output.identity.clone(),
             });
-            OutputStatus::Unknown
+            unknown("watcher has not completed warming this output")
         }
         OutputOwnership::OwnedUnwarmed => {
             actions.push(Action::Apply4000K {
                 output: output.identity.clone(),
             });
-            OutputStatus::Unknown
+            unknown("watcher has not completed warming this output")
         }
-        OutputOwnership::Unknown => OutputStatus::Unknown,
+        OutputOwnership::Unknown => status_from_ownership(output),
     }
 }
 
@@ -308,33 +339,73 @@ fn plan_off(output: &OutputInput, actions: &mut Vec<Action>) -> OutputStatus {
             actions.push(Action::RestoreOwned {
                 output: output.identity.clone(),
             });
-            OutputStatus::Unknown
+            unknown("watcher has not completed restoration of this output")
         }
         OutputOwnership::OwnedUnwarmed => {
             actions.push(Action::ReleaseUnwarmed {
                 output: output.identity.clone(),
             });
-            OutputStatus::NotWarmed
+            not_warm(output.reason.as_deref().unwrap_or("not warmed by Night Light"))
         }
-        OutputOwnership::Unowned => OutputStatus::NotWarmed,
-        OutputOwnership::Unknown => OutputStatus::Unknown,
+        OutputOwnership::Unowned => status_from_ownership(output),
+        OutputOwnership::Unknown => status_from_ownership(output),
     }
 }
 
-fn application_status(outcome: Outcome) -> OutputStatus {
+fn application_status(outcome: &Outcome) -> OutputStatus {
     match outcome {
         Outcome::Succeeded => OutputStatus::Warm,
-        Outcome::Failed => OutputStatus::Failed,
-        Outcome::Unknown | Outcome::NotAttempted => OutputStatus::Unknown,
+        Outcome::Failed(reason) => not_warm(reason),
+        Outcome::Unknown(reason) => unknown(reason),
+        Outcome::NotAttempted => unknown("watcher did not attempt application"),
     }
 }
 
-fn status_from_ownership(ownership: OutputOwnership) -> OutputStatus {
-    match ownership {
-        OutputOwnership::Unowned | OutputOwnership::OwnedUnwarmed => OutputStatus::NotWarmed,
+fn status_from_ownership(output: &OutputInput) -> OutputStatus {
+    match output.ownership {
+        OutputOwnership::Unowned => output.reason.as_deref().map_or(
+            OutputStatus::Normal,
+            not_warm,
+        ),
+        OutputOwnership::OwnedUnwarmed => not_warm(
+            output
+                .reason
+                .as_deref()
+                .unwrap_or("not warmed by Night Light"),
+        ),
         OutputOwnership::WarmOwned => OutputStatus::Warm,
-        OutputOwnership::Unknown => OutputStatus::Unknown,
+        OutputOwnership::Unknown => unknown(
+            output
+                .reason
+                .as_deref()
+                .unwrap_or("watcher has not confirmed the output state"),
+        ),
     }
+}
+
+fn not_warm(reason: &str) -> OutputStatus {
+    OutputStatus::NotWarm {
+        reason: nonempty_reason(reason, "output could not be warmed"),
+    }
+}
+
+fn unknown(reason: &str) -> OutputStatus {
+    OutputStatus::Unknown {
+        reason: nonempty_reason(reason, "watcher did not confirm the output state"),
+    }
+}
+
+fn nonempty_reason(reason: &str, fallback: &str) -> String {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        fallback.to_owned()
+    } else {
+        reason.to_owned()
+    }
+}
+
+fn single_line(value: &str) -> String {
+    value.replace('\n', "\\n").replace('\r', "\\r")
 }
 
 fn action_output(action: &Action) -> &str {
@@ -346,18 +417,14 @@ fn action_output(action: &Action) -> &str {
     }
 }
 
-fn format_status(request: RequestState, watcher_available: bool, outputs: &[OutputReport]) -> String {
-    let mut rendered = format!(
-        "night-light request={} watcher={}\n",
-        request.as_str(),
-        if watcher_available { "available" } else { "unavailable" }
-    );
+fn format_status(request: RequestState, outputs: &[OutputReport]) -> String {
+    let mut rendered = format!("{}\n", request.as_str());
     for output in outputs {
-        let safe_identity = output.identity.replace('\n', "\\n").replace('\r', "\\r");
+        let safe_identity = single_line(&output.identity);
         let _ = writeln!(
             rendered,
-            "night-light output={safe_identity} status={}",
-            output.status.as_str()
+            "{safe_identity}: {}",
+            output.status.render()
         );
     }
     rendered
@@ -371,7 +438,12 @@ mod tests {
         OutputInput {
             identity: identity.to_owned(),
             ownership,
+            reason: None,
         }
+    }
+
+    fn failed(reason: &str) -> Outcome {
+        Outcome::Failed(reason.to_owned())
     }
 
     fn outcome(
@@ -438,7 +510,10 @@ mod tests {
 
             assert_eq!(result.request, request);
             assert!(result.actions.is_empty());
-            assert_eq!(result.outputs[0].status, OutputStatus::Unknown);
+            assert_eq!(
+                result.outputs[0].status,
+                unknown("display watcher unavailable")
+            );
             assert_eq!(result.exit_status, 1);
             assert!(result
                 .stderr
@@ -460,10 +535,14 @@ mod tests {
 
         assert_eq!(result.request, RequestState::Off);
         assert!(result.actions.is_empty());
-        assert_eq!(result.outputs[0].status, OutputStatus::Unknown);
+        assert_eq!(
+            result.outputs[0].status,
+            unknown("display watcher unavailable")
+        );
         assert_eq!(result.exit_status, 1);
         assert!(result.stderr.as_deref().unwrap().contains("request cleared"));
-        assert!(result.stdout.contains("request=off watcher=unavailable"));
+        assert!(result.stdout.starts_with("off\n"));
+        assert!(result.stdout.ends_with("DP-1: unknown: display watcher unavailable\n"));
     }
 
     #[test]
@@ -495,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_application_failure_keeps_per_output_truthful_status() {
+    fn partial_application_failure_keeps_the_request_and_names_the_failed_output_reason() {
         let result = run(
             input(
                 Command::On,
@@ -515,7 +594,7 @@ mod tests {
                 outcome(
                     "DP-2",
                     Outcome::Succeeded,
-                    Outcome::Failed,
+                    failed("controlled by another program"),
                     Outcome::NotAttempted,
                 ),
             ],
@@ -523,13 +602,26 @@ mod tests {
 
         assert_eq!(result.request, RequestState::On);
         assert_eq!(result.outputs[0].status, OutputStatus::Warm);
-        assert_eq!(result.outputs[1].status, OutputStatus::Failed);
+        assert_eq!(
+            result.outputs[1].status,
+            OutputStatus::NotWarm {
+                reason: "controlled by another program".to_owned()
+            }
+        );
         assert_eq!(result.exit_status, 1);
-        assert!(result.stderr.is_some());
+        assert_eq!(
+            result.stderr.as_deref(),
+            Some("scottland-display: night-light: DP-2: not warm: controlled by another program")
+        );
+        assert!(result.stdout.starts_with("on\n"));
+        assert!(result.stdout.contains("DP-1: warm\n"));
+        assert!(result
+            .stdout
+            .contains("DP-2: not warm: controlled by another program\n"));
     }
 
     #[test]
-    fn all_warming_failures_keep_the_request_and_fail_the_command() {
+    fn all_warming_failures_clear_the_request_and_report_each_output_reason() {
         let result = run(
             input(
                 Command::On,
@@ -542,24 +634,48 @@ mod tests {
             &[
                 outcome(
                     "DP-1",
-                    Outcome::Failed,
+                    failed("gamma is owned elsewhere"),
                     Outcome::NotAttempted,
                     Outcome::NotAttempted,
                 ),
                 outcome(
                     "DP-2",
                     Outcome::Succeeded,
-                    Outcome::Failed,
+                    failed("gamma application refused"),
                     Outcome::NotAttempted,
                 ),
             ],
         );
 
-        assert_eq!(result.request, RequestState::On);
-        assert_eq!(result.outputs[0].status, OutputStatus::Failed);
-        assert_eq!(result.outputs[1].status, OutputStatus::Failed);
+        assert_eq!(result.request, RequestState::Off);
+        assert_eq!(
+            result.outputs[0].status,
+            OutputStatus::NotWarm {
+                reason: "gamma is owned elsewhere".to_owned()
+            }
+        );
+        assert_eq!(
+            result.outputs[1].status,
+            OutputStatus::NotWarm {
+                reason: "gamma application refused".to_owned()
+            }
+        );
         assert_eq!(result.exit_status, 1);
-        assert!(result.stderr.is_some());
+        assert_eq!(
+            result.stderr.as_deref(),
+            Some("scottland-display: night-light: DP-1: not warm: gamma is owned elsewhere\nscottland-display: night-light: DP-2: not warm: gamma application refused")
+        );
+        assert!(result.stdout.starts_with("off\n"));
+    }
+
+    #[test]
+    fn an_on_request_with_no_confirmed_warm_output_reports_off() {
+        let result = run(input(Command::On, RequestState::Off, Vec::new()), &[]);
+
+        assert_eq!(result.request, RequestState::Off);
+        assert_eq!(result.stdout, "off\n");
+        assert_eq!(result.exit_status, 0);
+        assert!(result.stderr.is_none());
     }
 
     #[test]
@@ -594,9 +710,14 @@ mod tests {
                 }
             ]
         );
-        assert_eq!(result.outputs[0].status, OutputStatus::NotWarmed);
-        assert_eq!(result.outputs[1].status, OutputStatus::NotWarmed);
-        assert_eq!(result.outputs[2].status, OutputStatus::NotWarmed);
+        assert_eq!(result.outputs[0].status, OutputStatus::Normal);
+        assert_eq!(result.outputs[1].status, OutputStatus::Normal);
+        assert_eq!(
+            result.outputs[2].status,
+            OutputStatus::NotWarm {
+                reason: "not warmed by Night Light".to_owned()
+            }
+        );
         assert_eq!(result.exit_status, 0);
     }
 
@@ -612,12 +733,17 @@ mod tests {
                 "DP-1",
                 Outcome::Succeeded,
                 Outcome::Succeeded,
-                Outcome::Failed,
+                failed("gamma restoration refused"),
             )],
         );
 
         assert_eq!(result.request, RequestState::Off);
-        assert_eq!(result.outputs[0].status, OutputStatus::Failed);
+        assert_eq!(
+            result.outputs[0].status,
+            OutputStatus::Unknown {
+                reason: "restoration failed: gamma restoration refused".to_owned()
+            }
+        );
         assert_eq!(result.exit_status, 1);
         assert!(result.stderr.is_some());
     }
@@ -635,10 +761,43 @@ mod tests {
 
         assert_eq!(result.request, RequestState::On);
         assert!(result.actions.is_empty());
-        assert_eq!(result.outputs[0].status, OutputStatus::Unknown);
+        assert_eq!(
+            result.outputs[0].status,
+            unknown("watcher has not confirmed the output state")
+        );
         assert_eq!(result.exit_status, 0);
         assert!(result.stderr.is_none());
-        assert!(result.stdout.contains("status=unknown"));
+        assert_eq!(
+            result.stdout,
+            "on\nDP-1: unknown: watcher has not confirmed the output state\n"
+        );
+    }
+
+    #[test]
+    fn status_lists_real_output_states_after_the_request_line() {
+        let mut held_elsewhere = output("DP-2", OutputOwnership::Unowned);
+        held_elsewhere.reason = Some("controlled by another program".to_owned());
+        let result = run(
+            input(
+                Command::Status,
+                RequestState::On,
+                vec![
+                    output("eDP-1", OutputOwnership::WarmOwned),
+                    held_elsewhere,
+                    output("HDMI-1", OutputOwnership::Unowned),
+                ],
+            ),
+            &[],
+        );
+
+        assert_eq!(result.request, RequestState::On);
+        assert!(result.actions.is_empty());
+        assert_eq!(result.exit_status, 0);
+        assert!(result.stderr.is_none());
+        assert_eq!(
+            result.stdout,
+            "on\neDP-1: warm\nDP-2: not warm: controlled by another program\nHDMI-1: normal\n"
+        );
     }
 
     #[test]
@@ -653,11 +812,16 @@ mod tests {
 
         assert_eq!(result.request, RequestState::On);
         assert!(result.actions.is_empty());
-        assert_eq!(result.outputs[0].status, OutputStatus::Unknown);
+        assert_eq!(
+            result.outputs[0].status,
+            unknown("display watcher unavailable")
+        );
         assert_eq!(result.exit_status, 0);
         assert!(result.stderr.is_none());
-        assert!(result.stdout.contains("request=on watcher=unavailable"));
-        assert!(result.stdout.contains("status=unknown"));
+        assert_eq!(
+            result.stdout,
+            "on\nDP-1: unknown: display watcher unavailable\n"
+        );
     }
 
     #[test]
@@ -678,12 +842,7 @@ mod tests {
 
         assert_eq!(result.request, RequestState::On);
         assert_eq!(result.outputs[0].status, OutputStatus::Warm);
-        assert!(result
-            .stdout
-            .starts_with("night-light request=on watcher=available\n"));
-        assert!(result
-            .stdout
-            .ends_with("night-light output=DP-1 status=warm\n"));
+        assert_eq!(result.stdout, "on\nDP-1: warm\n");
     }
 
     #[test]
@@ -709,7 +868,7 @@ mod tests {
                 output: "DP-1".to_owned()
             }]
         );
-        assert_eq!(result.outputs[0].status, OutputStatus::NotWarmed);
+        assert_eq!(result.outputs[0].status, OutputStatus::Normal);
         assert_eq!(result.exit_status, 0);
     }
 }

@@ -22,9 +22,12 @@ When the watcher is available, warming actions use the fixed 4000K target. The
 module reports an output as warm only when the injected acquisition and
 application facts both succeeded. `off` restores only outputs the watcher
 identifies as warm and owned by Night Light; an unowned output is left alone.
-Partial failures keep the request state but return a failing exit status and
-per-output statuses, so a successful display is not hidden by another
-display's failure. Unknown facts remain unknown.
+After an `on` or on-going `toggle`, the session state is on when at least one
+output is confirmed warm and off when none is confirmed warm. A
+partial failure returns a failing exit status and names each output and its
+injected failure reason on standard error. Status prints `on` or `off` on its
+first line, then one line per output using `warm`, `normal`, `not warm: <reason>`
+or `unknown: <reason>`. Unknown facts remain unknown.
 
 The module does not provide the shared `scottland-display` dispatcher, the
 session runtime transport, the per-session color-scheme watcher, gamma
