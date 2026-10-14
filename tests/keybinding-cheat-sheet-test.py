@@ -151,25 +151,44 @@ class ShortcutSheetBehavior(unittest.TestCase):
         self.assertTrue(lines)
         self.assertFalse(any("binding_" in line or "KEY_" in line for line in lines), lines)
 
-    def test_runnable_binding_uses_the_window_focused_before_picker(self):
-        self.config("[core]\nclose_top_view = <super> KEY_Q\n")
-        server = IpcSession(self.runtime, [{"id": 42, "focused": True}], 2)
+    def test_imported_shortcut_uses_its_command_as_label_and_remains_a_binding(self):
+        command = "wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+"
+        self.config(
+            "[scottland]\n"
+            "shortcut_keys_omarchy_1 = KEY_VOLUMEUP\n"
+            f"shortcut_command_omarchy_1 = {command}\n"
+        )
+        server = IpcSession(self.runtime, [], 2)
 
-        result = self.execute(selection="Super + Q → Close focused window", server=server)
+        result = self.execute(
+            selection=f"Volume up → {command}", server=server,
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([request["method"] for request in server.requests],
                          ["scottland/desktop-model", "scottland/run-binding"])
-        self.assertEqual(server.requests[1]["data"], {"key": "Q", "mods": "SUPER", "target": 42})
+        self.assertEqual(server.requests[1]["data"],
+                         {"key": "XF86AudioRaiseVolume", "mods": ""})
+
+    def test_runnable_binding_uses_the_window_focused_before_picker(self):
+        self.config("[wm-actions]\ntoggle_fullscreen = <super> KEY_F\n")
+        server = IpcSession(self.runtime, [{"id": 42, "focused": True}], 2)
+
+        result = self.execute(selection="Super + F → Toggle fullscreen", server=server)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([request["method"] for request in server.requests],
+                         ["scottland/desktop-model", "scottland/run-binding"])
+        self.assertEqual(server.requests[1]["data"], {"key": "F", "mods": "SUPER", "target": 42})
 
     def test_lost_target_returns_one_reason_without_retrying_action(self):
-        self.config("[core]\nclose_top_view = <super> KEY_Q\n")
+        self.config("[wm-actions]\ntoggle_fullscreen = <super> KEY_F\n")
         server = IpcSession(
             self.runtime, [{"id": 42, "focused": True}], 2,
             run_reply={"error": "this shortcut's target window is no longer focused"},
         )
 
-        result = self.execute(selection="Super + Q → Close focused window", server=server)
+        result = self.execute(selection="Super + F → Toggle fullscreen", server=server)
 
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stderr,

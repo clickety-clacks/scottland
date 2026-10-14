@@ -121,10 +121,14 @@ def is_binding_option(section, option, value):
     return binding_value(value)
 
 
-def command_for_binding(option, all_options):
-    for prefix in ("repeatable_binding_", "release_binding_", "always_binding_", "binding_"):
-        if option.startswith(prefix):
-            return all_options.get("command_" + option[len(prefix):], "")
+def command_for_binding(section, option, effective):
+    if section == "scottland" and option.startswith("shortcut_keys_"):
+        suffix = option[len("shortcut_keys_"):]
+        return effective.get((section, "shortcut_command_" + suffix), "")
+    if section == "command":
+        for prefix in ("repeatable_binding_", "release_binding_", "always_binding_", "binding_"):
+            if option.startswith(prefix):
+                return effective.get((section, "command_" + option[len(prefix):]), "")
     return ""
 
 
@@ -144,7 +148,7 @@ def humanize(section, option, command):
     known = DEFAULT_LABELS.get((section, option))
     if known:
         return known
-    if section == "command" and command:
+    if command:
         return command.strip()
     action = option
     for prefix in ("binding_", "repeatable_binding_", "release_binding_", "always_binding_"):
@@ -204,14 +208,14 @@ def read_bindings(path):
         raise ValueError("the session configuration ends in an incomplete continuation")
     finish_pending()
 
-    all_options = {option: value for (sec, option), value in effective.items() if sec == "command"}
     rows = []
     for (sec, option), value in effective.items():
         if not binding_value(value) or not is_binding_option(sec, option, value):
             continue
-        command = command_for_binding(option, all_options) if sec == "command" else ""
+        label_command = command_for_binding(sec, option, effective)
+        command = label_command if sec == "command" else ""
         chords = [part.strip() for part in value.split("|") if part.strip()]
-        label = humanize(sec, option, command)
+        label = humanize(sec, option, label_command)
         chord_text = " / ".join(pretty_chord(chord) for chord in chords)
         display = f"{chord_text} → {label}"
         rows.append({"section": sec, "option": option, "command": command,
@@ -305,7 +309,7 @@ def focus_snapshot():
 
 def needs_target(row):
     section, option = row["section"], row["option"]
-    if section in ("core", "grid", "vswitch", "fast-switcher", "wrot"):
+    if section in ("core", "grid", "vswitch", "fast-switcher", "wrot", "wm-actions"):
         return True
     if section == "scottland" and option == "move":
         return True
