@@ -16,4 +16,8 @@ cleanup() {
   tests/headless.sh stop
 }
 trap cleanup EXIT
-tests/headless.sh run python3 tests/settings-file-wins-test.py "$SCOTTLAND_HEADLESS_DIR" | tee build/settings-file-wins-evidence/results.log
+test_env=()
+if [[ ${SCOTTLAND_FILE_WINS_PREVIEW_ONLY:-0} == 1 ]]; then
+  test_env=(env SCOTTLAND_FILE_WINS_PREVIEW_ONLY=1)
+fi
+tests/headless.sh run "${test_env[@]}" python3 tests/settings-file-wins-test.py "$SCOTTLAND_HEADLESS_DIR" | tee build/settings-file-wins-evidence/results.log
