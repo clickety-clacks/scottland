@@ -7334,7 +7334,10 @@ class scottland_plugin_t : public wf::plugin_interface_t,
             auto transformer = view->get_transformed_node()->get_transformer<
                 wf::scene::view_2d_transformer_t>(TRANSFORMER);
             entry["applied_scale"] = transformer ? transformer->scale_x : 1.0;
-            entry["opacity"] = transformer ? transformer->get_alpha() : 1.0;
+            auto fullscreen_filter = fullscreen_filter_visuals.find(view->get_id());
+            entry["opacity"] = transformer ? transformer->get_alpha() :
+                (fullscreen_filter != fullscreen_filter_visuals.end() ?
+                    fullscreen_filter->second.opacity->get_alpha() : 1.0);
             // Where it's going, as the desktop model publishes it, not a step of an animation.
             auto state = model.windows.find(view->get_id());
             entry["target_scale"] = state != model.windows.end() ? state->second.scale : 1.0;
