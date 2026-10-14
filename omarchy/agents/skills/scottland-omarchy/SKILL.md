@@ -11,8 +11,11 @@ description: >-
 The `scottland-omarchy` package lets Scottland run on Omarchy beside Hyprland. Read the
 `scottland` skill first: everything there holds. This skill covers only what the adapter adds or
 changes. The adapter does not modify Hyprland or uwsm. Its per-user setup adds entries to Omarchy's
-user menu extension and installs its shipped themes; Omarchy's stock shell and scripts run
-unmodified inside Scottland. Rerun `scottland-omarchy-setup` after each adapter package upgrade:
+user menu extension and installs its shipped themes. The stock Omarchy shell remains in use and
+Omarchy's installed scripts are not edited. Inside Scottland only, the shell launch path places
+adapter-owned compatibility commands first; currently this makes the workspace-layout action
+report that layout cycling is unavailable instead of showing a misleading Hyprland-reload notice.
+Rerun `scottland-omarchy-setup` after each adapter package upgrade:
 a package upgrade alone does not update the user's menu extension or check the pinned screen-sharing
 portal. Setup preserves existing same-named themes.
 
