@@ -609,8 +609,20 @@ class Translator:
         # Run a command in this session, like Hyprland's exec dispatcher (Lua or classic form).
         command = self.exec_command(text)
         if command:
+            env = None
+            if command.strip() == b"omarchy-launch-shell":
+                # Omarchy's restart-shell script relaunches its shell through this dispatcher.
+                # Give that shell the same adapter command precedence as the initial autostart;
+                # this applies whether the shim was started by autostart.d or reload.d.
+                env = os.environ.copy()
+                libexec = os.path.join(env.get("SCOTTLAND_HOOKS", "/usr/lib/scottland"), "libexec")
+                path = env.get("PATH", os.defpath).split(os.pathsep)
+                if not path or path[0] != libexec:
+                    path = [libexec, *(entry for entry in path if entry != libexec)]
+                    env["PATH"] = os.pathsep.join(path)
             subprocess.Popen(["sh", "-c", command], start_new_session=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             env=env)
             return "ok"
         dpms = self.DPMS_LUA.match(text.strip()) or self.DPMS_CLASSIC.match(text.strip())
         if dpms:
