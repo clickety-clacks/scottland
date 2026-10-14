@@ -29,6 +29,7 @@ class ThemeMemory(unittest.TestCase):
             "SCOTTLAND_SOLAR_FILE": str(self.root/"solar.ini"),
             "SCOTTLAND_SOLAR_TRANSITION_FILE": str(self.root/"state/scottland/solar-transition.json"),
             "SCOTTLAND_OMARCHY_SOLAR_FILE": str(self.root/"themes.ini"),
+            "OMARCHY_PATH": str(self.root/"omarchy"),
         })
         env.start()
         self.addCleanup(env.stop)
@@ -46,6 +47,7 @@ class ThemeMemory(unittest.TestCase):
         return module
 
     def publish(self, name):
+        (self.root/".config/omarchy/themes"/name).mkdir(parents=True, exist_ok=True)
         path = self.adapter.current_theme_file
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".next")
@@ -171,6 +173,87 @@ class ThemeMemory(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_once()
         self.assertEqual(self.calls, [])
+        self.assertIsNone(self.adapter.read_transition()["consumer_ack"])
+
+    def remember_pair(self):
+        self.publish("personal-dark")
+        self.run_once()
+        self.event("light", "sunrise")
+        self.run_once()
+        self.publish("personal-light")
+        self.run_once()
+
+    def test_removed_user_or_builtin_memory_uses_fallback_once(self):
+        self.remember_pair()
+        user = self.root/".config/omarchy/themes/personal-dark"
+        builtin = self.root/"omarchy/themes/personal-dark"
+        builtin.parent.mkdir(parents=True)
+        user.rename(builtin)
+        self.event("dark", "builtin-sunset")
+        self.assertEqual(self.run_once(), "personal-dark")
+        # The setter fixture publishes in the user root; both lookup locations
+        # must be absent, as after removal or an update dropping a builtin.
+        user.rmdir()
+        builtin.rmdir()
+        self.event("light", "second-sunrise")
+        self.run_once()
+        self.event("dark", "removed-sunset")
+        self.assertEqual(self.run_once(), "watercolor-dream-dark")
+        self.assertEqual(self.adapter.read_transition()["consumer_ack"], "removed-sunset")
+        self.adapter = self.load()
+        count = len(self.calls)
+        self.assertEqual(self.run_once(), "unchanged")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.memory()["choices"], {"light": "personal-light"})
+
+    def test_removed_memory_fallback_failure_keeps_manual_pick_in_destination(self):
+        self.remember_pair()
+        (self.root/".config/omarchy/themes/personal-dark").rmdir()
+        self.event("dark", "sunset")
+        def fail(argv, **kwargs):
+            self.calls.append(argv[3])
+            raise subprocess.CalledProcessError(7, argv)
+        with patch.object(self.adapter.subprocess, "run", side_effect=fail):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.adapter.run_once()
+        self.assertEqual(self.calls[-1], "watercolor-dream-dark")
+        self.assertEqual(self.memory()["mode"], "dark")
+        self.assertIsNone(self.adapter.read_transition()["consumer_ack"])
+        self.publish("replacement-dark")
+        self.adapter = self.load()
+        self.assertEqual(self.run_once(), "replacement-dark")
+        self.assertEqual(self.memory()["choices"],
+                         {"dark": "replacement-dark", "light": "personal-light"})
+
+    def test_removal_during_set_falls_back_without_learning_failed_publication(self):
+        self.remember_pair()
+        self.event("dark", "sunset")
+        def remove_during_set(argv, **kwargs):
+            result = self.setter(argv, **kwargs)
+            if argv[3] == "personal-dark":
+                (self.root/".config/omarchy/themes/personal-dark").rmdir()
+                raise subprocess.CalledProcessError(1, argv)
+            return result
+        with patch.object(self.adapter.subprocess, "run", side_effect=remove_during_set):
+            self.assertEqual(self.adapter.run_once(), "watercolor-dream-dark")
+        self.assertEqual(self.calls[-2:], ["personal-dark", "watercolor-dream-dark"])
+        self.assertEqual(self.memory()["choices"], {"light": "personal-light"})
+        self.assertEqual(self.adapter.read_transition()["consumer_ack"], "sunset")
+
+    def test_existing_theme_command_failure_does_not_trigger_fallback(self):
+        self.remember_pair()
+        self.event("dark", "sunset")
+        def fail(argv, **kwargs):
+            self.calls.append(argv[3])
+            raise subprocess.CalledProcessError(7, argv)
+        count = len(self.calls)
+        with patch.object(self.adapter.subprocess, "run", side_effect=fail):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.adapter.run_once()
+        self.assertEqual(self.calls[count:], ["personal-dark"])
+        self.assertEqual(self.memory()["mode"], "dark")
+        self.assertEqual(self.memory()["choices"],
+                         {"dark": "personal-dark", "light": "personal-light"})
         self.assertIsNone(self.adapter.read_transition()["consumer_ack"])
 
     def test_watch_observes_manual_publication_without_theme_command(self):

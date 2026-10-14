@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import select
+import stat
 import struct
 import subprocess
 import sys
@@ -40,6 +41,21 @@ def themes():
     section = cfg["themes"] if cfg.has_section("themes") else {}
     return {"light": section.get("day", "watercolor-dream-light"),
             "dark": section.get("night", "watercolor-dream-dark")}
+
+
+def remembered_theme_available(name):
+    """Use the same user/built-in theme directories as omarchy-theme-set."""
+    if not name or name.startswith(".") or "/" in name or "\n" in name:
+        return False
+    roots = (Path.home()/".config/omarchy/themes",
+             Path(os.environ.get("OMARCHY_PATH", Path.home()/".local/share/omarchy"))/"themes")
+    for root in roots:
+        try:
+            if stat.S_ISDIR((root/name).stat().st_mode):
+                return True
+        except FileNotFoundError:
+            pass
+    return False
 
 
 def transition_lock():
@@ -190,14 +206,34 @@ def run_once():
         # separate consumer lock across command and ack so parallel sessions
         # cannot apply the same event twice.
         configured = themes()
-        target = memory["choices"].get(desired, configured[desired])
+        # Save the destination period before a possibly failing command. Future
+        # manual publications belong here even while this delivery is pending.
+        memory["mode"] = desired
+        remembered = memory["choices"].get(desired)
+        if remembered is not None and not remembered_theme_available(remembered):
+            del memory["choices"][desired]
+            remembered = None
+        target = remembered if remembered is not None else configured[desired]
         # Record intent before the command so a restart cannot learn our write.
         # Theme names are published by Omarchy as lowercase, hyphenated slugs.
         memory["automatic"] = target.lower().replace(" ", "-")
         _atomic_write(memory, memory_file)
         # A failure retains intent: the command may have partially published.
-        subprocess.run(["omarchy", "theme", "set", target], check=True)
-        memory["mode"] = desired
+        try:
+            subprocess.run(["omarchy", "theme", "set", target], check=True)
+        except subprocess.CalledProcessError:
+            # Removal can race the availability check. Only a now-missing
+            # remembered theme warrants fallback; other command errors retain
+            # their pending delivery and original failure.
+            if remembered is None or remembered_theme_available(remembered):
+                raise
+            observe_theme(memory)
+            if memory["choices"].get(desired) == remembered:
+                del memory["choices"][desired]
+            target = configured[desired]
+            memory["automatic"] = target.lower().replace(" ", "-")
+            _atomic_write(memory, memory_file)
+            subprocess.run(["omarchy", "theme", "set", target], check=True)
         observe_theme(memory)
         if memory.get("observed") is not None:
             memory["automatic"] = None
