@@ -66,7 +66,9 @@ tests/hint-outline-test.sh
   echo 'Window-mode tint/WK38 headless session was not cleaned from its private scratch' >&2; exit 1;
 }
 
-export SCOTTLAND_HEADLESS_DIR="$scratch/headless-pairing-opaque"
+# The headless guardian binds owner.sock beneath this directory; keep the nested
+# path short enough for sockaddr_un when the checkout itself has a long path.
+export SCOTTLAND_HEADLESS_DIR="$scratch/pairing"
 export SCOTTLAND_TEST_EVIDENCE_DIR="$scratch/evidence-pairing-opaque"
 mkdir -m 700 -- "$SCOTTLAND_TEST_EVIDENCE_DIR"
 tests/headless.sh start
