@@ -4,6 +4,7 @@
   scottland-color-scheme once     apply the current scheme to the running session
   scottland-color-scheme watch    apply it now and whenever it changes
   scottland-color-scheme ensure   apply it now, and start a watcher if this session has none
+  scottland-color-scheme terminal-theme-push  reload eligible Ghostty clients once
 
 The scheme comes from the desktop portal (org.freedesktop.appearance color-scheme, which themes
 and settings apps set on any desktop), or from GNOME's color-scheme setting without a portal.
@@ -443,19 +444,20 @@ def _ghostty_pids(display, proc_root="/proc", runtime_dir=None):
             yield int(entry.name)
 
 
-def push_terminal_theme(location=None, display=None, proc_root="/proc", runtime_dir=None):
-    """Reload this session's open Ghostty clients without reading or writing config files."""
+def _push_terminal_theme(location=None, display=None, proc_root="/proc", runtime_dir=None):
+    """Return (successful reload count, whether any attempted reload failed)."""
     location = current_theme_location() if location is None else location
     if not os.path.isdir(location):
-        return 0
+        return 0, False
     if not any(os.path.lexists(os.path.join(location, name)) for name in ("light", "dark")):
-        return 0
+        return 0, False
     display = os.environ.get("WAYLAND_DISPLAY") if display is None else display
     if not display:
-        return 0
+        return 0, False
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR") if runtime_dir is None else runtime_dir
 
     pushed = 0
+    failed = False
     for pid in _ghostty_pids(display, proc_root, runtime_dir):
         try:
             os.kill(pid, signal.SIGUSR2)
@@ -465,6 +467,13 @@ def push_terminal_theme(location=None, display=None, proc_root="/proc", runtime_
             continue
         except OSError as error:
             print(f"scottland-color-scheme: could not reload Ghostty process {pid}: {error}", file=sys.stderr)
+            failed = True
+    return pushed, failed
+
+
+def push_terminal_theme(location=None, display=None, proc_root="/proc", runtime_dir=None):
+    """Reload this session's open Ghostty clients without reading or writing config files."""
+    pushed, _ = _push_terminal_theme(location, display, proc_root, runtime_dir)
     return pushed
 
 
@@ -651,15 +660,25 @@ def watch_accent():
             time.sleep(1)
 
 
-if __name__ == "__main__":
-    command = sys.argv[1] if len(sys.argv) > 1 else "once"
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    command = argv[0] if argv else "once"
     if command == "cursor-size":
         print(current_cursor_size())
     elif command == "watch":
         watch()
+        return 0
+    elif command == "terminal-theme-push":
+        _, failed = _push_terminal_theme()
+        return 1 if failed else 0
     elif command == "ensure" and not watcher_running():
         # The watcher applies the scheme as it starts.
         subprocess.Popen([sys.argv[0], "watch"], start_new_session=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         apply(current())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

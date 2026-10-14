@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""TP1 source slice: link events reload only Ghostty clients in the current Wayland session."""
+"""TP1 watcher reload and TP6 terminal-theme-push CLI behavior."""
+from contextlib import redirect_stderr
 from importlib.machinery import SourceFileLoader
+import io
 import os
 from pathlib import Path
+import subprocess
+import sys
 import signal
 import tempfile
 from unittest.mock import patch
@@ -84,5 +88,51 @@ with tempfile.TemporaryDirectory(prefix="scottland-theme-push-") as temporary:
             after_push = (os.readlink(location / "light"), os.readlink(location / "dark"),
                           fixed_config.read_bytes(), replacement.read_bytes(), dark_target.read_bytes())
             check("push leaves the changed links and terminal configs untouched", after_push == before_push)
+
+    with tempfile.TemporaryDirectory(prefix="scottland-theme-push-cli-") as temporary:
+        config_home = Path(temporary) / "config"
+        location = config_home / "gooarchy" / "current-theme"
+        environment = {"XDG_CONFIG_HOME": str(config_home), "XDG_RUNTIME_DIR": "/run/user/test",
+                       "WAYLAND_DISPLAY": "wayland-cli-test"}
+        with patch.dict(os.environ, environment, clear=False):
+            executable = subprocess.run([sys.executable, str(root / "core/libexec/scottland-color-scheme"),
+                                         "terminal-theme-push"], env=os.environ.copy(),
+                                        capture_output=True, text=True, check=False)
+            check("executable one-shot CLI exits successfully when current-theme is absent",
+                  executable.returncode == 0 and not executable.stdout and not executable.stderr)
+
+            with patch.object(core, "_ghostty_pids", side_effect=AssertionError("absent location must not scan")):
+                check("one-shot CLI exits successfully when current-theme is absent",
+                      core.main(["terminal-theme-push"]) == 0)
+
+            location.mkdir(parents=True)
+            with patch.object(core, "_ghostty_pids", side_effect=AssertionError("missing links must not scan")):
+                check("one-shot CLI exits successfully when neither theme link exists",
+                      core.main(["terminal-theme-push"]) == 0)
+
+            target = Path(temporary) / "theme.conf"
+            target.write_text("theme = test\n")
+            os.symlink(target, location / "light")
+
+            with patch.dict(os.environ, {"WAYLAND_DISPLAY": ""}):
+                with patch.object(core, "_ghostty_pids", side_effect=AssertionError("missing display must not scan")):
+                    check("one-shot CLI exits successfully without a display",
+                          core.main(["terminal-theme-push"]) == 0)
+
+            with patch.object(core, "_ghostty_pids", return_value=[]):
+                check("one-shot CLI exits successfully when this display has no eligible Ghostty",
+                      core.main(["terminal-theme-push"]) == 0)
+
+            with patch.object(core, "_ghostty_pids", return_value=[107]), patch.object(core.os, "kill") as kill:
+                status = core.main(["terminal-theme-push"])
+                check("one-shot CLI reloads an eligible Ghostty once and exits successfully",
+                      status == 0 and kill.call_args_list == [((107, signal.SIGUSR2), {})])
+
+            with patch.object(core, "_ghostty_pids", return_value=[106]), \
+                    patch.object(core.os, "kill", side_effect=PermissionError("permission denied")), \
+                    redirect_stderr(io.StringIO()) as stderr:
+                status = core.main(["terminal-theme-push"])
+                check("one-shot CLI reports a failed attempted reload with a nonzero status",
+                      status == 1 and "could not reload Ghostty process 106: permission denied" in stderr.getvalue())
 
 print(f"{checks} passed")

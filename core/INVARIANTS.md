@@ -142,7 +142,7 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 | TP3 | Core reads the theme only through Gooarchy's current-theme location and writes no theme link or user config. | Source behavior and isolated fixtures cover the single location and unchanged theme/config files; real installed-session evidence remains pending. |
 | TP4 | A terminal with a fixed theme config keeps the same colors after a push. | The push only requests a same-session Ghostty config reload and writes no config; real fixed-config color evidence remains pending. |
 | TP5 | An absent current-theme location causes no push or report; if it appears later, the watcher follows it. | Implemented and covered by the isolated actual-inotify fixture on Nacelle (artifact `art_a2e3cc22`, commit `bc193fd8`). |
-| TP6 | `scottland-display terminal-theme push` pushes once under the same rules and exits 0, including when there is nothing to push. | The command is PO-approved; shared dispatcher integration waits for the accepted Lane A Display source/API handoff. No parallel command or watcher is permitted. |
+| TP6 | `scottland-display terminal-theme push` pushes once under the same rules and exits 0 when there is nothing to push. An attempted reload failure is reported with a nonzero result. | The internal `scottland-color-scheme terminal-theme-push` action reuses the existing per-session helper and watcher, and treats absent theme location/links, display, or eligible Ghostty as a successful no-op. The public command and shared dispatcher remain Display-owned. |
 
 ## Layout configurator (`scottland-settings`)
 
