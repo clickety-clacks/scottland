@@ -161,6 +161,18 @@ def settled():
     until(ready, 8, 'avoidance settled')
 
 
+def drag_snapshot():
+    return ipc('scottland/desktop-model').get('drag', {})
+
+
+def drag_is_active_for(drag, window):
+    return drag.get('started') is True and drag.get('window') == window
+
+
+def drag_is_idle(drag):
+    return not drag.get('started', False) and drag.get('window', 0) in (0, None)
+
+
 def pointer_drag(id, to, coast=False, require_drag=False):
     """Super+press on the window's drawn center and move to `to`; the button stays down."""
     x1, y1, x2, y2 = scene(id); x, y = (x1 + x2) / 2, (y1 + y2) / 2
@@ -188,10 +200,11 @@ def pointer_drag(id, to, coast=False, require_drag=False):
             pointer(x, y)
             time.sleep(.02)
         def actual_drag():
-            drag = ipc('scottland/desktop-model').get('drag', {})
+            drag = drag_snapshot()
             focused = focused_id()
-            state = {'expected': id, 'focused': focused, 'dragged': drag.get('dragged')}
-            return (focused == id and drag.get('dragged') == id, state)
+            state = {'expected': id, 'focused': focused, 'started': drag.get('started'),
+                     'window': drag.get('window')}
+            return (focused == id and drag_is_active_for(drag, id), state)
         try:
             until(actual_drag, 3, f'{id} is the focused window actually being dragged')
         except Unready as error:
@@ -201,8 +214,9 @@ def pointer_drag(id, to, coast=False, require_drag=False):
                 capture(frame_name, keep_ppm=True)
             except Exception as capture_error:
                 capture_status = f'unavailable: {type(capture_error).__name__}: {capture_error}'
-            drag = ipc('scottland/desktop-model').get('drag', {})
-            diagnostic = {'expected': id, 'focused': focused_id(), 'dragged': drag.get('dragged'),
+            drag = drag_snapshot()
+            diagnostic = {'expected': id, 'focused': focused_id(), 'started': drag.get('started'),
+                          'window': drag.get('window'),
                           'start': [round(v, 1) for v in start],
                           'target': [round(v, 1) for v in to],
                           'nudge_px': round(nudge, 1), 'nudge_events': nudge_steps,
@@ -344,32 +358,39 @@ try:
             ((sx1 + sx2) / 2, sy1 + 8) if sy1 < fx[1] - 10 else ((sx1 + sx2) / 2, sy2 - 8)
         pointer(gx, gy); time.sleep(.1); key('LEFTMETA', True); button(True); time.sleep(.2)
         pointer(gx + 3, gy + 3); time.sleep(.3); release()
-        until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None), 'dragging'), 3, 'grab ended')
+        def grab_ended():
+            drag = drag_snapshot()
+            return drag_is_idle(drag), drag
+        until(grab_ended, 3, 'grab ended')
         # Clear the cover off it again so the case's own cover starts clear. Pointer focus is active
         # for this fixture; move off Small before asking to focus B.
         bx1, by1, bx2, by2 = scene(B)
         pointer((bx1 + bx2) / 2, (by1 + by2) / 2)
         ipc('window-rules/focus-view', {'id': B})
         def reset_drag_ready():
-            drag = ipc('scottland/desktop-model').get('drag', {})
+            drag = drag_snapshot()
             focused = focused_id()
-            return (focused == B and drag.get('dragged', 0) in (0, None),
-                    {'expected_cover': B, 'focused': focused, 'dragged': drag.get('dragged')})
+            idle = drag_is_idle(drag)
+            return (focused == B and idle,
+                    {'expected_cover': B, 'focused': focused, 'started': drag.get('started'),
+                     'window': drag.get('window')})
         until(reset_drag_ready, 3, 'cover focused and prior grab cleared for reset drag')
         # Confirm the reset gesture really starts on B, but end at the output center. The nominal
         # base center (420,340) is outside the 1280px output's center zone and docks B to the rail.
         pointer_drag(B, (W / 2, H / 2), require_drag=True)
         def reset_drag_is_b():
-            drag = ipc('scottland/desktop-model').get('drag', {})
+            drag = drag_snapshot()
             focused = focused_id()
-            state = {'focused': focused, 'dragged': drag.get('dragged')}
-            return (focused == B and drag.get('dragged') == B, state)
+            state = {'focused': focused, 'started': drag.get('started'), 'window': drag.get('window')}
+            return (focused == B and drag_is_active_for(drag, B), state)
         reset_drag = until(reset_drag_is_b, 3, 'reset pointer drag belongs to focused cover B')
-        check(reset_drag['focused'] == B and reset_drag['dragged'] == B,
+        check(reset_drag['focused'] == B and drag_is_active_for(reset_drag, B),
               'cover B is the actual focused and dragged window during the reset')
         release(); settled()
-        until(lambda: (ipc('scottland/desktop-model').get('drag', {}).get('dragged', 0) in (0, None),
-                       'reset drag remains active'), 3, 'reset cover drag ended')
+        def reset_drag_ended():
+            drag = drag_snapshot()
+            return drag_is_idle(drag), drag
+        until(reset_drag_ended, 3, 'reset cover drag ended')
         # Fixture geometry and focus are IPC setup, not another product gesture.
         setup(base, C)
 
