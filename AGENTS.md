@@ -202,16 +202,15 @@ Before reporting anything as done:
      config and imported shortcuts (`start --omarchy` adds the Hyprland shim and Lua host).
      It touches nobody's display or services, so it's the default for logic, shortcuts and
      input handling. `run CMD` runs a command inside it; `ipc METHOD JSON` drives stipc.
-   - **Isolated AMD test host** (Omarchy test machine on the tailnet) for anything that must be seen on a
-     real screen or needs a real login. `tests/deploy.sh HOST [--reload]` syncs, builds and
-     dev-installs there. The AMD test host is shared: other agents run tests on it. Check what's on its
-     screen first (deploy prints it); don't start, stop or switch sessions while someone else
-     is using it. sudo there needs Mike's password; stage commands in its `scottland-install`
-     tmux session and open a terminal attached to it on Mike's screen.
+   - **Isolated physical-display test host** for anything that must be seen on a real screen or
+     needs a real login. `tests/deploy.sh HOST [--reload]` takes a caller-supplied test-host
+     address, then syncs, builds and dev-installs there. A shared host requires checking its
+     current session owner before deployment; don't start, stop or switch a session while
+     someone else is using it. Privileged steps need the machine owner's authorization.
 2. Use real input: Wayfire's `stipc` plugin (`tests/wfipc.py`, `tests/drag-test.py`). IPC calls
    that bypass input (e.g. `configure-view`) don't count as verification for input behavior.
-3. Look: screenshots with `grim` (through `scottland-exec`), and on the AMD test host the Lumina webcam
-   facing its screen (`/dev/video2`) when screenshots might lie.
+3. Look: screenshots with `grim` (through `scottland-exec`), and inspect the physical display
+   through an authorized camera route when screenshots might lie.
 4. Check whether a running session predates the build (`scottland-reload` loads it in place).
    **Before reloading anyone's live session, rehearse that exact reload headless**: start
    `tests/headless.sh` on the build the live session runs now (a `git worktree` at its commit),
