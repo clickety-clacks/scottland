@@ -275,12 +275,11 @@ fn shutdown_starts_the_worker_with_the_exact_current_executable() {
     assert_eq!(output.status, 0);
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+    assert_eq!(backend.events.len(), 2);
+    assert_eq!(backend.events[0], "current_executable");
     assert_eq!(
-        event_names(&backend),
-        vec![
-            "current_executable",
-            format!("start_worker:{}", executable.display())
-        ]
+        backend.events[1],
+        format!("start_worker:{}", executable.display())
     );
 }
 

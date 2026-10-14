@@ -409,14 +409,14 @@ mod tests {
         let command = shutdown_worker_command(executable, "scottland-power-shutdown-42");
         let args = command.get_args().collect::<Vec<_>>();
         let separator = args.iter().position(|arg| *arg == "--").unwrap();
-        assert_eq!(args.get(separator + 1), Some(&executable.as_os_str()));
+        assert_eq!(Path::new(args[separator + 1]), executable);
         assert_eq!(
-            args.get(separator + 2).copied(),
-            Some(std::ffi::OsStr::new("__shutdown-worker"))
+            args[separator + 2],
+            std::ffi::OsStr::new("__shutdown-worker")
         );
         assert!(
             args.iter()
-                .any(|arg| *arg == "--property=RuntimeMaxSec=30s")
+                .any(|arg| { arg.to_str() == Some("--property=RuntimeMaxSec=30s") })
         );
     }
 }
