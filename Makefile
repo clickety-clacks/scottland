@@ -5,7 +5,7 @@ RELEASES := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/scottland/releases
 # Portal selection for Scottland sessions (xdg-desktop-portal also reads $XDG_DATA_HOME).
 PORTALS := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/xdg-desktop-portal
 
-.PHONY: plugin tools tools-test dev-install link-dev test-hooks hooks dev-uninstall package clean
+.PHONY: plugin tools tools-test clipboard-test dev-install link-dev test-hooks hooks dev-uninstall package clean
 
 # Optimized with debug info, asserts and frame pointers: unoptimized builds ran the plugin's CPU
 # paths 7-9x slower and froze the pointer (docs/compositor-hangs.md); cores and stacks stay readable.
@@ -27,6 +27,9 @@ tools:
 tools-test:
 	$(CARGO) test --locked --manifest-path core/tools/Cargo.toml --target-dir build/cargo
 
+clipboard-test:
+	python3 tests/clipboard-list-test.py
+
 # The user's session runs a snapshot of a commit, never this checkout: merging, testing or editing
 # here doesn't touch it until the next dev-install (and reload). Refuses uncommitted work, so what
 # runs is exactly a commit. Snapshots are kept (running widgets may still use an older one).
@@ -35,7 +38,7 @@ dev-install: plugin tools
 	  { echo "dev-install: commit first; the session runs exactly a commit" >&2; exit 1; }
 	@rev=$$(git rev-parse --short=12 HEAD); dest=$(RELEASES)/$$rev; \
 	rm -rf "$$dest.new" && mkdir -p "$$dest.new/build" && git archive HEAD | tar -x -C "$$dest.new" && \
-	cp build/libscottland.so build/scottland-output-power build/scottland-output-heads "$$dest.new/build/" && cp -r build/tools "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
+	cp build/libscottland.so build/scottland-output-power build/scottland-output-heads build/scottland-clipboardd "$$dest.new/build/" && cp -r build/tools "$$dest.new/build/" && rm -rf "$$dest" && mv "$$dest.new" "$$dest" && \
 	$(MAKE) --no-print-directory -C "$$dest" link-dev >/dev/null && echo "installed $$rev ($$dest)"
 
 # Points the user's session at this tree (dev-install runs it inside a snapshot).
@@ -73,6 +76,7 @@ link-dev:
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(DEV)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(DEV)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/build/scottland-output-heads $(DEV)/libexec/scottland-output-heads
+	ln -sf $(CURDIR)/build/scottland-clipboardd $(DEV)/libexec/scottland-clipboardd
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(DEV)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(DEV)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(DEV)/libexec/start-scottland
@@ -82,6 +86,7 @@ link-dev:
 	ln -sf $(CURDIR)/core/libexec/scottland-exec $(HOME)/.local/bin/scottland-exec
 	ln -sf $(CURDIR)/core/libexec/scottland-ctl $(HOME)/.local/bin/scottland-ctl
 	ln -sf $(CURDIR)/core/libexec/scottland-list-picker $(HOME)/.local/bin/scottland-list-picker
+	ln -sf $(CURDIR)/core/libexec/scottland-clipboard $(HOME)/.local/bin/scottland-clipboard
 	ln -sfn $(CURDIR)/core/agents $(DEV)/agents
 	ln -sfn $(CURDIR)/core/widgets $(DEV)/widgets
 	ln -sfn $(CURDIR)/core/window-names.d $(DEV)/window-names.d
@@ -116,6 +121,7 @@ hooks:
 	ln -sf $(CURDIR)/omarchy/shim/scottland-hyprshim $(HOOKS_DIR)/libexec/scottland-hyprshim
 	ln -sf $(CURDIR)/build/scottland-output-power $(HOOKS_DIR)/libexec/scottland-output-power
 	ln -sf $(CURDIR)/build/scottland-output-heads $(HOOKS_DIR)/libexec/scottland-output-heads
+	ln -sf $(CURDIR)/build/scottland-clipboardd $(HOOKS_DIR)/libexec/scottland-clipboardd
 	ln -sf $(CURDIR)/core/session/scottland-build-config $(HOOKS_DIR)/libexec/scottland-build-config
 	ln -sf $(CURDIR)/core/session/scottland-autostart $(HOOKS_DIR)/libexec/scottland-autostart
 	ln -sf $(CURDIR)/core/session/start-scottland $(HOOKS_DIR)/libexec/start-scottland
@@ -146,7 +152,7 @@ test-hooks: plugin tools
 dev-uninstall:
 	rm -rf $(DEV)
 	rm -f $(CONF)/scottland.ini $(HOME)/.local/bin/start-scottland $(HOME)/.local/bin/scottland-omarchy-setup \
-	  $(HOME)/.local/bin/scottland-list-picker $(PORTALS)/scottland-portals.conf
+	  $(HOME)/.local/bin/scottland-list-picker $(HOME)/.local/bin/scottland-clipboard $(PORTALS)/scottland-portals.conf
 
 package:
 	cd packaging/arch && makepkg -sif

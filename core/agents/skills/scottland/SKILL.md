@@ -77,6 +77,14 @@ disconnect removes it. A short-lived IPC connection may close without removing t
 Register again after remapping or a plugin reload. Compositor grabs retain their input.
 Full rules: Scottland's `docs/key-layers.md` (KL1–KL8).
 
+## Clipboard history
+
+`scottland-clipboard history` opens the session-only history and copies the selected entry. Add
+`--paste` to paste it into the app that was focused when the picker opened, or `--open` to open it
+in its default application. Pipe text to `scottland-clipboard copy-text`, or pass a path and MIME
+type to `scottland-clipboard copy-file`; both paste by default, and `--copy-only` skips pasting.
+Use `scottland-clipboard clear` to empty the session history. Core does not bind a default key.
+
 ## Touchscreen scrolling for apps that ignore touch
 
 Many apps scroll with a finger on their own (browsers, most GTK and Qt apps). Some don't, notably
