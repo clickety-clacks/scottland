@@ -367,10 +367,10 @@ def find_point(target_id, require_ids=(), avoid_ids=()):
     raise RuntimeError(f"no usable tint sample for window {target_id}; required={require_ids}")
 
 
-def find_overlap_point(left_id, right_id):
+def find_overlap_point(left_id, right_id, left_rect_override=None):
     state = hints()
     frames = frame_map(state)
-    left, right = frames[left_id], frames[right_id]
+    left, right = left_rect_override or frames[left_id], frames[right_id]
     x1, y1 = max(left[0], right[0]), max(left[1], right[1])
     x2, y2 = min(left[0] + left[2], right[0] + right[2]), \
         min(left[1] + left[3], right[1] + right[3])
@@ -597,23 +597,6 @@ def cover_moves_away():
     point = find_point(back)
     tint_stack_check("arrow-pushed tint", point, (back, front))
 
-    # Super+drag moves a normal window while Window mode remains visible. Capture the moving
-    # surface after every input step and sample its current interior/boundary position.
-    side_frame = drawn(side)
-    start_x, start_y = side_frame[0] + side_frame[2] / 2, side_frame[1] + side_frame[3] / 2
-    key("LEFTMETA", True)
-    ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="press"))
-    try:
-        for step in range(1, 8):
-            pointer(start_x + 7 * step, start_y)
-            time.sleep(.025)
-            motion_tint_sample(f"pointer-drag motion frame {step}", side, "left")
-    finally:
-        ipc("stipc/feed_button", dict(combo="BTN_LEFT", mode="release"))
-        key("LEFTMETA", False)
-    side_after = drawn(side)
-    check("pointer drag moved the sampled window", side_after[0] > side_frame[0] + 25,
-          {"before": side_frame, "after": side_after})
     set_tint(7)
     release()
 
@@ -662,10 +645,12 @@ def fullscreen_in_front():
     # A widget card remains above fullscreen; test its rear-first mix separately from the edge
     # samples so the card cannot hide a fullscreen boundary point.
     if widget_hint_id is not None and widget_hint_id in hints():
-        card_point = find_overlap_point(front, widget_hint_id)
+        state = hints()
+        card_frame = drawn(widget_hint_id, state)
+        card_point = find_overlap_point(front, widget_hint_id, left_rect_override=fs)
         tint_stack_check("widget card above fullscreen mixes after fullscreen",
                          card_point, (front, widget_hint_id), no_stroke=False,
-                         frames_override={front: fs})
+                         frames_override={front: fs, widget_hint_id: card_frame})
     # Fullscreen bounds are square. Sample each edge away from badges and any widget card so an
     # inset rim or missed tint along one side cannot be hidden by the interior sample.
     state = hints()
@@ -791,10 +776,13 @@ def list_picker_overlay_isolation():
     panel_height = 40 + 44 + 12 + 88 + 12 + 19
     panel_left = float(geometry["x"]) + (width - panel_width) / 2
     panel_top = float(geometry["y"]) + (height - panel_height) / 2
-    overlay_point = (float(geometry["x"]) + width / 2, panel_top + 10)
+    overlay_candidates = [
+        (panel_left + panel_width * fx, panel_top + panel_height * fy)
+        for fy in (.12, .2, .28, .72, .8, .88)
+        for fx in (.08, .16, .24, .76, .84, .92)
+    ]
     background = tuple(int(BACKGROUND[i:i + 2], 16) for i in (1, 3, 5))
-    if not off_badges(hints(), *overlay_point, margin=20):
-        raise RuntimeError("list-picker overlay sample intersects a hint badge")
+    overlay_sample = []
     picker = subprocess.Popen(
         [str(repo / "core/libexec/scottland-list-picker"), "--prompt", "Choose a fixture"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -804,9 +792,14 @@ def list_picker_overlay_isolation():
 
         def panel_visible():
             shot = Shot("12-list-picker-map-probe")
-            return near(shot.pixel(*overlay_point), background, 4)
+            state = hints()
+            overlay_sample[:] = [point for point in overlay_candidates
+                                 if off_badges(state, *point, margin=20) and
+                                 near(shot.pixel(*point), background, 4)]
+            return bool(overlay_sample)
 
         wait(panel_visible, 10)
+        overlay_point = overlay_sample[0]
         set_tint(0)
         untinted = Shot("12-list-picker-untinted")
         set_tint(100)

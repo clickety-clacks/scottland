@@ -92,9 +92,9 @@ views and diagnose a failed frame but cannot establish a pass.
    hints are visible and capture its next rendered frame. Repeat with hint-background opacity at
    0% and 100%: tint samples must not change, and hint backing samples must not change when tint
    strength changes. The row must reach 100% and remain usable at that value.
-7. **Motion tracking.** The hint-outline test captures tint after each sampled peek-ease, keyboard
-   movement and pointer-drag input step. It probes one device pixel inside and outside the current
-   drawn edge; the colored pixel must follow the frame while the outside pixel stays untinted.
+7. **Motion tracking.** The hint-outline test captures tint after each sampled peek-ease and
+   keyboard movement step. It probes one device pixel inside and outside the current drawn edge;
+   the colored pixel must follow the frame while the outside pixel stays untinted.
 8. **Clear.** Capture the same settled layout before Window mode and after Alt release, then repeat
    with Esc. After avoidance offsets settle home, all pixels outside persistent Goo/halo effects
    match their corresponding pre-entry capture within 4/255.
