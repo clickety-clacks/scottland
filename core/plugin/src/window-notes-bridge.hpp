@@ -444,9 +444,28 @@
         {
             auto reply = notes_slice_snapshot();
             auto entries = wf::json_t::array();
-            const bool filter_window = data.has_member("window") && data["window"].is_int();
+            bool filter_window = false;
+            int64_t wanted_window = -1;
+            if (data.has_member("window"))
+            {
+                if (data["window"].is_int() && data["window"].as_int64() > 0)
+                {
+                    filter_window = true;
+                    wanted_window = data["window"].as_int64();
+                } else if (data["window"].is_string() && data["window"].as_string() == "focused")
+                {
+                    auto active = wf::toplevel_cast(wf::get_core().seat->get_active_view());
+                    if (auto link = link_of_widget(active)) wanted_window = (int64_t)link->window_id;
+                    else if (active) wanted_window = active->get_id();
+                    if (wanted_window <= 0)
+                        return wf::ipc::json_error("focused window does not exist");
+                    filter_window = true;
+                } else
+                {
+                    return wf::ipc::json_error("window must be a positive integer or 'focused'");
+                }
+            }
             const bool filter_writer = data.has_member("writer") && data["writer"].is_string();
-            const int64_t wanted_window = filter_window ? data["window"].as_int64() : -1;
             const std::string wanted_writer = filter_writer ? data["writer"].as_string() : "";
             for (const auto& [window_id, notes] : model.notes)
             {

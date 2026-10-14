@@ -36,7 +36,15 @@ Session and power commands:
   lid-close                                 request the distro's session locker
   lock                                      request the distro's session locker
   sleep-lock [BUDGET_MS]                    lock and wait until Scottland reports secure
-  sleep-monitor [--inhibited]               lock when logind prepares to suspend";
+  sleep-monitor [--inhibited]               lock when logind prepares to suspend
+
+Window notes commands:
+  notes add --window <id|focused> --writer <name> <text>
+  notes update <note-id> <text>
+  notes remove <note-id>
+  notes list [--window <id|focused>] [--writer <name>] [--json]
+
+For add or update, use - as <text> to read stdin through EOF (one trailing newline is removed).";
 
 const CONFIG_NAMES: &[&str] = &[
     "center_width",
@@ -320,6 +328,7 @@ pub fn run(args: &[String]) -> Result<u8> {
             Ctl::connect()?.windows()?;
             Ok(0)
         }
+        "notes" => notes_command(args),
         "sender-window-snapshot" if args.is_empty() => sender_window_snapshot(),
         "stdin" if args.is_empty() => stdin_updates(),
         "terminal-cwd" if args.len() <= 1 => terminal_cwd(args.first().map(String::as_str)),
@@ -335,6 +344,246 @@ pub fn run(args: &[String]) -> Result<u8> {
         }
         _ => Err(format!("invalid command or arguments\n{HELP}")),
     }
+}
+
+fn notes_command(args: &[String]) -> Result<u8> {
+    let Some((action, args)) = args.split_first() else {
+        return Err("expected notes add, update, remove, or list".to_string());
+    };
+    match action.as_str() {
+        "add" => notes_add(args),
+        "update" => notes_update(args),
+        "remove" => notes_remove(args),
+        "list" => notes_list(args),
+        _ => Err("expected notes add, update, remove, or list".to_string()),
+    }
+}
+
+fn notes_add(args: &[String]) -> Result<u8> {
+    let mut window = None;
+    let mut writer = None;
+    let mut positional = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--window" => {
+                if window.is_some() {
+                    return Err("notes add accepts --window once".to_string());
+                }
+                index += 1;
+                window = Some(parse_note_window(
+                    args.get(index).map(String::as_str).unwrap_or(""),
+                )?);
+            }
+            "--writer" => {
+                if writer.is_some() {
+                    return Err("notes add accepts --writer once".to_string());
+                }
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("notes add requires --writer <name>".to_string());
+                };
+                writer = Some(value.clone());
+            }
+            "--" => {
+                positional.extend(args[index + 1..].iter().map(String::as_str));
+                break;
+            }
+            option if option.starts_with("--") => {
+                return Err(format!("unknown notes add option {option}"));
+            }
+            value => positional.push(value),
+        }
+        index += 1;
+    }
+
+    let window = window.ok_or_else(|| "notes add requires --window <id|focused>".to_string())?;
+    let writer = writer.ok_or_else(|| "notes add requires --writer <name>".to_string())?;
+    if positional.len() != 1 {
+        return Err("notes add requires one text argument".to_string());
+    }
+    let text = read_note_text(positional[0])?;
+    let mut ctl = Ctl::connect()?;
+    let reply = call_notes(
+        &mut ctl,
+        json!({"action": "add", "window": window, "writer": writer, "text": text}),
+    )?;
+    let id = reply
+        .get("id")
+        .and_then(Value::as_i64)
+        .filter(|id| *id > 0)
+        .ok_or_else(|| "Wayfire returned no note id".to_string())?;
+    println!("{id}");
+    Ok(0)
+}
+
+fn notes_update(args: &[String]) -> Result<u8> {
+    if args.len() != 2 {
+        return Err("notes update requires <note-id> and one text argument".to_string());
+    }
+    let id = parse_positive_id(&args[0], "note-id must be a positive integer")?;
+    let text = read_note_text(&args[1])?;
+    let mut ctl = Ctl::connect()?;
+    call_notes(
+        &mut ctl,
+        json!({"action": "update", "id": id, "text": text}),
+    )?;
+    Ok(0)
+}
+
+fn notes_remove(args: &[String]) -> Result<u8> {
+    if args.len() != 1 {
+        return Err("notes remove requires one <note-id>".to_string());
+    }
+    let id = parse_positive_id(&args[0], "note-id must be a positive integer")?;
+    let mut ctl = Ctl::connect()?;
+    call_notes(&mut ctl, json!({"action": "remove", "id": id}))?;
+    Ok(0)
+}
+
+fn notes_list(args: &[String]) -> Result<u8> {
+    let mut window = None;
+    let mut writer = None;
+    let mut json_output = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--window" => {
+                if window.is_some() {
+                    return Err("notes list accepts --window once".to_string());
+                }
+                index += 1;
+                window = Some(parse_note_window(
+                    args.get(index).map(String::as_str).unwrap_or(""),
+                )?);
+            }
+            "--writer" => {
+                if writer.is_some() {
+                    return Err("notes list accepts --writer once".to_string());
+                }
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("notes list requires --writer <name>".to_string());
+                };
+                writer = Some(value.clone());
+            }
+            "--json" if !json_output => json_output = true,
+            "--json" => return Err("notes list accepts --json once".to_string()),
+            option => return Err(format!("unknown notes list option {option}")),
+        }
+        index += 1;
+    }
+
+    let mut request = json!({"action": "list"});
+    let fields = request
+        .as_object_mut()
+        .ok_or_else(|| "could not build notes request".to_string())?;
+    if let Some(window) = window {
+        fields.insert("window".to_string(), window);
+    }
+    if let Some(writer) = writer {
+        fields.insert("writer".to_string(), json!(writer));
+    }
+
+    let mut ctl = Ctl::connect()?;
+    let reply = call_notes(&mut ctl, request)?;
+    let windows = reply
+        .get("windows")
+        .filter(|windows| windows.is_array())
+        .cloned()
+        .ok_or_else(|| "Wayfire returned no notes windows".to_string())?;
+    if json_output {
+        return print_json(windows);
+    }
+    print!("{}", format_note_windows(&windows)?);
+    Ok(0)
+}
+
+fn parse_note_window(value: &str) -> Result<Value> {
+    if value == "focused" {
+        return Ok(json!("focused"));
+    }
+    Ok(json!(parse_positive_id(
+        value,
+        "window must be a positive integer or 'focused'",
+    )?))
+}
+
+fn parse_positive_id(value: &str, error: &str) -> Result<i64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(error.to_string());
+    }
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| error.to_string())
+}
+
+fn read_note_text(value: &str) -> Result<String> {
+    if value != "-" {
+        return Ok(value.to_string());
+    }
+    let mut text = String::new();
+    io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|error| format!("cannot read note text from stdin: {error}"))?;
+    if text.ends_with('\n') {
+        text.pop();
+    }
+    Ok(text)
+}
+
+fn call_notes(ctl: &mut Ctl, request: Value) -> Result<Value> {
+    let reply = ctl.call("scottland/notes", request)?;
+    if let Some(error) = reply.get("error") {
+        let message = error
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| error.to_string());
+        return Err(message.lines().collect::<Vec<_>>().join(" "));
+    }
+    Ok(reply)
+}
+
+fn format_note_windows(windows: &Value) -> Result<String> {
+    let windows = windows
+        .as_array()
+        .ok_or_else(|| "Wayfire returned invalid notes windows".to_string())?;
+    let mut output = String::new();
+    for window in windows {
+        let window_id = window
+            .get("id")
+            .and_then(Value::as_i64)
+            .filter(|id| *id > 0)
+            .ok_or_else(|| "Wayfire returned an invalid notes window id".to_string())?;
+        let notes = window
+            .get("notes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "Wayfire returned invalid notes".to_string())?;
+        for note in notes {
+            let note_id = note
+                .get("id")
+                .and_then(Value::as_i64)
+                .filter(|id| *id > 0)
+                .ok_or_else(|| "Wayfire returned an invalid note id".to_string())?;
+            let writer = note
+                .get("writer")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Wayfire returned an invalid note writer".to_string())?;
+            let text = note
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Wayfire returned invalid note text".to_string())?;
+            output.push_str(&format!("{window_id} {note_id} {writer}\n"));
+            for line in text.split('\n') {
+                output.push_str("  ");
+                output.push_str(line);
+                output.push('\n');
+            }
+        }
+    }
+    Ok(output)
 }
 
 fn sender_window_snapshot() -> Result<u8> {

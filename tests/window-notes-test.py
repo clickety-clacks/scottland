@@ -110,6 +110,90 @@ def focused():
     return (ipc("window-rules/get-focused-view").get("info") or {}).get("id")
 
 
+def ctl(*args, input_text=None):
+    return subprocess.run([str(repo / "build/tools/bin/scottland-ctl"), *map(str, args)],
+        input=input_text, text=True, capture_output=True, timeout=12)
+
+
+def rust_notes_cli_checks(anchor_id, focused_window_id):
+    writer = "cli-notes-agent"
+    add = ctl("notes", "add", "--window", anchor_id, "--writer", writer, "-",
+        input_text="please log in\nto xyz\n")
+    require("Rust notes add accepts stdin text and prints its id",
+        add.returncode == 0 and add.stdout.endswith("\n") and add.stdout.strip().isdigit(),
+        {"status": add.returncode, "stdout": add.stdout, "stderr": add.stderr})
+    note_id = int(add.stdout.strip())
+    expected_note = {"id": note_id, "writer": writer, "text": "please log in\nto xyz"}
+    require("Rust notes add stores the supplied window, writer and full text",
+        row_for(notes(), anchor_id)["notes"] == [expected_note], notes())
+
+    listing = ctl("notes", "list", "--window", anchor_id, "--writer", writer)
+    require("Rust notes list prints the documented multi-line form",
+        listing.returncode == 0 and listing.stdout ==
+            f"{anchor_id} {note_id} {writer}\n  please log in\n  to xyz\n",
+        {"status": listing.returncode, "stdout": listing.stdout, "stderr": listing.stderr})
+    json_listing = ctl("notes", "list", "--window", anchor_id, "--writer", writer, "--json")
+    require("Rust notes list JSON returns the filtered windows array",
+        json_listing.returncode == 0 and json.loads(json_listing.stdout) ==
+            [{"id": anchor_id, "notes": [expected_note]}],
+        {"status": json_listing.returncode, "stdout": json_listing.stdout,
+         "stderr": json_listing.stderr})
+
+    update = ctl("notes", "update", note_id, "logged in, thanks")
+    expected_updated = {**expected_note, "text": "logged in, thanks"}
+    require("Rust notes update changes text without changing note identity",
+        update.returncode == 0 and update.stdout == "" and
+            row_for(notes(), anchor_id)["notes"] == [expected_updated],
+        {"status": update.returncode, "stdout": update.stdout,
+         "stderr": update.stderr, "notes": notes()})
+
+    unchanged = notes()
+    invalid = ctl("notes", "add", "--window", anchor_id, "--writer", writer, "x" * 1001)
+    require("Rust notes add reports rejected text as one error line",
+        invalid.returncode != 0 and "text" in invalid.stderr and
+            len(invalid.stderr.splitlines()) == 1 and invalid.stdout == "" and notes() == unchanged,
+        {"status": invalid.returncode, "stdout": invalid.stdout,
+         "stderr": invalid.stderr, "notes": notes()})
+
+    missing = ctl("notes", "remove", 9223372036854775807)
+    require("Rust notes remove reports a missing id and exits nonzero",
+        missing.returncode != 0 and "note-id does not exist" in missing.stderr and
+            len(missing.stderr.splitlines()) == 1,
+        {"status": missing.returncode, "stdout": missing.stdout, "stderr": missing.stderr})
+    remove = ctl("notes", "remove", note_id)
+    require("Rust notes remove deletes the note",
+        remove.returncode == 0 and not any(
+            entry["id"] == note_id for _, entries in note_rows(notes()) for entry in entries),
+        {"status": remove.returncode, "stdout": remove.stdout,
+         "stderr": remove.stderr, "notes": notes()})
+    empty = ctl("notes", "list", "--window", anchor_id, "--writer", writer)
+    require("Rust notes list succeeds without output when no note matches",
+        empty.returncode == 0 and empty.stdout == "" and empty.stderr == "",
+        {"status": empty.returncode, "stdout": empty.stdout, "stderr": empty.stderr})
+
+    before_focus = focused()
+    focused_add = ctl("notes", "add", "--window", "focused", "--writer", writer,
+        "focused note")
+    require("Rust notes add resolves the focused window",
+        focused_add.returncode == 0 and focused_add.stdout.strip().isdigit(),
+        {"status": focused_add.returncode, "stdout": focused_add.stdout,
+         "stderr": focused_add.stderr})
+    focused_id = int(focused_add.stdout.strip())
+    focused_json = ctl("notes", "list", "--window", "focused", "--writer", writer, "--json")
+    require("Rust notes list resolves focused and leaves focus unchanged",
+        focused_json.returncode == 0 and focused() == before_focus == focused_window_id and
+            json.loads(focused_json.stdout) == [{"id": focused_window_id, "notes": [
+                {"id": focused_id, "writer": writer, "text": "focused note"}]}],
+        {"status": focused_json.returncode, "stdout": focused_json.stdout,
+         "stderr": focused_json.stderr, "focused": focused()})
+    focused_remove = ctl("notes", "remove", focused_id)
+    require("Rust notes remove cleans up a focused-window note",
+        focused_remove.returncode == 0 and not any(
+            entry["id"] == focused_id for _, entries in note_rows(notes()) for entry in entries),
+        {"status": focused_remove.returncode, "stderr": focused_remove.stderr,
+         "notes": notes()})
+
+
 def pointer(x, y):
     reply = ipc("stipc/move_cursor", {"x": round(x), "y": round(y)})
     if isinstance(reply, dict) and "error" in reply:
@@ -277,6 +361,7 @@ try:
     anchor = scene("Notes anchor")
     anchor_id = anchor["id"]
     anchor_frame = anchor.get("scene_frame", anchor["frame"])
+    rust_notes_cli_checks(anchor_id, focus_window["id"])
     baseline_path, baseline = shot("window-unnoted")
     before_slices = state_slices()
     watcher = NotesWatch()
