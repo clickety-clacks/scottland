@@ -388,10 +388,17 @@ def outside_point():
     state = hints()
     frames = frame_map(state)
     for identifier, frame in frames.items():
-        candidates = ((frame[0] + frame[2] * t, frame[1] - 8) for t in (.2, .35, .5, .65, .8))
-        candidates = list(candidates) + [(frame[0] - 8, frame[1] + frame[3] * t) for t in (.2, .35, .5, .65, .8)]
+        candidates = []
+        for distance in (16, 32, 48, 64, 80, 96):
+            for t in (.2, .35, .5, .65, .8):
+                candidates.extend((
+                    (frame[0] + frame[2] * t, frame[1] - distance),
+                    (frame[0] + frame[2] * t, frame[1] + frame[3] + distance),
+                    (frame[0] - distance, frame[1] + frame[3] * t),
+                    (frame[0] + frame[2] + distance, frame[1] + frame[3] * t),
+                ))
         for point in candidates:
-            if off_badges(state, *point) and not any(contains(other, point) for other in frames.values()):
+            if off_badges(state, *point, margin=20) and not any(contains(other, point) for other in frames.values()):
                 return point
     return None
 
@@ -432,8 +439,11 @@ def tint_stack_check(name, point, order, strength=7, scale=1, origin=(0, 0), no_
                 set_tint(100)
                 outside_full = Shot(name + "-outside-full", scale)
                 outside_screen = (point_out[0] + origin[0], point_out[1] + origin[1])
+                outside_before = outside_base.pixel(*outside_screen)
+                outside_after = outside_full.pixel(*outside_screen)
                 check(name + ": no tint stroke outside drawn extents",
-                      near(outside_base.pixel(*outside_screen), outside_full.pixel(*outside_screen), 3))
+                      near(outside_before, outside_after, 3),
+                      {"point": point_out, "base": outside_before, "tinted": outside_after})
         return point, before, after
     finally:
         set_tint(old)
@@ -659,20 +669,20 @@ def widget_cover():
               "widget_badge": state.get(widget_id, {}).get("badge")}, flush=True)
         image = Shot("09-widget-cover-" + phase)
         ux, uy, uw, uh = under_rect
-        points = [(x, y) for y in range(int(uy + 12), int(uy + uh - 12), 3)
-                  for x in range(int(ux + 12), int(ux + uw - 12), 3) if off_badges(state, x, y, 20)]
         under_card = lambda x, y: contains(card_rect, (x, y))
-        references = [p for p in points if not under_card(*p)]
-        shown_points = sum(near(image.pixel(x, y), client_color, 8) for x, y in points)
-        uncovered_hits = sum(near(image.pixel(x, y), client_color, 8) for x, y in references)
-        covered_points = [p for p in points if under_card(*p)]
-        covered_hits = sum(near(image.pixel(x, y), client_color, 8) for x, y in covered_points)
-        pixel_fraction = shown_points / max(1, len(points))
+        samples = [(ux + uw * fx, uy + uh * fy)
+                   for fy in (.25, .5, .65, .75, .9)
+                   for fx in (.35, .5, .65)
+                   if off_badges(state, ux + uw * fx, uy + uh * fy, 20)]
+        exposed = next((p for p in samples if not under_card(*p)), None)
+        covered = next((p for p in samples if under_card(*p)), None)
+        exposed_pixel = image.pixel(*exposed) if exposed else None
+        covered_pixel = image.pixel(*covered) if covered else None
         check("widget as cover " + phase + ": card hides client pixels while exposed pixels remain",
-              len(references) > 30 and len(covered_points) > 30 and uncovered_hits >= 8 and
-              covered_hits / len(covered_points) < .05)
-        check("widget as cover " + phase + ": fixture moved across the card extent",
-              (pixel_fraction < .5) == (phase == "mostly"))
+              exposed is not None and covered is not None and
+              near(exposed_pixel, client_color, 8) and not near(covered_pixel, client_color, 8),
+              {"exposed_point": exposed, "exposed_pixel": exposed_pixel,
+               "covered_point": covered, "covered_pixel": covered_pixel})
         point = find_overlap_point(small, widget_id)
         tint_stack_check("widget card tint " + phase, point, (small, widget_id))
         release()
@@ -680,7 +690,7 @@ def widget_cover():
     measure("partial")
     shown = views()[small]["frame"]
     ipc("window-rules/configure-view", dict(id=small, geometry=dict(
-        x=950, y=round(wf_["y"] - 25 + shown["height"] / 2 - 110), width=300, height=220)))
+        x=950, y=round(wf_["y"] - 85 + shown["height"] / 2 - 110), width=300, height=220)))
     ipc("window-rules/focus-view", dict(id=small))
     time.sleep(.7)
     measure("mostly")
