@@ -43,6 +43,9 @@ fn parse_step(step: &str) -> Option<Step> {
 }
 
 fn parse_amount(value: &str) -> Option<u8> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
     let amount = value.parse::<u8>().ok()?;
     (1..=100).contains(&amount).then_some(amount)
 }
@@ -91,5 +94,10 @@ mod tests {
         for step in ["5", "+0%", "0%-", "101%", "-5%", "5%+", "+5%-"] {
             assert_eq!(brightness_target_percent(50, step), None, "{step}");
         }
+    }
+
+    #[test]
+    fn rejects_repeated_plus_before_parsing_the_amount() {
+        assert_eq!(brightness_target_percent(50, "++5%"), None);
     }
 }
