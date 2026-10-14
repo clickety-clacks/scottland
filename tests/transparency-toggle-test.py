@@ -209,6 +209,43 @@ def press_hint(window_id, hold=.7):
     key(last, False)
 
 
+def capture_widget_map_failure(window_id, error):
+    snapshot = {
+        'window': window_id,
+        'error': str(error),
+        'wayland_display': os.environ.get('WAYLAND_DISPLAY'),
+        'widget_scope': os.environ.get('SCOTTLAND_WIDGET_SCOPE'),
+        'ipc': {},
+    }
+    for method, data in (
+        ('scottland/widgets', {}),
+        ('scottland/desktop-model', {'slice': 'widgets'}),
+        ('scottland/layout-state', {}),
+        ('window-rules/list-views', {}),
+    ):
+        try:
+            snapshot['ipc'][method] = ipc(method, data)
+        except Exception as capture_error:
+            snapshot['ipc'][method] = {'capture_error': str(capture_error)}
+
+    try:
+        result = subprocess.run(['ps', '-eo', 'pid,ppid,cgroup,args'], capture_output=True,
+                                text=True, timeout=3, check=False)
+        snapshot['processes'] = [
+            line for line in result.stdout.splitlines()
+            if str(repo) in line or 'scottland-widget' in line
+        ]
+        snapshot['ps_exit'] = result.returncode
+        snapshot['ps_stderr'] = result.stderr
+    except (OSError, subprocess.SubprocessError) as capture_error:
+        snapshot['process_capture_error'] = str(capture_error)
+
+    try:
+        (art / 'widget-map-timeout.json').write_text(json.dumps(snapshot, indent=2, sort_keys=True) + '\n')
+    except OSError as capture_error:
+        print(f'could not retain widget mapping diagnostics: {capture_error}', file=sys.stderr, flush=True)
+
+
 def widgetize_by_double_tap(window_id):
     key('LEFTALT', True)
     wait(lambda: hints()['active'], 'Window mode activates for widget double tap')
@@ -218,8 +255,13 @@ def widgetize_by_double_tap(window_id):
     wait(lambda: next(v for v in views() if v['id'] == window_id)['widgetized'], 'window becomes widget')
     key('LEFTALT', False)
     wait(lambda: not hints()['active'], 'Window mode exits after widget double tap')
-    return wait(lambda: next((w['widget_view'] for w in ipc('scottland/widgets')['widgets']
-                              if w['id'] == window_id and w['widget_view'] > 0), None), 'widget toplevel maps')
+    try:
+        return wait(lambda: next((w['widget_view'] for w in ipc('scottland/widgets')['widgets']
+                                  if w['id'] == window_id and w['widget_view'] > 0), None),
+                    'widget toplevel maps')
+    except RuntimeError as error:
+        capture_widget_map_failure(window_id, error)
+        raise
 
 
 try:
