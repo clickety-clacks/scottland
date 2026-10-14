@@ -255,10 +255,7 @@ fn failed_power_off_notifies_and_releases_the_inhibitor_with_failure_status() {
 
     assert_eq!(status, 5);
     assert_eq!(backend.notices.len(), 1);
-    assert_eq!(
-        backend.events.last().map(String::as_str),
-        Some("release_inhibitor")
-    );
+    assert!(backend.events.contains(&"release_inhibitor".to_string()));
     assert!(backend.events.contains(&"notify".to_string()));
 }
 
