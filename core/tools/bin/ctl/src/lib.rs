@@ -768,7 +768,7 @@ fn lock_session() -> Result<u8> {
 }
 
 fn sleep_lock(budget_arg: Option<&str>) -> Result<u8> {
-    let session = current_session()?;
+    let session = current_session_for_sleep_lock()?;
     session
         .var("XDG_SESSION_ID")
         .filter(|id| !id.is_empty())
@@ -788,6 +788,87 @@ fn sleep_lock(budget_arg: Option<&str>) -> Result<u8> {
         request_session_lock,
         session_state,
     )
+}
+
+/// Selects the session from its recorded environment without probing Wayfire's IPC socket.
+/// `sleep-lock` must request the login session lock before touching that socket: a full Wayfire
+/// listen backlog can make a blocking `connect` wait until logind's delay-inhibitor window ends.
+fn current_session_for_sleep_lock() -> Result<Session> {
+    let runtime = env::var_os("SCOTTLAND_SESSION_DIR")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(scottland::dirs::runtime_dir);
+    let caller_socket = env::var_os("WAYFIRE_SOCKET");
+    let caller_id = env::var_os("XDG_SESSION_ID");
+    select_recorded_sleep_session(&runtime, caller_socket.as_deref(), caller_id.as_deref())
+}
+
+fn select_recorded_sleep_session(
+    runtime: &Path,
+    caller_socket: Option<&OsStr>,
+    caller_id: Option<&OsStr>,
+) -> Result<Session> {
+    let entries = fs::read_dir(runtime)
+        .map_err(|error| format!("cannot read recorded Scottland sessions: {error}"))?;
+    let mut sessions = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("cannot read recorded Scottland session: {error}"))?;
+        let file_name = entry.file_name();
+        let bytes = file_name.as_bytes();
+        let Some(name) = bytes.strip_suffix(b".env") else {
+            continue;
+        };
+        if name.is_empty() || name.starts_with(b".") {
+            continue;
+        }
+        let Ok(session_env) = scottland::session::read_env(&entry.path()) else {
+            continue;
+        };
+        if session_env
+            .get(OsStr::new("WAYFIRE_SOCKET"))
+            .is_none_or(|socket| socket.is_empty())
+            || session_env
+                .get(OsStr::new("XDG_SESSION_ID"))
+                .is_none_or(|id| id.is_empty())
+        {
+            continue;
+        }
+        sessions.push(Session {
+            name: String::from_utf8_lossy(name).into_owned(),
+            env: session_env,
+        });
+    }
+    sessions.sort_by(|left, right| left.name.cmp(&right.name));
+
+    if let Some(socket) = caller_socket.filter(|socket| !socket.is_empty()) {
+        return sessions
+            .into_iter()
+            .find(|session| session.var("WAYFIRE_SOCKET") == Some(socket))
+            .ok_or_else(|| {
+                "the caller's Wayfire socket is not a recorded Scottland session".to_string()
+            });
+    }
+    if let Some(id) = caller_id.filter(|id| !id.is_empty()) {
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| session.var("XDG_SESSION_ID") == Some(id))
+        {
+            return Ok(session.clone());
+        }
+    }
+    match sessions.len() {
+        0 => Err("no recorded Scottland session can be selected for sleep-lock".to_string()),
+        1 => Ok(sessions.remove(0)),
+        _ => Err(format!(
+            "several Scottland sessions are recorded ({}); run sleep-lock inside a selected session",
+            sessions
+                .into_iter()
+                .map(|session| session.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 fn wait_for_session_secure<Now, RequestLock, SessionState>(
@@ -1090,6 +1171,42 @@ mod tests {
         assert_eq!(lock_budget_ms(5_000_000), 4_000);
         assert_eq!(lock_budget_ms(20_000_000), 12_000);
         assert_eq!(lock_budget_ms(500_000), 1);
+    }
+
+    #[test]
+    fn sleep_lock_selects_a_recorded_session_without_connecting_to_wayfire() {
+        let id = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+        let root = TestDir::new(
+            Path::new("/tmp").join(format!("sct-lock-select-{}-{id}", std::process::id())),
+        );
+        let runtime = root.0.join("runtime");
+        fs::create_dir_all(&runtime).expect("create private runtime directory");
+        let socket_path = root.0.join("wayfire.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind unaccepting Wayfire socket");
+        listener
+            .set_nonblocking(true)
+            .expect("make listener observation nonblocking");
+        fs::write(
+            runtime.join("wayland-1.env"),
+            format!(
+                "XDG_SESSION_ID=test-session\0WAYFIRE_SOCKET={}\0",
+                socket_path.display()
+            ),
+        )
+        .expect("record selected session environment");
+
+        let socket_arg = OsStr::new(socket_path.as_os_str());
+        let session = select_recorded_sleep_session(&runtime, Some(socket_arg), None)
+            .expect("select the caller's recorded session without probing Wayfire");
+        assert_eq!(session.name, "wayland-1");
+        assert_eq!(
+            session.var("XDG_SESSION_ID"),
+            Some(OsStr::new("test-session"))
+        );
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
     }
 
     #[test]
