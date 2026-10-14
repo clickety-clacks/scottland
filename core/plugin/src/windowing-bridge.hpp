@@ -22,6 +22,13 @@
     // Return opens a focused widget once per physical press, before the widget or its key layer
     // can receive it. Keep its release from reaching the app window that replaced the widget.
     std::set<std::pair<wlr_input_device*, uint32_t>> widget_return_keys;
+    // Probe the binding repository before temporarily bypassing its inactive Alt+Space
+    // accelerator. The impossible binding follows the same enabled-state convention as
+    // key_layers: set_enabled(false) must never cross an already disabled repository.
+    wf::option_sptr_t<wf::keybinding_t> app_alt_space_probe = wf::create_option(
+        wf::keybinding_t{0x80000000u, 0xffffffffu});
+    wf::key_callback app_alt_space_probe_callback = [] (const wf::keybinding_t&) { return true; };
+    std::map<wlr_keyboard_key_event*, bool> app_alt_space_events;
     wf::wl_timer<false> alt_hold;
     bool capture_chord = false;
     bool alt_bypassed = false;
@@ -1981,6 +1988,16 @@
         if (!capture_chord)
         {
             if (down && !alt_keys.empty()) { alt_bypassed = true; alt_hold.disconnect(); }
+            if (code == KEY_SPACE && !alt_keys.empty() && !window_keys.active && !claimed &&
+                ev->mode == wf::input_event_processing_mode_t::FULL &&
+                !(keyboard->modifiers.depressed & modifier_mask(keyboard->keymap, "CTRL SHIFT SUPER")) &&
+                wf::get_core().get_current_seat()->keyboard_state.focused_surface &&
+                !wlr_seat_keyboard_has_grab(wf::get_core().get_current_seat()))
+            {
+                bool enabled = wf::get_core().bindings->handle_key(app_alt_space_probe->get_value(), 0);
+                app_alt_space_events[ev->event] = enabled;
+                if (enabled) wf::get_core().bindings->set_enabled(false);
+            }
             return;
         }
         ev->mode = wf::input_event_processing_mode_t::IGNORE;
@@ -2021,6 +2038,14 @@
                 if (window_keys.hold_waiting()) arm_hint_hold();
             }
         }
+    };
+    wf::signal::connection_t<wf::post_input_event_signal<wlr_keyboard_key_event>> after_app_alt_space =
+        [=] (wf::post_input_event_signal<wlr_keyboard_key_event> *ev)
+    {
+        auto found = app_alt_space_events.find(ev->event);
+        if (found == app_alt_space_events.end()) return;
+        if (found->second) wf::get_core().bindings->set_enabled(true);
+        app_alt_space_events.erase(found);
     };
     wf::ipc::method_callback hints_state = [=] (wf::json_t data) -> wf::json_t
     {
@@ -2215,6 +2240,8 @@
         window_keys.gather = [=] () { gather_all(); };
         window_keys.close = [=] (uint64_t id) { auto view = wf::toplevel_cast(view_by_id(id));
             if (auto link = link_of_window(view)) close_linked(*link); else if (view) view->close(); };
+        wf::get_core().bindings->add_key(app_alt_space_probe, &app_alt_space_probe_callback);
+        wf::get_core().connect(&after_app_alt_space);
         wf::get_core().connect(&on_window_key);
         ipc_repo->register_method("scottland/hints", hints_state);
         ipc_repo->register_method("scottland/center-switcher", center_switcher_state);
@@ -2222,7 +2249,12 @@
     }
     void fini_window_keys()
     {
-        on_window_key.disconnect(); alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
+        on_window_key.disconnect(); after_app_alt_space.disconnect();
+        for (auto& [event, enabled] : app_alt_space_events)
+            if (enabled) wf::get_core().bindings->set_enabled(true);
+        app_alt_space_events.clear();
+        wf::get_core().bindings->rem_binding(&app_alt_space_probe_callback);
+        alt_hold.disconnect(); hints_tick.disconnect(); deferred_cycle.disconnect();
         hint_hold.disconnect(); hint_hold_retry.disconnect(); deferred_pair.disconnect(); deferred_pair_ready.disconnect();
         hint_registration.disconnect(); deferred_ready.disconnect();
         stop_keyboard_motion();
