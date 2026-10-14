@@ -146,6 +146,17 @@ see [its redraw-cost validation](../docs/goo.md#go10-settled-goo-over-redrawing-
 | A19 | The Goo Dye density setting (named Dye strength until 2026-10-05) scales all dye in the goo, picked-up color included (GO28, 2026-10-05), and the focus accent, attention and Window mode hint colors in fallback halos, from faint to stronger than today's look; above 1, the final dye weight is capped at full opacity. A16's unfocused strength still sets how much a neutral window releases. The setting applies live and is saved with Settings. | implemented; current all-dye, Settings Save/Cancel and Goo/fallback density checks pass on both GPU paths (2026-10-05); independent review remains |
 | A20 | `scottland-display text-size` reports `org.gnome.desktop.interface text-scaling-factor` (1.0 when unset); `text-size set <factor>` accepts only finite values from 0.5 through 3.0 and writes only that key; `text-size reset` unsets that key. Invalid input and backend failures return a truthful error, and the command does not edit app-specific configuration. | implemented (isolated CLI/GSettings-boundary behavior tests; live-session effects are not claimed) |
 
+## Terminal theme push
+
+| ID | Invariant | Status |
+|---|---|---|
+| TP1 | Open Ghostty terminals whose configs follow Gooarchy's current-theme location show its newly selected theme after either link changes, without a new window or login. | Implemented in the existing per-session watcher; isolated helper and actual-inotify behavior tests pass on Nacelle (artifact `art_a2e3cc22`, commit `bc193fd8`); real shipped-Ghostty color evidence remains pending. |
+| TP2 | After a push, an open following terminal continues to switch between the selected theme's light and dark variants when desktop Mode changes. | Uses the existing paired-theme config and changes neither link; real shipped-Ghostty mode-switch evidence remains pending. |
+| TP3 | Core reads the theme only through Gooarchy's current-theme location and writes no theme link or user config. | Source behavior and isolated fixtures cover the single location and unchanged theme/config files; real installed-session evidence remains pending. |
+| TP4 | A terminal with a fixed theme config keeps the same colors after a push. | The push only requests a same-session Ghostty config reload and writes no config; real fixed-config color evidence remains pending. |
+| TP5 | An absent current-theme location causes no push or report; if it appears later, the watcher follows it. | Implemented and covered by the isolated actual-inotify fixture on Nacelle (artifact `art_a2e3cc22`, commit `bc193fd8`). |
+| TP6 | `scottland-display terminal-theme push` pushes once under the same rules and exits 0 when there is nothing to push. An attempted reload failure is reported with a nonzero result. | The internal `scottland-color-scheme terminal-theme-push` action reuses the existing per-session helper and watcher, and treats absent theme location/links, display, or eligible Ghostty as a successful no-op. The public command and shared dispatcher remain Display-owned. |
+
 ## Layout configurator (`scottland-settings`)
 
 The settings app (Layout, Goo, Window mode, Translucency, Widgets and Sunlight tabs, zone overlay and hints): see [docs/settings.md](../docs/settings.md) (S1–S23, including independent hint-background opacity).
