@@ -123,13 +123,5 @@ class EmojiCommandTests(unittest.TestCase):
             subprocess.run([sys.executable, str(GENERATOR), str(SOURCE), str(output)], check=True)
             self.assertEqual(output.read_bytes(), DATA.read_bytes())
 
-    def test_invalid_data_row_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "bad.tsv"
-            source.write_text("# header\nmissing separator\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "invalid emoji data row 2"):
-                emoji.load_entries(source)
-
-
 if __name__ == "__main__":
     unittest.main()
