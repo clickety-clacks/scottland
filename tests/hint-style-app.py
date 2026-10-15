@@ -12,7 +12,7 @@ app = Gtk.Application(application_id='org.scottland.HintStyle.' + name)
 
 def activate(application):
     window = Gtk.ApplicationWindow(application=application, title=name)
-    window.set_default_size(int(width), int(height))
+    window.set_default_size(int(float(width)), int(float(height)))
     css = Gtk.CssProvider()
     Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
