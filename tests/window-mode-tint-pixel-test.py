@@ -577,8 +577,8 @@ try:
     card_source = launch('TintCard', '#3f7250',
         (round(screen_origin[0] + width * .74), round(screen_origin[1] + height * .22),
          round(width * .22), round(height * .22)))
-    state = views()
-    frame = state[card_source]['frame']
+    frame = wait(lambda: (views().get(card_source) or {}).get('frame'),
+                 'TintCard enters the desktop model')
     cx, cy = frame['x'] + frame['width'] / 2, frame['y'] + frame['height'] / 2
     key('LEFTMETA', True)
     drag(cx, cy, screen_origin[0] + width - 8 - cx, 0)

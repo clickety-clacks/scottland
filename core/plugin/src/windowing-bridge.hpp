@@ -376,6 +376,10 @@
                     if (rank == stacking.end() || !view || !view->is_mapped() ||
                         view->get_output() != output || state == model.windows.end() || !state->second.placement ||
                         !view->get_root_node()->is_enabled()) continue;
+                    // Filtered windows and widgets are fully transparent even if
+                    // they retain a user opacity override. Do not leave their
+                    // above-window tint shape visible over the desktop.
+                    if (window_keys.active && !matches_window_filter(view)) continue;
                     auto frame = frame_of(view, false);
                     scottland::rectf_t drawn;
                     double radius = 0;
