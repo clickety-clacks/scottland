@@ -1535,8 +1535,8 @@ Xe draw-query elapsed times vary with other sessions' GPU contention, so the
 process busy counters are the useful paired result there. Evidence from the
 pre-reset Xe run is under `build/go10-redraw-baseline/` and
 `build/go10-readfix/`; the AMD test host runs, including the final screenshot and
-Wayfire log, are copied to `build/go10-rx/`. Other agents had isolated
-headless sessions open during the final RX 580 run, so shared-GPU contention
+Wayfire log, are copied to `build/go10-rx/`. Concurrent isolated
+headless sessions were open during the final RX 580 run, so shared-GPU contention
 remains a measurement limitation. The headless Xe baseline also showed a much
 smaller increment than Mike's physical-display session (7.4–7.8 versus about
 29 points). The live target therefore remains unverified until this build is
