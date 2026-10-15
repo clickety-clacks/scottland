@@ -177,7 +177,7 @@ Specified in windowing-keys.md WK36 and WP1.
 
 | Date | Ruling | Where |
 |---|---|---|
-| 10-06 | Middle-button window-move ruling: pressing the real middle button on a movable window starts a move; a quick click still reaches the app. Stylus buttons remain client input, with no Scottland pen remapping. A three-finger click-drag moves the window instead of resizing it; a stationary hold follows the corresponding window hold interaction. | Pointer and touchpad behavior |
+| 10-06 | Ruled: “any real middle press drags the window; a stock pen does nothing until you remap a button with another tool.” `BTN_STYLUS` stays client input; Scottland adds no pen remapping or setting. R7 replaces L24's three-finger click-drag resize with a move. A quick middle click still reaches the app; R5 waits on WK39 hold forms. | L24; R1–R8 |
 
 ## Testing
 
