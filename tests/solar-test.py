@@ -16,7 +16,7 @@ build = root/"build"
 build.mkdir(parents=True, exist_ok=True)
 scratch = Path(tempfile.mkdtemp(prefix="solar-policy-", dir=build))
 atexit.register(shutil.rmtree, scratch, ignore_errors=True)
-os.environ.update(XDG_CONFIG_HOME=str(scratch/"config"), XDG_STATE_HOME=str(scratch/"state"),
+os.environ.update(HOME=str(scratch), XDG_CONFIG_HOME=str(scratch/"config"), XDG_STATE_HOME=str(scratch/"state"),
                   WAYLAND_DISPLAY="wayland-policy-test",
                   SCOTTLAND_SOLAR_MODE_FILE=str(scratch/"state/scottland/policy.solar-mode"),
                   SCOTTLAND_SOLAR_TRANSITION_FILE=str(scratch/"state/scottland/solar-transition.json"),

@@ -274,6 +274,267 @@ class ThemeMemory(unittest.TestCase):
         self.assertEqual(self.memory()["choices"], {"dark": "watch-selected-dark"})
         self.assertEqual(self.calls, [])
 
+    def image(self, relative):
+        path = self.root/relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Fixtures exercise publications and command ordering, not decoding.
+        path.write_bytes(b"fixture image")
+        return path
+
+    def background(self, path):
+        link = self.adapter.current_wallpaper_file
+        link.parent.mkdir(parents=True, exist_ok=True)
+        temporary = link.with_name("background.next")
+        temporary.symlink_to(path)
+        temporary.replace(link)
+
+    def appearance_setter(self, argv, **kwargs):
+        if argv[:3] == ["omarchy", "theme", "set"]:
+            result = self.setter(argv, **kwargs)
+            # Even a same-theme set replaces the selected wallpaper.
+            self.background(self.image("defaults/"+argv[3]+".png"))
+            return result
+        self.assertEqual(argv[:4], ["omarchy", "theme", "bg", "set"])
+        self.calls.append(("wallpaper", argv[4]))
+        self.background(Path(argv[4]))
+        return subprocess.CompletedProcess(argv, 0)
+
+    def appearance_once(self):
+        with patch.object(self.adapter.subprocess, "run", side_effect=self.appearance_setter):
+            return self.adapter.run_once()
+
+    def wallpaper_pair(self, same_theme=False):
+        dark = self.image("dark pictures/shared name.png")
+        light = self.image("light pictures/shared name.png")
+        self.publish("shared" if same_theme else "personal-dark")
+        self.background(dark)
+        self.appearance_once()
+        self.event("light", "sunrise")
+        self.appearance_once()
+        self.publish("shared" if same_theme else "personal-light")
+        self.background(light)
+        self.appearance_once()
+        return dark, light
+
+    def test_wallpaper_only_change_is_observed_without_applying(self):
+        self.publish("personal-dark")
+        self.run_once()
+        photo = self.image("Pictures/a portrait.png")
+        self.background(photo)
+        self.assertEqual(self.appearance_once(), "unchanged")
+        self.assertEqual(self.memory()["wallpapers"], {"dark": {"path": str(photo)}})
+        self.assertEqual(self.calls, [])
+
+    def test_custom_scottland_state_still_observes_omarchy_home_publications(self):
+        photo = self.image("Pictures/custom-state.png")
+        link = self.root/".local/state/omarchy/current/background"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(photo)
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"]["dark"], {"path": str(photo)})
+        self.assertTrue((self.root/"state/scottland/omarchy-theme-memory.json").is_file())
+
+    def test_same_theme_distinct_same_basename_wallpapers_round_trip(self):
+        dark, light = self.wallpaper_pair(same_theme=True)
+        self.calls.clear()
+        for mode, photo in (("dark", dark), ("light", light)):
+            self.event(mode, "return-"+mode)
+            self.assertEqual(self.appearance_once(), "shared")
+            self.assertEqual(self.adapter.current_wallpaper_file.resolve(), photo)
+            self.adapter = self.load()
+            self.assertEqual(self.appearance_once(), "unchanged")
+        self.assertEqual(self.calls, ["shared", ("wallpaper", str(dark)),
+                                     "shared", ("wallpaper", str(light))])
+
+    def test_final_outgoing_wallpaper_observation_and_manual_theme_side_effect(self):
+        dark, light = self.wallpaper_pair()
+        latest = self.image("manual theme/new background.png")
+        self.publish("late-light-theme")
+        self.background(latest)
+        self.event("dark", "sunset")
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"],
+                         {"dark": {"path": str(dark)}, "light": {"path": str(latest)}})
+        self.assertEqual(self.memory()["choices"]["light"], "late-light-theme")
+
+    def test_staged_image_reference_is_theme_qualified_not_current_alias(self):
+        self.publish("personal-dark")
+        staged = self.adapter.current_theme_file.parent/"theme/backgrounds/same.png"
+        staged.parent.mkdir(parents=True)
+        staged.write_bytes(b"dark image")
+        self.background(staged)
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"]["dark"],
+                         {"theme": "personal-dark", "relative": "backgrounds/same.png"})
+        self.event("light", "sunrise")
+        self.appearance_once()
+        staged.write_bytes(b"unrelated light image")
+        # This relative name must never refer to another theme's staged tree.
+        self.assertIsNone(self.adapter.wallpaper_path(self.memory()["wallpapers"]["dark"]))
+        self.event("dark", "sunset")
+        def staged_setter(argv, **kwargs):
+            result = self.appearance_setter(argv, **kwargs)
+            if argv[:3] == ["omarchy", "theme", "set"]:
+                staged.write_bytes(b"updated dark image")
+            return result
+        with patch.object(self.adapter.subprocess, "run", side_effect=staged_setter):
+            self.adapter.run_once()
+        self.assertEqual(self.adapter.current_wallpaper_file.resolve(), staged)
+        self.assertEqual(staged.read_bytes(), b"updated dark image")
+
+    def test_symlink_to_real_image_is_saved_as_actual_target(self):
+        photo = self.image("Pictures/actual.png")
+        alias = self.root/"Pictures/selection.png"
+        alias.symlink_to(photo)
+        self.background(alias)
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"]["dark"], {"path": str(photo)})
+
+    def test_old_theme_only_state_and_first_wallpaper_observation(self):
+        old = self.memory()
+        old.pop("wallpapers", None)
+        old["choices"]["dark"] = "personal-dark"
+        self.adapter._atomic_write(old, self.adapter.memory_file)
+        photo = self.image("Pictures/first.png")
+        self.background(photo)
+        self.adapter = self.load()
+        self.appearance_once()
+        self.assertEqual(self.memory()["choices"], {"dark": "personal-dark"})
+        self.assertEqual(self.memory()["wallpapers"], {"dark": {"path": str(photo)}})
+        self.assertEqual(self.calls, [])
+
+    def test_fresh_baseline_does_not_invent_theme_or_opposite_wallpaper(self):
+        self.adapter.memory_file.unlink()
+        photo = self.image("Pictures/first.png")
+        self.background(photo)
+        self.appearance_once()
+        self.assertEqual(self.memory()["choices"], {})
+        self.assertEqual(self.memory()["wallpapers"], {"dark": {"path": str(photo)}})
+
+    def test_missing_image_keeps_theme_default_once_without_learning_it(self):
+        dark, light = self.wallpaper_pair()
+        dark.unlink()
+        self.calls.clear()
+        self.event("dark", "sunset")
+        self.appearance_once()
+        self.assertEqual(self.calls, ["personal-dark"])
+        self.assertEqual(self.adapter.current_wallpaper_file.resolve(), self.root/"defaults/personal-dark.png")
+        self.adapter = self.load()
+        self.assertEqual(self.appearance_once(), "unchanged")
+        self.assertEqual(self.memory()["wallpapers"]["dark"], {"path": str(dark)})
+        self.assertEqual(self.memory()["wallpapers"]["light"], {"path": str(light)})
+        replacement = self.image("Pictures/replacement.png")
+        self.background(replacement)
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"]["dark"], {"path": str(replacement)})
+
+    def test_unreadable_image_falls_back_without_retrying(self):
+        dark, _ = self.wallpaper_pair()
+        real_open = os.open
+        def denied(path, flags, *args, **kwargs):
+            if Path(path) == dark:
+                raise PermissionError("fixture image unreadable")
+            return real_open(path, flags, *args, **kwargs)
+        self.calls.clear()
+        self.event("dark", "sunset")
+        with patch.object(self.adapter.os, "open", side_effect=denied):
+            self.appearance_once()
+            self.assertEqual(self.appearance_once(), "unchanged")
+        self.assertEqual(self.calls, ["personal-dark"])
+
+    def test_no_remembered_or_default_wallpaper_leaves_existing_display(self):
+        photo = self.image("Pictures/current.png")
+        self.background(photo)
+        self.event("light", "sunrise")
+        self.run_once()  # this stand-in theme has no wallpaper side effect
+        self.assertEqual(self.adapter.current_wallpaper_file.resolve(), photo)
+        self.assertNotIn("light", self.memory()["wallpapers"])
+        self.assertEqual(self.run_once(), "unchanged")
+
+    def test_partial_theme_failure_and_restart_do_not_learn_default(self):
+        dark, light = self.wallpaper_pair()
+        self.event("dark", "sunset")
+        def fail(argv, **kwargs):
+            self.appearance_setter(argv, **kwargs)
+            raise subprocess.CalledProcessError(7, argv)
+        with patch.object(self.adapter.subprocess, "run", side_effect=fail):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.adapter.run_once()
+        self.assertIsNone(self.adapter.read_transition()["consumer_ack"])
+        self.adapter = self.load()
+        self.appearance_once()
+        self.assertEqual(self.adapter.current_wallpaper_file.resolve(), dark)
+        self.assertEqual(self.memory()["wallpapers"],
+                         {"dark": {"path": str(dark)}, "light": {"path": str(light)}})
+
+    def test_interrupted_automatic_publication_is_not_manual_on_restart(self):
+        dark, light = self.wallpaper_pair()
+        self.event("dark", "sunset")
+        def interrupted(argv, **kwargs):
+            self.appearance_setter(argv, **kwargs)
+            raise KeyboardInterrupt()
+        with patch.object(self.adapter.subprocess, "run", side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.adapter.run_once()
+        self.adapter = self.load()
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"],
+                         {"dark": {"path": str(dark)}, "light": {"path": str(light)}})
+
+    def test_wallpaper_setter_failure_is_not_acknowledged_as_success(self):
+        dark, light = self.wallpaper_pair()
+        self.event("dark", "sunset")
+        def fail(argv, **kwargs):
+            result = self.appearance_setter(argv, **kwargs)
+            if argv[:4] == ["omarchy", "theme", "bg", "set"]:
+                raise subprocess.CalledProcessError(7, argv)
+            return result
+        with patch.object(self.adapter.subprocess, "run", side_effect=fail):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.adapter.run_once()
+        self.assertIsNone(self.adapter.read_transition()["consumer_ack"])
+        manual = self.image("Pictures/after-failure.png")
+        self.background(manual)
+        self.adapter = self.load()
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"],
+                         {"dark": {"path": str(manual)}, "light": {"path": str(light)}})
+
+    def test_removal_during_wallpaper_set_recovers_valid_default(self):
+        dark, light = self.wallpaper_pair()
+        self.event("dark", "sunset")
+        def removing(argv, **kwargs):
+            result = self.appearance_setter(argv, **kwargs)
+            if argv[-1] == str(dark):
+                dark.unlink()
+                raise subprocess.CalledProcessError(1, argv)
+            return result
+        with patch.object(self.adapter.subprocess, "run", side_effect=removing):
+            self.adapter.run_once()
+        self.assertEqual(self.adapter.current_wallpaper_file.resolve(), self.root/"defaults/personal-dark.png")
+        self.assertEqual(self.adapter.read_transition()["consumer_ack"], "sunset")
+        self.assertEqual(self.memory()["wallpapers"]["dark"], {"path": str(dark)})
+
+    def test_wallpaper_watch_digest_changes_without_theme_publication(self):
+        first = self.image("Pictures/first.png")
+        second = self.image("Pictures/second.png")
+        self.background(first)
+        digest = self.adapter._watch_digest()
+        self.background(second)
+        self.assertNotEqual(digest, self.adapter._watch_digest())
+        self.appearance_once()
+        self.assertEqual(self.memory()["wallpapers"]["dark"], {"path": str(second)})
+        self.assertEqual(self.calls, [])
+
+    def test_disabled_wallpaper_changes_remain_inert(self):
+        before = self.adapter.memory_file.read_bytes()
+        self.background(self.image("Pictures/disabled.png"))
+        self.event("light", "sunrise")
+        self.adapter.solar_file.write_text("[solar]\nenabled=false\n")
+        self.assertEqual(self.appearance_once(), "off")
+        self.assertEqual(self.adapter.memory_file.read_bytes(), before)
+        self.assertEqual(self.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -18,7 +18,9 @@ state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home()/".local/state")))/
 transition_file = Path(os.environ.get("SCOTTLAND_SOLAR_TRANSITION_FILE", str(state/"solar-transition.json")))
 consumer_lock_file = state/"solar-transition-consumer.lock"
 memory_file = state/"omarchy-theme-memory.json"
-current_theme_file = state.parent/"omarchy/current/theme.name"
+# Omarchy publishes here even when Scottland uses a custom XDG_STATE_HOME.
+current_theme_file = Path.home()/".local/state/omarchy/current/theme.name"
+current_wallpaper_file = current_theme_file.parent/"background"
 config_file = Path(os.environ.get("SCOTTLAND_OMARCHY_SOLAR_FILE",
                                   str(Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"scottland/omarchy-solar.ini")))
 solar_file = Path(os.environ.get("SCOTTLAND_SOLAR_FILE",
@@ -129,21 +131,114 @@ def read_memory():
         memory = json.loads(memory_file.read_text())
     except FileNotFoundError:
         return {"schema": 1, "choices": {}, "mode": None, "observed": None,
-                "automatic": None}
+                "automatic": None, "wallpapers": {}}
     if (not isinstance(memory, dict) or memory.get("schema") != 1
             or not isinstance(memory.get("choices"), dict)
             or memory.get("mode") not in (None, "light", "dark")
             or any(mode not in ("light", "dark") or not isinstance(name, str) or not name
                    for mode, name in memory["choices"].items())):
         raise ValueError(f"unsupported theme memory at {memory_file}")
+    # Theme-only schema-1 records remain valid; no migration or reset is needed.
+    memory.setdefault("wallpapers", {})
+    if (not isinstance(memory["wallpapers"], dict)
+            or any(mode not in ("light", "dark") or not valid_wallpaper_ref(ref)
+                   for mode, ref in memory["wallpapers"].items())):
+        raise ValueError(f"unsupported wallpaper memory at {memory_file}")
     return memory
+
+
+def valid_wallpaper_ref(ref):
+    if not isinstance(ref, dict):
+        return False
+    if set(ref) == {"path"}:
+        return isinstance(ref["path"], str) and Path(ref["path"]).is_absolute()
+    if set(ref) != {"theme", "relative"}:
+        return False
+    name, relative = ref["theme"], ref["relative"]
+    return (isinstance(name, str) and bool(name) and not name.startswith(".")
+            and "/" not in name and "\n" not in name
+            and isinstance(relative, str) and bool(relative)
+            and not Path(relative).is_absolute() and ".." not in Path(relative).parts)
+
+
+def readable_image(path):
+    """Availability only; the existing wallpaper setter owns media decoding."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            return stat.S_ISREG(os.fstat(fd).st_mode) and bool(os.read(fd, 1))
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return False
+
+
+def current_wallpaper(theme):
+    """Resolve the selection link, retaining a qualified staged-theme identity.
+
+    Omarchy rebuilds current/theme on each set. A copied image there needs its
+    theme and relative path, not that mutable absolute path. A symlink out of
+    that tree resolves to the actual image instead.
+    """
+    if theme is None:
+        return None
+    def identity(info):
+        return [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns]
+    try:
+        before = current_wallpaper_file.lstat()
+        path = current_wallpaper_file.resolve(strict=True)
+        if not readable_image(path):
+            return None
+        info = path.stat()
+        staged = current_theme_file.parent/"theme"
+        try:
+            relative = path.relative_to(staged.absolute())
+            ref = {"theme": theme["name"], "relative": str(relative)}
+        except ValueError:
+            ref = {"path": str(path)}
+        after = current_wallpaper_file.lstat()
+        if (identity(before) != identity(after)
+                or current_wallpaper_file.resolve(strict=True) != path
+                or current_theme() != theme):
+            return None
+        return {"reference": ref, "link": identity(after), "image": identity(info)}
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def wallpaper_path(ref):
+    if ref is None:
+        return None
+    if "path" in ref:
+        path = Path(ref["path"])
+    else:
+        theme = current_theme()
+        if theme is None or theme["name"] != ref["theme"]:
+            return None
+        path = current_theme_file.parent/"theme"/ref["relative"]
+    return path if readable_image(path) else None
+
+
+def observe_wallpaper(memory, automatic=False):
+    current = current_wallpaper(current_theme())
+    if current is None or current == memory.get("wallpaper_observed"):
+        return
+    intent = memory.get("wallpaper_intent")
+    if intent:
+        theme = current_theme()
+        automatic = automatic or (
+            intent["phase"] == "theme" and theme and theme["name"] == intent["theme"]
+            or intent["phase"] == "wallpaper" and current["reference"] == intent["reference"])
+    if not automatic and memory.get("mode") in ("light", "dark"):
+        memory["wallpapers"][memory["mode"]] = current["reference"]
+    memory["wallpaper_observed"] = current
 
 
 def observe_theme(memory):
     """Remember only a new publication, in the outgoing solar period."""
     current = current_theme()
     if current is None or current == memory.get("observed"):
-        return
+        return False
     automatic = memory.get("automatic")
     if automatic and current["name"] == automatic:
         # An interrupted automatic apply can publish before its acknowledgement.
@@ -153,6 +248,15 @@ def observe_theme(memory):
         memory["choices"][memory["mode"]] = current["name"]
         memory["automatic"] = None
     memory["observed"] = current
+    return bool(automatic and current["name"] == automatic)
+
+
+def settle_publications(memory):
+    """Consume this command's effects without learning defaults as user choices."""
+    observe_theme(memory)
+    observe_wallpaper(memory, automatic=True)
+    memory["wallpaper_intent"] = None
+    _atomic_write(memory, memory_file)
 
 
 def acknowledge(transition_id, acknowledgement_id):
@@ -191,7 +295,12 @@ def run_once():
             return "off"
         memory = read_memory()
         original = json.dumps(memory, sort_keys=True)
-        observe_theme(memory)
+        automatic = observe_theme(memory)
+        # Final outgoing observation precedes the change of period. On first
+        # use only an already acknowledged period identifies the shown image.
+        if memory["mode"] is None and record.get("consumer_ack") == acknowledgement_id:
+            memory["mode"] = desired
+        observe_wallpaper(memory, automatic=automatic)
         if memory["mode"] is None:
             # Establish a baseline on first use, without guessing whether the
             # already active theme was selected by a user or the old adapter.
@@ -217,6 +326,7 @@ def run_once():
         # Record intent before the command so a restart cannot learn our write.
         # Theme names are published by Omarchy as lowercase, hyphenated slugs.
         memory["automatic"] = target.lower().replace(" ", "-")
+        memory["wallpaper_intent"] = {"phase": "theme", "theme": memory["automatic"]}
         _atomic_write(memory, memory_file)
         # A failure retains intent: the command may have partially published.
         try:
@@ -226,15 +336,50 @@ def run_once():
             # remembered theme warrants fallback; other command errors retain
             # their pending delivery and original failure.
             if remembered is None or remembered_theme_available(remembered):
+                settle_publications(memory)
                 raise
-            observe_theme(memory)
+            settle_publications(memory)
             if memory["choices"].get(desired) == remembered:
                 del memory["choices"][desired]
             target = configured[desired]
             memory["automatic"] = target.lower().replace(" ", "-")
+            memory["wallpaper_intent"] = {"phase": "theme", "theme": memory["automatic"]}
             _atomic_write(memory, memory_file)
-            subprocess.run(["omarchy", "theme", "set", target], check=True)
-        observe_theme(memory)
+            try:
+                subprocess.run(["omarchy", "theme", "set", target], check=True)
+            except subprocess.CalledProcessError:
+                settle_publications(memory)
+                raise
+        settle_publications(memory)
+        # The theme setter may replace the wallpaper even for the same theme.
+        # Restore the period's image afterwards, through Omarchy's public path.
+        normal_wallpaper = current_wallpaper(current_theme())
+        wallpaper = memory["wallpapers"].get(desired)
+        path = wallpaper_path(wallpaper)
+        if path is not None:
+            memory["wallpaper_intent"] = {"phase": "wallpaper", "reference": wallpaper}
+            _atomic_write(memory, memory_file)
+            try:
+                subprocess.run(["omarchy", "theme", "bg", "set", str(path)], check=True)
+            except subprocess.CalledProcessError:
+                settle_publications(memory)
+                # Disappearance after the check is unavailable input, not an
+                # endless delivery failure. Other setter errors remain errors.
+                if wallpaper_path(wallpaper) is not None:
+                    raise
+                # A setter may have repointed the link before noticing removal.
+                # Recover the valid theme default without remembering it.
+                fallback = wallpaper_path(normal_wallpaper["reference"]) if normal_wallpaper else None
+                if fallback is not None:
+                    memory["wallpaper_intent"] = {
+                        "phase": "wallpaper", "reference": normal_wallpaper["reference"]}
+                    _atomic_write(memory, memory_file)
+                    try:
+                        subprocess.run(["omarchy", "theme", "bg", "set", str(fallback)], check=True)
+                    except subprocess.CalledProcessError:
+                        settle_publications(memory)
+                        raise
+            settle_publications(memory)
         if memory.get("observed") is not None:
             memory["automatic"] = None
         _atomic_write(memory, memory_file)
@@ -265,7 +410,8 @@ IN_WATCH_MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_ATTRIB
 
 def wait_for_transition_change(observed_digest=None):
     """Observe selection changes without inventing a Sunlight transition."""
-    watched_paths = (transition_file, config_file, solar_file, current_theme_file)
+    watched_paths = (transition_file, config_file, solar_file, current_theme_file,
+                     current_wallpaper_file)
     fd = _libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
     if fd < 0:
         error = ctypes.get_errno()
@@ -327,6 +473,7 @@ def _watch_digest():
     # Reselecting the same name is still a manual publication. Include its
     # identity to close the watch-registration race even when bytes match.
     digest.update(json.dumps(current_theme(), sort_keys=True).encode())
+    digest.update(json.dumps(current_wallpaper(current_theme()), sort_keys=True).encode())
     return digest.hexdigest()
 
 
