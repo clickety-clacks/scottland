@@ -7,6 +7,13 @@ rules on something, add it here in the same change that updates the spec. Princi
 
 Started 2026-10-04; earlier rulings from 2026-10-03/04 are back-filled from the session record.
 
+## Omarchy reload and screen sharing
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-07 | Scottland reload restarts the session's Hyprland shim and existing Omarchy shell together so the bar and menus reconnect. | O34 |
+| 10-07 | Screen sharing keeps xdg-desktop-portal-wlr's slurp chooser; the user selects a screen by clicking it. | AG02 |
+
 ## Omarchy solar compatibility
 
 | Date | Ruling | Where |
