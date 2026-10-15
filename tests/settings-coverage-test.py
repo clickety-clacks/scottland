@@ -27,8 +27,8 @@ assert edge_rows == edge_options, (
     f"Unfocused edge Settings mismatch: missing {edge_options - edge_rows}; "
     f"unknown {edge_rows - edge_options}")
 assert options["attention_color_family"].attrib["type"] == "string"
-assert options["attention_color_family"].findtext("default") == "theme"
-assert options["goo_dye_density"].findtext("default") == "1"
+assert options["attention_color_family"].findtext("default") == "cool"
+assert options["goo_dye_density"].findtext("default") == "1.5"
 assert options["goo_dye_density"].findtext("min") == "0"
 assert options["goo_dye_density"].findtext("max") == "1.5"
 ctl = (root / "core/libexec/scottland-ctl").read_text()

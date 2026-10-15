@@ -1,0 +1,15 @@
+[package]
+name = "scottland-source"
+description = "Tracked source, build and rollback mechanism for product tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lib]
+name = "scottland_source"
+
+[dependencies]
+toml.workspace = true

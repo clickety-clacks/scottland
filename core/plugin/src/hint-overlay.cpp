@@ -49,9 +49,17 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
         auto cr = cairo_create(surface);
         cairo_scale(cr, double(pixel_size) / canvas_size, double(pixel_size) / canvas_size);
         double mid = canvas_size / 2.0, radius = logical_size / 2.0;
+        cairo_arc(cr, mid, mid, radius, 0, 2 * 3.141592653589793);
+        // One backing for window and exterior widget hints alike: the palette background under
+        // the usual hint-color tint, at the hint background opacity (WK42: 1 is solid, 0 none).
+        auto fill = hint_mix(background, color, hint_badge_opacity);
+        cairo_set_source_rgba(cr, fill.r, fill.g, fill.b, background_opacity);
+        cairo_fill(cr);
         if (!goo)
         {
-            // Soft fallback halo plus a crisp dyed edge, outside the unchanged badge.
+            // Keep the fallback halo and crisp dyed edge above the opacity-controlled fill.
+            // The fill reaches the badge edge, so drawing this first lets translucent backing
+            // wash out the antialiased rim.
             for (int band = 7; band >= 1; --band)
             {
                 cairo_arc(cr, mid, mid, radius + band / 2.0, 0, 2 * M_PI);
@@ -63,12 +71,6 @@ bool hint_node::update(double x, double y, const std::string& text, double size,
             cairo_set_line_width(cr, 2);
             cairo_set_source_rgb(cr, color.r, color.g, color.b); cairo_stroke(cr);
         }
-        cairo_arc(cr, mid, mid, radius, 0, 2 * 3.141592653589793);
-        // One backing for window and exterior widget hints alike: the palette background under
-        // the usual hint-color tint, at the hint background opacity (WK42: 1 is solid, 0 none).
-        auto fill = hint_mix(background, color, hint_badge_opacity);
-        cairo_set_source_rgba(cr, fill.r, fill.g, fill.b, background_opacity);
-        cairo_fill(cr);
         cairo_select_font_face(cr, family.empty() ? "sans-serif" : family.c_str(), CAIRO_FONT_SLANT_NORMAL,
             CAIRO_FONT_WEIGHT_BOLD);
         cairo_set_font_size(cr, std::round(logical_size * (text.size() > 1 ? 0.46 : 0.62)));
