@@ -19,6 +19,7 @@ build_dir = root/"build"
 build_dir.mkdir(parents=True, exist_ok=True)
 scratch = Path(tempfile.mkdtemp(prefix="solar-scheduler-", dir=build_dir))
 atexit.register(shutil.rmtree, scratch, ignore_errors=True)
+os.environ["HOME"] = str(scratch)
 os.environ["XDG_CONFIG_HOME"] = str(scratch / "config")
 os.environ["XDG_STATE_HOME"] = str(scratch / "state")
 os.environ["WAYLAND_DISPLAY"] = "wayland-scheduler-test"
