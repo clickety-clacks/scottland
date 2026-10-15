@@ -5,6 +5,7 @@ Linux-only test helper. No process-group or shared-session discovery/signalling.
 The guardian is a subreaper; only its direct children are eligible for pidfd stop.
 """
 import argparse
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import json
@@ -22,6 +23,20 @@ import time
 
 class Refusal(RuntimeError):
     pass
+
+
+@contextmanager
+def owner_directory(state):
+    """Resolve the guardian socket inside its verified directory without a long pathname."""
+    previous = os.open('.', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fchdir(state.fd)
+        yield
+    finally:
+        try:
+            os.fchdir(previous)
+        finally:
+            os.close(previous)
 
 
 def birth(pid):
@@ -183,7 +198,8 @@ def launch(directory, argv):
         if [runtime.st_dev, runtime.st_ino, runtime.st_uid] != binding['runtime']:
             raise Refusal('launch is outside the task runtime mount')
         server = socket.socket(socket.AF_UNIX)
-        server.bind(directory + '/owner.sock')
+        with owner_directory(state):
+            server.bind('owner.sock')
         server.listen(1)
         read_gate, write_gate = os.pipe2(os.O_CLOEXEC)
         child = os.fork()
@@ -299,7 +315,8 @@ def stop(directory):
         nonce = secrets.token_hex(32)
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(8)
-            client.connect(directory + '/owner.sock')
+            with owner_directory(state):
+                client.connect('owner.sock')
             pid, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             if pid != guardian['pid'] or uid != os.getuid() or not same_birth(birth(pid), guardian):
                 raise Refusal('stop socket belongs to another guardian')

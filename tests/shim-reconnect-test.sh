@@ -89,13 +89,17 @@ PY
 pid=$(read_session_shim_pid)
 hooks=$(tests/headless.sh run sh -c 'printf "%s" "$SCOTTLAND_HOOKS"')
 tests/headless.sh run "$hooks/reload.d/10-hyprshim"
-[[ $(read_session_shim_pid) == "$pid" ]]
-echo 'PASS reload keeps a live shim'
-[[ $(read_session_shim_pid) == "$pid" ]] || {
+reloaded_pid=$(read_session_shim_pid)
+[[ $reloaded_pid != "$pid" ]] && kill -0 "$reloaded_pid" || {
+  echo 'reload did not replace the live shim for this headless session' >&2
+  exit 1
+}
+echo 'PASS reload replaces a live shim'
+[[ $(read_session_shim_pid) == "$reloaded_pid" ]] || {
   echo 'refusing to signal a shim PID that no longer belongs to this headless session' >&2
   exit 1
 }
-kill "$pid"
+kill "$reloaded_pid"
 for _ in $(seq 30); do
   if ! read_session_shim_pid >/dev/null 2>&1; then break; fi
   sleep 0.1
@@ -106,6 +110,6 @@ if read_session_shim_pid >/dev/null 2>&1; then
 fi
 tests/headless.sh run "$hooks/reload.d/10-hyprshim"
 new_pid=$(read_session_shim_pid)
-[[ $new_pid != "$pid" ]] && kill -0 "$new_pid"
+[[ $new_pid != "$reloaded_pid" ]] && kill -0 "$new_pid"
 tests/headless.sh run hyprctl -j monitors >/dev/null
 echo "PASS reload restarts the dead shim for $display and hyprctl answers"

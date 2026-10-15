@@ -20,6 +20,9 @@ evidence=$test_scratch/pending-start-cleanup-evidence
   exit 2
 }
 mkdir -m 700 -- "$evidence"
+long_socket_component="owner-socket-path-regression-$(printf '%096d' 0)"
+long_socket_root="$evidence/$long_socket_component"
+mkdir -m 700 -- "$long_socket_root"
 
 active_dir=
 active_owner=
@@ -52,7 +55,7 @@ run_pending_case() {
     *) fail "unknown pending mode: $mode" ;;
   esac
 
-  local session_dir="$evidence/$mode-session"
+  local session_dir="$long_socket_root/$mode-session"
   local start_log="$evidence/$mode-start.log"
   local watcher_record="$evidence/$mode-live-before-stop.json"
   local launch_record="$session_dir/launch-owner.json"
@@ -60,7 +63,7 @@ run_pending_case() {
   local owner runtime socket env_file watch_status start_status owner_socket missing_owner_dir
   [[ ! -e $session_dir && ! -L $session_dir ]] || fail "$mode session path is occupied"
   owner_socket=$session_dir/owner.sock
-  [[ ${#owner_socket} -lt 108 ]] || fail "$mode owner socket path exceeds AF_UNIX limit; use a short checkout path"
+  (( ${#owner_socket} >= 108 )) || fail "$mode owner socket fixture did not exceed the AF_UNIX pathname limit"
   missing_owner_dir=$session_dir/record-owner-missing
   [[ ! -e $missing_owner_dir && ! -L $missing_owner_dir ]] || fail "$mode owner-failure fixture path is occupied"
   owner=$(python3 -c 'import uuid; print(uuid.uuid4())')
