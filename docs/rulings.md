@@ -175,7 +175,7 @@ Specified in windowing-keys.md WK36 and WP1.
 
 | Date | Ruling | Where |
 |---|---|---|
-| 10-06 | Moving the pointer with the real middle button held drags a movable window, including from its halo. A quick middle click on client content still reaches the app; a halo click is consumed without replay. `BTN_STYLUS` remains client input, with no Scottland pen remapping or setting. Three-finger click-drag moves rather than resizes; hold-to-select remains a separate Window-mode behavior. | L24; R1–R8; WK39 |
+| 10-06 | Ruled: “any real middle press drags the window; a stock pen does nothing until you remap a button with another tool.” `BTN_STYLUS` stays client input; Scottland adds no pen remapping or setting. R7 replaces L24's three-finger click-drag resize with a move. A quick middle click still reaches the app; R5 waits on WK39 hold forms. | L24; R1–R8 |
 
 ## Testing
 
