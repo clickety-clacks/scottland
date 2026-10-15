@@ -82,8 +82,8 @@ identity file, once, before publication. Card traits come from its actual launch
 | DM5 | A marked reload between model builds preserves the widget mode (expanded, collapsed or hidden; not a held one), attention sources and mapped committed widget identities (previews are ended). A legacy main upgrade migrates surviving launch identity in one atomic model handover; publication waits for every surviving link to be installed, preserving service-owned mailboxes, and its version increases afterward. | implemented (headless) |
 | DM6 | Test-only `scottland/audit-model` compares model facts/targets with the Wayfire scene, widget service replica and card-reported text visibility, collapse and actual width. Seeded random real-input sequences audit after every operation and print their seed/trace on failure. Independent regressions additionally assert mailbox payload, input-intended morph direction, Esc layer release, fullscreen visibility against promotion, process exit, migrated identity/badge routing and app-ID-only changes. They run only in an isolated headless session. | implemented (headless) |
 | DM7 | The drag session is a field of the desktop model: current origin, original form, re-grab chain, morph target, drag scale/grab state and temporarily held-above window have one owner. Existing Esc and re-grab behavior stays the same. | implemented (headless) |
-| DM9 | Goo reads logical visibility, attention, drag and fullscreen focus from the desktop model; attached goo screens are model state in the desktop slice. GPU fields and animation samples remain renderer resources. Live disable/fallback removes those screens without changing widget or attention slices. | implemented; plumbus headless input/snapshot/fallback checked |
-| DM8 | A marked reload transfers the live pidfd, including launches without systemd scopes. Legacy upgrades open a handle only for a verified live launcher; an unverifiable launcher is reported as PID zero. Launcher exit enters through a pidfd event, changes the tracked PID and publishes a newer full snapshot while a forked widget stays mapped. Serializing a snapshot never probes process liveness. | implemented (plumbus headless) |
+| DM9 | Goo reads logical visibility, attention, drag and fullscreen focus from the desktop model; attached goo screens are model state in the desktop slice. GPU fields and animation samples remain renderer resources. Live disable/fallback removes those screens without changing widget or attention slices. | implemented; AMD test host headless input/snapshot/fallback checked |
+| DM8 | A marked reload transfers the live pidfd, including launches without systemd scopes. Legacy upgrades open a handle only for a verified live launcher; an unverifiable launcher is reported as PID zero. Launcher exit enters through a pidfd event, changes the tracked PID and publishes a newer full snapshot while a forked widget stays mapped. Serializing a snapshot never probes process liveness. | implemented (AMD test host headless) |
 
 App-ID-only updates are exercised by a real GTK Wayland client in
 `tests/state-regressions-test.sh`; it changes no title or geometry.
@@ -96,7 +96,7 @@ attention/mode reload preservation and rejection of deliberately incorrect obser
 The test endpoint and D-Bus render diagnostics exist only with `SCOTTLAND_TEST_MODEL=1`, set by
 the isolated headless harness. Live cards launch no reporting process.
 
-Final validation on plumbus, 2026-10-01, after merging main's WG16 resize-gravity
+Final validation on AMD test host, 2026-10-01, after merging main's WG16 resize-gravity
 change and subsequent card-animation rollback (`0ca408c`, merge `cc3db98`):
 
 | Suite | Result |
@@ -129,8 +129,8 @@ session matrix was rerun successfully with the private runtime. Unit/config/focu
 their own temporary runtimes and also passed after the final main merge.
 Model runs use real stipc pointer/touch/key input,
 real widget programs and audits after each operation. Expanded-card, fullscreen and
-other-output reload screenshots were retained and inspected. No live session on osanwe or
-physical screen on plumbus was touched. The isolated runtime was stopped after testing.
+other-output reload screenshots were retained and inspected. No live session on daily Intel desktop or
+physical screen on AMD test host was touched. The isolated runtime was stopped after testing.
 
 ## Window mode integration
 
@@ -181,7 +181,7 @@ newer versions on availability changes, exclusion from widget/attention slices, 
 live disable and unsupported-GPU fallback, FS1 suspension and resumption. Simulation steps,
 GPU resources and animation samples never enter snapshots.
 
-The isolated `Projects/scottland-goo-merge` checkout on plumbus first passed the full matrix
+The isolated `Projects/scottland-goo-merge` checkout on AMD test host first passed the full matrix
 on main `a198ede`. Main then advanced to `10774a2` with Alt hints, key layers and placement.
 The goo provider now composes parent presentation transforms before a cross-output drag;
 input uses the same derived source island rectangle, radius and close point. Declutter changes

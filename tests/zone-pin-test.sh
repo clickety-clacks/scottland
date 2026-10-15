@@ -1,6 +1,6 @@
 #!/bin/bash
 # WP1/WP5 zone scale pins with real input (tests/zone-pin-test.py). Run only on a test host
-# (plumbus), never on a daily desktop. The caller supplies its own headless directory.
+# (isolated), never on a daily desktop. The caller supplies its own headless directory.
 # Builds this checkout's plugin and test helpers first (make test-hooks): without them
 # tests/headless.sh would fall back to whatever helpers the machine has dev-installed.
 set -euo pipefail
