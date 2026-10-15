@@ -285,12 +285,12 @@ Reload: the older `bb821e3` rehearsal predates the 10-07 reload behavior. Scottl
 refreshes the session-scoped Hyprland shim and Lua host, then restarts the existing Omarchy shell
 with adapter `libexec` first on the shell's `PATH`, so its bar and menus reconnect. The focused
 `tests/omarchy-joint-reload-test.py` checks lock-safe shim replacement and shell-helper ordering;
-its 8/8 isolated fake-process and temporary-file result is from an earlier source candidate and
-does not verify the refreshed candidate. The broader `tests/omarchy-reload-rehearsal-test.py`
-also checks plugin, window, and F9 behavior but has not run on the refreshed candidate. Neither
-a same-build desktop rehearsal nor a live shell refresh has been performed; no live session was
+its 8/8 isolated fake-process and temporary-file checks passed on code revision `ad18c2a`.
+The broader `tests/omarchy-reload-rehearsal-test.py` also checks plugin, window, and F9 behavior
+but has not run for that revision. Neither a same-build desktop rehearsal nor a live shell refresh
+has been performed; no live session was
 changed or reloaded. Screen sharing uses xdg-desktop-portal-wlr's slurp chooser, where the user
-selects a screen by clicking it. `tests/portal-test.py` has not run on the refreshed candidate,
+selects a screen by clicking it. `tests/portal-test.py` has not run for that revision,
 and package installation and runtime screen selection remain unverified.
 
 Questions for Mike (unresolved: 3):
@@ -302,6 +302,8 @@ Questions for Mike (unresolved: 3):
    (`omarchy-hyprland-monitor-clamshell`, panel back on) both need monitor config translation
    (AG03): approve that work, or keep lid open reported and not run?
 4. ~~Screensaver (AG19)~~: ruled 10-13 after observing that Omarchy's screensaver opened windowed in Scottland 0.3: in Scottland, the mapped `org.omarchy.screensaver` opens fullscreen and ordinary windows remain windowed. Translate only the existing Omarchy screensaver window rule; keep Omarchy unmodified. Other screensaver rules, including cursor hiding, stay untranslated and are reported. Focused headless behavior proof is pending; physical-screen acceptance follows merge.
+5. ~~Shim updates~~: ruled 10-07: restart the session's Hyprland shim and Omarchy shell together so the bar and menus reconnect (O34).
+6. ~~Screen sharing picker~~: ruled 10-07: keep choosing the screen by clicking it in xdg-desktop-portal-wlr's slurp chooser (AG02).
 7. ~~xdg-desktop-portal-wlr's stream failures~~: ruled 10-05, fix it, upstream, patched copy meanwhile
    (upstream part superseded by 9).
 8. ~~Omarchy-adapter users and the patched xdg-desktop-portal-wlr~~: ruled 10-06, the adapter's setup
