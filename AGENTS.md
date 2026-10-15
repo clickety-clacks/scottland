@@ -9,8 +9,8 @@ Every agent working in this repository follows this. It replaces ad hoc integrat
 - The daily Intel desktop runs `v0.1.0` (`d3c8397`). `main` holds the next release, `v0.2.0` (cut 2): from now on only
   fixes land on `main` until `v0.2.0` ships.
 - `0.3` is open for new feature work (adapter-fixes, monitor translation, the env-import fix, goo on new
-  screens, middle-press drag, touchpad while typing, and what the Gooarchy PO targets at it).
-- No merge queue or CI exists yet; the Gooarchy PDO is setting them up. Until then, immediately before
+  screens, middle-press drag, touchpad while typing, and later planned features).
+- No merge queue or CI exists yet. Until they are available, immediately before
   merging: update your branch to the target branch's current tip and rerun the fast checks on that exact
   result.
 
@@ -206,7 +206,8 @@ Before reporting anything as done:
      needs a real login. `tests/deploy.sh HOST [--reload]` takes a caller-supplied test-host
      address, then syncs, builds and dev-installs there. A shared host requires checking its
      current session owner before deployment; don't start, stop or switch a session while
-     someone else is using it. Privileged steps need the machine owner's authorization.
+     someone else is using it. The deploy script reports the active seat and sessions. Prepare
+     privileged commands in a terminal visible to the machine owner and wait for authorization.
 2. Use real input: Wayfire's `stipc` plugin (`tests/wfipc.py`, `tests/drag-test.py`). IPC calls
    that bypass input (e.g. `configure-view`) don't count as verification for input behavior.
 3. Look: screenshots with `grim` (through `scottland-exec`), and inspect the physical display
