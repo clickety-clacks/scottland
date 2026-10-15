@@ -1,0 +1,47 @@
+#!/bin/sh
+# Keep the one-request OSD adapter inside the active Scottland session.
+hooks=${SCOTTLAND_HOOKS:-/usr/lib/scottland}
+session_dir=${SCOTTLAND_SESSION_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland}
+display=${WAYLAND_DISPLAY:-wayland}
+widget_dir="$session_dir/widgets/$display"
+socket="$widget_dir/osd.sock"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/scottland"
+
+umask 077
+if [ -L "$session_dir" ] || [ -L "$session_dir/widgets" ] || [ -L "$widget_dir" ]; then
+    echo "OSD host refused an indirect session runtime path" >&2
+    exit 73
+fi
+if [ -n "${SCOTTLAND_HEADLESS_OWNER:-}" ]; then
+    owner_file="$widget_dir/.headless-owner"
+    attempts=0
+    while [ ! -f "$owner_file" ] && [ "$attempts" -lt 100 ]; do
+        sleep 0.05
+        attempts=$((attempts + 1))
+    done
+    [ -f "$owner_file" ] && [ ! -L "$owner_file" ] \
+        && [ "$(cat "$owner_file")" = "$SCOTTLAND_HEADLESS_OWNER" ] || {
+        echo "OSD host could not verify the headless session runtime owner" >&2
+        exit 73
+    }
+else
+    mkdir -p "$widget_dir" || exit 73
+fi
+if [ ! -d "$widget_dir" ] || [ -L "$widget_dir" ]; then
+    echo "OSD host could not prepare its session runtime directory" >&2
+    exit 73
+fi
+if [ -e "$socket" ] || [ -L "$socket" ]; then
+    echo "OSD host socket path is already occupied" >&2
+    exit 73
+fi
+if [ ! -x "$hooks/libexec/scottland-widget" ] || [ ! -f "$hooks/widgets/session/shell.qml" ]; then
+    echo "OSD host files are not installed" >&2
+    exit 73
+fi
+
+mkdir -p "$state"
+SCOTTLAND_WIDGET_OSD_SOCKET="$socket" \
+SCOTTLAND_WIDGET_OSD_BINARY="$hooks/libexec/scottland-widget" \
+SCOTTLAND_WIDGET_OSD_PANEL="$hooks/widgets/osd/OsdPanel.qml" \
+    exec qs -n -p "$hooks/widgets/session" 2>>"$state/widget-osd.log"

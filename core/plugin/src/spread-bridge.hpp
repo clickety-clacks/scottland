@@ -1,8 +1,7 @@
 // Private integration fragment for scottland_plugin_t: spread and solo (docs/spread.md).
 // The solver is pure (spread.hpp). This bridge builds its snapshot from the desktop model, runs it
 // in measured slices on the event loop (spread-job.hpp) until the main-loop worker takes the job
-// over, and applies a result: committed outright for a hint hold or three-finger hold on the
-// focused window (WK35). Nothing else ever spreads (P4).
+// over, and applies solo or gather results outright (P5). Window-mode requests run in press order.
 
     // How far the pointer may move from where a pointer hold fired before that counts as starting
     // to drag, which cancels the hold's audition (ruling 10-05; WK39).
@@ -38,6 +37,11 @@
     };
     std::optional<spread_run_t> spread_run;
     wf::wl_timer<true> spread_tick;
+    // Continuations must run after spread_tick's repeating callback has retired. Re-arming that
+    // timer from its own callback is undone by Wayfire when the callback returns false.
+    wf::wl_idle_call spread_ready;
+    std::vector<std::function<void()>> spread_requests;
+    bool spread_request_active = false;
     wf::json_t spread_last;  // the last delivered solve (scottland/spread-state)
     uint64_t spread_solves = 0;
     // Test sessions only (SCOTTLAND_TEST_MODEL): stretch a solve over many event-loop turns, so a
@@ -64,24 +68,29 @@
             auto found = model.windows.find(view->get_id());
             out << view->get_id() << ':' << g.x << ',' << g.y << ',' << g.width << ',' << g.height << ',' <<
                 view->pending_fullscreen() << ',' << is_widget(view) << ',' <<
+                (drag->view && drag->view->get_id() == view->get_id()) << ',' <<
                 (found != model.windows.end() && found->second.pinned_scale ? *found->second.pinned_scale : 0.0) << ';';
         }
         return out.str();
     }
 
     std::optional<scottland::spread::snapshot_t> spread_snapshot(wf::output_t *output, uint64_t solo,
-        scottland::spread::box solo_box)
+        scottland::spread::box solo_box, bool gather = false)
     {
         namespace sp = scottland::spread;
         if (!output_alive(output)) return std::nullopt;
-        // The solver's caps, checked in constant time before anything is collected.
-        if (model.windows.size() + 1 > sp::MAX_OBSTACLES)
+        if (!gather && model.windows.size() + 1 > sp::MAX_OBSTACLES)
         {
             LOGI("scottland: spread: ", model.windows.size(), " windows, more than spread considers");
             return std::nullopt;
         }
         auto screen = output->get_relative_geometry(); auto a = output->workarea->get_workarea();
         sp::snapshot_t s;
+        s.mode = gather ? sp::mode_t::gather : sp::mode_t::solo;
+        // Caps are per screen. Preserve an unavailable result for this output without collecting
+        // an oversized snapshot or suppressing independent screens.
+        if (gather && output->wset()->get_views(wf::WSET_MAPPED_ONLY).size() > sp::MAX_OBSTACLES)
+            s.unavailable_reason = "more windows than spread considers";
         double W = screen.width;
         auto zone = zone_for(output);
         s.screen_width = W; s.screen_height = screen.height;
@@ -104,6 +113,7 @@
             s.arrival_inset = (W / 2 - trial) - s.center_half;
             break;
         }
+        if (!s.unavailable_reason.empty()) return s;
         s.solo = solo_box;
         auto rect_of = [] (scottland::rectf_t r) { return sp::box{r.x1, r.y1, r.x2, r.y2}; };
         auto active = wf::get_core().seat->get_active_view();
@@ -119,7 +129,15 @@
                 if (auto frame = frame_of(shown, false)) s.fixed.push_back(rect_of(frame->screen_rect()));
                 continue;
             }
-            if (window->pending_fullscreen() || drag->view == window) continue;
+            if (window->pending_fullscreen() || drag->view == window)
+            {
+                if (gather)
+                {
+                    auto g = window->get_geometry();
+                    s.fixed.push_back({g.x, g.y, g.x + g.width, g.y + g.height});
+                }
+                continue;
+            }
             auto g = window->get_geometry();
             sp::window_t w;
             w.id = e.id;
@@ -129,12 +147,11 @@
             w.pinned = found != model.windows.end() && found->second.pinned_scale.has_value();
             w.scale = std::clamp(scale_for(window), 0.05, 1.0);
             auto placement = place_at(output, w.cx, W).zone;
-            w.role = placement == zone_t::center ? sp::role_t::arrival :
-                (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed);
-            // The focused window is fixed too: a solo of another window must
-            // never move whatever the user is currently in, same as it never moves the solo
-            // target itself.
-            if (active && active.get() == window.get()) w.role = sp::role_t::fixed;
+            w.role = gather ? (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed) :
+                (placement == zone_t::center ? sp::role_t::arrival :
+                 (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed));
+            // During a solo, preserve the focused window too, just as the solo target is preserved.
+            if (!gather && active && active.get() == window.get()) w.role = sp::role_t::fixed;
             auto rank = std::find(focus_recency.begin(), focus_recency.end(), e.id);
             w.recency = uint32_t(rank - focus_recency.begin());
             w.side_memory = int8_t(ensure_window_memory(e.id).last_side);
@@ -144,11 +161,31 @@
     }
 
     // ------------------------------------------------------------------ the sliced runner
+    void spread_pump_requests()
+    {
+        if (spread_request_active || spread_run || spread_requests.empty()) return;
+        spread_request_active = true;
+        auto next = std::move(spread_requests.front());
+        spread_requests.erase(spread_requests.begin());
+        next();
+    }
+
+    void enqueue_spread_request(std::function<void()> request)
+    {
+        spread_requests.push_back(std::move(request));
+        spread_pump_requests();
+    }
+
+    void finish_spread_request()
+    {
+        spread_request_active = false;
+        spread_pump_requests();
+    }
+
     void spread_start(scottland::spread::snapshot_t snapshot, std::string purpose,
         std::chrono::nanoseconds compute_limit, std::chrono::nanoseconds wall_limit,
         std::function<void(const scottland::spread::result_t&)> deliver)
     {
-        spread_cancel();
         spread_run.emplace();
         auto& run = *spread_run;
         run.job = std::make_unique<scottland::spread::job_t>(std::move(snapshot));
@@ -167,6 +204,9 @@
     void spread_cancel()
     {
         spread_tick.disconnect();
+        spread_ready.disconnect();
+        spread_requests.clear();
+        spread_request_active = false;
         auto started = std::chrono::steady_clock::now();
         bool had = spread_run.has_value();
         spread_run.reset();  // an unfinished job unwinds its solve and frees its stack
@@ -204,7 +244,8 @@
         if (!spread_run) return;
         auto entered = std::chrono::steady_clock::now();
         double entered_cpu = thread_cpu_ms();
-        spread_tick.disconnect();
+        // If this came from spread_tick, spread_step() returns false and Wayfire retires the
+        // repeating source after the callback. The immediate first slice has no source yet.
         auto run = std::move(*spread_run);
         spread_run.reset();
         auto result = run.job->current();
@@ -322,12 +363,22 @@
 
     void solo_window(uint64_t id)
     {
+        enqueue_spread_request([=] () { solo_window_now(id); });
+    }
+
+    void solo_window_now(uint64_t id)
+    {
         auto window = wf::toplevel_cast(view_by_id(id));
         auto shown = represented_view(id);
-        if (!window || !shown || !shown->get_output() || drag->view) return;
+        if (!window || !shown || !shown->get_output() || drag->view)
+        {
+            finish_spread_request();
+            return;
+        }
         if (window->pending_fullscreen())
         {
             LOGI("scottland: solo ", id, ": full screen, nothing to spread");
+            finish_spread_request();
             return;
         }
         auto output = shown->get_output();
@@ -336,7 +387,7 @@
         scottland::spread::box solo{at.x - g.width / 2.0, at.y - g.height / 2.0, at.x + g.width / 2.0, at.y + g.height / 2.0};
         auto captured = std::chrono::steady_clock::now();
         auto snapshot = spread_snapshot(output, id, solo);
-        if (!snapshot) return;
+        if (!snapshot) { finish_spread_request(); return; }
         auto signature = spread_signature(output, id);
         double snapshot_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - captured).count();
         bool widget_before = bool(link_of_window(window));
@@ -352,6 +403,7 @@
                     now_window->get_geometry().width != g.width || now_window->get_geometry().height != g.height)
                 {
                     LOGI("scottland: solo ", id, ": the desktop changed while solving; not applied");
+                    spread_ready.run_once([=] () { finish_spread_request(); });
                     return;
                 }
                 auto started = std::chrono::steady_clock::now();
@@ -360,7 +412,57 @@
                 spread_last["commit_cpu_ms"] = thread_cpu_ms() - started_cpu;
                 spread_last["snapshot_ms"] = snapshot_ms;
                 spread_last["commit_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                // Let spread_deliver finish writing this solve's timing fields before the next
+                // request can replace spread_last.
+                spread_ready.run_once([=] () { finish_spread_request(); });
             });
+    }
+
+    void gather_screen(std::vector<wf::output_t*> outputs, size_t index)
+    {
+        if (index >= outputs.size()) { finish_spread_request(); return; }
+        wf::output_t *output = outputs[index];
+        if (!output_alive(output))
+        {
+            spread_ready.run_once([=] () { gather_screen(outputs, index + 1); });
+            return;
+        }
+        auto captured = std::chrono::steady_clock::now();
+        auto snapshot = spread_snapshot(output, 0, {}, true);
+        if (!snapshot)
+        {
+            spread_ready.run_once([=] () { gather_screen(outputs, index + 1); });
+            return;
+        }
+        auto signature = snapshot->unavailable_reason.empty() ? spread_signature(output, 0) : std::string{};
+        double snapshot_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - captured).count();
+        spread_start(std::move(*snapshot), "gather", std::chrono::nanoseconds(0), std::chrono::nanoseconds(0),
+            [=] (const scottland::spread::result_t& result) {
+                if (result.moves.empty())
+                    spread_last["snapshot_ms"] = snapshot_ms;
+                else if (output_alive(output) && !signature.empty() && spread_signature(output, 0) == signature)
+                {
+                    spread_last["snapshot_ms"] = snapshot_ms;
+                    auto started = std::chrono::steady_clock::now();
+                    double started_cpu = thread_cpu_ms();
+                    commit_spread_moves(result.moves);
+                    refresh_layout_avoidance();
+                    publish_model();
+                    spread_last["commit_cpu_ms"] = thread_cpu_ms() - started_cpu;
+                    spread_last["commit_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                } else
+                    LOGI("scottland: gather: screen changed while solving; not applied");
+                spread_ready.run_once([=] () { gather_screen(outputs, index + 1); });
+            });
+    }
+
+    void gather_all()
+    {
+        enqueue_spread_request([=] () {
+            std::vector<wf::output_t*> outputs;
+            for (auto output : wf::get_core().output_layout->get_outputs()) outputs.push_back(output);
+            gather_screen(std::move(outputs), 0);
+        });
     }
 
     // Committed outright, no undo (P5, decision 5): the other windows' moves and the solo

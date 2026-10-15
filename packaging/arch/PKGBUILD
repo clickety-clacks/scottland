@@ -50,6 +50,8 @@ PY
   git -C "$srcdir/source-bundle" update-ref refs/heads/release "$source_commit"
   git -C "$srcdir/source-bundle" bundle create "$srcdir/base.bundle" refs/heads/release
   rm -rf "$srcdir/source-bundle"
+  mkdir -p "$srcdir/tools/lib"
+  cp -a "$_root/core/tools/vendor/agent_window_resolver" "$srcdir/tools/lib/"
 }
 
 package_scottland() {
@@ -79,6 +81,7 @@ package_scottland() {
   install -Dm755 "$_root/core/autostart.d/06-watch-config" "$pkgdir/usr/lib/scottland/autostart.d/06-watch-config"
   install -Dm755 "$_root/core/libexec/scottland-ctl" "$pkgdir/usr/lib/scottland/libexec/scottland-ctl"
   install -Dm755 "$_root/core/libexec/scottland-exec" "$pkgdir/usr/lib/scottland/libexec/scottland-exec"
+  install -Dm755 "$_root/core/libexec/scottland-list-picker" "$pkgdir/usr/lib/scottland/libexec/scottland-list-picker"
   install -Dm755 "$_root/core/libexec/scottland-output" "$pkgdir/usr/lib/scottland/libexec/scottland-output"
   install -Dm644 "$_root/core/libexec/scottland_output_scale.py" "$pkgdir/usr/lib/scottland/libexec/scottland_output_scale.py"
   install -Dm755 "$_root/core/libexec/scottland-list-picker" "$pkgdir/usr/lib/scottland/libexec/scottland-list-picker"
@@ -97,6 +100,7 @@ package_scottland() {
   install -Dm755 "$_root/core/libexec/scottland-widget-launch" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-launch"
   install -Dm755 "$_root/core/libexec/scottland-widget-bus" "$pkgdir/usr/lib/scottland/libexec/scottland-widget-bus"
   install -Dm755 "$_root/core/autostart.d/08-widget-bus" "$pkgdir/usr/lib/scottland/autostart.d/08-widget-bus"
+  install -Dm755 "$_root/core/autostart.d/11-widget-osd-host" "$pkgdir/usr/lib/scottland/autostart.d/11-widget-osd-host"
   install -Dm755 "$_root/core/autostart.d/10-clipboard-history" "$pkgdir/usr/lib/scottland/autostart.d/10-clipboard-history"
   install -Dm755 "$_root/core/libexec/scottland-attention-sources" "$pkgdir/usr/lib/scottland/libexec/scottland-attention-sources"
   install -Dm755 "$_root/core/libexec/scottland-focus-mode" "$pkgdir/usr/lib/scottland/libexec/scottland-focus-mode"
@@ -106,6 +110,7 @@ package_scottland() {
   install -Dm755 "$_root/core/reload.d/08-widget-bus" "$pkgdir/usr/lib/scottland/reload.d/08-widget-bus"
   install -Dm644 "$_root/core/widgets/card/widget.toml" "$pkgdir/usr/lib/scottland/widgets/card/widget.toml"
   install -Dm644 "$_root/core/widgets/card/shell.qml" "$pkgdir/usr/lib/scottland/widgets/card/shell.qml"
+  install -Dm644 "$_root/core/widgets/session/shell.qml" "$pkgdir/usr/lib/scottland/widgets/session/shell.qml"
   install -Dm755 "$_root/core/autostart.d/01-record-environment" "$pkgdir/usr/lib/scottland/autostart.d/01-record-environment"
   install -Dm755 "$_root/core/libexec/scottland-color-scheme" "$pkgdir/usr/lib/scottland/libexec/scottland-color-scheme"
   install -Dm644 "$_root/core/session-env.d/10-cursor-size.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-cursor-size.sh"
@@ -116,6 +121,10 @@ package_scottland() {
   install -Dm755 "$_root/core/config.d/90-user-overrides" "$pkgdir/usr/lib/scottland/config.d/90-user-overrides"
   install -Dm755 "$_root/core/session/scottland-settings" "$pkgdir/usr/bin/scottland-settings"
   ln -s /usr/bin/scottland-settings "$pkgdir/usr/lib/scottland/libexec/scottland-settings"
+  # scottland-source runs the base binaries from tools/base; keep their
+  # vendored resolver at the matching sibling lib path.
+  install -dm755 "$pkgdir/usr/lib/scottland/tools/lib"
+  cp -a "$srcdir/tools/lib/agent_window_resolver" "$pkgdir/usr/lib/scottland/tools/lib/"
   install -Dm755 "$_root/core/session/scottland-reload" "$pkgdir/usr/lib/scottland/libexec/scottland-reload"
   ln -s /usr/lib/scottland/libexec/scottland-reload "$pkgdir/usr/bin/scottland-reload"
   install -dm755 "$pkgdir/usr/share/scottland/settings"
@@ -159,6 +168,7 @@ package_scottland-omarchy() {
 
   local o="$_root/omarchy"
   install -Dm755 "$o/bin/scottland-switch" "$pkgdir/usr/bin/scottland-switch"
+  install -Dm755 "$o/bin/scottland-omarchy-logout" "$pkgdir/usr/bin/scottland-omarchy-logout"
   install -Dm755 "$o/bin/scottland-omarchy-setup" "$pkgdir/usr/bin/scottland-omarchy-setup"
   install -Dm755 "$o/helper/scottland-session-helper" "$pkgdir/usr/lib/scottland/scottland-session-helper"
   install -Dm644 "$o/helper/org.scottland.session.policy" "$pkgdir/usr/share/polkit-1/actions/org.scottland.session.policy"
@@ -168,6 +178,8 @@ package_scottland-omarchy() {
   install -Dm644 "$o/session-env.d/07-hyprland-env.sh" "$pkgdir/usr/lib/scottland/session-env.d/07-hyprland-env.sh"
   install -Dm644 "$o/session-env.d/10-hyprland-compat.sh" "$pkgdir/usr/lib/scottland/session-env.d/10-hyprland-compat.sh"
   install -Dm755 "$o/libexec/scottland-luahost" "$pkgdir/usr/lib/scottland/libexec/scottland-luahost"
+  install -Dm755 "$o/libexec/omarchy-hyprland-workspace-layout-toggle" \
+    "$pkgdir/usr/lib/scottland/libexec/omarchy-hyprland-workspace-layout-toggle"
   install -Dm755 "$o/accent.d/10-omarchy-theme" "$pkgdir/usr/lib/scottland/accent.d/10-omarchy-theme"
   install -Dm755 "$o/focus.d/10-omarchy-notifications" "$pkgdir/usr/lib/scottland/focus.d/10-omarchy-notifications"
   install -Dm755 "$o/libexec/scottland-lua-call" "$pkgdir/usr/lib/scottland/libexec/scottland-lua-call"
@@ -184,6 +196,7 @@ package_scottland-omarchy() {
   install -Dm755 "$o/autostart.d/45-hyprland-start" "$pkgdir/usr/lib/scottland/autostart.d/45-hyprland-start"
   install -Dm755 "$o/config.d/50-omarchy-shortcuts" "$pkgdir/usr/lib/scottland/config.d/50-omarchy-shortcuts"
   install -Dm644 "$o/prompts/omarchy-overrides-agent.txt" "$pkgdir/usr/lib/scottland/prompts/omarchy-overrides-agent.txt"
+  install -Dm644 "$o/agents/skills/scottland-omarchy/SKILL.md" "$pkgdir/usr/share/scottland/agents/skills/scottland-omarchy/SKILL.md"
   install -Dm755 "$o/autostart.d/10-hyprshim" "$pkgdir/usr/lib/scottland/autostart.d/10-hyprshim"
   install -Dm755 "$o/reload.d/10-hyprshim" "$pkgdir/usr/lib/scottland/reload.d/10-hyprshim"
   install -Dm755 "$o/autostart.d/20-omarchy-shell" "$pkgdir/usr/lib/scottland/autostart.d/20-omarchy-shell"

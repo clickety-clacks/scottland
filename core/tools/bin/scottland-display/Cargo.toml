@@ -9,3 +9,5 @@ publish.workspace = true
 
 [dependencies]
 scottland.workspace = true
+wayland-client = "=0.31.15"
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }

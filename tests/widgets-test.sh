@@ -355,7 +355,8 @@ check "reload replaces a widget service older than the installed code" \
 
 # WG10: the session's palette file (what the card's colors follow).
 palette=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.palette.json
-tests/headless.sh run "$hooks_dir/libexec/scottland-color-scheme" ensure; sleep 2
+tests/headless.sh run "$hooks_dir/libexec/scottland-display" color-scheme watch >/dev/null 2>&1 &
+sleep 2
 watcher=$(sed -n 1p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/scottland/$display.color-scheme.pid")
 check "WG10 the session's palette file has every color" \
   python3 -c "import json,re,sys; p=json.load(open('$palette')); sys.exit(0 if p['scheme'] in ('light','dark') and all(re.fullmatch('#[0-9a-fA-F]{6}', p[k]) for k in ('background','foreground','muted','accent','alert')) else 1)"
