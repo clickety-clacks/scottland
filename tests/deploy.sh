@@ -9,7 +9,7 @@
 # builds the checkout's own test helpers (make test-hooks) instead, for headless tests there
 # (tests/headless.sh with SCOTTLAND_HEADLESS_DIR), leaving the machine's sessions untouched. With --reload, reloads the running session in place via scottland-reload,
 # which runs in that session's own recorded environment (no variables to set by hand).
-# The machine may be shared (plumbus: other agents run tests there): this prints what's on its
+# The machine may be shared: this prints what's on its
 # screen first, and never starts, stops or switches sessions.
 set -euo pipefail
 host=${1:?usage: tests/deploy.sh HOST [--reload]}
