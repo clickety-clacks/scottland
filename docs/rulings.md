@@ -166,6 +166,13 @@ Specified in windowing-keys.md WK36 and WP1.
 |---|---|---|
 | 10-08 | Boot, relog and reload use the live session values in the shared manager. Import each configured, set variable once. Log import or portal failures without retrying; login still starts the session watcher and ordinary hooks, and reload continues its plugin/config work. At login, restart only active or transitioning portal units that predate the successful import; do not restart failed portal units. On reload, import the live values without restarting already-running services. | E1, `core/autostart.d/05-import-environment` |
 
+## Window notes
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-09 | A widget shows one plugin-drawn note dot at its lower corner away from the screen edge; it shows no note text and the dot does not react to hover. The widget card, state file and D-Bus properties do not change. | NT-16 |
+| 10-09 | Notes are quiet labels. Adding, updating, removing or showing one does not request attention, change focus, raise a window or notify the user. | NT-7 |
+
 ## Knocks (concept in discussion; docs/knocks.md)
 
 | Date | Ruling |

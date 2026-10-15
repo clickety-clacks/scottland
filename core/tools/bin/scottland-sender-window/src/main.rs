@@ -62,7 +62,15 @@ fn run() -> Result<Value, String> {
     }
     let sender = root
         .get("sender")
-        .ok_or_else(|| "missing sender resolver target".to_string())?;
+        .ok_or_else(|| "missing sender".to_string())?;
+    match sender {
+        Value::String(sender_id) => run_sender_id(sender_id),
+        Value::Object(_) => run_location(sender),
+        _ => Err("sender must be a sender id string or resolver-v1 target object".to_string()),
+    }
+}
+
+fn run_location(sender: &Value) -> Result<Value, String> {
     let (has_tmux, collection) = validate_target_then_collect(sender, collect_windows)?;
     let (windows, window_facts) = match collection {
         Ok(snapshot) => snapshot,
@@ -74,11 +82,18 @@ fn run() -> Result<Value, String> {
             ));
         }
     };
+    resolve_location(sender, has_tmux, &windows, &window_facts)
+}
+
+fn resolve_location(
+    sender: &Value,
+    has_tmux: bool,
+    windows: &[Value],
+    window_facts: &BTreeMap<String, WindowFact>,
+) -> Result<Value, String> {
     let local_machine = match local_machine() {
         Ok(machine) => machine,
-        Err(message) => {
-            return Ok(unknown("local_identity_unavailable", "scottland", &message));
-        }
+        Err(message) => return Ok(unknown("local_identity_unavailable", "scottland", &message)),
     };
     let resolver_dir = match resolver_dir() {
         Ok(path) => path,
@@ -95,7 +110,7 @@ fn run() -> Result<Value, String> {
         .map(|relation| {
             (
                 (*relation).to_string(),
-                resolver_request(sender, &local_machine, &windows, relation),
+                resolver_request(sender, &local_machine, windows, relation),
             )
         })
         .collect();
@@ -134,7 +149,7 @@ fn run() -> Result<Value, String> {
                 continue;
             }
         };
-        match parse_relation(&response, &relation, &window_facts) {
+        match parse_relation(&response, &relation, window_facts) {
             Ok(result) => {
                 results.insert(relation, result);
             }
@@ -159,6 +174,466 @@ fn run() -> Result<Value, String> {
         .ok_or_else(|| "resolver omitted visible_exact result".to_string())?;
     let linked = results.get("linked_client");
     Ok(format_result(shows, linked))
+}
+
+enum RegistryLookup {
+    Target(Value),
+    Answer(Value),
+}
+
+fn run_sender_id(sender_id: &str) -> Result<Value, String> {
+    if !valid_sender_id(sender_id) {
+        return Err("sender must be a valid sender id".to_string());
+    }
+    let snapshot = match collect_provenance_windows() {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+            return Ok(unknown(
+                "local_collection_incomplete",
+                "scottland",
+                &message,
+            ));
+        }
+    };
+    let declared: BTreeSet<u64> = snapshot
+        .declared_windows
+        .iter()
+        .filter(|(_, declared_sender)| declared_sender.as_str() == sender_id)
+        .map(|(window, _)| *window)
+        .collect();
+
+    let lookup = match parse_agentd_sender_id(sender_id) {
+        None => RegistryLookup::Answer(json!({"status": "none", "windows": [], "reasons": []})),
+        Some(identity) => {
+            let local_machine = match canonical_local_machine() {
+                Ok(machine) => machine,
+                Err(_) => {
+                    return Ok(merge_declared_windows(
+                        &declared,
+                        unknown_registry(
+                            "registry_unreachable",
+                            "local machine identity is unavailable",
+                        ),
+                    ));
+                }
+            };
+            if identity.machine == local_machine {
+                lookup_local_agentd(&identity)
+            } else if !snapshot.hub_url_configured {
+                RegistryLookup::Answer(unknown_registry(
+                    "registry_unreachable",
+                    "the Scottland Hub setting could not be read",
+                ))
+            } else if snapshot.hub_url.trim().is_empty() {
+                RegistryLookup::Answer(unknown_registry(
+                    "registry_not_configured",
+                    "the Agentd Hub URL is not configured",
+                ))
+            } else {
+                match fetch_hub_snapshot(&snapshot.hub_url) {
+                    Ok(hub) => lookup_hub_agentd(&identity, &hub),
+                    Err(_) => RegistryLookup::Answer(unknown_registry(
+                        "registry_unreachable",
+                        "the Agentd Hub snapshot could not be read",
+                    )),
+                }
+            }
+        }
+    };
+
+    let location = match lookup {
+        RegistryLookup::Answer(answer) => answer,
+        RegistryLookup::Target(target) => {
+            let has_tmux = match validate_target(&target) {
+                Ok(has_tmux) => has_tmux,
+                Err(_) => {
+                    return Ok(merge_declared_windows(
+                        &declared,
+                        unknown_registry(
+                            "registry_incomplete",
+                            "the Agentd entry cannot form a resolver target",
+                        ),
+                    ));
+                }
+            };
+            if let Some(message) = snapshot.location_error.as_deref() {
+                unknown("local_collection_incomplete", "scottland", message)
+            } else {
+                match resolve_location(&target, has_tmux, &snapshot.windows, &snapshot.window_facts)
+                {
+                    Ok(result) => result,
+                    Err(_) => unknown_registry(
+                        "registry_incomplete",
+                        "the Agentd entry cannot form a resolver target",
+                    ),
+                }
+            }
+        }
+    };
+    Ok(merge_declared_windows(&declared, location))
+}
+
+fn unknown_registry(code: &str, message: &str) -> Value {
+    unknown_from_reasons(vec![reason(code, "registry", message, true)])
+}
+
+fn none_agentd_not_listed() -> Value {
+    json!({
+        "status": "none",
+        "windows": [],
+        "reasons": [reason("agent_not_listed", "registry", "Agentd did not list this sender", false)]
+    })
+}
+
+fn merge_declared_windows(declared: &BTreeSet<u64>, location: Value) -> Value {
+    if declared.is_empty() {
+        return location;
+    }
+    let mut by_window = BTreeMap::<u64, String>::new();
+    for window in declared {
+        by_window.insert(*window, "declared".to_string());
+    }
+    if let Some(rows) = location.get("windows").and_then(Value::as_array) {
+        for row in rows {
+            let Some(window) = row.get("window").and_then(Value::as_u64) else {
+                continue;
+            };
+            let Some(relation) = row.get("relation").and_then(Value::as_str) else {
+                continue;
+            };
+            by_window
+                .entry(window)
+                .or_insert_with(|| relation.to_string());
+        }
+    }
+    let mut rows: Vec<(u8, u64, String)> = by_window
+        .into_iter()
+        .map(|(window, relation)| (relation_order(&relation), window, relation))
+        .collect();
+    rows.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    let windows: Vec<Value> = rows
+        .into_iter()
+        .map(|(_, window, relation)| json!({"window": window, "relation": relation}))
+        .collect();
+    let reasons = location
+        .get("reasons")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    json!({"status": "found", "windows": windows, "reasons": reasons})
+}
+
+fn relation_order(relation: &str) -> u8 {
+    match relation {
+        "declared" => 0,
+        "shows" => 1,
+        "linked" => 2,
+        "attributed" => 3,
+        _ => 4,
+    }
+}
+
+fn lookup_local_agentd(identity: &AgentdIdentity) -> RegistryLookup {
+    let output = match Command::new("agentd").args(["list", "--json"]).output() {
+        Ok(output) if output.status.success() => output,
+        _ => {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_unreachable",
+                "the local Agentd snapshot could not be read",
+            ));
+        }
+    };
+    let snapshot: Value = match serde_json::from_slice(&output.stdout) {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_unreachable",
+                "the local Agentd snapshot is invalid",
+            ));
+        }
+    };
+    if snapshot.get("type").and_then(Value::as_str) != Some("snapshot")
+        || snapshot.get("schema").and_then(Value::as_str) != Some("agentd.snapshot.v1")
+    {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_unreachable",
+            "the local Agentd snapshot schema is unavailable",
+        ));
+    }
+    let Some(instance_id) = snapshot.get("instanceId").and_then(Value::as_str) else {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the local Agentd snapshot has no instance id",
+        ));
+    };
+    if snapshot.pointer("/scan/state").and_then(Value::as_str) != Some("complete") {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the local Agentd scan is incomplete",
+        ));
+    }
+    if instance_id != identity.instance_id {
+        return RegistryLookup::Answer(none_agentd_not_listed());
+    }
+    let Some(agents) = snapshot.get("agents").and_then(Value::as_array) else {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the local Agentd snapshot has no agent list",
+        ));
+    };
+    let mut matched = None;
+    for agent in agents {
+        let Some(id) = agent.get("id").and_then(Value::as_object) else {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_incomplete",
+                "a local Agentd entry has no process identity",
+            ));
+        };
+        let (Some(pid), Some(ticks)) = (
+            id.get("pid").and_then(Value::as_u64),
+            id.get("startTimeTicks").and_then(Value::as_u64),
+        ) else {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_incomplete",
+                "a local Agentd entry lacks its process identity",
+            ));
+        };
+        if pid == identity.pid as u64 && ticks == identity.start_time_ticks {
+            if matched.is_some() {
+                return RegistryLookup::Answer(unknown_registry(
+                    "registry_incomplete",
+                    "the local Agentd snapshot contains duplicate process identities",
+                ));
+            }
+            matched = Some(agent);
+        }
+    }
+    match matched {
+        Some(agent) => match agent_to_resolver_target(agent, &identity.machine, instance_id) {
+            Ok(target) => RegistryLookup::Target(target),
+            Err(_) => RegistryLookup::Answer(unknown_registry(
+                "registry_incomplete",
+                "a local Agentd entry lacks a field required for window lookup",
+            )),
+        },
+        None => RegistryLookup::Answer(none_agentd_not_listed()),
+    }
+}
+
+fn lookup_hub_agentd(identity: &AgentdIdentity, hub: &Value) -> RegistryLookup {
+    if hub.get("type").and_then(Value::as_str) != Some("snapshot")
+        || hub.get("schema").and_then(Value::as_str) != Some("agentd-hub.snapshot.v1")
+    {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_unreachable",
+            "the Agentd Hub snapshot schema is unavailable",
+        ));
+    }
+    let Some(sources) = hub.get("sources").and_then(Value::as_array) else {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the Agentd Hub snapshot has no source list",
+        ));
+    };
+    let matching_sources: Vec<&Value> = sources
+        .iter()
+        .filter(|source| {
+            source.get("machine").and_then(Value::as_str) == Some(identity.machine.as_str())
+        })
+        .collect();
+    if matching_sources.len() != 1 {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the Agentd Hub has no unique source for this machine",
+        ));
+    }
+    let source = matching_sources[0];
+    if source.pointer("/health/state").and_then(Value::as_str) != Some("reporting") {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_unreachable",
+            "the Agentd Hub source is not reporting",
+        ));
+    }
+    if source.pointer("/scan/state").and_then(Value::as_str) != Some("complete") {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the Agentd Hub source scan is incomplete",
+        ));
+    }
+    let Some(source_instance_id) = source.get("instanceId").and_then(Value::as_str) else {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the Agentd Hub source has no instance id",
+        ));
+    };
+    if source_instance_id != identity.instance_id {
+        return RegistryLookup::Answer(none_agentd_not_listed());
+    }
+    let Some(agents) = hub.get("agents").and_then(Value::as_array) else {
+        return RegistryLookup::Answer(unknown_registry(
+            "registry_incomplete",
+            "the Agentd Hub snapshot has no agent list",
+        ));
+    };
+    let mut matched = None;
+    for agent in agents {
+        let Some(machine) = agent.get("machine").and_then(Value::as_str) else {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_incomplete",
+                "an Agentd Hub entry has no machine",
+            ));
+        };
+        if machine != identity.machine {
+            continue;
+        }
+        let Some(instance_id) = agent.get("instanceId").and_then(Value::as_str) else {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_incomplete",
+                "an Agentd Hub entry has no instance id",
+            ));
+        };
+        if instance_id != identity.instance_id {
+            continue;
+        }
+        let Some(id) = agent.get("id").and_then(Value::as_object) else {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_incomplete",
+                "an Agentd Hub entry has no process identity",
+            ));
+        };
+        let (Some(pid), Some(ticks)) = (
+            id.get("pid").and_then(Value::as_u64),
+            id.get("startTimeTicks").and_then(Value::as_u64),
+        ) else {
+            return RegistryLookup::Answer(unknown_registry(
+                "registry_incomplete",
+                "an Agentd Hub entry lacks its process identity",
+            ));
+        };
+        if pid == identity.pid as u64 && ticks == identity.start_time_ticks {
+            if matched.is_some() {
+                return RegistryLookup::Answer(unknown_registry(
+                    "registry_incomplete",
+                    "the Agentd Hub contains duplicate process identities",
+                ));
+            }
+            matched = Some(agent);
+        }
+    }
+    match matched {
+        Some(agent) => {
+            match agent_to_resolver_target(agent, &identity.machine, &identity.instance_id) {
+                Ok(target) => RegistryLookup::Target(target),
+                Err(_) => RegistryLookup::Answer(unknown_registry(
+                    "registry_incomplete",
+                    "an Agentd Hub entry lacks a field required for window lookup",
+                )),
+            }
+        }
+        None => RegistryLookup::Answer(none_agentd_not_listed()),
+    }
+}
+
+fn agent_to_resolver_target(
+    agent: &Value,
+    machine: &str,
+    instance_id: &str,
+) -> Result<Value, String> {
+    let id = agent
+        .get("id")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "missing Agentd process identity".to_string())?;
+    let pid = id
+        .get("pid")
+        .and_then(Value::as_u64)
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| "invalid Agentd process id".to_string())?;
+    let ticks = id
+        .get("startTimeTicks")
+        .and_then(Value::as_u64)
+        .filter(|ticks| *ticks > 0)
+        .ok_or_else(|| "invalid Agentd start ticks".to_string())?;
+    let mut target = json!({
+        "identity": {
+            "machine": machine,
+            "instanceId": instance_id,
+            "pid": pid,
+            "startTimeTicks": ticks.to_string()
+        }
+    });
+    if let Some(name) = agent.get("name") {
+        if !name.is_null() {
+            target["name"] = name.clone();
+        }
+    }
+    if let Some(tmux) = agent.get("tmux") {
+        if !tmux.is_null() {
+            let object = tmux
+                .as_object()
+                .ok_or_else(|| "invalid Agentd tmux location".to_string())?;
+            let session = object
+                .get("session")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Agentd tmux location has no session".to_string())?;
+            let window_index = object
+                .get("windowIndex")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "Agentd tmux location has no window index".to_string())?;
+            let pane_id = object
+                .get("paneId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Agentd tmux location has no pane id".to_string())?;
+            target["tmux"] = json!({
+                "session": session,
+                "windowIndex": window_index.to_string(),
+                "paneId": pane_id
+            });
+        }
+    }
+    Ok(target)
+}
+
+fn fetch_hub_snapshot(base_url: &str) -> Result<Value, String> {
+    const MAX_HUB_BYTES: usize = 4 * 1024 * 1024;
+    const SCRIPT: &str = r#"
+import json, sys, urllib.request, urllib.parse
+try:
+    base = json.load(sys.stdin)
+    if not isinstance(base, str) or not base.strip():
+        raise ValueError()
+    endpoint = base.rstrip('/') + '/snapshot'
+    if urllib.parse.urlsplit(endpoint).scheme != 'https':
+        raise ValueError()
+    request = urllib.request.Request(endpoint, headers={'Accept': 'application/json'})
+    with urllib.request.urlopen(request, timeout=3) as response:
+        if urllib.parse.urlsplit(response.geturl()).scheme != 'https':
+            raise ValueError()
+        body = response.read(4194305)
+    if len(body) > 4194304:
+        raise ValueError()
+    sys.stdout.buffer.write(body)
+except Exception:
+    raise SystemExit(2)
+"#;
+    let mut child = Command::new("python3")
+        .args(["-c", SCRIPT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "python could not read the Agentd Hub".to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        serde_json::to_writer(&mut stdin, base_url)
+            .map_err(|_| "could not send the Agentd Hub URL to python".to_string())?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|_| "python could not read the Agentd Hub".to_string())?;
+    if !output.status.success() || output.stdout.len() > MAX_HUB_BYTES {
+        return Err("the Agentd Hub request failed".to_string());
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|_| "the Agentd Hub returned invalid JSON".to_string())
 }
 
 fn read_input() -> Result<Vec<u8>, String> {
@@ -357,9 +832,66 @@ fn safe_text(text: &str) -> bool {
 fn valid_machine(machine: &str) -> bool {
     let mut bytes = machine.bytes();
     matches!(bytes.next(), Some(byte) if byte.is_ascii_alphanumeric())
+        && bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-'))
+}
+
+fn valid_sender_id(value: &str) -> bool {
+    let Some((namespace, rest)) = value.split_once(':') else {
+        return false;
+    };
+    let mut bytes = namespace.bytes();
+    matches!(bytes.next(), Some(byte) if byte.is_ascii_lowercase())
         && bytes.all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'+' | b'.' | b'-')
         })
+        && !rest.is_empty()
+        && !value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AgentdIdentity {
+    machine: String,
+    instance_id: String,
+    pid: u32,
+    start_time_ticks: u64,
+}
+
+fn parse_agentd_sender_id(value: &str) -> Option<AgentdIdentity> {
+    let rest = value.strip_prefix("agentd://")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() != 3 || !valid_machine(parts[0]) || parts[1].is_empty() {
+        return None;
+    }
+    if parts[1]
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return None;
+    }
+    let (pid, ticks) = parts[2].split_once(':')?;
+    if pid.is_empty()
+        || !pid.bytes().all(|byte| byte.is_ascii_digit())
+        || (pid.len() > 1 && pid.starts_with('0'))
+        || !canonical_ticks(ticks)
+    {
+        return None;
+    }
+    let pid = pid.parse::<u32>().ok().filter(|pid| *pid > 0)?;
+    let start_time_ticks = ticks.parse::<u64>().ok().filter(|ticks| *ticks > 0)?;
+    Some(AgentdIdentity {
+        machine: parts[0].to_string(),
+        instance_id: parts[1].to_string(),
+        pid,
+        start_time_ticks,
+    })
+}
+
+fn canonical_local_machine() -> Result<String, String> {
+    let machine = local_machine()?;
+    Ok(machine.trim_end_matches('.').to_ascii_lowercase())
 }
 
 fn canonical_ticks(value: &str) -> bool {
@@ -381,6 +913,15 @@ struct WindowFact {
     ticks: String,
 }
 
+struct ProvenanceSnapshot {
+    windows: Vec<Value>,
+    window_facts: BTreeMap<String, WindowFact>,
+    declared_windows: BTreeMap<u64, String>,
+    location_error: Option<String>,
+    hub_url: String,
+    hub_url_configured: bool,
+}
+
 fn collect_windows() -> Result<(Vec<Value>, BTreeMap<String, WindowFact>), String> {
     // Select a recorded Scottland environment even when the caller belongs to another Wayfire
     // session. The helper's liveness probe is bounded; the Rust session library is not used here.
@@ -400,6 +941,56 @@ fn collect_windows() -> Result<(Vec<Value>, BTreeMap<String, WindowFact>), Strin
         .as_array()
         .or_else(|| snapshot.get("views").and_then(Value::as_array))
         .ok_or_else(|| "Scottland window snapshot has no views array".to_string())?;
+    collect_window_rows(rows)
+}
+
+fn collect_provenance_windows() -> Result<ProvenanceSnapshot, String> {
+    let output = Command::new("scottland-exec")
+        .args(["--", "scottland-ctl", "sender-window-provenance-snapshot"])
+        .output()
+        .map_err(|error| format!("could not query the Scottland desktop model: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Scottland desktop-model collection failed: {}",
+            diagnostic(&output.stderr)
+        ));
+    }
+    let snapshot: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Scottland returned invalid desktop-model JSON: {error}"))?;
+    let object = snapshot
+        .as_object()
+        .ok_or_else(|| "Scottland returned a malformed desktop model".to_string())?;
+    let rows = object
+        .get("windows")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Scottland desktop model has no windows array".to_string())?;
+    let declared_windows = collect_declared_windows(rows)?;
+    let (windows, window_facts, location_error) = match collect_window_rows(rows) {
+        Ok((windows, facts)) => (windows, facts, None),
+        Err(message) => (Vec::new(), BTreeMap::new(), Some(message)),
+    };
+    let hub_url = object
+        .get("agentd_hub_url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let hub_url_configured = object
+        .get("agentd_hub_url_configured")
+        .and_then(Value::as_bool)
+        == Some(true);
+    Ok(ProvenanceSnapshot {
+        windows,
+        window_facts,
+        declared_windows,
+        location_error,
+        hub_url,
+        hub_url_configured,
+    })
+}
+
+fn collect_window_rows(
+    rows: &[Value],
+) -> Result<(Vec<Value>, BTreeMap<String, WindowFact>), String> {
     if rows.len() > MAX_WINDOWS {
         return Err(format!(
             "Scottland returned more than {MAX_WINDOWS} windows"
@@ -464,6 +1055,51 @@ fn collect_windows() -> Result<(Vec<Value>, BTreeMap<String, WindowFact>), Strin
         facts.insert(stable_id, fact);
     }
     Ok((windows, facts))
+}
+
+fn collect_declared_windows(rows: &[Value]) -> Result<BTreeMap<u64, String>, String> {
+    if rows.len() > MAX_WINDOWS {
+        return Err(format!(
+            "Scottland returned more than {MAX_WINDOWS} windows"
+        ));
+    }
+    let mut declared = BTreeMap::new();
+    let mut ids = BTreeSet::new();
+    for row in rows {
+        let object = row
+            .as_object()
+            .ok_or_else(|| "Scottland returned a malformed window row".to_string())?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_u64)
+            .filter(|id| *id > 0)
+            .ok_or_else(|| "a Scottland window has no valid numeric id".to_string())?;
+        if !ids.insert(id) {
+            return Err(format!("Scottland returned duplicate window id {id}"));
+        }
+        let Some(provenance) = object.get("provenance") else {
+            continue;
+        };
+        let provenance = provenance
+            .as_object()
+            .ok_or_else(|| format!("window {id} has a malformed provenance record"))?;
+        if provenance
+            .get("launched_at")
+            .and_then(Value::as_i64)
+            .is_none()
+        {
+            return Err(format!("window {id} has an invalid provenance timestamp"));
+        }
+        let Some(sender) = provenance.get("sender") else {
+            continue;
+        };
+        let sender = sender
+            .as_str()
+            .filter(|sender| valid_sender_id(sender))
+            .ok_or_else(|| format!("window {id} has an invalid provenance sender"))?;
+        declared.insert(id, sender.to_string());
+    }
+    Ok(declared)
 }
 
 fn read_start_ticks(pid: u64) -> Result<String, String> {
@@ -856,7 +1492,9 @@ print("valid")
         let mut stdin = child.stdin.take().expect("parity stdin is piped");
         serde_json::to_writer(&mut stdin, target).expect("target JSON should serialize");
         drop(stdin);
-        let output = child.wait_with_output().expect("parity process should exit");
+        let output = child
+            .wait_with_output()
+            .expect("parity process should exit");
         match output.status.code() {
             Some(0) => true,
             Some(3) => false,
@@ -1025,5 +1663,120 @@ print("valid")
             }
         });
         assert_eq!(validate_target(&sender), Ok(true));
+    }
+
+    #[test]
+    fn sender_ids_reject_missing_namespaces_and_unicode_whitespace() {
+        assert!(valid_sender_id("tightbeam://example-host/session/s_123"));
+        assert!(valid_sender_id(
+            "urn:uuid:00000000-0000-4000-8000-000000000000"
+        ));
+        assert!(!valid_sender_id("deploy"));
+        assert!(!valid_sender_id("sender:with\u{00a0}space"));
+        assert!(!valid_sender_id("sender:with\u{0085}control"));
+    }
+
+    #[test]
+    fn agentd_sender_id_requires_four_canonical_identity_parts() {
+        assert_eq!(
+            parse_agentd_sender_id("agentd://example-host/inst-7/48211:9127734"),
+            Some(AgentdIdentity {
+                machine: "example-host".to_string(),
+                instance_id: "inst-7".to_string(),
+                pid: 48211,
+                start_time_ticks: 9127734,
+            })
+        );
+        assert!(parse_agentd_sender_id("agentd://example-host/inst-7/048211:9127734").is_none());
+        assert!(parse_agentd_sender_id("agentd://example-host/inst-7/48211:09127734").is_none());
+        assert!(parse_agentd_sender_id("agentd://example-host/inst-7/48211").is_none());
+    }
+
+    fn hub_snapshot(health: &str, scan: &str) -> Value {
+        json!({
+            "type": "snapshot",
+            "schema": "agentd-hub.snapshot.v1",
+            "sources": [{
+                "machine": "example-host",
+                "health": {"state": health},
+                "instanceId": "inst-7",
+                "scan": {"state": scan}
+            }],
+            "agents": [{
+                "machine": "example-host",
+                "instanceId": "inst-7",
+                "id": {"pid": 48211, "startTimeTicks": 9127734},
+                "name": "Agentd sender",
+                "tmux": {"session": "api", "windowIndex": 2, "paneId": "%14"}
+            }]
+        })
+    }
+
+    #[test]
+    fn hub_sender_lookup_builds_the_exact_resolver_target_from_agentd_identity() {
+        let identity =
+            parse_agentd_sender_id("agentd://example-host/inst-7/48211:9127734").unwrap();
+        let target = match lookup_hub_agentd(&identity, &hub_snapshot("reporting", "complete")) {
+            RegistryLookup::Target(target) => target,
+            RegistryLookup::Answer(answer) => panic!("expected a target, got {answer}"),
+        };
+        assert_eq!(target["identity"]["machine"], "example-host");
+        assert_eq!(target["identity"]["instanceId"], "inst-7");
+        assert_eq!(target["identity"]["pid"], 48211);
+        assert_eq!(target["identity"]["startTimeTicks"], "9127734");
+        assert_eq!(target["tmux"]["windowIndex"], "2");
+        assert_eq!(validate_target(&target), Ok(true));
+    }
+
+    #[test]
+    fn hub_sender_lookup_distinguishes_unreachable_from_incomplete() {
+        let identity =
+            parse_agentd_sender_id("agentd://example-host/inst-7/48211:9127734").unwrap();
+        let answer_code = |lookup| match lookup {
+            RegistryLookup::Answer(answer) => {
+                answer["reasons"][0]["code"].as_str().unwrap().to_string()
+            }
+            RegistryLookup::Target(_) => panic!("expected an unavailable registry result"),
+        };
+        assert_eq!(
+            answer_code(lookup_hub_agentd(
+                &identity,
+                &hub_snapshot("not_reached", "complete")
+            )),
+            "registry_unreachable"
+        );
+        assert_eq!(
+            answer_code(lookup_hub_agentd(
+                &identity,
+                &hub_snapshot("reporting", "degraded")
+            )),
+            "registry_incomplete"
+        );
+    }
+
+    #[test]
+    fn declared_sender_windows_precede_location_results_and_keep_registry_reasons() {
+        let declared = BTreeSet::from([41, 3]);
+        let location = json!({
+            "status": "unknown",
+            "windows": [
+                {"window": 41, "relation": "shows"},
+                {"window": 30, "relation": "linked"},
+                {"window": 20, "relation": "shows"}
+            ],
+            "reasons": [reason("registry_unreachable", "registry", "offline", true)]
+        });
+        let result = merge_declared_windows(&declared, location);
+        assert_eq!(result["status"], "found");
+        assert_eq!(
+            result["windows"],
+            json!([
+                {"window": 3, "relation": "declared"},
+                {"window": 41, "relation": "declared"},
+                {"window": 20, "relation": "shows"},
+                {"window": 30, "relation": "linked"}
+            ])
+        );
+        assert_eq!(result["reasons"][0]["code"], "registry_unreachable");
     }
 }
