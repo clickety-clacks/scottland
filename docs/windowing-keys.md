@@ -1359,7 +1359,7 @@ wider center zone returning at 100%. `tests/windowing-unit.sh` covers the pure m
 | State regressions | stops at the late-widget fixture | origin/main: stops at the same point |
 | Widget morph | 262–269 of 270, timing checks vary by run | origin/main 266–270 of 270, run side by side under the same load |
 
-AMD test host carried a load average of 11–16 from other agents' sessions during the widget-morph runs;
+The AMD test host carried a load average of 11–16 from concurrent workloads during the widget-morph runs;
 its failures are timing samples that differ from run to run on both builds, and no pins occur in
 it. No live session on daily Intel desktop or AMD test host was installed into, reloaded or used; nothing ran on
 daily Intel desktop.
