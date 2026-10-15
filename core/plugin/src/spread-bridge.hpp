@@ -116,6 +116,7 @@
         if (!s.unavailable_reason.empty()) return s;
         s.solo = solo_box;
         auto rect_of = [] (scottland::rectf_t r) { return sp::box{r.x1, r.y1, r.x2, r.y2}; };
+        auto active = wf::get_core().seat->get_active_view();
         for (auto e : window_entries())
         {
             if (e.id == solo) continue;
@@ -149,6 +150,8 @@
             w.role = gather ? (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed) :
                 (placement == zone_t::center ? sp::role_t::arrival :
                  (placement == zone_t::continuous ? sp::role_t::resident : sp::role_t::fixed));
+            // During a solo, preserve the focused window too, just as the solo target is preserved.
+            if (!gather && active && active.get() == window.get()) w.role = sp::role_t::fixed;
             auto rank = std::find(focus_recency.begin(), focus_recency.end(), e.id);
             w.recency = uint32_t(rank - focus_recency.begin());
             w.side_memory = int8_t(ensure_window_memory(e.id).last_side);

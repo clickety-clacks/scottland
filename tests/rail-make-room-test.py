@@ -42,7 +42,28 @@ def card_geometry(title):
     return geometry(t.card(title)["id"])
 
 
-def start_drag(view, x, y, steps=24):
+def focused_view_id():
+    return ipc.call("window-rules/get-focused-view").get("info", {}).get("id")
+
+
+def launch_card(title, rail="right", y=260):
+    try:
+        return t.launch(title, rail=rail, y=y)
+    except Exception as failure:
+        try:
+            state = {
+                "failure": repr(failure),
+                "views": ipc.call("scottland/layout-state")["views"],
+                "widgets": ipc.call("scottland/widgets")["widgets"],
+                "focused": ipc.call("window-rules/get-focused-view"),
+            }
+        except Exception as diagnostic_failure:
+            state = {"failure": repr(failure), "diagnostic failure": repr(diagnostic_failure)}
+        print("WG26 widget launch diagnostic: " + repr(state), flush=True)
+        raise
+
+
+def start_drag(view, x, y, steps=24, focus_during=None):
     f = view["frame"]
     sx, sy = f["x"] + f["width"] / 2, f["y"] + f["height"] / 2
     t.move(sx, sy)
@@ -56,6 +77,11 @@ def start_drag(view, x, y, steps=24):
         t.move(x1, y1)
         durations.append(time.monotonic() - started)
         time.sleep(0.025)
+        if i == 1 and focus_during is not None:
+            # Starting a real drag may focus its source window. Re-establish the test's active
+            # card after the drag starts but before it reaches the rail and invokes make-room.
+            ipc.call("window-rules/focus-view", {"id": focus_during})
+            t.wait_for(lambda: focused_view_id() == focus_during)
     time.sleep(0.45)
 
 
@@ -78,11 +104,11 @@ try:
     width, height = screen["width"], screen["height"]
     edge_right, edge_left = width - 6, 6
 
-    t.launch("rail-a", rail="right", y=230)
-    t.launch("rail-b", rail="right", y=480)
+    launch_card("rail-a", rail="right", y=230)
+    launch_card("rail-b", rail="right", y=480)
     before_a, before_b = card_geometry("rail-a"), card_geometry("rail-b")
     before_a_scene, before_b_scene = card_scene("rail-a"), card_scene("rail-b")
-    t.launch("rail-arrive", rail=None)
+    launch_card("rail-arrive", rail=None)
     start_drag(t.app("rail-arrive"), edge_right, 230)
     during_a, during_b = card_scene("rail-a"), card_scene("rail-b")
     landing = app_scene("rail-arrive")
@@ -105,7 +131,7 @@ try:
 
     stable_before_cancel = {name: card_geometry(name) for name in ("rail-a", "rail-b", "rail-arrive")}
     drawn_before_cancel = {name: card_scene(name) for name in ("rail-a", "rail-b", "rail-arrive")}
-    t.launch("rail-cancel", rail=None)
+    launch_card("rail-cancel", rail=None)
     home_before = geometry(t.app("rail-cancel")["id"])
     start_drag(t.app("rail-cancel"), edge_right, 230)
     during_cancel = {name: card_scene(name) for name in ("rail-a", "rail-b", "rail-arrive")}
@@ -130,7 +156,7 @@ try:
           (home_before, home_after))
 
     stable_before_exit = {name: card_scene(name) for name in ("rail-a", "rail-b", "rail-arrive")}
-    t.launch("rail-back", rail=None)
+    launch_card("rail-back", rail=None)
     start_drag(t.app("rail-back"), edge_right, 230)
     t.move(width / 2, 355)
     time.sleep(0.5)
@@ -160,8 +186,8 @@ try:
     for i, y in enumerate(rail_ys):
         name = f"rail-full-{i}"
         names.append(name)
-        t.launch(name, rail="left", y=y)
-    t.launch("rail-full-arrive", rail=None)
+        launch_card(name, rail="left", y=y)
+    launch_card("rail-full-arrive", rail=None)
     start_drag(t.app("rail-full-arrive"), edge_left, height / 2)
     full_during = {name: card_scene(name) for name in names}
     in_span = all(f["y"] >= 23 and f["y"] + f["height"] <= height - 23 for f in full_during.values())
@@ -174,6 +200,38 @@ try:
           {"during": full_during, "after": full_after})
     check("stipc pointer updates remain bounded while the rail is full",
           bool(durations) and max(durations) < 0.25, max(durations) if durations else None)
+
+    # Stay-still behavior: make-room treats the focused card as fixed. Focus rail-a, then
+    # drag an arrival onto rail-a's own spot: rail-a stays fixed, and P14 keeps the arrival at the
+    # explicit drop point even when that means the two cards overlap. Preserve the geometry as the
+    # WG26 fallback observation; the drop itself must not be silently moved to simplify the solve.
+    focused_card_id = t.card("rail-a")["id"]
+    ipc.call("window-rules/focus-view", {"id": focused_card_id})
+    t.wait_for(lambda: focused_view_id() == focused_card_id)
+    before_focus_a, before_focus_b = card_geometry("rail-a"), card_geometry("rail-b")
+    before_focus_a_scene = card_scene("rail-a")
+    drop_y = before_focus_a_scene["y"] + before_focus_a_scene["height"] / 2
+    launch_card("rail-focus-arrive", rail=None)
+    start_drag(t.app("rail-focus-arrive"), edge_right, drop_y, focus_during=focused_card_id)
+    focus_at_solve = focused_view_id()
+    check("the focused-card fixture remains active through the make-room solve",
+          focus_at_solve == focused_card_id, (focused_card_id, focus_at_solve))
+    during_focus_a = card_scene("rail-a")
+    check("the focused card does not move live while make-room runs",
+          abs(during_focus_a["y"] - before_focus_a_scene["y"]) < 0.5 and
+          abs(during_focus_a["x"] - before_focus_a_scene["x"]) < 0.5,
+          (before_focus_a_scene, during_focus_a))
+    end_drag()
+    t.wait_for(lambda: t.card("rail-focus-arrive") and not t.card("rail-focus-arrive")["preview"])
+    after_focus_a, after_focus_b = card_geometry("rail-a"), card_geometry("rail-b")
+    check("the focused card's committed geometry is exactly unchanged after the drop",
+          after_focus_a == before_focus_a, (before_focus_a, after_focus_a))
+    arrive_geometry = card_geometry("rail-focus-arrive")
+    arrival_center_y = arrive_geometry["y"] + arrive_geometry["height"] / 2
+    check("overlap with the focused card leaves the far-side card at home (no phantom landing)",
+          after_focus_b == before_focus_b, (before_focus_b, after_focus_b))
+    check("overlap with the focused card preserves the exact drop position",
+          abs(arrival_center_y - drop_y) < 0.5, (drop_y, arrive_geometry))
 finally:
     t.cleanup()
     print(f"WG26 rail input: {passed} passed, {failed} failed", flush=True)
