@@ -875,7 +875,7 @@ PY
     ;;
   run)
     shift
-    exec "$exec_tool" --display "$(display)" -- "$@" </dev/null
+    exec "$exec_tool" --display "$(display)" -- "$@"
     ;;
   ipc)
     shift
