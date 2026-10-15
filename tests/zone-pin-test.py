@@ -62,6 +62,26 @@ def wait_for(predicate, timeout=5):
     raise RuntimeError('timed out waiting for compositor/client state')
 
 
+def wait_for_compositor(timeout=15):
+    """Wait until this headless session's Wayfire IPC socket accepts connections."""
+    global request_path
+    if request_path is None:
+        request_path = subprocess.check_output(['tests/headless.sh', 'run', 'python3', '-c',
+            "import os; print(os.environ['WAYFIRE_SOCKET'])"], text=True).strip()
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.socket(socket.AF_UNIX) as request:
+                request.settimeout(.25)
+                request.connect(request_path)
+            return
+        except OSError as failure:
+            last_error = f'{type(failure).__name__}: {failure}'
+            time.sleep(.05)
+    raise RuntimeError(f'Wayfire IPC socket did not accept a connection within {timeout}s: {last_error}')
+
+
 def views():
     state = ipc('scottland/layout-state')['views']
     geometries = {v['id']: v['geometry'] for v in ipc('window-rules/list-views')}
@@ -117,10 +137,24 @@ def launch(name, x, y):
     ipc('stipc/move_cursor', {'x': round(x), 'y': round(y)})
     log = artifacts / (name + '.keys')
     log.write_text('')
-    clients.append(subprocess.Popen(['tests/headless.sh', 'run', 'python3',
+    client = subprocess.Popen(['tests/headless.sh', 'run', 'python3',
         str(Path('tests/windowing-key-recorder.py').resolve()), name, str(log)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-    v = wait_for(lambda: view(name))
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    clients.append(client)
+    try:
+        v = wait_for(lambda: view(name), timeout=15)
+    except RuntimeError as failure:
+        try:
+            state = {
+                'client_pid': client.pid,
+                'client_returncode': client.poll(),
+                'layout_views': ipc('scottland/layout-state')['views'],
+                'mapped_views': ipc('window-rules/list-views'),
+            }
+        except Exception as diagnostic_failure:
+            state = {'client_pid': client.pid, 'client_returncode': client.poll(),
+                     'diagnostic_failure': repr(diagnostic_failure)}
+        raise RuntimeError(f'{name} did not map within 15s; last observed state: {state!r}') from failure
     time.sleep(.4)
     return v['id']
 
@@ -128,10 +162,26 @@ def launch(name, x, y):
 def drag(name, x, y, shift=False):
     """Super+drag the window (or its widget) to (x, y), optionally with Shift held throughout."""
     v = view(name)
+    frame = v['frame']
     if v['widgetized']:
-        link = next(w for w in ipc('scottland/widgets')['widgets'] if int(w['id']) == v['id'])
-        v = next(item for item in views() if item['id'] == link['widget_view'])
-    f = v['frame']
+        def widget_frame():
+            link = next((w for w in ipc('scottland/widgets')['widgets']
+                if int(w['id']) == v['id'] and int(w['widget_view']) >= 0), None)
+            if link is None:
+                return None
+            widget_id = int(link['widget_view'])
+            return next((item['geometry'] for item in ipc('window-rules/list-views')
+                if item['id'] == widget_id), None)
+
+        try:
+            frame = wait_for(widget_frame)
+        except RuntimeError as failure:
+            state = {
+                'widgets': ipc('scottland/widgets')['widgets'],
+                'views': ipc('scottland/layout-state')['views'],
+            }
+            raise RuntimeError(f'widget view for {name} did not become available: {state!r}') from failure
+    f = frame
     cx, cy = f['x'] + f['width'] / 2, f['y'] + f['height'] / 2
     ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
     if shift: key('LEFTSHIFT', True)
@@ -244,6 +294,7 @@ def close_all():
 
 
 try:
+    wait_for_compositor()
     ipc('wayfire/set-config-options', {'scottland/sounds': False, 'scottland/alt_hold_delay': 300})
     output = ipc('window-rules/list-outputs')[0]['geometry']
     width, height = output['width'], output['height']
@@ -357,6 +408,46 @@ try:
           'unpinned window: back at its spot at the zone scale, no jump',
           {'spot': plain_spot, 'now': center(v), 'applied': v['applied_scale'], 'zone': plain_scale})
 
+    # --- Stay-still: the drop position wins even when the shown drag scale and the drop
+    # zone's natural scale disagree. The old fa4b60a nudge re-centered the window sideways once
+    # the scale settled; now its center stays at the pointer's drop point through the whole scale
+    # settle afterward, no matter which way the scale moves.
+    g = launch('NoNudge', width * .5, height * .3)
+    v = view('NoNudge')
+    f = v['frame']
+    cx, cy = f['x'] + f['width'] / 2, f['y'] + f['height'] / 2
+    tx, ty = width * .2, height * .6
+    ipc('stipc/move_cursor', {'x': round(cx), 'y': round(cy)})
+    key('LEFTMETA', True)
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'press'})
+    for step in range(1, 11):
+        ipc('stipc/move_cursor', {'x': round(cx + (tx - cx) * step / 10), 'y': round(cy + (ty - cy) * step / 10)})
+        time.sleep(.025)
+    time.sleep(.12)
+    before = center(view('NoNudge'))
+    shown_scale = view('NoNudge')['applied_scale']
+    drop_center = (tx, ty)  # this gesture starts at the window center, so release is its center
+    ipc('stipc/feed_button', {'combo': 'BTN_LEFT', 'mode': 'release'})
+    key('LEFTMETA', False)
+    just_after = center(view('NoNudge'))
+    check(near(drop_center, just_after, eps=.5),
+          'the drop leaves the center exactly where the pointer was released (P14)',
+          {'before release': before, 'drop point': drop_center, 'just after': just_after})
+    end = time.monotonic() + .8
+    track = []
+    while time.monotonic() < end:
+        track.append((center(view('NoNudge')), view('NoNudge')['applied_scale']))
+        time.sleep(.03)
+    natural_scale = view('NoNudge')['scale']
+    check(all(near(pos, drop_center) for pos, _ in track),
+          'the center stays at the drop point while scale settles afterward (P14)',
+          {'drop point': drop_center, 'track centers': [p for p, _ in track[:6]]})
+    if abs(shown_scale - natural_scale) > .01:
+        check(abs(track[-1][1] - natural_scale) < .01,
+              'the scale does settle to the drop zone\'s natural value; only the position stays put',
+              {'shown while dragging': shown_scale, 'natural': natural_scale, 'settled': track[-1][1]})
+    ipc('window-rules/close-view', {'id': g}); time.sleep(.3)
+
     # --- Persisted across a reload, then still restored.
     drag('Pinned', width * .25, height * .55, shift=True)  # a fresh left pin, at the pin's own scale
     pin = view('Pinned')['applied_scale']; spot = center(view('Pinned'))
@@ -365,14 +456,27 @@ try:
     runtime = Path(os.environ['XDG_RUNTIME_DIR'])
     display = (Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'display').read_text().strip()
     mark = runtime / 'scottland' / (display + '.reloading')
+    wayfire_log = Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'wayfire.log'
+    before_loaded = wayfire_log.read_text(errors='replace').count('scottland: plugin loaded')
+    before_unloaded = wayfire_log.read_text(errors='replace').count('scottland: plugin unloaded')
     mark.touch()
     fresh = Path(os.environ['SCOTTLAND_HEADLESS_DIR']) / 'libscottland-zone-pin-reload.so'
     subprocess.run(['cp', 'build/libscottland.so', str(fresh)], check=True)
     plugins = ipc('wayfire/get-config-option', {'option': 'core/plugins'})['value']
-    ipc('wayfire/set-config-options', {'core/plugins': ' '.join(
-        str(fresh) if p == 'scottland' else p for p in plugins.split())})
-    time.sleep(1)
-    mark.unlink()
+    try:
+        ipc('wayfire/set-config-options', {'core/plugins': ' '.join(
+            str(fresh) if p == 'scottland' else p for p in plugins.split())})
+
+        def reload_logged(needle, previous_count):
+            return wayfire_log.read_text(errors='replace').count(needle) > previous_count
+
+        wait_for(lambda: reload_logged('scottland: plugin unloaded', before_unloaded), timeout=10)
+        # The marker must remain until the replacement plugin has taken the persisted model.
+        # A fixed sleep can expire just before Wayfire enters fini(), making a successful reload
+        # look like lost state because the outgoing plugin never sees its handover marker.
+        wait_for(lambda: reload_logged('scottland: plugin loaded', before_loaded), timeout=10)
+    finally:
+        mark.unlink(missing_ok=True)
     after = [(h['window'], h['memories']) for h in ipc('scottland/hints')['hints']]
     check(before == after and dict(after)[a][1].get('pin') == pin, 'a reload keeps the zone pins', after)
     cycle(a, 'Pinned')

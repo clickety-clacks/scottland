@@ -1806,12 +1806,17 @@ class scottland_plugin_t : public wf::plugin_interface_t,
     };
     struct rail_drag_t
     {
-        scottland::rail::solver_t solver;
+        scottland::rail::focused_solver_t solver;
         scottland::drag_presentation_t presentation;
         wf::output_t *output = nullptr;
         uint64_t dragged = 0;
         bool left = false;
         double top = 0, bottom = 0;
+        // The focused card on this rail, if it isn't the one being dragged, stays fixed,
+        // so it divides the rail into independent make-room spans.
+        bool has_focused = false;
+        uint64_t focused_id = 0;
+        double focused_lo = 0, focused_hi = 0;
         scottland::rectf_t last_item, solved_item;  // latest landing; the one the last solve cleared
         wf::pointf_t pause_anchor{0, 0};
         uint32_t pause_deadline = 0;
@@ -3637,6 +3642,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.dragged = 0;
         rail.left = false;
         rail.top = rail.bottom = 0;
+        rail.has_focused = false;
+        rail.focused_id = 0;
+        rail.focused_lo = rail.focused_hi = 0;
         rail.last_item = rail.solved_item = {};
         rail.pause_anchor = {};
         rail.pause_deadline = 0;
@@ -3657,6 +3665,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         std::vector<scottland::drag_actor_position_t> origins;
         intervals.reserve(model.widgets.size());
         origins.reserve(model.widgets.size());
+        auto active = wf::get_core().seat->get_active_view();
+        rail.has_focused = false;
         for (auto& [window_id, link] : model.widgets)
         {
             // Widgets hidden by Super+M keep their places (they come back); full screen's don't count.
@@ -3673,6 +3683,16 @@ class scottland_plugin_t : public wf::plugin_interface_t,
                 rect.y1 -= frame->drag_layout_y;
                 rect.y2 -= frame->drag_layout_y;
             }
+            // The focused card stays fixed and is held out of the movable set so the
+            // solver never offers it a shift, same as the dragged card itself.
+            if (active && active.get() == widget.get())
+            {
+                rail.has_focused = true;
+                rail.focused_id = widget->get_id();
+                rail.focused_lo = rect.y1;
+                rail.focused_hi = rect.y2;
+                continue;
+            }
             auto geometry = widget->get_geometry();
             intervals.push_back({widget->get_id(), rect.y1, rect.y2});
             origins.push_back({widget->get_id(), (double)geometry.x, (double)geometry.y});
@@ -3682,7 +3702,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         auto area = output->workarea->get_workarea();
         double top = area.y + WIDGET_INSET;
         double bottom = area.y + area.height - WIDGET_INSET;
-        if (bottom < top || !rail.solver.begin(intervals) ||
+        scottland::rail::interval_t fixed{rail.focused_id, rail.focused_lo, rail.focused_hi};
+        if (bottom < top || !rail.solver.begin(intervals, rail.has_focused ? &fixed : nullptr) ||
             !rail.presentation.begin(origins, scottland::rail::MAX_ACTORS)) return false;
 
         rail.output = output;
@@ -3701,6 +3722,9 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         rail.last_item = item;
         rail.has_item = true;
         rail.solved_item = item;
+        // Focus is a fixed divider. The solver considers only actors on the landing's side,
+        // so an overfull opposite side cannot erase useful shifts and no actor crosses focus.
+        // An item overlapping focus has no phantom landing.
         rail.solver.solve(item.y1, item.y2, rail.top, rail.bottom);
         auto& shifts = rail.solver.shifts();
         for (size_t i = 0; i < rail.presentation.size(); ++i)
@@ -7073,10 +7097,8 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         [=] (wf::move_drag::drag_done_signal *ev)
     {
         // The dropped geometry is final; drag->view may still point at the view here.
-        // What you saw while dragging is what you get: right at a jump in scale (the drag keeps
-        // its size there until the other one agrees, see on_drag_motion) the drop can land where
-        // the zone says the other size. Then keep the size shown, and nudge the window sideways
-        // by the least distance that puts its center where that size belongs.
+        // At a scale jump, release keeps the drop position and lets the size settle to the
+        // drop zone's natural value instead of nudging the window to preserve the shown scale.
         auto main = ev->main_view;
         swipe_moving = false;  // whatever ended it (a button release can end a swipe drag)
         reconcile_rail_slides();  // a widget held in place by the grab may go now
@@ -7136,33 +7158,14 @@ class scottland_plugin_t : public wf::plugin_interface_t,
         if (main && main->is_mapped() && main->get_output() && !main->pending_fullscreen() && !is_widget(main) &&
             !widget_shaped.value_or(false))
         {
-            auto geometry = main->get_geometry();
-            double screen = main->get_output()->get_relative_geometry().width;
-            double center = geometry.x + geometry.width / 2.0;
             if (shift_held())
             {
                 pin_scale(main, model.drag.target);  // dropped with Shift held (L31)
-            } else if (std::abs(place_at(main->get_output(), center, screen).scale - model.drag.target) > JUMP)
-            {
-                for (int d = 1; d <= 400; d++)
-                {
-                    int found = 0;
-                    for (int sign : {-1, 1})
-                    {
-                        if (std::abs(place_at(main->get_output(), center + sign * d, screen).scale - model.drag.target) <= 0.003)
-                        {
-                            found = sign;
-                            break;
-                        }
-                    }
-
-                    if (found)
-                    {
-                        move_window(main, geometry.x + found * d, geometry.y);
-                        break;
-                    }
-                }
             }
+            // Stay-still behavior keeps the window exactly where the user let go. If the drop
+            // position's natural scale differs from the scale shown while dragging, the size
+            // follows the drop position instead of nudging the window to match its shown size;
+            // `set_scale` below animates that change (L10).
         }
 
         for (auto& dragged : ev->all_views)
