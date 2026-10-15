@@ -3,7 +3,7 @@
 Status: the larger knock model is still being formalized. The sender-window lookup in part 2 has a
 scoped implementation candidate; shared-runner build and real-terminal/tmux validation are
 pending. This supersedes the narrower "agentd as an attention source" framing; agentd, Yoohoo's
-bell menu, notifications, bells and Tightbeam decision requests are all expected to become cases
+bell menu, notifications, bells and requests for a user decision are all expected to become cases
 of this.
 
 ## The bigger picture: attention regimes (Mike, 2026-10-04)

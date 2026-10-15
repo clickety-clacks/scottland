@@ -25,7 +25,7 @@ on a physical session. This change is not tested on either machine's live displa
 |---|---|---|
 | WK1 | Alt alone enters hints only after the configurable short hold (300 ms default). Any other key or Ctrl, Shift, or Super already held, or pressed before the timeout, cancels eligibility for that entire Alt chord. Quick Alt+letter keeps app behavior; quick Alt+Tab and Alt+Shift+Tab use WK32. Both Alt keys are supported; pressing both before entry is not Alt alone. | implemented (headless) |
 | WK2 | After entry, every unclaimed key belongs to Scottland until the last held Alt is released, including Ctrl/Super combinations and unassigned keys. Presses and matching releases are consumed; hints/cycles act once per physical press; arrows add impulses on presses and auto-repeat (WK17). Focused-surface key-layer claims retain ordinary delivery (KL7), including while hints are visible; a claimed press before entry cancels the hold. Alt itself is delivered immediately and its matching release is delivered, so quick app chords have no added delay or synthetic replay. | implemented (headless) |
-| WK3 | Alt release exits window mode and removes hints. Esc removes hints, stops any remaining keyboard motion at the user's current result (WK22), and keeps keys captured until Alt release. When `scottland/window_avoidance_always` is off, avoidance offsets ease home on either exit (WK13/WK27); when on, the visual reservation continues outside Window mode. `scottland/hint_avoidance_always` remains a compatibility alias. Explicit cycles and moves remain committed; the next entry starts a new cycle from the current zone, skipping select if already selected. | implemented (Plumbus stipc, 2026-10-03) |
+| WK3 | Alt release exits window mode and removes hints. Esc removes hints, stops any remaining keyboard motion at the user's current result (WK22), and keeps keys captured until Alt release. When `scottland/window_avoidance_always` is off, avoidance offsets ease home on either exit (WK13/WK27); when on, the visual reservation continues outside Window mode. `scottland/hint_avoidance_always` remains a compatibility alias. Explicit cycles and moves remain committed; the next entry starts a new cycle from the current zone, skipping select if already selected. | implemented (AMD test host stipc, 2026-10-03) |
 | WK4 | Every mapped top-level window and every widget has a large, click-through compositor hint in session palette colors, attached to the most open visible portion of ordinary windows (WK31); widgets use the exterior attachment in WK26, expanded or collapsed. Dialogs are selectable but retain WG1's protection against widgetizing. | implemented (headless) |
 | WK5 | Assignment follows opening order, with `a s d f g h j k l q w e r t y u i o p z x c v b n m`. Each window retains its slot while open, including as a widget and across reload. Closed slots can be reused. As in Vimarchy, beyond 26 slots all labels become prefix-free two-letter hints; the assignment slot remains stable. Badges follow Vimarchy: a circle (in the visible window region per WK31, beside widgets per WK26) sized `clamp(min(displayed width, displayed height) × 0.34, 72, 132)` logical px, 21% hint-color fill, bold uppercase letters at 62% of badge height (46% for multiple letters). WK31 caps ordinary circles to visible clearance and supplies a readable fragment floor. Output scale affects raster resolution, never logical badge size. | implemented (headless) |
 | WK6 | A window’s first hint selects, focuses, and raises it only if it is not already selected/focused. If already selected (including by Tab), the first press goes straight to the next zone. A widget’s first hint selects and focuses without opening (WK30); if already selected, its hint goes straight to center. Selecting another hint resets the previous selection’s cycle. | implemented (headless) |
@@ -33,45 +33,45 @@ on a physical session. This change is not tested on either machine's live displa
 | WK8 | A periphery-start loop visits center → widget → periphery repeatedly (WK7). | implemented (headless) |
 | WK9 | A widget-start loop visits center → periphery → widget repeatedly; selection leaves its first center step for the next slow hint (WK6/WK30). | implemented (headless) |
 | WK10 | Tab and Shift+Tab select the next/previous window or widget in hint order, wrapping. Tab focuses a widget without opening it; its hint opens it. F4 closes the selected window and its widget through normal linked lifecycle, preserving save-confirmation behavior. | implemented (headless) |
-| WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Starting a drag suppresses hints for that chord, even after drop; unless `scottland/window_avoidance_always` is on, window avoidance then eases away (WK13/WK27). Shift during a drag pins scale (L31). Adding any modifier after entry stays in the mode (WK2). | implemented (Plumbus stipc, 2026-10-03) |
+| WK11 | Super+Alt resize (L20) and Alt with Ctrl/Shift held first never show hints. Starting a drag suppresses hints for that chord, even after drop; unless `scottland/window_avoidance_always` is on, window avoidance then eases away (WK13/WK27). Shift during a drag pins scale (L31). Adding any modifier after entry stays in the mode (WK2). | implemented (AMD test host stipc, 2026-10-03) |
 | WK12 | Alt still works in full screen (FS1). While hints are active, widgets slide back for their hints (shown expanded, WG16, as are hidden and collapsed widgets outside full screen); on release/cancel they slide away again if full screen remains in front. Asking does not end full screen or notification holding. An explicit cycle exits full screen before moving, preserves the previous center memory, and queues rapid steps through the exit transaction. | implemented (headless) |
 | WK13 | **Window avoidance: the peeking strip** (P12, P13; Mike's peek-strip decisions 1–9, 2026-10-04). By default it exists only while Window mode is active; Alt release or Esc returns temporary offsets to zero unless the user moved the window meanwhile. `scottland/window_avoidance_always` (default off; Settings label “Window avoidance”) keeps it on outside that mode; `scottland/hint_avoidance_always` remains a compatibility alias. **One engine, two tests** (`core/plugin/src/peek.cpp`): each window behind others takes the nearest offset at which it shows a free rectangle on screen. Always on, the rectangle is a strip 24 × 100 pt × text scale, in either orientation, at an edge or through a gap between front windows (decisions 1, 4, 7); a strip dimension larger than the window shrinks to the window's. In Window mode it is first room for the window's full hint, then room for the 48 pt × text-scale minimum hint, then the strip (decisions 2, 5): windows are nudged temporarily and return to their peek offsets when Window mode ends. pt are logical pixels: independent of output scale and not shrunk by zone scale; rectangles are drawn frames (zone scale applied, avoidance offset excluded); the strip must lie in the output's work area (not under a panel). **Only the covered window moves**: front windows never move for rear ones, so a pass goes front to back and each result is final when computed. The search is exact: candidate placements come from obstacle edges and the window's own reach, and their coverage is computed in one grid pass (no sampling, no rays, no give-up state). **Limits:** the displayed center stays in the window's own zone (P13: the center zone, or its periphery without the rail; decision 6) and vertically inside the work area (decision 8: no top/bottom band); its edges may hang past both. **The focused window never moves for avoidance** (during a drag, that is the window under the user's hand). Peeking is temporary and never moves a window's true location, so it never violates "stays put": pair members (WK36), the solo window and a window dropped to accept an audition get no special status, and any of them that is covered peeks like any other (Mike, 2026-10-05). A focused window completely covered by something that stays in front of it (a widget card, once a dropped window's hold above the widgets ends) therefore stays hidden until it is unfocused or raised: the focused window does not peek either, since peeking would move it without the user doing so (Mike, 2026-10-07: "the active window NEVER moves  automatically without the user explicitely doing it"; resolves the 10-05 entry in docs/rulings.md in this entry's favor). What covers what is re-checked whenever the scene's stacking or enabled state changes (for example when a dropped window's hold above the widgets ends, L29), not only on geometry and focus changes. **Direction (decision 8):** smallest move, with a soft preference for peeking toward the window's position relative to the window covering it most: a move in any other direction counts double (`peek_direction_weight`). A window with no room on any rung inside its limits does not move (`no_room`, P2) and only its hint is placed (WK31). **Per-screen live avoidance (10-07):** a glide on one screen switches only that screen to live window avoidance, not all screens. **Calm (P11):** while live (drag, drag coast, keyboard motion or glide), a window keeps its current way (the least offset within 16 px of its target) unless the least offset within 64 px per axis of where it is drawn is more than 6 px smaller. Every rung is tried this way first, so a smaller hint nearby beats a full one far away; only when no rung has a kept or near way does it take, down the ladder again, the feasible offset nearest where it is drawn. At rest it takes the least offset, unless its current way is within 6 px of it. Live to rest is a layout change, so the rest rule runs once after a drag. Targets ease 0.18 per tick with a 1000 px/s cap; reduced motion snaps. **Passes (P8):** one front-to-back pass per output over a snapshot, resumable in slices of `peek_slice_units` work units (170,000: 1.45 ms on the x86 test machine, 1.23 ms on the ARM test machine) and paused 1.5 ms into the refresh (a slice may overrun by one query; the refresh stays within 2 ms); results never depend on slicing. A layout change during a pass lets it finish on its snapshot and starts the next pass at once from the newest layout, so rear windows lag a moving front window by at most one pass; a change of windows or stacking starts over (previous targets hold). Solves are requested at most every 16 ms; a settled layout stops ticking. `scottland/hints` reports per window `outcome` (visible, moved, no_room, pending), `rung`, `rule` (K keep, N near, Y any, H home), `room` and `drawn`, and per pass units and slices. Offsets are scene-only: they never alter geometry, zone, scale, memory or widget state, and never widgetize a window, except that grabbing a shifted window commits its offset as its real position (WK27). Explicit user moves and cycles remain real. Grabbing a shifted window keeps it where it is drawn and commits that as its position; selecting it by its hint returns it to its true position (decision 9, WK27). | implemented; verified on the ARM test machine with real input (`tests/peek-strip-test.sh`, 40 checks, strips measured from screenshots; also on the x86 test machine) and by `tests/peek-unit.sh` (55 checks, both test machines), 2026-10-04 |
 | WK14 | Each assignment has a deterministic distinct color across a 160° hue arc opposite the session accent, with successive slots far apart; opening/closing other windows does not recolor retained letters. Scheme, background, foreground and accent come from `SCOTTLAND_PALETTE`, or the session's `<display>.palette.json`; an atomic palette-file change wakes the hint refresh, and reads are rate-limited to 250 ms while a step is running. Scheme chooses saturation/lightness; lightness is adjusted to at least 3:1 WCAG contrast against the theme background and a typical surface after compositing both tints. The whole window/card gets a hint-color overlay (7% by default; strength setting WK38), a 2 logical px full-color rounded border even at the supported 5% window scale, and the halo takes its dye. Fullscreen gets the tint and an inset square rim. Release, Esc, replacement and unload clear the transient dye without altering focus/attention state. With the screen-wide goo (on by default), window mode simply tints the goo with the hint color as dye (GO6): the window/card overlay stays, and there is no separate rim. The 2 logical px border applies to the fallback halo (goo off); with the goo on, the hint shows only as the window/card tint and the goo dye. | implemented (headless) |
-| WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing unless a WK34 hint peek is active, where the repeat takes WK30's center step. The interval starts at the first hint's final key release and ends at the repeated hint's first physical key press; holding a key or typing the rest of the repeated hint does not spend that interval. The first complete hint still acts immediately on press. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, Alt release or cancellation resets double-tap recognition; so does a hint hold (WK39). | verified on plumbus with human timing, 2026-10-04 |
-| WK16 | Double-taps use physical presses and a final-key release between complete hints, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; timing is latched at its first letter, but repeating a prefix alone does not move a window. | verified on plumbus with human timing, 2026-10-04 |
+| WK15 | Repeating the same hint within `scottland/window_double_tap_delay` (default 300 ms, range 1–3000, inclusive) sends its window to the rail immediately; if already a widget, it does nothing unless a WK34 hint peek is active, where the repeat takes WK30's center step. The interval starts at the first hint's final key release and ends at the repeated hint's first physical key press; holding a key or typing the rest of the repeated hint does not spend that interval. The first complete hint still acts immediately on press. Slower presses keep cycling. After the shortcut, slow cycling resumes after widget in the original start-relative loop. Tab, another hint, Alt release or cancellation resets double-tap recognition; so does a hint hold (WK39). | verified on AMD test host with human timing, 2026-10-04 |
+| WK16 | Double-taps use physical presses and a final-key release between complete hints, never key repeat, and apply only in window mode. With prefix-free multi-letter hints, repeat the complete hint to invoke the same shortcut; timing is latched at its first letter, but repeating a prefix alone does not move a window. | verified on AMD test host with human timing, 2026-10-04 |
 | WK17 | In entered Alt window mode, each unclaimed arrow press (including auto-repeat) adds a fixed impulse to its axis's surviving velocity, clamped independently to a maximum. Movement and resize each use their own constant deceleration (S14), integrated until zero including the final partial tick, with no restarted position animation. One default impulse travels v²/(2a) = 92.29 logical px. Hints/cycles retain physical-press-only behavior. | implemented (headless) |
 | WK18 | Arrows target the hint/Tab-selected window if selected this hold, otherwise the currently focused window (a focused widget represents its app). Different windows retain independent coasts. Left/Right change x, Up/Down change y; diagonals combine independent axes. An arrow on fullscreen explicitly exits it and waits for restored geometry before applying queued impulses. A later explicit cycle stops that window's coast before its lifecycle/placement action. Closing/unmapping or having no output discards its motion safely. | implemented (headless) |
 | WK19 | Ordinary arrow pushes follow their center's zone and scale live (L5/L8), and clear an old pin. Holding Shift for an arrow push keeps the window's displayed scale through that push and its coast, including boundary calculations (L31); releasing Shift does not end that coast's pin. The next ordinary push or drag clears it. Ctrl+arrows still resize (WK21), including with Shift held. Geometry/scale targets enter the desktop model; hints' visual declutter never enters motion coordinates. | implemented (headless) |
 | WK20 | Keyboard pushes and drag coasts (L32) never bounce ordinary windows. At an exposed top/bottom workarea edge, motion stops with 100 logical pt of the live scaled content footprint visible and that axis's velocity zeroed (a footprint shorter than 100 pt stays wholly visible). At an exposed side, outward travel widgetizes once onto the matching rail when the scaled footprint first touches its inner boundary, or the workarea boundary if farther inward; WG22 morphs from the contact image. All app motion axes end at that handoff. Existing drops already beyond contact may move inward without docking; an outward push morphs from their existing image without snapping inward. Stationary drops are unchanged. WG1-ineligible windows stop at side contact without changing form. A touching output at the center's orthogonal coordinate permits passage when the workarea reaches the physical seam; crossing transfers the global center, velocity and existing focus. Gaps and reserved edges remain closed. WK21 resize recovery retains its fully contained padded bounds; existing widgets retain WK23. | implemented (headless) |
 | WK21 | After mode entry, Ctrl+Right widens, Ctrl+Left narrows, Ctrl+Up grows height, Ctrl+Down shrinks height, with independent inertial size axes. Resizing keeps the window's center, zone and scale (L20) until its scaled footprint exceeds an exposed boundary, then pushes the center back inside the fully contained WP7 padded bounds (and outside exposed rails), within client pixel rounding, including asynchronous client commits. Sizes respect the app minimum and maximum and screen/workarea minus padding (integer size caps round down); an app minimum larger than that limit takes precedence. Movement and resize coasts can coexist. Ctrl+arrows consume input but do nothing for widgets. | implemented (headless) |
-| WK22 | Alt release commits keyboard movement/resize and lets existing velocity coast to zero; it stops adding repeats. Esc while still in mode stops inertia and repeats at the current result and records the landing memory. It does not undo explicit arrow pushes or cycle placements; their geometry, size, output, form, scale choice and memories remain the user's result. A resized window keeps a short-lived center anchor for late client commits. Hint-only offsets separately ease to zero (WK13). The cancelled chord remains captured until Alt release. A later hold starts a new cycle from the current zone. | implemented (plumbus headless, 2026-10-02) |
-| WK23 | Widgets coast vertically along their current rail and stop at top/bottom workarea limits, keeping the widget inset. An arrow away from the attached rail undocks the widget into its window on the same side, using the usual widget-to-window morph and the arrow's velocity to coast into the periphery. This first undock coast stops at that side's inner periphery edge if its velocity would carry it across the center; it never reaches the opposite rail. Later ordinary pushes can move the window freely. An arrow toward the rail does nothing; Ctrl+arrows do nothing (WK21). Tab can select a widget without restoring it (WK10). Esc stops an active coast at its current rail or periphery landing; it does not undo that explicit arrow move (WK22). | implemented (plumbus headless, 2026-10-02) |
+| WK22 | Alt release commits keyboard movement/resize and lets existing velocity coast to zero; it stops adding repeats. Esc while still in mode stops inertia and repeats at the current result and records the landing memory. It does not undo explicit arrow pushes or cycle placements; their geometry, size, output, form, scale choice and memories remain the user's result. A resized window keeps a short-lived center anchor for late client commits. Hint-only offsets separately ease to zero (WK13). The cancelled chord remains captured until Alt release. A later hold starts a new cycle from the current zone. | implemented (AMD test host headless, 2026-10-02) |
+| WK23 | Widgets coast vertically along their current rail and stop at top/bottom workarea limits, keeping the widget inset. An arrow away from the attached rail undocks the widget into its window on the same side, using the usual widget-to-window morph and the arrow's velocity to coast into the periphery. This first undock coast stops at that side's inner periphery edge if its velocity would carry it across the center; it never reaches the opposite rail. Later ordinary pushes can move the window freely. An arrow toward the rail does nothing; Ctrl+arrows do nothing (WK21). Tab can select a widget without restoring it (WK10). Esc stops an active coast at its current rail or periphery landing; it does not undo that explicit arrow move (WK22). | implemented (AMD test host headless, 2026-10-02) |
 | WK24 | `scottland/key_impulse` (335 px/s) and `scottland/key_friction` (608 px/s²) control constant-deceleration keyboard movement and drag release coasts (L32). Independent `scottland/resize_impulse` (335 px/s) and `scottland/resize_friction` (608 px/s²) control inertial Ctrl+arrow resizing. `scottland/key_max_velocity` (6000 px/s) caps both. The Window mode tab edits each impulse/deceleration pair through a position-over-time graph (S14). Repeats use the keyboard's configured delay/rate, independently for held arrows, and stop on key/Alt release or cancel. Exact focused-surface claims precede arrows (KL7); quick Alt+arrow and Ctrl-first chords keep existing app/desktop routing. A pointer/touch move or resize takes over motion without enabling hints (L31). | implemented (headless) |
 | WK25 | Hints follow the desktop's text size and interface font, as Vimarchy follows Omarchy's: the nominal minimum (72 px), maximum (132 px) and proportional size (0.34 of the window's shorter side) are multiplied by the text scaling factor (GTK's `text-scaling-factor`, which `omarchy display text size` sets on Omarchy), and the letters use the interface font (`font-name`'s family). When exposure needs it, WK31 can shrink a window hint to 48 px × text scale but never smaller. The color-scheme helper records both in the palette file (`text_scale`, `font_family`) and follows changes live. | implemented (headless) |
 | WK26 | In Window mode, every widget (the default card or a third-party widget, expanded or collapsed) has its hint outside its center-facing edge: right of a left-rail widget, left of a right-rail widget, vertically centered on its drawn frame. The circle overlaps by 15% of its diameter. For large text on short widgets, overlap reduces so the arc entering the widget spans at most the middle 60% of its height, leaving the upper inward count-badge corner clear. WK30/WK31 retain a consistent 48 px × desktop text scale circle; WK14 widget tint/dye/goo remain unchanged. The exterior circle has the same backing as every window hint, the theme background under a 21% hint-color tint, at WK42's one hint background opacity. (Superseded 2026-10-06: exterior circles were opaque by default while window circles kept a 21% hint-color fill; Mike: "having them different is a bug.") Colliding widget hints declutter with 6 logical px clearance; widgets move only vertically as a temporary visual transform and keep their horizontal attachment, while windows use WK31's exposure solver. Both the hints and widget frames stay vertically on screen; horizontal screen clamping takes precedence if an unusually wide widget leaves no room. Geometry, zone memories and rail attachment are never changed. Release/Esc clears the hints and restores temporary displacement. | implemented (headless) |
-| WK27 | Window avoidance re-solves only after true window geometry, focus, stack order, widget placement or output changes and, during sustained changes, no more than once every 16 ms (Window-mode entry may request an immediate initial solve). This includes keyboard pushes, held arrows, inertial coasts and real pointer drags; outside Window mode it runs only when `scottland/window_avoidance_always` (or its alias) is enabled. True frames, displayed offsets, retained move ways and target offsets remain separate; a drawn transform never feeds model geometry, drag/drop geometry, memory or later solve frames. An explicitly dragged window's grabbed point stays under the pointer, including when its drawn frame has an avoidance offset. **Grabbing a shifted (peeking) window** keeps it exactly where it is drawn, and that becomes its real position: the grab folds its avoidance offset into its true geometry (the one exception to offsets being scene-only), so window, goo, halo and input agree for the whole drag and the drop lands where it was drawn. Every drag path does this (Super-drag, Super+Shift, halo, touch hold and halo touch, three-finger swipe, client move request), in the center zone too. Its zone does not change (P13): a peek that hangs its center past the zone edge commits only to that edge; its scale stays as drawn at the grab and then follows the drag as any drag does. Esc and its zone memory use the committed position. A touch hold on a peeking window keeps it where it is drawn until the hold resolves, so a lift grabs it there. A peeking window's halo is hit where it is drawn. Selecting it by tapping its hint in Window mode instead brings it to its true position (shift removed) as it is raised and focused. (Mike, 2026-10-04, peek-strip decision 9) When avoidance becomes inactive, every temporary offset eases to zero. | verified on Plumbus for geometry separation and ordinary drag/coast; grabbing a peeking window verified headless on nacelle and plumbus with real input (2026-10-04, below); not yet seen on a live screen |
+| WK27 | Window avoidance re-solves only after true window geometry, focus, stack order, widget placement or output changes and, during sustained changes, no more than once every 16 ms (Window-mode entry may request an immediate initial solve). This includes keyboard pushes, held arrows, inertial coasts and real pointer drags; outside Window mode it runs only when `scottland/window_avoidance_always` (or its alias) is enabled. True frames, displayed offsets, retained move ways and target offsets remain separate; a drawn transform never feeds model geometry, drag/drop geometry, memory or later solve frames. An explicitly dragged window's grabbed point stays under the pointer, including when its drawn frame has an avoidance offset. **Grabbing a shifted (peeking) window** keeps it exactly where it is drawn, and that becomes its real position: the grab folds its avoidance offset into its true geometry (the one exception to offsets being scene-only), so window, goo, halo and input agree for the whole drag and the drop lands where it was drawn. Every drag path does this (Super-drag, Super+Shift, halo, touch hold and halo touch, three-finger swipe, client move request), in the center zone too. Its zone does not change (P13): a peek that hangs its center past the zone edge commits only to that edge; its scale stays as drawn at the grab and then follows the drag as any drag does. Esc and its zone memory use the committed position. A touch hold on a peeking window keeps it where it is drawn until the hold resolves, so a lift grabs it there. A peeking window's halo is hit where it is drawn. Selecting it by tapping its hint in Window mode instead brings it to its true position (shift removed) as it is raised and focused. (Mike, 2026-10-04, peek-strip decision 9) When avoidance becomes inactive, every temporary offset eases to zero. | verified on AMD test host for geometry separation and ordinary drag/coast; grabbing a peeking window verified headless on ARM test host and AMD test host with real input (2026-10-04, below); not yet seen on a live screen |
 | WK28 | Hint circles pop in when window mode starts (each once its placement has settled, WK41): each scales up from nothing with a short springy overshoot (and pops out quickly when the mode ends), and each circle has its own goo: it is a round goo source dyed its hint color, so it is part of the one liquid, joining the goo of the window or widget it touches (a widget's exterior hint visibly connects to the widget). With the goo off, circles get the fallback halo ring. Within the GO10 cost budget. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
 | WK29 | When a hint cycle (keyboard, window mode) moves a window to its next place, it comes to rest with a small elastic overshoot: an underdamped spring passes the target once in position and scale, then settles without wobble in 300 ms. `scottland/cycle_overshoot` is the peak percentage of the move (default 3%, range 0–10%; zero retains the original 260 ms position/180 ms scale motion). Geometry, zone, target scale and memories stay at the destination; drawn scale follows its own spring, never the intermediate position's zone. The live scaled content footprint is constrained to its output, including shared seams, without correcting existing off-screen memories or oversized endpoints; scale stays at least 5%. These limits may reduce overshoot. Keyboard widget opens use this window placement motion; widget morphs, rail glides, drops, drags, coasts and pointer/IPC opens retain their own motion. The cycle-overshoot setting is available through plugin metadata, `scottland-ctl` and the Window mode Settings tab. (Mike, 2026-10-02) | implemented (headless) |
 | WK30 | Widgets' hint circles keep a consistent 48 logical px diameter (2/3 of WK5's ordinary 72 px minimum), multiplied by desktop text scale, independent of expanded/collapsed form or client dimensions (WK31). Pressing a widget's hint first selects the widget (like a window that isn't selected yet); only a further press cycles it (to the center, etc.). Supersedes widget behavior in WK6-WK11/WK26 where they differ. (Mike, 2026-10-02) | implemented (headless); motion, shared liquid, fallback, reduced motion and paired GO10 checks below |
 | WK31 | In Window mode each ordinary window's hint is placed from the room WK13 found for it. **The frontmost window** (nothing covers it) gets its hint at the exact center of its on-screen part, at its proportional size (WK5/WK25), with no search and no avoidance for it (Mike, 2026-10-04). "Nothing covers it" is strict: no window or widget in front overlaps its on-screen part at all, so it also holds for a rear window nothing overlaps, and for a covered window whose move left it uncovered; raising a covered window centers its hint. **A covered window** with hint room (rungs full or minimum): the room is grown to a maximal free rectangle (left, right, up, down, each to the nearest obstacle, its own edge or the screen edge) and the hint sits at its center, as large as fits up to the full size and never below the 48 pt × text-scale minimum. **No hint room inside its limits** (strip rung; decision 5): the minimum hint is centered on the visible strip and overlaps the front window's edge (on screen). **No room at all** (`no_room`): the minimum hint at the window's center, on screen: hint only. Strip and no-room hints that would land on a hint in front of them slide along their strip (no-room: along the screen's shorter axis) the least distance that clears every hint already placed, 6 px apart after the WK28 pop; if none clears, they stay. Front hints never move for rear ones, and hints draw in window stacking order, so a front window's centered hint is never covered. A hint appears once the offsets it depends on have settled. The the daily machine engram case (2026-10-04: a window at the top covered except a sliver along its top got its hint near its center under the front window) is a regression in `tests/peek-unit.cpp` and `tests/peek-strip-test.py`: it gets room when its zone allows, and otherwise its hint sits on the sliver over the front window's edge. Hints use the room their own window shows, never exterior attachment; only widgets use WK26 exterior hints. Geometry, zone, scale and memories do not change (except that a grab commits a shifted window's offset as its position, WK27). | implemented; verified on the ARM test machine with real input (`tests/peek-strip-test.sh` B, E, F; `tests/hint-front-center-test.sh` 28 checks), 2026-10-04 |
 | WK32 | Quick Alt+Tab previews the next center-zone window in MRU order; Alt+Shift+Tab previews the previous, and further Tab presses while holding Alt keep stepping. Releasing Alt focuses and raises the preview. The small, click-through preview names the next window and its place in the cycle, or says there are no center windows. With one center window it previews that same window; with none, focus stays as it was. Side windows and widgets never enter the list. This owns Wayfire switcher's former bindings and is reserved from Omarchy imports (O5). Once window mode has opened, Tab instead retains WK10 hint order. Tenets 2 and 3 choose the brief visible preview and immediate, no-op empty behavior. | implemented (headless) |
 | WK33 | Each completed hint press that acts on a window or widget briefly pulses its hint-color tint over that representation, peaking quickly and fading within about 220 ms. Repeated acting presses pulse again. The flash is visual only: it does not alter focus, zone, scale, memory, or input routing. Tenet 2 gives immediate feedback for the chosen hint. | implemented (headless) |
-| WK34 | In window mode, the hint press that first selects an unselected collapsed widget also expands it for a five-second peek; collapsed intent and placement stay unchanged, and it collapses again at expiry unless another peek trigger is active. A further hint press during the peek follows WK30's center-first cycle and restores the app window to center, even within WK15's double-tap interval; this ends the peek. Tab selection keeps WK10 behavior; hint circles remain click-through (WK4). Tenets 2 and 3 make a minimized widget recognizable briefly while preserving its stored place. Since WG16's revision (2026-10-04) Window mode shows every collapsed widget expanded anyway; this peek now matters for the seconds after Alt is released. | implemented (plumbus headless, 2026-10-03) |
+| WK34 | In window mode, the hint press that first selects an unselected collapsed widget also expands it for a five-second peek; collapsed intent and placement stay unchanged, and it collapses again at expiry unless another peek trigger is active. A further hint press during the peek follows WK30's center-first cycle and restores the app window to center, even within WK15's double-tap interval; this ends the peek. Tab selection keeps WK10 behavior; hint circles remain click-through (WK4). Tenets 2 and 3 make a minimized widget recognizable briefly while preserving its stored place. Since WG16's revision (2026-10-04) Window mode shows every collapsed widget expanded anyway; this peek now matters for the seconds after Alt is released. | implemented (AMD test host headless, 2026-10-03) |
 | WK35 | Holding the hint of the focused window (past a hold delay, proposed 500 ms, a setting) solos it: it goes to the center and the other center windows go to the periphery, which spreads (docs/spread.md; spread's keyboard solo). It commits outright, no undo (P5). A tap keeps today's behavior (WK15 double-tap, WK6 slow repeats); key auto-repeat never counts as a hold or a repeat (WK16). (Mike, 2026-10-03; focused-window condition 2026-10-04) For the focused window only, its hint press acts on key release instead of key-down, so a hold doesn't first move the window one step: a tap still acts (on release), a hold solos it. Unfocused windows keep acting on key-down. (Mike, 2026-10-04) Touchpad trigger (Mike, 2026-10-04): a three-finger hold on the focused window solos it, matching WK36's three-finger hold on an unfocused window. Also (Mike, 2026-10-04): Super + double-tap-and-hold on the touchpad, held still for the hold delay instead of dragged (Super + double-tap-drag moves a window), solos the focused window and pairs an unfocused one (WK36); not built. | implemented: hint hold, release timing and three-finger hold (WK39), and the solo itself (docs/spread.md SP1, SP6; headless on the x86 and ARM test machines, real stipc input, 2026-10-04); not yet seen on a physical screen or touchpad |
 | WK36 | Entering pairing preserves each window's saved peripheral position: "going into pairing mode does NOT overwrite a window's saved position in the periphery." (Mike, 2026-10-06; WP1.) Pairing makes both windows fully opaque, once: "when paired neither of the paired windows is translucent, like a one-time override. dragging the window or otherwise repositioning it/manipulating it doesn't continue this lock." (Mike, 2026-10-06; A14.) Pairing: holding the hint of an unfocused window pairs it with the focused window: the two are placed side by side. Window sizes are preserved: they are never resized and never scaled up. If both fit side by side at their own size they stay at 100%; only if they don't fit are they scaled down, together, just enough to fit, going edge-to-edge across the screen only when necessary. When scaling is needed, both get roughly the same magnification (the larger window takes the larger share), best effort, rather than 50/50. The other windows already in the center stay where they are; window avoidance makes them peek out (above and below the pair) rather than sending them to the periphery, since the pair may span the screen. Nothing is locked afterwards: dragging, soloing and every other behavior work normally on either window. Tenet 4 exception: pairing is an explicit request, so scaling center windows down to fit the pair is a concession the user grants. Order: the two keep their current left/right order (whichever is further left now goes left; P1). Placement: both windows vertically centered on the screen's horizontal center line, the pair centered horizontally on the screen as a unit, with a halo-sized gap between them that is the first thing given up when space is tight (P7). (Mike, 2026-10-04) Touchpad trigger (Mike, 2026-10-04): a three-finger hold on an unfocused window (fingers down and still, within a small wobble, for the hold delay, without clicking or dragging) pairs it with the focused window, exactly as the hint hold does; a three-finger drag (L23) or click (L24) that starts moving or clicking first keeps its current meaning. | implemented: hint hold (the two test machines, headless, real stipc keys) and three-finger hold (the ARM test machine, headless, virtual touchpad emitting libinput's hold/swipe/button events), 2026-10-04; peripheral-memory preservation verified 2026-10-06 (17/0); opaque once verified by pixels 2026-10-06 (35/0, `tests/pairing-opaque-test.sh`); not yet seen on a physical screen or real touchpad |
-| WK37 | In Window mode, a window that is mostly occluded (less than half of its on-screen area visible: `hint_outline_visible_fraction` = 0.5 in `hint-style.hpp`) also gets an opaque outline in its hint color, 2 logical px (`hint_outline_width`), following its drawn rounded frame, antialiased at the output's device pixels (also on scaled outputs). The outlines draw in the overlay layer above all windows, like the hint overlay, so nothing occludes them: they sit in front of every window and of overlay surfaces already shown (e.g. Scottland Settings), with only the hint circles and press flashes above them. Its full extent and identity show through what covers it; only the ring is drawn, so front windows' content shows inside it. Occlusion is measured only in Window mode (not for always-on avoidance outside it), after each avoidance solve has finished an output (only on layout changes, WK27), from the solver's own front-to-back frames at their settled avoidance targets, with widgets in front counting as cover: an exact sweep over the covering rectangles, no per-frame work. The pass shares the solve's 2 ms deadline (P8): if the deadline is reached it stops and resumes on the next tick (until then the previous measurements stand); a layout change restarts it. Only the on-screen part counts; widgets and fullscreen windows get none. Alt release and Esc clear the outlines with the hints. (Mike, 2026-10-04; overlay layer above all windows, same day) | implemented (plumbus headless real input + screenshots, 2026-10-04) |
+| WK37 | In Window mode, a window that is mostly occluded (less than half of its on-screen area visible: `hint_outline_visible_fraction` = 0.5 in `hint-style.hpp`) also gets an opaque outline in its hint color, 2 logical px (`hint_outline_width`), following its drawn rounded frame, antialiased at the output's device pixels (also on scaled outputs). The outlines draw in the overlay layer above all windows, like the hint overlay, so nothing occludes them: they sit in front of every window and of overlay surfaces already shown (e.g. Scottland Settings), with only the hint circles and press flashes above them. Its full extent and identity show through what covers it; only the ring is drawn, so front windows' content shows inside it. Occlusion is measured only in Window mode (not for always-on avoidance outside it), after each avoidance solve has finished an output (only on layout changes, WK27), from the solver's own front-to-back frames at their settled avoidance targets, with widgets in front counting as cover: an exact sweep over the covering rectangles, no per-frame work. The pass shares the solve's 2 ms deadline (P8): if the deadline is reached it stops and resumes on the next tick (until then the previous measurements stand); a layout change restarts it. Only the on-screen part counts; widgets and fullscreen windows get none. Alt release and Esc clear the outlines with the hints. (Mike, 2026-10-04; overlay layer above all windows, same day) | implemented (AMD test host headless real input + screenshots, 2026-10-04) |
 | WK38 | The Window mode hint-color overlay on windows and cards (WK14) has a strength setting, `scottland/window_mode_tint` (percent, 0–100, default 7; range widened from 0–30, Mike, 2026-10-07), with a live slider ("Hint color overlay") in the Window mode Settings tab; 0 turns the overlay off. It applies to the frame tint and fullscreen tint, live including while hints are showing. Hint circles, borders, outlines, goo dye and press flashes are unaffected, and hint colors keep the 7% default as their contrast basis, so moving the slider never recolors hints. Also in plugin metadata and `scottland-ctl`. (Mike, 2026-10-04) | prior input/pixel checks; current main-based tint range result pending |
 | WK39 | Holding a complete hint's final key, without releasing it, for `scottland/window_hold_delay` ms (default 500, range 1–3000; Settings “Hold a hint”) is a hint hold, timed from the physical press (the input event's timestamp, the same clock WK15 uses). An unfocused window's or widget's press still acts immediately on key-down (WK6), and holding it pairs (WK36) with the window that had focus before the press. The focused window's press acts on key release instead (WK35, Mike 2026-10-04): a tap acts when released, and a hold is WK35's solo (docs/spread.md). Releasing the key first is a tap. Key auto-repeat neither counts nor restarts the hold (WK16). Any other key press (another hint, Tab, an arrow, F4, or Space) or Alt release ends the hold; a focused window's press still waiting for release acts first, as the tap it was. Esc ends the hold and drops a waiting focused press. A press that completed a double-tap acts at once and never becomes a hold, and after a hold the next press of that hint is not its double-tap. (Mike, 2026-10-03/04, WK35/WK36) | implemented (the x86 test machine headless, real stipc input, 2026-10-04) |
 | WK40 | **Super+arrows navigate** (Mike, 2026-10-05): Super+Left/Right/Up/Down focus and raise the neighboring window or widget in that direction; rail widgets are targets like any window, judged by where they appear, with no skip rules beyond what that needs (same day). **The rule:** the neighbor to the right is, of the windows and widgets whose drawn center is right of the focused one's drawn center, the one whose center is nearest (straight-line distance); likewise left, up and down. With none, nothing happens. Drawn means as shown: zone scale and any peek offset applied, full-screen windows at their full-screen bounds, all screens in one layout coordinate space. **Choices not ruled by Mike** (made to keep it working; listed for review): exactly equal distances go to the one in front; a center exactly on the focused one's is on no side, so such windows are ordered by id (opening order) instead, Right/Down reaching later ones and Left/Up earlier ones, so none is unreachable; with nothing focused it starts from the active screen's center; one step per press (no auto-repeat); targets are every window and widget not minimized and not slid away: a Wayfire-minimized window, the app window a widget stands in for, and widgets slid away (Super+M hidden mode, or set aside while a window is full screen) are not targets, nor are desktop-role surfaces, but a window merely covered by another (even by a full-screen window) still is. Focus and raise are the ordinary ones (as WK32's commit), so existing focus and peek rules apply (WK13); keyboard focus follows; the pointer is never moved or held (P8). The keys are `scottland/navigate_left`, `navigate_right`, `navigate_up`, `navigate_down` (default Super+arrows), which Wayfire's stock grid snapping no longer binds (its keypad slots stay); Ctrl+Super+arrows are unchanged. The Omarchy import reports Omarchy's Super+arrow focus shortcuts as displaced by this feature (O5, O20). | implemented; revised unit checks 17/0, real-input layout suite 61/0 and two-output suite 7/0 on the test machine (2026-10-05); not yet seen on a physical screen |
 | WK41 | **Hints appear only once settled** (Mike, 2026-10-05). On Window-mode entry each circle waits for its current placement result and the motion of its own placement dependencies. Window hints depend on themselves and foreground windows/widgets on their output; widget declutter depends on anchors on that output, so a widget circle also waits for the windows there to stop moving. A view that is not drawn (minimized, or a widget slid away) is behind everything: it is no window's obstacle or cover. Completed front-window results remain usable while unrelated rear windows or another output change. A hint does not wait for other outputs to finish a pass, and a change to one output's own inputs (zone widths, work area, its live state) requests a solve by itself. A WK37 outline additionally waits for the output's finished occlusion measurement and its dependent offsets. The hint tick continues until pending circles/outlines can appear. Existing removal behavior remains. The wait is bounded: one window or widget whose avoidance offset never settles must not hide all window hints (Mike's case, 2026-10-06). A grabbed window (a touch hold or a drag) stays where it is drawn and holds no hint back; an offset that has not settled within the time its ease needs (its distance at the automatic speed limit, plus one second for the closing tail and an early retarget) stops holding hints back, its own included. | prior integration-tree checks; exact main-based WK41 acceptance result pending |
-| WK42 | One “Hint background opacity” setting (`scottland/hint_background_opacity`, 0–100%, default 21) sets the opacity of the background behind hint letters, the same value for window hints and exterior widget hints (WK26), live even while hints are showing. It is absolute: 100% is a solid backing, 0% is no backing. Every hint has the same backing, the theme background under a 21% hint-color tint (the color hint letters are chosen to contrast with; at low values whatever lies beneath shows through, so over wallpaper widget letter contrast depends on the setting), and one default. Letter foreground, fallback hint rims, window/card tint and opacity, outlines, goo and hint geometry are unchanged. The Window mode Settings row supports Save, Cancel and Defaults (S23). (Mike, 2026-10-06: there should be a settings slider for opacity of the background behind hint letters; then "why does 100% mean 21% that makes no sense" and "it should set both. having them different is a bug." Supersedes the first version, which scaled each kind's own fill so 100% kept a 21% fill on window hints and an opaque one on widget hints. The PO confirmed the 21% default and no contrast floor in ruling 10-07.) | prior integration-tree checks; exact main-based WK42 acceptance result pending |
+| WK42 | One “Hint background opacity” setting (`scottland/hint_background_opacity`, 0–100%, default 21) sets the opacity of the background behind hint letters, the same value for window hints and exterior widget hints (WK26), live even while hints are showing. It is absolute: 100% is a solid backing, 0% is no backing. Every hint has the same backing, the theme background under a 21% hint-color tint (the color hint letters are chosen to contrast with; at low values whatever lies beneath shows through, so over wallpaper widget letter contrast depends on the setting), and one default. Letter foreground, fallback hint rims, window/card tint and opacity, outlines, goo and hint geometry are unchanged. The Window mode Settings row supports Save, Cancel and Defaults (S23). (Mike, 2026-10-06: there should be a settings slider for opacity of the background behind hint letters; then "why does 100% mean 21% that makes no sense" and "it should set both. having them different is a bug." Supersedes the first version, which scaled each kind's own fill so 100% kept a 21% fill on window hints and an opaque one on widget hints. The 21% default and absence of a contrast floor were confirmed in the 10-07 ruling.) | prior integration-tree checks; exact main-based WK42 acceptance result pending |
 | WK43 | In Window mode, a plain physical Space press gathers every screen's periphery windows (docs/spread.md GA1–GA19). Ctrl, Shift or Super makes Space a consumed no-op; key auto-repeat acts once. Space interrupts a pending hint hold, so the focused window's waiting press acts as a tap before gather. Exact focused-surface claims still win, quick Alt+Space remains the application's chord, and Window mode stays active. Gather does not select, focus, stack, cycle or change widget state; requests serialize with solo and gather in press order. | source implemented; host acceptance pending |
 | WP1 | Each open window remembers independent center, left/right periphery, and left/right rail positions. Centers are normalized to screen dimensions and applied to the destination screen, including when a widget moved to a screen with a different scale. Initial placement, real drag drops, finished keyboard coasts, and cycle placements establish memories; visual animation does not. Entering pairing does not overwrite a saved peripheral position (Mike, 2026-10-06; WK36): a fitted pair placement is not a peripheral visit, including when departure by the existing zone cycle remembers its source. An ordinary subsequent real drop still establishes its own memory. Closing forgets the record; a marked Scottland reload hands it to the new plugin in the atomic desktop model handover. Each zone memory also keeps the window's scale pin there, if the user set one (Shift-drag, L31): returning to that zone by cycling restores both the remembered position and that pinned scale; with no pin the zone's normal scale applies. Only the periphery memories keep a pin; the center and rails never do (see Decisions). (Mike, 2026-10-04) | implemented (the test machine, headless, 2026-10-04) |
 | WP2 | A remembered destination wins exactly, even when occupied. Only pixel rounding is applied. This is predictable placement, not automatic rearrangement of existing windows. | implemented (headless) |
 | WP3 | Side choice uses the most recently visited side with a periphery or rail memory. With neither, choose the side with the largest contiguous free opening (blocked intervals are unioned); when openings differ by no more than 5% of screen height, choose the nearer side. Exact horizontal ties choose right. | implemented (headless) |
-| WP4 | Without a memory, use the pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. An unremembered periphery destination goes as close to the center as possible while overlapping the center as little as possible (Mike, 2026-10-04): its center goes past the point where the zone scale has visibly fallen (5% when available, otherwise halfway toward the rail scale), so it reads as the periphery (WP8), and at most a quarter of its scaled width may hang into the center zone, never its middle point over the line with half of it in the center; where that doesn't fit on screen with its WP7 padding, as far out as fits. From that innermost spot, contention (this routine) keeps it off center windows and any others, so it hangs into the center zone only where that covers no window, and otherwise lands nearest the center, re-evaluating its natural scaled footprint at the landing position. Best effort when space is tight. A remembered spot remains exact (WP2). Rail placement is refined to the actual widget footprint when it maps. | implemented (plumbus headless, 2026-10-04) |
-| WP5 | Explicit zone cycling, card opens and presenting a side window clear the current Shift scale pin, but a zone's remembered pin (WP1) is restored when the window returns to that zone. Center destinations keep the original window size and are at 100%, except a remembered center spot in the softness band just past the center zone's edge (WP8), which returns at its own zone scale there, between 95% and 100% (the scale the user left it at). A cycle's drawn scale target is computed from its destination center, after pixel rounding, before the geometry transaction commits, so the final displayed scale matches that zone (on a steep scale curve, half a pixel shows); later old-geometry notifications cannot retarget the cycle. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). A restored pin is also the cycle's drawn scale target, so the window lands at the pin with no jump. | implemented (plumbus headless, 2026-10-04) |
-| WP8 | A zone memory belongs to the zone the window reads as, and a cycle starts from it: a side spot just past the center zone's edge, where an unpinned window still shows at full scale (its zone scale above the WP4 threshold: 95%, or halfway to the rail's scale on a curve with less range), is the center's, so dropping a periphery window there doesn't replace its periphery memory, and its next cycle goes to that memory. A remembered spot counts only while it still reads as its zone at the current zone settings; otherwise the cycle places the window afresh (WP4), with no pin. A Shift-pinned window anywhere in the side zone is a periphery window with its pin, even pinned at full size (L31: moving it aside at 100% is what Shift is mostly for). A center spot of this kind returns at the scale it has there (between that threshold and 100%; WP5); one inside the center zone is 100%. (Mike, 2026-10-04: a window dragged from the periphery back to the center then cycled between two center spots and a widget.) | implemented (plumbus headless, 2026-10-04) |
+| WP4 | Without a memory, use the pure `place_rectangle` routine: minimize summed rectangle intersection area inside the destination region, then prefer the spot nearest the current center. Within 1% of the incoming rectangle's area counts as about equal. Side-zone ties prefer nearby vertical positions. An unremembered periphery destination goes as close to the center as possible while overlapping the center as little as possible (Mike, 2026-10-04): its center goes past the point where the zone scale has visibly fallen (5% when available, otherwise halfway toward the rail scale), so it reads as the periphery (WP8), and at most a quarter of its scaled width may hang into the center zone, never its middle point over the line with half of it in the center; where that doesn't fit on screen with its WP7 padding, as far out as fits. From that innermost spot, contention (this routine) keeps it off center windows and any others, so it hangs into the center zone only where that covers no window, and otherwise lands nearest the center, re-evaluating its natural scaled footprint at the landing position. Best effort when space is tight. A remembered spot remains exact (WP2). Rail placement is refined to the actual widget footprint when it maps. | implemented (AMD test host headless, 2026-10-04) |
+| WP5 | Explicit zone cycling, card opens and presenting a side window clear the current Shift scale pin, but a zone's remembered pin (WP1) is restored when the window returns to that zone. Center destinations keep the original window size and are at 100%, except a remembered center spot in the softness band just past the center zone's edge (WP8), which returns at its own zone scale there, between 95% and 100% (the scale the user left it at). A cycle's drawn scale target is computed from its destination center, after pixel rounding, before the geometry transaction commits, so the final displayed scale matches that zone (on a steep scale curve, half a pixel shows); later old-geometry notifications cannot retarget the cycle. Oversized content stays full size. WG17 card clicks use the same placement routine: remembered center first, otherwise the nearest least-overlapping center spot rather than unconditional screen-middle placement. Presenting a side window uses it too (L30). A restored pin is also the cycle's drawn scale target, so the window lands at the pin with no jump. | implemented (AMD test host headless, 2026-10-04) |
+| WP8 | A zone memory belongs to the zone the window reads as, and a cycle starts from it: a side spot just past the center zone's edge, where an unpinned window still shows at full scale (its zone scale above the WP4 threshold: 95%, or halfway to the rail's scale on a curve with less range), is the center's, so dropping a periphery window there doesn't replace its periphery memory, and its next cycle goes to that memory. A remembered spot counts only while it still reads as its zone at the current zone settings; otherwise the cycle places the window afresh (WP4), with no pin. A Shift-pinned window anywhere in the side zone is a periphery window with its pin, even pinned at full size (L31: moving it aside at 100% is what Shift is mostly for). A center spot of this kind returns at the scale it has there (between that threshold and 100%; WP5); one inside the center zone is 100%. (Mike, 2026-10-04: a window dragged from the periphery back to the center then cycled between two center spots and a widget.) | implemented (AMD test host headless, 2026-10-04) |
 | WP6 | The placement routine and force solver have no Wayfire dependencies and have standalone unit tests. The placement routine is reusable for any rectangle/region contention; it never resizes an incoming rectangle or moves obstacles. | implemented (headless) |
 | WP7 | Windows Scottland places (zone cycling, card opens: the placement routine) keep off the screen's edges by the halo's width plus 5 pt (about 16 pt), in each dimension where the window fits; one larger than the screen in a dimension is not padded there. Widgets keep their own, wider rail inset. Remembered spots (WP2) and the user's own drops are kept exactly. | implemented (headless) |
 
@@ -176,7 +176,7 @@ halos meet across it, so the pair reads as one liquid unit; the padding is WP7's
   sees the window drawn at its old place, and nothing refreshed after its glide, so the hint
   stayed where the window had been (Mike's report on `2bf738e`, 2026-10-04).
 
-**Verification (plumbus, isolated headless sessions, 2026-10-04).** Second round, after
+**Verification (AMD test host, isolated headless sessions, 2026-10-04).** Second round, after
 Fable's review, on the merge of `double-tap-fix` (`7f6c3e5`) and main:
 
 | Suite | Result |
@@ -214,7 +214,7 @@ check in the same comparison). Settings help fails its border-drag slider checks
 with and without this branch (6 here; 9 on unmodified main earlier); nothing in Settings changed
 in this round. No physical screen was used.
 
-**Third round: three-finger hold and quiet-machine checks (nacelle, aarch64 Asahi, isolated
+**Third round: three-finger hold and quiet-machine checks (ARM test host, aarch64 Asahi, isolated
 headless sessions, 2026-10-04),** on the merge with main `7076f78`:
 
 | Suite | Result |
@@ -224,15 +224,15 @@ headless sessions, 2026-10-04),** on the merge with main `7076f78`:
 | `tests/pairing-test.sh`, two outputs | 17 passed |
 | `tests/window-double-tap-test.sh`, run to completion | 57 passed (main: 57) |
 | windowing end-to-end / key layers / widget hints / cycle overshoot / live drag (L23) | 102 / 59 / 228 / 79 / 11 passed |
-| widget morph | 267 passed, 3 goo frame-following failures (main on nacelle: 4 of the same) |
-| window-avoidance calm | 13 passed, 3 drag-geometry failures (main on nacelle: the same 3) |
+| widget morph | 267 passed, 3 goo frame-following failures (main on ARM test host: 4 of the same) |
+| window-avoidance calm | 13 passed, 3 drag-geometry failures (main on ARM test host: the same 3) |
 
 The three-finger checks drive the test-only virtual touchpad with libinput's sequences: still
 fingers past the delay pair an unfocused window (sizes, order, scale, focus), also on a widget
 card; lifted early, nothing; moving first is an L23 drag that pairs nothing; a three-finger click
 first (with or without libinput ending the hold first) stays an L24 middle click; the focused
 window solos it (docs/spread.md); two fingers do nothing; after a hold, moving
-fingers still drag. One earlier double-tap run on nacelle failed one 150 ms two-letter case and
+fingers still drag. One earlier double-tap run on ARM test host failed one 150 ms two-letter case and
 did not reproduce in two later complete runs.
 
 Main-loop latency (P8, `tests/pairing-latency.py`): a second IPC connection pings the
@@ -247,10 +247,10 @@ compositor every millisecond; worst round trip per phase, two runs each:
 | Window mode entry (hints appear) | 61.2 / 64.1 ms | 63.6 / 65.9 ms |
 
 Medians stay below 0.1 ms. Pairing adds no measurable stall. Window mode entry stalls about
-60 ms on nacelle on main as well, so it predates this branch; it is outside this change and
+60 ms on ARM test host on main as well, so it predates this branch; it is outside this change and
 recorded here for P8.
 
-**Cycled window's hint (2026-10-04, nacelle, isolated headless sessions).** Mike reported on
+**Cycled window's hint (2026-10-04, ARM test host, isolated headless sessions).** Mike reported on
 `2bf738e` that cycling a window by its hint left its hint where the window had been.
 `tests/hint-follow-test.sh` cycles the focused window center → periphery → widget → center and an
 unfocused window, with window avoidance always-on and off, at output scales 1 and 2. After each
@@ -459,7 +459,7 @@ are saved beside that session directory. `tests/widgets-test.sh` supplies widget
 regression coverage and now honors the supplied directory for its display, reload library, and
 artifacts too.
 
-Integrated validation on plumbus, 2026-10-01, code commit `756b8d7` (merges main `e76bc56`
+Integrated validation on AMD test host, 2026-10-01, code commit `756b8d7` (merges main `e76bc56`
 and key-layers `9a24c92`). Main's subsequent documentation-only tip `16286df` is included
 by merge `56b0cc1`; it changes no code under test.
 
@@ -491,7 +491,7 @@ Every compositor was started after its build. Deployment used `--tests-only` in
 the checkout's own helpers. Logs are in `~/.cache/scottland-hints-merge-results/final-756b8d7`. All suites exited zero,
 and the isolated sessions were stopped afterward.
 Headless screenshots show distinct hints tracking displaced windows and native/layer-shell surfaces.
-No live session on osanwe or physical screen on plumbus was installed into, reloaded or used.
+No live session on daily Intel desktop or physical screen on AMD test host was installed into, reloaded or used.
 Physical verification and rehearsal from the installed build before live reload remain the
 coordinating session's rollout work.
 
@@ -501,7 +501,7 @@ raw-key tracker respects focused-surface claims and keys consumed by hints.
 
 ## Hint appearance validation (2026-10-01)
 
-`tests/hint-style-test.sh` uses an isolated headless widget session on plumbus, real stipc Alt
+`tests/hint-style-test.sh` uses an isolated headless widget session on AMD test host, real stipc Alt
 holds and Super drags, theme-following solid GTK surfaces of different sizes, a scaled side
 window and a real default card. It saves light/dark screenshots and checks rendered pixel colors
 for surface tint, badge fill and border, min/max/displayed sizing, complementary/adjacent hues,
@@ -537,13 +537,13 @@ frame, clears the curve only in its private test session, moves the pointer away
 halo to rest, and records the actual frame/scale. The final 5% case shows a 72 px badge and a full
 2 px rim even with a resting halo thinner than 1 px. Earlier attempts remain in the logs.
 
-Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-hint-style tests/deploy.sh plumbus
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-hint-style tests/deploy.sh HOST
 --tests-only`, `TMPDIR=~/.cache/scottland-test-tmp` and
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-hint-style`.
-Logs are on plumbus in `~/.cache/scottland-hint-style-results/final-2aca04c`, with reviewed copies
+Logs are on AMD test host in `~/.cache/scottland-hint-style-results/final-2aca04c`, with reviewed copies
 and a final count manifest in this worktree's `build/hint-style-results/`.
 
-Reviewed screenshots in this worktree (originals are beside the headless directory on plumbus):
+Reviewed screenshots in this worktree (originals are beside the headless directory on AMD test host):
 
 - `build/hint-style-artifacts/dark-hints.png`
 - `build/hint-style-artifacts/light-hints.png`
@@ -558,13 +558,13 @@ the fullscreen and minimum-scale shots show both special border paths. The doubl
 checks text proportion and displacement; contrast targets theme-following surfaces, as specified
 above, rather than arbitrary application colors. All isolated sessions and task tmux runners
 were stopped; no Wayfire remained using this test directory. Physical verification remains
-pending. No live session on osanwe or real screen on plumbus was installed into, reloaded or used.
+pending. No live session on daily Intel desktop or real screen on AMD test host was installed into, reloaded or used.
 ## Human double-tap timing regression (2026-10-04)
 
 Mike reported that hints on live build `0a1bb2e` did not double-tap to the rail.
-Read-only inspection of osanwe's generated config and saved layout confirmed
+Read-only inspection of daily Intel desktop's generated config and saved layout confirmed
 `window_double_tap_delay = 300`; the last override enabled always-on window
-avoidance. No test or compositor connection was made on osanwe.
+avoidance. No test or compositor connection was made on daily Intel desktop.
 
 The original recognizer, introduced by `8cdae8d`, compared the key-down timestamps
 that completed each hint. On an unfocused window, the first hint selects under
@@ -584,7 +584,7 @@ and physical-repeat filtering and key-layer ownership retain their existing
 paths. Tenet 2 chooses equal time to repeat a recognized hint regardless of its
 length, rather than making users memorize a faster rhythm for longer labels.
 
-All checks used fresh isolated plumbus sessions started after the build, with
+All checks used fresh isolated AMD test host sessions started after the build, with
 the checkout's shipped config, real stipc input and inspected screenshots:
 
 | Check | Result |
@@ -609,7 +609,7 @@ Code and test commit `8cdae8d` implements WK3, WK6–WK9 and WK15–WK16 above. 
 `scottland/window_double_tap_delay` (300 ms default). Cycle order has a standalone pure function;
 the controller receives monotonic input press/release timestamps, so timing boundaries are deterministic in units.
 
-| Suite on plumbus | Result |
+| Suite on AMD test host | Result |
 |---|---|
 | `tests/windowing-unit.sh` | 57 passed, 0 failed |
 | `tests/windowing-test.sh` | 84 passed, 0 failed |
@@ -622,18 +622,18 @@ live interval changes, and complete two-letter hints. Existing fullscreen exit/q
 reload, normalized memories, contention and WP7 padding checks also pass. Headless hints were
 captured and visually inspected. Physical-screen verification remains pending.
 
-Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-cycles tests/deploy.sh plumbus --tests-only`,
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-cycles tests/deploy.sh test-host --tests-only`,
 `TMPDIR=$HOME/.cache/scottland-test-tmp`, and
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-cycles`, with private D-Bus and the
 checkout’s own helpers. Source hashes matched this commit. Each compositor started after the
 build; only isolated test sessions were used. Logs are retained in
-`~/.cache/scottland-cycles-results/` on plumbus. Neither osanwe’s live session nor plumbus’s
+`~/.cache/scottland-cycles-results/` on AMD test host. Neither daily Intel desktop’s live session nor AMD test host’s
 physical screen was touched. All isolated sessions were stopped after testing.
 
 ## Inertia validation (2026-10-01)
 
 Final code: `bd4ca0f` (with `ec0a1e9` integration and `a61ba7c` independent math).
-All 16 suites below exited zero on plumbus: **717 checks passed, zero failed**.
+All 16 suites below exited zero on AMD test host: **717 checks passed, zero failed**.
 Config concurrency counts five rounds, each containing 20 simultaneous config builds.
 
 | Suite | Passed |
@@ -667,7 +667,7 @@ pixel and shift the next resize's anchor through odd-size rounding. Commit and t
 both use L20's pixel rounding, with the anchor retained until 300 ms after the latest client
 geometry commit. Cancellation's settling resource leaves the existing glide/scale renderer intact.
 
-Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-inertia tests/deploy.sh plumbus
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-inertia tests/deploy.sh HOST
 --tests-only`, with `TMPDIR=$HOME/.cache/scottland-test-tmp` and
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-inertia`. Every ordinary test
 compositor started after the final build, using checkout-local helpers and private D-Bus.
@@ -677,10 +677,10 @@ no other checkout was modified. The older compositor was deliberately replaced b
 under open windows, and its surviving launch identity and subsequent badge routing passed.
 
 Final logs and exit/pass counts are in
-`~/.cache/scottland-inertia-results/final-bd4ca0f/` on plumbus. Inertia screenshots and scale
+`~/.cache/scottland-inertia-results/final-bd4ca0f/` on AMD test host. Inertia screenshots and scale
 samples are in `$XDG_RUNTIME_DIR/scottland-headless-inertia.inertia-artifacts/`; rail-boundary,
 maximum-resize and restored-widget screenshots were inspected. All isolated sessions were
-stopped. No live session on osanwe or physical screen on plumbus was used or reloaded.
+stopped. No live session on daily Intel desktop or physical screen on AMD test host was used or reloaded.
 Statuses remain **implemented (headless)**; physical verification is intentionally not claimed.
 
 ## Combined window mode validation (2026-10-01)
@@ -701,7 +701,7 @@ velocity and existing focus. Esc restores the starting output too. Keyboard resi
 retains its center until the scaled footprint overflows, then pushes it inside, including late
 client commits. Mouse/touch drops and exact remembered cycle destinations keep their own rules.
 
-All 17 suites have successful runs on plumbus: **893 checks**, counting five config-concurrency
+All 17 suites have successful runs on AMD test host: **893 checks**, counting five config-concurrency
 rounds and the goo-model aggregate as one check. The duplicate model confirmation is not added
 to that total. Each suite below exited zero in its successful run.
 
@@ -732,16 +732,16 @@ visible card fields matched. Two unchanged-code reruns passed all 95 checks each
 timeout or production code was changed to obtain these passes. The transient diagnostic mismatch's
 cause is unconfirmed, and the original failure observations/log are retained alongside the reruns.
 
-Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-wm tests/deploy.sh plumbus --tests-only`,
+Deployment used `SCOTTLAND_DEPLOY_DIR=Projects/scottland-wm tests/deploy.sh test-host --tests-only`,
 `TMPDIR=$HOME/.cache/scottland-test-tmp` and
 `SCOTTLAND_HEADLESS_DIR=$XDG_RUNTIME_DIR/scottland-headless-wm`. Plugin and test source hashes
 matched the worktree. Every compositor started after the build, with checkout-local helpers and
 private widget D-Bus. Marked reloads were exercised only within the isolated test sessions.
-All isolated runtimes were stopped. No other checkout or live desktop was modified, and plumbus's
+All isolated runtimes were stopped. No other checkout or live desktop was modified, and AMD test host's
 physical screen was not used. Status remains **implemented (headless)**; physical verification
 is not claimed.
 
-Logs, original exit records and a successful-run manifest are on plumbus in
+Logs, original exit records and a successful-run manifest are on AMD test host in
 `~/.cache/scottland-window-mode-results/final-f9568ec/`, with a local copy under
 `build/window-mode-results/final-f9568ec/`. Reviewed screenshots are under
 `build/window-mode-artifacts/`: `inertia/rail-boundary.png`,
@@ -755,7 +755,7 @@ Hint styling passed 51 checks with the default goo, 51 with the fallback halo, a
 GLES 2/packed goo. Windowing passed 84 per mode; inertia passed 61 single-output plus
 8 two-output checks per mode. See [goo-default validation](goo.md#goo-default-validation-2026-10-01).
 
-## WK26 validation (2026-10-02, osanwe headless)
+## WK26 validation (2026-10-02, daily Intel desktop headless)
 
 Based on `e63ad97`, using only this checkout's plugin and helpers. Every run had its own
 `SCOTTLAND_HEADLESS_DIR` under `build/wk26/`; screenshots, sampled geometry and logs remain
@@ -782,7 +782,7 @@ the nearest rounded end is 11 pixels inward/down from the frame's upper inward c
 The compatibility screenshots are in `build/wk26/count-corner-integration.widget-hints-artifacts/`.
 The new suite accepts `SCOTTLAND_WIDGET_PATH` for this isolated fixture override.
 
-## WK29 validation (2026-10-02, osanwe headless)
+## WK29 validation (2026-10-02, daily Intel desktop headless)
 
 Only `scottland-overshoot` and its fresh headless sessions were used. All session directories,
 screenshots, frame strips, sampled JSON, build logs and source/library hashes are under
@@ -854,10 +854,10 @@ six-window/two-widget fixture. All state directories, temporary files and artifa
 for this change are under `build/wk28-results/`; no live session or installed build
 is changed. This is headless verification, not physical-display verification.
 
-Validation uses fresh isolated compositors on osanwe (Xe) and plumbus (RX 580),
+Validation uses fresh isolated compositors on daily Intel desktop (Xe) and AMD test host (RX 580),
 started after the tested build; all owned sessions are stopped and their state
 directories removed. No physical display, live widget service or live checkout is
-used. The plumbus test-only checkout is `Projects/scottland-wk28-hintgoo-tests`.
+used. The AMD test host test-only checkout is `Projects/scottland-wk28-hintgoo-tests`.
 
 | Check | Result |
 |---|---|
@@ -998,11 +998,11 @@ than 0.95, and its applied scale matches the center's zone scale after the
 cycle. A real outward arrow push preserves that agreement. The avoidance
 check also uses a real pointer drag outside Alt: the focused window follows its
 true drop path while the others reflow. Screenshots and logs are under
-`build/wk31-round2/plumbus-final/`, including `visible/fully-hidden.png`,
+`build/wk31-round2/test-host-final/`, including `visible/fully-hidden.png`,
 `visible/fully-hidden-selected.png`, `visible/fully-hidden-pushed.png`,
 `visible/always-on-after-drag.png`, and `windowing/new-periphery.png` and
 `windowing/periphery-arrow.png`. Tests ran only in isolated headless sessions
-on plumbus with checkout-local hooks and real stipc input. The shared dev
+on AMD test host with checkout-local hooks and real stipc input. The shared dev
 install, live session and services were untouched. Physical-display
 verification remains outstanding under D2.
 
@@ -1015,7 +1015,7 @@ verification remains outstanding under D2.
 | `tests/widget-hints-test.sh` | **170 passed** |
 | `tests/inertia-test.sh` | **65 single-output and 8 two-output passed** |
 
-## Temporary window avoidance and explicit moves (2026-10-02, plumbus headless)
+## Temporary window avoidance and explicit moves (2026-10-02, AMD test host headless)
 
 Tenet 3 guides the lifetime: moving a window visually just to expose a hint ends with the hint
 request. Real Alt and Esc input through stipc returns every hint offset to zero; checks compare
@@ -1025,9 +1025,9 @@ drag drops stay committed after Alt release or Esc. Esc ends an arrow coast at i
 and late client resize commits keep their center anchored while settling. Pointer drags outside
 window mode create no hint offsets.
 
-The final serial plumbus run used only isolated headless sessions and checkout-local hooks. It
+The final serial AMD test host run used only isolated headless sessions and checkout-local hooks. It
 stopped every session, removed its runtime directories and retained the logs/screens under the
-osanwe checkout's `build/part1-plumbus/final/`. No dev-install, reload or live session was touched.
+daily Intel desktop checkout's `build/part1-test-host/final/`. No dev-install, reload or live session was touched.
 Physical-display verification remains outstanding under D2.
 
 | Suite | Result |
@@ -1041,7 +1041,7 @@ Screenshots include `hint-visible/stack-held.png`, `fully-hidden-pushed.png`,
 `inertia/two-output-crossing-kept.png`, `inertia/widget-move-kept.png`, and
 `windowing/periphery-arrow.png`.
 
-## Optional always-on window avoidance (2026-10-03, plumbus headless)
+## Optional always-on window avoidance (2026-10-03, AMD test host headless)
 
 `scottland/window_avoidance_always` defaults off and is available in the Window mode Settings tab,
 plugin metadata and `scottland-ctl`. The old `scottland/hint_avoidance_always` key remains honored
@@ -1052,11 +1052,11 @@ Save/reopen, Defaults and Cancel. The stress fixture overlaps six large windows,
 shifts toward the rails with attention breathing, and uses real input for ten widgetize/restore
 cycles of the same window.
 
-Plumbus headless results: `tests/settings-help-test.sh` **177 passed**;
+AMD test host headless results: `tests/settings-help-test.sh` **177 passed**;
 `tests/hint-avoidance-always-test.sh` **40 passed**, including geometry/widget invariance and all
 ten widget cycles. Settled Wayfire CPU was **8.7% of one core** during the three-second sample.
-Artifacts are in `build/part5-plumbus/settings-help/` and
-`build/part5-plumbus/avoidance-always/`, including the overlap, attention and widget-cycle
+Artifacts are in `build/part5-test-host/settings-help/` and
+`build/part5-test-host/avoidance-always/`, including the overlap, attention and widget-cycle
 screenshots plus `stress-metrics.json`. Sessions and their private state directories were stopped
 and removed. The always-on preference has not been applied to Mike's live session because it is
 read-only under the host rule. To enable it in a personal installation, add this to
@@ -1067,7 +1067,7 @@ read-only under the host rule. To enable it in a personal installation, add this
 window_avoidance_always = true
 ```
 
-## Bounded window avoidance and easing regression (2026-10-03, plumbus)
+## Bounded window avoidance and easing regression (2026-10-03, AMD test host)
 
 The captured 9:48:26 AM PT hang core's Wayfire main thread was in
 `step_hints -> expose_window_hints -> least_exposure_move -> visible_label`; the
@@ -1096,11 +1096,11 @@ ms**. Across seven samples after the pointer stopped, solve counts remained
 another solve. The selected window's real frame moved from `(179, 86)` to
 `(335, -25)` while remaining a window; another window took the avoidance offset.
 Before-fix and after-drag screenshots and machine-readable samples are retained
-under `build/avoidance-animation-plumbus/plumbus-output-final/avoidance-animation-plumbus/`.
+under `build/avoidance-animation-test-host/test-host-output-final/avoidance-animation-test-host/`.
 The pre-fix 393.05 ms measurement is under
-`build/avoidance-animation-plumbus/baseline/`.
+`build/avoidance-animation-test-host/baseline/`.
 
-| Plumbus check | Result |
+| AMD test host check | Result |
 |---|---|
 | `tests/windowing-unit.sh` | **113 passed**; forced 1 ns deadline returns the same finite, valid badge placement on repeated solves |
 | `tests/hint-visible-test.sh` | **85 passed**; fully covered stacks, true geometry, release/Esc and explicit moves |
@@ -1113,10 +1113,10 @@ no other Wayfire process was running. Each fixture used this checkout's
 `SCOTTLAND_HEADLESS_DIR`; all its compositors and exact runtime directories were
 stopped and removed. Screenshots include `window-mode-avoiding.png`,
 `always-on-new-large-window.png`, `before-live-drag.png` and `after-live-drag.png`.
-This is plumbus headless verification with stipc input, not physical-display
+This is AMD test host headless verification with stipc input, not physical-display
 verification.
 
-## WK13 / WK31 optimized merged-build recheck (2026-10-03, plumbus)
+## WK13 / WK31 optimized merged-build recheck (2026-10-03, AMD test host)
 
 The `ship-merged5` build includes the optimized GO19 Makefile configuration.
 This recheck predates the temporal-coherence correction below. The label and
@@ -1128,7 +1128,7 @@ at or above 48 × text scale even if it overlaps foreground content. Widget and
 window hints share that readable floor, replacing the previous 32 × text scale
 window floor.
 
-| Merged-build Plumbus check | Result |
+| Merged-build AMD test host check | Result |
 |---|---|
 | `tests/windowing-unit.sh` | **114 passed**; forced 1 ns deadline returns a finite, centered minimum hint consistently |
 | `tests/hint-style-test.sh` | **53 passed**; 5% window scale retains the 48 px × text-scale floor |
@@ -1145,7 +1145,7 @@ position. A 1 ns-budget unit case confirms the fallback remains finite and
 stable. Logs and screenshots are under
 `build/ship-merged5-evidence/avoidance-{animation,hang,visible}/`.
 
-### ship-merged6 recheck (optimized Plumbus build)
+### ship-merged6 recheck (optimized AMD test host build)
 
 The hang-stress rerun completed **10/10** checks with the 2 ms search budget,
 38 drag solves, a largest solve of **2.041 ms**, and a slowest IPC request of
@@ -1156,7 +1156,7 @@ process were consuming CPU; neither process was stopped. After that activity end
 the rerun passed. Logs and timing samples are under
 `build/ship-merged6-evidence/avoidance-hang/`.
 
-## P11 temporal coherence review and regression (2026-10-04, Plumbus)
+## P11 temporal coherence review and regression (2026-10-04, AMD test host)
 
 The earlier recon used five large overlapping windows, always-on window
 avoidance, a real stipc Super+drag with one-pixel pointer steps through a
@@ -1198,7 +1198,7 @@ deadline in the solver tests. Easing has a 1000 px/s cap; reduced motion still
 snaps. Pointer grab fractions include the displayed avoidance translation, and
 the grabbed transformer is held steady until the explicit drag owns the move.
 
-The earlier Plumbus rerun passed **170/170** deterministic checks and **15/15**
+The earlier AMD test host rerun passed **170/170** deterministic checks and **15/15**
 stipc checks. Review-2 found that the old parking assertion was invalid: before
 the second drag, the fixture spread its windows into a non-overlapping grid by
 IPC, and the parked window could become a widget. The claim that all five
@@ -1231,7 +1231,7 @@ reduced motion still snaps. The pointer-grab path is intended to account for
 the displayed avoidance translation, but the claimed shifted-window grab
 result below was invalidated by review.
 
-On the 2026-10-04 Plumbus rerun, the deterministic solver suite passed
+On the 2026-10-04 AMD test host rerun, the deterministic solver suite passed
 **180/180**. Its 16-window solver fixture converged in **2** bounded slices;
 the first slice completed **6** windows, both stayed within **1,800**
 inspections, and the completed layout did no more work. That fixture exercised
@@ -1257,7 +1257,7 @@ drawn frame. The supposedly grabbed window was never grabbed (its target stayed
 at dy = -84 px). This run therefore verifies neither grabbing a displaced
 window nor its drop behavior. The earlier invalid grid-based parking claim is
 also not part of this result. Screenshots and the full trace are in
-`build/window-avoidance-calm-plumbus/`.
+`build/window-avoidance-calm-test-host/`.
 
 The 12-window exact-overlap load fixture passed **10/10**. All 12 minimum-size
 hint badges stayed rendered, 9 windows had a checked ≥48 px visible patch, and
@@ -1273,7 +1273,7 @@ same-layout no-hint baseline (**+1.60 percentage points**); Window mode with
 hints used **15.60%**. Samples were 2.5 seconds each; system load average was
 about **2.4 / 2.4 / 2.6**; this task launched no concurrent GPU benchmark.
 The screenshots and state counters are in
-`build/window-avoidance-load-plumbus/`. P12 is not fully verified: the solver
+`build/window-avoidance-load-test-host/`. P12 is not fully verified: the solver
 must first distinguish timeout from completed no-room, and Mike's P1/P12
 zone-edge choice remains pending.
 
@@ -1301,7 +1301,7 @@ zone-edge choice remains pending.
   that cap or strip behavior; it does not address budget-starved windows.
   Mike's P1/P12 choice remains open.
 
-### Review-3 rerun and idle-tick regression check (2026-10-04, Plumbus)
+### Review-3 rerun and idle-tick regression check (2026-10-04, AMD test host)
 
 The eight requested suites ran on `de2af42` in separate headless directories.
 `windowing-test.sh` passed **102/102**, hang stress **10/10**, always-on stress
@@ -1325,13 +1325,13 @@ old widget width during the WK34 peek transition. The idle-tick change had
 removed the only palette-file refresh wakeup and had stopped hint-anchor updates
 while the widget morph timer was active. The bridge now watches atomic palette
 file replacement and keeps hint stepping alive only while a widget presentation
-transition is animating. The targeted Plumbus rerun then passed **228/228**;
+transition is animating. The targeted AMD test host rerun then passed **228/228**;
 both text-scale sizes and WK34 peek attachment checks pass. No avoidance solver
 logic changed. Logs and screenshots are under
-`build/review3-tests/plumbus/` and
-`build/review3-tests/plumbus-artifacts/`.
+`build/review3-tests/test-host/` and
+`build/review3-tests/test-host-artifacts/`.
 
-## WP1/WP5 zone scale pins (2026-10-04, plumbus headless)
+## WP1/WP5 zone scale pins (2026-10-04, AMD test host headless)
 
 `tests/zone-pin-test.sh` (needs `SCOTTLAND_HEADLESS_DIR`) first builds this checkout's plugin and
 test helpers (`make test-hooks`) and refuses to run without them, so it never falls back to a
@@ -1349,7 +1349,7 @@ pin); a Shift+arrow pin recorded and restored; and a remembered spot moved into 
 wider center zone returning at 100%. `tests/windowing-unit.sh` covers the pure memory rules
 (`remember_spot`, `remembered_pin`, `valid_pin` in `window-memory.hpp`), including the clamp.
 
-| Suite (plumbus, isolated checkouts) | Branch | Before |
+| Suite (AMD test host, isolated checkouts) | Branch | Before |
 |---|---|---|
 | Windowing unit | 194 passed | — |
 | Zone pin real input | 32 passed (twice, from a checkout with no prebuilt helpers) | `bc71c66`: 27 passed, 5 failed (all Esc checks and the widget pin clear); origin/main fails the pin restore itself |
@@ -1360,15 +1360,15 @@ wider center zone returning at 100%. `tests/windowing-unit.sh` covers the pure m
 | State regressions | stops at the late-widget fixture | origin/main: stops at the same point |
 | Widget morph | 262–269 of 270, timing checks vary by run | origin/main 266–270 of 270, run side by side under the same load |
 
-Plumbus carried a load average of 11–16 from other agents' sessions during the widget-morph runs;
+The AMD test host carried a load average of 11–16 from concurrent workloads during the widget-morph runs;
 its failures are timing samples that differ from run to run on both builds, and no pins occur in
-it. No live session on osanwe or plumbus was installed into, reloaded or used; nothing ran on
-osanwe.
+it. No live session on daily Intel desktop or AMD test host was installed into, reloaded or used; nothing ran on
+daily Intel desktop.
 
-## WK37/WK38 validation (plumbus headless, 2026-10-04)
+## WK37/WK38 validation (AMD test host headless, 2026-10-04)
 
 `tests/hint-outline-test.sh` builds this checkout's plugin and test helpers (`make test-hooks`),
-refuses to run without them, and runs three isolated headless sessions on plumbus with real stipc
+refuses to run without them, and runs three isolated headless sessions on AMD test host with real stipc
 Alt holds, arrows, hint keys, drags and pointer input on Scottland Settings; grim screenshots
 and state stay under `build/hint-outline-evidence`. All 48 checks pass (40 + 3 + 5):
 
@@ -1449,10 +1449,10 @@ Super+M modes and the grab (WK27), on the ARM and x86 test machines:
   main), hint-follow 14, hint-front-center 28, hint-visible 85, animation 15, outline, style 53,
   windowing 103, hang 10, widget-hints 193, always-on stress 44; peek-unit 55, windowing-unit 126.
 
-## WP4/WP8 cycles reach the periphery (2026-10-04, plumbus headless)
+## WP4/WP8 cycles reach the periphery (2026-10-04, AMD test host headless)
 
 Mike's report, on main `a4dd1b2`: keyboard cycles rarely landed windows in the periphery. Recon on
-plumbus (real stipc drags and Alt hint presses, his zone settings) reproduced both observations on
+AMD test host (real stipc drags and Alt hint presses, his zone settings) reproduced both observations on
 `a4dd1b2` and on `zone-scale-memory` `1b1c6a0` alike:
 
 1. A drop clearly inside the center kept the periphery memory, as it should. A drop just past the
@@ -1471,7 +1471,7 @@ a drop well inside the center, the WK7 loop and single presses in fresh holds; f
 cycles for a small, a Mike-sized and a wide window and among other windows; and an old periphery
 memory that a wider center zone puts in the softness band.
 
-| Suite (plumbus, isolated checkouts) | This branch | Before |
+| Suite (AMD test host, isolated checkouts) | This branch | Before |
 |---|---|---|
 | Cycle periphery real input | 25 passed | main `a4dd1b2` and `1b1c6a0`: 14 passed, 11 failed (every check above) |
 | Zone pin real input | see the follow-up below | — |
@@ -1481,8 +1481,8 @@ memory that a wider center zone puts in the softness band.
 | Drag coast | 25 passed, 2 failed (hint avoidance during keyboard coasts) | `1b1c6a0`: the same 2 |
 | State regressions | stops at the late-widget fixture | `1b1c6a0`: stops at the same point |
 
-Not yet run on a live screen session; nothing was installed or reloaded on plumbus or osanwe, and
-nothing ran on osanwe beyond read-only queries of Mike's live state.
+Not yet run on a live screen session; nothing was installed or reloaded on AMD test host or daily Intel desktop, and
+nothing ran on daily Intel desktop beyond read-only queries of Mike's live state.
 
 Follow-up after review (2026-10-04): a window Shift-pinned at full size and parked at the side was
 read as the center (its pin is above 95%), so its first hint press shrank it in place, dropped the
@@ -1490,7 +1490,7 @@ pin and overwrote its center memory. Only an unpinned window in the softness ban
 center now; a pinned side window is always a periphery window. `tests/zone-pin-test.sh` adds that
 case (a full-size Shift pin aside: periphery memory with its pin, center memory untouched, out to
 the center at 100% and back to the pin, and the loop through the widget). Run side by side on
-plumbus with origin/main `2bf738e` (main ships zone-scale-memory but not WP8):
+AMD test host with origin/main `2bf738e` (main ships zone-scale-memory but not WP8):
 
 | Suite | This branch | origin/main `2bf738e` | Branch before this fix |
 |---|---|---|---|
@@ -1501,7 +1501,7 @@ plumbus with origin/main `2bf738e` (main ships zone-scale-memory but not WP8):
 
 Follow-up, fresh periphery spot (Mike's ruling, 2026-10-04): the innermost fresh spot now hangs up
 to a quarter of its scaled width into the center zone instead of clearing it; the placement routine
-keeps it off center windows. With his settings on nacelle (headless, real input), landing scales:
+keeps it off center windows. With his settings on ARM test host (headless, real input), landing scales:
 
 | Window, nothing else open | This change | Clear of the zone (before) | main `1bdbe57` |
 |---|---|---|---|
@@ -1512,11 +1512,11 @@ keeps it off center windows. With his settings on nacelle (headless, real input)
 Beside a center window whose edge is at the zone's edge it lands at 0.516, touching but not covering
 it; beside a center window wider than the zone (its edge 206 pt into the periphery) at 0.426, clear
 of it. `tests/cycle-periphery-test.sh`: 28 passed (the branch before: 24 passed, 4 failed, the
-quarter-hang checks; main: 16 passed, 12 failed). Side by side with main on nacelle: zone pin 37
+quarter-hang checks; main: 16 passed, 12 failed). Side by side with main on ARM test host: zone pin 37
 passed (main's own copy of that suite: 32 passed), windowing 102 and cycle overshoot 79 passed on
 both.
 
-## Grabbing a peeking window (WK27, peek-strip decision 9; 2026-10-04, nacelle + plumbus headless)
+## Grabbing a peeking window (WK27, peek-strip decision 9; 2026-10-04, ARM test host + AMD test host headless)
 
 Mike's report (main 2bf738e, window avoidance always on): drag a window over a periphery window
 so it peeks, then drag the peeking one; its goo is offset from it by about the peek. Reproduced
@@ -1545,15 +1545,15 @@ with its goo island, its scene rectangle and the input point. Then it taps the h
 
 | Run | Result |
 |---|---|
-| Unfixed main + telemetry (nacelle) | 95 passed, 69 failed: every peeking drag path fails (goo 117–143 px off the window, a jump at the grab and at the drop); controls and hint tap pass |
-| Fix (nacelle, aarch64) | 299 passed, 0 failed |
-| Fix (plumbus) | 299 passed, 0 failed |
+| Unfixed main + telemetry (ARM test host) | 95 passed, 69 failed: every peeking drag path fails (goo 117–143 px off the window, a jump at the grab and at the drop); controls and hint tap pass |
+| Fix (ARM test host, aarch64) | 299 passed, 0 failed |
+| Fix (AMD test host) | 299 passed, 0 failed |
 
 The grabbed point keeps its fraction of the drawn box exactly in the center. In the periphery it
 creeps by up to ~0.016 as the window rescales (the fraction is kept on the box with its fixed
 halo margin); the uncovered control does the same, so that is existing drag behavior.
 
-Regressions on the fix (plumbus headless): `live-drag-test` 11/0, `hint-avoidance-always-test`
+Regressions on the fix (AMD test host headless): `live-drag-test` 11/0, `hint-avoidance-always-test`
 42/0, `hint-avoidance-hang-test` 10/0, `goo-test` 50/0, `goo-overlap-hover-test` 28/0,
 `hint-front-center-test` 28/0, `drag-coast-test` 27/0 in three of four runs (one run missed the
 keyboard-coast re-solve, a Window-mode push with no grab; the unfixed baseline passed its one run). `hint-avoidance-animation-test`
@@ -1642,7 +1642,7 @@ lookup that ranks missing views last, as main did. (2) A change to one output's 
 withheld until something global changed; each output's key is now part of the solve request.
 (3) A widget circle waited only for the other widgets, though widget declutter relaxes every
 anchor on the output; it now waits for every hint on its output to stop moving.
-Mike's 10-07 choice in dr_5d6c35e6 selects the existing per-screen behavior: a glide on one screen
+Mike's 10-07 choice selects the existing per-screen behavior: a glide on one screen
 switches only that screen to live window avoidance, not all screens. This documentation records the
 current behavior and makes no behavior change; WK13 is the invariant.
 `tests/hint-minimized-obstacle-test.sh` (the review's reproduction): a window fully covered by

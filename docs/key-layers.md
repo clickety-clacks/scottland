@@ -12,7 +12,7 @@ use a layer to take Esc from a drag or input from a session lock.
 
 ## Invariants
 
-Status **implemented** means built and tested with real stipc input headless on plumbus; real
+Status **implemented** means built and tested with real stipc input headless on AMD test host; real
 screen exercise and the coordinating session's rehearsed live reload remain outstanding.
 
 | ID | Rule | Status |
@@ -23,7 +23,7 @@ screen exercise and the coordinating session's rehearsed live reload remain outs
 | KL4 | Both native toplevels and layer-shell surfaces work. A Scottland view ID selects exactly one surface; PID plus layer namespace is a convenience selector and rejects ambiguity. | implemented |
 | KL5 | A surface's unmap, close or Wayland client disconnect removes its layer. Remapping does not resurrect it. Set atomically replaces its keys; clear or an empty set removes it. A failed request preserves the previous set. | implemented |
 | KL6 | Losing focus immediately deactivates claims for new presses. A claimed held key's release finishes the existing pair even after focus loss, clear, replacement or unmap; it cannot unexpectedly fire a release shortcut below. A new claim cannot take over an already pressed unclaimed key's release. | implemented |
-| KL7 | Compositor input grabs (drag, lock) take precedence over surface layers. Window mode is a raw-key mode: a focused surface retains exactly its claimed keys even while hints are visible; unclaimed keys continue hint navigation and entered-mode arrow movement/center resize (WK17–WK24). A claimed press before entry cancels the pending hold for the entire Alt chord, including a claimed Alt key. Unclaimed input and unrelated bindings are unaffected. | implemented (plumbus headless, including hints) |
+| KL7 | Compositor input grabs (drag, lock) take precedence over surface layers. Window mode is a raw-key mode: a focused surface retains exactly its claimed keys even while hints are visible; unclaimed keys continue hint navigation and entered-mode arrow movement/center resize (WK17–WK24). A claimed press before entry cancels the pending hold for the entire Alt chord, including a claimed Alt key. Unclaimed input and unrelated bindings are unaffected. | implemented (AMD test host headless, including hints) |
 | KL8 | IPC is session-local `scottland/key-layer`, documented below and in the shipped skill and IPC header. The first scope is a focused surface; the separate module leaves additional scopes and stacked fall-through for future work. | implemented |
 
 ## IPC
@@ -108,10 +108,10 @@ names into core.
 
 ## Tests
 
-On plumbus, in this checkout's own test session (never the real screen):
+On AMD test host, in this checkout's own test session (never the real screen):
 
 ```bash
-SCOTTLAND_DEPLOY_DIR=Projects/scottland-key-layers tests/deploy.sh plumbus --tests-only
+SCOTTLAND_DEPLOY_DIR=Projects/scottland-key-layers tests/deploy.sh test-host --tests-only
 ```
 
 `tests/key-layers-test.sh` starts and stops its own private headless session; it refuses to replace
@@ -120,7 +120,7 @@ surfaces, including multiple toplevel/layer-shell surfaces sharing one client, a
 imported Lua shortcut. Current runs keep their artifacts under the checkout's `build/` and
 leave `XDG_RUNTIME_DIR` unchanged. Use a unique `SCOTTLAND_HEADLESS_DIR` under `build/`.
 
-Integrated validation on plumbus, 2026-10-01, code commit `756b8d7` (later merge `56b0cc1`
+Integrated validation on AMD test host, 2026-10-01, code commit `756b8d7` (later merge `56b0cc1`
 adds only main's documentation):
 
 | Check | Result |

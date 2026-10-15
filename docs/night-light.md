@@ -1,8 +1,7 @@
 # Night Light policy module
 
 This module implements the isolated command/state/status behavior slice of the
-Night Light v3 contract (`art_28ec42f4`, SHA-256
-`756abe1113a776a30d5302726efe3de67d1e72823224d941bed44b42108cbf6a`). The
+Night Light v3 behavior contract. The
 source is `core/tools/lib/src/night_light.rs`. It is pure policy: it parses the
 operation after `night-light`, calculates the next session request, returns
 intended per-output actions, and formats status/error/exit results from injected

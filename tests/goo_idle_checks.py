@@ -1,4 +1,4 @@
-"""GO17 and GO18 visual checks shared by the plumbus idle-gpu fixture."""
+"""GO17 and GO18 visual checks shared by the test-host idle-gpu fixture."""
 import json
 import math
 import subprocess
