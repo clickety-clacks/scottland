@@ -173,6 +173,12 @@ Specified in windowing-keys.md WK36 and WP1.
 | 10-04 | Knocks from objects on the desktop matter most (the user elected them to be there). Knock priority comes from another system; Scottland only renders it. | docs/knocks.md |
 | 10-04 | Knocks have many channels, not one: every window is a channel for its object's knocks, and knocks from objects not on the desktop coexist with them; nothing is ranked against anything else. | docs/knocks.md |
 
+## Middle-press window drag
+
+| Date | Ruling | Where |
+|---|---|---|
+| 10-06 | Middle-button window-move ruling: pressing the real middle button on a movable window starts a move; a quick click still reaches the app. Stylus buttons remain client input, with no Scottland pen remapping. A three-finger click-drag moves the window instead of resizing it; a stationary hold follows the corresponding window hold interaction. | Pointer and touchpad behavior |
+
 ## Testing
 
 | Date | Ruling | Where |
