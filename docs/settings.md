@@ -291,7 +291,7 @@ through, so over wallpaper a widget hint's letter contrast depends on the settin
 The first version (same day) scaled each kind's own fill instead, so 100% meant a 21%
 hint-color fill on window hints and an opaque themed fill on widget hints. Mike: "why
 does 100% mean 21% that makes no sense" and "it should set both. having them different
-is a bug." The PO confirmed the shared absolute 0–100% range and 21% default in ruling 10-07;
+is a bug." The shared absolute 0–100% range and 21% default were confirmed in the 10-07 ruling;
 there is no contrast floor or automatic adjustment.
 
 `tests/hint-background-opacity-test.sh` uses an owned isolated headless session. A light
