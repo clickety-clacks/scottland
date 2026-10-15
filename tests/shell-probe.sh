@@ -13,8 +13,8 @@
 #   - sandbox HOME: small Omarchy settings copied, large read-only folders symlinked
 #   - a copy of the shell at a different path, so its IPC never answers the real shell's callers
 #   - XDG config/state/cache dirs point into the sandbox, and fake `systemctl`, `systemd-run` and
-#     `uwsm-app` log instead of acting: plugins that manage user services (e.g. Tightbeam decision
-#     windows) must not restart the real desktop's services
+#     `uwsm-app` log instead of acting: plugins that manage user services must not restart the
+#     real desktop's services
 set -uo pipefail
 
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
@@ -36,13 +36,15 @@ exec bwrap --bind / / --bind "$XDG_STATE_HOME/../quickshell" "$XDG_RUNTIME_DIR/q
 WRAPPER
 chmod +x "$out/bin/quickshell"
 
-# Plugins that manage the real desktop's services or single-instance windows stay out of the probe:
-# Tightbeam decisions reaches its live window host through Quickshell IPC and restarts its unit.
-skip_plugins=${PROBE_SKIP_PLUGINS:-mike.tightbeam-decisions}
+# Plugins that manage the real desktop's services or single-instance decision windows stay out of
+# the probe. Decision plugins may reach a live window through Quickshell IPC and restart its unit.
+skip_plugins=${PROBE_SKIP_PLUGINS:-}
 mkdir -p "$sandbox/.config/omarchy/plugins"
 for plugin in "$HOME"/.config/omarchy/plugins/*; do
-  [[ " $skip_plugins " == *" $(basename "$plugin") "* ]] && continue
-  ln -sfn "$plugin" "$sandbox/.config/omarchy/plugins/$(basename "$plugin")"
+  plugin_name=$(basename "$plugin")
+  [[ -z $skip_plugins && $plugin_name == *decisions* ]] && continue
+  [[ " $skip_plugins " == *" $plugin_name "* ]] && continue
+  ln -sfn "$plugin" "$sandbox/.config/omarchy/plugins/$plugin_name"
 done
 
 for entry in "$HOME"/.config/omarchy/*; do
